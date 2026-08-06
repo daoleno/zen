@@ -1635,20 +1635,82 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 		conversation.Reason = "brain_threads_unavailable"
 		return conversation
 	}
-	results := []calendar.ScheduledResult{}
-	if s.calendar != nil {
-		results = s.calendar.ScheduledResults(threadID, 0)
+	isCurrentThread := currentThreadErr == nil && strings.TrimSpace(currentThreadID) != "" &&
+		threadID == strings.TrimSpace(currentThreadID)
+
+	liveActivity := conversation.Activity
+	providerEvents := []work.CodexConversationEvent(nil)
+	if isCurrentThread {
+		_ = s.brain.MaterializeProviderConversation(threadID, conversation)
+		if hasChat, err := s.brain.TimelineHasChatMessages(threadID); err == nil && !hasChat {
+			// Current host can publish Available+empty after rotation. Seed the
+			// durable thread from the newest fresh Brain-workspace Codex
+			// transcript so first-screen open restores ordinary messages.
+			if workspace := strings.TrimSpace(s.brain.WorkspacePath()); workspace != "" {
+				if recovered, recoverErr := work.LoadLatestFreshCodexConversationForCWD(workspace, now); recoverErr == nil &&
+					recovered.Available && len(recovered.Events) > 0 {
+					_ = s.brain.MaterializeProviderConversation(threadID, recovered)
+				}
+			}
+		}
+		_ = s.brain.BackfillCurrentWorkCardsOnce(threadID)
+		providerEvents = conversation.Events
+	} else {
+		liveActivity = nil
 	}
-	if currentThreadErr == nil && strings.TrimSpace(currentThreadID) != "" &&
-		threadID != strings.TrimSpace(currentThreadID) {
-		conversation.Events = []work.CodexConversationEvent{}
-		conversation.Activity = nil
+
+	timelineItems, timelineErr := s.brain.ThreadTimeline(threadID, 0)
+	if timelineErr != nil {
+		conversation.Available = false
+		conversation.Reason = "brain_timeline_unavailable"
+		return conversation
 	}
-	eventsByID := make(map[string]int, len(conversation.Events)+len(results))
-	uniqueEvents := make([]work.CodexConversationEvent, 0, len(conversation.Events)+len(results))
-	for _, event := range conversation.Events {
-		if id := strings.TrimSpace(event.ID); id != "" {
+	eventsByID := make(map[string]int, len(timelineItems)+len(providerEvents)+8)
+	uniqueEvents := make([]work.CodexConversationEvent, 0, len(timelineItems)+len(providerEvents)+8)
+	appendUnique := func(event work.CodexConversationEvent) {
+		id := strings.TrimSpace(event.ID)
+		if id != "" {
 			if index, ok := eventsByID[id]; ok {
+				uniqueEvents[index] = event
+				return
+			}
+			eventsByID[id] = len(uniqueEvents)
+		}
+		uniqueEvents = append(uniqueEvents, event)
+	}
+	for _, event := range timelineItemsToConversationEventsForServer(timelineItems) {
+		appendUnique(event)
+	}
+	if isCurrentThread && !timelineHasChatMessagesForServer(timelineItems) {
+		// Cards without ordinary messages is the rejected cards-only failure.
+		// Keep durable rows, but do not present work_result cards alone.
+		filtered := uniqueEvents[:0]
+		for _, event := range uniqueEvents {
+			if event.Source == "work_result" {
+				continue
+			}
+			filtered = append(filtered, event)
+		}
+		uniqueEvents = filtered
+		eventsByID = make(map[string]int, len(uniqueEvents))
+		for index, event := range uniqueEvents {
+			if id := strings.TrimSpace(event.ID); id != "" {
+				eventsByID[id] = index
+			}
+		}
+	}
+	// Current-host provider events overlay the durable timeline so tools,
+	// streaming partials, and live Activity remain visible. An empty provider
+	// snapshot leaves the durable timeline intact. Durable calendar/work_result
+	// rows win over provider duplicates with the same ID.
+	for _, event := range providerEvents {
+		id := strings.TrimSpace(event.ID)
+		if id != "" {
+			if index, ok := eventsByID[id]; ok {
+				existing := uniqueEvents[index]
+				if existing.Source == "calendar_result" || existing.Source == "work_result" {
+					continue
+				}
 				uniqueEvents[index] = event
 				continue
 			}
@@ -1656,25 +1718,43 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 		}
 		uniqueEvents = append(uniqueEvents, event)
 	}
-	conversation.Events = uniqueEvents
-	for _, result := range results {
-		event := calendarResultConversationEvent(result)
-		if index, ok := eventsByID[event.ID]; ok {
-			conversation.Events[index] = event
-			continue
-		}
-		eventsByID[event.ID] = len(conversation.Events)
-		conversation.Events = append(conversation.Events, event)
+	results := []calendar.ScheduledResult{}
+	if s.calendar != nil {
+		results = s.calendar.ScheduledResults(threadID, 0)
 	}
-	sort.SliceStable(conversation.Events, func(left, right int) bool {
-		return brainConversationEventLess(conversation.Events[left], conversation.Events[right])
+	for _, result := range results {
+		appendUnique(calendarResultConversationEvent(result))
+	}
+
+	sort.SliceStable(uniqueEvents, func(left, right int) bool {
+		return brainConversationEventLess(uniqueEvents[left], uniqueEvents[right])
 	})
+	conversation.Events = uniqueEvents
+	conversation.Activity = liveActivity
 	conversation.Available = true
 	conversation.Reason = ""
 	conversation.Source = "brain_chat"
 	conversation.SessionID = prefix + threadID
 	conversation.Updated = &now
 	return conversation
+}
+
+// timelineItemsToConversationEventsForServer adapts brain timeline rows without
+// importing unexported helpers across packages.
+func timelineItemsToConversationEventsForServer(items []brain.TimelineItem) []work.CodexConversationEvent {
+	return brain.TimelineItemsToConversationEvents(items, false)
+}
+
+func timelineHasChatMessagesForServer(items []brain.TimelineItem) bool {
+	for _, item := range items {
+		switch item.Kind {
+		case "user_message", "assistant_message":
+			if strings.TrimSpace(item.Body) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func calendarResultConversationEvent(result calendar.ScheduledResult) work.CodexConversationEvent {

@@ -1,11 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { BrainWorkResultEvent } from "../../store/brain";
+import { interfaceChatSessionCacheKey } from "../terminal/interfaceChatSessionIdentity";
 import {
   mergeSupplementaryTimelineItems,
   supplementaryTimelineItemsForConversation,
 } from "../terminal/InterfaceTimelineModel";
 import type { ZenTimelineItem } from "../terminal/InterfaceTimelineItemView";
 import { projectCanonicalBrainWorkResultEvents } from "./brainWorkEventTimeline";
+
+mock.module("react-native", () => ({ Platform: { OS: "web" } }));
+mock.module("../../services/auth", () => ({
+  buildAuthorizationHeader: async () => "test-authorization",
+}));
+mock.module("../../services/connectionIssue", () => ({
+  diagnoseConnectionIssue: async () => null,
+}));
+
+const { interfaceChatThreadReducer } = await import("../terminal/InterfaceChatSession");
 
 const resultEvent: BrainWorkResultEvent = {
   event_id: "event-session-done",
@@ -244,5 +255,203 @@ describe("Brain Work event timeline projection", () => {
         loading: true,
       }),
     ).toBe(projected);
+  });
+
+  test("InterfaceChatSession brain-thread scope retains messages across host rotation; empty host snapshot explains cards-only", () => {
+    const scopeKey = "brain-thread:thread-current";
+    const scopeCacheKey = interfaceChatSessionCacheKey(
+      "server-1",
+      "brain-agent-host-old:@1",
+      scopeKey,
+    );
+    // Host rotation changes agentId but Brain uses the thread scope cache key.
+    expect(
+      interfaceChatSessionCacheKey("server-1", "brain-agent-host-new:@2", scopeKey),
+    ).toBe(scopeCacheKey);
+
+    let thread = interfaceChatThreadReducer(
+      {
+        cacheKey: scopeCacheKey,
+        conversation: null,
+        loading: true,
+        error: null,
+        pendingUserMessages: [],
+        turnFocusAnchorAliases: new Map(),
+        streamCursor: { revision: 0 },
+        awaitingSnapshot: false,
+        resyncToken: 0,
+      },
+      { type: "stream_start", generation: 1 },
+    );
+    thread = interfaceChatThreadReducer(thread, {
+      type: "snapshot",
+      generation: 1,
+      payload: {
+        request_id: "sub-old-host",
+        conversation_id: scopeKey,
+        revision: 1,
+        conversation: {
+          available: true,
+          source: "brain_chat",
+          session_id: scopeKey,
+          events: [
+            {
+              id: "msg-user-1",
+              seq: 1,
+              kind: "user_message",
+              role: "user",
+              body: "Ship the Brain card correction.",
+              timestamp: "2026-08-06T01:00:00Z",
+            },
+            {
+              id: "msg-assistant-1",
+              seq: 2,
+              kind: "assistant_message",
+              role: "assistant",
+              body: "Working on the presentable card projection.",
+              timestamp: "2026-08-06T01:01:00Z",
+            },
+          ],
+        },
+      },
+    });
+    expect(thread.conversation?.events.map((event) => event.id)).toEqual([
+      "msg-user-1",
+      "msg-assistant-1",
+    ]);
+
+    // Same scope cache key: host rotation resubscribes without clearing history.
+    thread = interfaceChatThreadReducer(thread, {
+      type: "stream_start",
+      generation: 2,
+    });
+    expect(thread.conversation?.events.map((event) => event.id)).toEqual([
+      "msg-user-1",
+      "msg-assistant-1",
+    ]);
+
+    // Pagination / reconnect snapshot with the same brain-thread identity.
+    thread = interfaceChatThreadReducer(thread, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "sub-reconnect",
+        conversation_id: scopeKey,
+        revision: 2,
+        conversation: {
+          available: true,
+          source: "brain_chat",
+          session_id: scopeKey,
+          events: [
+            {
+              id: "msg-assistant-2",
+              seq: 0,
+              kind: "assistant_message",
+              role: "assistant",
+              body: "Paginated older turn restored.",
+              timestamp: "2026-08-06T00:59:00Z",
+            },
+            {
+              id: "msg-user-1",
+              seq: 1,
+              kind: "user_message",
+              role: "user",
+              body: "Ship the Brain card correction.",
+              timestamp: "2026-08-06T01:00:00Z",
+            },
+            {
+              id: "msg-assistant-1",
+              seq: 2,
+              kind: "assistant_message",
+              role: "assistant",
+              body: "Working on the presentable card projection.",
+              timestamp: "2026-08-06T01:01:00Z",
+            },
+          ],
+        },
+      },
+    });
+    expect(thread.conversation?.events.map((event) => event.id)).toEqual([
+      "msg-assistant-2",
+      "msg-user-1",
+      "msg-assistant-1",
+    ]);
+
+    const unreadCard: BrainWorkResultEvent = {
+      ...resultEvent,
+      event_id: "current-needs-input",
+      kind: "session.needs_input",
+      work_title: "zen-manual-input-and-brand-icons",
+      summary: "go vet ./... ; echo VET_EXIT:$?",
+      occurred_at: "2026-08-06T02:19:33Z",
+      unread: true,
+    };
+    const cards = projectCanonicalBrainWorkResultEvents({
+      events: [unreadCard],
+      displayedThreadId: "thread-current",
+      currentThreadId: "thread-current",
+      readOnly: false,
+      openSessionIds: new Set(),
+      onActivate: () => {},
+    });
+    const providerItems: ZenTimelineItem[] = (thread.conversation?.events ?? []).map(
+      (event) => ({
+        type: "message",
+        role: event.role === "user" ? "user" : "assistant",
+        id: event.id,
+        timestamp: event.timestamp ?? "2026-08-06T01:00:00Z",
+        body: event.body ?? "",
+        attachments: [],
+      }),
+    );
+    const merged = mergeSupplementaryTimelineItems(
+      providerItems,
+      supplementaryTimelineItemsForConversation({
+        items: cards,
+        conversationScopeKey: scopeKey,
+        conversation: thread.conversation,
+        loading: false,
+      }),
+    );
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg-assistant-2",
+      "msg-user-1",
+      "msg-assistant-1",
+      "current-needs-input",
+    ]);
+
+    // A later host with an empty provider transcript publishes an exact empty
+    // snapshot for the same brain-thread identity. Cards remain; messages are
+    // gone because the snapshot replaced them — not because cards deleted them.
+    thread = interfaceChatThreadReducer(thread, {
+      type: "stream_start",
+      generation: 3,
+    });
+    thread = interfaceChatThreadReducer(thread, {
+      type: "snapshot",
+      generation: 3,
+      payload: {
+        request_id: "sub-new-empty-host",
+        conversation_id: scopeKey,
+        revision: 3,
+        conversation: {
+          available: true,
+          source: "brain_chat",
+          session_id: scopeKey,
+          events: [],
+        },
+      },
+    });
+    expect(thread.conversation?.events).toEqual([]);
+    const cardsOnly = mergeSupplementaryTimelineItems(
+      [],
+      supplementaryTimelineItemsForConversation({
+        items: cards,
+        conversationScopeKey: scopeKey,
+        conversation: thread.conversation,
+        loading: false,
+      }),
+    );
+    expect(cardsOnly.map((item) => item.id)).toEqual(["current-needs-input"]);
   });
 });

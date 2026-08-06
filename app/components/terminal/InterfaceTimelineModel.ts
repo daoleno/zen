@@ -3,6 +3,7 @@ import type {
   CodexConversationEvent,
   ProviderActivity,
 } from "../../services/codexConversation";
+import type { BrainWorkResultEvent } from "../../store/brain";
 import {
   buildExpandedToolDetails,
   isWaitSessionPoll,
@@ -148,6 +149,11 @@ export function buildZenTimeline(
 
     if (event.kind === "status") {
       flushExploration();
+      const workCard = brainWorkEventTimelineItemFromConversationEvent(event);
+      if (workCard) {
+        items.push(workCard);
+        continue;
+      }
       if (shouldRenderStatusAsMessage(event)) {
         const body = (event.body || "").trim();
         if (body) {
@@ -411,6 +417,80 @@ function shouldRenderStatusAsMessage(event: CodexConversationEvent) {
     !(event.status || "").trim() &&
     Boolean((event.body || "").trim())
   );
+}
+
+function brainWorkEventTimelineItemFromConversationEvent(
+  event: CodexConversationEvent,
+): ZenTimelineItem | null {
+  if (event.source !== "work_result" || event.kind !== "status") {
+    return null;
+  }
+  const kind = normalizeBrainWorkResultKind(event.status);
+  if (!kind) {
+    return null;
+  }
+  const workEvent: BrainWorkResultEvent = {
+    event_id: event.id,
+    kind,
+    work_id: (event.work_id || "").trim(),
+    work_title: (event.title || "").trim(),
+    summary: (event.body || "").trim(),
+    session_id: event.work_session_id?.trim() || undefined,
+    session_name: event.session_name?.trim() || undefined,
+    occurred_at: event.timestamp || new Date(0).toISOString(),
+    unread: Boolean(event.unread),
+  };
+  if (!workEvent.work_id || !workEvent.occurred_at) {
+    return null;
+  }
+  return {
+    type: "brain-work-event",
+    id: event.id,
+    timestamp: workEvent.occurred_at,
+    event: workEvent,
+  };
+}
+
+function normalizeBrainWorkResultKind(
+  value: string | undefined,
+): BrainWorkResultEvent["kind"] | null {
+  switch (value) {
+    case "session.done":
+    case "session.failed":
+    case "session.needs_input":
+    case "session.stale":
+      return value;
+    default:
+      return null;
+  }
+}
+
+export function attachBrainWorkEventActions(
+  items: ZenTimelineItem[],
+  onActivate?: (
+    event: BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void,
+  openSessionIds?: ReadonlySet<string>,
+): ZenTimelineItem[] {
+  if (!onActivate) {
+    return items;
+  }
+  return items.map((item) => {
+    if (item.type !== "brain-work-event") {
+      return item;
+    }
+    const canOpenSession = Boolean(
+      item.event.session_id && openSessionIds?.has(item.event.session_id),
+    );
+    if (!item.event.unread && !canOpenSession) {
+      return item;
+    }
+    return {
+      ...item,
+      onPress: () => onActivate(item.event, canOpenSession),
+    };
+  });
 }
 
 function activityFromEvent(

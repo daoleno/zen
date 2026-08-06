@@ -6,11 +6,13 @@ import type {
 import type { PendingUserMessage } from "./InterfaceChatSession";
 import {
   buildZenTimeline,
+  attachBrainWorkEventActions,
   mergeRunningActivityIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
   mergeSupplementaryTimelineItems,
 } from "./InterfaceTimelineModel";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
+import type { BrainWorkResultEvent } from "../../store/brain";
 
 type StableTimelineEntry = {
   item: ZenTimelineItem;
@@ -23,6 +25,8 @@ export function useInterfaceTimelineItems({
   runningActivity,
   supplementaryItems = [],
   onRetryPendingUserMessage,
+  onBrainWorkEventActivate,
+  openSessionIds,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
@@ -30,6 +34,11 @@ export function useInterfaceTimelineItems({
   runningActivity?: ProviderActivity;
   supplementaryItems?: ZenTimelineItem[];
   onRetryPendingUserMessage(id: string): void;
+  onBrainWorkEventActivate?: (
+    event: BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
 }) {
   const previousRef = useRef<{
     byId: Map<string, StableTimelineEntry>;
@@ -40,8 +49,13 @@ export function useInterfaceTimelineItems({
   });
 
   const providerTimelineItems = useMemo(
-    () => buildZenTimeline(events),
-    [events],
+    () =>
+      attachBrainWorkEventActions(
+        buildZenTimeline(events),
+        onBrainWorkEventActivate,
+        openSessionIds,
+      ),
+    [events, onBrainWorkEventActivate, openSessionIds],
   );
   const providerTimelineItemsWithTurnFocus = useMemo(() => {
     if (!turnFocusAnchorAliases?.size) {

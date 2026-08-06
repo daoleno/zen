@@ -18,7 +18,6 @@ import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
-import { projectCanonicalBrainWorkResultEvents } from "../../components/brain/brainWorkEventTimeline";
 import {
   brainProviderLabel,
   distinctExecutorAdapters,
@@ -400,25 +399,6 @@ export default function BrainScreen() {
     () => new Set((activeBrain?.agents ?? []).map((agent) => agent.id)),
     [activeBrain?.agents],
   );
-  const workEventTimelineItems = useMemo(
-    () =>
-      projectCanonicalBrainWorkResultEvents({
-        events: activeBrain?.result_events ?? [],
-        displayedThreadId,
-        currentThreadId: activeBrain?.chat_thread_id,
-        readOnly: targetedThreadReadOnly,
-        openSessionIds,
-        onActivate: activateWorkResult,
-      }),
-    [
-      activeBrain?.chat_thread_id,
-      activeBrain?.result_events,
-      activateWorkResult,
-      displayedThreadId,
-      openSessionIds,
-      targetedThreadReadOnly,
-    ],
-  );
 
   return (
     <SafeAreaView
@@ -471,7 +451,10 @@ export default function BrainScreen() {
               chrome={chrome}
               screenFocused={screenFocused}
               topChromeInset={topChromeInset}
-              supplementaryTimelineItems={workEventTimelineItems}
+              onBrainWorkEventActivate={
+                targetedThreadReadOnly ? undefined : activateWorkResult
+              }
+              openSessionIds={openSessionIds}
               readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
               emptyTitle={BRAIN_EMPTY_TITLE}

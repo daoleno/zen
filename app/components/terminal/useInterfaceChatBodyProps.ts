@@ -39,6 +39,11 @@ interface UseInterfaceChatBodyPropsInput {
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
   supplementaryTimelineItems?: ZenTimelineItem[];
+  onBrainWorkEventActivate?: (
+    event: import("../../store/brain").BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
   loading: boolean;
   error?: string | null;
   draft: string;
@@ -81,6 +86,8 @@ export function useInterfaceChatBodyProps({
   turnFocusAnchorAliases,
   runningActivity,
   supplementaryTimelineItems,
+  onBrainWorkEventActivate,
+  openSessionIds,
   loading,
   error,
   draft,
@@ -133,6 +140,8 @@ export function useInterfaceChatBodyProps({
       turnFocusAnchorAliases,
       runningActivity,
       supplementaryTimelineItems,
+      onBrainWorkEventActivate,
+      openSessionIds,
       loading,
       error,
       scrollRef: timeline.scrollRef,
@@ -231,6 +240,8 @@ export function useInterfaceChatBodyProps({
       turnFocusAnchorAliases,
       runningActivity,
       supplementaryTimelineItems,
+      onBrainWorkEventActivate,
+      openSessionIds,
       handleSendPress,
       handleStopPress,
       handleUploadPress,

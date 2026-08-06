@@ -192,4 +192,58 @@ describe("Brain Work result-event normalization", () => {
       },
     ]);
   });
+
+  test("reconnect snapshot replaces result_events so server-omitted historical cards cannot resurrect", () => {
+    const historical = {
+      event_id: "1a6ddd99-accept",
+      kind: "session.done",
+      work_id: "work-historical",
+      work_title: "zen-pi-opencode-first-class-acceptance",
+      summary: "Round-2 ACCEPT P0=0 P1=0 P2=0",
+      occurred_at: "2026-08-05T20:54:04Z",
+      unread: true,
+    };
+    const current = {
+      event_id: "current-needs-input",
+      kind: "session.needs_input",
+      work_id: "work-current",
+      work_title: "zen-manual-input-and-brand-icons",
+      summary: "go vet ./... ; echo VET_EXIT:$?",
+      occurred_at: "2026-08-06T02:19:33Z",
+      unread: true,
+    };
+    const before = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: { result_events: [historical, current] },
+    });
+    expect(before.byServer["server-1"]?.result_events?.map((event) => event.event_id)).toEqual([
+      "1a6ddd99-accept",
+      "current-needs-input",
+    ]);
+
+    // Authoritative server projection already omitted the closed-commitment card.
+    const afterReconnect = brainReducer(before, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: { result_events: [current] },
+    });
+    expect(afterReconnect.byServer["server-1"]?.result_events).toEqual([
+      {
+        event_id: "current-needs-input",
+        kind: "session.needs_input",
+        work_id: "work-current",
+        work_title: "zen-manual-input-and-brand-icons",
+        summary: "go vet ./... ; echo VET_EXIT:$?",
+        session_id: undefined,
+        session_name: undefined,
+        occurred_at: "2026-08-06T02:19:33Z",
+        unread: true,
+      },
+    ]);
+  });
 });

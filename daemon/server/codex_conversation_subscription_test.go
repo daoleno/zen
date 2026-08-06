@@ -500,6 +500,64 @@ func TestNonCurrentBrainThreadClearsProviderActivity(t *testing.T) {
 	}
 }
 
+func TestBrainScopedConversationEmptyProviderHostPreservesDurableTimeline(t *testing.T) {
+	service, _ := newBrainCalendarFixture(t, "thread-current")
+	srv := &Server{brain: service}
+	populated := work.CodexConversation{
+		Available: true,
+		Source:    "codex_rollout",
+		SessionID: "host-session-old",
+		Events: []work.CodexConversationEvent{{
+			ID:        "user-keep",
+			Timestamp: "2026-08-06T02:00:00Z",
+			Kind:      "user_message",
+			Role:      "user",
+			Body:      "Keep me after host rotation",
+		}, {
+			ID:        "assistant-keep",
+			Timestamp: "2026-08-06T02:00:01Z",
+			Kind:      "assistant_message",
+			Role:      "assistant",
+			Body:      "History stays with the Brain thread.",
+		}},
+	}
+	first := srv.brainScopedConversation("brain-thread:thread-current", populated, time.Now())
+	if !first.Available || len(first.Events) != 2 {
+		t.Fatalf("initial scoped conversation = %#v", first)
+	}
+	// A rotated/new host Session can publish an available empty provider
+	// transcript. Durable Brain-thread timeline must survive.
+	got := srv.brainScopedConversation("brain-thread:thread-current", work.CodexConversation{
+		Available: true,
+		Source:    "codex_rollout",
+		SessionID: "host-session-new",
+		Events:    nil,
+	}, time.Now())
+	if !got.Available || got.Source != "brain_chat" || got.SessionID != "brain-thread:thread-current" {
+		t.Fatalf("scoped empty host = %#v", got)
+	}
+	if len(got.Events) != 2 || got.Events[0].Body != "Keep me after host rotation" {
+		t.Fatalf("empty host erased durable timeline: %#v", got.Events)
+	}
+}
+
+func TestBrainScopedConversationEmptyProviderHostWithoutTimelineStaysEmpty(t *testing.T) {
+	service, _ := newBrainCalendarFixture(t, "thread-current")
+	srv := &Server{brain: service}
+	got := srv.brainScopedConversation("brain-thread:thread-current", work.CodexConversation{
+		Available: true,
+		Source:    "codex_rollout",
+		SessionID: "host-session-new",
+		Events:    nil,
+	}, time.Now())
+	if !got.Available || got.Source != "brain_chat" || got.SessionID != "brain-thread:thread-current" {
+		t.Fatalf("scoped empty host = %#v", got)
+	}
+	if len(got.Events) != 0 {
+		t.Fatalf("empty host invented transcript events: %#v", got.Events)
+	}
+}
+
 func TestBrainScopedConversationPreservesPartialProviderEventWithCalendar(t *testing.T) {
 	service, calendarStore := newBrainCalendarFixture(t, "thread-1")
 	result := finishScheduledResult(t, calendarStore, "item", "Daily papers", "thread-1", "Three papers.", "")

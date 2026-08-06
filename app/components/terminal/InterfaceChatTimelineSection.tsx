@@ -44,6 +44,11 @@ interface InterfaceChatTimelineSectionProps {
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
   supplementaryItems?: ZenTimelineItem[];
+  onBrainWorkEventActivate?: (
+    event: import("../../store/brain").BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
   loading: boolean;
   error?: string | null;
   commandMenuOpen: boolean;
@@ -102,6 +107,8 @@ export function InterfaceChatTimelineSection({
   turnFocusAnchorAliases,
   runningActivity,
   supplementaryItems,
+  onBrainWorkEventActivate,
+  openSessionIds,
   loading,
   error,
   commandMenuOpen,
@@ -164,6 +171,8 @@ export function InterfaceChatTimelineSection({
     turnFocusAnchorAliases,
     runningActivity,
     supplementaryItems,
+    onBrainWorkEventActivate,
+    openSessionIds,
     onRetryPendingUserMessage,
   });
   const loadAssetPreview = useCallback(

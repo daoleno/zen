@@ -50,6 +50,11 @@ export interface InterfaceChatBodyProps {
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
   supplementaryTimelineItems?: ZenTimelineItem[];
+  onBrainWorkEventActivate?: (
+    event: import("../../store/brain").BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
   loading: boolean;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -139,6 +144,8 @@ export function InterfaceChatBody({
   turnFocusAnchorAliases,
   runningActivity,
   supplementaryTimelineItems,
+  onBrainWorkEventActivate,
+  openSessionIds,
   loading,
   error,
   scrollRef,
@@ -279,6 +286,8 @@ export function InterfaceChatBody({
           onRetryPendingUserMessage={onRetryPendingUserMessage}
           runningActivity={runningActivity}
           supplementaryItems={supplementaryTimelineItems}
+          onBrainWorkEventActivate={onBrainWorkEventActivate}
+          openSessionIds={openSessionIds}
           loading={loading}
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}

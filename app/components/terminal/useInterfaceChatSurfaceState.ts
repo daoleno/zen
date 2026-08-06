@@ -77,6 +77,11 @@ interface UseInterfaceChatSurfaceStateInput {
   emptyTitle?: string;
   emptyBody?: string;
   supplementaryTimelineItems?: ZenTimelineItem[];
+  onBrainWorkEventActivate?: (
+    event: import("../../store/brain").BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
   composerAccessory?: ReactNode;
   onDraftChange?: (value: string) => void;
   renderComposerAccessory?: (args: {
@@ -137,6 +142,8 @@ export function useInterfaceChatSurfaceState({
   emptyTitle,
   emptyBody,
   supplementaryTimelineItems,
+  onBrainWorkEventActivate,
+  openSessionIds,
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
@@ -617,6 +624,8 @@ export function useInterfaceChatSurfaceState({
     turnFocusAnchorAliases,
     runningActivity,
     supplementaryTimelineItems: readySupplementaryTimelineItems,
+    onBrainWorkEventActivate,
+    openSessionIds,
     loading,
     error,
     draft,

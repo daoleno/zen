@@ -196,6 +196,12 @@ type CodexConversationEvent struct {
 	Explanation string                        `json:"explanation,omitempty"`
 	Plan        []CodexPlanStep               `json:"plan,omitempty"`
 	Source      string                        `json:"source,omitempty"`
+	// Work-card fields are only set for Brain timeline Source=work_result items.
+	WorkID      string `json:"work_id,omitempty"`
+	WorkSession string `json:"work_session_id,omitempty"`
+	SessionName string `json:"session_name,omitempty"`
+	Unread      bool   `json:"unread,omitempty"`
+	Supersedes  string `json:"supersedes,omitempty"`
 	// AdmissionSHA256 is the exact provider-native user input digest when the
 	// source preserves those bytes separately from its display projection.
 	AdmissionSHA256 string `json:"-"`

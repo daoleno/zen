@@ -34,6 +34,11 @@ interface InterfaceChatSurfaceProps {
   emptyTitle?: string;
   emptyBody?: string;
   supplementaryTimelineItems?: ZenTimelineItem[];
+  onBrainWorkEventActivate?: (
+    event: import("../../store/brain").BrainWorkResultEvent,
+    canOpenSession: boolean,
+  ) => void;
+  openSessionIds?: ReadonlySet<string>;
   composerAccessory?: React.ReactNode;
   onDraftChange?: (value: string) => void;
   renderComposerAccessory?: (args: {
@@ -66,6 +71,8 @@ function InterfaceChatSurfaceImpl({
   emptyTitle,
   emptyBody,
   supplementaryTimelineItems,
+  onBrainWorkEventActivate,
+  openSessionIds,
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
@@ -93,6 +100,8 @@ function InterfaceChatSurfaceImpl({
     emptyTitle,
     emptyBody,
     supplementaryTimelineItems,
+    onBrainWorkEventActivate,
+    openSessionIds,
     composerAccessory,
     onDraftChange,
     renderComposerAccessory,

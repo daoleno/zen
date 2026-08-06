@@ -72,12 +72,11 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	resultEvents, err := s.store.RecentWorkResultEvents(recentWorkResultEventLimit)
+	chatThreadID, err := s.store.ChatThreadID()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	chatThreadID, err := s.store.ChatThreadID()
-	if err != nil {
+	if err := s.store.BackfillCurrentWorkCardsOnce(chatThreadID); err != nil {
 		return Snapshot{}, err
 	}
 	hostExecutor := s.hostExecutor()
@@ -102,9 +101,10 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
-	enrichWorkResultEvents(resultEvents, snapshot.Agents)
 	snapshot.ActiveWork = activeWork
-	snapshot.ResultEvents = resultEvents
+	// Work cards live in the Brain-thread timeline. result_events is retired
+	// as a supplementary presentation projection (empty keeps wire compat).
+	snapshot.ResultEvents = []WorkResultEvent{}
 	return snapshot, nil
 }
 
@@ -951,7 +951,10 @@ func (s *Service) MarkWorkRead(workID string) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("brain service is not configured")
 	}
-	return s.store.MarkWorkRead(workID)
+	if err := s.store.MarkWorkRead(workID); err != nil {
+		return err
+	}
+	return s.store.MarkTimelineWorkCardsRead(workID)
 }
 
 func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
@@ -959,11 +962,73 @@ func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 		return WorkEvent{}, false, fmt.Errorf("brain service is not configured")
 	}
 	recorded, created, err := s.store.AppendWorkEvent(event)
-	if err != nil || !created || !recorded.Actionable {
+	if err != nil {
 		return recorded, created, err
+	}
+	if created && isProjectedWorkResultEvent(recorded.Kind) {
+		threadID, threadErr := s.store.ChatThreadID()
+		if threadErr == nil && strings.TrimSpace(threadID) != "" {
+			if workItem, getErr := s.store.Work(recorded.WorkID); getErr == nil {
+				_, _, _ = s.store.MaterializeWorkCard(threadID, workItem, recorded)
+			}
+		}
+	}
+	if !created || !recorded.Actionable {
+		return recorded, created, nil
 	}
 	_, dispatchErr := s.DispatchPendingEvent()
 	return recorded, created, dispatchErr
+}
+
+func (s *Service) WorkspacePath() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	return s.store.WorkspacePath()
+}
+
+func (s *Service) TimelineHasChatMessages(threadID string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, nil
+	}
+	items, err := s.store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		return false, err
+	}
+	return timelineHasChatMessages(items), nil
+}
+
+func timelineHasChatMessages(items []TimelineItem) bool {
+	for _, item := range items {
+		switch item.Kind {
+		case timelineKindUserMessage, timelineKindAssistantMessage:
+			if strings.TrimSpace(item.Body) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) MaterializeProviderConversation(threadID string, conversation work.CodexConversation) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.MaterializeProviderConversation(threadID, conversation)
+}
+
+func (s *Service) ThreadTimeline(threadID string, limit int) ([]TimelineItem, error) {
+	if s == nil || s.store == nil {
+		return []TimelineItem{}, nil
+	}
+	return s.store.ThreadTimeline(threadID, limit)
+}
+
+func (s *Service) BackfillCurrentWorkCardsOnce(threadID string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.BackfillCurrentWorkCardsOnce(threadID)
 }
 
 // RouteCalendarEvent projects the existing idempotent Calendar occurrence into

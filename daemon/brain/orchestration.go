@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 3
+const orchestrationSchemaVersion = 4
 
 var (
 	ErrWorkNotFound      = errors.New("Brain Work not found")
@@ -43,6 +43,10 @@ const (
 
 // Work is the only durable Brain commitment. It is intentionally small:
 // detailed plans and evidence remain in the referenced worklog.
+//
+// TerminalAt is the closed-commitment causality boundary: set exactly once
+// when Work first becomes done/cancelled, cleared on reopen to a non-terminal
+// status, and never bumped by later title/next_action/owner/context updates.
 type Work struct {
 	ID               string           `json:"work_id"`
 	Title            string           `json:"title"`
@@ -56,6 +60,7 @@ type Work struct {
 	ContextRef       string           `json:"context_ref,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
+	TerminalAt       *time.Time       `json:"terminal_at,omitempty"`
 }
 
 // WorkEvent is an append-only fact. Event.ID is also its delivery receipt.
@@ -100,6 +105,14 @@ type ActiveWork struct {
 
 // WorkResultEvent is a bounded, read-only domain projection. The append-only
 // WorkEvent and its Work remain the only durable sources.
+//
+// A card is the Work's current standalone presentable outcome: at most one
+// projected result event per Work (a newer event supersedes older ones).
+// Terminal Work events strictly before Work.TerminalAt are historical backlog
+// and are not standalone cards — the same closed-commitment boundary the
+// scheduler uses. ConsumedAt remains exact-once delivery only and never hides
+// cards. ReadAt owns unread emphasis via MarkWorkRead; it is not required to
+// collapse superseded or closed-commitment history.
 type WorkResultEvent struct {
 	EventID     string    `json:"event_id"`
 	Kind        string    `json:"kind"`
@@ -248,6 +261,26 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			}
 			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 		}
+		backfillWorkTerminalAt(&database)
+		if err := validateOrchestrationDatabase(database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		return database, true, nil
+	case 3:
+		var database orchestrationDatabase
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if database.BrainWork == nil || database.BrainWorkEvents == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
+		}
+		backfillWorkTerminalAt(&database)
+		database.SchemaVersion = orchestrationSchemaVersion
 		if err := validateOrchestrationDatabase(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -276,6 +309,28 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			orchestrationSchemaVersion,
 		)
 	}
+}
+
+// backfillWorkTerminalAt freezes each terminal Work's then-current UpdatedAt
+// into TerminalAt exactly once during schema migration. That stamp is enough
+// to classify pre-existing closed-commitment backlog (CreatedAt < UpdatedAt)
+// without reinterpreting later bookkeeping UpdatedAt values forever.
+func backfillWorkTerminalAt(database *orchestrationDatabase) {
+	for index := range database.BrainWork {
+		item := &database.BrainWork[index]
+		if workIsTerminal(item.Status) {
+			if item.TerminalAt == nil || item.TerminalAt.IsZero() {
+				stamp := item.UpdatedAt
+				item.TerminalAt = &stamp
+			}
+			continue
+		}
+		item.TerminalAt = nil
+	}
+}
+
+func workIsTerminal(status WorkStatus) bool {
+	return status == WorkDone || status == WorkCancelled
 }
 
 func ensureSingleJSONValue(decoder *json.Decoder, raw []byte) error {
@@ -355,6 +410,13 @@ func validateWork(item Work) error {
 	}
 	if item.CreatedAt.IsZero() || item.UpdatedAt.IsZero() {
 		return fmt.Errorf("created_at and updated_at are required")
+	}
+	if workIsTerminal(item.Status) {
+		if item.TerminalAt == nil || item.TerminalAt.IsZero() {
+			return fmt.Errorf("terminal work requires terminal_at")
+		}
+	} else if item.TerminalAt != nil {
+		return fmt.Errorf("non-terminal work must not have terminal_at")
 	}
 	return nil
 }
@@ -462,6 +524,11 @@ func normalizeWorkForCreate(item Work, now time.Time) (Work, error) {
 	}
 	item.CreatedAt = now
 	item.UpdatedAt = now
+	item.TerminalAt = nil
+	if workIsTerminal(item.Status) {
+		stamp := now
+		item.TerminalAt = &stamp
+	}
 	if err := validateWork(item); err != nil {
 		return Work{}, err
 	}
@@ -571,8 +638,11 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 			err = ErrWorkNotFound
 		} else {
 			item = database.BrainWork[index]
+			previousStatus := item.Status
 			applyWorkUpdate(&item, update)
-			item.UpdatedAt = s.nowUTC()
+			now := s.nowUTC()
+			item.UpdatedAt = now
+			syncWorkTerminalAt(&item, previousStatus, now)
 			if err = validateWork(item); err == nil {
 				database.BrainWork[index] = item
 				err = s.persistOrchestrationLocked(database)
@@ -655,6 +725,27 @@ func applyWorkUpdate(item *Work, update WorkUpdate) {
 	}
 	if update.ContextRef != nil {
 		item.ContextRef = strings.TrimSpace(*update.ContextRef)
+	}
+}
+
+// syncWorkTerminalAt keeps TerminalAt aligned with status transitions only.
+// First non-terminal → terminal sets the stamp; reopen clears it; staying
+// terminal preserves the existing stamp so bookkeeping cannot move the
+// closed-commitment boundary.
+func syncWorkTerminalAt(item *Work, previousStatus WorkStatus, now time.Time) {
+	wasTerminal := workIsTerminal(previousStatus)
+	nowTerminal := workIsTerminal(item.Status)
+	switch {
+	case !wasTerminal && nowTerminal:
+		stamp := now
+		item.TerminalAt = &stamp
+	case wasTerminal && !nowTerminal:
+		item.TerminalAt = nil
+	case nowTerminal && (item.TerminalAt == nil || item.TerminalAt.IsZero()):
+		stamp := now
+		item.TerminalAt = &stamp
+	case !nowTerminal:
+		item.TerminalAt = nil
 	}
 }
 
@@ -871,12 +962,16 @@ func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent)
 		return false
 	}
 	item := database.BrainWork[index]
-	if item.Status != WorkDone && item.Status != WorkCancelled {
+	if !workIsTerminal(item.Status) {
 		return true
 	}
 	// Strictly earlier Events are historical backlog; equality stays eligible
 	// for serialized terminal update-then-append under coarse clocks.
-	return !event.CreatedAt.Before(item.UpdatedAt)
+	boundary, ok := workTerminalBoundary(item)
+	if !ok {
+		return false
+	}
+	return !event.CreatedAt.Before(boundary)
 }
 
 // ReleaseEventClaim atomically makes the exact identity-bound Event claimable
@@ -1107,17 +1202,29 @@ func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
 	if err != nil {
 		return nil, err
 	}
+	return projectCurrentWorkResultEvents(database, limit), nil
+}
+
+// projectCurrentWorkResultEvents is migration/backfill only. Presentation reads
+// materialized timeline work_card items; it must not reproject the audit log.
+func projectCurrentWorkResultEvents(database orchestrationDatabase, limit int) []WorkResultEvent {
+	if limit <= 0 {
+		return []WorkResultEvent{}
+	}
 	workByID := make(map[string]Work, len(database.BrainWork))
 	for _, item := range database.BrainWork {
 		workByID[item.ID] = item
 	}
-	out := make([]WorkResultEvent, 0, min(limit, len(database.BrainWorkEvents)))
+	candidates := make([]WorkResultEvent, 0, min(limit, len(database.BrainWorkEvents)))
 	for _, event := range database.BrainWorkEvents {
 		if !isProjectedWorkResultEvent(event.Kind) {
 			continue
 		}
 		item, ok := workByID[event.WorkID]
 		if !ok {
+			continue
+		}
+		if !workResultEventPresentable(item, event) {
 			continue
 		}
 		sessionID := strings.TrimSpace(item.OwnerSessionID)
@@ -1134,7 +1241,7 @@ func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
 		}
 		summary = compactWorkResultText(summary)
 		eventSourceName := strings.TrimSpace(event.SourceName)
-		out = append(out, WorkResultEvent{
+		candidates = append(candidates, WorkResultEvent{
 			EventID:            event.ID,
 			Kind:               event.Kind,
 			WorkID:             item.ID,
@@ -1148,6 +1255,24 @@ func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
 			hasEventSummary:    eventSummary != "",
 		})
 	}
+	sort.Slice(candidates, func(left, right int) bool {
+		if candidates[left].OccurredAt.Equal(candidates[right].OccurredAt) {
+			return candidates[left].EventID < candidates[right].EventID
+		}
+		return candidates[left].OccurredAt.Before(candidates[right].OccurredAt)
+	})
+	latestByWork := make(map[string]WorkResultEvent, len(candidates))
+	order := make([]string, 0, len(candidates))
+	for _, event := range candidates {
+		if _, seen := latestByWork[event.WorkID]; !seen {
+			order = append(order, event.WorkID)
+		}
+		latestByWork[event.WorkID] = event
+	}
+	out := make([]WorkResultEvent, 0, len(order))
+	for _, workID := range order {
+		out = append(out, latestByWork[workID])
+	}
 	sort.Slice(out, func(left, right int) bool {
 		if out[left].OccurredAt.Equal(out[right].OccurredAt) {
 			return out[left].EventID < out[right].EventID
@@ -1157,7 +1282,30 @@ func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
 	if len(out) > limit {
 		out = append([]WorkResultEvent(nil), out[len(out)-limit:]...)
 	}
-	return out, nil
+	return out
+}
+
+// workResultEventPresentable keeps current outcomes and drops terminal-Work
+// historical backlog. Equality with TerminalAt stays presentable so serialized
+// terminal update-then-append (Calendar-style) remains a card. Later unrelated
+// UpdateWork field mutations bump UpdatedAt only and cannot hide the latest
+// terminal result.
+func workResultEventPresentable(item Work, event WorkEvent) bool {
+	if !workIsTerminal(item.Status) {
+		return true
+	}
+	boundary, ok := workTerminalBoundary(item)
+	if !ok {
+		return false
+	}
+	return !event.CreatedAt.Before(boundary)
+}
+
+func workTerminalBoundary(item Work) (time.Time, bool) {
+	if item.TerminalAt == nil || item.TerminalAt.IsZero() {
+		return time.Time{}, false
+	}
+	return *item.TerminalAt, true
 }
 
 func compactWorkResultText(value string) string {

@@ -64,6 +64,11 @@ export interface CodexConversationEvent {
   explanation?: string;
   plan?: CodexPlanStep[];
   source?: string;
+  work_id?: string;
+  work_session_id?: string;
+  session_name?: string;
+  unread?: boolean;
+  supersedes?: string;
 }
 
 export interface CodexConversation {
@@ -238,6 +243,16 @@ function normalizeCodexConversationEvent(
           )
       : undefined,
     source: typeof event.source === "string" ? event.source : undefined,
+    work_id: typeof event.work_id === "string" ? event.work_id : undefined,
+    work_session_id:
+      typeof event.work_session_id === "string"
+        ? event.work_session_id
+        : undefined,
+    session_name:
+      typeof event.session_name === "string" ? event.session_name : undefined,
+    unread: typeof event.unread === "boolean" ? event.unread : undefined,
+    supersedes:
+      typeof event.supersedes === "string" ? event.supersedes : undefined,
   };
   if (
     (normalized.kind === "user_message" ||

@@ -955,24 +955,24 @@ func TestEnrichWorkResultEventsCompactsLegacyLiveSummary(t *testing.T) {
 	}
 }
 
-func TestServiceSnapshotExposesWorkResultEvents(t *testing.T) {
+func TestServiceSnapshotRetiresResultEventsAndBackfillsTimelineCards(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
-	item, err := store.CreateWork(Work{
-		Title:            "Expose the result",
-		Objective:        "Project the durable occurrence in Brain snapshots.",
-		Status:           WorkWaiting,
-		CompletionPolicy: CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for index := range recentWorkResultEventLimit + 1 {
+	for index := range 3 {
 		now = now.Add(time.Minute)
+		item, err := store.CreateWork(Work{
+			Title:            fmt.Sprintf("Expose the result %02d", index),
+			Objective:        "Project the durable occurrence in Brain snapshots.",
+			Status:           WorkWaiting,
+			CompletionPolicy: CompletionBounded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		eventID := fmt.Sprintf("event-%02d", index)
 		if _, _, err := store.AppendWorkEvent(WorkEvent{
 			ID: eventID, WorkID: item.ID, Kind: "session.done",
@@ -987,11 +987,20 @@ func TestServiceSnapshotExposesWorkResultEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.ResultEvents) != recentWorkResultEventLimit ||
-		snapshot.ResultEvents[0].EventID != "event-01" ||
-		snapshot.ResultEvents[len(snapshot.ResultEvents)-1].EventID != "event-20" ||
-		snapshot.ResultEvents[0].Summary != "Snapshot projection completed." {
-		t.Fatalf("snapshot result events = %#v", snapshot.ResultEvents)
+	if len(snapshot.ResultEvents) != 0 {
+		t.Fatalf("result_events must stay retired, got %#v", snapshot.ResultEvents)
+	}
+	items, err := store.ThreadTimeline(snapshot.ChatThreadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("timeline backfill cards = %#v", items)
+	}
+	for _, item := range items {
+		if item.Kind != timelineKindWorkCard || item.Summary != "Snapshot projection completed." {
+			t.Fatalf("timeline item = %#v", item)
+		}
 	}
 }
 
