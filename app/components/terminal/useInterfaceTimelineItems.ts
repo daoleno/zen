@@ -9,10 +9,9 @@ import {
   attachBrainWorkEventActions,
   mergeRunningActivityIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
-  mergeSupplementaryTimelineItems,
 } from "./InterfaceTimelineModel";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
-import type { BrainWorkResultEvent } from "../../store/brain";
+import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
 
 type StableTimelineEntry = {
   item: ZenTimelineItem;
@@ -23,7 +22,6 @@ export function useInterfaceTimelineItems({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
-  supplementaryItems = [],
   onRetryPendingUserMessage,
   onBrainWorkEventActivate,
   openSessionIds,
@@ -32,7 +30,6 @@ export function useInterfaceTimelineItems({
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
-  supplementaryItems?: ZenTimelineItem[];
   onRetryPendingUserMessage(id: string): void;
   onBrainWorkEventActivate?: (
     event: BrainWorkResultEvent,
@@ -82,12 +79,8 @@ export function useInterfaceTimelineItems({
   );
 
   return useMemo(() => {
-    const timelineWithSupplementaryItems = mergeSupplementaryTimelineItems(
-      providerTimelineWithActivity,
-      supplementaryItems,
-    );
     const nextItems = mergePendingUserMessagesIntoTimeline(
-      timelineWithSupplementaryItems,
+      providerTimelineWithActivity,
       pendingUserMessages,
       onRetryPendingUserMessage,
     );
@@ -120,7 +113,6 @@ export function useInterfaceTimelineItems({
     onRetryPendingUserMessage,
     pendingUserMessages,
     providerTimelineWithActivity,
-    supplementaryItems,
   ]);
 }
 
@@ -142,8 +134,6 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.pending === right.pending &&
       left.pendingLifecycle === right.pendingLifecycle &&
       left.pendingLifecycleLabel === right.pendingLifecycleLabel &&
-      left.pendingLifecycleAccessibilityLabel ===
-        right.pendingLifecycleAccessibilityLabel &&
       left.pendingFailureMessage === right.pendingFailureMessage &&
       left.onRetryPending === right.onRetryPending &&
       left.streaming === right.streaming &&

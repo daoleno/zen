@@ -43,9 +43,8 @@ interface InterfaceChatTimelineSectionProps {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
-  supplementaryItems?: ZenTimelineItem[];
   onBrainWorkEventActivate?: (
-    event: import("../../store/brain").BrainWorkResultEvent,
+    event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
@@ -106,7 +105,6 @@ export function InterfaceChatTimelineSection({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
-  supplementaryItems,
   onBrainWorkEventActivate,
   openSessionIds,
   loading,
@@ -170,7 +168,6 @@ export function InterfaceChatTimelineSection({
     pendingUserMessages,
     turnFocusAnchorAliases,
     runningActivity,
-    supplementaryItems,
     onBrainWorkEventActivate,
     openSessionIds,
     onRetryPendingUserMessage,

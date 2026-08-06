@@ -21,6 +21,7 @@ import {
 } from "./CodexHeartbeatWake";
 import { MessageBody } from "./InterfaceMessageBody";
 import { InterfaceTimelineAttachmentPreviewList } from "./InterfaceTimelineAttachmentPreviewList";
+import { resolvePendingUserBubbleBorderColor } from "./pendingUserMessageLifecycle";
 
 export type DisplayAttachment = {
   name: string;
@@ -39,7 +40,6 @@ export interface ZenMessageTimelineItem {
   pending?: boolean;
   pendingLifecycle?: "pending" | "failed";
   pendingLifecycleLabel?: string;
-  pendingLifecycleAccessibilityLabel?: string;
   pendingFailureMessage?: string;
   onRetryPending?: () => void;
   streaming?: boolean;
@@ -98,21 +98,31 @@ export function ZenUserMessage({
   const bubbleRadii = isChatGpt
     ? chatgptUserBubbleRadii()
     : userBubbleRadii(presentation.groupPosition);
+  const reservedBorderWidth = StyleSheet.hairlineWidth;
+  const pendingBorderColor = resolvePendingUserBubbleBorderColor({
+    pending: item.pending,
+    lifecycle: item.pendingLifecycle,
+    focusColor: chrome.focus,
+    dangerColor: chrome.danger,
+  });
+  const showFooter =
+    item.pendingLifecycle === "failed" ||
+    Boolean(item.pendingLifecycleLabel) ||
+    Boolean(item.onRetryPending) ||
+    zenTheme.chat.showTimestamps;
 
   return (
     <View style={[styles.userRow, spacing]}>
       <View
+        // Busy only — never a status-only accessibilityLabel that replaces body.
+        accessibilityState={item.pending ? { busy: true } : undefined}
         style={[
           isChatGpt ? styles.userBubbleChatGpt : styles.userBubble,
           bubbleRadii,
           {
             backgroundColor: sentBubbleColor,
-            borderColor:
-              item.pendingLifecycle === "failed"
-                ? chrome.danger
-                : item.pending
-                  ? chrome.borderStrong
-                  : "transparent",
+            borderWidth: reservedBorderWidth,
+            borderColor: pendingBorderColor,
           },
         ]}
       >
@@ -126,15 +136,11 @@ export function ZenUserMessage({
             compact={hasBody}
           />
         ) : null}
-        {item.pending || zenTheme.chat.showTimestamps ? (
+        {showFooter ? (
           <MessageBubbleFooter
             timestamp={item.timestamp}
             tone="sent"
-            pending={item.pending}
             lifecycleLabel={item.pendingLifecycleLabel}
-            lifecycleAccessibilityLabel={
-              item.pendingLifecycleAccessibilityLabel
-            }
             failureMessage={item.pendingFailureMessage}
             failureColor={chrome.danger}
             onRetry={item.onRetryPending}
@@ -383,7 +389,7 @@ const styles = StyleSheet.create({
   },
   userBubbleChatGpt: {
     maxWidth: "88%",
-    borderWidth: 0,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },

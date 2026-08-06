@@ -3,7 +3,7 @@ import type {
   CodexConversationEvent,
   ProviderActivity,
 } from "../../services/codexConversation";
-import type { BrainWorkResultEvent } from "../../store/brain";
+import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
 import {
   buildExpandedToolDetails,
   isWaitSessionPoll,
@@ -266,8 +266,8 @@ export function mergePendingUserMessagesIntoTimeline(
       ...item,
       pending: true,
       pendingLifecycle: message.lifecycle,
-      pendingLifecycleLabel: presentation.label,
-      pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
+      // Empty pending label is border/a11y only — do not pass "" into UI props.
+      pendingLifecycleLabel: presentation.label || undefined,
       pendingFailureMessage:
         message.lifecycle === "failed" ? message.failureMessage : undefined,
       onRetryPending:
@@ -285,48 +285,6 @@ export function mergePendingUserMessagesIntoTimeline(
     placedLocalRowIDs.add(pendingItem.id);
   }
   return merged;
-}
-
-export function mergeSupplementaryTimelineItems(
-  timelineItems: ZenTimelineItem[],
-  supplementaryItems: ZenTimelineItem[],
-): ZenTimelineItem[] {
-  if (supplementaryItems.length === 0) {
-    return timelineItems;
-  }
-  const merged = [...timelineItems];
-  const seen = new Set(merged.map((item) => item.id));
-  for (const item of supplementaryItems) {
-    if (seen.has(item.id)) {
-      continue;
-    }
-    seen.add(item.id);
-    insertTimelineItemByTimestamp(merged, item);
-  }
-  return merged;
-}
-
-export function supplementaryTimelineItemsForConversation({
-  items,
-  conversationScopeKey,
-  conversation,
-  loading,
-}: {
-  items: ZenTimelineItem[];
-  conversationScopeKey?: string;
-  conversation: CodexConversation | null;
-  loading: boolean;
-}): ZenTimelineItem[] {
-  if (!conversationScopeKey || items.length === 0) {
-    return items;
-  }
-  if (loading && !conversation) {
-    return [];
-  }
-  // A matching retained snapshot remains canonical while its subscription
-  // reconnects, even when the session reports loading again. Conversely, an
-  // accepted empty snapshot is ready because it still carries this identity.
-  return conversation?.session_id === conversationScopeKey ? items : [];
 }
 
 function insertPendingCurrentAtCausalBoundary(

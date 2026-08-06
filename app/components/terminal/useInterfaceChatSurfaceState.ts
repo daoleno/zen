@@ -26,10 +26,6 @@ import type {
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
-import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
-import {
-  supplementaryTimelineItemsForConversation,
-} from "./InterfaceTimelineModel";
 import { useInterfaceChatController } from "./InterfaceChatController";
 import {
   type InterfaceChatAgentInfo,
@@ -76,9 +72,8 @@ interface UseInterfaceChatSurfaceStateInput {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
-  supplementaryTimelineItems?: ZenTimelineItem[];
   onBrainWorkEventActivate?: (
-    event: import("../../store/brain").BrainWorkResultEvent,
+    event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
@@ -141,7 +136,6 @@ export function useInterfaceChatSurfaceState({
   showUnavailableAction,
   emptyTitle,
   emptyBody,
-  supplementaryTimelineItems,
   onBrainWorkEventActivate,
   openSessionIds,
   composerAccessory,
@@ -204,21 +198,6 @@ export function useInterfaceChatSurfaceState({
     beginPendingUserMessageAttempt,
     rejectPendingUserMessage,
   } = session;
-  const readySupplementaryTimelineItems = useMemo(
-    () =>
-      supplementaryTimelineItemsForConversation({
-        items: supplementaryTimelineItems ?? [],
-        conversationScopeKey,
-        conversation,
-        loading,
-      }),
-    [
-      conversation,
-      conversationScopeKey,
-      loading,
-      supplementaryTimelineItems,
-    ],
-  );
   const setObservedDraft = useCallback(
     (value: string) => {
       setDraft(value);
@@ -406,13 +385,8 @@ export function useInterfaceChatSurfaceState({
     }
   }, [statusDisplayEvent, statusTimedOut]);
   const latestTimelineTimestamp = useMemo(
-    () =>
-      latestChatTimelineTimestamp(
-        conversation,
-        pendingUserMessages,
-        readySupplementaryTimelineItems,
-      ),
-    [conversation, pendingUserMessages, readySupplementaryTimelineItems],
+    () => latestChatTimelineTimestamp(conversation, pendingUserMessages),
+    [conversation, pendingUserMessages],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const runningActivity = useMemo(
@@ -422,8 +396,7 @@ export function useInterfaceChatSurfaceState({
   const timeline = usePinnedTimeline(
     events.length +
       pendingUserMessages.length +
-      (runningActivity ? 1 : 0) +
-      readySupplementaryTimelineItems.length,
+      (runningActivity ? 1 : 0),
     conversationCacheKey,
     topChromeInset,
   );
@@ -623,7 +596,6 @@ export function useInterfaceChatSurfaceState({
     pendingUserMessages,
     turnFocusAnchorAliases,
     runningActivity,
-    supplementaryTimelineItems: readySupplementaryTimelineItems,
     onBrainWorkEventActivate,
     openSessionIds,
     loading,
@@ -659,7 +631,6 @@ export function useInterfaceChatSurfaceState({
 function latestChatTimelineTimestamp(
   conversation: CodexConversation | null,
   pendingUserMessages: PendingUserMessage[],
-  supplementaryTimelineItems?: ZenTimelineItem[],
 ) {
   let latest = 0;
   conversation?.events.forEach((event: CodexConversationEvent) => {
@@ -670,12 +641,6 @@ function latestChatTimelineTimestamp(
   });
   pendingUserMessages.forEach((message) => {
     const timestamp = new Date(message.createdAt).getTime();
-    if (Number.isFinite(timestamp) && timestamp > latest) {
-      latest = timestamp;
-    }
-  });
-  supplementaryTimelineItems?.forEach((item) => {
-    const timestamp = new Date(item.timestamp || "").getTime();
     if (Number.isFinite(timestamp) && timestamp > latest) {
       latest = timestamp;
     }

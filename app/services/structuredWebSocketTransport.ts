@@ -133,12 +133,20 @@ export function structuredInputMessage(input: {
   requestId: string;
   agentId: string;
   text: string;
+  displayBody?: string;
+  conversationScopeKey?: string;
 }) {
   return {
     type: "send_input",
     request_id: input.requestId,
     agent_id: input.agentId,
     text: input.text,
+    ...(input.displayBody !== undefined
+      ? { display_body: input.displayBody }
+      : {}),
+    ...(input.conversationScopeKey
+      ? { conversation_scope_key: input.conversationScopeKey }
+      : {}),
   };
 }
 

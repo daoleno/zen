@@ -255,10 +255,20 @@ func latestUpdatedCodexTranscript(candidates []codexTranscriptCandidate) codexTr
 }
 
 func openCodexRolloutPathsForProcess(processID int) []string {
-	if paths := procOpenCodexRolloutPaths(processID); len(paths) > 0 {
-		return paths
+	if processID <= 0 {
+		return nil
 	}
-	return lsofOpenCodexRolloutPaths(processID)
+	var paths []string
+	for _, pid := range append([]int{processID}, procDescendantPIDs(processID)...) {
+		paths = append(paths, procOpenCodexRolloutPaths(pid)...)
+	}
+	if len(paths) > 0 {
+		return uniqueStrings(paths)
+	}
+	for _, pid := range append([]int{processID}, procDescendantPIDs(processID)...) {
+		paths = append(paths, lsofOpenCodexRolloutPaths(pid)...)
+	}
+	return uniqueStrings(paths)
 }
 
 func procOpenCodexRolloutPaths(processID int) []string {

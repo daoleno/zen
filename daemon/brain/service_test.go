@@ -2,13 +2,13 @@ package brain
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -908,99 +908,47 @@ func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
 	return w.captures[sessionID], nil
 }
 
-func TestEnrichWorkResultEventsUsesLiveSessionWithoutErasingWorkFallback(t *testing.T) {
-	events := []WorkResultEvent{
-		{
-			EventID:   "live-event",
-			SessionID: "brain-agent-live:@1",
-			Summary:   "Review the durable Work result.",
-		},
-		{
-			EventID:   "closed-event",
-			SessionID: "brain-agent-closed:@2",
-			Summary:   "Inspect the durable Work fallback.",
-		},
-	}
-	enrichWorkResultEvents(events, []AgentRef{{
-		ID:      "brain-agent-live:@1",
-		Name:    "Brain card worker",
-		Summary: "Finished the focused implementation and tests.",
-	}})
-
-	if events[0].SessionName != "Brain card worker" ||
-		events[0].Summary != "Finished the focused implementation and tests." {
-		t.Fatalf("live result event = %#v", events[0])
-	}
-	if events[1].SessionName != "" ||
-		events[1].Summary != "Inspect the durable Work fallback." {
-		t.Fatalf("closed result event lost fallback = %#v", events[1])
-	}
-}
-
-func TestEnrichWorkResultEventsCompactsLegacyLiveSummary(t *testing.T) {
-	events := []WorkResultEvent{{
-		EventID:   "legacy-event",
-		SessionID: "brain-agent-live:@1",
-		Summary:   "Work fallback.",
-	}}
-	enrichWorkResultEvents(events, []AgentRef{{
-		ID:      "brain-agent-live:@1",
-		Summary: strings.Repeat("结", 500),
-	}})
-
-	if len(events) != 1 ||
-		utf8.RuneCountInString(events[0].Summary) != workResultSummaryRuneLimit ||
-		!strings.HasSuffix(events[0].Summary, "…") {
-		t.Fatalf("legacy live summary = %#v", events)
-	}
-}
-
-func TestServiceSnapshotRetiresResultEventsAndBackfillsTimelineCards(t *testing.T) {
+func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
-	for index := range 3 {
-		now = now.Add(time.Minute)
-		item, err := store.CreateWork(Work{
-			Title:            fmt.Sprintf("Expose the result %02d", index),
-			Objective:        "Project the durable occurrence in Brain snapshots.",
-			Status:           WorkWaiting,
-			CompletionPolicy: CompletionBounded,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		eventID := fmt.Sprintf("event-%02d", index)
-		if _, _, err := store.AppendWorkEvent(WorkEvent{
-			ID: eventID, WorkID: item.ID, Kind: "session.done",
-			DedupeKey: eventID, Summary: "Snapshot projection completed.",
-			Actionable: true,
-		}); err != nil {
-			t.Fatal(err)
-		}
+	item, err := store.CreateWork(Work{
+		Title:            "Expose the result",
+		Objective:        "Cards live in the timeline, not the snapshot.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		ID: "event-01", WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "event-01", Summary: "Done.",
+		Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	snapshot, err := NewService(store, nil, nil).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.ResultEvents) != 0 {
-		t.Fatalf("result_events must stay retired, got %#v", snapshot.ResultEvents)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "result_events") {
+		t.Fatalf("snapshot must not carry result_events: %s", raw)
 	}
 	items, err := store.ThreadTimeline(snapshot.ChatThreadID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 3 {
-		t.Fatalf("timeline backfill cards = %#v", items)
-	}
-	for _, item := range items {
-		if item.Kind != timelineKindWorkCard || item.Summary != "Snapshot projection completed." {
-			t.Fatalf("timeline item = %#v", item)
-		}
+	if len(items) != 0 {
+		t.Fatalf("snapshot must not reproject audit events into timeline: %#v", items)
 	}
 }
 

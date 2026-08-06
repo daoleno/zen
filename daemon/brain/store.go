@@ -134,9 +134,12 @@ func (s *Store) HostSessionID() (string, error) {
 }
 
 type HostSession struct {
-	ID         string
-	ExecutorID string
-	UpdatedAt  time.Time
+	ID                string
+	ExecutorID        string
+	UpdatedAt         time.Time
+	ProviderSessionID string
+	TranscriptPath    string
+	ProviderDataRoot  string
 }
 
 func (s *Store) HostSession() (HostSession, error) {
@@ -157,11 +160,18 @@ func (s *Store) SetHostSession(id, executorID string) error {
 	if id == "" {
 		return writeJSONFile(s.HostSessionPath(), hostSessionFile{})
 	}
-	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
+	previous, _ := s.readHostSessionLocked()
+	host := hostSessionFile{
 		ID:         id,
 		ExecutorID: executorID,
 		UpdatedAt:  time.Now().UTC(),
-	})
+	}
+	if previous.ID == id {
+		host.ProviderSessionID = previous.ProviderSessionID
+		host.TranscriptPath = previous.TranscriptPath
+		host.ProviderDataRoot = previous.ProviderDataRoot
+	}
+	return writeJSONFile(s.HostSessionPath(), host)
 }
 
 func (s *Store) SetHostExecutorID(executorID string) error {
@@ -173,9 +183,34 @@ func (s *Store) SetHostExecutorID(executorID string) error {
 		return err
 	}
 	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
-		ID:         host.ID,
-		ExecutorID: executorID,
-		UpdatedAt:  time.Now().UTC(),
+		ID:                host.ID,
+		ExecutorID:        executorID,
+		UpdatedAt:         time.Now().UTC(),
+		ProviderSessionID: host.ProviderSessionID,
+		TranscriptPath:    host.TranscriptPath,
+		ProviderDataRoot:  host.ProviderDataRoot,
+	})
+}
+
+// SetHostProviderTranscript persists the stable Host Executor Session provider
+// transcript identity. Empty values clear the binding.
+func (s *Store) SetHostProviderTranscript(providerSessionID, transcriptPath, providerDataRoot string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	host, err := s.readHostSessionLocked()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(host.ID) == "" {
+		return fmt.Errorf("host session required before binding provider transcript")
+	}
+	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
+		ID:                host.ID,
+		ExecutorID:        host.ExecutorID,
+		UpdatedAt:         time.Now().UTC(),
+		ProviderSessionID: strings.TrimSpace(providerSessionID),
+		TranscriptPath:    strings.TrimSpace(transcriptPath),
+		ProviderDataRoot:  strings.TrimSpace(providerDataRoot),
 	})
 }
 
@@ -402,9 +437,12 @@ type profileFile struct {
 }
 
 type hostSessionFile struct {
-	ID         string    `json:"id,omitempty"`
-	ExecutorID string    `json:"executor_id,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	ID                string    `json:"id,omitempty"`
+	ExecutorID        string    `json:"executor_id,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at,omitempty"`
+	ProviderSessionID string    `json:"provider_session_id,omitempty"`
+	TranscriptPath    string    `json:"transcript_path,omitempty"`
+	ProviderDataRoot  string    `json:"provider_data_root,omitempty"`
 }
 
 type chatStateFile struct {
@@ -428,9 +466,12 @@ func (s *Store) readHostSessionLocked() (HostSession, error) {
 		return HostSession{}, err
 	}
 	return HostSession{
-		ID:         strings.TrimSpace(host.ID),
-		ExecutorID: strings.TrimSpace(host.ExecutorID),
-		UpdatedAt:  host.UpdatedAt,
+		ID:                strings.TrimSpace(host.ID),
+		ExecutorID:        strings.TrimSpace(host.ExecutorID),
+		UpdatedAt:         host.UpdatedAt,
+		ProviderSessionID: strings.TrimSpace(host.ProviderSessionID),
+		TranscriptPath:    strings.TrimSpace(host.TranscriptPath),
+		ProviderDataRoot:  strings.TrimSpace(host.ProviderDataRoot),
 	}, nil
 }
 

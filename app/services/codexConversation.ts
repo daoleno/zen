@@ -68,7 +68,6 @@ export interface CodexConversationEvent {
   work_session_id?: string;
   session_name?: string;
   unread?: boolean;
-  supersedes?: string;
 }
 
 export interface CodexConversation {
@@ -251,8 +250,6 @@ function normalizeCodexConversationEvent(
     session_name:
       typeof event.session_name === "string" ? event.session_name : undefined,
     unread: typeof event.unread === "boolean" ? event.unread : undefined,
-    supersedes:
-      typeof event.supersedes === "string" ? event.supersedes : undefined,
   };
   if (
     (normalized.kind === "user_message" ||

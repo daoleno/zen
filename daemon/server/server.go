@@ -287,6 +287,7 @@ type clientMessage struct {
 	CalendarItem         *calendar.Item         `json:"calendar_item"`
 	Revision             int64                  `json:"revision"`
 	ConversationScopeKey string                 `json:"conversation_scope_key"`
+	DisplayBody          string                 `json:"display_body"`
 	Generation           int64                  `json:"generation"`
 	Limit                int                    `json:"limit"`
 	Operation            string                 `json:"operation"`
@@ -806,6 +807,28 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"message":    err.Error(),
 			})
 		} else {
+			if s.brain != nil {
+				displayBody := strings.TrimSpace(raw.DisplayBody)
+				if displayBody == "" {
+					displayBody = strings.TrimSpace(raw.Text)
+				}
+				if admitErr := s.brain.AdmitHostUserInput(
+					raw.AgentID,
+					raw.RequestID,
+					displayBody,
+					raw.ConversationScopeKey,
+				); admitErr != nil {
+					// Provider already accepted. Canonical Brain persistence failed,
+					// so do not falsely ack input_sent. Pending preserves the local
+					// row for transcript recovery without encouraging a duplicate retry.
+					log.Printf("brain admit user input error: %v", admitErr)
+					s.sendJSON(conn, map[string]any{
+						"type":       "input_pending",
+						"request_id": raw.RequestID,
+					})
+					break
+				}
+			}
 			s.sendJSON(conn, map[string]any{
 				"type":       "input_sent",
 				"request_id": raw.RequestID,
@@ -1641,19 +1664,14 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	liveActivity := conversation.Activity
 	providerEvents := []work.CodexConversationEvent(nil)
 	if isCurrentThread {
-		_ = s.brain.MaterializeProviderConversation(threadID, conversation)
-		if hasChat, err := s.brain.TimelineHasChatMessages(threadID); err == nil && !hasChat {
-			// Current host can publish Available+empty after rotation. Seed the
-			// durable thread from the newest fresh Brain-workspace Codex
-			// transcript so first-screen open restores ordinary messages.
-			if workspace := strings.TrimSpace(s.brain.WorkspacePath()); workspace != "" {
-				if recovered, recoverErr := work.LoadLatestFreshCodexConversationForCWD(workspace, now); recoverErr == nil &&
-					recovered.Available && len(recovered.Events) > 0 {
-					_ = s.brain.MaterializeProviderConversation(threadID, recovered)
-				}
-			}
+		// Durable finals come from the Host Executor Session transcript
+		// identity. Live cwd matching is never the recurring authority.
+		bound, boundErr := s.brain.HostBoundProviderConversation()
+		if boundErr == nil && bound.Available {
+			conversation = work.PreferHostBoundConversation(conversation, bound)
+			_ = s.brain.MaterializeProviderConversation(threadID, bound)
 		}
-		_ = s.brain.BackfillCurrentWorkCardsOnce(threadID)
+		_ = s.brain.MaterializeProviderConversation(threadID, conversation)
 		providerEvents = conversation.Events
 	} else {
 		liveActivity = nil
@@ -1681,29 +1699,18 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	for _, event := range timelineItemsToConversationEventsForServer(timelineItems) {
 		appendUnique(event)
 	}
-	if isCurrentThread && !timelineHasChatMessagesForServer(timelineItems) {
-		// Cards without ordinary messages is the rejected cards-only failure.
-		// Keep durable rows, but do not present work_result cards alone.
-		filtered := uniqueEvents[:0]
-		for _, event := range uniqueEvents {
-			if event.Source == "work_result" {
-				continue
-			}
-			filtered = append(filtered, event)
-		}
-		uniqueEvents = filtered
-		eventsByID = make(map[string]int, len(uniqueEvents))
-		for index, event := range uniqueEvents {
-			if id := strings.TrimSpace(event.ID); id != "" {
-				eventsByID[id] = index
-			}
-		}
-	}
+	echoSuppressions := brain.ProviderUserEchoSuppressions(timelineItems, providerEvents)
 	// Current-host provider events overlay the durable timeline so tools,
 	// streaming partials, and live Activity remain visible. An empty provider
 	// snapshot leaves the durable timeline intact. Durable calendar/work_result
-	// rows win over provider duplicates with the same ID.
+	// rows win over provider duplicates with the same ID. Brain input admissions
+	// suppress provider echoes one-to-one; same-body Terminal inputs still overlay.
 	for _, event := range providerEvents {
+		if strings.TrimSpace(event.Kind) == "user_message" {
+			if echoSuppressions[strings.TrimSpace(event.ID)] {
+				continue
+			}
+		}
 		id := strings.TrimSpace(event.ID)
 		if id != "" {
 			if index, ok := eventsByID[id]; ok {
@@ -1742,19 +1749,7 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 // timelineItemsToConversationEventsForServer adapts brain timeline rows without
 // importing unexported helpers across packages.
 func timelineItemsToConversationEventsForServer(items []brain.TimelineItem) []work.CodexConversationEvent {
-	return brain.TimelineItemsToConversationEvents(items, false)
-}
-
-func timelineHasChatMessagesForServer(items []brain.TimelineItem) bool {
-	for _, item := range items {
-		switch item.Kind {
-		case "user_message", "assistant_message":
-			if strings.TrimSpace(item.Body) != "" {
-				return true
-			}
-		}
-	}
-	return false
+	return brain.TimelineItemsToConversationEvents(items)
 }
 
 func calendarResultConversationEvent(result calendar.ScheduledResult) work.CodexConversationEvent {

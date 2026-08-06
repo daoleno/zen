@@ -25,8 +25,6 @@ var (
 
 const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 
-const recentWorkResultEventLimit = 20
-
 type Watcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
@@ -76,9 +74,6 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := s.store.BackfillCurrentWorkCardsOnce(chatThreadID); err != nil {
-		return Snapshot{}, err
-	}
 	hostExecutor := s.hostExecutor()
 	host, err := s.ensureHostAgent(hostExecutor)
 	if err != nil {
@@ -102,29 +97,7 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
 	snapshot.ActiveWork = activeWork
-	// Work cards live in the Brain-thread timeline. result_events is retired
-	// as a supplementary presentation projection (empty keeps wire compat).
-	snapshot.ResultEvents = []WorkResultEvent{}
 	return snapshot, nil
-}
-
-func enrichWorkResultEvents(events []WorkResultEvent, agents []AgentRef) {
-	agentsByID := make(map[string]AgentRef, len(agents))
-	for _, agent := range agents {
-		agentsByID[agent.ID] = agent
-	}
-	for index := range events {
-		agent, ok := agentsByID[events[index].SessionID]
-		if !ok {
-			continue
-		}
-		if !events[index].hasEventSourceName {
-			events[index].SessionName = strings.TrimSpace(agent.Name)
-		}
-		if summary := strings.TrimSpace(agent.Summary); !events[index].hasEventSummary && summary != "" {
-			events[index].Summary = compactWorkResultText(summary)
-		}
-	}
 }
 
 func (s *Service) Context() (BrainContext, error) {
@@ -966,11 +939,8 @@ func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 		return recorded, created, err
 	}
 	if created && isProjectedWorkResultEvent(recorded.Kind) {
-		threadID, threadErr := s.store.ChatThreadID()
-		if threadErr == nil && strings.TrimSpace(threadID) != "" {
-			if workItem, getErr := s.store.Work(recorded.WorkID); getErr == nil {
-				_, _, _ = s.store.MaterializeWorkCard(threadID, workItem, recorded)
-			}
+		if workItem, getErr := s.store.Work(recorded.WorkID); getErr == nil {
+			_, _, _ = s.store.MaterializeWorkCard(workItem, recorded)
 		}
 	}
 	if !created || !recorded.Actionable {
@@ -987,29 +957,6 @@ func (s *Service) WorkspacePath() string {
 	return s.store.WorkspacePath()
 }
 
-func (s *Service) TimelineHasChatMessages(threadID string) (bool, error) {
-	if s == nil || s.store == nil {
-		return false, nil
-	}
-	items, err := s.store.ThreadTimeline(threadID, 0)
-	if err != nil {
-		return false, err
-	}
-	return timelineHasChatMessages(items), nil
-}
-
-func timelineHasChatMessages(items []TimelineItem) bool {
-	for _, item := range items {
-		switch item.Kind {
-		case timelineKindUserMessage, timelineKindAssistantMessage:
-			if strings.TrimSpace(item.Body) != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (s *Service) MaterializeProviderConversation(threadID string, conversation work.CodexConversation) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -1017,18 +964,124 @@ func (s *Service) MaterializeProviderConversation(threadID string, conversation 
 	return s.store.MaterializeProviderConversation(threadID, conversation)
 }
 
+// AdmitHostUserInput durably appends the exact admitted display body to the
+// Brain thread identified by conversation_scope_key when Session Input accepts
+// a host receipt. request_id is the canonical durable user-row identity.
+func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != strings.TrimSpace(agentID) {
+		return nil
+	}
+	threadID := threadIDFromConversationScopeKey(conversationScopeKey)
+	if threadID == "" {
+		threadID, err = s.store.ChatThreadID()
+		if err != nil {
+			return err
+		}
+	}
+	known, err := s.store.HasChatThread(threadID)
+	if err != nil {
+		return err
+	}
+	if !known {
+		return fmt.Errorf("brain thread %q is unknown", threadID)
+	}
+	sessionID := strings.TrimSpace(host.ProviderSessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(host.ID)
+	}
+	_, err = s.store.AdmitUserMessage(threadID, sessionID, receipt, displayBody)
+	return err
+}
+
+func threadIDFromConversationScopeKey(scopeKey string) string {
+	const prefix = "brain-thread:"
+	scopeKey = strings.TrimSpace(scopeKey)
+	if !strings.HasPrefix(scopeKey, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(scopeKey, prefix))
+}
+
+// BindHostProviderTranscript resolves and persists the Host Executor Session's
+// provider transcript identity from the live host process when needed.
+func (s *Service) BindHostProviderTranscript() (work.CodexTranscriptIdentity, error) {
+	if s == nil || s.store == nil {
+		return work.CodexTranscriptIdentity{}, nil
+	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return work.CodexTranscriptIdentity{}, err
+	}
+	existing := work.CodexTranscriptIdentity{
+		SessionID: host.ProviderSessionID,
+		Path:      host.TranscriptPath,
+		DataRoot:  host.ProviderDataRoot,
+	}
+	if strings.TrimSpace(host.ID) == "" || s.watcher == nil {
+		return existing, nil
+	}
+	agent := s.watcher.GetAgent(host.ID)
+	if agent == nil {
+		return existing, nil
+	}
+	resolved := work.ResolveCodexTranscriptIdentityForAgent(*agent, existing)
+	if strings.TrimSpace(resolved.SessionID) == strings.TrimSpace(existing.SessionID) &&
+		strings.TrimSpace(resolved.Path) == strings.TrimSpace(existing.Path) &&
+		strings.TrimSpace(resolved.DataRoot) == strings.TrimSpace(existing.DataRoot) {
+		return resolved, nil
+	}
+	if strings.TrimSpace(resolved.SessionID) == "" && strings.TrimSpace(resolved.Path) == "" {
+		return existing, nil
+	}
+	if err := s.store.SetHostProviderTranscript(resolved.SessionID, resolved.Path, resolved.DataRoot); err != nil {
+		return resolved, err
+	}
+	return resolved, nil
+}
+
+// HostBoundProviderConversation loads assistant/final transcript rows from the
+// stable Host Executor Session identity rather than cwd matching.
+func (s *Service) HostBoundProviderConversation() (work.CodexConversation, error) {
+	if s == nil || s.store == nil {
+		return work.CodexConversation{Available: false, Events: []work.CodexConversationEvent{}}, nil
+	}
+	identity, err := s.BindHostProviderTranscript()
+	if err != nil {
+		return work.CodexConversation{}, err
+	}
+	if strings.TrimSpace(identity.SessionID) == "" && strings.TrimSpace(identity.Path) == "" {
+		host, hostErr := s.store.HostSession()
+		if hostErr != nil {
+			return work.CodexConversation{}, hostErr
+		}
+		identity = work.CodexTranscriptIdentity{
+			SessionID: host.ProviderSessionID,
+			Path:      host.TranscriptPath,
+			DataRoot:  host.ProviderDataRoot,
+		}
+	}
+	if strings.TrimSpace(identity.SessionID) == "" && strings.TrimSpace(identity.Path) == "" {
+		return work.CodexConversation{
+			Available: false,
+			Reason:    "host_transcript_unbound",
+			Events:    []work.CodexConversationEvent{},
+		}, nil
+	}
+	return work.LoadCodexConversationByIdentity(identity)
+}
+
 func (s *Service) ThreadTimeline(threadID string, limit int) ([]TimelineItem, error) {
 	if s == nil || s.store == nil {
 		return []TimelineItem{}, nil
 	}
 	return s.store.ThreadTimeline(threadID, limit)
-}
-
-func (s *Service) BackfillCurrentWorkCardsOnce(threadID string) error {
-	if s == nil || s.store == nil {
-		return nil
-	}
-	return s.store.BackfillCurrentWorkCardsOnce(threadID)
 }
 
 // RouteCalendarEvent projects the existing idempotent Calendar occurrence into
@@ -1042,12 +1095,17 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		return false, nil
 	}
 	contextRef := "calendar:" + event.Item.ID + ":" + run.ID
+	sourceThreadID := strings.TrimSpace(run.SourceThreadID)
+	if sourceThreadID == "" {
+		sourceThreadID = strings.TrimSpace(event.Item.SourceThreadID)
+	}
 	item, _, err := s.store.EnsureWork(Work{
 		ID:               calendarWorkID(event.Item.ID, run.ID),
 		Title:            firstNonEmpty(run.Title, event.Item.Title),
 		Objective:        strings.TrimSpace(event.Item.ActionInstruction),
 		Status:           WorkRunning,
 		OwnerSessionID:   strings.TrimSpace(run.AgentSession),
+		SourceThreadID:   sourceThreadID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the scheduled action.",
 		WaitFor:          calendarWaitCondition(run),
@@ -1169,6 +1227,7 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 						return AgentRef{}, err
 					}
 				}
+				_, _ = s.BindHostProviderTranscript()
 				return agentRefFromClassifier(agent), nil
 			}
 			// Explicit provider/executor mismatch (e.g. user switched host executor).
@@ -1224,6 +1283,7 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 				ResolvedExecutor: executor.ID,
 				Detail:           "recorded host missing; rebound matching live Brain host",
 			})
+			_, _ = s.BindHostProviderTranscript()
 			return agentRefFromClassifier(recovered), nil
 		}
 		replaceReason = hostReplaceReasonMissingTmux

@@ -49,9 +49,8 @@ export interface InterfaceChatBodyProps {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
-  supplementaryTimelineItems?: ZenTimelineItem[];
   onBrainWorkEventActivate?: (
-    event: import("../../store/brain").BrainWorkResultEvent,
+    event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
@@ -143,7 +142,6 @@ export function InterfaceChatBody({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
-  supplementaryTimelineItems,
   onBrainWorkEventActivate,
   openSessionIds,
   loading,
@@ -285,7 +283,6 @@ export function InterfaceChatBody({
           turnFocusAnchorAliases={turnFocusAnchorAliases}
           onRetryPendingUserMessage={onRetryPendingUserMessage}
           runningActivity={runningActivity}
-          supplementaryItems={supplementaryTimelineItems}
           onBrainWorkEventActivate={onBrainWorkEventActivate}
           openSessionIds={openSessionIds}
           loading={loading}

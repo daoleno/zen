@@ -1,4 +1,4 @@
-import type { BrainWorkResultEvent } from "../../store/brain";
+import type { BrainWorkResultEvent } from "./brainWorkEvent";
 
 const CANONICAL_SESSION_SUFFIX =
   /\s*\(brain-agent-[^()\s]+:@\d+\)\s*$/i;

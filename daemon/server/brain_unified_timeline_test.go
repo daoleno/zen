@@ -8,7 +8,7 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
-func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHostAndSupersedesCards(t *testing.T) {
+func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHost(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -70,8 +70,8 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHostAndSupersedesCards(t 
 		t.Fatal(err)
 	}
 
-	// Cards-only regression: empty provider host after rotation must restore
-	// ordinary chat history and keep only current (non-superseded) cards.
+	// Empty provider host after rotation must restore ordinary chat history
+	// from the durable ledger and keep every materialized card visible.
 	got := srv.brainScopedConversation("brain-thread:thread-live", work.CodexConversation{
 		Available: true,
 		SessionID: "host-new",
@@ -85,16 +85,13 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHostAndSupersedesCards(t 
 	for _, id := range ids {
 		idSet[id] = true
 	}
-	for _, wantID := range []string{"u1", "a1", "1a6ddd99-accept", "current-needs"} {
+	for _, wantID := range []string{"u1", "a1", "645a5a2a-reject", "1a6ddd99-accept", "current-needs"} {
 		if !idSet[wantID] {
 			t.Fatalf("missing %s in restored timeline %v", wantID, ids)
 		}
 	}
-	if idSet["645a5a2a-reject"] {
-		t.Fatalf("superseded historical reject leaked: %v", ids)
-	}
 	var (
-		needsCard              *work.CodexConversationEvent
+		needsCard                 *work.CodexConversationEvent
 		userIndex, assistantIndex int
 	)
 	userIndex, assistantIndex = -1, -1
@@ -106,8 +103,6 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHostAndSupersedesCards(t 
 			userIndex = index
 		case "a1":
 			assistantIndex = index
-		case "645a5a2a-reject":
-			t.Fatalf("superseded historical reject leaked: %#v", got.Events)
 		}
 	}
 	if needsCard == nil || needsCard.Source != "work_result" || needsCard.Status != "session.needs_input" || !needsCard.Unread {
@@ -117,12 +112,11 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHostAndSupersedesCards(t 
 		t.Fatalf("chat history order broken: %v", ids)
 	}
 	if got.Events[userIndex].Body != "ordinary history" || got.Events[assistantIndex].Body != "still here" {
-		t.Fatalf("chat history missing under cards-only empty host: %#v", got.Events)
+		t.Fatalf("chat history missing under empty host: %#v", got.Events)
 	}
 }
 
-func TestBrainEmptyHostWithoutChatIsFailureEvenWithFewerCards(t *testing.T) {
-	// Reducing card count while leaving cards-only must fail acceptance.
+func TestBrainCardOnlyNewThreadIsValid(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -149,10 +143,70 @@ func TestBrainEmptyHostWithoutChatIsFailureEvenWithFewerCards(t *testing.T) {
 	got := srv.brainScopedConversation("brain-thread:thread-cards-only", work.CodexConversation{
 		Available: true, SessionID: "host-empty", Events: nil,
 	}, time.Now())
+	found := false
 	for _, event := range got.Events {
-		if event.Source == "work_result" {
-			t.Fatalf("presented cards-only work_result without chat: %#v", got.Events)
+		if event.Source == "work_result" && event.ID == "card-1" {
+			found = true
 		}
+	}
+	if !found {
+		t.Fatalf("genuine card-only thread must present work_result: %#v", got.Events)
 	}
 }
 
+func TestBrainWorkEventStaysOnFrozenThreadAcrossScopedReads(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{
+		ThreadID:  "thread-a",
+		ThreadIDs: []string{"thread-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	srv := &Server{brain: service}
+
+	item, err := store.CreateWork(brain.Work{
+		Title: "A work", Objective: "freeze A", Status: brain.WorkRunning,
+		CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{
+		ThreadID:  "thread-b",
+		ThreadIDs: []string{"thread-a", "thread-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
+		ID: "stay-a", WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "stay", Actionable: false, Summary: "belongs to A",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	threadA := srv.brainScopedConversation("brain-thread:thread-a", work.CodexConversation{
+		Available: true, SessionID: "host", Events: nil,
+	}, time.Now())
+	threadB := srv.brainScopedConversation("brain-thread:thread-b", work.CodexConversation{
+		Available: true, SessionID: "host", Events: nil,
+	}, time.Now())
+	if !containsConversationEventID(threadA.Events, "stay-a") {
+		t.Fatalf("thread A missing card: %#v", threadA.Events)
+	}
+	if containsConversationEventID(threadB.Events, "stay-a") {
+		t.Fatalf("thread B must not receive A's card: %#v", threadB.Events)
+	}
+}
+
+func containsConversationEventID(events []work.CodexConversationEvent, id string) bool {
+	for _, event := range events {
+		if event.ID == id {
+			return true
+		}
+	}
+	return false
+}

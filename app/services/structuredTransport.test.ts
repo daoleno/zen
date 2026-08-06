@@ -87,6 +87,22 @@ describe("structured provider transport", () => {
       agent_id: "agent-a",
       text: "hello\n",
     });
+    expect(
+      structuredInputMessage({
+        requestId: "request-brain",
+        agentId: "brain-host",
+        text: "hello\n",
+        displayBody: "hello",
+        conversationScopeKey: "brain-thread:thread-a",
+      }),
+    ).toEqual({
+      type: "send_input",
+      request_id: "request-brain",
+      agent_id: "brain-host",
+      text: "hello\n",
+      display_body: "hello",
+      conversation_scope_key: "brain-thread:thread-a",
+    });
     expect(structuredActionMessage({
       requestId: "request-stop",
       agentId: "agent-a",

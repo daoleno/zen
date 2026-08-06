@@ -75,9 +75,27 @@ export function presentPendingUserMessageLifecycle(
   }
   return {
     lifecycle: "pending",
-    label: "Pending",
+    // Pending is border-only (focus/accent); bubble keeps busy without a
+    // status-only accessibilityLabel that would replace message content.
+    label: "",
     accessibilityLabel: "Message pending provider transcript",
   };
+}
+
+/** Reserved pending border: full focus/accent, never faint borderStrong. */
+export function resolvePendingUserBubbleBorderColor(args: {
+  pending?: boolean;
+  lifecycle?: PendingUserMessageLifecycle;
+  focusColor: string;
+  dangerColor: string;
+}): string {
+  if (args.lifecycle === "failed") {
+    return args.dangerColor;
+  }
+  if (args.pending) {
+    return args.focusColor;
+  }
+  return "transparent";
 }
 
 export type ReconcileUserEvent = {
@@ -97,12 +115,13 @@ export type PendingUserMessageReconciliation<T> = {
 };
 
 /**
- * Consumes provider user events against successful dispatch attempts in their
- * process-local order. The persistent UI array is never reordered. Event IDs
- * and sequence boundaries are the only matching inputs; message bodies are
- * intentionally not identities. IDs consumed by an earlier attempt are folded
- * into the next remaining attempt's boundary so a later snapshot cannot
- * consume the same provider event twice.
+ * Consumes provider/canonical user events against local pending rows.
+ *
+ * 1. Exact receipt match first (global): user event id === dispatchRequestId.
+ *    This is the Brain admission identity and clears Pending without FIFO or
+ *    seq-boundary guessing. Message bodies are never identities.
+ * 2. Provider-neutral causal FIFO fallback for ordinary provider echoes whose
+ *    ids differ from the request receipt.
  */
 export function reconcilePendingUserMessagesAgainstEvents<
   T extends PendingUserMessageLifecycleFields & { id: string },
@@ -120,7 +139,40 @@ export function reconcilePendingUserMessagesAgainstEvents<
     return { pendingUserMessages, providerEventAliases: [] };
   }
 
-  const attempts = pendingUserMessages
+  const consumedEventIds = new Set<string>();
+  const clearedPendingIds = new Set<string>();
+  const providerEventAliases: ProviderEventTurnFocusAlias[] = [];
+
+  // Pass 1: exact receipt identity, independent of attempt order / seq bounds.
+  for (const message of pendingUserMessages) {
+    const receiptId = message.dispatchRequestId.trim();
+    if (!receiptId || clearedPendingIds.has(message.id)) {
+      continue;
+    }
+    const exact = userEvents.find(
+      (event) =>
+        event.id === receiptId &&
+        !consumedEventIds.has(event.id),
+    );
+    if (!exact) {
+      continue;
+    }
+    consumedEventIds.add(exact.id);
+    clearedPendingIds.add(message.id);
+    providerEventAliases.push({
+      providerEventId: exact.id,
+      localPendingId: message.id,
+    });
+  }
+
+  const remainingForFifo = pendingUserMessages.filter(
+    (message) => !clearedPendingIds.has(message.id),
+  );
+  if (remainingForFifo.length === 0) {
+    return { pendingUserMessages: [], providerEventAliases };
+  }
+
+  const attempts = remainingForFifo
     .map((message, presentationIndex) => ({ message, presentationIndex }))
     .sort((left, right) => {
       const byAttempt =
@@ -128,9 +180,7 @@ export function reconcilePendingUserMessagesAgainstEvents<
         finiteAttemptOrder(right.message.dispatchAttemptOrder);
       return byAttempt || left.presentationIndex - right.presentationIndex;
     });
-  const consumedEventIds = new Set<string>();
   const remainingById = new Map<string, T>();
-  const providerEventAliases: ProviderEventTurnFocusAlias[] = [];
   for (const { message } of attempts) {
     const priorEventIds = new Set(message.createdAfterEventIds ?? []);
     const providerEvent = userEvents.find((event) => {
@@ -146,6 +196,7 @@ export function reconcilePendingUserMessagesAgainstEvents<
     });
     if (providerEvent) {
       consumedEventIds.add(providerEvent.id);
+      clearedPendingIds.add(message.id);
       providerEventAliases.push({
         providerEventId: providerEvent.id,
         localPendingId: message.id,
@@ -166,6 +217,9 @@ export function reconcilePendingUserMessagesAgainstEvents<
   }
   return {
     pendingUserMessages: pendingUserMessages.flatMap((message) => {
+      if (clearedPendingIds.has(message.id)) {
+        return [];
+      }
       const remaining = remainingById.get(message.id);
       return remaining ? [remaining] : [];
     }),

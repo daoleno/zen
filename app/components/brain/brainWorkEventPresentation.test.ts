@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BrainWorkResultEvent } from "../../store/brain";
+import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
   brainWorkEventSourceLabel,

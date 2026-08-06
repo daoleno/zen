@@ -1,10 +1,8 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
-import type { BrainWorkEventTimelineItem } from "../brain/BrainWorkEventCard";
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import {
   buildZenTimeline,
-  mergeSupplementaryTimelineItems,
 } from "./InterfaceTimelineModel";
 import {
   TIMELINE_BOTTOM_THRESHOLD,
@@ -26,25 +24,6 @@ function assistant(
   };
 }
 
-function workEvent(
-  id: string,
-  occurredAt: string,
-  summary: string,
-): BrainWorkEventTimelineItem {
-  return {
-    type: "brain-work-event",
-    id,
-    timestamp: occurredAt,
-    event: {
-      event_id: id,
-      kind: "completed",
-      occurred_at: occurredAt,
-      summary,
-      unread: true,
-    },
-  };
-}
-
 describe("timeline history viewport stability", () => {
   test("canonical append retains history identity under the native anchor owner", () => {
     const before = buildZenTimeline([
@@ -63,35 +42,6 @@ describe("timeline history viewport stability", () => {
       before.find((item) => item.id === "history-anchor")?.id,
     );
     expect(after).not.toBe(before);
-    expect(timelineListStabilityProps(false)).toMatchObject({
-      maintainVisibleContentPosition: { minIndexForVisible: 0 },
-    });
-  });
-
-  test("supplementary Work insertion joins canonical ordering without replacing the anchor", () => {
-    const transcript = buildZenTimeline([
-      assistant("oldest", 0, "older"),
-      assistant("history-anchor", 2, "anchor"),
-      assistant("newest", 4, "newer"),
-    ]);
-    const inserted = mergeSupplementaryTimelineItems(transcript, [
-      workEvent(
-        "work-result-3",
-        "2026-08-04T00:00:03.000Z",
-        "Delegated work completed",
-      ),
-    ]);
-
-    expect(inserted.map((item) => item.id)).toEqual([
-      "oldest",
-      "history-anchor",
-      "work-result-3",
-      "newest",
-    ]);
-    expect(inserted.find((item) => item.id === "history-anchor")).toBe(
-      transcript.find((item) => item.id === "history-anchor"),
-    );
-    expect(inserted).not.toBe(transcript);
     expect(timelineListStabilityProps(false)).toMatchObject({
       maintainVisibleContentPosition: { minIndexForVisible: 0 },
     });
@@ -183,7 +133,7 @@ describe("timeline history viewport stability", () => {
     );
   });
 
-  test("a suspended canonical or supplementary mutation truthfully detaches the reader", async () => {
+  test("a suspended canonical mutation truthfully detaches the reader", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
     ).text();

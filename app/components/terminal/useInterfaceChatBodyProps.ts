@@ -14,7 +14,6 @@ import type {
   PendingUserMessage,
 } from "./InterfaceChatSession";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
-import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import type { InterfaceComposerPresentation } from "./InterfaceChatSurfaceModel";
 import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 import type { useInterfaceChatController } from "./InterfaceChatController";
@@ -38,9 +37,8 @@ interface UseInterfaceChatBodyPropsInput {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
-  supplementaryTimelineItems?: ZenTimelineItem[];
   onBrainWorkEventActivate?: (
-    event: import("../../store/brain").BrainWorkResultEvent,
+    event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
@@ -85,7 +83,6 @@ export function useInterfaceChatBodyProps({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
-  supplementaryTimelineItems,
   onBrainWorkEventActivate,
   openSessionIds,
   loading,
@@ -139,7 +136,6 @@ export function useInterfaceChatBodyProps({
       pendingUserMessages,
       turnFocusAnchorAliases,
       runningActivity,
-      supplementaryTimelineItems,
       onBrainWorkEventActivate,
       openSessionIds,
       loading,
@@ -239,7 +235,6 @@ export function useInterfaceChatBodyProps({
       pendingUserMessages,
       turnFocusAnchorAliases,
       runningActivity,
-      supplementaryTimelineItems,
       onBrainWorkEventActivate,
       openSessionIds,
       handleSendPress,

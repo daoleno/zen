@@ -201,7 +201,6 @@ type CodexConversationEvent struct {
 	WorkSession string `json:"work_session_id,omitempty"`
 	SessionName string `json:"session_name,omitempty"`
 	Unread      bool   `json:"unread,omitempty"`
-	Supersedes  string `json:"supersedes,omitempty"`
 	// AdmissionSHA256 is the exact provider-native user input digest when the
 	// source preserves those bytes separately from its display projection.
 	AdmissionSHA256 string `json:"-"`

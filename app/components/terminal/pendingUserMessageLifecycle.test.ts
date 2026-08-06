@@ -5,6 +5,7 @@ import {
   presentPendingUserMessageLifecycle,
   reconcilePendingUserMessagesAgainstEvents,
   rejectPendingUserMessage,
+  resolvePendingUserBubbleBorderColor,
 } from "./pendingUserMessageLifecycle";
 import {
   buildZenTimeline,
@@ -30,10 +31,10 @@ function pending(
 }
 
 describe("pending user message lifecycle", () => {
-  test("the local row has only pending and failed presentations", () => {
+  test("pending presentation is border/a11y only; failed keeps visible status", () => {
     expect(presentPendingUserMessageLifecycle(pending())).toEqual({
       lifecycle: "pending",
-      label: "Pending",
+      label: "",
       accessibilityLabel: "Message pending provider transcript",
     });
     expect(
@@ -43,6 +44,69 @@ describe("pending user message lifecycle", () => {
       label: "Send failed",
       accessibilityLabel: "Message send failed",
     });
+  });
+
+  test("pending border uses full focus/accent, not faint borderStrong", () => {
+    const focus = "#89A28D";
+    const danger = "#C45C5C";
+    const borderStrong = "rgba(137,162,141,0.22)";
+    expect(
+      resolvePendingUserBubbleBorderColor({
+        pending: true,
+        lifecycle: "pending",
+        focusColor: focus,
+        dangerColor: danger,
+      }),
+    ).toBe(focus);
+    expect(
+      resolvePendingUserBubbleBorderColor({
+        pending: true,
+        lifecycle: "pending",
+        focusColor: focus,
+        dangerColor: danger,
+      }),
+    ).not.toBe(borderStrong);
+    expect(
+      resolvePendingUserBubbleBorderColor({
+        pending: true,
+        lifecycle: "failed",
+        focusColor: focus,
+        dangerColor: danger,
+      }),
+    ).toBe(danger);
+    expect(
+      resolvePendingUserBubbleBorderColor({
+        pending: false,
+        focusColor: focus,
+        dangerColor: danger,
+      }),
+    ).toBe("transparent");
+  });
+
+  test("user bubble source wires focus border and busy-only a11y", async () => {
+    const bubbleSource = await Bun.file(
+      new URL("./InterfaceTimelineMessage.tsx", import.meta.url),
+    ).text();
+    const footerSource = await Bun.file(
+      new URL("./MessageBubbleFooter.tsx", import.meta.url),
+    ).text();
+    const zenUser = bubbleSource.slice(
+      bubbleSource.indexOf("export function ZenUserMessage"),
+      bubbleSource.indexOf("function HeartbeatWakeCard"),
+    );
+    const callAt = zenUser.indexOf("resolvePendingUserBubbleBorderColor({");
+    expect(callAt).toBeGreaterThan(-1);
+    const pendingBorderBlock = zenUser.slice(callAt, callAt + 220);
+    expect(pendingBorderBlock).toContain("focusColor: chrome.focus");
+    expect(pendingBorderBlock).not.toContain("borderStrong");
+    expect(zenUser).toContain(
+      "accessibilityState={item.pending ? { busy: true } : undefined}",
+    );
+    expect(zenUser).not.toMatch(/accessibilityLabel\s*=/);
+    expect(zenUser).not.toContain("lifecycleAccessibilityLabel");
+    expect(zenUser).not.toContain("pending={item.pending}");
+    expect(footerSource).not.toContain("pending?:");
+    expect(footerSource).not.toContain("lifecycleAccessibilityLabel");
   });
 
   test("manual retry keeps one UI row but starts a fresh request attempt", () => {
@@ -97,6 +161,116 @@ describe("pending user message lifecycle", () => {
 });
 
 describe("provider transcript reconciliation", () => {
+  test("exact receipt match clears Pending before causal FIFO", () => {
+    // Live duplicate: durable Brain admission id === dispatchRequestId, but
+    // seq is inside the send boundary so FIFO alone would leave the optimistic
+    // row on screen beside the canonical event.
+    const receiptId = "msh1e2ak_atzbs1";
+    const local = pending({
+      id: "local-optimistic",
+      body: "canonical admitted body",
+      sentText: "canonical admitted body",
+      dispatchRequestId: receiptId,
+      createdAfterMaxSeq: 99,
+      createdAfterEventIds: ["history"],
+    });
+    const admission = {
+      id: receiptId,
+      seq: 5,
+      kind: "user_message",
+    };
+    const reconciled = reconcilePendingUserMessagesAgainstEvents(
+      [local],
+      [{ id: "history", seq: 1, kind: "user_message" }, admission],
+    );
+    expect(reconciled.pendingUserMessages).toEqual([]);
+    expect(reconciled.providerEventAliases).toEqual([
+      { providerEventId: receiptId, localPendingId: "local-optimistic" },
+    ]);
+  });
+
+  test("exact receipt matching is global across concurrent out-of-order admissions", () => {
+    const rows = [
+      pending({
+        id: "local-a",
+        dispatchRequestId: "receipt-a",
+        dispatchAttemptOrder: 1,
+        createdAfterMaxSeq: 50,
+      }),
+      pending({
+        id: "local-b",
+        dispatchRequestId: "receipt-b",
+        dispatchAttemptOrder: 2,
+        createdAfterMaxSeq: 50,
+      }),
+    ];
+    // Snapshot delivers B before A; both seqs would be blocked by FIFO bounds.
+    const reconciled = reconcilePendingUserMessagesAgainstEvents(rows, [
+      { id: "receipt-b", seq: 3, kind: "user_message" },
+      { id: "receipt-a", seq: 2, kind: "user_message" },
+    ]);
+    expect(reconciled.pendingUserMessages).toEqual([]);
+    expect(reconciled.providerEventAliases).toEqual([
+      { providerEventId: "receipt-a", localPendingId: "local-a" },
+      { providerEventId: "receipt-b", localPendingId: "local-b" },
+    ]);
+  });
+
+  test("retry exact-matches the new receipt; prior admission id does not steal it", () => {
+    const failed = pending({
+      id: "local-row",
+      lifecycle: "failed",
+      dispatchRequestId: "receipt-old",
+      dispatchAttemptOrder: 1,
+      createdAfterMaxSeq: 10,
+      createdAfterEventIds: ["history", "receipt-old"],
+    });
+    const retried = beginPendingUserMessageAttempt(failed, {
+      requestId: "receipt-new",
+      dispatchAttemptOrder: 2,
+      createdAfterMaxSeq: 10,
+      createdAfterEventIds: ["history", "receipt-old"],
+    });
+    const mid = reconcilePendingUserMessagesAgainstEvents([retried], [
+      { id: "history", seq: 1, kind: "user_message" },
+      { id: "receipt-old", seq: 2, kind: "user_message" },
+    ]);
+    expect(mid.pendingUserMessages).toHaveLength(1);
+    expect(mid.pendingUserMessages[0]?.dispatchRequestId).toBe("receipt-new");
+
+    const done = reconcilePendingUserMessagesAgainstEvents(
+      mid.pendingUserMessages,
+      [
+        { id: "history", seq: 1, kind: "user_message" },
+        { id: "receipt-old", seq: 2, kind: "user_message" },
+        { id: "receipt-new", seq: 3, kind: "user_message" },
+      ],
+    );
+    expect(done.pendingUserMessages).toEqual([]);
+    expect(done.providerEventAliases).toEqual([
+      { providerEventId: "receipt-new", localPendingId: "local-row" },
+    ]);
+  });
+
+  test("provider echo with a different id still clears via causal FIFO after exact pass", () => {
+    const local = pending({
+      id: "local-optimistic",
+      dispatchRequestId: "client-request-1",
+      createdAfterMaxSeq: 10,
+    });
+    const reconciled = reconcilePendingUserMessagesAgainstEvents([local], [
+      { id: "history", seq: 10, kind: "user_message" },
+      { id: "provider-echo-xyz", seq: 11, kind: "user_message" },
+    ]);
+    expect(reconciled.pendingUserMessages).toEqual([]);
+    expect(reconciled.providerEventAliases).toEqual([
+      {
+        providerEventId: "provider-echo-xyz",
+        localPendingId: "local-optimistic",
+      },
+    ]);
+  });
+
   test("retry reconciliation follows dispatch attempts without reordering UI rows", () => {
     const failedA = pending({
       id: "pending-a",
@@ -223,8 +397,9 @@ describe("provider transcript reconciliation", () => {
     ).toEqual([]);
   });
 
-  test("events at or before the send boundary never consume a local row", () => {
+  test("events at or before the send boundary never consume a local row via FIFO", () => {
     const row = pending({
+      dispatchRequestId: "unrelated-request",
       createdAfterMaxSeq: 20,
       createdAfterEventIds: ["known-by-id"],
     });
@@ -278,7 +453,51 @@ describe("provider transcript reconciliation", () => {
 });
 
 describe("pending timeline rows", () => {
-  test("local rows render in FIFO order at their causal boundary", () => {
+  test("accepted receipt yields exactly one rendered user row without Pending text", () => {
+    const receiptId = "msh1e2ak_atzbs1";
+    const body = "live admitted chinese body";
+    const local = pending({
+      id: "local-optimistic",
+      body,
+      sentText: body,
+      dispatchRequestId: receiptId,
+      createdAfterMaxSeq: 99,
+    });
+    const reconciled = reconcilePendingUserMessagesAgainstEvents([local], [
+      { id: receiptId, seq: 2, kind: "user_message" },
+    ]);
+    expect(reconciled.pendingUserMessages).toEqual([]);
+
+    const timeline = buildZenTimeline([
+      {
+        id: receiptId,
+        seq: 2,
+        timestamp: "2026-08-06T04:49:00.000Z",
+        kind: "user_message",
+        body,
+      },
+    ]);
+    const merged = mergePendingUserMessagesIntoTimeline(
+      timeline,
+      reconciled.pendingUserMessages,
+    );
+    const userRows = merged.filter(
+      (item) => item.type === "message" && item.role === "user",
+    );
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]).toMatchObject({
+      id: receiptId,
+      body,
+    });
+    expect(userRows[0]?.type === "message" && userRows[0].pending).toBeFalsy();
+    expect(
+      userRows[0]?.type === "message" && userRows[0].pendingLifecycleLabel,
+    ).toBeFalsy();
+    expect(JSON.stringify(merged)).not.toContain("Pending");
+    expect(JSON.stringify(merged)).not.toContain("Sending");
+  });
+
+  test("local rows render in FIFO order at their causal boundary without Pending label", () => {
     const timeline = buildZenTimeline([
       {
         id: "history",
@@ -305,8 +524,12 @@ describe("pending timeline rows", () => {
     expect(merged[1]).toMatchObject({
       pending: true,
       pendingLifecycle: "pending",
-      pendingLifecycleLabel: "Pending",
     });
+    expect(
+      merged[1]?.type === "message" && merged[1].pendingLifecycleLabel,
+    ).toBeUndefined();
+    expect(JSON.stringify(merged[1])).not.toContain("Pending");
+    expect(JSON.stringify(merged[1])).not.toContain("Sending");
     expect(merged[2]).toMatchObject({
       pending: true,
       pendingLifecycle: "failed",

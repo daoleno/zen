@@ -44,8 +44,8 @@ import { useAgents, type ConnectionState } from "../../store/agents";
 import {
   useBrain,
   type BrainAdapterRef,
-  type BrainWorkResultEvent,
 } from "../../store/brain";
+import type { BrainWorkResultEvent } from "../../components/brain/brainWorkEvent";
 import { useCurrentServer } from "../../store/currentServer";
 
 const BRAIN_EMPTY_TITLE = "Ready when you are";

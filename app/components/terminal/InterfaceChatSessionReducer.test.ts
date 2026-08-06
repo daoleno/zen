@@ -732,4 +732,162 @@ describe("process-local Chat reducer", () => {
     });
     expect(local.conversation?.activity).toBeUndefined();
   });
+
+  test("Brain admission user_message clears Pending and survives empty restart snapshot", () => {
+    const requestId = "app-request-pending-1";
+    const admissionId = requestId;
+    const body = "accepted user body for pending clear";
+    const withPending = interfaceChatThreadReducer(streamingState(), {
+      type: "add_pending_user_message",
+      message: pending({
+        id: "local-pending",
+        body,
+        sentText: body,
+        dispatchRequestId: requestId,
+        createdAfterEventIds: ["history"],
+      }),
+    });
+    expect(withPending.pendingUserMessages).toHaveLength(1);
+
+    const admitted = interfaceChatThreadReducer(withPending, {
+      type: "snapshot",
+      generation: 1,
+      payload: {
+        request_id: "stream-a",
+        conversation_id: "thread-a",
+        revision: 9,
+        conversation: {
+          available: true,
+          session_id: "brain-thread:thread-a",
+          events: [
+            { id: "history", seq: 1, kind: "user_message", body: "earlier" },
+            { id: admissionId, seq: 2, kind: "user_message", body },
+            {
+              id: "assistant-1",
+              seq: 3,
+              kind: "assistant_message",
+              body: "assistant reply after cwd vanished",
+            },
+          ],
+        },
+      },
+    });
+    expect(admitted.pendingUserMessages).toEqual([]);
+    expect(admitted.conversation?.events.map((event) => event.id)).toEqual([
+      "history",
+      admissionId,
+      "assistant-1",
+    ]);
+
+    const disconnected = interfaceChatThreadReducer(admitted, {
+      type: "stream_error",
+      error: "connection_closed",
+      generation: 1,
+    });
+    const restarted = interfaceChatThreadReducer(disconnected, {
+      type: "stream_start",
+      generation: 2,
+    });
+    const afterRestart = interfaceChatThreadReducer(restarted, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "thread-a",
+        revision: 9,
+        conversation: {
+          available: true,
+          session_id: "brain-thread:thread-a",
+          events: [
+            { id: "history", seq: 1, kind: "user_message", body: "earlier" },
+            { id: admissionId, seq: 2, kind: "user_message", body },
+            {
+              id: "assistant-1",
+              seq: 3,
+              kind: "assistant_message",
+              body: "assistant reply after cwd vanished",
+            },
+          ],
+        },
+      },
+    });
+    expect(afterRestart.pendingUserMessages).toEqual([]);
+    expect(afterRestart.conversation?.events.map((event) => event.id)).toEqual([
+      "history",
+      admissionId,
+      "assistant-1",
+    ]);
+
+    // Later provider echo of the same admitted body must not reopen Pending.
+    const echoed = interfaceChatThreadReducer(afterRestart, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "thread-a",
+        revision: 10,
+        conversation: {
+          available: true,
+          session_id: "brain-thread:thread-a",
+          events: [
+            { id: "history", seq: 1, kind: "user_message", body: "earlier" },
+            { id: admissionId, seq: 2, kind: "user_message", body },
+            {
+              id: "assistant-1",
+              seq: 3,
+              kind: "assistant_message",
+              body: "assistant reply after cwd vanished",
+            },
+          ],
+        },
+      },
+    });
+    expect(echoed.pendingUserMessages).toEqual([]);
+  });
+
+  test("exact receipt match clears Pending even when admission seq is inside the send boundary", () => {
+    // Live duplicate proof: id=msh1e2ak_atzbs1 arrived while FIFO seq bounds
+    // still blocked causal consumption of that same event.
+    const receiptId = "msh1e2ak_atzbs1";
+    const body = "duplicate pending plus durable admission";
+    const withPending = interfaceChatThreadReducer(streamingState(), {
+      type: "add_pending_user_message",
+      message: pending({
+        id: "local-optimistic",
+        body,
+        sentText: body,
+        dispatchRequestId: receiptId,
+        createdAfterMaxSeq: 99,
+        createdAfterEventIds: ["history"],
+      }),
+    });
+    expect(withPending.pendingUserMessages).toHaveLength(1);
+
+    const admitted = interfaceChatThreadReducer(withPending, {
+      type: "snapshot",
+      generation: 1,
+      payload: {
+        request_id: "stream-a",
+        conversation_id: "thread-a",
+        revision: 11,
+        conversation: {
+          available: true,
+          session_id: "brain-thread:thread-a",
+          events: [
+            { id: "history", seq: 1, kind: "user_message", body: "earlier" },
+            { id: receiptId, seq: 5, kind: "user_message", body },
+          ],
+        },
+      },
+    });
+    expect(admitted.pendingUserMessages).toEqual([]);
+    expect(
+      admitted.conversation?.events.filter(
+        (event) => event.kind === "user_message" && event.body === body,
+      ),
+    ).toHaveLength(1);
+    expect(admitted.turnFocusAnchorAliases.get(receiptId)).toBe(
+      "local-optimistic",
+    );
+  });
 });

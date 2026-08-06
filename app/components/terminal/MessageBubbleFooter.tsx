@@ -8,9 +8,7 @@ import { PENDING_MESSAGE_RETRY_ACCESSIBILITY_LABEL } from './pendingUserMessageL
 interface MessageBubbleFooterProps {
   timestamp?: string;
   tone?: 'sent' | 'received';
-  pending?: boolean;
   lifecycleLabel?: string;
-  lifecycleAccessibilityLabel?: string;
   failureMessage?: string;
   failureColor?: string;
   onRetry?: () => void;
@@ -19,28 +17,25 @@ interface MessageBubbleFooterProps {
 export function MessageBubbleFooter({
   timestamp,
   tone = 'received',
-  pending = false,
   lifecycleLabel,
-  lifecycleAccessibilityLabel,
   failureMessage,
   failureColor,
   onRetry,
 }: MessageBubbleFooterProps) {
   const { theme } = useAppTheme();
-  const label = lifecycleLabel
+  const hasLifecycleLabel = Boolean(lifecycleLabel);
+  // Pending never injects status text. Timestamps stay available so enabling
+  // them does not shift geometry when the optimistic row becomes durable.
+  const label = hasLifecycleLabel
     ? lifecycleLabel
-    : pending
-      ? 'Sending'
-      : formatChatBubbleTime(timestamp);
-  if (!label) {
-    return null;
-  }
-
+    : formatChatBubbleTime(timestamp);
   const timeColor =
     tone === 'sent'
       ? theme.chat.sentTimestamp
       : theme.chat.receivedTimestamp;
-  const showLifecycle = Boolean(lifecycleLabel || pending);
+  if (!label && !failureMessage && !onRetry) {
+    return null;
+  }
 
   return (
     <View style={styles.stack}>
@@ -54,17 +49,17 @@ export function MessageBubbleFooter({
         </Text>
       ) : null}
       <View style={styles.row}>
-        {showLifecycle ? (
+        {hasLifecycleLabel ? (
           <PendingMessageLifecycleLabel
-            label={label}
-            accessibilityLabel={lifecycleAccessibilityLabel || label}
+            label={label!}
+            accessibilityLabel={label}
             color={failureMessage ? failureColor || timeColor : timeColor}
           />
-        ) : (
+        ) : label ? (
           <Text style={[styles.time, { color: timeColor }]}>
             {label}
           </Text>
-        )}
+        ) : null}
         {onRetry ? (
           <Pressable
             accessibilityRole="button"

@@ -2,6 +2,7 @@ package brain
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +26,48 @@ const (
 	workResultConversationSource = "work_result"
 )
 
+// AdmissionTimelineItemID returns the durable timeline identity for a successful
+// Brain input receipt. The accepted request_id is the canonical user-row id.
+func AdmissionTimelineItemID(receipt string) string {
+	return strings.TrimSpace(receipt)
+}
+
+// AdmissionDigest returns the stable SHA-256 hex digest of exact admitted UTF-8.
+func AdmissionDigest(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("%x", sum)
+}
+
+// AdmitUserMessage durably records the exact user payload for a successful
+// Brain input admission/receipt. Idempotent by request_id.
+func (s *Store) AdmitUserMessage(threadID, sessionID, receipt, body string) (TimelineItem, error) {
+	threadID = strings.TrimSpace(threadID)
+	sessionID = strings.TrimSpace(sessionID)
+	receipt = strings.TrimSpace(receipt)
+	body = strings.TrimSpace(body)
+	id := AdmissionTimelineItemID(receipt)
+	if threadID == "" || sessionID == "" || id == "" || body == "" {
+		return TimelineItem{}, fmt.Errorf("admit user message requires thread, session, receipt, and body")
+	}
+	return s.AppendTimelineItem(TimelineItem{
+		ID:              id,
+		ThreadID:        threadID,
+		SessionID:       sessionID,
+		Role:            "user",
+		Body:            body,
+		Kind:            timelineKindUserMessage,
+		BrainAdmission:  true,
+		AdmissionSHA256: AdmissionDigest(body),
+	})
+}
+
 // TimelineItem is one durable Brain-thread timeline row. The append-only
 // messages.jsonl ledger is the sole presentation truth for Brain chat history
 // and Work cards. Work Events remain the scheduler audit log and are never
 // reprojected into the UI on every snapshot.
+//
+// Cards are immutable messages: every newly materialized presentable event
+// remains chronologically visible. There is no current-per-Work collapse.
 type TimelineItem struct {
 	ID         string    `json:"id"`
 	ThreadID   string    `json:"thread_id,omitempty"`
@@ -41,6 +80,20 @@ type TimelineItem struct {
 	Status     string    `json:"status,omitempty"`
 	Title      string    `json:"title,omitempty"`
 
+	// BrainAdmission marks rows written by AdmitUserMessage (Interface
+	// send_input). Provider materialization never sets this. Digests alone are
+	// not provenance.
+	BrainAdmission bool `json:"brain_admission,omitempty"`
+
+	// AdmissionSHA256 is correlation data for BrainAdmission rows only: the
+	// exact UTF-8 digest used to match one provider echo. It is never message
+	// identity and must not appear on provider-native durable rows.
+	AdmissionSHA256 string `json:"admission_sha256,omitempty"`
+
+	// AdmissionEchoEventID records the provider event id that consumed this
+	// admission's single echo credit. Empty means unmatched.
+	AdmissionEchoEventID string `json:"admission_echo_event_id,omitempty"`
+
 	// Legacy calendar rows retained for orphan-message migration compatibility.
 	CalendarItemID string     `json:"calendar_item_id,omitempty"`
 	CalendarRunID  string     `json:"calendar_run_id,omitempty"`
@@ -52,9 +105,6 @@ type TimelineItem struct {
 	Summary     string `json:"summary,omitempty"`
 	SessionName string `json:"session_name,omitempty"`
 	Unread      bool   `json:"unread,omitempty"`
-	// Supersedes names the prior current work_card ID for the same Work.
-	// Presentation collapses superseded cards; audit facts stay in Work Events.
-	Supersedes string `json:"supersedes,omitempty"`
 }
 
 func (s *Store) messagesPath() string {
@@ -80,11 +130,12 @@ func (s *Store) appendTimelineItemLocked(item TimelineItem) (TimelineItem, error
 	item.Kind = strings.TrimSpace(item.Kind)
 	item.Status = strings.TrimSpace(item.Status)
 	item.Title = strings.TrimSpace(item.Title)
+	item.AdmissionSHA256 = strings.TrimSpace(item.AdmissionSHA256)
+	item.AdmissionEchoEventID = strings.TrimSpace(item.AdmissionEchoEventID)
 	item.WorkID = strings.TrimSpace(item.WorkID)
 	item.EventKind = strings.TrimSpace(item.EventKind)
 	item.Summary = strings.TrimSpace(item.Summary)
 	item.SessionName = strings.TrimSpace(item.SessionName)
-	item.Supersedes = strings.TrimSpace(item.Supersedes)
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = time.Now().UTC()
 	} else {
@@ -169,6 +220,9 @@ func (s *Store) ThreadTimeline(threadID string, limit int) ([]TimelineItem, erro
 }
 
 func (s *Store) threadTimelineLocked(threadID string, limit int) ([]TimelineItem, error) {
+	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
+		return nil, formatAdmissionProvenanceError(err)
+	}
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return []TimelineItem{}, nil
@@ -256,7 +310,8 @@ func sortTimelineItems(items []TimelineItem) {
 
 // MaterializeProviderConversation appends durable provider transcript events
 // into the Brain thread timeline exactly once by event ID. Partial/transient
-// events stay live-only until they finalize.
+// events stay live-only until they finalize. Provider user echoes reconcile
+// one-to-one against Brain input admissions and never create rows.
 func (s *Store) MaterializeProviderConversation(threadID string, conversation work.CodexConversation) error {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
@@ -264,9 +319,42 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	known, err := s.timelineIDsLocked(threadID)
+	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
+		return formatAdmissionProvenanceError(err)
+	}
+	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return err
+	}
+	items := make([]TimelineItem, 0, len(allItems))
+	for _, item := range allItems {
+		if item.ThreadID != threadID {
+			continue
+		}
+		normalizeLegacyTimelineKind(&item)
+		items = append(items, item)
+	}
+	sortTimelineItems(items)
+	// Assign echo credits before appending so restart/replay stays idempotent.
+	suppress, updatedItems, dirty := claimProviderUserEchoes(items, conversation.Events, true)
+	if dirty {
+		byID := make(map[string]TimelineItem, len(updatedItems))
+		for _, item := range updatedItems {
+			byID[item.ID] = item
+		}
+		for index := range allItems {
+			if next, ok := byID[allItems[index].ID]; ok {
+				allItems[index] = next
+			}
+		}
+		if err := s.rewriteTimelineLocked(allItems); err != nil {
+			return err
+		}
+		items = updatedItems
+	}
+	known := make(map[string]bool, len(items))
+	for _, item := range items {
+		known[item.ID] = true
 	}
 	sessionID := strings.TrimSpace(conversation.SessionID)
 	if sessionID == "" {
@@ -278,6 +366,9 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 		}
 		id := strings.TrimSpace(event.ID)
 		if id == "" || known[id] {
+			continue
+		}
+		if strings.TrimSpace(event.Kind) == timelineKindUserMessage && suppress[id] {
 			continue
 		}
 		item, ok := timelineItemFromProviderEvent(threadID, sessionID, event)
@@ -342,6 +433,9 @@ func timelineItemFromProviderEvent(threadID, sessionID string, event work.CodexC
 		Kind:      kind,
 		Title:     strings.TrimSpace(event.Title),
 		Status:    strings.TrimSpace(event.Status),
+		// Provider-native rows never receive Brain admission provenance or
+		// correlation digests. Echo matching uses live provider event digests
+		// against BrainAdmission rows only.
 	}, true
 }
 
@@ -358,16 +452,15 @@ func (s *Store) timelineIDsLocked(threadID string) (map[string]bool, error) {
 }
 
 // MaterializeWorkCard records a presentable Work Event as a typed timeline
-// item exactly once. A newer card for the same Work supersedes the prior
-// current card without deleting Work Event audit facts.
-func (s *Store) MaterializeWorkCard(threadID string, workItem Work, event WorkEvent) (TimelineItem, bool, error) {
+// item exactly once by event ID into the Work's frozen SourceThreadID.
+func (s *Store) MaterializeWorkCard(workItem Work, event WorkEvent) (TimelineItem, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.materializeWorkCardLocked(threadID, workItem, event)
+	return s.materializeWorkCardLocked(workItem, event)
 }
 
-func (s *Store) materializeWorkCardLocked(threadID string, workItem Work, event WorkEvent) (TimelineItem, bool, error) {
-	threadID = strings.TrimSpace(threadID)
+func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (TimelineItem, bool, error) {
+	threadID := strings.TrimSpace(workItem.SourceThreadID)
 	event.ID = strings.TrimSpace(event.ID)
 	if threadID == "" || event.ID == "" || !isProjectedWorkResultEvent(event.Kind) {
 		return TimelineItem{}, false, nil
@@ -396,30 +489,6 @@ func (s *Store) materializeWorkCardLocked(threadID string, workItem Work, event 
 	title := strings.TrimSpace(workItem.Title)
 	body := firstNonEmpty(summary, title, event.Kind)
 
-	supersedes := ""
-	items, err := s.threadTimelineLocked(threadID, 0)
-	if err != nil {
-		return TimelineItem{}, false, err
-	}
-	superseded := supersededWorkCardIDs(items)
-	var latest *TimelineItem
-	for index := range items {
-		item := &items[index]
-		if item.Kind != timelineKindWorkCard || item.WorkID != workItem.ID {
-			continue
-		}
-		if superseded[item.ID] {
-			continue
-		}
-		if latest == nil || item.CreatedAt.After(latest.CreatedAt) ||
-			(item.CreatedAt.Equal(latest.CreatedAt) && item.ID > latest.ID) {
-			latest = item
-		}
-	}
-	if latest != nil && latest.ID != event.ID {
-		supersedes = latest.ID
-	}
-
 	item, err := s.appendTimelineItemLocked(TimelineItem{
 		ID:          event.ID,
 		ThreadID:    threadID,
@@ -435,25 +504,11 @@ func (s *Store) materializeWorkCardLocked(threadID string, workItem Work, event 
 		Summary:     summary,
 		SessionName: strings.TrimSpace(event.SourceName),
 		Unread:      event.ReadAt == nil,
-		Supersedes:  supersedes,
 	})
 	if err != nil {
 		return TimelineItem{}, false, err
 	}
 	return item, true, nil
-}
-
-func supersededWorkCardIDs(items []TimelineItem) map[string]bool {
-	out := make(map[string]bool)
-	for _, item := range items {
-		if item.Kind != timelineKindWorkCard {
-			continue
-		}
-		if target := strings.TrimSpace(item.Supersedes); target != "" {
-			out[target] = true
-		}
-	}
-	return out
 }
 
 // MarkTimelineWorkCardsRead clears unread emphasis on materialized work cards
@@ -550,66 +605,9 @@ func (s *Store) rewriteTimelineLocked(items []TimelineItem) error {
 	return nil
 }
 
-// BackfillCurrentWorkCardsOnce materializes only the current presentable
-// outcome per Work into the current thread. It never floods historical
-// superseded Events from the global audit log.
-func (s *Store) BackfillCurrentWorkCardsOnce(threadID string) error {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return nil
-	}
-	markerPath := filepath.Join(s.statePath(), "timeline_work_card_backfill_v1")
-	if _, err := os.Stat(markerPath); err == nil {
-		return nil
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return err
-	}
-	projected := projectCurrentWorkResultEvents(database, recentWorkResultEventLimit)
-	workByID := make(map[string]Work, len(database.BrainWork))
-	for _, item := range database.BrainWork {
-		workByID[item.ID] = item
-	}
-	eventByID := make(map[string]WorkEvent, len(database.BrainWorkEvents))
-	for _, event := range database.BrainWorkEvents {
-		eventByID[event.ID] = event
-	}
-	for _, card := range projected {
-		workItem, ok := workByID[card.WorkID]
-		if !ok {
-			continue
-		}
-		event, ok := eventByID[card.EventID]
-		if !ok {
-			continue
-		}
-		event.Summary = card.Summary
-		event.SourceName = card.SessionName
-		event.ReadAt = nil
-		if !card.Unread {
-			now := s.nowUTC()
-			event.ReadAt = &now
-		}
-		if _, _, err := s.materializeWorkCardLocked(threadID, workItem, event); err != nil {
-			return err
-		}
-	}
-	return os.WriteFile(markerPath, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o600)
-}
-
-func timelineItemsToConversationEvents(items []TimelineItem, includeSuperseded bool) []work.CodexConversationEvent {
-	superseded := supersededWorkCardIDs(items)
+func timelineItemsToConversationEvents(items []TimelineItem) []work.CodexConversationEvent {
 	out := make([]work.CodexConversationEvent, 0, len(items))
 	for index, item := range items {
-		if item.Kind == timelineKindWorkCard && !includeSuperseded && superseded[item.ID] {
-			continue
-		}
 		event, ok := timelineItemToConversationEvent(item, index+1)
 		if !ok {
 			continue
@@ -620,15 +618,16 @@ func timelineItemsToConversationEvents(items []TimelineItem, includeSuperseded b
 }
 
 // TimelineItemsToConversationEvents projects durable timeline rows into the
-// shared conversation wire contract.
-func TimelineItemsToConversationEvents(items []TimelineItem, includeSuperseded bool) []work.CodexConversationEvent {
-	return timelineItemsToConversationEvents(items, includeSuperseded)
+// shared conversation wire contract. Every materialized presentable card stays
+// chronologically visible.
+func TimelineItemsToConversationEvents(items []TimelineItem) []work.CodexConversationEvent {
+	return timelineItemsToConversationEvents(items)
 }
 
 func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConversationEvent, bool) {
 	switch item.Kind {
 	case timelineKindUserMessage:
-		return work.CodexConversationEvent{
+		event := work.CodexConversationEvent{
 			ID:        item.ID,
 			Seq:       seq,
 			Timestamp: item.CreatedAt.Format(time.RFC3339Nano),
@@ -636,7 +635,11 @@ func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConv
 			Role:      "user",
 			Body:      item.Body,
 			Source:    "brain_timeline",
-		}, true
+		}
+		if IsBrainInputAdmission(item) {
+			event.AdmissionSHA256 = admissionCorrelationDigest(item)
+		}
+		return event, true
 	case timelineKindAssistantMessage:
 		return work.CodexConversationEvent{
 			ID:        item.ID,
@@ -663,7 +666,6 @@ func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConv
 			WorkSession: item.SessionID,
 			SessionName: item.SessionName,
 			Unread:      item.Unread,
-			Supersedes:  item.Supersedes,
 		}, true
 	case timelineKindCalendarResult:
 		return work.CodexConversationEvent{

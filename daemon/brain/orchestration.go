@@ -44,15 +44,16 @@ const (
 // Work is the only durable Brain commitment. It is intentionally small:
 // detailed plans and evidence remain in the referenced worklog.
 //
-// TerminalAt is the closed-commitment causality boundary: set exactly once
-// when Work first becomes done/cancelled, cleared on reopen to a non-terminal
-// status, and never bumped by later title/next_action/owner/context updates.
+// SourceThreadID freezes the originating Brain thread at Work creation.
+// Later Work Events materialize only into that persisted thread, even if the
+// user has since created or switched to another Brain thread.
 type Work struct {
 	ID               string           `json:"work_id"`
 	Title            string           `json:"title"`
 	Objective        string           `json:"objective"`
 	Status           WorkStatus       `json:"status"`
 	OwnerSessionID   string           `json:"owner_session_id,omitempty"`
+	SourceThreadID   string           `json:"source_thread_id,omitempty"`
 	CompletionPolicy CompletionPolicy `json:"completion_policy"`
 	DoneCriteriaRef  string           `json:"done_criteria_ref,omitempty"`
 	NextAction       string           `json:"next_action,omitempty"`
@@ -60,7 +61,6 @@ type Work struct {
 	ContextRef       string           `json:"context_ref,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
-	TerminalAt       *time.Time       `json:"terminal_at,omitempty"`
 }
 
 // WorkEvent is an append-only fact. Event.ID is also its delivery receipt.
@@ -103,31 +103,6 @@ type ActiveWork struct {
 	UnreadResult   bool       `json:"unread_result"`
 }
 
-// WorkResultEvent is a bounded, read-only domain projection. The append-only
-// WorkEvent and its Work remain the only durable sources.
-//
-// A card is the Work's current standalone presentable outcome: at most one
-// projected result event per Work (a newer event supersedes older ones).
-// Terminal Work events strictly before Work.TerminalAt are historical backlog
-// and are not standalone cards — the same closed-commitment boundary the
-// scheduler uses. ConsumedAt remains exact-once delivery only and never hides
-// cards. ReadAt owns unread emphasis via MarkWorkRead; it is not required to
-// collapse superseded or closed-commitment history.
-type WorkResultEvent struct {
-	EventID     string    `json:"event_id"`
-	Kind        string    `json:"kind"`
-	WorkID      string    `json:"work_id"`
-	WorkTitle   string    `json:"work_title"`
-	Summary     string    `json:"summary"`
-	SessionID   string    `json:"session_id,omitempty"`
-	SessionName string    `json:"session_name,omitempty"`
-	OccurredAt  time.Time `json:"occurred_at"`
-	Unread      bool      `json:"unread"`
-
-	hasEventSourceName bool
-	hasEventSummary    bool
-}
-
 type WorkChange struct {
 	WorkID string
 }
@@ -138,6 +113,32 @@ type orchestrationDatabase struct {
 	SchemaVersion   int                     `json:"schema_version"`
 	Migrations      orchestrationMigrations `json:"migrations"`
 	BrainWork       []Work                  `json:"brain_work"`
+	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
+}
+
+// workRecord is the on-disk Work shape during decode. Unknown never-released
+// fields such as terminal_at are ignored (no DisallowUnknownFields on schema
+// 3/4 upgrade). SourceThreadID is required after bind/persist to schema 4.
+type workRecord struct {
+	ID               string           `json:"work_id"`
+	Title            string           `json:"title"`
+	Objective        string           `json:"objective"`
+	Status           WorkStatus       `json:"status"`
+	OwnerSessionID   string           `json:"owner_session_id,omitempty"`
+	SourceThreadID   string           `json:"source_thread_id,omitempty"`
+	CompletionPolicy CompletionPolicy `json:"completion_policy"`
+	DoneCriteriaRef  string           `json:"done_criteria_ref,omitempty"`
+	NextAction       string           `json:"next_action,omitempty"`
+	WaitFor          string           `json:"wait_for,omitempty"`
+	ContextRef       string           `json:"context_ref,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+}
+
+type orchestrationDatabaseRecord struct {
+	SchemaVersion   int                     `json:"schema_version"`
+	Migrations      orchestrationMigrations `json:"migrations"`
+	BrainWork       []workRecord            `json:"brain_work"`
 	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
 }
 
@@ -152,7 +153,7 @@ type orchestrationV0 struct {
 type legacyOrchestrationDatabase struct {
 	SchemaVersion   int                     `json:"schema_version"`
 	Migrations      orchestrationMigrations `json:"migrations"`
-	BrainWork       []Work                  `json:"brain_work"`
+	BrainWork       []workRecord            `json:"brain_work"`
 	BrainWorkEvents []legacyWorkEvent       `json:"brain_work_events"`
 }
 
@@ -192,8 +193,16 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	if err != nil {
 		return fmt.Errorf("decode Brain orchestration database: %w", err)
 	}
-	if migrated {
+	threadID, err := s.ChatThreadID()
+	if err != nil {
+		return err
+	}
+	bound := bindUnresolvedSourceThreadIDs(&database, threadID)
+	if migrated || bound {
 		return s.persistOrchestrationLocked(database)
+	}
+	if err := validateOrchestrationDatabase(database); err != nil {
+		return fmt.Errorf("decode Brain orchestration database: %w", err)
 	}
 	return nil
 }
@@ -245,7 +254,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:   orchestrationSchemaVersion,
 			Migrations:      legacy.Migrations,
-			BrainWork:       legacy.BrainWork,
+			BrainWork:       worksFromRecords(legacy.BrainWork),
 			BrainWorkEvents: make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
 		}
 		for _, old := range legacy.BrainWorkEvents {
@@ -261,47 +270,55 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			}
 			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 		}
-		backfillWorkTerminalAt(&database)
-		if err := validateOrchestrationDatabase(database); err != nil {
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
 		return database, true, nil
 	case 3:
-		var database orchestrationDatabase
-		decoder := json.NewDecoder(bytes.NewReader(trimmed))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&database); err != nil {
+		var record orchestrationDatabaseRecord
+		// Unknown never-released fields (e.g. terminal_at) are ignored.
+		if err := json.Unmarshal(trimmed, &record); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
-		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if database.BrainWork == nil || database.BrainWorkEvents == nil {
+		if record.BrainWork == nil || record.BrainWorkEvents == nil {
 			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
 		}
-		backfillWorkTerminalAt(&database)
-		database.SchemaVersion = orchestrationSchemaVersion
-		if err := validateOrchestrationDatabase(database); err != nil {
+		database := orchestrationDatabase{
+			SchemaVersion:   orchestrationSchemaVersion,
+			Migrations:      record.Migrations,
+			BrainWork:       worksFromRecords(record.BrainWork),
+			BrainWorkEvents: record.BrainWorkEvents,
+		}
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
 		return database, true, nil
 	case orchestrationSchemaVersion:
-		var database orchestrationDatabase
-		decoder := json.NewDecoder(bytes.NewReader(trimmed))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&database); err != nil {
+		var record orchestrationDatabaseRecord
+		// Ignore unknown never-released fields; bind missing source threads in ensure.
+		if err := json.Unmarshal(trimmed, &record); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
-		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if database.BrainWork == nil || database.BrainWorkEvents == nil {
+		if record.BrainWork == nil || record.BrainWorkEvents == nil {
 			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
 		}
-		if err := validateOrchestrationDatabase(database); err != nil {
+		database := orchestrationDatabase{
+			SchemaVersion:   orchestrationSchemaVersion,
+			Migrations:      record.Migrations,
+			BrainWork:       worksFromRecords(record.BrainWork),
+			BrainWorkEvents: record.BrainWorkEvents,
+		}
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
-		return database, false, nil
+		needsBind := false
+		for _, item := range database.BrainWork {
+			if strings.TrimSpace(item.SourceThreadID) == "" {
+				needsBind = true
+				break
+			}
+		}
+		return database, needsBind, nil
 	default:
 		return orchestrationDatabase{}, false, fmt.Errorf(
 			"unsupported schema_version %d (latest %d)",
@@ -311,26 +328,51 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 	}
 }
 
-// backfillWorkTerminalAt freezes each terminal Work's then-current UpdatedAt
-// into TerminalAt exactly once during schema migration. That stamp is enough
-// to classify pre-existing closed-commitment backlog (CreatedAt < UpdatedAt)
-// without reinterpreting later bookkeeping UpdatedAt values forever.
-func backfillWorkTerminalAt(database *orchestrationDatabase) {
-	for index := range database.BrainWork {
-		item := &database.BrainWork[index]
-		if workIsTerminal(item.Status) {
-			if item.TerminalAt == nil || item.TerminalAt.IsZero() {
-				stamp := item.UpdatedAt
-				item.TerminalAt = &stamp
-			}
-			continue
-		}
-		item.TerminalAt = nil
+// worksFromRecords copies durable Work fields. SourceThreadID may be empty
+// until bindUnresolvedSourceThreadIDs freezes ownership during upgrade.
+func worksFromRecords(records []workRecord) []Work {
+	out := make([]Work, 0, len(records))
+	for _, record := range records {
+		out = append(out, Work{
+			ID:               strings.TrimSpace(record.ID),
+			Title:            strings.TrimSpace(record.Title),
+			Objective:        strings.TrimSpace(record.Objective),
+			Status:           record.Status,
+			OwnerSessionID:   strings.TrimSpace(record.OwnerSessionID),
+			SourceThreadID:   strings.TrimSpace(record.SourceThreadID),
+			CompletionPolicy: record.CompletionPolicy,
+			DoneCriteriaRef:  strings.TrimSpace(record.DoneCriteriaRef),
+			NextAction:       strings.TrimSpace(record.NextAction),
+			WaitFor:          strings.TrimSpace(record.WaitFor),
+			ContextRef:       strings.TrimSpace(record.ContextRef),
+			CreatedAt:        record.CreatedAt,
+			UpdatedAt:        record.UpdatedAt,
+		})
 	}
+	return out
 }
 
-func workIsTerminal(status WorkStatus) bool {
-	return status == WorkDone || status == WorkCancelled
+// bindUnresolvedSourceThreadIDs freezes the current Brain chat thread onto
+// every Work that still lacks source_thread_id. Explicit SourceThreadID values
+// (including scheduled-action sources already stored on the Work) are kept.
+// Historical cards are never bulk-materialized here.
+func bindUnresolvedSourceThreadIDs(database *orchestrationDatabase, currentThreadID string) bool {
+	if database == nil {
+		return false
+	}
+	currentThreadID = strings.TrimSpace(currentThreadID)
+	if currentThreadID == "" {
+		return false
+	}
+	changed := false
+	for index := range database.BrainWork {
+		if strings.TrimSpace(database.BrainWork[index].SourceThreadID) != "" {
+			continue
+		}
+		database.BrainWork[index].SourceThreadID = currentThreadID
+		changed = true
+	}
+	return changed
 }
 
 func ensureSingleJSONValue(decoder *json.Decoder, raw []byte) error {
@@ -341,10 +383,18 @@ func ensureSingleJSONValue(decoder *json.Decoder, raw []byte) error {
 }
 
 func validateOrchestrationDatabase(database orchestrationDatabase) error {
+	return validateOrchestrationDatabaseWithSourceThread(database, true)
+}
+
+func validateOrchestrationDatabaseLoose(database orchestrationDatabase) error {
+	return validateOrchestrationDatabaseWithSourceThread(database, false)
+}
+
+func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabase, requireSourceThread bool) error {
 	workIDs := make(map[string]struct{}, len(database.BrainWork))
 	activeOwners := make(map[string]string, len(database.BrainWork))
 	for index, item := range database.BrainWork {
-		if err := validateWork(item); err != nil {
+		if err := validateWorkWithSourceThread(item, requireSourceThread); err != nil {
 			return fmt.Errorf("brain_work[%d]: %w", index, err)
 		}
 		if _, exists := workIDs[item.ID]; exists {
@@ -387,9 +437,14 @@ func validateOrchestrationDatabase(database orchestrationDatabase) error {
 }
 
 func validateWork(item Work) error {
+	return validateWorkWithSourceThread(item, true)
+}
+
+func validateWorkWithSourceThread(item Work, requireSourceThread bool) error {
 	item.ID = strings.TrimSpace(item.ID)
 	item.Title = strings.TrimSpace(item.Title)
 	item.Objective = strings.TrimSpace(item.Objective)
+	item.SourceThreadID = strings.TrimSpace(item.SourceThreadID)
 	if item.ID == "" {
 		return fmt.Errorf("work_id is required")
 	}
@@ -411,12 +466,8 @@ func validateWork(item Work) error {
 	if item.CreatedAt.IsZero() || item.UpdatedAt.IsZero() {
 		return fmt.Errorf("created_at and updated_at are required")
 	}
-	if workIsTerminal(item.Status) {
-		if item.TerminalAt == nil || item.TerminalAt.IsZero() {
-			return fmt.Errorf("terminal work requires terminal_at")
-		}
-	} else if item.TerminalAt != nil {
-		return fmt.Errorf("non-terminal work must not have terminal_at")
+	if requireSourceThread && item.SourceThreadID == "" {
+		return fmt.Errorf("source_thread_id is required")
 	}
 	return nil
 }
@@ -512,6 +563,7 @@ func normalizeWorkForCreate(item Work, now time.Time) (Work, error) {
 	item.Title = strings.TrimSpace(item.Title)
 	item.Objective = strings.TrimSpace(item.Objective)
 	item.OwnerSessionID = strings.TrimSpace(item.OwnerSessionID)
+	item.SourceThreadID = strings.TrimSpace(item.SourceThreadID)
 	item.DoneCriteriaRef = strings.TrimSpace(item.DoneCriteriaRef)
 	item.NextAction = strings.TrimSpace(item.NextAction)
 	item.WaitFor = strings.TrimSpace(item.WaitFor)
@@ -524,20 +576,36 @@ func normalizeWorkForCreate(item Work, now time.Time) (Work, error) {
 	}
 	item.CreatedAt = now
 	item.UpdatedAt = now
-	item.TerminalAt = nil
-	if workIsTerminal(item.Status) {
-		stamp := now
-		item.TerminalAt = &stamp
-	}
 	if err := validateWork(item); err != nil {
 		return Work{}, err
 	}
 	return item, nil
 }
 
+func (s *Store) resolveSourceThreadID(item Work) (Work, error) {
+	item.SourceThreadID = strings.TrimSpace(item.SourceThreadID)
+	if item.SourceThreadID != "" {
+		return item, nil
+	}
+	threadID, err := s.ChatThreadID()
+	if err != nil {
+		return Work{}, err
+	}
+	item.SourceThreadID = strings.TrimSpace(threadID)
+	if item.SourceThreadID == "" {
+		return Work{}, fmt.Errorf("source_thread_id is required")
+	}
+	return item, nil
+}
+
 func (s *Store) CreateWork(item Work) (Work, error) {
 	now := s.nowUTC()
-	item, err := normalizeWorkForCreate(item, now)
+	var err error
+	item, err = s.resolveSourceThreadID(item)
+	if err != nil {
+		return Work{}, err
+	}
+	item, err = normalizeWorkForCreate(item, now)
 	if err != nil {
 		return Work{}, err
 	}
@@ -570,7 +638,12 @@ func (s *Store) EnsureWork(item Work) (Work, bool, error) {
 		return Work{}, false, fmt.Errorf("deterministic work_id is required")
 	}
 	now := s.nowUTC()
-	item, err := normalizeWorkForCreate(item, now)
+	var err error
+	item, err = s.resolveSourceThreadID(item)
+	if err != nil {
+		return Work{}, false, err
+	}
+	item, err = normalizeWorkForCreate(item, now)
 	if err != nil {
 		return Work{}, false, err
 	}
@@ -638,11 +711,11 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 			err = ErrWorkNotFound
 		} else {
 			item = database.BrainWork[index]
-			previousStatus := item.Status
 			applyWorkUpdate(&item, update)
 			now := s.nowUTC()
 			item.UpdatedAt = now
-			syncWorkTerminalAt(&item, previousStatus, now)
+			// SourceThreadID is frozen at Create and never rewritten.
+			item.SourceThreadID = database.BrainWork[index].SourceThreadID
 			if err = validateWork(item); err == nil {
 				database.BrainWork[index] = item
 				err = s.persistOrchestrationLocked(database)
@@ -728,27 +801,6 @@ func applyWorkUpdate(item *Work, update WorkUpdate) {
 	}
 }
 
-// syncWorkTerminalAt keeps TerminalAt aligned with status transitions only.
-// First non-terminal → terminal sets the stamp; reopen clears it; staying
-// terminal preserves the existing stamp so bookkeeping cannot move the
-// closed-commitment boundary.
-func syncWorkTerminalAt(item *Work, previousStatus WorkStatus, now time.Time) {
-	wasTerminal := workIsTerminal(previousStatus)
-	nowTerminal := workIsTerminal(item.Status)
-	switch {
-	case !wasTerminal && nowTerminal:
-		stamp := now
-		item.TerminalAt = &stamp
-	case wasTerminal && !nowTerminal:
-		item.TerminalAt = nil
-	case nowTerminal && (item.TerminalAt == nil || item.TerminalAt.IsZero()):
-		stamp := now
-		item.TerminalAt = &stamp
-	case !nowTerminal:
-		item.TerminalAt = nil
-	}
-}
-
 func workIndex(items []Work, id string) int {
 	for index := range items {
 		if items[index].ID == id {
@@ -779,6 +831,10 @@ func (s *Store) WorkByOwnerSession(sessionID string) (Work, bool, error) {
 // New delegated Sessions are created with Work directly and never use this
 // migration or a runtime fallback.
 func (s *Store) MigrateDelegatedSessionsV1(sessions []Work) (bool, error) {
+	defaultThreadID, err := s.ChatThreadID()
+	if err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
@@ -806,6 +862,9 @@ func (s *Store) MigrateDelegatedSessionsV1(sessions []Work) (bool, error) {
 			continue
 		}
 		candidate.ID = legacySessionWorkID(candidate.OwnerSessionID)
+		if strings.TrimSpace(candidate.SourceThreadID) == "" {
+			candidate.SourceThreadID = defaultThreadID
+		}
 		candidate, err = normalizeWorkForCreate(candidate, now)
 		if err != nil {
 			s.mu.Unlock()
@@ -962,16 +1021,12 @@ func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent)
 		return false
 	}
 	item := database.BrainWork[index]
-	if !workIsTerminal(item.Status) {
+	if item.Status != WorkDone && item.Status != WorkCancelled {
 		return true
 	}
 	// Strictly earlier Events are historical backlog; equality stays eligible
 	// for serialized terminal update-then-append under coarse clocks.
-	boundary, ok := workTerminalBoundary(item)
-	if !ok {
-		return false
-	}
-	return !event.CreatedAt.Before(boundary)
+	return !event.CreatedAt.Before(item.UpdatedAt)
 }
 
 // ReleaseEventClaim atomically makes the exact identity-bound Event claimable
@@ -1190,122 +1245,6 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 		return leftWork.UpdatedAt.After(rightWork.UpdatedAt)
 	})
 	return out, nil
-}
-
-func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
-	if limit <= 0 {
-		return []WorkResultEvent{}, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return nil, err
-	}
-	return projectCurrentWorkResultEvents(database, limit), nil
-}
-
-// projectCurrentWorkResultEvents is migration/backfill only. Presentation reads
-// materialized timeline work_card items; it must not reproject the audit log.
-func projectCurrentWorkResultEvents(database orchestrationDatabase, limit int) []WorkResultEvent {
-	if limit <= 0 {
-		return []WorkResultEvent{}
-	}
-	workByID := make(map[string]Work, len(database.BrainWork))
-	for _, item := range database.BrainWork {
-		workByID[item.ID] = item
-	}
-	candidates := make([]WorkResultEvent, 0, min(limit, len(database.BrainWorkEvents)))
-	for _, event := range database.BrainWorkEvents {
-		if !isProjectedWorkResultEvent(event.Kind) {
-			continue
-		}
-		item, ok := workByID[event.WorkID]
-		if !ok {
-			continue
-		}
-		if !workResultEventPresentable(item, event) {
-			continue
-		}
-		sessionID := strings.TrimSpace(item.OwnerSessionID)
-		if payloadSessionID := strings.TrimPrefix(event.PayloadRef, "session:"); payloadSessionID != event.PayloadRef {
-			sessionID = strings.TrimSpace(payloadSessionID)
-		}
-		eventSummary := strings.TrimSpace(event.Summary)
-		summary := eventSummary
-		if summary == "" {
-			summary = strings.TrimSpace(item.Objective)
-			if nextAction := strings.TrimSpace(item.NextAction); nextAction != "" {
-				summary = nextAction
-			}
-		}
-		summary = compactWorkResultText(summary)
-		eventSourceName := strings.TrimSpace(event.SourceName)
-		candidates = append(candidates, WorkResultEvent{
-			EventID:            event.ID,
-			Kind:               event.Kind,
-			WorkID:             item.ID,
-			WorkTitle:          item.Title,
-			Summary:            summary,
-			SessionID:          sessionID,
-			SessionName:        eventSourceName,
-			OccurredAt:         event.CreatedAt,
-			Unread:             event.ReadAt == nil,
-			hasEventSourceName: eventSourceName != "",
-			hasEventSummary:    eventSummary != "",
-		})
-	}
-	sort.Slice(candidates, func(left, right int) bool {
-		if candidates[left].OccurredAt.Equal(candidates[right].OccurredAt) {
-			return candidates[left].EventID < candidates[right].EventID
-		}
-		return candidates[left].OccurredAt.Before(candidates[right].OccurredAt)
-	})
-	latestByWork := make(map[string]WorkResultEvent, len(candidates))
-	order := make([]string, 0, len(candidates))
-	for _, event := range candidates {
-		if _, seen := latestByWork[event.WorkID]; !seen {
-			order = append(order, event.WorkID)
-		}
-		latestByWork[event.WorkID] = event
-	}
-	out := make([]WorkResultEvent, 0, len(order))
-	for _, workID := range order {
-		out = append(out, latestByWork[workID])
-	}
-	sort.Slice(out, func(left, right int) bool {
-		if out[left].OccurredAt.Equal(out[right].OccurredAt) {
-			return out[left].EventID < out[right].EventID
-		}
-		return out[left].OccurredAt.Before(out[right].OccurredAt)
-	})
-	if len(out) > limit {
-		out = append([]WorkResultEvent(nil), out[len(out)-limit:]...)
-	}
-	return out
-}
-
-// workResultEventPresentable keeps current outcomes and drops terminal-Work
-// historical backlog. Equality with TerminalAt stays presentable so serialized
-// terminal update-then-append (Calendar-style) remains a card. Later unrelated
-// UpdateWork field mutations bump UpdatedAt only and cannot hide the latest
-// terminal result.
-func workResultEventPresentable(item Work, event WorkEvent) bool {
-	if !workIsTerminal(item.Status) {
-		return true
-	}
-	boundary, ok := workTerminalBoundary(item)
-	if !ok {
-		return false
-	}
-	return !event.CreatedAt.Before(boundary)
-}
-
-func workTerminalBoundary(item Work) (time.Time, bool) {
-	if item.TerminalAt == nil || item.TerminalAt.IsZero() {
-		return time.Time{}, false
-	}
-	return *item.TerminalAt, true
 }
 
 func compactWorkResultText(value string) string {

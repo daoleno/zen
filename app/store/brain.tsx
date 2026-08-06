@@ -34,24 +34,6 @@ export type BrainActiveWork = {
   unread_result: boolean;
 };
 
-export type BrainWorkEventKind =
-  | "session.done"
-  | "session.failed"
-  | "session.needs_input"
-  | "session.stale";
-
-export type BrainWorkResultEvent = {
-  event_id: string;
-  kind: BrainWorkEventKind;
-  work_id: string;
-  work_title: string;
-  summary: string;
-  session_id?: string;
-  session_name?: string;
-  occurred_at: string;
-  unread: boolean;
-};
-
 export type BrainAgentRef = {
   id: string;
   name: string;
@@ -90,7 +72,6 @@ export type BrainSnapshot = {
   chat_thread_id?: string;
   scheduled_results?: BrainScheduledResult[];
   active_work?: BrainActiveWork[];
-  result_events?: BrainWorkResultEvent[];
   workspace?: string;
   generated_at?: string;
 };
@@ -112,11 +93,10 @@ export const initialBrainState: BrainState = {
 
 type RawBrainSnapshot = Omit<
   Partial<BrainSnapshot>,
-  "scheduled_results" | "active_work" | "result_events"
+  "scheduled_results" | "active_work"
 > & {
   scheduled_results?: unknown[];
   active_work?: unknown[];
-  result_events?: unknown[];
   host_executor?: BrainAdapterRef | null;
   delegated_executor?: BrainAdapterRef | null;
   executors?: BrainAdapterRef[];
@@ -174,82 +154,10 @@ function normalizeSnapshot(
     active_work: Array.isArray(raw?.active_work)
       ? normalizeActiveWork(raw.active_work)
       : [],
-    result_events: Array.isArray(raw?.result_events)
-      ? normalizeWorkResultEvents(raw.result_events)
-      : [],
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
     generated_at:
       typeof raw?.generated_at === "string" ? raw.generated_at : undefined,
   };
-}
-
-function normalizeWorkResultEvents(raw: unknown[]): BrainWorkResultEvent[] {
-  const byId = new Map<string, BrainWorkResultEvent>();
-  raw.forEach((value) => {
-    const item =
-      value && typeof value === "object"
-        ? (value as Record<string, unknown>)
-        : null;
-    if (!item) {
-      return;
-    }
-    const eventId =
-      typeof item.event_id === "string" ? item.event_id.trim() : "";
-    const kind = normalizeWorkEventKind(item.kind);
-    const workId =
-      typeof item.work_id === "string" ? item.work_id.trim() : "";
-    const workTitle =
-      typeof item.work_title === "string" ? item.work_title.trim() : "";
-    const summary =
-      typeof item.summary === "string" ? item.summary.trim() : "";
-    const occurredAt =
-      typeof item.occurred_at === "string" ? item.occurred_at.trim() : "";
-    if (
-      !eventId ||
-      !kind ||
-      !workId ||
-      !workTitle ||
-      !summary ||
-      !occurredAt ||
-      !Number.isFinite(Date.parse(occurredAt))
-    ) {
-      return;
-    }
-    byId.set(eventId, {
-      event_id: eventId,
-      kind,
-      work_id: workId,
-      work_title: workTitle,
-      summary,
-      session_id: optionalTrimmedString(item.session_id),
-      session_name: optionalTrimmedString(item.session_name),
-      occurred_at: occurredAt,
-      unread: item.unread === true,
-    });
-  });
-  return Array.from(byId.values()).sort((left, right) => {
-    const timeDifference =
-      Date.parse(left.occurred_at) - Date.parse(right.occurred_at);
-    return timeDifference || left.event_id.localeCompare(right.event_id);
-  });
-}
-
-function normalizeWorkEventKind(value: unknown): BrainWorkEventKind | null {
-  switch (value) {
-    case "session.done":
-    case "session.failed":
-    case "session.needs_input":
-    case "session.stale":
-      return value;
-    default:
-      return null;
-  }
-}
-
-function optionalTrimmedString(value: unknown) {
-  return typeof value === "string" && value.trim()
-    ? value.trim()
-    : undefined;
 }
 
 function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
@@ -474,23 +382,7 @@ function brainServerStatesEqual(
       left.scheduled_results ?? [],
       right.scheduled_results ?? [],
     ) &&
-    activeWorkArraysEqual(left.active_work ?? [], right.active_work ?? []) &&
-    workResultEventArraysEqual(
-      left.result_events ?? [],
-      right.result_events ?? [],
-    )
-  );
-}
-
-function workResultEventArraysEqual(
-  left: BrainWorkResultEvent[],
-  right: BrainWorkResultEvent[],
-) {
-  return (
-    left.length === right.length &&
-    left.every(
-      (item, index) => JSON.stringify(item) === JSON.stringify(right[index]),
-    )
+    activeWorkArraysEqual(left.active_work ?? [], right.active_work ?? [])
   );
 }
 

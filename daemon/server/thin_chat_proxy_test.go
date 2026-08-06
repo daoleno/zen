@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"github.com/gorilla/websocket"
@@ -180,6 +181,99 @@ func TestInboundSendInputProjectsAmbiguousOutcomeAsPending(t *testing.T) {
 	}
 	if gotReceipt != "request-durable-pending" {
 		t.Fatalf("receipt = %q, want request ID", gotReceipt)
+	}
+}
+
+func TestBrainAdmissionFailureAfterProviderAcceptEmitsPending(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@admit-fail"
+	if err := store.SetChatState(brain.ChatState{ThreadID: "known-thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: brain.NewService(store, nil, nil),
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != hostID || text != "persist me" || receipt != "request-admit-fail" {
+				t.Fatalf("provider call = %q %q %q", agentID, text, receipt)
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type:                 "send_input",
+		RequestID:            "request-admit-fail",
+		AgentID:              hostID,
+		Text:                 "persist me",
+		DisplayBody:          "persist me",
+		ConversationScopeKey: "brain-thread:unknown-thread",
+	})
+	if response.Type == "input_sent" {
+		t.Fatalf("admission failure must not emit input_sent: %#v", response)
+	}
+	if response.Type != "input_pending" ||
+		response.RequestID != "request-admit-fail" ||
+		response.FieldCount != 2 {
+		t.Fatalf("pending response = %#v", response)
+	}
+	if got := providerCalls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want exactly 1", got)
+	}
+	items, err := store.ThreadTimeline("known-thread", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("failed admission must not invent durable rows: %#v", items)
+	}
+}
+
+func TestNonBrainSendInputStillAcknowledgesAfterProviderAccept(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "brain-thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession("brain-host:@1", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: brain.NewService(store, nil, nil),
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != "ordinary-session" || receipt != "request-non-brain" {
+				t.Fatalf("provider call = %q %q", agentID, receipt)
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type:      "send_input",
+		RequestID: "request-non-brain",
+		AgentID:   "ordinary-session",
+		Text:      "hello ordinary",
+	})
+	if response.Type != "input_sent" ||
+		response.RequestID != "request-non-brain" ||
+		response.FieldCount != 2 {
+		t.Fatalf("non-Brain response = %#v", response)
+	}
+	if got := providerCalls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1", got)
 	}
 }
 

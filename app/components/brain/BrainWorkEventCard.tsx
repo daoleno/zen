@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { formatChatBubbleTime } from "../../constants/telegramPresentation";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { TypeScale } from "../../constants/tokens";
-import type { BrainWorkResultEvent } from "../../store/brain";
+import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
   brainWorkEventSourceLabel,

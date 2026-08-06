@@ -1837,6 +1837,10 @@ export class MultiServerWebSocketClient {
     serverId: string,
     agentId: string,
     text: string,
+    options?: {
+      displayBody?: string;
+      conversationScopeKey?: string;
+    },
   ): StructuredCommandReceipt {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
@@ -1859,6 +1863,8 @@ export class MultiServerWebSocketClient {
             requestId,
             agentId,
             text,
+            displayBody: options?.displayBody,
+            conversationScopeKey: options?.conversationScopeKey,
           }),
         );
       },

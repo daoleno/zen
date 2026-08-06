@@ -20,7 +20,6 @@ describe("Brain work cards in canonical conversation timeline", () => {
       work_session_id: "sess-1",
       session_name: "agent",
       unread: true,
-      supersedes: "event-0",
     };
     const items = buildZenTimeline([
       {

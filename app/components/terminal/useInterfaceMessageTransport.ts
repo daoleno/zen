@@ -138,7 +138,11 @@ export function useInterfaceMessageTransport({
       setSending(true);
       setOperationalError(undefined);
       const attempt = beginLiveMessageAttempt({
-        writeNow: () => wsClient.sendInput(serverId, agentId, `${text}\n`),
+        writeNow: () =>
+          wsClient.sendInput(serverId, agentId, `${text}\n`, {
+            displayBody: text,
+            conversationScopeKey,
+          }),
         createOptimisticRow: (receipt) => {
           return addPendingUserMessage({
             body: previousDraft.trim(),
@@ -185,6 +189,7 @@ export function useInterfaceMessageTransport({
       agentId,
       addPendingUserMessage,
       clearComposerNativeText,
+      conversationScopeKey,
       observeInputOutcome,
       restoreDraft,
       requestTurnFocus,
@@ -216,6 +221,10 @@ export function useInterfaceMessageTransport({
           serverId,
           agentId,
           `${message.sentText}\n`,
+          {
+            displayBody: message.sentText,
+            conversationScopeKey,
+          },
         );
       } catch (error: any) {
         setOperationalError(
@@ -233,6 +242,7 @@ export function useInterfaceMessageTransport({
     [
       agentId,
       beginPendingUserMessageAttempt,
+      conversationScopeKey,
       observeInputOutcome,
       pendingUserMessages,
       serverId,
