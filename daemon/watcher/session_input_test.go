@@ -14,27 +14,35 @@ import (
 )
 
 type fakeSessionInputIO struct {
-	mu               sync.Mutex
-	paneValue        sessionInputPane
-	buffers          map[string]string
-	loadedPayloads   []string
-	queues           [][]string
-	submissions      []string
-	ledger           sessionInputReceiptLedger
-	ledgerWrites     []sessionInputReceiptLedger
-	writeErrors      map[int]error
-	ledgerReads      int
-	readErrors       map[int]error
-	operations       []string
-	turn             delegatedTurnRecord
-	hasTurn          bool
-	runStarted       bool
-	runErr           error
-	startedQueues    int
-	afterLoad        func()
-	activeQueues     int
-	maxQueues        int
-	paneContentValue string
+	mu        sync.Mutex
+	paneValue sessionInputPane
+	// paneIDView models App Terminal link-window resolution: when set,
+	// pane("%pane_id") returns this value while pane(sessionID) keeps
+	// paneValue. Both must share pane_id/generation; session fields may differ.
+	paneIDView          *sessionInputPane
+	paneCalls           []string
+	postLedgerPaneCalls []string
+	recordingPostLedger bool
+	buffers             map[string]string
+	loadedPayloads      []string
+	queues              [][]string
+	submissions         []string
+	ledger              sessionInputReceiptLedger
+	ledgerWrites        []sessionInputReceiptLedger
+	writeErrors         map[int]error
+	ledgerReads         int
+	readErrors          map[int]error
+	operations          []string
+	turn                delegatedTurnRecord
+	hasTurn             bool
+	runStarted          bool
+	runErr              error
+	startedQueues       int
+	afterLoad           func()
+	afterLedgerWrite    func()
+	activeQueues        int
+	maxQueues           int
+	paneContentValue    string
 }
 
 type transportAdmissionProbe struct {
@@ -98,9 +106,16 @@ func newFakeSessionInputIO() *fakeSessionInputIO {
 	}
 }
 
-func (io *fakeSessionInputIO) pane(string) sessionInputPane {
+func (io *fakeSessionInputIO) pane(target string) sessionInputPane {
 	io.mu.Lock()
 	defer io.mu.Unlock()
+	io.paneCalls = append(io.paneCalls, target)
+	if io.recordingPostLedger {
+		io.postLedgerPaneCalls = append(io.postLedgerPaneCalls, target)
+	}
+	if strings.HasPrefix(strings.TrimSpace(target), "%") && io.paneIDView != nil {
+		return *io.paneIDView
+	}
 	return io.paneValue
 }
 
@@ -160,14 +175,20 @@ func (io *fakeSessionInputIO) receiptLedger(string) (sessionInputReceiptLedger, 
 
 func (io *fakeSessionInputIO) writeReceiptLedger(_ string, ledger sessionInputReceiptLedger) error {
 	io.mu.Lock()
-	defer io.mu.Unlock()
 	call := len(io.ledgerWrites) + 1
 	io.ledgerWrites = append(io.ledgerWrites, cloneSessionInputReceiptLedger(ledger))
 	io.operations = append(io.operations, "ledger_write")
 	if err := io.writeErrors[call]; err != nil {
+		io.mu.Unlock()
 		return err
 	}
 	io.ledger = cloneSessionInputReceiptLedger(ledger)
+	io.recordingPostLedger = true
+	afterLedgerWrite := io.afterLedgerWrite
+	io.mu.Unlock()
+	if afterLedgerWrite != nil {
+		afterLedgerWrite()
+	}
 	return nil
 }
 
@@ -396,6 +417,145 @@ func TestSessionInputTargetGenerationChangeIsDefinitelyNotSubmitted(t *testing.T
 	}
 	if len(io.queues) != 0 || len(io.submissions) != 0 {
 		t.Fatalf("provider mutated after generation change: queues=%d submissions=%d", len(io.queues), len(io.submissions))
+	}
+}
+
+func TestSessionInputPaneGenerationIsPaneLifetimeOnly(t *testing.T) {
+	stable := sessionInputPaneGeneration("%1")
+	if stable == "" {
+		t.Fatal("pane generation must be non-empty for a live pane id")
+	}
+	if got := sessionInputPaneGeneration("%1"); got != stable {
+		t.Fatalf("pane generation must be deterministic: %s vs %s", stable, got)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte("%1")))
+	if stable != want {
+		t.Fatalf("pane generation must be sha256(pane_id) only: got %s want %s", stable, want)
+	}
+	if sessionInputPaneGeneration("%2") == stable {
+		t.Fatal("pane_id replacement must change generation")
+	}
+	if sessionInputPaneGeneration("") != "" {
+		t.Fatal("empty pane id must not invent a generation")
+	}
+
+	// Direct invariant: launch metadata (pane_pid / pane_start_command) cannot
+	// enter the digest because the generation owner accepts only pane_id.
+	// A pid/start_command-inclusive legacy digest must therefore differ.
+	legacyLaunch := sha256.Sum256([]byte(strings.Join([]string{
+		"%1", "12345", "cursor-agent --force",
+	}, "\x00")))
+	if stable == fmt.Sprintf("%x", legacyLaunch[:]) {
+		t.Fatal("pane-lifetime generation must ignore pane_pid and pane_start_command")
+	}
+
+	// Historical App false positive: session_id / session_created differ across
+	// link-window views for the same pane_id.
+	legacySessionA := sha256.Sum256([]byte(strings.Join([]string{
+		"$1", "100", "@1", "%1",
+	}, "\x00")))
+	legacySessionB := sha256.Sum256([]byte(strings.Join([]string{
+		"$2", "200", "@1", "%1",
+	}, "\x00")))
+	if fmt.Sprintf("%x", legacySessionA[:]) == fmt.Sprintf("%x", legacySessionB[:]) {
+		t.Fatal("precondition: session-inclusive digests must differ across linked views")
+	}
+	if stable == fmt.Sprintf("%x", legacySessionA[:]) {
+		t.Fatal("pane-lifetime generation must not equal session-inclusive digest")
+	}
+}
+
+func TestSessionInputLinkedViewPostMarkerPaneIDRereadAllowsExactOnceSubmit(t *testing.T) {
+	const (
+		sessionTarget = "agent:@1"
+		paneID        = "%42"
+		receipt       = "receipt-linked-post-marker"
+		payload       = "hi from linked view"
+	)
+	generation := sessionInputPaneGeneration(paneID)
+
+	// Baseline session target vs post-marker %pane_id diverge on session fields
+	// that a session-inclusive digest would hash, while sharing pane_id/generation.
+	legacySessionView := sha256.Sum256([]byte(strings.Join([]string{
+		"$1", "100", "@1", paneID,
+	}, "\x00")))
+	legacyLinkedView := sha256.Sum256([]byte(strings.Join([]string{
+		"$2", "200", "@1", paneID,
+	}, "\x00")))
+	if fmt.Sprintf("%x", legacySessionView[:]) == fmt.Sprintf("%x", legacyLinkedView[:]) {
+		t.Fatal("precondition: linked-view session fields must change session-inclusive digest")
+	}
+	if generation == fmt.Sprintf("%x", legacySessionView[:]) ||
+		generation == fmt.Sprintf("%x", legacyLinkedView[:]) {
+		t.Fatal("pane_id-only generation must diverge from session-inclusive digests")
+	}
+
+	io := newFakeSessionInputIO()
+	io.paneValue = sessionInputPane{
+		alive:      true,
+		paneID:     paneID,
+		generation: generation,
+	}
+	linked := sessionInputPane{
+		alive:      true,
+		paneID:     paneID,
+		generation: generation,
+	}
+	io.paneIDView = &linked
+	var afterLedgerHookRan bool
+	io.afterLedgerWrite = func() {
+		afterLedgerHookRan = true
+	}
+
+	owner := newSessionInputOwner(io)
+	identity := testSessionInputIdentity("cursor-agent")
+	result, err := owner.submit(
+		sessionTarget, identity, fixedSessionInputResolver(identity),
+		identity.Command, payload, receipt,
+	)
+	if err != nil || result.Outcome != InputAccepted {
+		t.Fatalf("post-marker linked-view submit = (%+v, %v)", result, err)
+	}
+	if !afterLedgerHookRan {
+		t.Fatal("after-ledger hook never ran; persistReceiptLedger was not exercised")
+	}
+	if len(io.postLedgerPaneCalls) == 0 {
+		t.Fatal("no pane() calls after persistReceiptLedger")
+	}
+	foundPostMarker := false
+	for _, target := range io.postLedgerPaneCalls {
+		if target == paneID {
+			foundPostMarker = true
+			break
+		}
+	}
+	if !foundPostMarker {
+		t.Fatalf("post-ledger pane calls=%v, want pane(%s) after persistReceiptLedger",
+			io.postLedgerPaneCalls, paneID)
+	}
+	foundSessionBaseline := false
+	for _, target := range io.paneCalls {
+		if target == sessionTarget {
+			foundSessionBaseline = true
+			break
+		}
+	}
+	if !foundSessionBaseline {
+		t.Fatalf("pane calls=%v, want baseline pane(%s)", io.paneCalls, sessionTarget)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("queues=%d, want exact-once submit", len(io.queues))
+	}
+
+	dup, err := owner.submit(
+		sessionTarget, identity, fixedSessionInputResolver(identity),
+		identity.Command, payload, receipt,
+	)
+	if err != nil || dup.Outcome != InputAccepted || !dup.Duplicate {
+		t.Fatalf("same-receipt duplicate = (%+v, %v), want accepted duplicate", dup, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("duplicate same receipt replayed provider queue: queues=%d", len(io.queues))
 	}
 }
 

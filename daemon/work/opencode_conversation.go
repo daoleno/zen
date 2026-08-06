@@ -654,8 +654,8 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 				Partial:   status == "running" || status == "pending",
 			}
 			if index, ok := b.eventByCall[callID]; ok && index >= 0 && index < len(b.events) {
+				event.Seq = b.events[index].Seq
 				b.events[index] = event
-				b.events[index].Seq = b.events[index].Seq
 			} else {
 				b.events = append(b.events, event)
 				b.eventByCall[callID] = len(b.events) - 1

@@ -137,21 +137,42 @@ func (realSessionInputIO) pane(sessionID string) sessionInputPane {
 		"-p",
 		"-t",
 		sessionID,
-		"#{pane_dead}\t#{session_id}\t#{session_created}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_start_command}",
+		// Immutable pane lifetime only. App Terminal opens a disposable
+		// link-window view session; display-message -t %pane_id can therefore
+		// report a different session_id/session_created than
+		// display-message -t session:window for the same pane. pane_pid and
+		// pane_start_command are launch/process metadata, not pane identity.
+		// Live provider process identity (PID + start times) remains
+		// fail-closed at every mutation boundary via guardTargetIdentity.
+		"#{pane_dead}\t#{pane_id}",
 	).Output()
 	if err != nil {
 		return sessionInputPane{}
 	}
 	fields := strings.Split(strings.TrimSuffix(string(out), "\n"), "\t")
-	if len(fields) != 7 || fields[0] == "1" || strings.TrimSpace(fields[4]) == "" {
+	if len(fields) != 2 || fields[0] == "1" || strings.TrimSpace(fields[1]) == "" {
 		return sessionInputPane{}
 	}
-	digest := sha256.Sum256([]byte(strings.Join(fields[1:7], "\x00")))
+	paneID := strings.TrimSpace(fields[1])
 	return sessionInputPane{
 		alive:      true,
-		paneID:     fields[4],
-		generation: fmt.Sprintf("%x", digest[:]),
+		paneID:     paneID,
+		generation: sessionInputPaneGeneration(paneID),
 	}
+}
+
+// sessionInputPaneGeneration is the opaque digest of an immutable tmux pane
+// lifetime id. It must not include session_id/session_created (linked App view
+// sessions), window linkage metadata that is not pane-exclusive, pane_pid, or
+// pane_start_command. Replaced panes get a new pane_id; respawned processes in
+// the same pane are rejected by targetProcessIdentity instead.
+func sessionInputPaneGeneration(paneID string) string {
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(paneID))
+	return fmt.Sprintf("%x", digest[:])
 }
 
 func (realSessionInputIO) loadBuffer(buffer, payload string) error {

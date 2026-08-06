@@ -4,7 +4,7 @@ import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
 import type { ComponentProps } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Claude, Codex, Grok } from '@lobehub/icons-rn';
+import { Claude, Codex, Grok, OpenCode } from '@lobehub/icons-rn';
 import { useAppTheme } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
 import { surfacesFromTheme } from '../../constants/themedSurfaces';
@@ -12,6 +12,7 @@ import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { FlavorLetterBadge } from './FlavorLetterBadge';
 import { CursorMark } from '../icons/CursorMark';
+import { PiMark } from '../icons/PiMark';
 
 type MaterialIconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 type FontAwesome5Name = ComponentProps<typeof FontAwesome5>['name'];
@@ -168,25 +169,11 @@ function renderContent({
   }
 
   if (kind === 'pi') {
-    return (
-      <FlavorLetterBadge
-        letter="π"
-        backgroundColor="#1F6F5F"
-        textColor="#F4FFFB"
-        size={iconSize}
-      />
-    );
+    return <PiMark size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;
   }
 
   if (kind === 'opencode') {
-    return (
-      <FlavorLetterBadge
-        letter="O"
-        backgroundColor="#F5A524"
-        textColor="#1A1205"
-        size={iconSize}
-      />
-    );
+    return <OpenCode size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;
   }
 
   if (flavor !== 'shell') {

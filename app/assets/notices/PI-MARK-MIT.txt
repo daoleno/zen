@@ -1,0 +1,36 @@
+Pi Coding Agent brand mark
+==========================
+
+Zen ships a compact React Native SVG of the Pi Coding Agent mark used by the
+shared AgentKindIcon component.
+
+Provenance:
+- Official geometry: https://pi.dev/logo.svg and https://pi.dev/logo-auto.svg
+  for the badlogic/pi-mono / Pi Coding Agent project (MIT).
+- Matching 24x24 Mono paths: LobeHub lobe-icons src/Pi/components/Mono.tsx
+  (MIT). @lobehub/icons-rn@2.7.1 does not export a Pi component, so Zen mirrors
+  those open-source paths locally as app/components/icons/PiMark.tsx.
+
+The upstream Pi project license (MIT) applies to that mark geometry:
+
+MIT License
+
+Copyright (c) the Pi Coding Agent / badlogic/pi-mono authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
