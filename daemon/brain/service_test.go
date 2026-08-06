@@ -22,6 +22,7 @@ type fakeWatcher struct {
 	sentCalls []sentCall
 	killed    []string
 	sendErr   error
+	createErr error
 	captures  map[string]string
 	receipts  map[string]string
 	outcomes  map[string]watcher.InputOutcome
@@ -820,6 +821,9 @@ func (w *fakeWatcher) HasSession(target string) bool {
 }
 
 func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
+	if w.createErr != nil {
+		return "", w.createErr
+	}
 	if w.sessions == nil {
 		w.sessions = map[string]*classifier.Agent{}
 	}
@@ -1173,6 +1177,506 @@ func TestServiceSnapshotReplacesHostWhenTmuxSessionMissing(t *testing.T) {
 	}
 	if !strings.Contains(string(audit), oldID) {
 		t.Fatalf("audit should name previous host, got %s", audit)
+	}
+}
+
+// missing_tmux with a bound provider session must native-resume (not blank),
+// atomically persist the resume token, and audit resume_launched (tmux launch
+// only — not provider acceptance).
+func TestServiceSnapshotResumesProviderSessionWhenTmuxMissing(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-missing-bound:@9"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, transcriptPath, "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("expected one resume launch, got %#v", fw.created)
+	}
+	command := fw.created[0].opts.Command
+	token, present, err := work.ProviderResumeToken(work.AgentProviderCodex, command)
+	if err != nil || !present || token != providerSessionID {
+		t.Fatalf("resume command = %q token=(%q,%v,%v)", command, token, present, err)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID == oldID || hostSession.ProviderSessionID != providerSessionID || hostSession.TranscriptPath != transcriptPath {
+		t.Fatalf("atomic binding = %+v", hostSession)
+	}
+	audit, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), hostReplaceReasonMissingTmuxResumeLaunched) {
+		t.Fatalf("expected resume_launched audit, got %s", audit)
+	}
+}
+
+func TestServiceSnapshotResumesCodexFromTranscriptPathOnly(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := "019fd717-589c-7a11-9966-917f43dc336a"
+	path := "/tmp/rollout-2026-08-06T20-40-59-" + derived + ".jsonl"
+	if err := store.SetHostSession("dead:@1", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript("", path, "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	if _, err := service.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	host, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.ProviderSessionID != derived || host.TranscriptPath != path {
+		t.Fatalf("path-derived binding = %+v", host)
+	}
+	token, present, err := work.ProviderResumeToken(work.AgentProviderCodex, fw.created[0].opts.Command)
+	if err != nil || !present || token != derived {
+		t.Fatalf("command=%q token=%q err=%v", fw.created[0].opts.Command, token, err)
+	}
+}
+
+// Snapshot → ensureHostAgent never calls NewChat/SetChatState; chat_state bytes
+// stay identical. thread_ids is cumulative NewChat history only.
+func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := "brain_1786013210655596422"
+	historical := []string{"brain_1783911734080561361", "brain_1784200700958214019", current}
+	if err := store.SetChatState(ChatState{ThreadID: current, ThreadIDs: historical}); err != nil {
+		t.Fatal(err)
+	}
+	beforeRaw, err := os.ReadFile(store.ChatStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-1786013209881380707:@7750"
+	providerSessionID := "019fd6ae-d6df-7341-bedc-706f7c4977bf"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/rollout-"+providerSessionID+".jsonl", "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ChatThreadID != current {
+		t.Fatalf("thread rotated: %q", snapshot.ChatThreadID)
+	}
+	afterRaw, err := os.ReadFile(store.ChatStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeRaw, afterRaw) {
+		t.Fatalf("chat_state mutated:\nbefore=%s\nafter=%s", beforeRaw, afterRaw)
+	}
+	if len(fw.killed) != 0 || len(fw.sentCalls) != 0 {
+		t.Fatalf("resume must not NewChat-kill or bootstrap: killed=%#v sent=%#v", fw.killed, fw.sentCalls)
+	}
+}
+
+func TestServiceMissingTmuxFailClosedTable(t *testing.T) {
+	tests := []struct {
+		name       string
+		executorID string
+		command    string
+		kind       string
+		providerID string
+		path       string
+		createErr  error
+		wantCreate bool
+	}{
+		{name: "unsupported", executorID: "custom", command: "my-custom-agent", kind: "custom", providerID: "custom-1"},
+		{name: "opencode non-ses", executorID: "opencode", command: "opencode", kind: "opencode", providerID: "not-a-ses"},
+		{name: "claude path-only", executorID: "claude", command: "claude", kind: "claude", path: "/tmp/claude.jsonl"},
+		{name: "create fails", executorID: "codex", command: "codex", kind: "codex", providerID: "019fd717-589c-7a11-9966-917f43dc336a", createErr: fmt.Errorf("tmux unavailable")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldID := "brain-agent-brain-old:@1"
+			if err := store.SetHostSession(oldID, tc.executorID); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetHostProviderTranscript(tc.providerID, tc.path, ""); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.HostSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fw := &fakeWatcher{createErr: tc.createErr}
+			service := NewService(store, fw, &work.ExecutorConfig{
+				ByName: map[string]work.Executor{
+					tc.executorID: {Name: tc.executorID, Command: tc.command, Kind: tc.kind},
+					"codex":       {Name: "codex", Command: "codex", Kind: "codex"},
+				},
+			})
+			t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", tc.executorID)
+
+			_, err = service.Snapshot()
+			if err == nil {
+				t.Fatal("expected fail-closed error")
+			}
+			if tc.wantCreate != (len(fw.created) > 0) {
+				t.Fatalf("created %#v", fw.created)
+			}
+			after, err := store.HostSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.ID != before.ID || after.ProviderSessionID != before.ProviderSessionID || after.TranscriptPath != before.TranscriptPath {
+				t.Fatalf("binding mutated: before=%+v after=%+v", before, after)
+			}
+			audit, _ := os.ReadFile(store.HostReplacementsPath())
+			if !strings.Contains(string(audit), hostReplaceReasonMissingTmuxUnrecoverable) {
+				t.Fatalf("audit=%s", audit)
+			}
+		})
+	}
+}
+
+func TestServiceSnapshotDoesNotRebindUnrelatedHostAsContinuity(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadID := "brain-agent-brain-dead:@292"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	if err := store.SetHostSession(deadID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/"+providerSessionID+".jsonl", "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			"main:@0": {
+				ID: "main:@0", Name: "Codex", Cwd: "/other",
+				Command: "codex resume", State: classifier.StateRunning, Hidden: true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions["main:@0"])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.created) != 1 || snapshot.HostAgent == nil || snapshot.HostAgent.ID == "main:@0" {
+		t.Fatalf("created=%#v host=%#v", fw.created, snapshot.HostAgent)
+	}
+	audit, _ := os.ReadFile(store.HostReplacementsPath())
+	if strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) ||
+		!strings.Contains(string(audit), hostReplaceReasonMissingTmuxResumeLaunched) {
+		t.Fatalf("audit=%s", audit)
+	}
+}
+
+func TestStoreReplaceHostSessionBindingAtomic(t *testing.T) {
+	storeA, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.SetHostSession("old:@1", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.SetHostProviderTranscript("old-token", "/tmp/old.jsonl", "/home"); err != nil {
+		t.Fatal(err)
+	}
+	derived := "019fd717-589c-7a11-9966-917f43dc336a"
+	path := "/tmp/rollout-2026-08-06T20-40-59-" + derived + ".jsonl"
+	if err := storeA.ReplaceHostSessionBinding("new:@2", "codex", derived, path, "/home"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := storeA.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "new:@2" || got.ProviderSessionID != derived || got.TranscriptPath != path || got.ProviderDataRoot != "/home" {
+		t.Fatalf("got %+v", got)
+	}
+
+	before, err := os.ReadFile(storeA.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeA.replaceHostBindingWrite = func(string, any) error {
+		return fmt.Errorf("injected atomic rename failure")
+	}
+	if err := storeA.ReplaceHostSessionBinding("newer:@3", "codex", "other", path, "/home"); err == nil {
+		t.Fatal("expected injected write failure")
+	}
+	afterBytes, err := os.ReadFile(storeA.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterBytes) {
+		t.Fatalf("host file mutated on failed write:\nbefore=%s\nafter=%s", before, afterBytes)
+	}
+	after, err := storeA.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ID != "new:@2" || after.ProviderSessionID != derived {
+		t.Fatalf("old binding lost after failed write: %+v", after)
+	}
+
+	// Concurrent sibling Store must not observe A's seam.
+	storeB, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeB.ReplaceHostSessionBinding("b:@1", "codex", "b-token", "/tmp/b.jsonl", "/b"); err != nil {
+		t.Fatal(err)
+	}
+	hostB, err := storeB.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostB.ID != "b:@1" || hostB.ProviderSessionID != "b-token" {
+		t.Fatalf("store B should write normally: %+v", hostB)
+	}
+	stillA, err := os.ReadFile(storeA.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, stillA) {
+		t.Fatalf("store A host file changed while B wrote")
+	}
+}
+
+func TestServiceSnapshotResumeBindFailureKillsNewHostKeepsOld(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-old:@1"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/"+providerSessionID+".jsonl", "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	store.replaceHostBindingWrite = func(string, any) error {
+		return fmt.Errorf("injected binding write failure")
+	}
+
+	_, err = service.Snapshot()
+	if err == nil {
+		t.Fatal("expected binding failure")
+	}
+	if !strings.Contains(err.Error(), "injected binding write failure") {
+		t.Fatalf("store error must remain primary: %v", err)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("expected one CreateSession before bind fail, got %#v", fw.created)
+	}
+	newID := fw.created[0].id
+	if len(fw.killed) != 1 || fw.killed[0] != newID {
+		t.Fatalf("must kill exactly the new agentID %q, killed %#v", newID, fw.killed)
+	}
+	afterBytes, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterBytes) {
+		t.Fatalf("old binding mutated:\nbefore=%s\nafter=%s", before, afterBytes)
+	}
+	audit, _ := os.ReadFile(store.HostReplacementsPath())
+	if strings.Contains(string(audit), hostReplaceReasonMissingTmuxResumeLaunched) {
+		t.Fatalf("must not audit resume_launched after bind failure: %s", audit)
+	}
+}
+
+func TestServiceSnapshotRecoverLiveMigratesProviderBindingAtomically(t *testing.T) {
+	tests := []struct {
+		name      string
+		token     string
+		path      string
+		root      string
+		wantToken string
+		aliveCmd  string
+	}{
+		{
+			name:      "token+path+root",
+			token:     "019fd717-589c-7a11-9966-917f43dc336a",
+			path:      "/home/daoleno/.codex/sessions/2026/08/06/rollout-019fd717-589c-7a11-9966-917f43dc336a.jsonl",
+			root:      "/home/daoleno",
+			wantToken: "019fd717-589c-7a11-9966-917f43dc336a",
+			aliveCmd:  "codex resume 019fd717-589c-7a11-9966-917f43dc336a",
+		},
+		{
+			name:      "codex path-only derives uuid",
+			path:      "/tmp/rollout-2026-08-06T20-40-59-019fd717-589c-7a11-9966-917f43dc336a.jsonl",
+			root:      "/home",
+			wantToken: "019fd717-589c-7a11-9966-917f43dc336a",
+			aliveCmd:  "codex resume 019fd717-589c-7a11-9966-917f43dc336a",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadID := "brain-agent-brain-dead:@1"
+			aliveID := "brain-agent-brain-alive:@2"
+			if err := store.SetHostSession(deadID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetHostProviderTranscript(tc.token, tc.path, tc.root); err != nil {
+				t.Fatal(err)
+			}
+			fw := &fakeWatcher{
+				sessions: map[string]*classifier.Agent{
+					aliveID: {
+						ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
+						Command: tc.aliveCmd, State: classifier.StateRunning, Hidden: true,
+					},
+				},
+			}
+			fw.agents = append(fw.agents, fw.sessions[aliveID])
+			service := NewService(store, fw, &work.ExecutorConfig{
+				ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+			})
+
+			snapshot, err := service.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(fw.created) != 0 || len(fw.killed) != 0 {
+				t.Fatalf("created=%#v killed=%#v", fw.created, fw.killed)
+			}
+			if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
+				t.Fatalf("host=%#v", snapshot.HostAgent)
+			}
+			host, err := store.HostSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if host.ID != aliveID || host.ProviderSessionID != tc.wantToken ||
+				host.TranscriptPath != tc.path || host.ProviderDataRoot != tc.root {
+				t.Fatalf("binding=%+v want id=%s token=%s path=%s root=%s",
+					host, aliveID, tc.wantToken, tc.path, tc.root)
+			}
+			audit, _ := os.ReadFile(store.HostReplacementsPath())
+			if !strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) {
+				t.Fatalf("audit=%s", audit)
+			}
+		})
+	}
+}
+
+func TestServiceSnapshotRecoverLiveBindFailureKeepsOldDoesNotKill(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadID := "brain-agent-brain-dead:@1"
+	aliveID := "brain-agent-brain-alive:@2"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	if err := store.SetHostSession(deadID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/"+providerSessionID+".jsonl", "/home"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			aliveID: {
+				ID:      aliveID,
+				Name:    "Brain (" + aliveID + ")",
+				Cwd:     store.WorkspacePath(),
+				Command: "codex resume " + providerSessionID,
+				State:   classifier.StateRunning,
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	store.replaceHostBindingWrite = func(string, any) error {
+		return fmt.Errorf("injected recover bind failure")
+	}
+
+	_, err = service.Snapshot()
+	if err == nil {
+		t.Fatal("expected recover bind failure")
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("recover-live bind failure must not kill recovered host: %#v", fw.killed)
+	}
+	afterBytes, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterBytes) {
+		t.Fatalf("old binding mutated:\nbefore=%s\nafter=%s", before, afterBytes)
+	}
+	audit, _ := os.ReadFile(store.HostReplacementsPath())
+	if strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) {
+		t.Fatalf("must not audit recovered_alive on bind failure: %s", audit)
 	}
 }
 

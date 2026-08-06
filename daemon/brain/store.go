@@ -28,6 +28,9 @@ type Store struct {
 	now     func() time.Time
 
 	writeOrchestration func(string, any) error
+	// replaceHostBindingWrite is an optional Store-scoped seam used only by
+	// ReplaceHostSessionBinding. Nil means writeJSONFile (production default).
+	replaceHostBindingWrite func(path string, value any) error
 }
 
 func DefaultRoot() (string, error) {
@@ -172,6 +175,33 @@ func (s *Store) SetHostSession(id, executorID string) error {
 		host.ProviderDataRoot = previous.ProviderDataRoot
 	}
 	return writeJSONFile(s.HostSessionPath(), host)
+}
+
+// ReplaceHostSessionBinding atomically writes a new host tmux target together
+// with its provider binding in one JSON write. On failure the previous file is
+// unchanged (writeAtomic rename).
+func (s *Store) ReplaceHostSessionBinding(id, executorID, providerSessionID, transcriptPath, providerDataRoot string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("host session id required")
+	}
+	return s.writeReplaceHostSessionBinding(s.HostSessionPath(), hostSessionFile{
+		ID:                id,
+		ExecutorID:        strings.TrimSpace(executorID),
+		UpdatedAt:         time.Now().UTC(),
+		ProviderSessionID: strings.TrimSpace(providerSessionID),
+		TranscriptPath:    strings.TrimSpace(transcriptPath),
+		ProviderDataRoot:  strings.TrimSpace(providerDataRoot),
+	})
+}
+
+func (s *Store) writeReplaceHostSessionBinding(path string, value any) error {
+	if s != nil && s.replaceHostBindingWrite != nil {
+		return s.replaceHostBindingWrite(path, value)
+	}
+	return writeJSONFile(path, value)
 }
 
 func (s *Store) SetHostExecutorID(executorID string) error {

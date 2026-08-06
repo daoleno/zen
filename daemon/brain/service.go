@@ -1208,10 +1208,12 @@ func calendarWorkID(itemID, runID string) string {
 // Host replacement reasons are durable audit tags written to host_replacements.jsonl.
 // They answer: why did ensureHostAgent create a new Brain host instead of reusing one?
 const (
-	hostReplaceReasonMissingTmux      = "missing_tmux"
-	hostReplaceReasonProviderMismatch = "provider_mismatch"
-	hostReplaceReasonNoRecordedHost   = "no_recorded_host"
-	hostReplaceReasonRecoveredAlive   = "recovered_alive_host"
+	hostReplaceReasonMissingTmux               = "missing_tmux"
+	hostReplaceReasonMissingTmuxResumeLaunched = "missing_tmux_resume_launched"
+	hostReplaceReasonMissingTmuxUnrecoverable  = "missing_tmux_unrecoverable"
+	hostReplaceReasonProviderMismatch          = "provider_mismatch"
+	hostReplaceReasonNoRecordedHost            = "no_recorded_host"
+	hostReplaceReasonRecoveredAlive            = "recovered_alive_host"
 )
 
 func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error) {
@@ -1280,9 +1282,32 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		}
 	} else if id != "" {
 		// Recorded host id is gone from tmux. Prefer re-binding an already-running
-		// hidden Brain host for this executor over spawning a blank session.
-		if recovered := s.recoverMatchingHost(executor); recovered != nil {
-			if err := s.store.SetHostSession(recovered.ID, executor.ID); err != nil {
+		// Brain host that still owns the recorded provider session over spawning.
+		if recovered := s.recoverMatchingHost(executor, hostSession); recovered != nil {
+			// ID will change; SetHostSession would clear provider token/path/root.
+			// Migrate the recorded binding onto recovered.ID in one atomic write.
+			providerToken := strings.TrimSpace(hostSession.ProviderSessionID)
+			transcriptPath := strings.TrimSpace(hostSession.TranscriptPath)
+			providerRoot := strings.TrimSpace(hostSession.ProviderDataRoot)
+			if providerToken == "" && transcriptPath != "" {
+				provider := strings.TrimSpace(executor.Provider)
+				if provider == "" || provider == work.AgentProviderCustom {
+					provider = work.InferAgentProvider(executor.Command, executor.ID)
+				}
+				if provider == work.AgentProviderCodex {
+					if derived := work.CodexSessionIDFromRolloutPath(transcriptPath); derived != "" {
+						providerToken = derived
+					}
+				}
+			}
+			if err := s.store.ReplaceHostSessionBinding(
+				recovered.ID,
+				executor.ID,
+				providerToken,
+				transcriptPath,
+				providerRoot,
+			); err != nil {
+				// Keep old binding; do not audit recovered_alive; do not kill live host.
 				return AgentRef{}, err
 			}
 			s.recordHostReplacement(HostReplacementEvent{
@@ -1294,7 +1319,6 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 				ResolvedExecutor: executor.ID,
 				Detail:           "recorded host missing; rebound matching live Brain host",
 			})
-			_, _ = s.BindHostProviderTranscript()
 			return agentRefFromClassifier(recovered), nil
 		}
 		replaceReason = hostReplaceReasonMissingTmux
@@ -1310,6 +1334,49 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		replaceReason = hostReplaceReasonNoRecordedHost
 	}
 
+	resumeToken := ""
+	if replaceReason == hostReplaceReasonMissingTmux {
+		token, known, resumable := s.hostProviderResumeToken(hostSession, executor)
+		if known {
+			if !resumable {
+				s.recordHostReplacement(HostReplacementEvent{
+					Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+					FromID:           id,
+					FromExecutorID:   hostSession.ExecutorID,
+					ResolvedExecutor: executor.ID,
+					Detail: fmt.Sprintf(
+						"has_session=false id=%q provider_session=%q executor=%q: no native resume shape",
+						id, token, executor.ID,
+					),
+				})
+				return AgentRef{}, fmt.Errorf(
+					"brain host refusing blank replacement: recorded provider session %q cannot be natively resumed for executor %q",
+					token, executor.ID,
+				)
+			}
+			resumeCommand, err := s.hostLaunchCommand(executor, token)
+			if err != nil {
+				s.recordHostReplacement(HostReplacementEvent{
+					Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+					FromID:           id,
+					FromExecutorID:   hostSession.ExecutorID,
+					ResolvedExecutor: executor.ID,
+					Detail: fmt.Sprintf(
+						"has_session=false id=%q provider_session=%q: %v",
+						id, token, err,
+					),
+				})
+				return AgentRef{}, fmt.Errorf(
+					"brain host refusing blank replacement: recorded provider session %q cannot be natively resumed for executor %q: %w",
+					token, executor.ID, err,
+				)
+			}
+			command = resumeCommand
+			resumeToken = token
+			replaceDetail = fmt.Sprintf("has_session=false id=%q provider_session_id=%q", id, token)
+		}
+	}
+
 	agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
 		Cwd:         s.brainWorkspace(),
 		Command:     command,
@@ -1320,15 +1387,46 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		Env:         brainSessionEnvironment(),
 	})
 	if err != nil {
+		if resumeToken != "" {
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+				FromID:           id,
+				FromExecutorID:   hostSession.ExecutorID,
+				ResolvedExecutor: executor.ID,
+				Detail: fmt.Sprintf(
+					"has_session=false id=%q provider_session=%q create_failed=%v",
+					id, resumeToken, err,
+				),
+			})
+		}
 		return AgentRef{}, err
 	}
-	if err := s.store.SetHostSession(agentID, executor.ID); err != nil {
+	if resumeToken != "" {
+		// CreateSession only proves tmux launch. Persist binding atomically with the
+		// true resume token; do not clear-then-reseal.
+		if err := s.store.ReplaceHostSessionBinding(
+			agentID,
+			executor.ID,
+			resumeToken,
+			hostSession.TranscriptPath,
+			hostSession.ProviderDataRoot,
+		); err != nil {
+			// Best-effort kill the new hidden tmux; keep old binding; do not audit
+			// missing_tmux_resume_launched. Store error remains primary.
+			_ = s.watcher.KillSession(agentID)
+			return AgentRef{}, err
+		}
+	} else if err := s.store.SetHostSession(agentID, executor.ID); err != nil {
 		return AgentRef{}, err
 	}
 	if replaceReason == hostReplaceReasonMissingTmux || replaceReason == hostReplaceReasonProviderMismatch {
-		// Record the newly created target as the replacement destination.
+		createdReason := replaceReason + "_created"
+		if resumeToken != "" {
+			// Honest: tmux launched a resume command; provider acceptance is later.
+			createdReason = hostReplaceReasonMissingTmuxResumeLaunched
+		}
 		s.recordHostReplacement(HostReplacementEvent{
-			Reason:           replaceReason + "_created",
+			Reason:           createdReason,
 			FromID:           id,
 			ToID:             agentID,
 			FromExecutorID:   hostSession.ExecutorID,
@@ -1336,8 +1434,10 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 			Detail:           replaceDetail,
 		})
 	}
-	if prompt := s.hostBootstrapPrompt(executor); prompt != "" {
-		_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
+	if resumeToken == "" {
+		if prompt := s.hostBootstrapPrompt(executor); prompt != "" {
+			_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
+		}
 	}
 	if agent := s.watcher.GetAgent(agentID); agent != nil {
 		return agentRefFromClassifier(agent), nil
@@ -1362,13 +1462,26 @@ func brainSessionEnvironment() map[string]string {
 	return env
 }
 
-// recoverMatchingHost finds a live hidden Brain host that matches the resolved
-// executor. Used when host_session.json points at a dead tmux target so Snapshot
-// can rebind instead of always spawning a fresh host.
-func (s *Service) recoverMatchingHost(executor work.AgentExecutor) *classifier.Agent {
+// recoverMatchingHost finds a live Brain-owned host that still represents the
+// recorded provider session. It must not rebind an unrelated hidden session
+// (for example main:@0 "codex resume") and pretend that is continuity.
+func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession HostSession) *classifier.Agent {
 	if s == nil || s.watcher == nil {
 		return nil
 	}
+	workspace := s.brainWorkspace()
+	wantSession := strings.TrimSpace(hostSession.ProviderSessionID)
+	wantPath := strings.TrimSpace(hostSession.TranscriptPath)
+	provider := strings.TrimSpace(executor.Provider)
+	if provider == "" || provider == work.AgentProviderCustom {
+		provider = work.InferAgentProvider(executor.Command, executor.ID)
+	}
+	wantDerived := ""
+	if provider == work.AgentProviderCodex && wantPath != "" {
+		wantDerived = work.CodexSessionIDFromRolloutPath(wantPath)
+	}
+	hasWant := wantSession != "" || wantPath != "" || wantDerived != ""
+	var fallback *classifier.Agent
 	for _, agent := range s.watcher.Agents() {
 		if agent == nil || !agent.Hidden {
 			continue
@@ -1379,10 +1492,109 @@ func (s *Service) recoverMatchingHost(executor work.AgentExecutor) *classifier.A
 		if !s.watcher.HasSession(agent.ID) {
 			continue
 		}
+		if !isBrainOwnedHostAgent(agent, workspace) {
+			continue
+		}
 		cp := *agent
-		return &cp
+		if hasWant {
+			token, present, err := work.ProviderResumeToken(provider, agent.Command)
+			if err != nil || !present {
+				continue
+			}
+			if (wantSession != "" && token == wantSession) ||
+				(wantPath != "" && token == wantPath) ||
+				(wantDerived != "" && token == wantDerived) {
+				return &cp
+			}
+			continue
+		}
+		if fallback == nil {
+			fallback = &cp
+		}
 	}
-	return nil
+	return fallback
+}
+
+func isBrainOwnedHostAgent(agent *classifier.Agent, workspace string) bool {
+	if agent == nil || !agent.Hidden {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(agent.Name))
+	if !strings.HasPrefix(name, "brain") {
+		return false
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return true
+	}
+	return strings.TrimSpace(agent.Cwd) == workspace
+}
+
+// hostProviderResumeToken resolves the native resume source for a recorded
+// Brain host binding. Known+!resumable must fail closed (never blank-launch).
+func (s *Service) hostProviderResumeToken(host HostSession, executor work.AgentExecutor) (token string, tokenKnown bool, tokenResumable bool) {
+	command := strings.TrimSpace(executor.Command)
+	if command == "" {
+		command = strings.TrimSpace(executor.ID)
+	}
+	provider := strings.TrimSpace(executor.Provider)
+	if provider == "" || provider == work.AgentProviderCustom {
+		provider = work.InferAgentProvider(command, executor.ID)
+	}
+	id := strings.TrimSpace(host.ProviderSessionID)
+	path := strings.TrimSpace(host.TranscriptPath)
+	switch provider {
+	case work.AgentProviderCodex:
+		if id != "" {
+			return id, true, true
+		}
+		if path == "" {
+			return "", false, false
+		}
+		if sid := work.CodexSessionIDFromRolloutPath(path); sid != "" {
+			return sid, true, true
+		}
+		resolved := work.ResolveCodexTranscriptIdentityForAgent(classifier.Agent{}, work.CodexTranscriptIdentity{
+			Path:     path,
+			DataRoot: strings.TrimSpace(host.ProviderDataRoot),
+		})
+		if sid := strings.TrimSpace(resolved.SessionID); sid != "" {
+			return sid, true, true
+		}
+		return path, true, false
+	case work.AgentProviderClaude, work.AgentProviderGrok, work.AgentProviderCursor:
+		if id != "" {
+			return id, true, true
+		}
+		if path != "" {
+			return path, true, false
+		}
+		return "", false, false
+	case work.AgentProviderOpenCode:
+		if strings.HasPrefix(id, "ses_") {
+			return id, true, true
+		}
+		if id != "" || path != "" {
+			return firstNonEmpty(id, path), true, false
+		}
+		return "", false, false
+	case work.AgentProviderPi:
+		if filepath.IsAbs(id) {
+			return id, true, true
+		}
+		if filepath.IsAbs(path) {
+			return path, true, true
+		}
+		if id != "" || path != "" {
+			return firstNonEmpty(id, path), true, false
+		}
+		return "", false, false
+	default:
+		if id != "" || path != "" {
+			return firstNonEmpty(id, path), true, false
+		}
+		return "", false, false
+	}
 }
 
 func (s *Service) recordHostReplacement(event HostReplacementEvent) {
@@ -1521,6 +1733,10 @@ func firstNonZeroTime(values ...time.Time) time.Time {
 }
 
 func (s *Service) hostCommand(executor work.AgentExecutor) (string, error) {
+	return s.hostLaunchCommand(executor, "")
+}
+
+func (s *Service) hostLaunchCommand(executor work.AgentExecutor, resumeSessionID string) (string, error) {
 	command := strings.TrimSpace(executor.Command)
 	if command == "" {
 		command = strings.TrimSpace(executor.ID)
@@ -1533,23 +1749,47 @@ func (s *Service) hostCommand(executor work.AgentExecutor) (string, error) {
 		provider = work.InferAgentProvider(command, executor.ID)
 	}
 	workspace := s.brainWorkspace()
+	resumeSessionID = strings.TrimSpace(resumeSessionID)
+
 	switch provider {
-	case "codex":
-		args := []string{command}
+	case work.AgentProviderCodex:
 		if !codexCommandHasFullAuthorization(command) {
-			args = append(args, codexFullAuthorizationFlag)
+			command = strings.TrimSpace(command + " " + codexFullAuthorizationFlag)
+		}
+		if resumeSessionID != "" {
+			var err error
+			command, err = work.WithProviderResumeToken(provider, command, resumeSessionID)
+			if err != nil {
+				return "", err
+			}
 		}
 		if !strings.Contains(command, "--no-alt-screen") {
-			args = append(args, "--no-alt-screen")
+			command = strings.TrimSpace(command + " --no-alt-screen")
 		}
 		if workspace != "" && !strings.Contains(command, " -C ") && !strings.Contains(command, " --cd ") {
-			args = append(args, "-C", shellQuote(workspace))
+			command = strings.TrimSpace(command + " -C " + shellQuote(workspace))
 		}
-		return withZenCLIOnPath(strings.Join(args, " ")), nil
-	case "claude":
+		return withZenCLIOnPath(command), nil
+	case work.AgentProviderClaude:
 		command = work.HardenClaudeCommand(command)
+		if resumeSessionID != "" {
+			var err error
+			command, err = work.WithProviderResumeToken(provider, command, resumeSessionID)
+			if err != nil {
+				return "", err
+			}
+		}
 		if workspace != "" && !strings.Contains(command, " --add-dir ") {
-			return withZenCLIOnPath(strings.TrimSpace(command + " --add-dir " + shellQuote(workspace))), nil
+			command = strings.TrimSpace(command + " --add-dir " + shellQuote(workspace))
+		}
+		return withZenCLIOnPath(command), nil
+	case work.AgentProviderGrok, work.AgentProviderCursor:
+		if resumeSessionID != "" {
+			var err error
+			command, err = work.WithProviderResumeToken(provider, command, resumeSessionID)
+			if err != nil {
+				return "", err
+			}
 		}
 		return withZenCLIOnPath(command), nil
 	case work.AgentProviderOpenCode:
@@ -1557,14 +1797,30 @@ func (s *Service) hostCommand(executor work.AgentExecutor) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if resumeSessionID != "" {
+			hardened, err = work.WithProviderResumeToken(provider, hardened, resumeSessionID)
+			if err != nil {
+				return "", err
+			}
+		}
 		return withZenCLIOnPath(hardened), nil
 	case work.AgentProviderPi:
+		if resumeSessionID != "" {
+			command, err := work.WithProviderResumeToken(provider, command, resumeSessionID)
+			if err != nil {
+				return "", err
+			}
+			return withZenCLIOnPath(command), nil
+		}
 		command, err := work.EnsurePiSessionLaunchCommand(command)
 		if err != nil {
 			return "", err
 		}
 		return withZenCLIOnPath(command), nil
 	default:
+		if resumeSessionID != "" {
+			return "", fmt.Errorf("executor %q has no native resume launch shape", firstNonEmpty(executor.ID, provider))
+		}
 		return withZenCLIOnPath(command), nil
 	}
 }
