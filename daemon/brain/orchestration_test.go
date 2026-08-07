@@ -877,7 +877,13 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if events[0].ClaimedAt == nil || events[0].ConsumedAt != nil || len(fw.sentCalls) != 1 {
+	original := WorkEvent{}
+	for _, event := range events {
+		if event.ID == events[0].ID || event.DedupeKey == "external:send-failure" {
+			original = event
+		}
+	}
+	if original.ClaimedAt == nil || original.ConsumedAt != nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
 	}
 	// The held claim is surfaced as a deduped delivery.ambiguous note.
