@@ -43,11 +43,11 @@ func NewCollector() *Collector {
 		codexUsageClient:         &http.Client{Timeout: 8 * time.Second},
 		codexUsageEndpoint:       codexUsageEndpoint,
 		codexUsageTimeout:        8 * time.Second,
-		opencodeGoClient:         &http.Client{Timeout: 8 * time.Second},
+		opencodeGoClient:         &http.Client{Timeout: 15 * time.Second},
 		opencodeGoEndpoint:       opencodeGoModelsEndpoint,
 		opencodeGoChatEndpoint:   opencodeGoChatEndpoint,
 		opencodeGoServerEndpoint: opencodeGoServerEndpoint,
-		opencodeGoTimeout:        8 * time.Second,
+		opencodeGoTimeout:        15 * time.Second,
 		now:                      time.Now,
 	}
 }

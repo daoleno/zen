@@ -32,19 +32,36 @@ Content-Type: application/json
 
 The payload cannot generate a completion: an empty `messages` list and a
 negative `max_tokens` are invalid for every model, so the gateway rejects the
-request after authenticating the key. Only an **exact 400** whose `error.type`
-and `error.code` are both `invalid_request_error` confirms that the key is
-accepted by the Go service — proof of authentication with zero token usage.
+request after authenticating the key. The live gateway (verified 2026-08-07)
+authenticates the key before proxying to the Go provider, so any provider-side
+request-validation rejection of the probe payload positively confirms that the
+key is accepted by the Go service — proof of authentication with zero token
+usage. The gateway wraps that rejection with error type `invalid_request_error`
+or `server_error` depending on the model, and the message always names the
+rejected payload field. Confirmation requires a `400` (or `422` with the same
+evidence) whose parseable JSON error:
+
+- is not an auth/billing error type (`AuthError`, `authentication_error`,
+  `invalid_api_key`, `unauthorized`, `permission_denied`, `forbidden`,
+  `access_denied`, `insufficient_quota`, `billing_error`), and
+- either has `error.type` exactly `invalid_request_error` with `error.code`
+  absent or exactly `invalid_request_error`, or has a message naming the
+  rejected payload field (observed live phrases: `invalid params`,
+  `bad_request_error`, `invalid_request_error`, `input required`,
+  `messages is empty`, `messages must not be empty`,
+  `must contain at least one message`, `specify "prompt" or "messages"`,
+  `max_tokens`).
 
 Fail-closed rules:
 
 - `401`/`403`/`429`/`5xx` and network failures are never accepted.
 - A `2xx` response is never parsed or accepted, and never confirms.
-- HTML, malformed bodies, and unknown error shapes are never accepted.
-- Inconclusive probe responses (for example a 400 with a different error
-  type, or a 422) move on to the next discovered model; the check fails
-  closed when no discovered model yields the exact confirmation (bounded to
-  four probes).
+- HTML, malformed bodies, auth/billing error types, and unknown error shapes
+  are never accepted.
+- Inconclusive probe responses (for example a `422` without the invalid-request
+  evidence, or a `400` with an unknown message) move on to the next discovered
+  model; the check fails closed when no discovered model yields the
+  confirmation (bounded to four probes).
 - An empty model list fails closed.
 
 ## Usage windows

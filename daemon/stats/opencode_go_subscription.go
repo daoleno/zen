@@ -349,18 +349,81 @@ func discoverOpenCodeGoModels(ctx context.Context, client openCodeGoHTTPClient, 
 	return models, nil
 }
 
+// openCodeGoAuthErrorTypes are error types that prove the request was rejected
+// before authentication or authorization. A 400/422 carrying one of these is
+// never accepted as subscription evidence.
+var openCodeGoAuthErrorTypes = map[string]bool{
+	"authentication_error": true,
+	"invalid_api_key":      true,
+	"autherror":            true, // live gateway AuthError shape (no underscore)
+	"auth_error":           true,
+	"unauthorized":         true,
+	"forbidden":            true,
+	"permission_denied":    true,
+	"access_denied":        true,
+	"insufficient_quota":   true,
+	"billing_error":        true,
+}
+
+// openCodeGoInvalidRequestSignals are the phrases the live OpenCode Go gateway
+// uses when it rejects the non-generating probe payload after authenticating
+// the key: the provider refuses the empty messages list, the missing prompt,
+// or the negative max_tokens. Evidence captured from the live service
+// (2026-08-07): the gateway wraps provider rejections with error type
+// invalid_request_error or server_error, and the message always names the
+// rejected payload field.
+var openCodeGoInvalidRequestSignals = []string{
+	"invalid params",
+	"bad_request_error",
+	"invalid_request_error",
+	"input required",
+	"messages is empty",
+	"messages must not be empty",
+	"must contain at least one message",
+	`specify "prompt" or "messages"`,
+	"max_tokens",
+}
+
+// openCodeGoChallengeConfirmsInvalidRequest decides whether a 400/422 probe
+// response proves that the key was accepted by the Go service. The gateway
+// authenticates the key before proxying to the provider, so any provider-side
+// request-validation rejection of the probe payload (which cannot generate a
+// completion) is positive authentication evidence with zero token usage. The
+// error type must not be an auth/billing type, and either the type is exactly
+// invalid_request_error (code absent or equal, mirroring the live service) or
+// the message names the rejected payload field. Unknown shapes are never
+// accepted.
+func openCodeGoChallengeConfirmsInvalidRequest(errorType, errorCode, message string) bool {
+	errorType = strings.ToLower(strings.TrimSpace(errorType))
+	errorCode = strings.ToLower(strings.TrimSpace(errorCode))
+	if errorType == "invalid_request_error" && (errorCode == "" || errorCode == "invalid_request_error") {
+		return true
+	}
+	if errorType == "" || openCodeGoAuthErrorTypes[errorType] {
+		return false
+	}
+	lower := strings.ToLower(message)
+	for _, signal := range openCodeGoInvalidRequestSignals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
+}
+
 // runOpenCodeGoAuthChallenge probes the chat completions endpoint with a
 // payload that cannot generate a completion: an empty messages list and a
-// negative max_tokens. Only an exact 400 whose error type is
-// invalid_request_error confirms that the key is accepted by the Go service:
-// the error code may be absent or exactly invalid_request_error, mirroring
-// the live service, and a non-empty conflicting code is never accepted. Such
-// a response proves authentication without producing any token usage.
-// Auth failures (401/403), throttling (429), server errors (5xx), unexpected
-// 2xx responses, HTML, and unknown error shapes are never accepted; 2xx
-// responses are skipped without parsing and inconclusive probe responses move
-// on to the next discovered model. The check fails closed when no discovered
-// model yields the exact confirmation.
+// negative max_tokens. The live gateway authenticates the key before proxying
+// to the provider, so a 400/422 whose error is a request-validation rejection
+// of the probe payload confirms that the key is accepted by the Go service
+// (see openCodeGoChallengeConfirmsInvalidRequest); the gateway wraps the
+// provider rejection with error type invalid_request_error or server_error
+// depending on the model. Such a response proves authentication without
+// producing any token usage. Auth failures (401/403), throttling (429), server
+// errors (5xx), unexpected 2xx responses, HTML, and unknown error shapes are
+// never accepted; 2xx responses are skipped without parsing and inconclusive
+// probe responses move on to the next discovered model. The check fails
+// closed when no discovered model yields the confirmation.
 func runOpenCodeGoAuthChallenge(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial, models []string) bool {
 	attempts := len(models)
 	if attempts > opencodeGoChallengeMaxAttempts {
@@ -387,20 +450,22 @@ func runOpenCodeGoAuthChallenge(ctx context.Context, client openCodeGoHTTPClient
 			// A 2xx response can never confirm: the payload must not
 			// generate. Skip the model without parsing the body.
 			continue
-		case resp.StatusCode == http.StatusBadRequest:
+		case resp.StatusCode == http.StatusBadRequest,
+			resp.StatusCode == http.StatusUnprocessableEntity:
 			if readErr != nil {
 				continue
 			}
 			var errorBody struct {
 				Error struct {
-					Type string `json:"type"`
-					Code string `json:"code"`
+					Type    string `json:"type"`
+					Code    string `json:"code"`
+					Message string `json:"message"`
 				} `json:"error"`
 			}
 			if err := json.Unmarshal(body, &errorBody); err != nil {
 				continue
 			}
-			if errorBody.Error.Type == "invalid_request_error" && (errorBody.Error.Code == "" || errorBody.Error.Code == "invalid_request_error") {
+			if openCodeGoChallengeConfirmsInvalidRequest(errorBody.Error.Type, errorBody.Error.Code, errorBody.Error.Message) {
 				return true
 			}
 			continue

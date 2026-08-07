@@ -358,6 +358,162 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 	})
 }
 
+func TestOpenCodeGoChallengeConfirmsLiveInvalidRequestBodies(t *testing.T) {
+	// Exact error bodies captured from the live OpenCode Go gateway on
+	// 2026-08-07 with a valid subscription key. The gateway wraps the
+	// provider's rejection of the non-generating probe payload with error
+	// type invalid_request_error or server_error depending on the model;
+	// every body names the rejected payload field.
+	for _, tt := range []struct {
+		name          string
+		errorType     string
+		errorCode     string
+		message       string
+		wantConfirmed bool
+	}{
+		{
+			name:          "live minimax-m3 server_error invalid params",
+			errorType:     "server_error",
+			message:       `Error from provider (Console Go): Upstream request failed: [bad_request_error] invalid params, messages is empty (2013)`,
+			wantConfirmed: true,
+		},
+		{
+			name:          "live minimax-m2.5 server_error input required",
+			errorType:     "server_error",
+			message:       `Error from provider (Console Go): Upstream request failed: [400] Input required: specify "prompt" or "messages"`,
+			wantConfirmed: true,
+		},
+		{
+			name:          "live minimax-m2.7 invalid_request_error without code",
+			errorType:     "invalid_request_error",
+			message:       `Error from provider (Console Go): Upstream request failed: [invalid_request_error] invalid params, messages must not be empty (2013)`,
+			wantConfirmed: true,
+		},
+		{
+			name:          "live kimi-k2.6 invalid_request_error with matching code",
+			errorType:     "invalid_request_error",
+			errorCode:     "invalid_request_error",
+			message:       `Error from provider (Console Go): Upstream request failed: [invalid_request_error] 'messages' must contain at least one message`,
+			wantConfirmed: true,
+		},
+		{
+			name:          "live glm-5.2 max_tokens input",
+			errorType:     "invalid_request_error",
+			message:       `Error from provider (Console Go): Upstream request failed: [invalid_request_error] Input should be greater than 0`,
+			wantConfirmed: true,
+		},
+		{
+			name:          "auth flavored type never confirms",
+			errorType:     "AuthError",
+			message:       `Error from provider (Console Go): Upstream request failed: [bad_request_error] invalid params, messages is empty (2013)`,
+			wantConfirmed: false,
+		},
+		{
+			name:          "billing flavored type never confirms",
+			errorType:     "billing_error",
+			message:       `subscription required for opencode go`,
+			wantConfirmed: false,
+		},
+		{
+			name:          "unknown type without payload signal never confirms",
+			errorType:     "server_error",
+			message:       `upstream failed`,
+			wantConfirmed: false,
+		},
+		{
+			name:          "empty type never confirms even with payload signal",
+			message:       `invalid params, messages is empty`,
+			wantConfirmed: false,
+		},
+		{
+			name:          "conflicting code without payload signal never confirms",
+			errorType:     "invalid_request_error",
+			errorCode:     "conflicting_code",
+			message:       `boom`,
+			wantConfirmed: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openCodeGoChallengeConfirmsInvalidRequest(tt.errorType, tt.errorCode, tt.message); got != tt.wantConfirmed {
+				t.Fatalf("openCodeGoChallengeConfirmsInvalidRequest = %v, want %v", got, tt.wantConfirmed)
+			}
+		})
+	}
+}
+
+func TestOpenCodeGoChallengeConfirmsLiveProviderRejectionsEndToEnd(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	auth := openCodeGoAuthMaterial{kind: "official", token: "go-secret"}
+
+	// Models and per-model 400 bodies exactly as observed on the live
+	// gateway on 2026-08-07. The first two models return the server_error
+	// wrap; the challenge must confirm without requiring the
+	// invalid_request_error type.
+	server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"minimax-m3"},{"id":"minimax-m2.5"},{"id":"minimax-m2.7"},{"id":"kimi-k2.6"},{"id":"glm-5.2"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		body := readRequestBody(t, r)
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal([]byte(body), &payload)
+		switch payload.Model {
+		case "minimax-m3":
+			challenge400(w, `{"error":{"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [bad_request_error] invalid params, messages is empty (2013)"}}`)
+		case "minimax-m2.5":
+			challenge400(w, `{"error":{"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [400] Input required: specify \"prompt\" or \"messages\""}}`)
+		case "minimax-m2.7":
+			challenge400(w, `{"error":{"type":"invalid_request_error","message":"Error from provider (Console Go): Upstream request failed: [invalid_request_error] invalid params, messages must not be empty (2013)"}}`)
+		case "kimi-k2.6":
+			challenge400(w, `{"error":{"type":"invalid_request_error","code":"invalid_request_error","message":"Error from provider (Console Go): Upstream request failed: [invalid_request_error] 'messages' must contain at least one message"}}`)
+		default:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"error":{"param":"max_tokens","type":"invalid_request_error","message":"Error from provider (Console Go): Upstream request failed: [invalid_request_error] Input should be greater than 0"}}`))
+		}
+	}, nil)
+	defer server.Close()
+
+	usage, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now)
+	if err != nil {
+		t.Fatalf("live gateway shape must confirm: %v", err)
+	}
+	if usage.AuthKind != "official" || usage.State != "available" || usage.Plan != "go" {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestCollectOpenCodeGoSubscriptionConfirmsLiveGatewayShape(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("OPENCODE_GO_WORKSPACE_ID", "")
+	t.Setenv("OPENCODE_GO_AUTH_COOKIE", "")
+	home := t.TempDir()
+	writeOpenCodeGoAuthFixture(t, home, `{"opencode-go":{"type":"api","key":"go-secret"}}`)
+
+	// The live gateway wraps every provider rejection of the probe payload
+	// in the server_error shape for some models (observed on minimax-m3 and
+	// minimax-m2.5 on 2026-08-07). A gateway that returns that shape for
+	// every probed model must still positively confirm the subscription on
+	// the first probe instead of failing closed after four probes.
+	server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"minimax-m3"},{"id":"minimax-m2.5"},{"id":"minimax-m2.7"},{"id":"kimi-k3"},{"id":"kimi-k2.7-code"},{"id":"kimi-k2.6"},{"id":"kimi-k2.5"},{"id":"glm-5.2"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		challenge400(w, `{"error":{"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [bad_request_error] invalid params, messages is empty (2013)"}}`)
+	}, nil)
+	defer server.Close()
+
+	c := &Collector{opencodeGoClient: server.Client(), opencodeGoEndpoint: server.URL, opencodeGoChatEndpoint: server.URL, opencodeGoServerEndpoint: server.URL, opencodeGoTimeout: time.Second, now: time.Now}
+	got := c.collectOpenCodeGoSubscription(home)
+	if got == nil || got.AuthKind != "official" || got.State != "available" || got.Plan != "go" {
+		t.Fatalf("live gateway shape must confirm subscription: %#v", got)
+	}
+	if got.UsageAvailable || len(got.Windows) != 0 {
+		t.Fatalf("usage must be unavailable without dashboard credentials: %#v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "go-secret") {
+		t.Fatalf("serialized usage exposed credential material: %s", encoded)
+	}
+}
+
 func readRequestBody(t *testing.T, r *http.Request) string {
 	t.Helper()
 	var builder strings.Builder
