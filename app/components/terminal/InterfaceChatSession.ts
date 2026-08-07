@@ -327,6 +327,11 @@ function applyCodexConversationSnapshot(
     payload.conversation,
     accepted.sameConversation,
   );
+  // Revisit/reconnect with identical history: reuse the previously cleaned
+  // conversation and projection instead of re-running the full cleaning and
+  // projection over every past event. Keyed by a full content fingerprint, so
+  // any changed body, input, or output forces a fresh clean (no stale rows).
+  const cleaned = cleanConversationForChatSnapshot(conversation, state.conversation);
   return applyIncomingConversation(
     {
       ...state,
@@ -338,17 +343,124 @@ function applyCodexConversationSnapshot(
         ? state.turnFocusAnchorAliases
         : new Map(),
     },
-    conversation,
+    cleaned,
     accepted.cursor,
+    true,
   );
+}
+
+/**
+ * Content-keyed reuse of cleaned conversation events across remounts
+ * (revisit/reconnect). The fingerprint covers every field the cleaning and
+ * drop rules read, so a hit means the cleaned result is identical by
+ * construction. Bounded LRU keeps memory proportional to a few sessions.
+ */
+const CLEANED_CONVERSATION_CACHE_MAX = 4;
+const cleanedConversationCache = new Map<
+  string,
+  { fingerprint: number; events: CodexConversation["events"] }
+>();
+
+function cleanConversationForChatSnapshot(
+  conversation: CodexConversation,
+  previousConversation: CodexConversation | null,
+): CodexConversation {
+  const identity = conversationIdentity(conversation);
+  if (identity) {
+    // The drop rules read conversation.source, so it is part of the cache key.
+    const cacheKey = `${identity}|${conversation.source ?? ""}`;
+    const fingerprint = conversationEventsFingerprint(conversation.events);
+    const cached = cleanedConversationCache.get(cacheKey);
+    if (cached && cached.fingerprint === fingerprint) {
+      cleanedConversationCache.delete(cacheKey);
+      cleanedConversationCache.set(cacheKey, cached);
+      return { ...conversation, events: cached.events };
+    }
+    const filtered = filterCodexConversationForChat(
+      conversation,
+      previousConversation,
+    );
+    const cleanedEvents = filtered.events;
+    cleanedConversationCache.delete(cacheKey);
+    if (cleanedConversationCache.size >= CLEANED_CONVERSATION_CACHE_MAX) {
+      const oldest = cleanedConversationCache.keys().next().value;
+      if (oldest !== undefined) {
+        cleanedConversationCache.delete(oldest);
+      }
+    }
+    cleanedConversationCache.set(cacheKey, { fingerprint, events: cleanedEvents });
+    return filtered;
+  }
+  return filterCodexConversationForChat(conversation, previousConversation);
+}
+
+function conversationEventsFingerprint(events: CodexConversation["events"]) {
+  let hash = 0x811c9dc5;
+  for (const event of events) {
+    hash = fnv1aStep(hash, event.id);
+    hash = fnv1aStep(hash, event.seq >>> 0);
+    hash = fnv1aStep(hash, event.timestamp || "");
+    hash = fnv1aStep(hash, event.kind);
+    hash = fnv1aStep(hash, event.role || "");
+    hash = fnv1aStep(hash, event.title || "");
+    hash = fnv1aStep(hash, event.body || "");
+    hash = fnv1aStep(hash, event.command || "");
+    hash = fnv1aStep(hash, event.tool_name || "");
+    hash = fnv1aStep(hash, event.input || "");
+    hash = fnv1aStep(hash, event.output || "");
+    hash = fnv1aStep(hash, event.call_id || "");
+    hash = fnv1aStep(hash, event.exit_code ?? 0);
+    hash = fnv1aStep(hash, event.status || "");
+    hash = fnv1aStep(hash, event.partial ? 1 : 0);
+    hash = fnv1aStep(hash, event.transient ? 1 : 0);
+    for (const file of event.files ?? []) {
+      hash = fnv1aStep(hash, file);
+      hash = fnv1aStep(hash, 1);
+    }
+    hash = fnv1aStep(hash, (event.files?.length ?? 0) + 1);
+    for (const change of event.file_changes ?? []) {
+      hash = fnv1aStep(hash, change.path);
+      hash = fnv1aStep(hash, change.move_path || "");
+      hash = fnv1aStep(hash, change.operation);
+      hash = fnv1aStep(hash, change.additions ?? 0);
+      hash = fnv1aStep(hash, change.deletions ?? 0);
+      hash = fnv1aStep(hash, 1);
+    }
+    hash = fnv1aStep(hash, (event.file_changes?.length ?? 0) + 1);
+    hash = fnv1aStep(hash, event.explanation || "");
+    for (const step of event.plan ?? []) {
+      hash = fnv1aStep(hash, step.step);
+      hash = fnv1aStep(hash, step.status);
+      hash = fnv1aStep(hash, 1);
+    }
+    hash = fnv1aStep(hash, (event.plan?.length ?? 0) + 1);
+    hash = fnv1aStep(hash, event.source || "");
+  }
+  return hash >>> 0;
+}
+
+function fnv1aStep(hash: number, value: number | string) {
+  if (typeof value === "number") {
+    hash ^= value;
+    hash = Math.imul(hash, 0x01000193);
+    return hash;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash;
 }
 
 function applyIncomingConversation(
   state: InterfaceChatThreadState,
   conversation: CodexConversation,
   streamCursor: ConversationStreamCursor = state.streamCursor,
+  alreadyFiltered = false,
 ): InterfaceChatThreadState {
-  const filteredConversation = filterCodexConversationForChat(conversation);
+  const filteredConversation = alreadyFiltered
+    ? conversation
+    : filterCodexConversationForChat(conversation, state.conversation);
   const nextConversation = reuseStableConversationEvents(
     state.conversation,
     filteredConversation,
@@ -448,9 +560,17 @@ function applyCodexConversationDelta(
     }
     return state;
   }
+  // Delta upserts are the only events that can differ from the previous
+  // state; the base events are already filtered/cleaned. Cleaning just the
+  // upserts keeps the per-delta cost proportional to the change instead of
+  // the whole history.
+  const cleanedUpserts = filterCodexConversationEventsForChat(
+    delta.source ?? baseConversation.source,
+    delta.upserts,
+  ).events;
   const nextEvents = reconcileConversationDeltaEvents(
     baseConversation.events,
-    delta.upserts,
+    cleanedUpserts,
     delta.deletes,
   );
   const nextConversation = {
@@ -468,7 +588,7 @@ function applyCodexConversationDelta(
         : baseConversation.activity,
     events: nextEvents,
   };
-  return applyIncomingConversation(state, nextConversation, accepted.cursor);
+  return applyIncomingConversation(state, nextConversation, accepted.cursor, true);
 }
 
 function codexDeltaMetadataChanged(
@@ -975,25 +1095,61 @@ export function useInterfaceChatSession({
 
 function filterCodexConversationForChat(
   conversation: CodexConversation,
+  previousConversation: CodexConversation | null,
 ): CodexConversation {
-  let changed = false;
-  const events: CodexConversation["events"] = [];
-  for (const event of conversation.events) {
-    if (shouldDropStructuredChatEvent(conversation.source, event)) {
-      changed = true;
-      continue;
-    }
-    const cleaned = cleanCodexConversationEventForChat(event);
-    if (!cleaned) {
-      changed = true;
-      continue;
-    }
-    if (cleaned !== event) {
-      changed = true;
-    }
-    events.push(cleaned);
+  const filtered = filterCodexConversationEventsForChat(
+    conversation.source,
+    conversation.events,
+    previousConversation,
+  );
+  if (!filtered.changed) {
+    return conversation;
   }
-  return changed ? { ...conversation, events } : conversation;
+  return { ...conversation, events: filtered.events };
+}
+
+function filterCodexConversationEventsForChat(
+  source: CodexConversation["source"],
+  events: CodexConversation["events"],
+  previousConversation: CodexConversation | null = null,
+): { events: CodexConversation["events"]; changed: boolean } {
+  let changed = false;
+  const cleaned: CodexConversation["events"] = [];
+  // Unchanged events keep their previous cleaned object identity: re-cleaning
+  // the full history on every snapshot/delta would re-run the regex chains
+  // over all past text. An event that equals its previously cleaned form
+  // cannot change the cleaning result (cleaning is idempotent on clean text),
+  // and drop decisions depend only on stable fields.
+  const previousById =
+    previousConversation && previousConversation.events.length > 0
+      ? new Map(previousConversation.events.map((event) => [event.id, event]))
+      : null;
+  for (const event of events) {
+    if (shouldDropStructuredChatEvent(source, event)) {
+      changed = true;
+      continue;
+    }
+    if (previousById) {
+      const previousEvent = previousById.get(event.id);
+      if (previousEvent && codexEventsEqual(previousEvent, event)) {
+        if (previousEvent !== event) {
+          changed = true;
+        }
+        cleaned.push(previousEvent);
+        continue;
+      }
+    }
+    const cleanedEvent = cleanCodexConversationEventForChat(event);
+    if (!cleanedEvent) {
+      changed = true;
+      continue;
+    }
+    if (cleanedEvent !== event) {
+      changed = true;
+    }
+    cleaned.push(cleanedEvent);
+  }
+  return { events: cleaned, changed };
 }
 
 function cleanCodexConversationEventForChat(
@@ -1121,6 +1277,11 @@ function cleanCodexVisibleText(value: string) {
 }
 
 function stripCodexContextualFragments(value: string) {
+  if (!value.includes("<")) {
+    // No XML-like marker open/close pair can exist without "<"; the scan
+    // loop over every marker would be pure waste on plain body text.
+    return normalizeDisplayText(value.trim());
+  }
   let stripped = value.trim();
   stripped = stripGoalInternalContext(stripped);
   if (!stripped) {

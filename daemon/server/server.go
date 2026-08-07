@@ -1452,7 +1452,14 @@ type codexConversationSubscriptionSnapshot struct {
 	conversation work.CodexConversation
 	fingerprint  string
 	eventsByID   map[string]work.CodexConversationEvent
-	revision     int64
+	// eventFingerprints memoizes per-event content fingerprints so unchanged
+	// history is never re-hashed on later polls or deltas.
+	eventFingerprints map[string]string
+	revision          int64
+	// readerVersion is the provider reader content version of this snapshot.
+	// 0 means unknown (test loader or non-cached provider); never skip then.
+	readerVersion int64
+	attached      bool
 }
 
 func (s *Server) runCodexConversationSubscription(
@@ -1550,18 +1557,40 @@ func (s *Server) publishCodexConversationSubscription(
 		})
 		return
 	}
+	readerVersion := reader.ConversationVersion()
+	changedIDs := reader.ChangedEventIDs()
 	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
 	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
 
-	fingerprint := codexConversationSubscriptionFingerprint(conversation)
-	if (*previous) != nil && (*previous).fingerprint == fingerprint {
+	// Content-version fast path: the reader proves nothing changed, so the
+	// whole poll is O(1) — no sanitize, fingerprint, eventsByID, or delta.
+	// This requires a content-versioned provider (OpenCode cache), a stable
+	// conversation identity and attachment state, and no Brain overlay (which
+	// changes independently of the provider source).
+	if readerVersion != 0 && (*previous) != nil &&
+		(*previous).readerVersion == readerVersion &&
+		(*previous).attached == resolved.fromWatcher &&
+		codexConversationIdentity((*previous).conversation) == codexConversationIdentity(conversation) &&
+		!strings.HasPrefix(strings.TrimSpace(raw.ConversationScopeKey), "brain-thread:") {
+		return
+	}
+
+	fingerprint := codexConversationSubscriptionFingerprintMemoized(
+		conversation,
+		(*previous),
+		changedIDs,
+	)
+	if (*previous) != nil && (*previous).fingerprint == fingerprint.fingerprint {
 		return
 	}
 	next := codexConversationSubscriptionSnapshot{
-		conversation: conversation,
-		fingerprint:  fingerprint,
-		eventsByID:   codexConversationEventsByID(conversation.Events),
-		revision:     1,
+		conversation:      conversation,
+		fingerprint:       fingerprint.fingerprint,
+		eventsByID:        codexConversationEventsByID(conversation.Events),
+		eventFingerprints: fingerprint.eventFingerprints,
+		revision:          1,
+		readerVersion:     readerVersion,
+		attached:          resolved.fromWatcher,
 	}
 	if (*previous) != nil {
 		next.revision = (*previous).revision + 1
@@ -1583,7 +1612,12 @@ func (s *Server) publishCodexConversationSubscription(
 		return
 	}
 
-	upserts, deletes := codexConversationDelta((*previous).eventsByID, conversation.Events)
+	upserts, deletes := codexConversationDeltaMemoized(
+		(*previous).eventsByID,
+		(*previous).eventFingerprints,
+		conversation.Events,
+		next.eventFingerprints,
+	)
 	if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 		return
 	}
@@ -1865,6 +1899,92 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+type codexConversationFingerprintMemo struct {
+	fingerprint       string
+	eventFingerprints map[string]string
+}
+
+// codexConversationSubscriptionFingerprintMemoized computes the conversation
+// fingerprint while memoizing per-event fingerprints. Only events listed in
+// changedIDs (or missing from the previous memo) are re-hashed; the rest of
+// the history is never re-read for hashing. O(events) small-string work per
+// poll instead of O(total conversation text).
+func codexConversationSubscriptionFingerprintMemoized(
+	conversation work.CodexConversation,
+	previous *codexConversationSubscriptionSnapshot,
+	changedIDs []string,
+) codexConversationFingerprintMemo {
+	hash := fnv.New64a()
+	writeFingerprintString(hash, codexConversationIdentity(conversation))
+	writeFingerprintString(hash, conversation.Path)
+	writeFingerprintString(hash, conversation.SessionID)
+	writeFingerprintBool(hash, conversation.Available)
+	writeFingerprintString(hash, conversation.Reason)
+	writeFingerprintString(hash, conversation.Source)
+	writeFingerprintString(hash, conversation.CWD)
+	writeProviderActivityFingerprint(hash, conversation.Activity)
+
+	eventFingerprints := map[string]string{}
+	if previous != nil {
+		for id, fingerprint := range previous.eventFingerprints {
+			eventFingerprints[id] = fingerprint
+		}
+	}
+	changed := make(map[string]struct{}, len(changedIDs)+1)
+	for _, id := range changedIDs {
+		changed[id] = struct{}{}
+	}
+	writeFingerprintInt(hash, len(conversation.Events))
+	for _, event := range conversation.Events {
+		id := strings.TrimSpace(event.ID)
+		if _, ok := eventFingerprints[id]; !ok {
+			// New or unknown event: its fingerprint must be computed.
+			changed[id] = struct{}{}
+		}
+		if _, needs := changed[id]; needs {
+			eventFingerprints[id] = codexConversationEventFingerprint(event)
+		}
+		writeFingerprintString(hash, id)
+		writeFingerprintString(hash, eventFingerprints[id])
+	}
+	return codexConversationFingerprintMemo{
+		fingerprint:       fmt.Sprintf("%016x", hash.Sum64()),
+		eventFingerprints: eventFingerprints,
+	}
+}
+
+// codexConversationDeltaMemoized computes the upsert/delete sets against
+// memoized per-event fingerprints so unchanged events are compared by a short
+// hash string instead of re-hashing their full text.
+func codexConversationDeltaMemoized(
+	previous map[string]work.CodexConversationEvent,
+	previousFingerprints map[string]string,
+	next []work.CodexConversationEvent,
+	nextFingerprints map[string]string,
+) ([]work.CodexConversationEvent, []string) {
+	var upserts []work.CodexConversationEvent
+	nextIDs := make(map[string]struct{}, len(next))
+	for _, event := range next {
+		id := strings.TrimSpace(event.ID)
+		if id == "" {
+			upserts = append(upserts, event)
+			continue
+		}
+		nextIDs[id] = struct{}{}
+		if _, ok := previous[id]; !ok ||
+			previousFingerprints[id] != nextFingerprints[id] {
+			upserts = append(upserts, event)
+		}
+	}
+	var deletes []string
+	for id := range previous {
+		if _, ok := nextIDs[id]; !ok {
+			deletes = append(deletes, id)
+		}
+	}
+	return upserts, deletes
 }
 
 func codexConversationSubscriptionFingerprint(conversation work.CodexConversation) string {

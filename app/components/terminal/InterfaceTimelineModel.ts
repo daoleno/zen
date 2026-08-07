@@ -971,7 +971,23 @@ function finishDisplayText(value: string) {
     .trim();
 }
 
+/**
+ * Any `[` immediately followed by CSI-prefix characters (space–slash, digit,
+ * or `?`) can be a CSI-lookalike that the slow path rewrites. ESC and CR are
+ * required by the escape-sequence rules. When none can exist, the full regex
+ * chain reduces to a single C0 control-character scan with identical output.
+ */
+const CSI_LOOKALIKE_PREFIX_RE = /\[(?:[\x20-\x2F\d]|\?)/;
+const C0_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
 function stripTerminalControlSequences(value: string) {
+  if (
+    !value.includes("\u001B") &&
+    !value.includes("\r") &&
+    !CSI_LOOKALIKE_PREFIX_RE.test(value)
+  ) {
+    return value.replace(C0_CONTROL_CHARS_RE, "");
+  }
   return value
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
@@ -983,7 +999,7 @@ function stripTerminalControlSequences(value: string) {
     )
     .replace(/\[2K\[1G/g, "\n")
     .replace(/\[(?:\?\d+[hl]|\d+(?:;\d+)*[mKGH])/g, "")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+    .replace(C0_CONTROL_CHARS_RE, "");
 }
 
 function stripProgressSpinnerPrefix(line: string) {

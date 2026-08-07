@@ -25,10 +25,37 @@ type ProviderConversationReader struct {
 	// this subscription so later polls never cross-bind another same-CWD row.
 	openCodeOwnedSessionID string
 
+	// openCodeOwnedCandidate retains the last revalidated session row for the
+	// pinned OpenCode session so an unchanged-source poll can return the
+	// cached conversation without any sqlite3 spawn.
+	openCodeOwnedCandidate openCodeSessionCandidate
+
+	// openCodeLastVersion is the shared cache content version of the last
+	// returned OpenCode conversation. The server skips serialization work when
+	// the version is unchanged. 0 means unknown (no OpenCode load yet).
+	openCodeLastVersion int64
+
+	// openCodeLastChangedIDs are the event ids changed by the last
+	// content-changing OpenCode load, used for cheap memoized deltas.
+	openCodeLastChangedIDs []string
+
 	// piPinnedSessionPath retains the auto-bound shared-directory Pi transcript
 	// for this subscription so a newer same-CWD session never leaks into the
 	// active agent's Interface mid-turn.
 	piPinnedSessionPath string
+}
+
+// ConversationVersion returns the content version of the last loaded provider
+// conversation. 0 means unknown (no load or a non-cache provider); callers
+// must fall back to full processing.
+func (r *ProviderConversationReader) ConversationVersion() int64 {
+	return r.openCodeLastVersion
+}
+
+// ChangedEventIDs returns the event ids changed by the last content-changing
+// OpenCode load, or nil when unknown. Used for cheap memoized deltas.
+func (r *ProviderConversationReader) ChangedEventIDs() []string {
+	return r.openCodeLastChangedIDs
 }
 
 type providerConversationBinding struct {
@@ -117,6 +144,9 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 	if !r.bound || r.binding.provider != next.provider || r.binding.agentID != next.agentID ||
 		r.binding.command != next.command || r.binding.cwd != next.cwd {
 		r.openCodeOwnedSessionID = ""
+		r.openCodeOwnedCandidate = openCodeSessionCandidate{}
+		r.openCodeLastVersion = 0
+		r.openCodeLastChangedIDs = nil
 		r.piPinnedSessionPath = ""
 	}
 	r.bound = true

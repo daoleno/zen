@@ -672,6 +672,17 @@ func isCodexContextualFragment(value string) bool {
 // CleanCodexDisplayText removes Codex-internal context blocks from text before
 // it is shown in user-facing surfaces.
 func CleanCodexDisplayText(value string) string {
+	if !strings.Contains(value, "<") {
+		// Without "<" no goal-context or contextual-fragment marker can exist;
+		// the regex and marker scans below would be pure waste on plain text.
+		// isCodexInstructionContextFragment still guards plain-text markers
+		// (AGENTS.md preamble style), so the result is identical.
+		value = cleanConversationText(value)
+		if isCodexInstructionContextFragment(value) {
+			return ""
+		}
+		return value
+	}
 	value = stripCodexGoalInternalContext(value)
 	value = cleanConversationText(stripCodexContextualFragments(value))
 	if isCodexInstructionContextFragment(value) {

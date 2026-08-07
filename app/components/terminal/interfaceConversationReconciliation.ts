@@ -147,11 +147,25 @@ export function reconcileConversationSnapshot(
   _sameConversation: boolean,
 ): CodexConversation {
   const replacement = normalizeCodexConversation(incoming);
+  const events = replacement.events;
   return {
     ...replacement,
     activity: replacement.activity,
-    events: replacement.events.slice().sort(compareConversationEvents),
+    events: eventsSorted(events) ? events : events.slice().sort(compareConversationEvents),
   };
+}
+
+/**
+ * O(n) monotonic-order verification with memoized timestamp parses. The
+ * daemon streams sorted events, so a full sort is replaced by one cheap scan.
+ */
+export function eventsSorted(events: CodexConversation["events"]) {
+  for (let index = 1; index < events.length; index += 1) {
+    if (compareConversationEvents(events[index - 1]!, events[index]!) > 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function providerActivitiesEqual(
@@ -171,7 +185,15 @@ export function providerActivitiesEqual(
   );
 }
 
-/** Canonical deltas append or stable-upsert; only snapshots replace. */
+/**
+ * Canonical deltas append or stable-upsert; only snapshots replace.
+ *
+ * The base array is already sorted (reconciliation invariant). Streaming
+ * upserts either replace an existing event in place (same order keys) or
+ * append new events at the end (daemon time order). Both are verified with an
+ * O(n) monotonic scan using memoized timestamp parses; only when verification
+ * fails does the merge fall back to a full sort.
+ */
 export function reconcileConversationDeltaEvents(
   previous: CodexConversation["events"],
   upserts: CodexConversation["events"],
@@ -182,7 +204,19 @@ export function reconcileConversationDeltaEvents(
   // the sole operation allowed to clear visible history.
   void deletes;
   upserts.forEach((event) => byId.set(event.id, event));
-  return Array.from(byId.values()).sort(compareConversationEvents);
+  if (upserts.length === 0) {
+    return previous;
+  }
+  if (byId.size === previous.length) {
+    // Stable-upsert only: every upsert id already existed, so the merged
+    // array keeps its previous length and order unless keys moved.
+    if (eventsSorted(previous)) {
+      const merged = previous.map((event) => byId.get(event.id) ?? event);
+      return eventsSorted(merged) ? merged : merged.sort(compareConversationEvents);
+    }
+  }
+  const merged = Array.from(byId.values());
+  return eventsSorted(merged) ? merged : merged.sort(compareConversationEvents);
 }
 
 function conversationIdsMatch(left?: string, right?: string) {
@@ -192,12 +226,37 @@ function conversationIdsMatch(left?: string, right?: string) {
   return !left || !right;
 }
 
+/**
+ * Bounded memoization of RFC3339 timestamp parses. Timestamps repeat heavily
+ * across polls (only streaming events change), so re-parsing every event on
+ * every sort/scan is wasted work. Exact Date.parse semantics: the cached
+ * number is the very value Date.parse returned.
+ */
+const parsedTimestampCache = new Map<string, number>();
+const PARSED_TIMESTAMP_CACHE_MAX = 20_000;
+
+function parseEventTimestamp(value: string | undefined): number {
+  if (!value) {
+    return Number.NaN;
+  }
+  const cached = parsedTimestampCache.get(value);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const parsed = Date.parse(value);
+  if (parsedTimestampCache.size >= PARSED_TIMESTAMP_CACHE_MAX) {
+    parsedTimestampCache.clear();
+  }
+  parsedTimestampCache.set(value, parsed);
+  return parsed;
+}
+
 export function compareConversationEvents(
   left: CodexConversation["events"][number],
   right: CodexConversation["events"][number],
 ) {
-  const leftTime = Date.parse(left.timestamp || "");
-  const rightTime = Date.parse(right.timestamp || "");
+  const leftTime = parseEventTimestamp(left.timestamp);
+  const rightTime = parseEventTimestamp(right.timestamp);
   const leftHasTime = Number.isFinite(leftTime);
   const rightHasTime = Number.isFinite(rightTime);
   if (leftHasTime !== rightHasTime) {

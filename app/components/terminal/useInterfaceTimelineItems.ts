@@ -21,6 +21,19 @@ type StableTimelineEntry = {
   item: ZenTimelineItem;
 };
 
+/**
+ * Module-level projection reuse keyed by the exact events array. The App
+ * treats event arrays as immutable (every mutation replaces the array), so a
+ * remounted screen (revisit/reconnect) that receives the same event objects —
+ * the snapshot cleaning cache returns the identical cleaned events — reuses
+ * the projection and its cache instead of re-projecting the whole history.
+ * Entries are garbage-collected with their arrays.
+ */
+const projectionReuseCache = new WeakMap<
+  CodexConversationEvent[],
+  { items: ZenTimelineItem[]; cache: ZenTimelineProjectionCache }
+>();
+
 export function useInterfaceTimelineItems({
   events,
   pendingUserMessages,
@@ -52,10 +65,19 @@ export function useInterfaceTimelineItems({
 
   // Pure event→timeline projection. Callback/set identity must not rescan events.
   const projectedTimelineItems = useMemo(() => {
+    const reused = projectionReuseCache.get(events);
+    if (reused) {
+      projectionCacheRef.current = reused.cache;
+      return reused.items;
+    }
     const projected = projectZenTimeline(
       events,
       projectionCacheRef.current,
     );
+    projectionReuseCache.set(events, {
+      items: projected.items,
+      cache: projected.cache,
+    });
     projectionCacheRef.current = projected.cache;
     return projected.items;
   }, [events]);

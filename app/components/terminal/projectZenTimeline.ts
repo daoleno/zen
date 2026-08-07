@@ -55,12 +55,18 @@ export function projectZenTimeline(
 ): ZenTimelineProjectionResult {
   const measure = isTimelineProjectionPerfEnabled();
   const started = measure ? nowMs() : 0;
-  const ordered = resolveProjectionEventOrder(events, previous);
-  const sortedEvents = ordered.sortedEvents;
 
   if (!previous) {
-    return finishFull(sortedEvents, started, measure, "no-cache", ordered.source);
+    return finishFull(
+      resolveProjectionEventOrder(events, null),
+      started,
+      measure,
+      "no-cache",
+    );
   }
+
+  const ordered = resolveProjectionEventOrder(events, previous);
+  const sortedEvents = ordered.sortedEvents;
 
   if (sortedEvents.length !== previous.sortedEvents.length) {
     const appended = tryProvenSingleEventAppend(
@@ -73,25 +79,13 @@ export function projectZenTimeline(
     if (appended) {
       return appended;
     }
-    return finishFull(
-      sortedEvents,
-      started,
-      measure,
-      "length-change",
-      ordered.source,
-    );
+    return finishFull(ordered, started, measure, "length-change");
   }
 
   // Uniqueness/item-id eligibility lives on the cache from the last full
   // projection. Do not allocate Sets on the streaming hot path.
   if (!previous.incrementalSafe || !previous.itemIndexById) {
-    return finishFull(
-      sortedEvents,
-      started,
-      measure,
-      "duplicate-event-id",
-      ordered.source,
-    );
+    return finishFull(ordered, started, measure, "duplicate-event-id");
   }
 
   let dirtyIndex = -1;
@@ -99,13 +93,7 @@ export function projectZenTimeline(
     const nextEvent = sortedEvents[index];
     const previousEvent = previous.sortedEvents[index];
     if (nextEvent.id !== previousEvent.id) {
-      return finishFull(
-        sortedEvents,
-        started,
-        measure,
-        "id-sequence-change",
-        ordered.source,
-      );
+      return finishFull(ordered, started, measure, "id-sequence-change");
     }
     if (
       nextEvent === previousEvent ||
@@ -114,13 +102,7 @@ export function projectZenTimeline(
       continue;
     }
     if (dirtyIndex >= 0) {
-      return finishFull(
-        sortedEvents,
-        started,
-        measure,
-        "multiple-dirty",
-        ordered.source,
-      );
+      return finishFull(ordered, started, measure, "multiple-dirty");
     }
     dirtyIndex = index;
   }
@@ -147,40 +129,34 @@ export function projectZenTimeline(
   const nextEvent = sortedEvents[dirtyIndex];
   const proof = proveBoundedStreamingMutation(previousEvent, nextEvent);
   if (proof) {
-    return finishFull(sortedEvents, started, measure, proof, ordered.source);
+    return finishFull(ordered, started, measure, proof);
   }
 
   const itemIndex = previous.itemIndexById.get(nextEvent.id);
   if (itemIndex == null) {
-    return finishFull(sortedEvents, started, measure, "item-missing", ordered.source);
+    return finishFull(ordered, started, measure, "item-missing");
   }
   const previousItem = previous.items[itemIndex];
   if (previousItem.id !== nextEvent.id) {
-    return finishFull(sortedEvents, started, measure, "ambiguous", ordered.source);
+    return finishFull(ordered, started, measure, "ambiguous");
   }
   if (
     previousItem.type !== "message" &&
     previousItem.type !== "activity"
   ) {
-    return finishFull(sortedEvents, started, measure, "ambiguous", ordered.source);
+    return finishFull(ordered, started, measure, "ambiguous");
   }
 
   const nextProjected = buildZenTimelineFromSortedEvents([nextEvent]);
   if (nextProjected.length !== 1) {
-    return finishFull(
-      sortedEvents,
-      started,
-      measure,
-      "presence-change",
-      ordered.source,
-    );
+    return finishFull(ordered, started, measure, "presence-change");
   }
   const nextItem = nextProjected[0];
   if (
     nextItem.id !== nextEvent.id ||
     nextItem.type !== previousItem.type
   ) {
-    return finishFull(sortedEvents, started, measure, "ambiguous", ordered.source);
+    return finishFull(ordered, started, measure, "ambiguous");
   }
 
   const items = previous.items.slice();
@@ -244,12 +220,13 @@ export function resolveProjectionEventOrder(
 }
 
 function finishFull(
-  sortedEvents: CodexConversationEvent[],
+  ordered: { sortedEvents: CodexConversationEvent[]; source: ZenTimelineEventOrderSource },
   started: number,
   measure: boolean,
   fallbackReason: TimelineProjectionFallbackReason,
-  eventOrder: ZenTimelineEventOrderSource,
 ): ZenTimelineProjectionResult {
+  const sortedEvents = ordered.sortedEvents;
+  const eventOrder = ordered.source;
   // Sorted core — never sort again here.
   const items = buildZenTimelineFromSortedEvents(sortedEvents);
   const safety = computeIncrementalSafety(sortedEvents, items);

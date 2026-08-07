@@ -654,3 +654,65 @@ INSERT INTO project(id) VALUES ('proj');
 		t.Fatalf("sqlite3 fixture: %v: %s", err, out)
 	}
 }
+
+func TestOpenCodeSettleReportsPartialFlipsAsChanged(t *testing.T) {
+	started := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	session := []openCodeSessionSeed{
+		{ID: "ses_par", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(9 * time.Second).UnixMilli()},
+	}
+	inFlightMessages := []openCodeMessageSeed{
+		{ID: "msg_user", SessionID: "ses_par", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"role":"user","time":{"created":1}}`},
+		{ID: "msg_asst", SessionID: "ses_par", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","time":{"created":1}}`},
+	}
+	inFlightParts := []openCodePartSeed{
+		{ID: "prt_start", MessageID: "msg_asst", SessionID: "ses_par", CreatedMS: started.Add(3 * time.Second).UnixMilli(), Data: `{"type":"step-start"}`},
+		{ID: "prt_text2", MessageID: "msg_asst", SessionID: "ses_par", CreatedMS: started.Add(4 * time.Second).UnixMilli(), Data: `{"type":"text","text":"streaming text"}`},
+	}
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	createOpenCodeFixtureDB(t, dbPath, session, inFlightMessages, inFlightParts)
+	t.Setenv("ZEN_OPENCODE_DB", dbPath)
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{Cwd: "/repo", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range first.Events {
+		if event.Kind == "assistant_message" && !event.Partial {
+			t.Fatalf("in-flight text must be partial: %#v", event)
+		}
+	}
+	version := reader.ConversationVersion()
+	if version == 0 {
+		t.Fatal("no content version")
+	}
+	// The turn settles: only the assistant message row changes (finish).
+	settledMessages := []openCodeMessageSeed{
+		inFlightMessages[0],
+		{ID: "msg_asst", SessionID: "ses_par", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + fmt.Sprintf("%d", started.Add(6*time.Second).UnixMilli()) + `}}`},
+	}
+	createOpenCodeFixtureDB(t, dbPath, session, settledMessages, inFlightParts)
+	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader.ConversationVersion() == version {
+		t.Fatal("settle must bump the content version")
+	}
+	for _, event := range second.Events {
+		if event.Kind == "assistant_message" && event.Partial {
+			t.Fatalf("settled text must not be partial: %#v", event)
+		}
+	}
+	// The settle clears Partial on events whose rows did not change; the
+	// changed-id report must include them so the memoized delta reaches the App.
+	changed := map[string]bool{}
+	for _, id := range reader.ChangedEventIDs() {
+		changed[id] = true
+	}
+	for _, event := range first.Events {
+		if event.Kind == "assistant_message" && !changed[event.ID] {
+			t.Fatalf("settled Partial flip not reported as changed: %q", event.ID)
+		}
+	}
+}
