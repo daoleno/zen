@@ -1,4 +1,8 @@
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
+import {
+  TERMINAL_GRID_SIZE_SOURCE,
+  TERMINAL_TEXT_SIZE_ADJUST_CSS,
+} from './terminalFontDensity';
 import { TERMINAL_SCROLL_GESTURE_CONTROLLER_SOURCE } from './terminalScrollGesture';
 
 export function buildGhosttyTerminalHtml(
@@ -45,6 +49,7 @@ export function buildGhosttyTerminalHtml(
         overflow: hidden;
         background: ${theme.background};
         overscroll-behavior: none;
+        ${TERMINAL_TEXT_SIZE_ADJUST_CSS}
       }
       body {
         user-select: none;
@@ -135,6 +140,8 @@ export function buildGhosttyTerminalHtml(
       const HAS_BUNDLED_FONT = ${escapedFontUri !== null};
       const FONT_READY_TIMEOUT_MS = 1200;
       const RENDERER_GENERATION = ${safeRendererGeneration};
+
+      ${TERMINAL_GRID_SIZE_SOURCE}
 
       let rendererReady = false;
       const send = (payload) => {
@@ -356,8 +363,14 @@ export function buildGhosttyTerminalHtml(
           const viewport = getViewportSize();
           const nextCellWidth = measureCellWidth();
           const nextCellHeight = LINE_HEIGHT_PX;
-          const nextCols = Math.max(1, Math.floor(viewport.width / nextCellWidth));
-          const nextRows = Math.max(1, Math.floor(viewport.height / nextCellHeight));
+          const nextGrid = gridSize(
+            viewport.width,
+            viewport.height,
+            nextCellWidth,
+            nextCellHeight,
+          );
+          const nextCols = nextGrid.cols;
+          const nextRows = nextGrid.rows;
           viewportWidth = viewport.width;
           viewportHeight = viewport.height;
           cellWidth = nextCellWidth;

@@ -17,6 +17,19 @@ describe("Ghostty WebView bootstrap boundary", () => {
     expect(html).toContain("send({ type: 'ready' });");
   });
 
+  test("the terminal pins its font density so OS text scaling cannot inflate the grid", () => {
+    const html = buildGhosttyTerminalHtml(
+      theme,
+      "https://zen.local/font.ttf",
+      13,
+      0,
+    );
+
+    expect(html).toContain("-webkit-text-size-adjust: none;");
+    expect(html).toContain("text-size-adjust: none;");
+    expect(html).toContain("const gridSize = (viewportWidth, viewportHeight, cellWidth, cellHeight)");
+  });
+
   test("inline bootstrap failures and font timeout are observable and bounded", () => {
     const html = buildGhosttyTerminalHtml(
       theme,

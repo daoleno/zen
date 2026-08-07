@@ -32,6 +32,7 @@ import {
   terminalFontCache,
 } from './terminalSurfaceBootstrap';
 import { terminalWebViewBaseUrl } from './terminalWebViewSource';
+import { terminalWebViewDensityProps } from './terminalFontDensity';
 import { useGhosttyTerminalController } from './useGhosttyTerminalController';
 
 export const TerminalSurfaceGhosttyWebView = forwardRef<
@@ -200,6 +201,7 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
         contentInsetAdjustmentBehavior="never"
         allowsLinkPreview={false}
         overScrollMode="never"
+        {...terminalWebViewDensityProps(Platform.OS)}
         // Keep a dedicated compositor layer so focus transitions do not leave
         // a stale blank buffer until the next touch.
         androidLayerType="hardware"
