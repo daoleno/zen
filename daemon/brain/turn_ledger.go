@@ -277,6 +277,7 @@ type turnMutation struct {
 	hint                *watcher.TurnHint
 	dropHintKind        string
 	workUpdate          WorkUpdate
+	recordFact          bool
 	changed             bool
 }
 
@@ -332,16 +333,31 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.EvidenceProvider:
 		switch fact.Kind {
 		case "admission":
-			if status != watcher.TurnAdmitted || fact.Admission.Empty() {
+			// The admission tuple must prove this input began inside the
+			// turn's admission window; stale pre-window admissions never
+			// promote a newer turn.
+			if status != watcher.TurnAdmitted || fact.Admission.Empty() ||
+				(!fact.Admission.At.IsZero() && fact.Admission.At.Before(turn.AcceptedAt)) {
 				return mutation, nil
 			}
 			status = watcher.TurnAccepted
 			admission = fact.Admission
 			activityID = firstNonEmpty(activityID, fact.ActivityID)
 			summary = firstNonEmpty(fact.Summary, "Delegated turn accepted")
+			mutation.recordAdmission = true
 			mutation.changed = true
 		case "running":
+			inWindow := fact.StartedAt.IsZero() || !fact.StartedAt.Before(turn.AcceptedAt)
 			if !binding && !adopts {
+				// An unbound running fact is diagnostic evidence only — except
+				// that provider running inside the admission window
+				// contradicts any provisional same-kind hint (Phase 1b legacy
+				// reconciliation: history showing the turn still running drops
+				// the false done hint, C.2.8).
+				if inWindow {
+					mutation.dropHintKind = "session.done"
+					mutation.changed = true
+				}
 				return mutation, nil
 			}
 			if adopts {
@@ -373,7 +389,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			if strings.TrimSpace(turn.ActivityID) == "" && activityID != "" {
 				mutation.activityID = activityID
 			}
-			mutation.dropHintKind = firstNonEmpty(mutation.dropHintKind, "done")
+			mutation.dropHintKind = firstNonEmpty(mutation.dropHintKind, "session.done")
 		case "attention":
 			if !binding && !adopts {
 				return mutation, nil
@@ -431,14 +447,25 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			// Attention cleared / lease renewal: refreshes Accepted, Running,
 			// and Blocked. Control never promotes Admitted (only an accepted
 			// Receipt or a bound Provider admission/activity proves the input
-			// began) and never terminalizes.
+			// began) and never terminalizes. Every heartbeat is a distinct
+			// durable fact (its progress_event_id is part of the FactID), so
+			// later identical heartbeats still renew the lease record.
 			switch status {
-			case watcher.TurnAccepted, watcher.TurnRunning:
+			case watcher.TurnAccepted:
+				status = watcher.TurnRunning
+				if fact.Summary != "" {
+					summary = fact.Summary
+				} else {
+					summary = firstNonEmpty(summary, "Delegated turn running")
+				}
+				attention = ""
+				mutation.recordFact = true
+			case watcher.TurnRunning:
 				if fact.Summary != "" && fact.Summary != summary {
 					summary = fact.Summary
 				}
 				attention = ""
-				mutation.changed = attention != turn.Attention || summary != turn.Summary
+				mutation.recordFact = true
 			case watcher.TurnBlocked:
 				status = watcher.TurnRunning
 				attention = ""
@@ -447,7 +474,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				} else {
 					summary = firstNonEmpty(summary, "Delegated turn running")
 				}
-				mutation.changed = true
+				mutation.recordFact = true
 			}
 		case "attention":
 			if status != watcher.TurnBlocked {
@@ -478,11 +505,13 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		}
 	case watcher.EvidenceReceipt:
 		if fact.Kind == "admission" && status == watcher.TurnAdmitted &&
-			!fact.Admission.Empty() {
+			!fact.Admission.Empty() &&
+			(fact.Admission.At.IsZero() || !fact.Admission.At.Before(turn.AcceptedAt)) {
 			status = watcher.TurnAccepted
 			admission = fact.Admission
 			activityID = firstNonEmpty(activityID, fact.ActivityID)
 			summary = firstNonEmpty(fact.Summary, "Delegated input accepted")
+			mutation.recordAdmission = true
 			mutation.changed = true
 		}
 	case watcher.EvidenceLiveness:
@@ -509,7 +538,11 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				settledAt = &settled
 			}
 			mutation.changed = true
-			applyEvent("session.failed", true, summary)
+			if status == watcher.TurnUnknown {
+				applyEvent("session.uncertain", true, summary)
+			} else {
+				applyEvent("session.failed", true, summary)
+			}
 		case "uncertain":
 			// ProcessDead without a readable bound terminal, or SessionReplaced
 			// with a different live identity: end-of-identity → Unknown, never
@@ -573,7 +606,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	} else if mutation.eventKind == "session.stale" {
 		mutation.workUpdate = derivedWorkUpdate(status, turn.SessionID, mutation.eventKind)
 	}
-	if rowChanged || mutation.eventKind != "" || mutation.hint != nil {
+	if rowChanged || mutation.eventKind != "" || mutation.hint != nil || mutation.recordFact {
 		mutation.changed = true
 	}
 	return mutation, nil
@@ -636,6 +669,12 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	needsInput := WorkNeedsInput
 	waiting := WorkWaiting
 	sessionWait := "Session " + sessionID
+	if eventKind == "session.stale" {
+		// Lease expiry never moves canonical status; the stale wake is
+		// needs_input regardless of the current canonical state.
+		next := "Inspect the delegated Session lease expiry."
+		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
+	}
 	switch status {
 	case watcher.TurnAccepted, watcher.TurnRunning:
 		next := "Wait for the delegated Session."
@@ -649,10 +688,6 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 		return terminalSessionWorkUpdate("session.failed")
 	case watcher.TurnUnknown:
 		next := "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
-	}
-	if eventKind == "session.stale" {
-		next := "Inspect the delegated Session lease expiry."
 		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
 	}
 	return WorkUpdate{Status: &waiting}
@@ -886,7 +921,27 @@ func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 		candidate.SessionID = strings.TrimSpace(candidate.SessionID)
 		candidate.TurnID = strings.TrimSpace(candidate.TurnID)
 		candidate.WorkID = strings.TrimSpace(candidate.WorkID)
-		if candidate.SessionID == "" || candidate.TurnID == "" || candidate.WorkID == "" {
+		if candidate.SessionID == "" || candidate.TurnID == "" {
+			continue
+		}
+		if candidate.WorkID == "" {
+			for _, item := range database.BrainWork {
+				if strings.TrimSpace(item.OwnerSessionID) == candidate.SessionID {
+					candidate.WorkID = item.ID
+					break
+				}
+			}
+		}
+		workExists := false
+		for _, item := range database.BrainWork {
+			if item.ID == candidate.WorkID {
+				workExists = true
+				break
+			}
+		}
+		if !workExists {
+			// A marker without an owning Work cannot be imported; it is left
+			// quarantined rather than failing the whole migration.
 			continue
 		}
 		exists := false

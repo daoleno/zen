@@ -1067,7 +1067,7 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 }
 
 func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
-	if !event.Actionable || event.ConsumedAt != nil {
+	if !event.Actionable || event.ConsumedAt != nil || event.DiscardedAt != nil {
 		return false
 	}
 	index := workIndex(database.BrainWork, event.WorkID)

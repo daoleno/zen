@@ -860,6 +860,9 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil {
 		t.Fatalf("failed send claim = %#v", events)
 	}
+	// The tmux receipt ledger proves the mutation may have begun: the claim
+	// is held forever, never released by elapsed time, never replayed.
+	fw.setReceiptOutcome(events[0].ID, watcher.InputAmbiguous)
 	fw.sendErr = nil
 	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
 		t.Fatalf("uncertain delivery retried: woke=%v err=%v", woke, err)
@@ -876,6 +879,16 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	}
 	if events[0].ClaimedAt == nil || events[0].ConsumedAt != nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
+	}
+	// The held claim is surfaced as a deduped delivery.ambiguous note.
+	noteFound := false
+	for _, event := range events {
+		if event.Kind == "delivery.ambiguous" && !event.Actionable {
+			noteFound = true
+		}
+	}
+	if !noteFound {
+		t.Fatalf("ambiguous claim missing delivery.ambiguous note: %#v", events)
 	}
 }
 
