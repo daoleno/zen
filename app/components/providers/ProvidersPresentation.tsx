@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -30,12 +30,19 @@ import {
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { RisingSheet } from "../ui/RisingSheet";
-import { providerEditorCanSave } from "./providersPresentationModel";
+import {
+  providerEditorAfterSave,
+  providerEditorCanSave,
+  providerEditorSessionKey,
+  providerEditorShouldResetFields,
+  type ProviderSaveOutcome,
+  type ProvidersEditorState,
+} from "./providersPresentationModel";
 
-export type ProvidersEditorState =
-  | { kind: "add" }
-  | { kind: "credential"; connection: ProviderConnection }
-  | null;
+export type {
+  ProviderSaveOutcome,
+  ProvidersEditorState,
+} from "./providersPresentationModel";
 
 export interface ProvidersPresentationProps {
   catalog: ProvidersSnapshot | null;
@@ -60,16 +67,16 @@ export interface ProvidersPresentationProps {
   onSaveCurated(
     preset: ProviderPreset,
     apiKey: string,
-  ): Promise<boolean> | boolean;
+  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   onSaveCustom(input: {
     name: string;
     baseUrl: string;
     apiKey: string;
-  }): Promise<boolean> | boolean;
+  }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   onSaveCredential(
     connection: ProviderConnection,
     apiKey: string,
-  ): Promise<boolean> | boolean;
+  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
 }
 
 export function ProvidersPresentation({
@@ -520,16 +527,16 @@ interface ProviderEditorSheetProps {
   onSaveCurated(
     preset: ProviderPreset,
     apiKey: string,
-  ): Promise<boolean> | boolean;
+  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   onSaveCustom(input: {
     name: string;
     baseUrl: string;
     apiKey: string;
-  }): Promise<boolean> | boolean;
+  }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   onSaveCredential(
     connection: ProviderConnection,
     apiKey: string,
-  ): Promise<boolean> | boolean;
+  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
 }
 
 function ProviderEditorSheet({
@@ -553,18 +560,31 @@ function ProviderEditorSheet({
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
 
-  const editorKey = editor
-    ? editor.kind === "credential"
-      ? `credential:${editor.connection.id}`
-      : "add"
-    : null;
+  const sessionKey = providerEditorSessionKey(editor);
+  const prevSessionKeyRef = useRef(sessionKey);
 
   useEffect(() => {
+    const previous = prevSessionKeyRef.current;
+    prevSessionKeyRef.current = sessionKey;
+    if (providerEditorShouldResetFields(previous, sessionKey)) {
+      setPresetId(null);
+      setApiKey("");
+      setName("");
+      setBaseUrl("");
+    }
+  }, [sessionKey]);
+
+  const resetFields = () => {
     setPresetId(null);
     setApiKey("");
     setName("");
     setBaseUrl("");
-  }, [editorKey]);
+  };
+
+  const handleClose = () => {
+    resetFields();
+    onClose();
+  };
 
   const connection =
     editor?.kind === "credential" ? editor.connection : null;
@@ -582,30 +602,33 @@ function ProviderEditorSheet({
   const title = connection
     ? connection.credential_ready
       ? "Replace API key"
-      : "Add API key"
+      : editor?.kind === "credential" && editor.retry
+        ? "Retry API key"
+        : "Add API key"
     : "Add Provider";
 
   const handleSave = async () => {
     if (!canSave) return;
-    const key = apiKey;
-    setApiKey("");
-    if (connection) {
-      await onSaveCredential(connection, key);
-      return;
-    }
-    if (selectedPreset) {
-      await onSaveCurated(selectedPreset, key);
-      return;
-    }
-    if (isCustom) {
-      await onSaveCustom({ name: name.trim(), baseUrl: baseUrl.trim(), apiKey: key });
+    const outcome = connection
+      ? await onSaveCredential(connection, apiKey)
+      : selectedPreset
+        ? await onSaveCurated(selectedPreset, apiKey)
+        : isCustom
+          ? await onSaveCustom({
+              name: name.trim(),
+              baseUrl: baseUrl.trim(),
+              apiKey,
+            })
+          : null;
+    if (outcome?.status === "saved") {
+      resetFields();
     }
   };
 
   return (
     <RisingSheet
       visible={editor !== null}
-      onClose={onClose}
+      onClose={handleClose}
       align="bottom"
       avoidKeyboard
       cardStyle={[
@@ -627,14 +650,21 @@ function ProviderEditorSheet({
             accessibilityRole="button"
             hitSlop={8}
             style={styles.editorClose}
-            onPress={onClose}
+            onPress={handleClose}
           >
             <Ionicons name="close" size={22} color={colors.textSecondary} />
           </Pressable>
         </View>
 
         {connection ? (
-          <Text style={styles.editorProviderName}>{connection.name}</Text>
+          <>
+            <Text style={styles.editorProviderName}>{connection.name}</Text>
+            {editor?.kind === "credential" && editor.retry ? (
+              <Text style={styles.editorRetryHint}>
+                The API key wasn't saved. Try again with the same key.
+              </Text>
+            ) : null}
+          </>
         ) : (
           <>
             <Text style={styles.fieldLabel}>Provider</Text>
@@ -1028,6 +1058,12 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       ...UiTextMetrics,
       ...TypeScale.body,
       color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    editorRetryHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.warning,
       marginBottom: 4,
     },
     fieldLabel: {

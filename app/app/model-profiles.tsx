@@ -4,7 +4,9 @@ import { useFocusEffect, useRouter } from "expo-router";
 import {
   ProvidersPresentation,
   type ProvidersEditorState,
+  type ProviderSaveOutcome,
 } from "../components/providers/ProvidersPresentation";
+import { providerEditorAfterSave } from "../components/providers/providersPresentationModel";
 import {
   ProviderError,
   ProviderRequestOwner,
@@ -431,6 +433,25 @@ export default function ProvidersScreen() {
     setEditor(null);
   }, []);
 
+  // A save outcome that settles after the user already closed the overlay
+  // must not reopen it: only confirmed success or explicit close resets.
+  const editorOpenRef = useRef(false);
+  editorOpenRef.current = editor !== null;
+
+  const applySaveOutcome = useCallback(
+    (outcome: ProviderSaveOutcome) => {
+      if (outcome.status === "saved") {
+        closeEditor();
+        return;
+      }
+      if (outcome.status === "credential_failed" && !editorOpenRef.current) {
+        return;
+      }
+      setEditor((previous) => providerEditorAfterSave(previous, outcome));
+    },
+    [closeEditor],
+  );
+
   return (
     <ProvidersPresentation
       catalog={catalog}
@@ -492,7 +513,7 @@ export default function ProvidersScreen() {
       }}
       onSaveCurated={async (preset, apiKey) => {
         const previous = catalogRef.current;
-        if (!previous) return false;
+        if (!previous) return { status: "create_failed" as const };
         const created = await runMutation(() =>
           wsClient.upsertProviderConnection(currentServerId!, {
             revision,
@@ -500,7 +521,7 @@ export default function ProvidersScreen() {
             connection: curatedCreateInput(preset),
           }),
         );
-        if (!created) return false;
+        if (!created) return { status: "create_failed" as const };
         let connection: ProviderConnection;
         try {
           connection = resolveCreatedConnection({
@@ -513,17 +534,19 @@ export default function ProvidersScreen() {
           syncWriteLockUi();
           const presented = presentProviderError(identityError);
           Alert.alert(presented.title, presented.message);
-          closeEditor();
           void loadCatalog({ soft: true });
-          return false;
+          return { status: "create_failed" as const };
         }
         const ok = await saveCredential(connection.id, apiKey);
-        closeEditor();
-        return ok;
+        const outcome: ProviderSaveOutcome = ok
+          ? { status: "saved" }
+          : { status: "credential_failed", connection };
+        applySaveOutcome(outcome);
+        return outcome;
       }}
       onSaveCustom={async ({ name, baseUrl, apiKey }) => {
         const previous = catalogRef.current;
-        if (!previous) return false;
+        if (!previous) return { status: "create_failed" as const };
         const created = await runMutation(() =>
           wsClient.upsertProviderConnection(currentServerId!, {
             revision,
@@ -531,7 +554,7 @@ export default function ProvidersScreen() {
             connection: customGatewayCreateInput({ name, baseUrl }),
           }),
         );
-        if (!created) return false;
+        if (!created) return { status: "create_failed" as const };
         let connection: ProviderConnection;
         try {
           connection = resolveCreatedConnection({
@@ -544,18 +567,23 @@ export default function ProvidersScreen() {
           syncWriteLockUi();
           const presented = presentProviderError(identityError);
           Alert.alert(presented.title, presented.message);
-          closeEditor();
           void loadCatalog({ soft: true });
-          return false;
+          return { status: "create_failed" as const };
         }
         const ok = await saveCredential(connection.id, apiKey);
-        closeEditor();
-        return ok;
+        const outcome: ProviderSaveOutcome = ok
+          ? { status: "saved" }
+          : { status: "credential_failed", connection };
+        applySaveOutcome(outcome);
+        return outcome;
       }}
       onSaveCredential={async (connection, apiKey) => {
         const ok = await saveCredential(connection.id, apiKey);
-        closeEditor();
-        return ok;
+        const outcome: ProviderSaveOutcome = ok
+          ? { status: "saved" }
+          : { status: "credential_failed", connection };
+        applySaveOutcome(outcome);
+        return outcome;
       }}
     />
   );

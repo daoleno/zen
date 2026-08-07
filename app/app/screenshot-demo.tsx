@@ -658,9 +658,9 @@ function ProvidersDemo() {
         onDelete={NOOP}
         onSetDefault={NOOP}
         onDiscover={NOOP}
-        onSaveCurated={() => false}
-        onSaveCustom={() => false}
-        onSaveCredential={() => false}
+        onSaveCurated={() => ({ status: "saved" })}
+        onSaveCustom={() => ({ status: "saved" })}
+        onSaveCredential={() => ({ status: "saved" })}
       />
     </SafeAreaView>
   );
