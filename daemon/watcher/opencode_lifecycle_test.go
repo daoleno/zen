@@ -139,7 +139,7 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 
 	// The poll adopts the live provider activity: Admitted → Accepted →
 	// Running through the single reducer, never failed.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(3*time.Second), turn, probe.next(), nil)
 	if turn.Status != TurnRunning {
 		t.Fatalf("provider-native running did not promote the turn: %+v", turn)
 	}
@@ -150,16 +150,16 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	}
 
 	// Authoritative settlement: provider completed plus settled evidence.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(21*time.Second), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(21*time.Second), turn, probe.next(), nil)
 	if turn.Status != TurnDone {
 		t.Fatalf("authoritative settlement = %+v, want done", turn)
 	}
 
 	// The terminal turn is immutable: a later running observation must not
 	// reopen it (the reducer ignores facts for terminal turns).
-	applied := w.applyPollFacts(sessionID, true, -1, now.Add(26*time.Second), turn, ProviderActivityObservation{
+	applied := w.applyPollFacts(sessionID, true, -1, 1, now.Add(26*time.Second), turn, ProviderActivityObservation{
 		ID: "act-turn", Status: "running", StartedAt: now.Add(25 * time.Second), Structured: true,
-	})
+	}, nil)
 	if applied.Status != TurnDone {
 		t.Fatalf("terminal turn reopened after settlement: %+v", applied)
 	}
@@ -236,11 +236,11 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 		t.Fatalf("follow-up created a competing lifecycle: %+v", turn)
 	}
 
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(3*time.Second), turn, probe.next(), nil)
 	if turn.Status != TurnRunning {
 		t.Fatalf("follow-up activity did not promote: %+v", turn)
 	}
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(21*time.Second), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(21*time.Second), turn, probe.next(), nil)
 	if turn.Status != TurnDone {
 		t.Fatalf("settlement = %+v, want done", turn)
 	}
@@ -353,7 +353,7 @@ func TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity(t *
 		AdmissionCursor: 5,
 		Structured:      true,
 	}
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(5*time.Second), turn, stale)
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(5*time.Second), turn, stale, nil)
 	if turn.Status != TurnAccepted {
 		t.Fatalf("stale completed activity terminalized the new turn: %+v", turn)
 	}
@@ -448,7 +448,7 @@ func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing
 
 	// The poll adopts the live provider activity: the new canonical turn
 	// supersedes the old terminal projection, without replay.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(3*time.Second), turn, probe.next(), nil)
 	if turn.Status != TurnRunning || !turn.HasAdmission {
 		t.Fatalf("poll adoption = %+v, want Running with bound admission", turn)
 	}
@@ -457,7 +457,7 @@ func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing
 	}
 
 	// The true completion settles the new canonical turn exactly once.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(11*time.Minute), turn, probe.next())
+	turn = w.applyPollFacts(sessionID, true, -1, 1, now.Add(11*time.Minute), turn, probe.next(), nil)
 	if turn.Status != TurnDone {
 		t.Fatalf("true completion = %+v, want Done", turn)
 	}

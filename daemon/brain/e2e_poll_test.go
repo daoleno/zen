@@ -248,3 +248,118 @@ func TestE2ERealPollPiBlockedFrameNeverWakes(t *testing.T) {
 		t.Fatalf("Pi turn status = %s, want running", snapshot.Status)
 	}
 }
+
+// TestE2ERealPollSamePaneReplacementNeverFails is the Brain-adjudicated
+// regression: the same pane respawned with a new PID/process-start exits
+// non-zero while Provider history is unreadable (nil probe). The recorded
+// process continuity cannot be proved, so the turn must resolve Unknown with
+// exactly one uncertain wake and zero failed wakes — pane identity alone
+// never authorizes Failed for the old turn.
+func TestE2ERealPollSamePaneReplacementNeverFails(t *testing.T) {
+	store, service, hostWatcher, sessionID, turnID := e2eStore(t)
+	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	e2eAdmission(t, store, sessionID, turnID, at)
+
+	// Unreadable Provider history: no probe installed.
+	cancel := runRealWatcher(t, watcher.PollSources{
+		ListWindows: func() ([]watcher.PollWindow, error) {
+			return []watcher.PollWindow{{
+				Target: sessionID, Name: "opencode", Cwd: "/repo",
+				Command: "opencode", PanePID: 300, Delegated: true, // respawned PID
+			}}, nil
+		},
+		CapturePane: func(string) (string, bool, int) {
+			return "OpenCode\n", false, 1 // dead, non-zero exit
+		},
+		SnapshotProcesses: func() map[int]watcher.PollProcess {
+			return map[int]watcher.PollProcess{300: {PID: 300, Comm: "opencode"}}
+		},
+		// Same pane lifetime: the generation matches the recorded one, so
+		// the continuity gate (not the pane gate) must decide.
+		PaneGeneration: func(string) string { return "pane-1" },
+	}, nil, service)
+	defer cancel()
+
+	waitForTurnStatus(t, store, sessionID, watcher.TurnUnknown)
+	// Let further polls run: the turn must stay Unknown, never Failed.
+	time.Sleep(200 * time.Millisecond)
+	snapshot, _, _ := store.Turn(sessionID)
+	if snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("same-pane replacement turn = %s, want Unknown (never Failed)", snapshot.Status)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	events, _ := store.ListWorkEvents(workItem.ID)
+	uncertain := 0
+	failed := 0
+	for _, event := range events {
+		switch {
+		case strings.HasSuffix(event.DedupeKey, ":session.uncertain"):
+			uncertain++
+		case strings.HasSuffix(event.DedupeKey, ":session.failed"):
+			failed++
+		}
+	}
+	if uncertain != 1 {
+		t.Fatalf("uncertain wakes = %d, want exactly one: %#v", uncertain, events)
+	}
+	if failed != 0 {
+		t.Fatalf("failed wakes = %d, want zero: %#v", failed, events)
+	}
+	// Dispatch delivers exactly the one uncertain wake, nothing failed.
+	for range 2 {
+		_, _ = service.DispatchPendingEvent()
+	}
+	for _, call := range hostWatcher.sentCalls {
+		if strings.Contains(call.text, `"kind":"session.failed"`) {
+			t.Fatalf("delivered a failed wake for a replaced process: %#v", hostWatcher.sentCalls)
+		}
+	}
+}
+
+// TestE2ERealPollMatchedProcessAbnormalExitFails retains the authoritative
+// matched path: the recorded pane AND the exact recorded process lifetime
+// (PanePID and ProcessID continuity, ProcessID free in the snapshot) die
+// with a non-zero exit → canonical Failed with exactly one failed wake.
+func TestE2ERealPollMatchedProcessAbnormalExitFails(t *testing.T) {
+	store, service, hostWatcher, sessionID, turnID := e2eStore(t)
+	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	e2eAdmission(t, store, sessionID, turnID, at)
+
+	cancel := runRealWatcher(t, watcher.PollSources{
+		ListWindows: func() ([]watcher.PollWindow, error) {
+			return []watcher.PollWindow{{
+				Target: sessionID, Name: "opencode", Cwd: "/repo",
+				Command: "opencode", PanePID: 100, Delegated: true, // recorded pane PID
+			}}, nil
+		},
+		CapturePane: func(string) (string, bool, int) {
+			return "OpenCode\n", false, 1 // dead, non-zero exit
+		},
+		SnapshotProcesses: func() map[int]watcher.PollProcess { return nil }, // recorded PID free
+		PaneGeneration:    func(string) string { return "pane-1" },
+	}, nil, service)
+	defer cancel()
+
+	waitForTurnStatus(t, store, sessionID, watcher.TurnFailed)
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	events, _ := store.ListWorkEvents(workItem.ID)
+	failed := 0
+	for _, event := range events {
+		if strings.HasSuffix(event.DedupeKey, ":session.failed") && event.Actionable {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("failed wakes = %d, want exactly one: %#v", failed, events)
+	}
+	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
+		t.Fatalf("failed wake dispatch = woke=%v err=%v", woke, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("duplicate failed dispatch = woke=%v err=%v", woke, err)
+	}
+	if len(hostWatcher.sentCalls) != 1 {
+		t.Fatalf("failed deliveries = %d, want exactly one", len(hostWatcher.sentCalls))
+	}
+}

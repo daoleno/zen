@@ -7,46 +7,108 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-// TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn covers P1.5:
-// a non-zero exit from a replaced or unreadable pane lifetime can never
-// produce a canonical Failed fact — it resolves to end-of-identity Unknown.
+// TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn covers the
+// frozen CR.3 RecordedIdentity contract: a non-zero exit produces canonical
+// Failed only when the dead pane matches the recorded pane lifetime AND the
+// pane's process chain was not respawned (recorded PanePID still reported)
+// AND the recorded provider process (ProcessID, ProcessStart) is provably
+// gone. Every missing/mismatched/unprovable continuity resolves Unknown.
 func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
-	for _, test := range []struct {
+	recordedStart := int64(1700000000000000000)
+	liveStart := int64(1700000001000000000)
+	turnStart := time.Unix(0, recordedStart).UTC()
+	tests := []struct {
 		name          string
 		recordedGen   string
 		currentGen    string
 		deadStatus    int
-		wantFactKinds []string
+		recordedPanePID int
+		recordedProcID  int
+		recordedProcStart int64
+		panePID       int
+		processes     map[int]processInfo
+		wantFailed    bool
 	}{
 		{
 			name:          "replaced pane with nonzero exit",
 			recordedGen:   "recorded-pane",
 			currentGen:    "replacement-pane",
 			deadStatus:    1,
-			wantFactKinds: []string{"uncertain"},
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       100,
+			wantFailed:    false,
 		},
 		{
 			name:          "unreadable pane identity with nonzero exit",
 			recordedGen:   "recorded-pane",
 			currentGen:    "",
 			deadStatus:    1,
-			wantFactKinds: []string{"uncertain"},
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       100,
+			wantFailed:    false,
 		},
 		{
 			name:          "missing recorded identity with nonzero exit",
-			recordedGen:   "",
-			currentGen:    "",
 			deadStatus:    1,
-			wantFactKinds: []string{"uncertain"},
+			panePID:       100,
+			wantFailed:    false,
 		},
 		{
-			name:          "recorded pane matched with nonzero exit is abnormal",
+			name:          "same pane respawned with new PID and nonzero exit",
 			recordedGen:   "recorded-pane",
 			currentGen:    "recorded-pane",
 			deadStatus:    1,
-			wantFactKinds: []string{"failed"},
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       300,
+			wantFailed:    false,
 		},
-	} {
+		{
+			name:          "recorded process still alive with recorded start",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       100,
+			processes: map[int]processInfo{
+				200: {pid: 200, startedAt: turnStart, comm: "opencode"},
+			},
+			wantFailed:    false,
+		},
+		{
+			name:          "recorded process PID reused by different lifetime",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       100,
+			processes: map[int]processInfo{
+				200: {pid: 200, startedAt: time.Unix(0, liveStart).UTC(), comm: "opencode"},
+			},
+			wantFailed:    false,
+		},
+		{
+			name:          "exact recorded process lifetime matched is abnormal",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: recordedStart,
+			panePID:       100,
+			wantFailed:    true,
+		},
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			io := newFakeSessionInputIO()
 			io.paneValue = sessionInputPane{alive: false, paneID: "%9", generation: test.currentGen}
@@ -58,6 +120,9 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 				AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
 				PaneGeneration:  test.recordedGen,
 				ProcessIdentity: "recorded-proc",
+				PanePID:         test.recordedPanePID,
+				ProcessID:       test.recordedProcID,
+				ProcessStart:    test.recordedProcStart,
 			})
 			w := New(time.Second)
 			owner := newSessionInputOwner(io)
@@ -66,23 +131,22 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			w.turnLedger = ledger
 
 			turn, _, _ := ledger.Turn("agent:@1")
-			turn = w.applyPollFacts("agent:@1", false, test.deadStatus, time.Now().UTC(), turn, ProviderActivityObservation{})
+			turn = w.applyPollFacts("agent:@1", false, test.deadStatus, test.panePID,
+				time.Now().UTC(), turn, ProviderActivityObservation{}, test.processes)
 
 			kinds := map[string]bool{}
 			for _, fact := range ledger.applied {
 				kinds[fact.Kind] = true
 			}
-			for _, want := range test.wantFactKinds {
-				if !kinds[want] {
-					t.Fatalf("applied facts = %#v, want kind %q", ledger.applied, want)
-				}
+			if kinds["failed"] != test.wantFailed {
+				t.Fatalf("failed fact presence = %v (want %v), applied = %#v",
+					kinds["failed"], test.wantFailed, ledger.applied)
 			}
-			if kinds["failed"] != (test.deadStatus != 0 && test.recordedGen != "" && test.recordedGen == test.currentGen) {
-				t.Fatalf("failed fact presence = %v, applied = %#v", kinds["failed"], ledger.applied)
+			if !kinds["uncertain"] && !test.wantFailed {
+				t.Fatalf("missing uncertain resolution, applied = %#v", ledger.applied)
 			}
 			// The fake ledger resolves every liveness fact to Unknown; the
-			// point of this test is the fact choice (never a Failed fact for
-			// replaced/unreadable identities), which is asserted above.
+			// point of this test is the fact choice, asserted above.
 			if turn.Status != TurnUnknown {
 				t.Fatalf("liveness resolution = %+v, want Unknown", turn)
 			}
@@ -197,5 +261,72 @@ func TestPollPiBlockedPaneNeverWakesTurnTrackedSession(t *testing.T) {
 	agent = agentByID(w.Agents(), "brain-agent-pi:@1")
 	if agent == nil || agent.State != classifier.StateRunning {
 		t.Fatalf("Pi session after repeated poll = %#v, want running", agent)
+	}
+}
+
+// TestPollLivenessAppliesWithoutProviderProbe covers the Round-3 gate
+// change: applyPollFacts runs for every mutable ledger-tracked turn even
+// when no Provider probe is installed — only the Provider observation is
+// skipped, so liveness facts (end-of-identity, abnormal exit) always reach
+// the reducer.
+func TestPollLivenessAppliesWithoutProviderProbe(t *testing.T) {
+	w := New(time.Second)
+	w.pollNow = fakePollClock([]time.Time{
+		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
+		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
+	})
+	ledger := newFakeTurnLedger()
+	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
+		SessionID:       "brain-agent-worker:@1",
+		TurnID:          "brain-agent-worker:@1:turn:1",
+		Status:          TurnRunning,
+		AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
+		ProcessIdentity: "recorded-proc",
+		PanePID:         100,
+		ProcessID:       200,
+		ProcessStart:    1700000000000000000,
+	})
+	w.turnLedger = ledger
+	// No Provider probe installed (nil): the mutable turn must still be
+	// applied, with only the Provider observation gated.
+	windows := []tmuxWindow{
+		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "opencode", panePID: 100, delegated: true},
+	}
+	restore := installFakePollSeams(windows, map[string]string{
+		"brain-agent-worker:@1": "OpenCode\n",
+	}, map[int]processInfo{})
+	defer restore()
+	// The pane dies with a non-zero exit: the liveness fact must reach the
+	// reducer even with a nil probe.
+	previousCapture := capturePaneContentFunc
+	capturePaneContentFunc = func(target string) (string, bool, int) {
+		content, _, _ := previousCapture(target)
+		return content, false, 1
+	}
+	defer func() { capturePaneContentFunc = previousCapture }()
+
+	w.poll()
+	drainWatcherEvents(w)
+
+	kinds := map[string]bool{}
+	providerFacts := 0
+	for _, fact := range ledger.applied {
+		kinds[fact.Kind] = true
+		if fact.Class == EvidenceProvider {
+			providerFacts++
+		}
+	}
+	if !kinds["uncertain"] {
+		t.Fatalf("liveness fact missing with nil probe: %#v", ledger.applied)
+	}
+	if kinds["failed"] {
+		t.Fatalf("unprovable identity produced a failed fact: %#v", ledger.applied)
+	}
+	if providerFacts != 0 {
+		t.Fatalf("provider observation applied with nil probe: %#v", ledger.applied)
+	}
+	agent := agentByID(w.Agents(), "brain-agent-worker:@1")
+	if agent == nil || agent.State != classifier.StateUnknown {
+		t.Fatalf("projection = %#v, want Unknown from the liveness fact", agent)
 	}
 }

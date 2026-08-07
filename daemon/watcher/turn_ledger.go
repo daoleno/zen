@@ -111,7 +111,15 @@ type TurnSnapshot struct {
 	// ProcessIdentity is the recorded provider process identity at admission;
 	// it anchors deterministic liveness FactIDs (never observation time).
 	ProcessIdentity string
-	UpdatedAt       time.Time
+	// PanePID/PaneStart/ProcessID/ProcessStart are the readably recorded
+	// RecordedIdentity tuple (frozen CR.3): the pane's first process and the
+	// exact provider process lifetime. They prove abnormal-exit ownership at
+	// death; zero values mean the continuity cannot be proven (fail closed).
+	PanePID     int
+	PaneStart   int64
+	ProcessID   int
+	ProcessStart int64
+	UpdatedAt   time.Time
 }
 
 // TurnFact is one provider-neutral observation applied to the canonical turn
@@ -207,6 +215,13 @@ type AdmittedTurn struct {
 	ProcessIdentity string
 	PaneGeneration  string
 	PayloadSHA256   string
+	// RecordedIdentity tuple (frozen CR.3): the pane's first process and the
+	// exact provider process lifetime, persisted readably so abnormal-exit
+	// proof can verify continuity at death.
+	PanePID     int
+	PaneStart   int64
+	ProcessID   int
+	ProcessStart int64
 }
 
 // LegacyDelegatedTurnMarker is one pre-protocol tmux @zen_delegated_turn

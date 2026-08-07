@@ -31,7 +31,15 @@ type TurnRecord struct {
 	Summary         string               `json:"summary,omitempty"`
 	Facts           []TurnFactRecord     `json:"facts"`
 	Hints           []watcher.TurnHint   `json:"hints,omitempty"`
-	UpdatedAt       time.Time            `json:"updated_at"`
+	// RecordedIdentity tuple (frozen CR.3): readably persisted so
+	// abnormal-exit Failed can prove the nonzero exit belongs to the exact
+	// recorded process lifetime. Zero values mean continuity is unprovable
+	// (legacy rows, missing identity) and abnormal exits fail closed.
+	PanePID      int   `json:"pane_pid,omitempty"`
+	PaneStart    int64 `json:"pane_start,omitempty"`
+	ProcessID    int   `json:"process_id,omitempty"`
+	ProcessStart int64 `json:"process_start,omitempty"`
+	UpdatedAt    time.Time            `json:"updated_at"`
 }
 
 // TurnFactRecord is one durable applied observation on a turn. FactID is the
@@ -168,6 +176,10 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 		Hints:           append([]watcher.TurnHint(nil), t.Hints...),
 		PaneGeneration:  t.PaneGeneration,
 		ProcessIdentity: t.ProcessIdentity,
+		PanePID:         t.PanePID,
+		PaneStart:       t.PaneStart,
+		ProcessID:       t.ProcessID,
+		ProcessStart:    t.ProcessStart,
 		UpdatedAt:       t.UpdatedAt,
 	}
 	return snapshot
@@ -221,6 +233,10 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 		PaneGeneration:  strings.TrimSpace(admitted.PaneGeneration),
 		ProcessIdentity: strings.TrimSpace(admitted.ProcessIdentity),
 		PayloadSHA256:   strings.TrimSpace(admitted.PayloadSHA256),
+		PanePID:         admitted.PanePID,
+		PaneStart:       admitted.PaneStart,
+		ProcessID:       admitted.ProcessID,
+		ProcessStart:    admitted.ProcessStart,
 		AcceptedAt:      admitted.AcceptedAt.UTC(),
 		Facts:           []TurnFactRecord{},
 		UpdatedAt:       now,

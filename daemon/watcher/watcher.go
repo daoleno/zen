@@ -205,6 +205,7 @@ type Watcher struct {
 	pollGeneration        int64
 	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
 	turnLedger            TurnLedger
+	pollSources           *PollSources // test-only seam (SetPollSources); production is nil
 	ledgerTurns           map[string]TurnSnapshot // projection cache of the canonical ledger, never a truth owner
 	appliedFactIDs        map[string]string       // session -> last applied provider FactID (skip identical applies)
 	ledgerTurnReadAt      map[string]time.Time    // TTL for authoritative ledger re-reads
@@ -915,11 +916,16 @@ func (w *Watcher) poll() {
 		// never terminalizes and never sets attention for turn-tracked
 		// sessions; it only refreshes the projection. Unknown turns are still
 		// probed so a later turn-bound Provider terminal can upgrade them.
+		// applyPollFacts runs for every mutable ledger-tracked turn even with
+		// a nil Provider probe: only the Provider observation is gated, so
+		// liveness facts (abnormal exit, end-of-identity) always apply.
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
 		provider := ProviderActivityObservation{}
-		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) && providerProbe != nil {
-			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
-			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
+		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
+			if providerProbe != nil {
+				provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+			}
+			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.panePID, item.now, turn, provider, processes)
 		}
 		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
@@ -1174,14 +1180,19 @@ func (w *Watcher) ledgerTurnFor(sessionID string, now time.Time) (TurnSnapshot, 
 }
 
 // applyPollFacts applies one poll's provider + liveness observations through
-// the single canonical reducer and returns the latest snapshot.
+// the single canonical reducer and returns the latest snapshot. It runs for
+// every mutable ledger-tracked turn regardless of whether a Provider probe
+// is installed: only the Provider observation is gated, so liveness facts
+// (abnormal exit, end-of-identity) always reach the reducer.
 func (w *Watcher) applyPollFacts(
 	id string,
 	alive bool,
 	deadStatus int,
+	panePID int,
 	now time.Time,
 	turn TurnSnapshot,
 	provider ProviderActivityObservation,
+	processes map[int]processInfo,
 ) TurnSnapshot {
 	ledger := w.turnLedger
 	if ledger == nil {
@@ -1198,16 +1209,23 @@ func (w *Watcher) applyPollFacts(
 	}
 	if !alive {
 		if deadStatus >= 0 {
-			// Abnormal-exit proof requires the recorded pane/process
-			// lifetime: the dead pane must be the recorded pane (PaneGeneration
-			// match). A missing or mismatched identity can never fail the
-			// recorded turn — it resolves Unknown + session.uncertain.
+			// Abnormal-exit proof requires the exact recorded process
+			// lifetime (frozen CR.3 RecordedIdentity), not only the recorded
+			// pane: the dead pane must be the recorded pane (PaneGeneration
+			// match) AND the pane's process chain must not have been
+			// respawned (the dead pane still reports the recorded PanePID)
+			// AND the recorded provider process (ProcessID, ProcessStart)
+			// must be provably gone from the process snapshot — never still
+			// alive with the recorded start. Any missing, mismatched, or
+			// unprovable continuity resolves Unknown + session.uncertain,
+			// never Failed.
 			recordedGeneration := strings.TrimSpace(turn.PaneGeneration)
 			generation := w.currentPaneGeneration(id)
 			recordedPaneDead := recordedGeneration != "" && generation == recordedGeneration
-			if deadStatus != 0 && recordedPaneDead {
-				// Authoritative abnormal exit for the recorded pane identity:
-				// final-grade Failed (or Unknown from Admitted).
+			if deadStatus != 0 && recordedPaneDead &&
+				recordedProcessContinuity(turn, panePID, processes) {
+				// Authoritative abnormal exit for the exact recorded process
+				// lifetime: final-grade Failed (or Unknown from Admitted).
 				facts = append(facts, TurnFact{
 					SessionID:    id,
 					TurnID:       turn.TurnID,
@@ -1378,7 +1396,46 @@ func activityFactFromObservation(sessionID string, turn TurnSnapshot, provider P
 	}
 }
 
+// recordedProcessContinuity proves a dead pane's nonzero exit belongs to the
+// exact recorded process lifetime (frozen CR.3 RecordedIdentity), never only
+// to the recorded pane. It requires all proofs:
+//
+//   - the recorded identity tuple is fully readable (PanePID, ProcessID,
+//     ProcessStart all set; legacy or unrecorded identities are unprovable
+//     and fail closed);
+//   - the dead pane still reports the recorded pane process PID, so the
+//     pane's process chain was not respawned (same-pane replacement with a
+//     new PID fails this check);
+//   - the recorded provider process is provably ended: its PID is free in
+//     the current process snapshot. Any occupant — the same lifetime still
+//     alive (matching ProcessStart) or a reused PID with a different
+//     lifetime — means the dead pane's exit status cannot be attributed to
+//     the recorded process lifetime.
+//
+// Any missing, mismatched, or unprovable continuity returns false and the
+// caller resolves Unknown, never Failed.
+func recordedProcessContinuity(turn TurnSnapshot, panePID int, processes map[int]processInfo) bool {
+	if turn.PanePID <= 0 || turn.ProcessID <= 0 || turn.ProcessStart <= 0 {
+		return false
+	}
+	if panePID != turn.PanePID {
+		return false
+	}
+	if _, occupied := processes[turn.ProcessID]; occupied {
+		return false
+	}
+	return true
+}
+
 func (w *Watcher) currentPaneGeneration(sessionID string) string {
+	// The test-only poll source seam can supply the pane generation directly
+	// so end-to-end tests exercise the identity gate without tmux.
+	w.mu.RLock()
+	sources := w.pollSources
+	w.mu.RUnlock()
+	if sources != nil && sources.PaneGeneration != nil {
+		return sources.PaneGeneration(sessionID)
+	}
 	owner := w.sessionInputOwner()
 	if owner == nil {
 		return ""
@@ -1894,6 +1951,10 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 			ID:              strings.TrimSpace(turnID),
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
+			PanePID:         identity.PanePID,
+			PaneStart:       identity.PaneStart,
+			ProcessID:       identity.ProcessID,
+			ProcessStart:    identity.ProcessStart,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
@@ -1941,6 +2002,10 @@ func (w *Watcher) SubmitDelegatedInput(
 			ID:              strings.TrimSpace(turnID),
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
+			PanePID:         identity.PanePID,
+			PaneStart:       identity.PaneStart,
+			ProcessID:       identity.ProcessID,
+			ProcessStart:    identity.ProcessStart,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
