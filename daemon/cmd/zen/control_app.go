@@ -87,6 +87,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainWorkUpdate(req)
 	case "brain_work_event":
 		return a.handleBrainWorkEvent(req)
+	case "brain_work_event_resolve":
+		return a.handleBrainWorkEventResolve(req)
 	case "brain_set_executor":
 		return a.handleBrainSetExecutor(req)
 	case "set_delegated_executor":
@@ -668,6 +670,40 @@ func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response 
 		response.Confirmation = "Duplicate event already recorded."
 	}
 	return response
+}
+
+// handleBrainWorkEventResolve closes held delivery claims explicitly and
+// actor-recorded (C.2.6): mark_delivered, discard, or user-authorized replay.
+// Automatic or time-based resolution is prohibited.
+func (a *controlApp) handleBrainWorkEventResolve(req control.Request) control.Response {
+	if a == nil || a.brainStore == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work is not configured.")
+	}
+	eventID := strings.TrimSpace(req.ID)
+	action := strings.TrimSpace(req.Operation)
+	actor := strings.TrimSpace(req.Actor)
+	reason := strings.TrimSpace(req.Reason)
+	switch action {
+	case "mark_delivered":
+		if err := a.brainStore.MarkDeliveredClaim(eventID, actor, reason); err != nil {
+			return brainWorkControlError(err)
+		}
+		return control.Response{OK: true, Confirmation: "Held claim marked delivered."}
+	case "discard":
+		if err := a.brainStore.DiscardClaim(eventID, actor, reason); err != nil {
+			return brainWorkControlError(err)
+		}
+		return control.Response{OK: true, Confirmation: "Held claim discarded."}
+	case "replay":
+		replay, err := a.brainStore.ReplayEvent(eventID, actor, reason)
+		if err != nil {
+			return brainWorkControlError(err)
+		}
+		return control.Response{OK: true, BrainWorkEvent: &replay, Confirmation: "Event replayed under an audited new identity."}
+	default:
+		return control.ErrorResponse("invalid_brain_work_event_resolution",
+			"resolution action must be mark_delivered, discard, or replay")
+	}
 }
 
 func brainWorkControlError(err error) control.Response {

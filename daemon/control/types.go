@@ -46,6 +46,8 @@ type Request struct {
 	Force              bool                                   `json:"force,omitempty"`
 	ID                 string                                 `json:"id,omitempty"`
 	Revision           int64                                  `json:"revision,omitempty"`
+	Actor              string                                 `json:"actor,omitempty"`
+	Reason             string                                 `json:"reason,omitempty"`
 	CalendarItem       *calendar.Item                         `json:"calendar_item,omitempty"`
 	BrainWork          *brain.Work                            `json:"brain_work,omitempty"`
 	BrainWorkEvent     *brain.WorkEvent                       `json:"brain_work_event,omitempty"`

@@ -1094,6 +1094,8 @@ func runBrainWork(args []string, stderr io.Writer) error {
 		return runBrainWorkUpdate(args[1:], stderr)
 	case "event":
 		return runBrainWorkEvent(args[1:], stderr)
+	case "event-resolve":
+		return runBrainWorkEventResolve(args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown brain work command: %s", args[0])
 	}
@@ -1252,6 +1254,43 @@ func (f completionPolicyFlag) String() string {
 func (f completionPolicyFlag) Set(value string) error {
 	*f.value = brain.CompletionPolicy(strings.TrimSpace(value))
 	return nil
+}
+
+// runBrainWorkEventResolve closes held delivery claims explicitly and
+// actor-recorded (C.2.6): mark_delivered, discard, or user-authorized replay.
+func runBrainWorkEventResolve(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work event-resolve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	var eventID, action, actor, reason string
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&eventID, "id", "", "held Event id")
+	fs.StringVar(&action, "action", "", "resolution: mark_delivered, discard, or replay")
+	fs.StringVar(&actor, "actor", "", "resolving actor (user or Brain on explicit user approval)")
+	fs.StringVar(&reason, "reason", "", "audited resolution reason")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen brain work event-resolve -id <event_id> -action <mark_delivered|discard|replay> -actor <actor> -reason <reason>")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, control.Request{
+		Type:      "brain_work_event_resolve",
+		ID:        eventID,
+		Operation: action,
+		Actor:     actor,
+		Reason:    reason,
+	})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
 func runBrainExecutors(args []string, stderr io.Writer) error {

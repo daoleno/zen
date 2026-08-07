@@ -74,11 +74,17 @@ func providerFactSourceID(sessionID string, observation ProviderActivityObservat
 }
 
 func admissionFromObservation(observation ProviderActivityObservation) TurnAdmission {
+	admissionAt := observation.AdmissionAt
+	if admissionAt.IsZero() {
+		// Adapters without a dedicated admission timestamp anchor the window
+		// on the activity start: the input began before the activity.
+		admissionAt = observation.StartedAt
+	}
 	return TurnAdmission{
 		Stream: strings.TrimSpace(observation.AdmissionStream),
 		ID:     strings.TrimSpace(observation.AdmissionID),
 		Cursor: observation.AdmissionCursor,
 		SHA256: strings.TrimSpace(observation.InputSHA256),
-		At:     observation.AdmissionAt.UTC(),
+		At:     admissionAt.UTC(),
 	}
 }

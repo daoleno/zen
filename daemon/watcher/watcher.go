@@ -1032,7 +1032,7 @@ func (w *Watcher) poll() {
 				// is not outcome: without a readable bound Provider terminal
 				// this resolves to Unknown + session.uncertain, never Failed.
 				// A bound terminal readable at death decides first (C.2.4).
-				w.resolveRemovedTurnFacts(id, *old, turn, providerProbe, processes, processSnapshotAt)
+				w.resolveRemovedTurnFacts(id, *old, turn, providerProbe)
 			}
 			if providerProbe != nil {
 				providerProbe.ForgetProviderActivity(id)
@@ -1266,14 +1266,13 @@ func (w *Watcher) applyPollFacts(
 
 // resolveRemovedTurnFacts applies a removed session's provider facts (a bound
 // terminal readable at death decides first) and then the end-of-identity
-// liveness fact, per the same canonical reducer.
+// liveness fact, per the same canonical reducer. The recorded identity is
+// considered gone because the target is absent from a successful inventory.
 func (w *Watcher) resolveRemovedTurnFacts(
 	id string,
 	agent classifier.Agent,
 	turn TurnSnapshot,
 	probe ProviderActivityProbe,
-	processes map[int]processInfo,
-	processSnapshotAt time.Time,
 ) {
 	if w == nil || w.turnLedger == nil || TurnTerminal(turn.Status) {
 		return
