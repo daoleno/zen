@@ -20,15 +20,20 @@ import (
 )
 
 const (
-	// opencodeGoModelsEndpoint is the official read-only OpenCode Go models
-	// endpoint. The ecosystem treats a 2xx JSON response carrying the model
-	// list as confirmation that the OpenCode Go key is accepted by the Go
-	// provider (see opgginc/opencode-bar). If the endpoint ever starts
-	// rejecting credentials or changes shape, the check fails closed.
-	opencodeGoModelsEndpoint   = "https://opencode.ai/zen/go/v1/models"
+	// opencodeGoModelsEndpoint is the official OpenCode Go models endpoint. It
+	// is public (it returns the same payload for valid and invalid keys) and
+	// is used only to discover the currently served Go models, never as
+	// subscription evidence.
+	opencodeGoModelsEndpoint = "https://opencode.ai/zen/go/v1/models"
+	// opencodeGoChatEndpoint receives the non-generating invalid-request auth
+	// challenge that positively confirms the Go subscription.
+	opencodeGoChatEndpoint     = "https://opencode.ai/zen/go/v1/chat/completions"
 	opencodeGoDashboardBaseURL = "https://opencode.ai/workspace"
 	maxOpenCodeGoAuthBytes     = 2 << 20
 	maxOpenCodeGoBodyBytes     = 8 << 20
+	// opencodeGoChallengeMaxAttempts bounds how many discovered models are
+	// probed before the challenge fails closed.
+	opencodeGoChallengeMaxAttempts = 4
 )
 
 // openCodeGoWindowSpecs mirror the official Go dashboard usage windows and the
@@ -201,15 +206,17 @@ func openCodeGoDashboardCredentialFromFile(path string) *openCodeGoDashboardCred
 }
 
 // fetchOpenCodeGoSubscription confirms the OpenCode Go subscription with the
-// read-only models request and, when dashboard credentials are available,
-// attaches the usage windows parsed from the authenticated dashboard page.
-// Verification failure yields an error so no card can be produced; dashboard
-// failure is fail-closed and only downgrades usage availability.
-func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClient, modelsEndpoint, dashboardBaseURL string, auth openCodeGoAuthMaterial, dashboard *openCodeGoDashboardCredential, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
+// non-generating invalid-request auth challenge (and, when dashboard
+// credentials are configured, the authenticated dashboard page). The models
+// endpoint is only used to discover current Go models and is never treated as
+// evidence. The projection is produced only when the subscription is
+// positively confirmed; otherwise an error is returned so no card exists.
+func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClient, modelsEndpoint, chatEndpoint, dashboardBaseURL string, auth openCodeGoAuthMaterial, dashboard *openCodeGoDashboardCredential, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
 	if auth.kind != "official" || strings.TrimSpace(auth.token) == "" {
 		return nil, errors.New("official OpenCode Go authentication required")
 	}
-	if err := verifyOpenCodeGoKey(ctx, client, modelsEndpoint, auth); err != nil {
+	models, err := discoverOpenCodeGoModels(ctx, client, modelsEndpoint, auth)
+	if err != nil {
 		return nil, err
 	}
 
@@ -219,42 +226,135 @@ func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClien
 		Plan:      "go",
 		FetchedAt: now.UTC().Format(time.RFC3339),
 	}
-	if windows := fetchOpenCodeGoDashboardWindows(ctx, client, dashboardBaseURL, dashboard, now); len(windows) > 0 {
+	windows := fetchOpenCodeGoDashboardWindows(ctx, client, dashboardBaseURL, dashboard, now)
+	if len(windows) > 0 {
 		usage.UsageAvailable = true
 		usage.Windows = windows
+	}
+
+	confirmed := len(windows) > 0
+	if !confirmed {
+		confirmed = runOpenCodeGoAuthChallenge(ctx, client, chatEndpoint, auth, models)
+	}
+	if !confirmed {
+		return nil, errors.New("opencode go subscription not confirmed")
 	}
 	return usage, nil
 }
 
-func verifyOpenCodeGoKey(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial) error {
+// discoverOpenCodeGoModels fetches the currently served Go model IDs from the
+// public models endpoint. It is model discovery only: the endpoint returns the
+// same payload for invalid keys, so its success never confirms a subscription.
+// An empty list or an unparseable response fails closed.
+func discoverOpenCodeGoModels(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+auth.token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "zen-stats")
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("request opencode go models: %w", err)
+		return nil, fmt.Errorf("request opencode go models: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("opencode go models endpoint returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("opencode go models endpoint returned status %d", resp.StatusCode)
 	}
 
 	var payload struct {
-		Data   []json.RawMessage `json:"data"`
-		Models []json.RawMessage `json:"models"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []string `json:"models"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxOpenCodeGoBodyBytes))
 	if err := decoder.Decode(&payload); err != nil {
-		return errors.New("opencode go models response is not parseable json")
+		return nil, errors.New("opencode go models response is not parseable json")
 	}
-	if payload.Data == nil && payload.Models == nil {
-		return errors.New("opencode go models response has no model list")
+	var models []string
+	for _, model := range payload.Data {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			models = append(models, id)
+		}
 	}
-	return nil
+	if len(models) == 0 {
+		for _, id := range payload.Models {
+			if id = strings.TrimSpace(id); id != "" {
+				models = append(models, id)
+			}
+		}
+	}
+	if len(models) == 0 {
+		return nil, errors.New("opencode go models response has no models")
+	}
+	return models, nil
+}
+
+// runOpenCodeGoAuthChallenge probes the chat completions endpoint with a
+// payload that cannot generate a completion: an empty messages list and a
+// negative max_tokens. Only an exact 400 whose error type and code are both
+// invalid_request_error confirms that the key is accepted by the Go service;
+// such a response proves authentication without producing any token usage.
+// Auth failures (401/403), throttling (429), server errors (5xx), unexpected
+// 2xx responses, HTML, and unknown error shapes are never accepted; 2xx
+// responses are skipped without parsing and inconclusive probe responses move
+// on to the next discovered model. The check fails closed when no discovered
+// model yields the exact confirmation.
+func runOpenCodeGoAuthChallenge(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial, models []string) bool {
+	attempts := len(models)
+	if attempts > opencodeGoChallengeMaxAttempts {
+		attempts = opencodeGoChallengeMaxAttempts
+	}
+	for i := 0; i < attempts; i++ {
+		payload := fmt.Sprintf(`{"model":%q,"messages":[],"max_tokens":-1,"stream":false}`, models[i])
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Authorization", "Bearer "+auth.token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "zen-stats")
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxOpenCodeGoBodyBytes))
+		resp.Body.Close()
+
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			// A 2xx response can never confirm: the payload must not
+			// generate. Skip the model without parsing the body.
+			continue
+		case resp.StatusCode == http.StatusBadRequest:
+			if readErr != nil {
+				continue
+			}
+			var errorBody struct {
+				Error struct {
+					Type string `json:"type"`
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(body, &errorBody); err != nil {
+				continue
+			}
+			if errorBody.Error.Type == "invalid_request_error" && errorBody.Error.Code == "invalid_request_error" {
+				return true
+			}
+			continue
+		case resp.StatusCode == http.StatusUnauthorized,
+			resp.StatusCode == http.StatusForbidden,
+			resp.StatusCode == http.StatusTooManyRequests,
+			resp.StatusCode >= 500:
+			return false
+		default:
+			continue
+		}
+	}
+	return false
 }
 
 func fetchOpenCodeGoDashboardWindows(ctx context.Context, client openCodeGoHTTPClient, dashboardBaseURL string, dashboard *openCodeGoDashboardCredential, now time.Time) []OpenCodeGoUsageWindow {
@@ -346,11 +446,12 @@ func openCodeGoNormalizeDashboardHTML(page string) string {
 }
 
 // collectOpenCodeGoSubscription returns the subscription projection only when
-// the most recent read-only verification against the official OpenCode Go
-// API succeeded. Any negative or ambiguous outcome (missing credentials, auth
-// failure, network failure, malformed body) yields nil so the app can never
-// retain or produce a Go card. Usage windows are present only when the
-// authenticated dashboard page parsed successfully in the same refresh.
+// the most recent verification positively confirmed the OpenCode Go
+// subscription: the non-generating invalid-request auth challenge yielded the
+// exact invalid_request_error 400, or the authenticated dashboard page parsed
+// real usage windows. Any negative or ambiguous outcome (missing credentials,
+// auth failure, network failure, ambiguous response, no challenge signal)
+// yields nil so the app can never retain or produce a Go card.
 func (c *Collector) collectOpenCodeGoSubscription(home string) *OpenCodeGoSubscriptionUsage {
 	auth, err := readOpenCodeGoAuth(home)
 	if err != nil || auth.kind != "official" {
@@ -360,7 +461,7 @@ func (c *Collector) collectOpenCodeGoSubscription(home string) *OpenCodeGoSubscr
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.opencodeGoTimeout)
 	defer cancel()
-	usage, err := fetchOpenCodeGoSubscription(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, c.opencodeGoDashboardEndpoint, auth, dashboard, c.now())
+	usage, err := fetchOpenCodeGoSubscription(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, c.opencodeGoChatEndpoint, c.opencodeGoDashboardEndpoint, auth, dashboard, c.now())
 	if err != nil {
 		return nil
 	}

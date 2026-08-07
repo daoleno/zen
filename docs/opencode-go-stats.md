@@ -15,20 +15,37 @@ OpenCode Zen entry (`opencode`), a shared `OPENCODE_API_KEY` environment
 value, a `opencode-go/*` model in the OpenCode config, or historical usage is
 not evidence of a Go subscription.
 
-Confirmation itself is the read-only models request used by the OpenCode
-ecosystem (opgginc/opencode-bar):
+The Go models endpoint (`GET https://opencode.ai/zen/go/v1/models`) is public
+— it returns the same payload for valid and invalid keys — so it is used only
+to discover the currently served Go model IDs and is **never** treated as
+subscription evidence.
+
+Confirmation is a **non-generating invalid-request auth challenge**:
 
 ```
-GET https://opencode.ai/zen/go/v1/models
+POST https://opencode.ai/zen/go/v1/chat/completions
 Authorization: Bearer <key>
-Accept: application/json
+Content-Type: application/json
+
+{"model":"<discovered-go-model>","messages":[],"max_tokens":-1,"stream":false}
 ```
 
-The check succeeds only on a 2xx response whose JSON carries the model list
-(`data` or `models` array). Auth failure, HTML, rate limiting, gateway
-failures, unparseable bodies, and schema drift all fail closed: no card.
-This is deliberately read-only; Zen never sends a model request to the Go
-inference API for verification.
+The payload cannot generate a completion: an empty `messages` list and a
+negative `max_tokens` are invalid for every model, so the gateway rejects the
+request after authenticating the key. Only an **exact 400** whose `error.type`
+and `error.code` are both `invalid_request_error` confirms that the key is
+accepted by the Go service — proof of authentication with zero token usage.
+
+Fail-closed rules:
+
+- `401`/`403`/`429`/`5xx` and network failures are never accepted.
+- A `2xx` response is never parsed or accepted, and never confirms.
+- HTML, malformed bodies, and unknown error shapes are never accepted.
+- Inconclusive probe responses (for example a 400 with a different error
+  type, or a 422) move on to the next discovered model; the check fails
+  closed when no discovered model yields the exact confirmation (bounded to
+  four probes).
+- An empty model list fails closed.
 
 ## Usage windows
 
@@ -84,11 +101,11 @@ downgrades the card to usage-unavailable instead of keeping stale numbers.
 
 - Verified subscription + parsed dashboard windows: plan label, per-window
   used percentage, documented limit, and reset time.
-- Verified subscription without dashboard credentials or after a dashboard
-  failure: plan label with an explicit "live usage unavailable" note and the
-  credential setup hint.
-- Anything negative (missing credentials, invalid key, network failure,
-  ambiguous response): no card at all.
+- Verified subscription (challenge confirmed) without dashboard credentials
+  or after a dashboard failure: plan label with an explicit "live usage
+  unavailable" note and the credential setup hint.
+- Anything negative (missing credentials, invalid key, ambiguous challenge,
+  network failure): no card at all.
 
 ## Security
 

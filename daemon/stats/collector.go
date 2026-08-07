@@ -28,6 +28,7 @@ type Collector struct {
 	codexUsageTimeout           time.Duration
 	opencodeGoClient            openCodeGoHTTPClient
 	opencodeGoEndpoint          string
+	opencodeGoChatEndpoint      string
 	opencodeGoDashboardEndpoint string
 	opencodeGoTimeout           time.Duration
 	now                         func() time.Time
@@ -44,6 +45,7 @@ func NewCollector() *Collector {
 		codexUsageTimeout:           8 * time.Second,
 		opencodeGoClient:            &http.Client{Timeout: 8 * time.Second},
 		opencodeGoEndpoint:          opencodeGoModelsEndpoint,
+		opencodeGoChatEndpoint:      opencodeGoChatEndpoint,
 		opencodeGoDashboardEndpoint: opencodeGoDashboardBaseURL,
 		opencodeGoTimeout:           8 * time.Second,
 		now:                         time.Now,
