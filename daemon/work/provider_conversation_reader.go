@@ -24,6 +24,11 @@ type ProviderConversationReader struct {
 	// openCodeOwnedSessionID retains the unambiguously bound OpenCode ses_* for
 	// this subscription so later polls never cross-bind another same-CWD row.
 	openCodeOwnedSessionID string
+
+	// piPinnedSessionPath retains the auto-bound shared-directory Pi transcript
+	// for this subscription so a newer same-CWD session never leaks into the
+	// active agent's Interface mid-turn.
+	piPinnedSessionPath string
 }
 
 type providerConversationBinding struct {
@@ -110,6 +115,7 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 	if !r.bound || r.binding.provider != next.provider || r.binding.agentID != next.agentID ||
 		r.binding.command != next.command || r.binding.cwd != next.cwd {
 		r.openCodeOwnedSessionID = ""
+		r.piPinnedSessionPath = ""
 	}
 	r.bound = true
 	r.binding = next

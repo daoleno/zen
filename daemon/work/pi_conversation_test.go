@@ -161,24 +161,153 @@ func TestPiNonmatchingUserDoesNotAdmitPayload(t *testing.T) {
 	}
 }
 
-func TestFindPiTranscriptRequiresOwnedPath(t *testing.T) {
+func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 	dir := t.TempDir()
-	shared := filepath.Join(dir, "shared.jsonl")
-	writePiFixture(t, shared, "/repo", "foreign")
 	agent := classifier.Agent{
 		Cwd:       "/repo",
 		Command:   "pi",
-		StartedAt: time.Now().UTC(),
+		StartedAt: time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC),
 	}
-	if _, ok, err := findPiTranscript(agent, time.Now().UTC()); err != nil || ok {
-		t.Fatalf("shared dir must not auto-bind: ok=%v err=%v", ok, err)
-	}
+	// Owned --session wins and needs no shared directory.
 	owned := filepath.Join(dir, "owned.jsonl")
 	writePiFixture(t, owned, "/repo", "owned-user")
 	agent.Command = "pi --session " + owned
-	candidate, ok, err := findPiTranscript(agent, time.Now().UTC())
+	candidate, ok, err := NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != owned {
 		t.Fatalf("owned bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+	// Shared per-CWD directory auto-binds for interactive launches without
+	// --session so the Interface is not left Working-only.
+	agentDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(sessionsDir, "2026-08-06T00-00-10-000Z_sess1.jsonl")
+	writePiFixture(t, shared, "/repo", "shared-user")
+	agent.Command = "pi"
+	candidate, ok, err = NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
+	if err != nil || !ok || candidate.Path != shared {
+		t.Fatalf("shared dir bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+	// Wrong-cwd fixture in the same dir must not bind.
+	wrong := filepath.Join(sessionsDir, "2026-08-06T00-00-11-000Z_sess2.jsonl")
+	writePiFixture(t, wrong, "/other", "foreign")
+	reader := NewProviderConversationReader()
+	candidate, ok, err = reader.findPiTranscript(agent, time.Now().UTC())
+	if err != nil || !ok || candidate.Path != shared {
+		t.Fatalf("wrong-cwd must not replace pinned bind: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+}
+
+func TestPiSharedDirAmbiguousWindowRefuses(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	writePiFixture(t, filepath.Join(sessionsDir, "a.jsonl"), "/repo", "a-user")
+	writePiFixture(t, filepath.Join(sessionsDir, "b.jsonl"), "/repo", "b-user")
+	agent := classifier.Agent{Cwd: "/repo", Command: "pi", StartedAt: started}
+	candidate, ok, err := NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
+	if err != nil || ok {
+		t.Fatalf("ambiguous same-window transcripts must refuse: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+}
+
+func TestPiToolLifecycleConvergesOnAbortAndError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := strings.Join([]string{
+		`{"type":"session","version":3,"id":"sess-1","timestamp":"2026-08-06T00:00:00.000Z","cwd":"/repo"}`,
+		`{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-06T00:00:01.000Z","message":{"role":"user","content":"run it"}}`,
+		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-06T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"sleep 10"}}],"stopReason":"toolUse"}}`,
+		`{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-08-06T00:00:03.000Z","message":{"role":"assistant","content":[],"stopReason":"aborted"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := parsePiConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tool *CodexConversationEvent
+	for i := range got.Events {
+		if got.Events[i].Kind == "tool_call" {
+			tool = &got.Events[i]
+			break
+		}
+	}
+	if tool == nil || tool.Status != "cancelled" || tool.Partial {
+		t.Fatalf("aborted turn must cancel running tool: %#v", tool)
+	}
+	if got.Activity == nil || got.Activity.Status != ProviderActivityInterrupted {
+		t.Fatalf("activity = %+v", got.Activity)
+	}
+
+	errorPath := filepath.Join(t.TempDir(), "session.jsonl")
+	errorContent := strings.Join([]string{
+		`{"type":"session","version":3,"id":"sess-2","timestamp":"2026-08-06T00:00:00.000Z","cwd":"/repo"}`,
+		`{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-06T00:00:01.000Z","message":{"role":"user","content":"run it"}}`,
+		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-06T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_2","name":"bash","arguments":{"command":"boom"}}],"stopReason":"toolUse"}}`,
+		`{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-08-06T00:00:03.000Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"tool failed"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(errorPath, []byte(errorContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = parsePiConversation(errorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool = nil
+	for i := range got.Events {
+		if got.Events[i].Kind == "tool_call" {
+			tool = &got.Events[i]
+			break
+		}
+	}
+	if tool == nil || tool.Status != "failed" || tool.Partial {
+		t.Fatalf("error turn must fail running tool: %#v", tool)
+	}
+	if got.Activity == nil || got.Activity.Status != ProviderActivityFailed {
+		t.Fatalf("activity = %+v", got.Activity)
+	}
+}
+
+func TestPiSharedDirSessionSwitchCannotLeak(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(sessionsDir, "2026-08-06T00-00-10-000Z_first.jsonl")
+	writePiFixture(t, first, "/repo", "first-user")
+	agent := classifier.Agent{Cwd: "/repo", Command: "pi"}
+	reader := NewProviderConversationReader()
+	candidate, ok, err := reader.findPiTranscript(agent, time.Now().UTC())
+	if err != nil || !ok || candidate.Path != first {
+		t.Fatalf("first bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+	// A newer same-CWD session must not leak into the pinned reader.
+	second := filepath.Join(sessionsDir, "2026-08-06T00-01-00-000Z_second.jsonl")
+	writePiFixture(t, second, "/repo", "second-user")
+	if err := os.Chtimes(second, time.Now(), time.Now().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok, err = reader.findPiTranscript(agent, time.Now().UTC())
+	if err != nil || !ok || candidate.Path != first {
+		t.Fatalf("newer session leaked into pinned bind: ok=%v path=%q err=%v", ok, candidate.Path, err)
+	}
+	// A reader bound to a different agent binding may pick the newer session.
+	other := NewProviderConversationReader()
+	candidate, ok, err = other.findPiTranscript(agent, time.Now().UTC())
+	if err != nil || !ok || candidate.Path != second {
+		t.Fatalf("fresh reader should bind newest: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
 }
 

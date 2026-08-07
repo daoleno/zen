@@ -38,7 +38,7 @@ func (r *ProviderConversationReader) loadPiConversationForAgent(agent classifier
 		}, nil
 	}
 
-	candidate, ok, err := findPiTranscript(agent, now)
+	candidate, ok, err := r.findPiTranscript(agent, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -83,7 +83,13 @@ func (r *ProviderConversationReader) loadPiConversation(path string) (CodexConve
 	return r.loadFileConversation(AgentProviderPi, path, parsePiConversation)
 }
 
-func findPiTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
+// findPiTranscript binds the Pi session for an agent: an explicitly owned
+// --session path first, then --session-dir, then the pinned shared per-CWD
+// candidate, then a fresh shared-directory auto-bind. Interactive Pi TUIs
+// launched without --session only persist under the shared directory, so
+// auto-binding keeps the Interface attached instead of collapsing to
+// Working-only.
+func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
 	if path := PiOwnedSessionPath(agent.Command); path != "" {
 		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
 		if err != nil || ok {
@@ -95,8 +101,170 @@ func findPiTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandid
 	if dir := PiOwnedSessionDir(agent.Command); dir != "" {
 		return findPiExclusiveSessionDir(dir, agent, now)
 	}
-	// Never auto-bind from Pi's shared per-CWD directory or newest mtime.
-	return piTranscriptCandidate{}, false, nil
+	if pinned := strings.TrimSpace(r.piPinnedSessionPath); pinned != "" {
+		candidate, ok, err := readPiOwnedSessionCandidate(pinned, agent.Cwd, now)
+		if err == nil && ok {
+			return candidate, true, nil
+		}
+		r.piPinnedSessionPath = ""
+	}
+	candidate, ok, err := findPiSharedCWDTranscript(agent, now)
+	if err != nil || !ok {
+		return candidate, ok, err
+	}
+	r.piPinnedSessionPath = candidate.Path
+	return candidate, true, nil
+}
+
+// findPiSharedCWDTranscript binds Pi's shared per-CWD session directory
+// (~/.pi/agent/sessions/--<cwd>--). A unique StartedAt window match wins;
+// otherwise the freshest unambiguous transcript binds. Wrong-cwd and stale
+// transcripts never bind.
+func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
+	if strings.TrimSpace(agent.Cwd) == "" {
+		return piTranscriptCandidate{}, false, nil
+	}
+	sessionsDir, err := piAgentSessionsDir()
+	if err != nil {
+		return piTranscriptCandidate{}, false, err
+	}
+	dir := filepath.Join(sessionsDir, encodePiSessionDirName(agent.Cwd))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return piTranscriptCandidate{}, false, nil
+		}
+		return piTranscriptCandidate{}, false, err
+	}
+	var candidates []piTranscriptCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
+		if err != nil || !ok {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return piTranscriptCandidate{}, false, nil
+	}
+	if len(piWindowCandidates(candidates, agent.StartedAt)) > 0 {
+		if matched, ok := matchPiTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+			return matched, true, nil
+		}
+		return piTranscriptCandidate{}, false, nil
+	}
+	return freshestPiTranscript(candidates)
+}
+
+func piWindowCandidates(candidates []piTranscriptCandidate, startedAt time.Time) []piTranscriptCandidate {
+	if startedAt.IsZero() {
+		return nil
+	}
+	startedAt = startedAt.UTC()
+	minCreatedAt := startedAt.Add(-5 * time.Second)
+	maxCreatedAt := startedAt.Add(2 * time.Minute)
+	out := make([]piTranscriptCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		createdAt := candidate.CreatedAt.UTC()
+		if createdAt.IsZero() || createdAt.Before(minCreatedAt) || createdAt.After(maxCreatedAt) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func matchPiTranscriptToAgentStart(candidates []piTranscriptCandidate, startedAt time.Time) (piTranscriptCandidate, bool) {
+	window := piWindowCandidates(candidates, startedAt)
+	if len(window) == 0 {
+		return piTranscriptCandidate{}, false
+	}
+	bestIndex := 0
+	bestDelta := time.Duration(0)
+	for index, candidate := range window {
+		delta := candidate.CreatedAt.UTC().Sub(startedAt.UTC())
+		if delta < 0 {
+			delta = -delta
+		}
+		if index == 0 || delta < bestDelta {
+			bestIndex = index
+			bestDelta = delta
+		}
+	}
+	for index, candidate := range window {
+		if index == bestIndex {
+			continue
+		}
+		delta := candidate.CreatedAt.UTC().Sub(startedAt.UTC())
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta == bestDelta {
+			return piTranscriptCandidate{}, false
+		}
+	}
+	return window[bestIndex], true
+}
+
+// freshestPiTranscript binds the most recently updated fresh transcript;
+// equal-updated candidates refuse as ambiguous rather than guessing.
+func freshestPiTranscript(candidates []piTranscriptCandidate) (piTranscriptCandidate, bool, error) {
+	if len(candidates) == 0 {
+		return piTranscriptCandidate{}, false, nil
+	}
+	bestIndex := 0
+	for index, candidate := range candidates {
+		if index == 0 || candidate.Updated.After(candidates[bestIndex].Updated) {
+			bestIndex = index
+		}
+	}
+	for index, candidate := range candidates {
+		if index == bestIndex {
+			continue
+		}
+		if candidate.Updated.Equal(candidates[bestIndex].Updated) {
+			return piTranscriptCandidate{}, false, nil
+		}
+	}
+	return candidates[bestIndex], true, nil
+}
+
+// piAgentSessionsDir resolves Pi's shared session root. It honors Pi's
+// PI_CODING_AGENT_DIR override and defaults to ~/.pi/agent/sessions.
+func piAgentSessionsDir() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); override != "" {
+		if override == "~" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			override = home
+		} else if strings.HasPrefix(override, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			override = filepath.Join(home, strings.TrimPrefix(override, "~/"))
+		}
+		return filepath.Join(override, "sessions"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".pi", "agent", "sessions"), nil
+}
+
+// encodePiSessionDirName mirrors pi-mono's SessionManager cwd encoding:
+// --<cwd without leading slash>-- with /, \ and : replaced by -.
+func encodePiSessionDirName(cwd string) string {
+	trimmed := strings.TrimLeft(strings.TrimSpace(cwd), `/\\`)
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-")
+	return "--" + replacer.Replace(trimmed) + "--"
 }
 
 func readPiOwnedSessionCandidate(path, agentCWD string, now time.Time) (piTranscriptCandidate, bool, error) {
@@ -477,7 +645,8 @@ func (b *piConversationBuilder) projectAssistant(
 ) int {
 	blocks := piContentBlocks(raw)
 	for _, block := range blocks {
-		switch block.Type {
+		blockType := strings.ToLower(strings.TrimSpace(block.Type))
+		switch blockType {
 		case "thinking":
 			text := strings.TrimSpace(block.Thinking)
 			if text == "" {
@@ -549,13 +718,32 @@ func (b *piConversationBuilder) projectAssistant(
 				Status:    "failed",
 			})
 		}
+		settleRunningPiTools(events, "failed")
 		b.activityLifecycle.settle("", ProviderActivityFailed, timestamp)
 	case "aborted":
+		settleRunningPiTools(events, "cancelled")
 		b.activityLifecycle.settle("", ProviderActivityInterrupted, timestamp)
 	case "stop", "length":
 		b.activityLifecycle.settle("", ProviderActivityCompleted, timestamp)
 	}
 	return seq
+}
+
+// settleRunningPiTools converges still-running tool calls at an authoritative
+// assistant turn boundary (abort/error) so the Interface never leaves a tool
+// permanently "running" after the turn ended.
+func settleRunningPiTools(events *[]CodexConversationEvent, status string) {
+	for i := range *events {
+		event := &(*events)[i]
+		if event.Kind != "tool_call" {
+			continue
+		}
+		current := strings.ToLower(strings.TrimSpace(event.Status))
+		if current == "running" || current == "pending" || event.Partial {
+			event.Status = status
+			event.Partial = false
+		}
+	}
 }
 
 type piContentBlock struct {

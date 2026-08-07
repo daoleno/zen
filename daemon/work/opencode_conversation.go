@@ -21,6 +21,7 @@ const (
 type openCodeSessionCandidate struct {
 	ID        string
 	CWD       string
+	ParentID  string
 	CreatedAt time.Time
 	Updated   time.Time
 }
@@ -98,8 +99,22 @@ func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent,
 	if err != nil {
 		return openCodeSessionCandidate{}, false, err
 	}
-	fresh := freshOpenCodeSessionCandidates(candidates, now)
-	if matched, ok := matchOpenCodeSessionToAgentStart(fresh, agent.StartedAt); ok {
+	// Child sessions (session.parent_id set) are Task/sub-agent activity, not
+	// the Zen agent's own transcript thread. Only root sessions can bind.
+	roots := rootOpenCodeCandidates(candidates)
+	fresh := freshOpenCodeSessionCandidates(roots, now)
+	if len(openCodeWindowCandidates(fresh, agent.StartedAt)) > 0 {
+		// A StartedAt window exists: unique min-delta bind, else refuse.
+		if matched, ok := matchOpenCodeSessionToAgentStart(fresh, agent.StartedAt); ok {
+			r.openCodeOwnedSessionID = matched.ID
+			return matched, true, nil
+		}
+		return openCodeSessionCandidate{}, false, nil
+	}
+	// No window candidate (startedAt zero or drifted): bind the freshest root
+	// so a live session is never reported as session_not_found and the
+	// Interface does not collapse an active transcript to Working-only.
+	if matched, ok := freshestOpenCodeRoot(fresh); ok {
 		r.openCodeOwnedSessionID = matched.ID
 		return matched, true, nil
 	}
@@ -113,6 +128,11 @@ func (r *ProviderConversationReader) revalidateOpenCodeOwnedSession(sessionID, a
 	}
 	candidate, ok, err := queryOpenCodeSessionByID(dbPath, sessionID)
 	if err != nil || !ok {
+		return openCodeSessionCandidate{}, false
+	}
+	// A child (subtask) session must never anchor a Zen agent transcript even
+	// when previously pinned by an older reader binding.
+	if strings.TrimSpace(candidate.ParentID) != "" {
 		return openCodeSessionCandidate{}, false
 	}
 	if !openCodeDirectoryMatches(candidate.CWD, agentCWD) {
@@ -210,6 +230,7 @@ func lookPathOpenCodeDB() (string, error) {
 type openCodeSessionRow struct {
 	ID          string `json:"id"`
 	Directory   string `json:"directory"`
+	ParentID    string `json:"parent_id"`
 	TimeCreated int64  `json:"time_created"`
 	TimeUpdated int64  `json:"time_updated"`
 }
@@ -223,7 +244,7 @@ func queryOpenCodeSessions(dbPath, cwd string) ([]openCodeSessionCandidate, erro
 	seen := map[string]struct{}{}
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
 		query := fmt.Sprintf(
-			`SELECT id, directory, time_created, time_updated FROM session WHERE directory = %s ORDER BY time_created DESC;`,
+			`SELECT id, directory, parent_id, time_created, time_updated FROM session WHERE directory = %s ORDER BY time_created DESC;`,
 			sqliteStringLiteral(candidateCWD),
 		)
 		rows, err := queryOpenCodeSessionRows(sqlite3, dbPath, query)
@@ -238,6 +259,7 @@ func queryOpenCodeSessions(dbPath, cwd string) ([]openCodeSessionCandidate, erro
 			candidates = append(candidates, openCodeSessionCandidate{
 				ID:        row.ID,
 				CWD:       row.Directory,
+				ParentID:  strings.TrimSpace(row.ParentID),
 				CreatedAt: time.UnixMilli(row.TimeCreated).UTC(),
 				Updated:   time.UnixMilli(row.TimeUpdated).UTC(),
 			})
@@ -252,7 +274,7 @@ func queryOpenCodeSessionByID(dbPath, sessionID string) (openCodeSessionCandidat
 		return openCodeSessionCandidate{}, false, nil
 	}
 	query := fmt.Sprintf(
-		`SELECT id, directory, time_created, time_updated FROM session WHERE id = %s LIMIT 1;`,
+		`SELECT id, directory, parent_id, time_created, time_updated FROM session WHERE id = %s LIMIT 1;`,
 		sqliteStringLiteral(sessionID),
 	)
 	rows, err := queryOpenCodeSessionRows(sqlite3, dbPath, query)
@@ -263,6 +285,7 @@ func queryOpenCodeSessionByID(dbPath, sessionID string) (openCodeSessionCandidat
 	return openCodeSessionCandidate{
 		ID:        row.ID,
 		CWD:       row.Directory,
+		ParentID:  strings.TrimSpace(row.ParentID),
 		CreatedAt: time.UnixMilli(row.TimeCreated).UTC(),
 		Updated:   time.UnixMilli(row.TimeUpdated).UTC(),
 	}, true, nil
@@ -308,46 +331,87 @@ func isOpenCodeSessionFresh(updated, now time.Time) bool {
 	return now.Sub(updated) <= maxOpenCodeConversationAge
 }
 
-func matchOpenCodeSessionToAgentStart(candidates []openCodeSessionCandidate, startedAt time.Time) (openCodeSessionCandidate, bool) {
+func rootOpenCodeCandidates(candidates []openCodeSessionCandidate) []openCodeSessionCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	roots := make([]openCodeSessionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.ParentID) == "" {
+			roots = append(roots, candidate)
+		}
+	}
+	return roots
+}
+
+func openCodeWindowCandidates(candidates []openCodeSessionCandidate, startedAt time.Time) []openCodeSessionCandidate {
 	if startedAt.IsZero() {
-		return openCodeSessionCandidate{}, false
+		return nil
 	}
 	startedAt = startedAt.UTC()
 	minCreatedAt := startedAt.Add(-5 * time.Second)
 	maxCreatedAt := startedAt.Add(2 * time.Minute)
-	bestIndex := -1
-	var bestDelta time.Duration
-	for index, candidate := range candidates {
+	out := make([]openCodeSessionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
 		createdAt := candidate.CreatedAt.UTC()
 		if createdAt.IsZero() || createdAt.Before(minCreatedAt) || createdAt.After(maxCreatedAt) {
 			continue
 		}
-		delta := createdAt.Sub(startedAt)
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func matchOpenCodeSessionToAgentStart(candidates []openCodeSessionCandidate, startedAt time.Time) (openCodeSessionCandidate, bool) {
+	window := openCodeWindowCandidates(candidates, startedAt)
+	if len(window) == 0 {
+		return openCodeSessionCandidate{}, false
+	}
+	bestIndex := 0
+	bestDelta := time.Duration(0)
+	for index, candidate := range window {
+		delta := candidate.CreatedAt.UTC().Sub(startedAt.UTC())
 		if delta < 0 {
 			delta = -delta
 		}
-		if bestIndex == -1 || delta < bestDelta ||
-			(delta == bestDelta && candidate.Updated.After(candidates[bestIndex].Updated)) {
+		if index == 0 || delta < bestDelta {
 			bestIndex = index
 			bestDelta = delta
 		}
 	}
-	if bestIndex == -1 {
+	for index, candidate := range window {
+		if index == bestIndex {
+			continue
+		}
+		delta := candidate.CreatedAt.UTC().Sub(startedAt.UTC())
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta == bestDelta {
+			return openCodeSessionCandidate{}, false
+		}
+	}
+	return window[bestIndex], true
+}
+
+// freshestOpenCodeRoot binds the most recently updated fresh root session
+// when the StartedAt window is unavailable (zero or drifted). Equal-updated
+// candidates refuse as ambiguous rather than guessing.
+func freshestOpenCodeRoot(candidates []openCodeSessionCandidate) (openCodeSessionCandidate, bool) {
+	if len(candidates) == 0 {
 		return openCodeSessionCandidate{}, false
+	}
+	bestIndex := 0
+	for index, candidate := range candidates {
+		if index == 0 || candidate.Updated.After(candidates[bestIndex].Updated) {
+			bestIndex = index
+		}
 	}
 	for index, candidate := range candidates {
 		if index == bestIndex {
 			continue
 		}
-		createdAt := candidate.CreatedAt.UTC()
-		if createdAt.IsZero() || createdAt.Before(minCreatedAt) || createdAt.After(maxCreatedAt) {
-			continue
-		}
-		delta := createdAt.Sub(startedAt)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta == bestDelta {
+		if candidate.Updated.Equal(candidates[bestIndex].Updated) {
 			return openCodeSessionCandidate{}, false
 		}
 	}
@@ -457,6 +521,7 @@ type openCodeConversationBuilder struct {
 	sessionID         string
 	events            []CodexConversationEvent
 	eventByCall       map[string]int
+	subtaskIndexes    []int
 	seq               int
 	openSteps         int
 	activityLifecycle providerActivityLifecycle
@@ -561,12 +626,16 @@ func (b *openCodeConversationBuilder) hasRunningTools() bool {
 func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp string, parts []openCodePartRow) {
 	for _, part := range parts {
 		var payload struct {
-			Type   string `json:"type"`
-			Text   string `json:"text"`
-			Tool   string `json:"tool"`
-			CallID string `json:"callID"`
-			Reason string `json:"reason"`
-			State  struct {
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			Tool        string `json:"tool"`
+			CallID      string `json:"callID"`
+			Reason      string `json:"reason"`
+			Prompt      string `json:"prompt"`
+			Description string `json:"description"`
+			Agent       string `json:"agent"`
+			Command     string `json:"command"`
+			State       struct {
 				Status string          `json:"status"`
 				Input  json.RawMessage `json:"input"`
 				Output string          `json:"output"`
@@ -637,7 +706,10 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 			b.seq++
 			callID := firstNonEmpty(payload.CallID, part.ID)
 			status := strings.ToLower(strings.TrimSpace(payload.State.Status))
-			if status == "" {
+			switch status {
+			case "error":
+				status = "failed"
+			case "":
 				status = "running"
 			}
 			input := strings.TrimSpace(string(payload.State.Input))
@@ -666,13 +738,63 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 					partTime,
 				)
 			}
+		case "subtask":
+			// OpenCode's Task/sub-agent launch part. Project it as a tool call
+			// node so child activity is represented in the Interface instead of
+			// silently dropping the parent transcript's Task activity.
+			b.seq++
+			callID := firstNonEmpty(part.ID, fmt.Sprintf("%s:subtask:%d", b.sessionID, b.seq))
+			input, _ := json.Marshal(map[string]string{
+				"prompt":      payload.Prompt,
+				"description": payload.Description,
+				"agent":       payload.Agent,
+				"command":     payload.Command,
+			})
+			b.events = append(b.events, CodexConversationEvent{
+				ID:        callID,
+				Seq:       b.seq,
+				Timestamp: partTime,
+				Kind:      "tool_call",
+				ToolName:  "subtask",
+				CallID:    callID,
+				Input:     string(input),
+				Status:    "running",
+				Partial:   true,
+			})
+			b.subtaskIndexes = append(b.subtaskIndexes, len(b.events)-1)
 		case "file":
 			// Optional file/ref parts are not projected into chat body yet.
 		}
 	}
 }
 
+// resolveSubtaskStates converges subtask part events to their final state at
+// result time: a settled turn marks child activity completed, while a still
+// running turn keeps it in-flight.
+func (b *openCodeConversationBuilder) resolveSubtaskStates() {
+	settled := !b.activityLifecycle.running()
+	for _, index := range b.subtaskIndexes {
+		if index < 0 || index >= len(b.events) {
+			continue
+		}
+		event := &b.events[index]
+		if settled {
+			event.Status = "completed"
+			event.Partial = false
+		}
+	}
+}
+
 func (b *openCodeConversationBuilder) result() CodexConversation {
+	b.resolveSubtaskStates()
+	// A settled turn means the DB rows are the final state: partial-to-final
+	// replacement clears in-flight flags so the Interface renders the turn as
+	// finished instead of perpetually streaming.
+	if !b.activityLifecycle.running() {
+		for i := range b.events {
+			b.events[i].Partial = false
+		}
+	}
 	return conversationWithActivity(CodexConversation{
 		SessionID: b.sessionID,
 		Events:    b.events,
