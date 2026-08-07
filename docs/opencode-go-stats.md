@@ -51,13 +51,14 @@ Fail-closed rules:
 
 The official Go limits are value-based and published in the OpenCode Go
 documentation: **$12 per 5 hours, $30 per week, $60 per month**. Current used
-percentages and reset times are only exposed by the authenticated dashboard,
-so Zen reads them only when dashboard credentials are configured.
+percentages and reset times come only from the authenticated OpenCode web
+subscription server-function, so Zen reads them only when dashboard
+credentials are configured.
 
 ### Dashboard credentials
 
-Zen follows the conventions shared with opencode-bar and opencode-quota.
-Credentials are resolved in this order:
+Zen follows the conventions shared with opencode-bar, opencode-quota, and
+CodexBar. Credentials are resolved in this order:
 
 1. Environment: `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`
 2. Config override: `OPENCODE_GO_CONFIG_FILE`
@@ -70,40 +71,64 @@ Credentials are resolved in this order:
    - `~/Library/Application Support/opencode-quota/opencode-go.json` (macOS)
 
 Config JSON accepts `workspaceId` / `workspaceID` / `workspace_id` and
-`authCookie` / `auth_cookie` / `cookie`.
+`authCookie` / `auth_cookie` / `cookie`. The workspace ID may be a raw
+`wrk_...` id or a full `https://opencode.ai/workspace/...` URL; it is
+normalized before use.
 
 Zen intentionally does not scan browser profiles or export browser cookies.
 
-### Dashboard read
+### Usage read (server-function)
+
+Usage is read through the OpenCode web server-function endpoint
+`https://opencode.ai/_server` with the fixed `subscription.get` server id
+`7abeebee372f304e050aaaf92be863f4a86490e382f8c79db68fd94040d691b4`
+(mirroring CodexBar's `OpenCodeUsageFetcher` and its `docs/opencode.md`):
 
 ```
-GET https://opencode.ai/workspace/<workspaceId>/go
+GET https://opencode.ai/_server?id=7abeebee...&args=%5B%22<workspaceId>%22%5D
 Cookie: auth=<authCookie>
-Accept: text/html,application/xhtml+xml
+X-Server-Id: 7abeebee...
+X-Server-Instance: server-fn:<unique-id-per-request>
+Origin: https://opencode.ai
+Referer: https://opencode.ai/workspace/<workspaceId>/billing
+Accept: text/javascript, application/json;q=0.9, */*;q=0.8
+User-Agent: <browser user agent>
 ```
 
-The page embeds `rollingUsage`, `weeklyUsage`, and `monthlyUsage` objects
-(JSON payloads or SolidJS-serialized expressions) carrying `usagePercent` and
-`resetInSec`. The daemon parses the three canonical windows and maps them to
-the documented limits ($12/$30/$60). Parsing is fail-closed:
+The workspace ID travels as a URL-encoded JSON array in the `args` query
+parameter. When the GET returns 200 but the body carries no usage windows, a
+POST to `/_server` is attempted with the same headers and a JSON body of
+`["<workspaceId>"]`. Every request uses a fresh `X-Server-Instance`.
 
-- a non-2xx response, a login/redirect page, a rate-limit page, markup drift,
-  or missing fields yields **no** usage windows;
-- windows that parse are kept, unparseable ones are dropped, and nothing is
-  ever guessed;
-- a page with zero parseable windows reports usage as unavailable.
+The response is `text/javascript` with serialized objects. Parsing tries
+strict JSON first (top-level or under `data`/`result`/`usage`/`billing`/
+`payload`), then extracts the window objects from the serialized text. The
+rolling 5-hour window is required; the weekly window is included when
+present; the monthly window is parsed only when it actually exists. Values
+are never guessed.
 
-Usage is never cached or replayed: the card shows windows only when the
-dashboard parsed successfully in the same refresh. A later dashboard failure
-downgrades the card to usage-unavailable instead of keeping stale numbers.
+Fail-closed rules:
+
+- `401`/`403`, `429`, `5xx`, and any non-200 response yield no usage.
+- Signed-out text (`login`, `sign in`, `auth/authorize`,
+  `not associated with an account`, `actor of type "public"`), explicit
+  `null` payloads, and malformed responses yield no usage.
+- Page HTML is never treated as success evidence.
+- A server-function success (at least the rolling window parsed) confirms
+  the subscription itself; otherwise the non-generating invalid-request
+  auth challenge below is required for the card.
+
+The legacy `/workspace/<id>/go` HTML-page scrape is explicitly deprecated and
+is not used; the server-function contract above is the only dashboard usage
+path.
 
 ## Card states
 
-- Verified subscription + parsed dashboard windows: plan label, per-window
-  used percentage, documented limit, and reset time.
+- Verified subscription + parsed server-function windows: plan label,
+  per-window used percentage, documented limit, and reset time.
 - Verified subscription (challenge confirmed) without dashboard credentials
-  or after a dashboard failure: plan label with an explicit "live usage
-  unavailable" note and the credential setup hint.
+  or after a server-function failure: plan label with an explicit "live
+  usage unavailable" note and the credential setup hint.
 - Anything negative (missing credentials, invalid key, ambiguous challenge,
   network failure): no card at all.
 
@@ -113,5 +138,5 @@ downgrades the card to usage-unavailable instead of keeping stale numbers.
   Stats payload, logged, or cached; only credential *source* labels
   (`environment`, config path) are loggable.
 - No browser cookie scanning or exporting.
-- Dashboard parsing fails closed on expiry, HTML/login responses, rate
-  limiting, and schema drift.
+- Server-function parsing fails closed on expiry, signed-out HTML responses,
+  rate limiting, null payloads, and schema drift.
