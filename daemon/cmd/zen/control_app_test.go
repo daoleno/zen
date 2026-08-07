@@ -16,17 +16,22 @@ import (
 )
 
 type fakeControlWatcher struct {
-	agents    map[string]*classifier.Agent
-	created   []watcher.CreateSessionOptions
-	sent      []fakeControlSend
-	killed    []string
-	captures  map[string]string
-	receipts  map[string]string
-	progress  []fakeControlProgress
-	sendErr   error
-	ready     []fakeControlSend
-	submitted []fakeControlSend
-	onCreate  func(string)
+	agents            map[string]*classifier.Agent
+	created           []watcher.CreateSessionOptions
+	sent              []fakeControlSend
+	killed            []string
+	captures          map[string]string
+	receipts          map[string]string
+	progress          []fakeControlProgress
+	sendErr           error
+	createErr         error
+	killErr           error
+	killLeavesLive    bool
+	reportKillMissing bool
+	probeErr          error
+	ready             []fakeControlSend
+	submitted         []fakeControlSend
+	onCreate          func(string)
 }
 
 type fakeControlSend struct {
@@ -75,11 +80,25 @@ func (w *fakeControlWatcher) GetAgent(id string) *classifier.Agent {
 }
 
 func (w *fakeControlWatcher) HasSession(target string) bool {
-	_, ok := w.agents[target]
-	return ok
+	presence, err := w.ProbeSession(target)
+	return err == nil && presence == watcher.SessionPresencePresent
+}
+
+func (w *fakeControlWatcher) ProbeSession(target string) (watcher.SessionPresence, error) {
+	if w.probeErr != nil {
+		return watcher.SessionPresenceUnknown, w.probeErr
+	}
+	if _, ok := w.agents[target]; ok {
+		return watcher.SessionPresencePresent, nil
+	}
+	return watcher.SessionPresenceAbsent, nil
 }
 
 func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
+	if w.createErr != nil {
+		w.created = append(w.created, opts)
+		return "", w.createErr
+	}
 	id := fmt.Sprintf(
 		"brain-agent-%s:@%d",
 		strings.ToLower(strings.ReplaceAll(opts.Name, " ", "-")),
@@ -200,7 +219,18 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 
 func (w *fakeControlWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
+	if w.killLeavesLive && w.killErr != nil {
+		return w.killErr
+	}
+	_, existed := w.agents[sessionID]
 	delete(w.agents, sessionID)
+	if w.killErr != nil {
+		return w.killErr
+	}
+	if !existed && w.reportKillMissing {
+		// Production KillSession treats target-missing as idempotent success.
+		return nil
+	}
 	return nil
 }
 

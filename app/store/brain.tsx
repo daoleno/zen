@@ -4,6 +4,10 @@ import React, {
   useReducer,
   type ReactNode,
 } from "react";
+import {
+  normalizeAgentSessionCapabilities,
+  type AgentSessionCapabilities,
+} from "../services/providers/sessionCapabilities";
 
 export type BrainScheduledResult = {
   id: string;
@@ -45,6 +49,11 @@ export type BrainAgentRef = {
   process_id?: number;
   updated_at?: string;
   delegated?: boolean;
+  /**
+   * Daemon-authoritative flat Session capabilities on brain_snapshot.host_agent.
+   * Hidden hosts are absent from agent_session_list — never invent from name/command.
+   */
+  capabilities?: AgentSessionCapabilities;
 };
 
 export type BrainAdapterCapabilities = {
@@ -287,6 +296,8 @@ function normalizeAgentRef(raw: any): BrainAgentRef {
     updated_at:
       typeof raw?.updated_at === "string" ? raw.updated_at : undefined,
     delegated: raw?.delegated === true,
+    // Same strict flat boolean helper as agent_session.capabilities.
+    capabilities: normalizeAgentSessionCapabilities(raw?.capabilities),
   };
 }
 
@@ -449,7 +460,13 @@ function agentRefsEqual(
     left.started_at === right.started_at &&
     left.process_id === right.process_id &&
     left.updated_at === right.updated_at &&
-    left.delegated === right.delegated
+    left.delegated === right.delegated &&
+    left.capabilities?.structured_events ===
+      right.capabilities?.structured_events &&
+    left.capabilities?.model_profile_managed ===
+      right.capabilities?.model_profile_managed &&
+    left.capabilities?.model_profile_active_switch ===
+      right.capabilities?.model_profile_active_switch
   );
 }
 

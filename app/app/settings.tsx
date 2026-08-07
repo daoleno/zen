@@ -768,6 +768,38 @@ export default function SettingsScreen() {
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
+              Agents
+            </Text>
+          </View>
+          <View style={styles.aboutGroup}>
+            <AnimatedPressable
+              style={styles.aboutRow}
+              preset="press"
+              scale={0.99}
+              accessibilityRole="button"
+              accessibilityLabel="Providers"
+              accessibilityHint="Manage Provider connections and API keys"
+              onPress={() => {
+                void Haptics.selectionAsync();
+                router.push("/model-profiles");
+              }}
+            >
+              <View style={styles.aboutCopy}>
+                <Text style={styles.aboutTitle}>Providers</Text>
+                <Text style={styles.aboutDescription}>
+                  Connections and models for Codex and Claude Code
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color={colors.textTertiary}
+              />
+            </AnimatedPressable>
+          </View>
+
+          <View style={styles.sectionHeaderStandalone}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
               About
             </Text>
           </View>

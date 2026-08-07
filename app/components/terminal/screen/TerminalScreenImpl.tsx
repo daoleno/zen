@@ -1,5 +1,7 @@
-import React from "react";
+import React, { useCallback } from "react";
+import { useRouter } from "expo-router";
 import { useAgents } from "../../../store/agents";
+import { useBrain } from "../../../store/brain";
 import { useWork } from "../../../store/work";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
@@ -13,9 +15,14 @@ import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 import { useSessionResourceSheet } from "./useSessionResourceSheet";
+import {
+  sessionSupportsModelProfileAction,
+  useSessionProviderSheet,
+} from "./useSessionProviderSheet";
 
 export default function TerminalScreen() {
   const { state } = useAgents();
+  const { state: brainState } = useBrain();
   const { state: workState } = useWork();
   const {
     agentId,
@@ -33,6 +40,8 @@ export default function TerminalScreen() {
     setNewTerminalVisible,
     creatingSession,
     setCreatingSession,
+    createDurabilityWarning,
+    dismissCreateDurabilityWarning,
     screenFocused,
     setScreenFocused,
     terminalRef,
@@ -44,6 +53,7 @@ export default function TerminalScreen() {
     agents: state.agents,
     hydratedServers: state.hydratedServers,
   });
+  const brainForServer = serverId ? brainState.byServer[serverId] : undefined;
   const {
     agentAliases,
     setAgentAliases,
@@ -74,6 +84,8 @@ export default function TerminalScreen() {
     serverConnections: state.serverConnections,
     serverConnectionIssues: state.serverConnectionIssues,
     interfaceRenderModes,
+    brainHostAgent: brainForServer?.host_agent ?? null,
+    brainHostServerId: brainForServer?.serverId ?? null,
   });
   const { chromeColors, chatChrome, chatTheme, statusBarStyle, terminalTheme } =
     theme;
@@ -149,6 +161,23 @@ export default function TerminalScreen() {
     connectionConnected: connectionState === "connected",
   });
 
+  const router = useRouter();
+  const routeSheet = useSessionProviderSheet({
+    serverId,
+    agentId,
+    capabilities: agent?.capabilities ?? null,
+    connectionConnected: connectionState === "connected",
+  });
+
+  const openModel = useCallback(() => {
+    closeMenu();
+    routeSheet.open();
+  }, [closeMenu, routeSheet]);
+
+  const modelActionAvailable = sessionSupportsModelProfileAction(
+    agent?.capabilities ?? null,
+  );
+
   const { overlayProps, topBarProps, viewportProps } =
     useTerminalScreenLayoutProps({
       agent,
@@ -185,6 +214,20 @@ export default function TerminalScreen() {
       resourceSheetLoading: resourceSheet.loading,
       resourceSheetError: resourceSheet.error,
       resourceSheetSnapshot: resourceSheet.snapshot,
+      routeSheetVisible: routeSheet.visible,
+      routeSheetLoading: routeSheet.loading,
+      routeSheetActivating: routeSheet.activating,
+      routeSheetError: routeSheet.error,
+      routeSheetDurabilityWarning: routeSheet.durabilityWarning,
+      routeSheetRequiresRefresh: routeSheet.requiresRefreshBeforeMutation,
+      routeSheetNonRouted: routeSheet.managedReadOnly,
+      routeSheetManagedReadOnly: routeSheet.managedReadOnly,
+      routeSheetActivationEnabled: routeSheet.activationEnabled,
+      routeSheetSelection: routeSheet.selection,
+      routeSheetConnections: routeSheet.connections,
+      routeSheetModelsByConnection: routeSheet.modelsByConnection,
+      createDurabilityWarning,
+      onDismissCreateDurabilityWarning: dismissCreateDurabilityWarning,
       screenFocused,
       selectedServerId: serverId,
       serverId,
@@ -206,6 +249,18 @@ export default function TerminalScreen() {
       openSessionDetails: resourceSheet.open,
       closeResourceSheet: resourceSheet.close,
       retryResourceSheet: resourceSheet.retry,
+      openModel: modelActionAvailable
+        ? openModel
+        : undefined,
+      modelActionAvailable,
+      closeRouteSheet: routeSheet.close,
+      retryRouteSheet: routeSheet.retry,
+      activateSessionModel: (choice) => {
+        void routeSheet.activate(choice);
+      },
+      openProvidersSettings: () => {
+        router.push("/model-profiles");
+      },
       sessionActions,
     });
 

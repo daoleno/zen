@@ -15,6 +15,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -23,6 +24,7 @@ type controlWatcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
 	HasSession(target string) bool
+	ProbeSession(target string) (watcher.SessionPresence, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
 	RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
@@ -46,6 +48,7 @@ type controlApp struct {
 	brainService      *brain.Service
 	calendarStore     *calendar.Store
 	calendarScheduler *calendar.Scheduler
+	profiles          *modelprofiles.Owner
 	stateDir          string
 }
 
@@ -111,6 +114,24 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleDeviceRevoke(req)
 	case "pair":
 		return a.handlePair()
+	case "provider_list":
+		return a.handleProviderList()
+	case "provider_upsert":
+		return a.handleProviderUpsert(req)
+	case "provider_delete":
+		return a.handleProviderDelete(req)
+	case "provider_set_default":
+		return a.handleProviderSetDefault(req)
+	case "provider_discover":
+		return a.handleProviderDiscover(req)
+	case "session_provider_get":
+		return a.handleSessionProviderGet(req)
+	case "session_provider_activate":
+		return a.handleSessionProviderActivate(req)
+	case "model_profile_list", "model_profile_get", "model_profile_upsert",
+		"model_profile_delete", "model_profile_set_default",
+		"session_route_get", "session_route_activate":
+		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "profile wire removed; use provider connection APIs")
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
 	}
@@ -354,7 +375,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		}
 	}
 
-	agentID, err := a.watcher.CreateSession("", watcher.CreateSessionOptions{
+	createOpts := watcher.CreateSessionOptions{
 		Cwd:         cwd,
 		Command:     command,
 		Name:        name,
@@ -363,22 +384,91 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		ProgressEnv: true,
 		Delegated:   !req.Hidden,
 		Env:         progressEnvForStateDir(a.stateDir),
-	})
-	if err != nil {
-		a.recordSpawnWorkFailure(ownedWork, err)
-		return control.ErrorResponse("spawn_failed", err.Error())
+	}
+	var routeSnap *modelprofiles.WireSessionSnapshot
+	var routePersist modelprofiles.PersistResult
+	agentID := ""
+	connectionID := strings.TrimSpace(req.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(req.ProfileID)
+	}
+	if a.profiles != nil {
+		plan, planErr := a.profiles.PrepareLaunch(a.spawnProfileClientHint(req, command), connectionID, command)
+		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {
+			a.recordSpawnWorkFailure(ownedWork, planErr)
+			return control.ErrorResponse(modelprofiles.ControlErrorCode(planErr), planErr.Error())
+		}
+		if plan.Applied && !plan.Bypass {
+			createOpts.Command = plan.Command
+			createOpts.Env = mergeControlEnv(createOpts.Env, plan.Env)
+			agentID, err = a.watcher.CreateSession("", createOpts)
+			if err != nil {
+				abortPersist, abortErr := a.profiles.AbortLaunch(plan.ProvisionalID)
+				a.recordSpawnWorkFailure(ownedWork, err)
+				joined := errors.Join(err, abortErr)
+				if abortErr != nil || !abortPersist.Applied {
+					return control.ErrorResponse(modelprofiles.ControlErrorCode(errors.Join(joined, modelprofiles.ErrLaunchCleanupIncomplete)), joined.Error())
+				}
+				return control.ErrorResponse("spawn_failed", joined.Error())
+			}
+			_, snap, persist, commitErr := a.profiles.CommitLaunch(plan.ProvisionalID, agentID)
+			if !persist.Applied {
+				cleanup := modelprofiles.CleanupFailedLaunch(a.profiles, plan.ProvisionalID, agentID, a.watcher.KillSession, a.sessionLivenessProbe)
+				a.recordSpawnWorkFailure(ownedWork, commitErr)
+				joined := errors.Join(commitErr, cleanup.Err)
+				code := modelprofiles.ControlErrorCode(joined)
+				if code == "" || code == modelprofiles.CodeProfilesUnavailable {
+					code = modelprofiles.ControlErrorCode(commitErr)
+				}
+				if code == "" {
+					code = "spawn_failed"
+				}
+				return control.ErrorResponse(code, joined.Error())
+			}
+			routePersist = modelprofiles.CombinePersistResults(plan.Persist, persist)
+			routeSnap = &snap
+			if commitErr != nil || !routePersist.Durable {
+				if commitErr == nil {
+					commitErr = modelprofiles.ErrPersistDirSync
+				}
+				log.Printf("model profile launch applied with uncertain durability: %v", commitErr)
+			}
+		}
+	}
+	if agentID == "" {
+		agentID, err = a.watcher.CreateSession("", createOpts)
+		if err != nil {
+			a.recordSpawnWorkFailure(ownedWork, err)
+			return control.ErrorResponse("spawn_failed", err.Error())
+		}
 	}
 	if ownedWork.ID != "" {
 		ownedWork, err = a.brainStore.AttachWorkOwner(ownedWork.ID, agentID)
 		if err != nil {
-			_ = a.watcher.KillSession(agentID)
+			var cleanup modelprofiles.LaunchCleanupResult
+			if a.profiles != nil && routeSnap != nil {
+				// Commit already rebound the provisional to agentID — release the
+				// committed binding (not a provisional Abort) and kill tmux.
+				cleanup = modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
+			} else {
+				_ = a.watcher.KillSession(agentID)
+			}
+			a.recordSpawnWorkFailure(ownedWork, err)
+			joined := errors.Join(err, cleanup.Err)
+			if cleanup.Err != nil || (routeSnap != nil && !cleanup.Persist.Applied) {
+				code := modelprofiles.ControlErrorCode(joined)
+				if code == "" || code == modelprofiles.CodeProfilesUnavailable {
+					code = "spawn_failed"
+				}
+				return control.ErrorResponse(code, joined.Error())
+			}
 			return brainWorkControlError(err)
 		}
 	}
 
 	if prompt != "" {
 		var sendErr error
-		sendErr = a.submitAgentHandoff(agentID, command, prompt, true)
+		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, true)
 		if sendErr != nil {
 			a.recordSpawnWorkFailure(ownedWork, sendErr)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
@@ -394,10 +484,17 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				Name:      name,
 				Status:    string(classifier.StateRunning),
 				Cwd:       cwd,
-				Command:   command,
+				Command:   createOpts.Command,
 				Hidden:    req.Hidden,
 				Delegated: !req.Hidden,
 			},
+			SessionRoute: routeSnap,
+		}
+		if routeSnap != nil {
+			if outcome, durable := modelprofiles.WirePersistFields(routePersist); outcome != "" {
+				response.PersistenceOutcome = control.PersistenceOutcome(outcome)
+				response.PersistenceDurable = durable
+			}
 		}
 		if ownedWork.ID != "" {
 			response.BrainWork = &ownedWork
@@ -405,7 +502,13 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		return response
 	}
 	out := controlAgent(agent)
-	response := control.Response{OK: true, Agent: &out}
+	response := control.Response{OK: true, Agent: &out, SessionRoute: routeSnap}
+	if routeSnap != nil {
+		if outcome, durable := modelprofiles.WirePersistFields(routePersist); outcome != "" {
+			response.PersistenceOutcome = control.PersistenceOutcome(outcome)
+			response.PersistenceDurable = durable
+		}
+	}
 	if ownedWork.ID != "" {
 		response.BrainWork = &ownedWork
 	}
@@ -771,8 +874,23 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 	if agent != nil && !req.Force && closeRequiresForce(agent) {
 		return control.ErrorResponse("agent_running_requires_force", "Agent is still running or unresolved. Send it a cancellation request first, wait for done/failed/blocked, or close with force.")
 	}
-	if err := a.watcher.KillSession(agentID); err != nil {
-		return control.ErrorResponse("close_failed", err.Error())
+	var release func(string) (modelprofiles.PersistResult, error)
+	if a.profiles != nil {
+		release = a.profiles.ReleaseSession
+	}
+	teardown := modelprofiles.TeardownSession(agentID, a.watcher.KillSession, a.sessionLivenessProbe, release)
+	if teardown.Err != nil {
+		code := modelprofiles.ControlErrorCode(teardown.Err)
+		if code == "" || code == modelprofiles.CodeProfilesUnavailable {
+			code = "close_failed"
+		}
+		resp := control.ErrorResponse(code, teardown.Err.Error())
+		if teardown.Persist.Applied {
+			outcome, durable := modelprofiles.WirePersistFields(teardown.Persist)
+			resp.PersistenceOutcome = control.PersistenceOutcome(outcome)
+			resp.PersistenceDurable = durable
+		}
+		return resp
 	}
 	if agent == nil {
 		return control.Response{OK: true}
@@ -780,6 +898,28 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 	out := controlAgent(agent)
 	out.Status = string(classifier.StateRemoved)
 	return control.Response{OK: true, Agent: &out}
+}
+
+func (a *controlApp) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
+	if a == nil || a.watcher == nil {
+		return modelprofiles.SessionLivenessUnknown, fmt.Errorf("watcher unavailable")
+	}
+	presence, err := a.watcher.ProbeSession(sessionID)
+	return mapWatcherSessionPresence(presence, err)
+}
+
+func mapWatcherSessionPresence(presence watcher.SessionPresence, err error) (modelprofiles.SessionLiveness, error) {
+	if err != nil {
+		return modelprofiles.SessionLivenessUnknown, err
+	}
+	switch presence {
+	case watcher.SessionPresencePresent:
+		return modelprofiles.SessionLivenessPresent, nil
+	case watcher.SessionPresenceAbsent:
+		return modelprofiles.SessionLivenessAbsent, nil
+	default:
+		return modelprofiles.SessionLivenessUnknown, nil
+	}
 }
 
 func (a *controlApp) handleBrainExecutors() control.Response {
@@ -952,6 +1092,22 @@ func (a *controlApp) currentBrainExecutor() (work.AgentExecutor, bool) {
 		}
 	}
 	return a.execs.AgentExecutor("codex")
+}
+
+// spawnProfileClientHint derives the canonical Model Profiles client executor
+// (codex|claude) from the configured CLI identity. req.Executor remains the
+// process/executor selection; aliases must not be passed as PrepareLaunch IDs.
+func (a *controlApp) spawnProfileClientHint(req control.Request, command string) string {
+	name := strings.TrimSpace(req.ExecutorID)
+	if name == "" {
+		name = strings.TrimSpace(req.Executor)
+	}
+	if a != nil && a.execs != nil && name != "" {
+		if ae, ok := a.execs.AgentExecutor(name); ok {
+			return ae.ProfileClientExecutor()
+		}
+	}
+	return work.ProfileClientExecutor(name, command)
 }
 
 func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
@@ -1210,4 +1366,177 @@ func ensureTrailingNewline(value string) string {
 		return value
 	}
 	return value + "\n"
+}
+
+func mergeControlEnv(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
+}
+
+func (a *controlApp) handleProviderList() control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	proj, err := a.profiles.ProjectProviders()
+	if err != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	return control.Response{OK: true, Providers: &proj}
+}
+
+func (a *controlApp) handleProviderUpsert(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	if req.ProviderConnection == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "provider_connection is required")
+	}
+	create := strings.EqualFold(strings.TrimSpace(req.Operation), "create")
+	if !create && req.ProviderConnection.ID != "" {
+		if _, err := a.profiles.GetProfile(req.ProviderConnection.ID); errors.Is(err, modelprofiles.ErrNotFound) {
+			create = true
+		}
+	}
+	proj, err := a.profiles.UpsertProviderConnection(*req.ProviderConnection, req.Revision, create)
+	return a.providersMutationResponse(proj, err)
+}
+
+func (a *controlApp) handleProviderDelete(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	id := strings.TrimSpace(req.ConnectionID)
+	if id == "" {
+		id = strings.TrimSpace(req.ProfileID)
+	}
+	if id == "" {
+		id = strings.TrimSpace(req.ID)
+	}
+	proj, err := a.profiles.DeleteProviderConnection(id, req.Revision)
+	return a.providersMutationResponse(proj, err)
+}
+
+func (a *controlApp) handleProviderSetDefault(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	executorID := strings.TrimSpace(req.Client)
+	if executorID == "" {
+		executorID = strings.TrimSpace(req.ExecutorID)
+	}
+	if executorID == "" {
+		executorID = strings.TrimSpace(req.Executor)
+	}
+	if executorID == "" {
+		executorID = strings.TrimSpace(req.Executor)
+	}
+	connectionID := strings.TrimSpace(req.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(req.ProfileID)
+	}
+	proj, err := a.profiles.SetProviderDefault(executorID, connectionID, req.ModelID, req.Revision)
+	return a.providersMutationResponse(proj, err)
+}
+
+func (a *controlApp) handleProviderDiscover(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	id := strings.TrimSpace(req.ConnectionID)
+	if id == "" {
+		id = strings.TrimSpace(req.ProfileID)
+	}
+	if id == "" {
+		id = strings.TrimSpace(req.ID)
+	}
+	entries, err := a.profiles.DiscoverProviderModels(id, true)
+	if err != nil && len(entries) == 0 {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	proj, _ := a.profiles.ProjectProviders()
+	proj.Models[id] = entries
+	return control.Response{OK: true, Providers: &proj}
+}
+
+func (a *controlApp) providersMutationResponse(proj modelprofiles.ProviderCatalogProjection, err error) control.Response {
+	persist := modelprofiles.PersistResultFromError(err)
+	if !persist.Applied {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	response := control.Response{OK: true, Providers: &proj}
+	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
+		response.PersistenceOutcome = control.PersistenceOutcome(outcome)
+		response.PersistenceDurable = durable
+	}
+	if err != nil {
+		log.Printf("provider catalog mutation applied with uncertain durability: %v", err)
+		response.Confirmation = "Provider catalog updated; persistence was applied but directory durability is uncertain."
+	}
+	return response
+}
+
+func (a *controlApp) handleSessionProviderGet(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	sessionID := strings.TrimSpace(req.AgentID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.ID)
+	}
+	sel, ok := a.profiles.SessionProviderSelection(sessionID)
+	if !ok {
+		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "session provider binding not found")
+	}
+	snap, _ := a.profiles.SessionSnapshot(sessionID)
+	return control.Response{OK: true, SessionProvider: &sel, SessionRoute: &snap}
+}
+
+func (a *controlApp) handleSessionProviderActivate(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	sessionID := strings.TrimSpace(req.AgentID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.ID)
+	}
+	connectionID := strings.TrimSpace(req.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(req.ProfileID)
+	}
+	_, snap, persist, err := a.profiles.ActivateSessionProvider(sessionID, connectionID, req.ModelID)
+	if !persist.Applied {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	if snap.Current == nil {
+		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "session provider binding not found after activate")
+	}
+	binding := *snap.Current
+	sel := modelprofiles.ProviderSessionSelection{
+		SessionID:       binding.SessionID,
+		Client:          binding.Client,
+		ConnectionID:    binding.ConnectionID,
+		ConnectionName:  binding.ConnectionName,
+		ProviderLabel:   binding.ProviderLabel,
+		ModelID:         binding.ModelID,
+		CredentialReady: binding.CredentialReady,
+		HotSwitchable:   binding.HotSwitchable,
+	}
+	response := control.Response{OK: true, SessionProvider: &sel, SessionRoute: &snap, Binding: &binding}
+	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
+		response.PersistenceOutcome = control.PersistenceOutcome(outcome)
+		response.PersistenceDurable = durable
+	}
+	if err != nil {
+		log.Printf("session provider activate applied with uncertain durability: %v", err)
+	}
+	return response
 }

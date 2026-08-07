@@ -11,7 +11,13 @@ import type {
   AgentCapabilities,
   ConnectionState,
 } from "../../../store/agents";
+import type { BrainAgentRef } from "../../../store/brain";
 import type { WorkItem } from "../../../store/work";
+import {
+  sessionAllowsModelProfileActivation,
+  sessionIsManagedReadOnlyProfile,
+  sessionSupportsModelProfileAction,
+} from "../../../services/providers/sessionCapabilities";
 import { findLinkedWork } from "./TerminalScreenModel";
 import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
@@ -26,6 +32,10 @@ interface UseTerminalRouteModelInput {
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   interfaceRenderModes: StoredInterfaceRenderModes;
+  /** Current-server Brain host_agent (hidden from agent_session_list). */
+  brainHostAgent?: BrainAgentRef | null;
+  /** serverId that owns brainHostAgent — must match route serverId. */
+  brainHostServerId?: string | null;
 }
 
 export function useTerminalRouteModel({
@@ -39,18 +49,30 @@ export function useTerminalRouteModel({
   serverConnections,
   serverConnectionIssues,
   interfaceRenderModes,
+  brainHostAgent,
+  brainHostServerId,
 }: UseTerminalRouteModelInput) {
   const storedAgent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const agent = useMemo(
     () =>
-      resolveRouteAgent({
+      resolveTerminalRouteAgent({
         storedAgent,
         routeSessionHint,
         sessionKey,
         serverId,
         agentId,
+        brainHostAgent,
+        brainHostServerId,
       }),
-    [agentId, routeSessionHint, serverId, sessionKey, storedAgent],
+    [
+      agentId,
+      brainHostAgent,
+      brainHostServerId,
+      routeSessionHint,
+      serverId,
+      sessionKey,
+      storedAgent,
+    ],
   );
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
   const presentedAgent = useMemo(
@@ -156,26 +178,93 @@ export function defaultInterfaceRenderModeForKind(
   return supportsChatInterface(kind, capabilities) ? "chat" : "terminal";
 }
 
-function resolveRouteAgent({
+/**
+ * True when the route targets the current-server Brain host by exact server+id.
+ * Never matches on name, command, or route-param inference.
+ */
+export function brainHostMatchesRoute(input: {
+  brainHostAgent?: BrainAgentRef | null;
+  brainHostServerId?: string | null;
+  routeServerId: string;
+  routeAgentId: string;
+}): boolean {
+  const hostId = input.brainHostAgent?.id?.trim() || "";
+  const brainServer = input.brainHostServerId?.trim() || "";
+  const routeServer = input.routeServerId.trim();
+  const routeAgent = input.routeAgentId.trim();
+  if (!hostId || !brainServer || !routeServer || !routeAgent) {
+    return false;
+  }
+  return brainServer === routeServer && hostId === routeAgent;
+}
+
+/**
+ * Resolve the Terminal route Agent. When the route targets the current-server
+ * Brain host (hidden from agent_session_list), merge host_agent — including
+ * daemon-authoritative capabilities — without upserting into the Agent store.
+ */
+export function resolveTerminalRouteAgent({
   storedAgent,
   routeSessionHint,
   sessionKey,
   serverId,
   agentId,
+  brainHostAgent,
+  brainHostServerId,
 }: {
   storedAgent?: Agent;
   routeSessionHint: TerminalRouteSessionHint;
   sessionKey: string | null;
   serverId: string;
   agentId: string;
+  brainHostAgent?: BrainAgentRef | null;
+  brainHostServerId?: string | null;
 }): Agent | undefined {
+  const hostMatches = brainHostMatchesRoute({
+    brainHostAgent,
+    brainHostServerId,
+    routeServerId: serverId,
+    routeAgentId: agentId,
+  });
+  const hostCapabilities = hostMatches
+    ? brainHostAgent?.capabilities
+    : undefined;
+
   if (storedAgent) {
+    // Ordinary visible Agent: unchanged identity. Overlay host capabilities only
+    // when this exact server+id is the Brain host (rare overlap; never invent).
     return {
       ...storedAgent,
       name: storedAgent.name || routeSessionHint.name || agentId,
       cwd: storedAgent.cwd || routeSessionHint.cwd,
       command: storedAgent.command || routeSessionHint.command,
       started_at: storedAgent.started_at ?? routeSessionHint.startedAt,
+      capabilities: hostCapabilities ?? storedAgent.capabilities,
+    };
+  }
+
+  if (hostMatches && sessionKey && brainHostAgent) {
+    // Hidden Brain host: project host_agent as the route Agent for this screen.
+    // Capabilities come only from host_agent — route params never authorize.
+    const now = Date.now();
+    return {
+      key: sessionKey,
+      id: brainHostAgent.id,
+      serverId,
+      serverName: "",
+      serverUrl: "",
+      name: brainHostAgent.name || agentId,
+      status: (brainHostAgent.status as Agent["status"]) || "running",
+      project: undefined,
+      cwd: brainHostAgent.cwd || routeSessionHint.cwd,
+      command: brainHostAgent.command || routeSessionHint.command,
+      summary: brainHostAgent.summary || "",
+      last_output_lines: [],
+      started_at: brainHostAgent.started_at ?? routeSessionHint.startedAt,
+      updated_at: brainHostAgent.started_at || now,
+      process_id: brainHostAgent.process_id,
+      delegated: brainHostAgent.delegated,
+      capabilities: hostCapabilities,
     };
   }
 
@@ -188,6 +277,7 @@ function resolveRouteAgent({
     return undefined;
   }
 
+  // Route-hint fallback for non-host Sessions without a store row — no capabilities.
   const now = Date.now();
   return {
     key: sessionKey,
@@ -204,6 +294,21 @@ function resolveRouteAgent({
     last_output_lines: [],
     started_at: routeSessionHint.startedAt,
     updated_at: routeSessionHint.startedAt || now,
+  };
+}
+
+/** Model menu visibility derived from resolved route agent capabilities. */
+export function routeAgentProviderModelActionState(
+  capabilities: AgentCapabilities | null | undefined,
+): {
+  actionVisible: boolean;
+  activationEnabled: boolean;
+  managedReadOnly: boolean;
+} {
+  return {
+    actionVisible: sessionSupportsModelProfileAction(capabilities),
+    activationEnabled: sessionAllowsModelProfileActivation(capabilities),
+    managedReadOnly: sessionIsManagedReadOnlyProfile(capabilities),
   };
 }
 

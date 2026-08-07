@@ -77,7 +77,6 @@ export function NewTerminalSheet({
     listDirEpochRef.current = nextDirectoryListEpoch(listDirEpochRef.current);
   }, []);
 
-  // Always invalidate on unmount, independent of the visible-reset effect.
   useEffect(() => {
     return () => {
       invalidateDirectoryRequests();
@@ -89,7 +88,6 @@ export function NewTerminalSheet({
       invalidateDirectoryRequests();
       return;
     }
-    Keyboard.dismiss();
     setForm(
       createNewTerminalSheetFormState({
         cwd: initialCwd,
@@ -98,9 +96,6 @@ export function NewTerminalSheet({
       }),
     );
     setDirectory(createIdleDirectoryPickerState());
-    return () => {
-      invalidateDirectoryRequests();
-    };
   }, [
     initialCommand,
     initialCwd,
@@ -127,61 +122,46 @@ export function NewTerminalSheet({
         return;
       }
       setDirectory((current) =>
-        failDirectoryLoad(current, e?.message ?? "Failed to load directory"),
+        failDirectoryLoad(
+          current,
+          e instanceof Error ? e.message : "Failed to list directory",
+        ),
       );
     }
   }, []);
 
-  useEffect(() => {
-    if (!visible || form.panel !== "directory" || !selectedServerId) {
-      return;
-    }
-    // Snapshot cwd when entering the directory panel; browsing updates local
-    // directory state only so form fields stay intact until select/back.
-    void loadDirectory(selectedServerId, form.cwd.trim() || undefined);
-  }, [form.panel, loadDirectory, selectedServerId, visible]);
-
-  const handleCloseSheet = () => {
-    // Invalidate before notifying parent so in-flight listDir cannot win a race
-    // against visible=false / unmount.
-    invalidateDirectoryRequests();
-    Keyboard.dismiss();
-    onClose();
-  };
-
-  const handleSheetDismiss = () => {
-    // Backdrop / system-back: invalidate immediately for either panel outcome.
-    invalidateDirectoryRequests();
-    if (resolveNewTerminalSheetDismiss(form.panel) === "return-to-form") {
-      setForm((current) => returnToFormPanel(current));
-      return;
-    }
-    Keyboard.dismiss();
-    onClose();
+  const submitLaunch = (input: {
+    cwd: string;
+    command: string;
+    name: string;
+  }) => {
+    onSubmit({
+      ...input,
+      serverId: selectedServerId ?? undefined,
+    });
   };
 
   const handlePresetTap = (preset: NewTerminalLaunchPreset) => {
     if (!canSubmit) return;
     Keyboard.dismiss();
     setForm((current) => ({ ...current, command: preset.command }));
-    if (!form.advanced) {
-      onSubmit({
-        cwd: form.cwd.trim() || initialCwd.trim(),
-        command: preset.command,
-        name: "",
-        serverId: selectedServerId ?? undefined,
-      });
+    if (form.advanced) {
+      return;
     }
+    submitLaunch({
+      cwd: form.cwd.trim() || initialCwd.trim(),
+      command: preset.command,
+      name: "",
+    });
   };
 
   const handleAdvancedSubmit = () => {
     if (!canSubmit) return;
     Keyboard.dismiss();
-    onSubmit({
+    submitLaunch({
       cwd: form.cwd.trim(),
       command: form.command.trim(),
       name: form.name.trim(),
-      serverId: selectedServerId ?? undefined,
     });
   };
 
@@ -190,11 +170,25 @@ export function NewTerminalSheet({
     Keyboard.dismiss();
     setDirectory(createIdleDirectoryPickerState());
     setForm((current) => openDirectoryPanel(current));
+    void loadDirectory(selectedServerId, form.cwd.trim() || undefined);
   };
 
   const handleReturnToForm = () => {
     invalidateDirectoryRequests();
     setForm((current) => returnToFormPanel(current));
+  };
+
+  const handleSheetDismiss = () => {
+    const next = resolveNewTerminalSheetDismiss(form.panel);
+    if (next === "close-sheet") {
+      onClose();
+      return;
+    }
+    handleReturnToForm();
+  };
+
+  const handleCloseSheet = () => {
+    onClose();
   };
 
   const handleSelectDirectory = () => {

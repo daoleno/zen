@@ -261,6 +261,31 @@ func TestInferAgentProviderRecognizesCursorAgent(t *testing.T) {
 	}
 }
 
+func TestProfileClientExecutorSeparatesAliasFromCanonicalClient(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{name: "codex alias id", in: []string{"primary", "codex --flag"}, want: AgentProviderCodex},
+		{name: "codex kind", in: []string{"codex", "env X=1 -- mybin"}, want: AgentProviderCodex},
+		{name: "claude wrapper", in: []string{"desk", "claude --permission-mode bypassPermissions"}, want: AgentProviderClaude},
+		{name: "custom raw", in: []string{"custom", "my-custom-agent"}, want: ""},
+		{name: "cursor unsupported", in: []string{"cursor-agent --force"}, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ProfileClientExecutor(tc.in...); got != tc.want {
+				t.Fatalf("ProfileClientExecutor(%v)=%q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	ae := NewAgentExecutor("primary", Executor{Name: "primary", Command: "codex", Kind: "codex"})
+	if ae.ID != "primary" || ae.ProfileClientExecutor() != AgentProviderCodex {
+		t.Fatalf("AgentExecutor=%+v hint=%q", ae, ae.ProfileClientExecutor())
+	}
+}
+
 func TestDelegatedAgentExecutorUsesConfiguredDelegatedExecutor(t *testing.T) {
 	cfg := NewExecutorConfig("claude", map[string]Executor{
 		"claude": {Name: "claude", Command: "claude"},

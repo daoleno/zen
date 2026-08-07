@@ -11,6 +11,13 @@ import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type { StoredInterfaceRenderMode } from "../../../services/storage";
 import type { PresentedAgent } from "../../../services/agentPresentation";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
+import type {
+  ProviderConnection,
+  ProviderError,
+  ProviderModel,
+  ProviderSessionSelection,
+} from "../../../services/providers";
+import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
@@ -54,6 +61,20 @@ interface UseTerminalScreenLayoutPropsInput {
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
+  routeSheetVisible: boolean;
+  routeSheetLoading: boolean;
+  routeSheetActivating: boolean;
+  routeSheetError?: ProviderError | string | null;
+  routeSheetDurabilityWarning?: string | null;
+  routeSheetRequiresRefresh?: boolean;
+  routeSheetNonRouted?: boolean;
+  routeSheetManagedReadOnly?: boolean;
+  routeSheetActivationEnabled?: boolean;
+  routeSheetSelection?: ProviderSessionSelection | null;
+  routeSheetConnections: ProviderConnection[];
+  routeSheetModelsByConnection: Record<string, ProviderModel[]>;
+  createDurabilityWarning?: string | null;
+  onDismissCreateDurabilityWarning?(): void;
   screenFocused: boolean;
   selectedServerId: string;
   serverId: string;
@@ -75,6 +96,12 @@ interface UseTerminalScreenLayoutPropsInput {
   openSessionDetails(): void;
   closeResourceSheet(): void;
   retryResourceSheet(): void;
+  openModel?: () => void;
+  modelActionAvailable?: boolean;
+  closeRouteSheet(): void;
+  retryRouteSheet(): void;
+  activateSessionModel(choice: SessionModelChoice): void;
+  openProvidersSettings(): void;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
 }
 
@@ -113,6 +140,20 @@ export function useTerminalScreenLayoutProps({
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
+  routeSheetVisible,
+  routeSheetLoading,
+  routeSheetActivating,
+  routeSheetError,
+  routeSheetDurabilityWarning,
+  routeSheetRequiresRefresh,
+  routeSheetNonRouted,
+  routeSheetManagedReadOnly,
+  routeSheetActivationEnabled,
+  routeSheetSelection,
+  routeSheetConnections,
+  routeSheetModelsByConnection,
+  createDurabilityWarning,
+  onDismissCreateDurabilityWarning,
   screenFocused,
   selectedServerId,
   serverId,
@@ -134,6 +175,12 @@ export function useTerminalScreenLayoutProps({
   openSessionDetails,
   closeResourceSheet,
   retryResourceSheet,
+  openModel,
+  modelActionAvailable = false,
+  closeRouteSheet,
+  retryRouteSheet,
+  activateSessionModel,
+  openProvidersSettings,
   sessionActions,
 }: UseTerminalScreenLayoutPropsInput) {
   const handleToggleInterfaceRenderMode = useCallback(() => {
@@ -208,6 +255,20 @@ export function useTerminalScreenLayoutProps({
     resourceSheetLoading,
     resourceSheetError,
     resourceSheetSnapshot,
+    routeSheetVisible,
+    routeSheetLoading,
+    routeSheetActivating,
+    routeSheetError,
+    routeSheetDurabilityWarning,
+    routeSheetRequiresRefresh,
+    routeSheetNonRouted,
+    routeSheetManagedReadOnly,
+    routeSheetActivationEnabled,
+    routeSheetSelection,
+    routeSheetConnections,
+    routeSheetModelsByConnection,
+    createDurabilityWarning,
+    onDismissCreateDurabilityWarning,
     creatingSession,
     menuVisible,
     menuPosition,
@@ -227,6 +288,13 @@ export function useTerminalScreenLayoutProps({
     theme: terminalTheme,
     onCloseResourceSheet: closeResourceSheet,
     onRetryResourceSheet: retryResourceSheet,
+    onCloseRouteSheet: closeRouteSheet,
+    onRetryRouteSheet: retryRouteSheet,
+    onActivateSessionModel: activateSessionModel,
+    onOpenModel: modelActionAvailable
+      ? openModel
+      : undefined,
+    onOpenProvidersSettings: openProvidersSettings,
     setNewTerminalVisible,
     setRenameVisible,
     setRenameDraft,

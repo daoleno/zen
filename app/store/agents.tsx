@@ -8,6 +8,12 @@ import {
   isAgentSessionListFreshForConnection as isAgentSessionListFreshForConnectionInput,
   stampAgentSessionListGeneration as stampAgentSessionListGenerationForServer,
 } from '../services/agentSessionListTransport';
+import {
+  normalizeAgentSessionCapabilities,
+  type AgentSessionCapabilities,
+} from '../services/providers/sessionCapabilities';
+
+export type AgentCapabilities = AgentSessionCapabilities;
 
 export interface Agent {
   key: string;
@@ -33,10 +39,6 @@ export interface Agent {
   process_id?: number;
   delegated?: boolean;
   capabilities?: AgentCapabilities;
-}
-
-export interface AgentCapabilities {
-  structured_events?: boolean;
 }
 
 export type ConnectionState = 'offline' | 'connecting' | 'connected';
@@ -78,6 +80,8 @@ export type RawAgent = {
   delegated?: boolean;
   capabilities?: {
     structured_events?: unknown;
+    model_profile_managed?: unknown;
+    model_profile_active_switch?: unknown;
   };
 };
 
@@ -376,7 +380,11 @@ function agentsEqual(left: Agent, right: Agent): boolean {
       left.process_id === right.process_id &&
       left.delegated === right.delegated &&
       left.capabilities?.structured_events ===
-        right.capabilities?.structured_events
+        right.capabilities?.structured_events &&
+      left.capabilities?.model_profile_managed ===
+        right.capabilities?.model_profile_managed &&
+      left.capabilities?.model_profile_active_switch ===
+        right.capabilities?.model_profile_active_switch
     )
   );
 }
@@ -467,15 +475,7 @@ function normalizeAgent(
 function normalizeAgentCapabilities(
   capabilities: RawAgent['capabilities'],
 ): AgentCapabilities | undefined {
-  if (!capabilities || typeof capabilities !== 'object') {
-    return undefined;
-  }
-  return {
-    structured_events:
-      typeof capabilities.structured_events === 'boolean'
-        ? capabilities.structured_events
-        : undefined,
-  };
+  return normalizeAgentSessionCapabilities(capabilities);
 }
 
 function normalizeTimestamp(value: RawAgent['updated_at']): number {

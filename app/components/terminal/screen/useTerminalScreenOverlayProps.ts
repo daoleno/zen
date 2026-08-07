@@ -1,6 +1,13 @@
 import { useCallback, useMemo } from "react";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
+  ProviderConnection,
+  ProviderError,
+  ProviderModel,
+  ProviderSessionSelection,
+} from "../../../services/providers";
+import type { SessionModelChoice } from "../../providers/SessionModelSheet";
+import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
@@ -14,6 +21,20 @@ interface UseTerminalScreenOverlayPropsInput {
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
+  routeSheetVisible: boolean;
+  routeSheetLoading: boolean;
+  routeSheetActivating: boolean;
+  routeSheetError?: ProviderError | string | null;
+  routeSheetDurabilityWarning?: string | null;
+  routeSheetRequiresRefresh?: boolean;
+  routeSheetNonRouted?: boolean;
+  routeSheetManagedReadOnly?: boolean;
+  routeSheetActivationEnabled?: boolean;
+  routeSheetSelection?: ProviderSessionSelection | null;
+  routeSheetConnections: ProviderConnection[];
+  routeSheetModelsByConnection: Record<string, ProviderModel[]>;
+  createDurabilityWarning?: string | null;
+  onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
   menuVisible: boolean;
   menuPosition: { left: number; top: number };
@@ -32,6 +53,11 @@ interface UseTerminalScreenOverlayPropsInput {
   theme: TerminalThemePalette;
   onCloseResourceSheet(): void;
   onRetryResourceSheet(): void;
+  onCloseRouteSheet(): void;
+  onRetryRouteSheet(): void;
+  onActivateSessionModel(choice: SessionModelChoice): void;
+  onOpenModel?(): void;
+  onOpenProvidersSettings(): void;
   setNewTerminalVisible(value: boolean): void;
   setRenameVisible(value: boolean): void;
   setRenameDraft(value: string): void;
@@ -48,6 +74,20 @@ export function useTerminalScreenOverlayProps({
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
+  routeSheetVisible,
+  routeSheetLoading,
+  routeSheetActivating,
+  routeSheetError,
+  routeSheetDurabilityWarning,
+  routeSheetRequiresRefresh,
+  routeSheetNonRouted,
+  routeSheetManagedReadOnly,
+  routeSheetActivationEnabled,
+  routeSheetSelection,
+  routeSheetConnections,
+  routeSheetModelsByConnection,
+  createDurabilityWarning,
+  onDismissCreateDurabilityWarning,
   creatingSession,
   menuVisible,
   menuPosition,
@@ -66,6 +106,11 @@ export function useTerminalScreenOverlayProps({
   theme,
   onCloseResourceSheet,
   onRetryResourceSheet,
+  onCloseRouteSheet,
+  onRetryRouteSheet,
+  onActivateSessionModel,
+  onOpenModel,
+  onOpenProvidersSettings,
   setNewTerminalVisible,
   setRenameVisible,
   setRenameDraft,
@@ -101,6 +146,20 @@ export function useTerminalScreenOverlayProps({
       resourceSheetLoading,
       resourceSheetError,
       resourceSheetSnapshot,
+      routeSheetVisible,
+      routeSheetLoading,
+      routeSheetActivating,
+      routeSheetError,
+      routeSheetDurabilityWarning,
+      routeSheetRequiresRefresh,
+      routeSheetNonRouted,
+      routeSheetManagedReadOnly,
+      routeSheetActivationEnabled,
+      routeSheetSelection,
+      routeSheetConnections,
+      routeSheetModelsByConnection,
+      createDurabilityWarning,
+      onDismissCreateDurabilityWarning,
       creatingSession,
       menuVisible,
       menuPosition,
@@ -119,6 +178,11 @@ export function useTerminalScreenOverlayProps({
       theme,
       onCloseResourceSheet,
       onRetryResourceSheet,
+      onCloseRouteSheet,
+      onRetryRouteSheet,
+      onActivateSessionModel,
+      onOpenModel,
+      onOpenProvidersSettings,
       onNewTerminal: openNewTerminal,
       onCloseMenu: closeMenu,
       onRename: openRenameModal,
@@ -146,8 +210,13 @@ export function useTerminalScreenOverlayProps({
       menuVisible,
       navigationActions.handleTerminateAgent,
       newTerminalVisible,
+      onActivateSessionModel,
+      onOpenProvidersSettings,
       onCloseResourceSheet,
+      onCloseRouteSheet,
+      onOpenModel,
       onRetryResourceSheet,
+      onRetryRouteSheet,
       onToggleRenderMode,
       openNewTerminal,
       openRenameModal,
@@ -158,6 +227,18 @@ export function useTerminalScreenOverlayProps({
       resourceSheetLoading,
       resourceSheetSnapshot,
       resourceSheetVisible,
+      routeSheetActivating,
+      routeSheetError,
+      routeSheetDurabilityWarning,
+      routeSheetRequiresRefresh,
+      routeSheetNonRouted,
+      routeSheetManagedReadOnly,
+      routeSheetActivationEnabled,
+      routeSheetLoading,
+      routeSheetConnections,
+      routeSheetModelsByConnection,
+      routeSheetSelection,
+      routeSheetVisible,
       serverId,
       sessionActions.handleSaveRename,
       sessionActions.openLinkedWork,

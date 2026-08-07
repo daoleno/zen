@@ -16,16 +16,21 @@ import (
 )
 
 type fakeWatcher struct {
-	agents    []*classifier.Agent
-	sessions  map[string]*classifier.Agent
-	created   []createdCall
-	sentCalls []sentCall
-	killed    []string
-	sendErr   error
-	createErr error
-	captures  map[string]string
-	receipts  map[string]string
-	outcomes  map[string]watcher.InputOutcome
+	agents         []*classifier.Agent
+	sessions       map[string]*classifier.Agent
+	created        []createdCall
+	sentCalls      []sentCall
+	killed         []string
+	sendErr        error
+	createErr      error
+	killErr        error
+	killLeavesLive bool
+	probeErr       error
+	probeErrByID   map[string]error
+	createHook     func()
+	captures       map[string]string
+	receipts       map[string]string
+	outcomes       map[string]watcher.InputOutcome
 }
 
 type createdCall struct {
@@ -813,11 +818,26 @@ func (w *fakeWatcher) GetAgent(id string) *classifier.Agent {
 }
 
 func (w *fakeWatcher) HasSession(target string) bool {
-	if w.sessions == nil {
-		return false
+	presence, err := w.ProbeSession(target)
+	return err == nil && presence == watcher.SessionPresencePresent
+}
+
+func (w *fakeWatcher) ProbeSession(target string) (watcher.SessionPresence, error) {
+	if w.probeErrByID != nil {
+		if err, ok := w.probeErrByID[target]; ok && err != nil {
+			return watcher.SessionPresenceUnknown, err
+		}
 	}
-	_, ok := w.sessions[target]
-	return ok
+	if w.probeErr != nil {
+		return watcher.SessionPresenceUnknown, w.probeErr
+	}
+	if w.sessions == nil {
+		return watcher.SessionPresenceAbsent, nil
+	}
+	if _, ok := w.sessions[target]; ok {
+		return watcher.SessionPresencePresent, nil
+	}
+	return watcher.SessionPresenceAbsent, nil
 }
 
 func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
@@ -845,6 +865,9 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 	w.created = append(w.created, createdCall{id: id, opts: opts})
 	w.sessions[id] = agent
 	w.agents = append(w.agents, agent)
+	if w.createHook != nil {
+		w.createHook()
+	}
 	return id, nil
 }
 
@@ -895,6 +918,9 @@ func (w *fakeWatcher) InputReceiptResult(_ string, receipt string) (watcher.Inpu
 
 func (w *fakeWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
+	if w.killLeavesLive && w.killErr != nil {
+		return w.killErr
+	}
 	if w.sessions != nil {
 		delete(w.sessions, sessionID)
 	}
@@ -905,6 +931,9 @@ func (w *fakeWatcher) KillSession(sessionID string) error {
 		}
 	}
 	w.agents = nextAgents
+	if w.killErr != nil {
+		return w.killErr
+	}
 	return nil
 }
 
@@ -1540,6 +1569,153 @@ func TestServiceSnapshotResumeBindFailureKillsNewHostKeepsOld(t *testing.T) {
 	audit, _ := os.ReadFile(store.HostReplacementsPath())
 	if strings.Contains(string(audit), hostReplaceReasonMissingTmuxResumeLaunched) {
 		t.Fatalf("must not audit resume_launched after bind failure: %s", audit)
+	}
+}
+
+// ProjectionSnapshot must never create/resume/rebind even when the recorded
+// host is absent from tmux (continuity stays on intentional Snapshot paths).
+func TestProjectionSnapshotAbsentHostDoesNotMutate(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-proj:@1"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/"+providerSessionID+".jsonl", "/home"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{} // recorded host Absent
+	routes := &fakeRouteLifecycle{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	service.SetSessionRouteLifecycle(routes)
+
+	snapshot, err := service.ProjectionSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != oldID {
+		t.Fatalf("projection must keep recorded host: %#v", snapshot.HostAgent)
+	}
+	if len(fw.created) != 0 || len(fw.killed) != 0 || len(routes.transfers) != 0 {
+		t.Fatalf("created=%#v killed=%#v transfers=%#v", fw.created, fw.killed, routes.transfers)
+	}
+	after, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("binding mutated:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+// Unknown recorded-host ProbeSession must not enter missing_tmux create/kill/transfer.
+func TestServiceSnapshotProbeUnknownPreservesBindingCreatesZero(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-probe-unknown:@1"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, transcriptPath, "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	beforeHost, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{probeErr: fmt.Errorf("injected tmux probe transport failure")}
+	routes := &fakeRouteLifecycle{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	service.SetSessionRouteLifecycle(routes)
+
+	_, err = service.Snapshot()
+	if err == nil || !strings.Contains(err.Error(), "liveness unknown") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("probe unknown must create zero sessions: %#v", fw.created)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("probe unknown must not kill: %#v", fw.killed)
+	}
+	if len(routes.transfers) != 0 {
+		t.Fatalf("probe unknown must not transfer routes: %#v", routes.transfers)
+	}
+	afterHost, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeHost, afterHost) {
+		t.Fatalf("host/provider binding mutated:\nbefore=%s\nafter=%s", beforeHost, afterHost)
+	}
+	audit, _ := os.ReadFile(store.HostReplacementsPath())
+	if strings.Contains(string(audit), hostReplaceReasonMissingTmux) ||
+		strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) {
+		t.Fatalf("must not audit recovery/spawn on probe unknown: %s", audit)
+	}
+}
+
+// Candidate recover ProbeSession Unknown must not fall through to duplicate spawn.
+func TestServiceSnapshotRecoverCandidateProbeUnknownCreatesZero(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadID := "brain-agent-brain-dead:@1"
+	aliveID := "brain-agent-brain-alive:@2"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	if err := store.SetHostSession(deadID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, "/tmp/"+providerSessionID+".jsonl", "/home"); err != nil {
+		t.Fatal(err)
+	}
+	beforeHost, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{},
+		agents: []*classifier.Agent{{
+			ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
+			Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
+		}},
+		probeErrByID: map[string]error{
+			aliveID: fmt.Errorf("injected candidate probe failure"),
+		},
+	}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+
+	_, err = service.Snapshot()
+	if err == nil || !strings.Contains(err.Error(), "candidate liveness unknown") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("candidate probe unknown must not spawn: %#v", fw.created)
+	}
+	afterHost, err := os.ReadFile(store.HostSessionPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeHost, afterHost) {
+		t.Fatalf("binding mutated:\nbefore=%s\nafter=%s", beforeHost, afterHost)
 	}
 }
 

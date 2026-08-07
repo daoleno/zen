@@ -28,6 +28,7 @@ import (
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
 	"github.com/daoleno/zen/daemon/stats"
@@ -84,12 +85,18 @@ type Server struct {
 	work                         *work.Store
 	execs                        *work.ExecutorConfig
 	brain                        *brain.Service
+	profiles                     *modelprofiles.Owner
 	calendar                     *calendar.Store
 	calendarScheduler            *calendar.Scheduler
 	providerConversationLoader   func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
 	sendInputOverride            func(agentID, text string) error
 	sendInputWithReceiptOverride func(agentID, text, receipt string) error
 	sendActionOverride           func(agentID, action string) error
+	killSessionOverride          func(agentID string) error
+	hasSessionOverride           func(agentID string) bool
+	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
+	getAgentOverride             func(agentID string) *classifier.Agent
+	brainSnapshotBroadcastHook   func(payload map[string]any)
 	uploadDir                    string
 	uploadMu                     sync.Mutex
 	sessionFileAgentLoader       func(agentID string) *classifier.Agent
@@ -131,8 +138,9 @@ type codexConversationSubscription struct {
 }
 
 type authenticatedClient struct {
-	deviceID string
-	revoked  atomic.Bool
+	deviceID        string
+	secureTransport bool // TLS or loopback — required for secret writes
+	revoked         atomic.Bool
 }
 
 type terminalCleanupState uint8
@@ -249,53 +257,59 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
-	Type                 string                 `json:"type"`
-	RequestID            string                 `json:"request_id"`
-	AgentID              string                 `json:"agent_id"`
-	TargetID             string                 `json:"target_id"`
-	Cwd                  string                 `json:"cwd"`
-	Command              string                 `json:"command"`
-	Name                 string                 `json:"name"`
-	StartedAt            json.RawMessage        `json:"started_at"`
-	Backend              string                 `json:"backend"`
-	SessionID            string                 `json:"session_id"`
-	Text                 string                 `json:"text"`
-	Key                  string                 `json:"key"`
-	Data                 string                 `json:"data"`
-	Body                 string                 `json:"body"`
-	Action               string                 `json:"action"`
-	PushToken            string                 `json:"push_token"`
-	ServerRef            string                 `json:"server_ref"`
-	Cols                 int                    `json:"cols"`
-	Rows                 int                    `json:"rows"`
-	Col                  int                    `json:"col"`
-	Row                  int                    `json:"row"`
-	Lines                int                    `json:"lines"`
-	ProcessID            int                    `json:"process_id"`
-	Path                 string                 `json:"path"`
-	FileGeneration       string                 `json:"file_generation"`
-	ID                   string                 `json:"id"`
-	Project              string                 `json:"project"`
-	Frontmatter          map[string]interface{} `json:"frontmatter"`
-	BaseMtime            string                 `json:"base_mtime"`
-	Prompt               string                 `json:"prompt"`
-	Executor             string                 `json:"executor"`
-	ExecutorID           string                 `json:"executor_id"`
-	AdapterID            string                 `json:"adapter_id"`
-	Personality          string                 `json:"personality"`
-	Done                 bool                   `json:"done"`
-	CalendarItem         *calendar.Item         `json:"calendar_item"`
-	Revision             int64                  `json:"revision"`
-	ConversationScopeKey string                 `json:"conversation_scope_key"`
-	DisplayBody          string                 `json:"display_body"`
-	Generation           int64                  `json:"generation"`
-	Limit                int                    `json:"limit"`
-	Operation            string                 `json:"operation"`
-	Scope                string                 `json:"scope"`
-	Agents               []string               `json:"agents"`
-	SkillID              string                 `json:"skill_id"`
-	Source               string                 `json:"source"`
-	SkillName            string                 `json:"skill_name"`
+	Type                 string                                 `json:"type"`
+	RequestID            string                                 `json:"request_id"`
+	AgentID              string                                 `json:"agent_id"`
+	TargetID             string                                 `json:"target_id"`
+	Cwd                  string                                 `json:"cwd"`
+	Command              string                                 `json:"command"`
+	Name                 string                                 `json:"name"`
+	StartedAt            json.RawMessage                        `json:"started_at"`
+	Backend              string                                 `json:"backend"`
+	SessionID            string                                 `json:"session_id"`
+	Text                 string                                 `json:"text"`
+	Key                  string                                 `json:"key"`
+	Data                 string                                 `json:"data"`
+	Body                 string                                 `json:"body"`
+	Action               string                                 `json:"action"`
+	PushToken            string                                 `json:"push_token"`
+	ServerRef            string                                 `json:"server_ref"`
+	Cols                 int                                    `json:"cols"`
+	Rows                 int                                    `json:"rows"`
+	Col                  int                                    `json:"col"`
+	Row                  int                                    `json:"row"`
+	Lines                int                                    `json:"lines"`
+	ProcessID            int                                    `json:"process_id"`
+	Path                 string                                 `json:"path"`
+	FileGeneration       string                                 `json:"file_generation"`
+	ID                   string                                 `json:"id"`
+	Project              string                                 `json:"project"`
+	Frontmatter          map[string]interface{}                 `json:"frontmatter"`
+	BaseMtime            string                                 `json:"base_mtime"`
+	Prompt               string                                 `json:"prompt"`
+	Executor             string                                 `json:"executor"`
+	ExecutorID           string                                 `json:"executor_id"`
+	Client               string                                 `json:"client"`
+	AdapterID            string                                 `json:"adapter_id"`
+	Personality          string                                 `json:"personality"`
+	Done                 bool                                   `json:"done"`
+	CalendarItem         *calendar.Item                         `json:"calendar_item"`
+	Revision             int64                                  `json:"revision"`
+	ConversationScopeKey string                                 `json:"conversation_scope_key"`
+	DisplayBody          string                                 `json:"display_body"`
+	Generation           int64                                  `json:"generation"`
+	Limit                int                                    `json:"limit"`
+	Operation            string                                 `json:"operation"`
+	Scope                string                                 `json:"scope"`
+	Agents               []string                               `json:"agents"`
+	SkillID              string                                 `json:"skill_id"`
+	Source               string                                 `json:"source"`
+	SkillName            string                                 `json:"skill_name"`
+	ProfileID            string                                 `json:"profile_id"`
+	ConnectionID         string                                 `json:"connection_id"`
+	ModelID              string                                 `json:"model_id"`
+	Credential           string                                 `json:"credential"`
+	ProviderConnection   *modelprofiles.ProviderConnectionInput `json:"provider_connection"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -391,7 +405,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("websocket upgrade: %v", err)
 		return
 	}
-	owner := &authenticatedClient{deviceID: device.ID}
+	owner := &authenticatedClient{
+		deviceID:        device.ID,
+		secureTransport: isSecureCredentialTransport(r),
+	}
 	if !s.bindAuthenticatedClient(conn, owner) {
 		_ = conn.Close()
 		return
@@ -718,6 +735,10 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		return
 	}
 
+	if s.handleModelProfileMessage(conn, raw) {
+		return
+	}
+
 	switch raw.Type {
 	case "list_agents", "list_agent_sessions":
 		s.sendAgentSessionList(conn)
@@ -863,15 +884,23 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			}
 			command = ensured
 		}
-		agentID, err := s.watcher.CreateSession(raw.TargetID, watcher.CreateSessionOptions{
+		connectionID := strings.TrimSpace(raw.ConnectionID)
+		if connectionID == "" {
+			connectionID = strings.TrimSpace(raw.ProfileID)
+		}
+		agentID, routeSnap, persist, err := s.createSessionWithProfiles(raw.TargetID, watcher.CreateSessionOptions{
 			Cwd:     raw.Cwd,
 			Command: command,
 			Name:    raw.Name,
-		})
-		if err != nil {
+		}, connectionID)
+		if err != nil && (!persist.Applied || strings.TrimSpace(agentID) == "") {
+			code := "create_session_failed"
+			if mapped := modelprofiles.ControlErrorCode(err); mapped != "" && mapped != modelprofiles.CodeProfilesUnavailable {
+				code = mapped
+			}
 			s.sendJSON(conn, map[string]any{
 				"type":       "error",
-				"code":       "create_session_failed",
+				"code":       code,
 				"message":    err.Error(),
 				"request_id": raw.RequestID,
 			})
@@ -884,6 +913,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		}
 		if agent := s.watcher.GetAgent(agentID); agent != nil {
 			response["agent_session"] = s.agentSessionWire(agent)
+		}
+		if routeSnap != nil {
+			response["session_route"] = routeSnap
+			if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
+				response["persistence_outcome"] = outcome
+				response["persistence_durable"] = durable
+			}
+			if err != nil {
+				response["persistence_warning"] = err.Error()
+			}
 		}
 		s.sendJSON(conn, response)
 
@@ -1111,9 +1150,29 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		}
 
 	case "kill_agent":
-		if err := s.watcher.KillSession(raw.AgentID); err != nil {
-			log.Printf("kill_agent error: %v", err)
-			s.sendError(conn, "kill_failed", err.Error())
+		teardown := s.teardownAgentSession(raw.AgentID)
+		if teardown.Err != nil {
+			log.Printf("kill_agent error: %v", teardown.Err)
+			code := modelprofiles.ControlErrorCode(teardown.Err)
+			if code == "" || code == modelprofiles.CodeProfilesUnavailable || code == "close_failed" {
+				code = "kill_failed"
+			}
+			payload := map[string]any{
+				"type":    "error",
+				"code":    code,
+				"message": teardown.Err.Error(),
+			}
+			if raw.RequestID != "" {
+				payload["request_id"] = raw.RequestID
+			}
+			if teardown.Persist.Applied {
+				outcome, durable := modelprofiles.WirePersistFields(teardown.Persist)
+				if outcome != "" {
+					payload["persistence_outcome"] = outcome
+					payload["persistence_durable"] = durable
+				}
+			}
+			s.sendJSON(conn, payload)
 		}
 
 	case "list_dir":
@@ -2295,12 +2354,43 @@ func (s *Server) brainSnapshotWire(snapshot brain.Snapshot) (any, error) {
 	if _, ok := payload["adapters"]; !ok && snapshot.Executors != nil {
 		payload["adapters"] = snapshot.Executors
 	}
+	s.enrichBrainSnapshotHostAgentCapabilities(payload, snapshot)
 	results, err := s.scheduledResultsForKnownBrainThreads(defaultScheduledResultLimit)
 	if err != nil {
 		return nil, err
 	}
 	payload["scheduled_results"] = results
 	return payload, nil
+}
+
+// enrichBrainSnapshotHostAgentCapabilities attaches the same flat capabilities
+// object as agent_session wire onto brain_snapshot.host_agent. Derivation uses
+// the hidden watcher Agent + Model Profiles route table only; missing agent or
+// profile owner fail closed to false. The host stays Hidden and is never added
+// to agent_session_list.
+func (s *Server) enrichBrainSnapshotHostAgentCapabilities(payload map[string]any, snapshot brain.Snapshot) {
+	if payload == nil {
+		return
+	}
+	hostRaw, ok := payload["host_agent"]
+	if !ok || hostRaw == nil {
+		return
+	}
+	hostMap, ok := hostRaw.(map[string]any)
+	if !ok {
+		return
+	}
+	sessionID := ""
+	if snapshot.HostAgent != nil {
+		sessionID = strings.TrimSpace(snapshot.HostAgent.ID)
+	}
+	if sessionID == "" {
+		if id, _ := hostMap["id"].(string); strings.TrimSpace(id) != "" {
+			sessionID = strings.TrimSpace(id)
+		}
+	}
+	hostMap["capabilities"] = s.hostAgentWireCapabilities(sessionID)
+	payload["host_agent"] = hostMap
 }
 
 func (s *Server) scheduledResultsForKnownBrainThreads(limit int) ([]calendar.ScheduledResult, error) {
@@ -2503,15 +2593,38 @@ func (s *Server) broadcastBrainSnapshot() {
 		log.Printf("brain snapshot broadcast failed: %v", err)
 		return
 	}
+	s.emitBrainSnapshotBroadcast(snapshot)
+}
+
+// broadcastBrainHostCapabilityRefresh projects brain_snapshot for Hidden-host
+// discovery/removal without ensureHostAgent. Continuity (create/resume/rebind)
+// is owned by intentional Snapshot/NewChat paths, not by projection events.
+func (s *Server) broadcastBrainHostCapabilityRefresh() {
+	if s.brain == nil {
+		return
+	}
+	snapshot, err := s.brain.ProjectionSnapshot()
+	if err != nil {
+		log.Printf("brain host capability refresh failed: %v", err)
+		return
+	}
+	s.emitBrainSnapshotBroadcast(snapshot)
+}
+
+func (s *Server) emitBrainSnapshotBroadcast(snapshot brain.Snapshot) {
 	payload, err := s.brainSnapshotWire(snapshot)
 	if err != nil {
 		log.Printf("brain snapshot projection failed: %v", err)
 		return
 	}
-	s.broadcastJSON(map[string]any{
+	message := map[string]any{
 		"type":  "brain_snapshot",
 		"brain": payload,
-	})
+	}
+	if s.brainSnapshotBroadcastHook != nil {
+		s.brainSnapshotBroadcastHook(message)
+	}
+	s.broadcastJSON(message)
 }
 
 func (s *Server) handleCalendarEvent(event calendar.Event) {
@@ -2583,6 +2696,14 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			if _, err := s.brain.ObserveHostSessionEvent(ev); err != nil {
 				log.Printf("brain host event dispatch failed: %v", err)
 			}
+			// Hidden hosts stay off agent_session_list. Refresh brain_snapshot
+			// only when the current Host appears or disappears so capabilities
+			// converge after reconnect discovery — never on output/turn noise,
+			// and never via ensureHostAgent (projection must not create/resume/
+			// rebind as a side effect of a discovery event).
+			if s.shouldBroadcastHiddenHostBrainSnapshot(ev) {
+				s.broadcastBrainHostCapabilityRefresh()
+			}
 		}
 		return
 	}
@@ -2614,6 +2735,26 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		s.maybeNotifyForSessionEvent(ev)
 		s.routeSessionEventToBrain(ev)
 	}
+}
+
+// shouldBroadcastHiddenHostBrainSnapshot admits only current-Host discovery and
+// removal for capability projection. Those refreshes must not call
+// ensureHostAgent. Output chunks, turn state, and unrelated Hidden agents never
+// churn brain_snapshot.
+func (s *Server) shouldBroadcastHiddenHostBrainSnapshot(ev watcher.SessionEvent) bool {
+	if s == nil || s.brain == nil || ev.Agent == nil || !ev.Agent.Hidden {
+		return false
+	}
+	switch ev.Type {
+	case "agent_discovered", "agent_removed":
+	default:
+		return false
+	}
+	hostID := s.brain.CurrentHostSessionID()
+	if hostID == "" {
+		return false
+	}
+	return hostID == strings.TrimSpace(ev.Agent.ID)
 }
 
 func (s *Server) routeSessionEventToBrain(ev watcher.SessionEvent) {

@@ -454,11 +454,13 @@ export default function SkillsScreen() {
         const startedAt = Date.now();
         const creation = await createOwnedSkillsTerminalSession({
           serverId: reviewed.serverId,
-          createSession: (serverId) =>
-            wsClient.createSession(serverId, {
+          createSession: async (serverId) => {
+            const created = await wsClient.createSession(serverId, {
               cwd: reviewed.cwd || undefined,
               name: `Skills: ${reviewed.command.operation} ${reviewed.command.skillName}`,
-            }),
+            });
+            return created.agentId;
+          },
           isCurrent: () => requestOwnerRef.current.isCurrent(handoffToken),
           abortSession: (serverId, agentId) =>
             wsClient.killAgent(serverId, agentId),

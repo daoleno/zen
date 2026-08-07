@@ -14,6 +14,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -21,6 +22,10 @@ import (
 var (
 	ErrExecutorNotConfigured = errors.New("brain host executor is not configured")
 	ErrExecutorLockedByEnv   = errors.New("brain host executor is locked by environment override")
+	// ErrRouteTransferNotDurable means TransferSession applied in memory but
+	// route-bindings.json durability was not proven. Host bind/success audit
+	// must not proceed.
+	ErrRouteTransferNotDurable = errors.New("brain host route transfer applied but not durable")
 )
 
 const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
@@ -29,6 +34,7 @@ type Watcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
 	HasSession(target string) bool
+	ProbeSession(target string) (watcher.SessionPresence, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
@@ -50,6 +56,75 @@ type Service struct {
 	authoritativeInventorySeen bool
 	delegatedInventory         map[string]struct{}
 	unmanagedInventory         map[string]struct{}
+
+	routeMu sync.Mutex
+	routes  SessionRouteLifecycle
+}
+
+// SessionRouteLifecycle remaps, resumes, prepares, or releases Model Profile
+// routes across host Session identity changes. New Brain-host launches use
+// Prepare/Commit; missing-tmux resume reuses an immutable existing binding via
+// ResumeLaunch+Transfer and must not re-resolve the executor default.
+type SessionRouteLifecycle interface {
+	TransferSession(fromID, toID string) (modelprofiles.PersistResult, error)
+	ResumeLaunch(sessionID, baseCommand string) (command string, env map[string]string, found bool, err error)
+	ReleaseSession(sessionID string) (modelprofiles.PersistResult, error)
+	PrepareLaunch(executorID, profileID, baseCommand string) (modelprofiles.SessionLaunchPlan, error)
+	CommitLaunch(provisionalID, sessionID string) (modelprofiles.SessionRouteState, modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error)
+	AbortLaunch(provisionalID string) (modelprofiles.PersistResult, error)
+}
+
+// SetSessionRouteLifecycle installs optional Model Profiles resume support.
+func (s *Service) SetSessionRouteLifecycle(routes SessionRouteLifecycle) {
+	if s == nil {
+		return
+	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	s.routes = routes
+}
+
+func (s *Service) sessionRoutes() SessionRouteLifecycle {
+	if s == nil {
+		return nil
+	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	return s.routes
+}
+
+// teardownHostSession kills a Brain host window and releases its Model Profile
+// route only when the window is confirmed gone. Surfaces joined kill/release
+// errors; preserves the route when kill fails and the Session is still live.
+func (s *Service) teardownHostSession(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || s == nil || s.watcher == nil {
+		return nil
+	}
+	var release func(string) (modelprofiles.PersistResult, error)
+	if routes := s.sessionRoutes(); routes != nil {
+		release = routes.ReleaseSession
+	}
+	result := modelprofiles.TeardownSession(sessionID, s.watcher.KillSession, s.sessionLivenessProbe, release)
+	return result.Err
+}
+
+func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
+	if s == nil || s.watcher == nil {
+		return modelprofiles.SessionLivenessUnknown, fmt.Errorf("watcher unavailable")
+	}
+	presence, err := s.watcher.ProbeSession(sessionID)
+	if err != nil {
+		return modelprofiles.SessionLivenessUnknown, err
+	}
+	switch presence {
+	case watcher.SessionPresencePresent:
+		return modelprofiles.SessionLivenessPresent, nil
+	case watcher.SessionPresenceAbsent:
+		return modelprofiles.SessionLivenessAbsent, nil
+	default:
+		return modelprofiles.SessionLivenessUnknown, nil
+	}
 }
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
@@ -98,6 +173,89 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.Agents = s.agentRefs(host.ID)
 	snapshot.ActiveWork = activeWork
 	return snapshot, nil
+}
+
+// ProjectionSnapshot builds a brain_snapshot for wire projection without
+// ensureHostAgent. Hidden-host discovery/removal refreshes use this so
+// capability convergence never creates, resumes, rebinds, transfers routes,
+// or rewrites host binding. Continuity remains owned by Snapshot, NewChat,
+// and other intentional lifecycle entry points under tri-state/route-transfer
+// rules.
+func (s *Service) ProjectionSnapshot() (Snapshot, error) {
+	if s == nil || s.store == nil {
+		return Snapshot{}, fmt.Errorf("brain service is not configured")
+	}
+	snapshot, err := s.store.Snapshot()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	activeWork, err := s.store.ActiveWork()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	chatThreadID, err := s.store.ChatThreadID()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	hostExecutor := s.hostExecutor()
+	host, err := s.projectedHostAgent(hostExecutor)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	delegatedExecutor := s.brainDelegatedExecutor()
+	if host.ID != "" {
+		snapshot.HostAgent = &host
+	}
+	hostExecutor.Host = true
+	if hostExecutor.ID == delegatedExecutor.ID {
+		hostExecutor.Delegated = true
+	}
+	snapshot.HostExecutor = &hostExecutor
+	delegatedExecutor.Delegated = true
+	if delegatedExecutor.ID == hostExecutor.ID {
+		delegatedExecutor.Host = true
+	}
+	snapshot.DelegatedExecutor = &delegatedExecutor
+	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
+	snapshot.ChatThreadID = chatThreadID
+	snapshot.Agents = s.agentRefs(host.ID)
+	snapshot.ActiveWork = activeWork
+	return snapshot, nil
+}
+
+// projectedHostAgent returns the recorded host for wire projection only.
+// It never probes for replacement and never mutates store/route/tmux state.
+func (s *Service) projectedHostAgent(executor work.AgentExecutor) (AgentRef, error) {
+	if s == nil || s.store == nil {
+		return AgentRef{}, nil
+	}
+	hostSession, err := s.store.HostSession()
+	if err != nil {
+		return AgentRef{}, err
+	}
+	id := strings.TrimSpace(hostSession.ID)
+	if id == "" {
+		return AgentRef{}, nil
+	}
+	if s.watcher != nil {
+		if agent := s.watcher.GetAgent(id); agent != nil {
+			return agentRefFromClassifier(agent), nil
+		}
+	}
+	command := ""
+	if cmd, cmdErr := s.hostCommand(executor); cmdErr == nil {
+		command = cmd
+	}
+	return AgentRef{
+		ID:      id,
+		Name:    "Brain",
+		Status:  string(classifier.StateUnknown),
+		Summary: "Session not observed",
+		Cwd:     s.brainWorkspace(),
+		Command: command,
+		Updated: firstNonZeroTime(hostSession.UpdatedAt, s.now().UTC()),
+		Hidden:  true,
+	}, nil
 }
 
 func (s *Service) Context() (BrainContext, error) {
@@ -752,6 +910,20 @@ func (s *Service) CancelUserSteering(agentID string) {
 	_, _ = s.DispatchPendingEvent()
 }
 
+// CurrentHostSessionID returns the recorded Brain host Session id, or empty
+// when unset/unavailable. Used by the server to bound Hidden-host snapshot
+// refreshes to the current Host only.
+func (s *Service) CurrentHostSessionID() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(host.ID)
+}
+
 // ObserveHostSessionEvent lets foreground user steering finish before a queued
 // internal Event is claimed. The assistant turn ending is not itself persisted
 // as an Event; it only makes the existing Event claimable.
@@ -1232,104 +1404,86 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	replaceReason := ""
 	replaceDetail := ""
 
-	if id != "" && s.watcher.HasSession(id) {
-		if agent := s.watcher.GetAgent(id); agent != nil {
-			if s.hostAgentMatches(agent, executor) {
+	if id != "" {
+		presence, probeErr := s.watcher.ProbeSession(id)
+		switch {
+		case probeErr != nil || presence == watcher.SessionPresenceUnknown:
+			if probeErr == nil {
+				probeErr = fmt.Errorf("tmux probe returned unknown for %q", id)
+			}
+			return AgentRef{}, fmt.Errorf("brain host recorded session liveness unknown: %w", probeErr)
+		case presence == watcher.SessionPresencePresent:
+			if agent := s.watcher.GetAgent(id); agent != nil {
+				if s.hostAgentMatches(agent, executor) {
+					if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
+						if err := s.store.SetHostSession(id, executor.ID); err != nil {
+							return AgentRef{}, err
+						}
+					}
+					_, _ = s.BindHostProviderTranscript()
+					return agentRefFromClassifier(agent), nil
+				}
+				// Explicit provider/executor mismatch (e.g. user switched host executor).
+				replaceReason = hostReplaceReasonProviderMismatch
+				replaceDetail = fmt.Sprintf(
+					"recorded_executor=%q resolved_executor=%q agent_command=%q agent_provider=%q",
+					hostSession.ExecutorID,
+					executor.ID,
+					strings.TrimSpace(agent.Command),
+					work.InferAgentProvider(agent.Command),
+				)
+				s.recordHostReplacement(HostReplacementEvent{
+					Reason:           replaceReason,
+					FromID:           id,
+					FromExecutorID:   hostSession.ExecutorID,
+					FromCommand:      agent.Command,
+					ResolvedExecutor: executor.ID,
+					Detail:           replaceDetail,
+				})
+				if err := s.teardownHostSession(id); err != nil {
+					return AgentRef{}, fmt.Errorf("brain host provider replacement teardown: %w", err)
+				}
+			} else {
+				// Tmux target still exists but watcher has not observed it yet (common right
+				// after daemon restart). Do not replace; return a bootstrap stub.
 				if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
 					if err := s.store.SetHostSession(id, executor.ID); err != nil {
 						return AgentRef{}, err
 					}
 				}
-				_, _ = s.BindHostProviderTranscript()
-				return agentRefFromClassifier(agent), nil
+				return AgentRef{
+					ID:      id,
+					Name:    "Brain",
+					Status:  string(classifier.StateRunning),
+					Summary: "Session starting",
+					Cwd:     s.brainWorkspace(),
+					Command: command,
+					Updated: firstNonZeroTime(hostSession.UpdatedAt, s.now().UTC()),
+					Hidden:  true,
+				}, nil
 			}
-			// Explicit provider/executor mismatch (e.g. user switched host executor).
-			replaceReason = hostReplaceReasonProviderMismatch
-			replaceDetail = fmt.Sprintf(
-				"recorded_executor=%q resolved_executor=%q agent_command=%q agent_provider=%q",
-				hostSession.ExecutorID,
-				executor.ID,
-				strings.TrimSpace(agent.Command),
-				work.InferAgentProvider(agent.Command),
-			)
+		default:
+			// Proven Absent only — prefer rebinding a live matching Brain host.
+			recovered, recoverErr := s.recoverMatchingHost(executor, hostSession)
+			if recoverErr != nil {
+				return AgentRef{}, recoverErr
+			}
+			if recovered != nil {
+				if err := s.rebindRecoveredHost(id, recovered, executor, hostSession); err != nil {
+					return AgentRef{}, err
+				}
+				return agentRefFromClassifier(recovered), nil
+			}
+			replaceReason = hostReplaceReasonMissingTmux
+			replaceDetail = fmt.Sprintf("probe=absent id=%q", id)
 			s.recordHostReplacement(HostReplacementEvent{
 				Reason:           replaceReason,
 				FromID:           id,
 				FromExecutorID:   hostSession.ExecutorID,
-				FromCommand:      agent.Command,
 				ResolvedExecutor: executor.ID,
 				Detail:           replaceDetail,
 			})
-			_ = s.watcher.KillSession(id)
-		} else {
-			// Tmux target still exists but watcher has not observed it yet (common right
-			// after daemon restart). Do not replace; return a bootstrap stub.
-			if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
-				if err := s.store.SetHostSession(id, executor.ID); err != nil {
-					return AgentRef{}, err
-				}
-			}
-			return AgentRef{
-				ID:      id,
-				Name:    "Brain",
-				Status:  string(classifier.StateRunning),
-				Summary: "Session starting",
-				Cwd:     s.brainWorkspace(),
-				Command: command,
-				Updated: firstNonZeroTime(hostSession.UpdatedAt, s.now().UTC()),
-				Hidden:  true,
-			}, nil
 		}
-	} else if id != "" {
-		// Recorded host id is gone from tmux. Prefer re-binding an already-running
-		// Brain host that still owns the recorded provider session over spawning.
-		if recovered := s.recoverMatchingHost(executor, hostSession); recovered != nil {
-			// ID will change; SetHostSession would clear provider token/path/root.
-			// Migrate the recorded binding onto recovered.ID in one atomic write.
-			providerToken := strings.TrimSpace(hostSession.ProviderSessionID)
-			transcriptPath := strings.TrimSpace(hostSession.TranscriptPath)
-			providerRoot := strings.TrimSpace(hostSession.ProviderDataRoot)
-			if providerToken == "" && transcriptPath != "" {
-				provider := strings.TrimSpace(executor.Provider)
-				if provider == "" || provider == work.AgentProviderCustom {
-					provider = work.InferAgentProvider(executor.Command, executor.ID)
-				}
-				if provider == work.AgentProviderCodex {
-					if derived := work.CodexSessionIDFromRolloutPath(transcriptPath); derived != "" {
-						providerToken = derived
-					}
-				}
-			}
-			if err := s.store.ReplaceHostSessionBinding(
-				recovered.ID,
-				executor.ID,
-				providerToken,
-				transcriptPath,
-				providerRoot,
-			); err != nil {
-				// Keep old binding; do not audit recovered_alive; do not kill live host.
-				return AgentRef{}, err
-			}
-			s.recordHostReplacement(HostReplacementEvent{
-				Reason:           hostReplaceReasonRecoveredAlive,
-				FromID:           id,
-				ToID:             recovered.ID,
-				FromExecutorID:   hostSession.ExecutorID,
-				FromCommand:      recovered.Command,
-				ResolvedExecutor: executor.ID,
-				Detail:           "recorded host missing; rebound matching live Brain host",
-			})
-			return agentRefFromClassifier(recovered), nil
-		}
-		replaceReason = hostReplaceReasonMissingTmux
-		replaceDetail = fmt.Sprintf("has_session=false id=%q", id)
-		s.recordHostReplacement(HostReplacementEvent{
-			Reason:           replaceReason,
-			FromID:           id,
-			FromExecutorID:   hostSession.ExecutorID,
-			ResolvedExecutor: executor.ID,
-			Detail:           replaceDetail,
-		})
 	} else {
 		replaceReason = hostReplaceReasonNoRecordedHost
 	}
@@ -1377,6 +1531,62 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		}
 	}
 
+	sessionEnv := brainSessionEnvironment()
+	routes := s.sessionRoutes()
+	provisionalID := ""
+	// Missing-tmux resume must reuse the immutable existing route binding.
+	// New host launches (initial, NewChat, provider/executor mismatch) resolve
+	// the selected executor default through PrepareLaunch.
+	if routes != nil && strings.TrimSpace(id) != "" && resumeToken != "" {
+		routeCommand, routeEnv, found, routeErr := routes.ResumeLaunch(id, command)
+		if routeErr != nil {
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+				FromID:           id,
+				FromExecutorID:   hostSession.ExecutorID,
+				ResolvedExecutor: executor.ID,
+				Detail: fmt.Sprintf(
+					"has_session=false id=%q provider_session=%q route_resume_failed=%v",
+					id, resumeToken, routeErr,
+				),
+			})
+			return AgentRef{}, fmt.Errorf(
+				"brain host refusing blank replacement: recorded route for session %q cannot be resumed: %w",
+				id, routeErr,
+			)
+		}
+		if found {
+			if strings.TrimSpace(routeCommand) != "" {
+				command = routeCommand
+			}
+			sessionEnv = mergeStringMaps(sessionEnv, routeEnv)
+		}
+	} else if routes != nil && resumeToken == "" {
+		clientHint := work.ProfileClientExecutor(executor.Provider, executor.Command, executor.ID)
+		plan, planErr := routes.PrepareLaunch(clientHint, "", command)
+		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {
+			return AgentRef{}, fmt.Errorf("brain host profile prepare: %w", planErr)
+		}
+		if plan.Applied && !plan.Bypass {
+			if strings.TrimSpace(plan.Command) != "" {
+				command = plan.Command
+			}
+			sessionEnv = mergeStringMaps(sessionEnv, plan.Env)
+			provisionalID = plan.ProvisionalID
+			// Prepare Applied+!Durable may proceed: CommitLaunch is the
+			// durability barrier for the exact final Session-owned route.
+			// Brain Snapshot/NewChat has no persistence-warning wire, so a
+			// later Applied+!Durable or errored Commit must fail closed
+			// (unlike control/App keep-with-warning).
+			if planErr != nil || !plan.Persist.Durable {
+				if planErr == nil {
+					planErr = modelprofiles.ErrPersistDirSync
+				}
+				log.Printf("brain host profile prepare applied; Commit is durability barrier (prepare uncertain: %v)", planErr)
+			}
+		}
+	}
+
 	agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
 		Cwd:         s.brainWorkspace(),
 		Command:     command,
@@ -1384,9 +1594,16 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		Detached:    true,
 		Hidden:      true,
 		ProgressEnv: true,
-		Env:         brainSessionEnvironment(),
+		Env:         sessionEnv,
 	})
 	if err != nil {
+		if provisionalID != "" && routes != nil {
+			abortPersist, abortErr := routes.AbortLaunch(provisionalID)
+			err = errors.Join(err, abortErr)
+			if abortErr != nil || !abortPersist.Applied {
+				err = errors.Join(err, modelprofiles.ErrLaunchCleanupIncomplete)
+			}
+		}
 		if resumeToken != "" {
 			s.recordHostReplacement(HostReplacementEvent{
 				Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
@@ -1401,6 +1618,46 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		}
 		return AgentRef{}, err
 	}
+	if provisionalID != "" && routes != nil {
+		_, _, persist, commitErr := routes.CommitLaunch(provisionalID, agentID)
+		if !persist.Applied {
+			cleanup := modelprofiles.CleanupFailedLaunch(routes, provisionalID, agentID, s.watcher.KillSession, s.sessionLivenessProbe)
+			return AgentRef{}, errors.Join(commitErr, cleanup.Err)
+		}
+		if commitErr != nil || !persist.Durable {
+			// Fail closed: Brain has no persistence-warning wire. Tear down the
+			// committed route (kill first; preserve route if kill/resource
+			// cleanup fails). Do not SetHostSession or audit successful replacement.
+			durabilityErr := commitErr
+			if durabilityErr == nil {
+				durabilityErr = modelprofiles.ErrPersistDirSync
+			}
+			cleanup := modelprofiles.CleanupFailedLaunch(routes, "", agentID, s.watcher.KillSession, s.sessionLivenessProbe)
+			return AgentRef{}, fmt.Errorf(
+				"brain host profile commit not durable: %w",
+				errors.Join(durabilityErr, cleanup.Err),
+			)
+		}
+		provisionalID = ""
+	} else if routes != nil && strings.TrimSpace(id) != "" && resumeToken != "" && id != agentID {
+		persist, transferErr := routes.TransferSession(id, agentID)
+		if settleErr := s.settleHostIdentityRouteTransfer(routes, id, agentID, persist, transferErr, true); settleErr != nil {
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+				FromID:           id,
+				FromExecutorID:   hostSession.ExecutorID,
+				ResolvedExecutor: executor.ID,
+				Detail: fmt.Sprintf(
+					"has_session=false id=%q provider_session=%q route_transfer=%v",
+					id, resumeToken, settleErr,
+				),
+			})
+			return AgentRef{}, fmt.Errorf(
+				"brain host refusing blank replacement: %w",
+				settleErr,
+			)
+		}
+	}
 	if resumeToken != "" {
 		// CreateSession only proves tmux launch. Persist binding atomically with the
 		// true resume token; do not clear-then-reseal.
@@ -1411,13 +1668,28 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 			hostSession.TranscriptPath,
 			hostSession.ProviderDataRoot,
 		); err != nil {
-			// Best-effort kill the new hidden tmux; keep old binding; do not audit
-			// missing_tmux_resume_launched. Store error remains primary.
-			_ = s.watcher.KillSession(agentID)
-			return AgentRef{}, err
+			// Roll route ownership back to the old Session id so resume remains possible.
+			// Kill the new Session only after a durable rollback; otherwise preserve
+			// the live possible route owner and surface recoverable failure.
+			if routes != nil && strings.TrimSpace(id) != "" && id != agentID {
+				persist, rollbackErr := routes.TransferSession(agentID, id)
+				if !(persist.Applied && persist.Durable && rollbackErr == nil) {
+					return AgentRef{}, fmt.Errorf(
+						"brain host store bind failed and route rollback %q <- %q did not durably restore (live session retained): %w",
+						id, agentID, errors.Join(err, rollbackErr, nondurableOrIncomplete(persist, rollbackErr)),
+					)
+				}
+			}
+			killErr := s.watcher.KillSession(agentID)
+			return AgentRef{}, errors.Join(err, killErr)
 		}
 	} else if err := s.store.SetHostSession(agentID, executor.ID); err != nil {
-		return AgentRef{}, err
+		if routes != nil {
+			cleanup := modelprofiles.CleanupFailedLaunch(routes, provisionalID, agentID, s.watcher.KillSession, s.sessionLivenessProbe)
+			return AgentRef{}, errors.Join(err, cleanup.Err)
+		}
+		killErr := s.watcher.KillSession(agentID)
+		return AgentRef{}, errors.Join(err, killErr)
 	}
 	if replaceReason == hostReplaceReasonMissingTmux || replaceReason == hostReplaceReasonProviderMismatch {
 		createdReason := replaceReason + "_created"
@@ -1462,12 +1734,27 @@ func brainSessionEnvironment() map[string]string {
 	return env
 }
 
+func mergeStringMaps(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
+}
+
 // recoverMatchingHost finds a live Brain-owned host that still represents the
 // recorded provider session. It must not rebind an unrelated hidden session
 // (for example main:@0 "codex resume") and pretend that is continuity.
-func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession HostSession) *classifier.Agent {
+// Candidate ProbeSession Unknown fails closed — never falls through to spawn.
+func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession HostSession) (*classifier.Agent, error) {
 	if s == nil || s.watcher == nil {
-		return nil
+		return nil, nil
 	}
 	workspace := s.brainWorkspace()
 	wantSession := strings.TrimSpace(hostSession.ProviderSessionID)
@@ -1489,10 +1776,17 @@ func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession H
 		if !s.hostAgentMatches(agent, executor) {
 			continue
 		}
-		if !s.watcher.HasSession(agent.ID) {
+		if !isBrainOwnedHostAgent(agent, workspace) {
 			continue
 		}
-		if !isBrainOwnedHostAgent(agent, workspace) {
+		presence, probeErr := s.watcher.ProbeSession(agent.ID)
+		switch {
+		case probeErr != nil || presence == watcher.SessionPresenceUnknown:
+			if probeErr == nil {
+				probeErr = fmt.Errorf("tmux probe returned unknown for %q", agent.ID)
+			}
+			return nil, fmt.Errorf("brain host candidate liveness unknown: %w", probeErr)
+		case presence != watcher.SessionPresencePresent:
 			continue
 		}
 		cp := *agent
@@ -1504,7 +1798,7 @@ func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession H
 			if (wantSession != "" && token == wantSession) ||
 				(wantPath != "" && token == wantPath) ||
 				(wantDerived != "" && token == wantDerived) {
-				return &cp
+				return &cp, nil
 			}
 			continue
 		}
@@ -1512,7 +1806,156 @@ func (s *Service) recoverMatchingHost(executor work.AgentExecutor, hostSession H
 			fallback = &cp
 		}
 	}
-	return fallback
+	return fallback, nil
+}
+
+// rebindRecoveredHost transfers any Model Profile route oldID→recovered.ID before
+// replacing the host binding. Failed/not-applied/applied-nondurable transfer
+// (except no-route) preserves the old binding and live host with no
+// recovered_alive audit. host_session.json is never treated as a durability
+// barrier for route-bindings.json.
+func (s *Service) rebindRecoveredHost(oldID string, recovered *classifier.Agent, executor work.AgentExecutor, hostSession HostSession) error {
+	if s == nil || s.store == nil || recovered == nil {
+		return fmt.Errorf("brain host recover: missing service or recovered agent")
+	}
+	newID := strings.TrimSpace(recovered.ID)
+	if newID == "" {
+		return fmt.Errorf("brain host recover: empty recovered id")
+	}
+	oldID = strings.TrimSpace(oldID)
+
+	routes := s.sessionRoutes()
+	routeTransferred := false
+	if routes != nil && oldID != "" && oldID != newID {
+		persist, transferErr := routes.TransferSession(oldID, newID)
+		if settleErr := s.settleHostIdentityRouteTransfer(routes, oldID, newID, persist, transferErr, false); settleErr != nil {
+			return settleErr
+		}
+		// No-route is a successful settle with nothing transferred.
+		if persist.Applied {
+			routeTransferred = true
+		}
+	}
+
+	providerToken := strings.TrimSpace(hostSession.ProviderSessionID)
+	transcriptPath := strings.TrimSpace(hostSession.TranscriptPath)
+	providerRoot := strings.TrimSpace(hostSession.ProviderDataRoot)
+	if providerToken == "" && transcriptPath != "" {
+		provider := strings.TrimSpace(executor.Provider)
+		if provider == "" || provider == work.AgentProviderCustom {
+			provider = work.InferAgentProvider(executor.Command, executor.ID)
+		}
+		if provider == work.AgentProviderCodex {
+			if derived := work.CodexSessionIDFromRolloutPath(transcriptPath); derived != "" {
+				providerToken = derived
+			}
+		}
+	}
+	if err := s.store.ReplaceHostSessionBinding(
+		newID,
+		executor.ID,
+		providerToken,
+		transcriptPath,
+		providerRoot,
+	); err != nil {
+		if routeTransferred && routes != nil {
+			persist, rollbackErr := routes.TransferSession(newID, oldID)
+			if !(persist.Applied && persist.Durable && rollbackErr == nil) {
+				return fmt.Errorf(
+					"brain host recover bind failed and route rollback %q <- %q did not durably restore (live host retained): %w",
+					oldID, newID, errors.Join(err, rollbackErr, nondurableOrIncomplete(persist, rollbackErr)),
+				)
+			}
+		}
+		// Keep old binding; do not audit recovered_alive; do not kill live host.
+		return err
+	}
+	s.recordHostReplacement(HostReplacementEvent{
+		Reason:           hostReplaceReasonRecoveredAlive,
+		FromID:           oldID,
+		ToID:             newID,
+		FromExecutorID:   hostSession.ExecutorID,
+		FromCommand:      recovered.Command,
+		ResolvedExecutor: executor.ID,
+		Detail:           "recorded host missing; rebound matching live Brain host",
+	})
+	return nil
+}
+
+// settleHostIdentityRouteTransfer enforces one route/host convergence invariant:
+// Applied+!Durable TransferSession must not become a successful host binding or
+// recovered/resume audit. host_session.json is not a durability barrier for
+// route-bindings.json. On nondurable apply, compensate toward fromID; only a
+// durable compensation may authorize killing toID (resume spawn). Recovered
+// live hosts never kill (killOnCompensated=false).
+func (s *Service) settleHostIdentityRouteTransfer(
+	routes SessionRouteLifecycle,
+	fromID, toID string,
+	persist modelprofiles.PersistResult,
+	transferErr error,
+	killOnCompensated bool,
+) error {
+	fromID = strings.TrimSpace(fromID)
+	toID = strings.TrimSpace(toID)
+	if routes == nil || fromID == "" || toID == "" || fromID == toID {
+		return nil
+	}
+	if errors.Is(transferErr, modelprofiles.ErrBindingNotFound) && !persist.Applied {
+		// No route for the recorded Session — host bind only.
+		return nil
+	}
+	if !persist.Applied {
+		var killErr error
+		if killOnCompensated && s != nil && s.watcher != nil {
+			killErr = s.watcher.KillSession(toID)
+		}
+		return errors.Join(fmt.Errorf(
+			"route transfer %q -> %q failed: %w",
+			fromID, toID, transferErr,
+		), killErr)
+	}
+	if persist.Durable && transferErr == nil {
+		return nil
+	}
+	durabilityErr := transferErr
+	if durabilityErr == nil {
+		durabilityErr = modelprofiles.ErrPersistDirSync
+	}
+	durabilityErr = errors.Join(ErrRouteTransferNotDurable, durabilityErr)
+
+	rollbackPersist, rollbackErr := routes.TransferSession(toID, fromID)
+	if rollbackPersist.Applied && rollbackPersist.Durable && rollbackErr == nil {
+		var killErr error
+		if killOnCompensated && s != nil && s.watcher != nil {
+			killErr = s.watcher.KillSession(toID)
+		}
+		return errors.Join(fmt.Errorf(
+			"route transfer %q -> %q applied but not durable; compensated to %q: %w",
+			fromID, toID, fromID, durabilityErr,
+		), killErr)
+	}
+	// Compensation failed or remains nondurable: preserve the live possible owner.
+	return fmt.Errorf(
+		"route transfer %q -> %q not durable and compensation did not durably restore %q (live owner %q retained): %w",
+		fromID, toID, fromID, toID,
+		errors.Join(durabilityErr, rollbackErr, nondurableOrIncomplete(rollbackPersist, rollbackErr)),
+	)
+}
+
+func nondurableOrIncomplete(persist modelprofiles.PersistResult, err error) error {
+	if persist.Applied && persist.Durable && err == nil {
+		return nil
+	}
+	if !persist.Applied {
+		if err != nil {
+			return err
+		}
+		return modelprofiles.ErrLaunchCleanupIncomplete
+	}
+	if err != nil {
+		return err
+	}
+	return modelprofiles.ErrPersistDirSync
 }
 
 func isBrainOwnedHostAgent(agent *classifier.Agent, workspace string) bool {

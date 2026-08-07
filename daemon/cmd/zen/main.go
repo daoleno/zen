@@ -26,6 +26,7 @@ import (
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/doctor"
 	"github.com/daoleno/zen/daemon/link"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/selfupdate"
 	"github.com/daoleno/zen/daemon/server"
@@ -194,9 +195,44 @@ func runDaemon(args []string, stderr io.Writer) error {
 		stateDir:      authManager.StorageDir(),
 	}
 
+	profilesPath, err := work.DefaultModelProfilesPath()
+	if err != nil {
+		return fmt.Errorf("resolve model profiles path: %w", err)
+	}
+	routesPath, err := work.DefaultRouteBindingsPath()
+	if err != nil {
+		return fmt.Errorf("resolve route bindings path: %w", err)
+	}
+	listenerPath, err := work.DefaultRouteListenerPath()
+	if err != nil {
+		return fmt.Errorf("resolve route listener path: %w", err)
+	}
+	discoveryPath, err := work.DefaultProviderDiscoveryPath()
+	if err != nil {
+		return fmt.Errorf("resolve provider discovery path: %w", err)
+	}
+	profileOwner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
+		ProfilesPath:  profilesPath,
+		RoutesPath:    routesPath,
+		ListenerPath:  listenerPath,
+		DiscoveryPath: discoveryPath,
+		Credentials:   modelprofiles.NewKeyringCredentialStore(),
+	})
+	if err != nil {
+		return fmt.Errorf("start model profiles owner: %w", err)
+	}
+	defer func() { _ = profileOwner.Close() }()
+	controlHandler.profiles = profileOwner
+	brainService.SetSessionRouteLifecycle(profileOwner)
+
 	pusher := push.New()
-	launcher := work.NewLauncher(work.TmuxRunner{Watcher: w, Env: progressEnvForStateDir(authManager.StorageDir())}, execs)
+	launcher := work.NewLauncher(work.TmuxRunner{
+		Watcher:  w,
+		Env:      progressEnvForStateDir(authManager.StorageDir()),
+		Profiles: profileOwner,
+	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
+	srv.SetModelProfiles(profileOwner)
 	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
 	srv.SetCalendar(calendarStore, calendarScheduler)
@@ -762,6 +798,22 @@ func runAgentList(args []string, stderr io.Writer) error {
 }
 
 func runAgentSpawn(args []string, stderr io.Writer) error {
+	cfg, req, err := parseAgentSpawnArgs(args, stderr)
+	if err != nil {
+		return err
+	}
+	req.AgentID = currentAgentID()
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+// parseAgentSpawnArgs binds zen agent spawn flags. -profile is the Work
+// lifecycle profile; -model-profile is the optional Model Profile override
+// (omit to resolve the selected executor default server-side).
+func parseAgentSpawnArgs(args []string, stderr io.Writer) (cliConfig, control.Request, error) {
 	fs := flag.NewFlagSet("zen agent spawn", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfg := cliConfig{json: true}
@@ -775,6 +827,7 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.Prompt, "prompt", "", "initial prompt text")
 	fs.StringVar(&req.PromptFile, "prompt-file", "", "file containing the initial prompt")
 	fs.StringVar(&req.Profile, "profile", "implementation", "agent lifecycle profile: quick, research, implementation, or long_running")
+	fs.StringVar(&req.ProfileID, "model-profile", "", "optional Model Profile id override; omit to use the selected executor default")
 	fs.StringVar(&req.WorkID, "work", "", "existing Brain Work id to own this delegated Session")
 	var completionPolicy string
 	var doneCriteriaRef string
@@ -789,22 +842,17 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
-		return err
+		return cliConfig{}, control.Request{}, err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return cliConfig{}, control.Request{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	req.BrainWork = &brain.Work{
 		CompletionPolicy: brain.CompletionPolicy(strings.TrimSpace(completionPolicy)),
 		DoneCriteriaRef:  strings.TrimSpace(doneCriteriaRef),
 		ContextRef:       strings.TrimSpace(contextRef),
 	}
-	req.AgentID = currentAgentID()
-	resp, err := callControl(cfg, req)
-	if err != nil {
-		return err
-	}
-	return writeControlResponse(os.Stdout, resp, cfg.json)
+	return cfg, req, nil
 }
 
 func currentAgentID() string {

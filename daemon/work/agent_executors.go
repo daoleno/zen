@@ -625,6 +625,27 @@ func InferAgentProvider(values ...string) string {
 	return ""
 }
 
+// ProfileClientExecutor returns the canonical Model Profiles client executor
+// ("codex" or "claude") for a configured CLI identity. The configured executor
+// ID/name remains the process identity; this hint is only for PrepareLaunch
+// default/override resolution. Empty means unsupported/custom — callers must
+// keep bypass/fail-closed behavior rather than inventing a client type.
+func ProfileClientExecutor(values ...string) string {
+	provider := InferAgentProvider(values...)
+	switch provider {
+	case AgentProviderCodex, AgentProviderClaude:
+		return provider
+	default:
+		return ""
+	}
+}
+
+// ProfileClientExecutor returns the canonical Model Profiles client hint for
+// this configured AgentExecutor (Provider first, then command/ID inference).
+func (e AgentExecutor) ProfileClientExecutor() string {
+	return ProfileClientExecutor(e.Provider, e.Command, e.ID)
+}
+
 func inferAgentProviderOne(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {

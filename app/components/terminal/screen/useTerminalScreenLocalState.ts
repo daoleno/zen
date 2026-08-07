@@ -29,6 +29,7 @@ export function useTerminalScreenLocalState() {
     initialInterfaceRenderMode?: string;
     initialComposerFocus?: string;
     skillsHandoff?: string;
+    createDurabilityWarning?: string;
   }>();
   const agentId = paramString(params.id);
   const serverId = paramString(params.serverId);
@@ -90,6 +91,16 @@ export function useTerminalScreenLocalState() {
     }
   }, [routeSkillsHandoffToken, router, sessionKey]);
 
+  const createDurabilityWarningParam = paramString(params.createDurabilityWarning);
+  const [createDurabilityWarning, setCreateDurabilityWarning] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    if (!createDurabilityWarningParam) return;
+    setCreateDurabilityWarning(createDurabilityWarningParam);
+    router.setParams({ createDurabilityWarning: "" });
+  }, [createDurabilityWarningParam, router]);
+
   const skillsHandoffToken =
     skillsHandoffGrant?.sessionKey === sessionKey
       ? skillsHandoffGrant.token
@@ -123,6 +134,8 @@ export function useTerminalScreenLocalState() {
     setNewTerminalVisible,
     creatingSession,
     setCreatingSession,
+    createDurabilityWarning,
+    dismissCreateDurabilityWarning: () => setCreateDurabilityWarning(null),
     screenFocused,
     setScreenFocused,
     terminalRef,

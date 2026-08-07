@@ -33,6 +33,7 @@ interface TerminalActionPopoverProps {
   onNewTerminal(): void;
   onRename(): void;
   onOpenLinkedWork(): void;
+  onOpenModel?(): void;
   onToggleRenderMode?(): void;
   onTerminate(): void;
 }
@@ -53,6 +54,7 @@ export function TerminalActionPopover({
   onNewTerminal,
   onRename,
   onOpenLinkedWork,
+  onOpenModel,
   onToggleRenderMode,
   onTerminate,
 }: TerminalActionPopoverProps) {
@@ -85,6 +87,15 @@ export function TerminalActionPopover({
       onPress: onRename,
     },
   );
+
+  if (onOpenModel) {
+    actions.push({
+      key: "model",
+      icon: "sparkles-outline",
+      label: "Model",
+      onPress: onOpenModel,
+    });
+  }
 
   if (showLinkedWork) {
     actions.push({

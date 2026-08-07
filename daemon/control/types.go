@@ -8,40 +8,48 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 )
 
 const SocketName = "zen.sock"
 
 type Request struct {
-	Type           string           `json:"type"`
-	Name           string           `json:"name,omitempty"`
-	Executor       string           `json:"executor,omitempty"`
-	ExecutorID     string           `json:"executor_id,omitempty"`
-	Command        string           `json:"command,omitempty"`
-	Cwd            string           `json:"cwd,omitempty"`
-	Prompt         string           `json:"prompt,omitempty"`
-	PromptFile     string           `json:"prompt_file,omitempty"`
-	Profile        string           `json:"profile,omitempty"`
-	AgentID        string           `json:"agent_id,omitempty"`
-	Status         string           `json:"status,omitempty"`
-	Phase          string           `json:"phase,omitempty"`
-	Attention      string           `json:"attention,omitempty"`
-	Summary        string           `json:"summary,omitempty"`
-	TaskClass      string           `json:"task_class,omitempty"`
-	EventKind      string           `json:"event_kind,omitempty"`
-	DetailsJSON    string           `json:"details_json,omitempty"`
-	LeaseSeconds   int              `json:"lease_seconds,omitempty"`
-	Text           string           `json:"text,omitempty"`
-	Submit         bool             `json:"submit,omitempty"`
-	Hidden         bool             `json:"hidden,omitempty"`
-	Force          bool             `json:"force,omitempty"`
-	ID             string           `json:"id,omitempty"`
-	Revision       int64            `json:"revision,omitempty"`
-	CalendarItem   *calendar.Item   `json:"calendar_item,omitempty"`
-	BrainWork      *brain.Work      `json:"brain_work,omitempty"`
-	BrainWorkEvent *brain.WorkEvent `json:"brain_work_event,omitempty"`
-	WorkID         string           `json:"work_id,omitempty"`
-	WorkFields     []string         `json:"work_fields,omitempty"`
+	Type               string                                 `json:"type"`
+	Name               string                                 `json:"name,omitempty"`
+	Executor           string                                 `json:"executor,omitempty"`
+	ExecutorID         string                                 `json:"executor_id,omitempty"`
+	Command            string                                 `json:"command,omitempty"`
+	Cwd                string                                 `json:"cwd,omitempty"`
+	Prompt             string                                 `json:"prompt,omitempty"`
+	PromptFile         string                                 `json:"prompt_file,omitempty"`
+	Profile            string                                 `json:"profile,omitempty"`
+	ProfileID          string                                 `json:"profile_id,omitempty"`
+	ConnectionID       string                                 `json:"connection_id,omitempty"`
+	ModelID            string                                 `json:"model_id,omitempty"`
+	ProviderConnection *modelprofiles.ProviderConnectionInput `json:"provider_connection,omitempty"`
+	Generation         int64                                  `json:"generation,omitempty"` // internal CAS only; ignored on Provider activate
+	Operation          string                                 `json:"operation,omitempty"`
+	AgentID            string                                 `json:"agent_id,omitempty"`
+	Client             string                                 `json:"client,omitempty"`
+	Status             string                                 `json:"status,omitempty"`
+	Phase              string                                 `json:"phase,omitempty"`
+	Attention          string                                 `json:"attention,omitempty"`
+	Summary            string                                 `json:"summary,omitempty"`
+	TaskClass          string                                 `json:"task_class,omitempty"`
+	EventKind          string                                 `json:"event_kind,omitempty"`
+	DetailsJSON        string                                 `json:"details_json,omitempty"`
+	LeaseSeconds       int                                    `json:"lease_seconds,omitempty"`
+	Text               string                                 `json:"text,omitempty"`
+	Submit             bool                                   `json:"submit,omitempty"`
+	Hidden             bool                                   `json:"hidden,omitempty"`
+	Force              bool                                   `json:"force,omitempty"`
+	ID                 string                                 `json:"id,omitempty"`
+	Revision           int64                                  `json:"revision,omitempty"`
+	CalendarItem       *calendar.Item                         `json:"calendar_item,omitempty"`
+	BrainWork          *brain.Work                            `json:"brain_work,omitempty"`
+	BrainWorkEvent     *brain.WorkEvent                       `json:"brain_work_event,omitempty"`
+	WorkID             string                                 `json:"work_id,omitempty"`
+	WorkFields         []string                               `json:"work_fields,omitempty"`
 }
 
 type PersistenceOutcome string
@@ -60,29 +68,33 @@ type PairingInfo struct {
 }
 
 type Response struct {
-	OK                 bool               `json:"ok"`
-	Error              *Error             `json:"error,omitempty"`
-	Agent              *Agent             `json:"agent,omitempty"`
-	Agents             []Agent            `json:"agents,omitempty"`
-	Executor           *Executor          `json:"executor,omitempty"`
-	DelegatedExecutor  *Executor          `json:"delegated_executor,omitempty"`
-	Executors          []Executor         `json:"executors,omitempty"`
-	Context            any                `json:"context,omitempty"`
-	Housekeeping       any                `json:"housekeeping,omitempty"`
-	Playbooks          any                `json:"playbooks,omitempty"`
-	Text               string             `json:"text,omitempty"`
-	Workspace          string             `json:"workspace,omitempty"`
-	CalendarItem       *calendar.Item     `json:"calendar_item,omitempty"`
-	CalendarItems      []calendar.Item    `json:"calendar_items,omitempty"`
-	Devices            []auth.DeviceInfo  `json:"devices,omitempty"`
-	Pairing            *PairingInfo       `json:"pairing,omitempty"`
-	PersistenceOutcome PersistenceOutcome `json:"persistence_outcome,omitempty"`
-	PersistenceDurable *bool              `json:"persistence_durable,omitempty"`
-	Confirmation       string             `json:"confirmation,omitempty"`
-	BrainWork          *brain.Work        `json:"brain_work,omitempty"`
-	BrainWorks         []brain.Work       `json:"brain_work_items,omitempty"`
-	BrainWorkEvent     *brain.WorkEvent   `json:"brain_work_event,omitempty"`
-	BrainWorkEvents    []brain.WorkEvent  `json:"brain_work_events,omitempty"`
+	OK                 bool                                     `json:"ok"`
+	Error              *Error                                   `json:"error,omitempty"`
+	Agent              *Agent                                   `json:"agent,omitempty"`
+	Agents             []Agent                                  `json:"agents,omitempty"`
+	Executor           *Executor                                `json:"executor,omitempty"`
+	DelegatedExecutor  *Executor                                `json:"delegated_executor,omitempty"`
+	Executors          []Executor                               `json:"executors,omitempty"`
+	Context            any                                      `json:"context,omitempty"`
+	Housekeeping       any                                      `json:"housekeeping,omitempty"`
+	Playbooks          any                                      `json:"playbooks,omitempty"`
+	Text               string                                   `json:"text,omitempty"`
+	Workspace          string                                   `json:"workspace,omitempty"`
+	CalendarItem       *calendar.Item                           `json:"calendar_item,omitempty"`
+	CalendarItems      []calendar.Item                          `json:"calendar_items,omitempty"`
+	Devices            []auth.DeviceInfo                        `json:"devices,omitempty"`
+	Pairing            *PairingInfo                             `json:"pairing,omitempty"`
+	PersistenceOutcome PersistenceOutcome                       `json:"persistence_outcome,omitempty"`
+	PersistenceDurable *bool                                    `json:"persistence_durable,omitempty"`
+	Confirmation       string                                   `json:"confirmation,omitempty"`
+	BrainWork          *brain.Work                              `json:"brain_work,omitempty"`
+	BrainWorks         []brain.Work                             `json:"brain_work_items,omitempty"`
+	BrainWorkEvent     *brain.WorkEvent                         `json:"brain_work_event,omitempty"`
+	BrainWorkEvents    []brain.WorkEvent                        `json:"brain_work_events,omitempty"`
+	Providers          *modelprofiles.ProviderCatalogProjection `json:"providers,omitempty"`
+	SessionProvider    *modelprofiles.ProviderSessionSelection  `json:"session_provider,omitempty"`
+	SessionRoute       *modelprofiles.WireSessionSnapshot       `json:"session_route,omitempty"`
+	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
 }
 
 type Error struct {

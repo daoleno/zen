@@ -33,8 +33,9 @@ func (s *Service) NewChat() (Snapshot, error) {
 	}
 	executor := s.hostExecutor()
 	if hostSession, err := s.store.HostSession(); err == nil {
-		if id := strings.TrimSpace(hostSession.ID); id != "" && s.watcher.HasSession(id) {
-			if err := s.watcher.KillSession(id); err != nil {
+		if id := strings.TrimSpace(hostSession.ID); id != "" {
+			// Explicit NewChat destroys the host; release any managed route.
+			if err := s.teardownHostSession(id); err != nil {
 				return Snapshot{}, err
 			}
 		}

@@ -9,7 +9,9 @@ import (
 )
 
 type agentSessionWireCapabilities struct {
-	StructuredEvents bool `json:"structured_events"`
+	StructuredEvents         bool `json:"structured_events"`
+	ModelProfileManaged      bool `json:"model_profile_managed"`
+	ModelProfileActiveSwitch bool `json:"model_profile_active_switch"`
 }
 
 type agentSessionWire struct {
@@ -21,12 +23,57 @@ func (s *Server) agentSessionWire(agent *classifier.Agent) *agentSessionWire {
 	if agent == nil {
 		return nil
 	}
+	managed, activeSwitch := s.modelProfileSessionCapabilities(agent.ID)
 	return &agentSessionWire{
 		Agent: agent,
 		Capabilities: agentSessionWireCapabilities{
-			StructuredEvents: s.agentSupportsStructuredEvents(agent),
+			StructuredEvents:         s.agentSupportsStructuredEvents(agent),
+			ModelProfileManaged:      managed,
+			ModelProfileActiveSwitch: activeSwitch,
 		},
 	}
+}
+
+// lookupAgent returns the live watcher Agent for sessionID. Missing watcher /
+// agent fails closed (nil) so Brain Host capabilities never invent presence.
+func (s *Server) lookupAgent(sessionID string) *classifier.Agent {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || s == nil {
+		return nil
+	}
+	if s.getAgentOverride != nil {
+		return s.getAgentOverride(sessionID)
+	}
+	if s.watcher == nil {
+		return nil
+	}
+	return s.watcher.GetAgent(sessionID)
+}
+
+func (s *Server) hostAgentWireCapabilities(sessionID string) agentSessionWireCapabilities {
+	agent := s.lookupAgent(sessionID)
+	if agent == nil {
+		return agentSessionWireCapabilities{}
+	}
+	wire := s.agentSessionWire(agent)
+	if wire == nil {
+		return agentSessionWireCapabilities{}
+	}
+	return wire.Capabilities
+}
+
+// modelProfileSessionCapabilities reads the authoritative Model Profiles route
+// table only. Command/name heuristics must never authorize App actions.
+func (s *Server) modelProfileSessionCapabilities(sessionID string) (managed, activeSwitch bool) {
+	if s == nil {
+		return false, false
+	}
+	owner := s.modelProfiles()
+	if owner == nil {
+		return false, false
+	}
+	caps := owner.SessionRouteCapabilities(sessionID)
+	return caps.Managed, caps.ActiveSwitch
 }
 
 func (s *Server) agentSessionsWire(agents []*classifier.Agent) []*agentSessionWire {

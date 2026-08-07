@@ -723,6 +723,13 @@ const AppNavigator = memo(function AppNavigator({
         }}
       />
       <Stack.Screen
+        name="model-profiles"
+        options={{
+          title: "Providers",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
+      />
+      <Stack.Screen
         name="terminal/[id]"
         options={{ headerShown: false, animation: "none" }}
       />

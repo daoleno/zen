@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -585,20 +586,50 @@ func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt
 	return snapshot, nil
 }
 
+// SessionPresence is the tri-state result of ProbeSession.
+type SessionPresence int
+
+const (
+	// SessionPresenceUnknown means the probe failed; callers must not treat this
+	// as proof of absence.
+	SessionPresenceUnknown SessionPresence = iota
+	SessionPresencePresent
+	SessionPresenceAbsent
+)
+
+// ErrDelegatedResourceRelease means the tmux window is gone (or was already
+// missing) but delegated resource cleanup failed and remains retryable.
+var ErrDelegatedResourceRelease = errors.New("delegated resource release failed")
+
 // HasSession reports whether tmux still has a session matching the target.
+// Probe failures collapse to false for backward-compatible callers; prefer
+// ProbeSession when absence must be proven.
 func (w *Watcher) HasSession(target string) bool {
+	presence, err := w.ProbeSession(target)
+	return err == nil && presence == SessionPresencePresent
+}
+
+// ProbeSession reports whether tmux still has the target. Transport/probe
+// failures return SessionPresenceUnknown with a non-nil error — never Absent.
+func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return false
+		return SessionPresenceAbsent, nil
 	}
-	sessionName := baseSessionName(target)
-	if strings.Contains(target, ":") {
-		return exec.Command("tmux", "has-session", "-t", target).Run() == nil
+	probeTarget := target
+	if !strings.Contains(target, ":") {
+		if name := baseSessionName(target); name != "" {
+			probeTarget = name
+		}
 	}
-	if sessionName == "" {
-		sessionName = target
+	out, err := exec.Command("tmux", "has-session", "-t", probeTarget).CombinedOutput()
+	if err == nil {
+		return SessionPresencePresent, nil
 	}
-	return exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil
+	if isTmuxTargetMissing(err, string(out)) || isNoTmuxServerError(err) || isNoTmuxServerError(fmt.Errorf("%s", out)) {
+		return SessionPresenceAbsent, nil
+	}
+	return SessionPresenceUnknown, fmt.Errorf("tmux has-session %s: %w: %s", probeTarget, err, strings.TrimSpace(string(out)))
 }
 
 // Run starts the polling loop. Blocks until context is cancelled.
@@ -2875,8 +2906,17 @@ func shellQuote(value string) string {
 // KillSession terminates the tmux window backing a single agent.
 // Agent IDs use the form session:window_id, so killing the window
 // exits only that agent instead of the whole tmux session.
+//
+// A target that is already missing is an idempotent success for the kill
+// itself. Delegated resource release still runs when a bound unit is known and
+// must succeed before KillSession returns nil — a resource-release failure
+// after a successful (or already-missing) kill is retryable and typed as
+// ErrDelegatedResourceRelease.
 func (w *Watcher) KillSession(sessionID string) error {
 	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
 	manager := w.resourceManager()
 	unit := manager.UnitForTarget(sessionID)
 	delegated := unit != ""
@@ -2884,20 +2924,37 @@ func (w *Watcher) KillSession(sessionID string) error {
 		delegated, unit = tmuxDelegatedResource(sessionID)
 	}
 	out, killErr := exec.Command("tmux", "kill-window", "-t", sessionID).CombinedOutput()
-	var releaseErr error
+	outText := strings.TrimSpace(string(out))
+	missing := killErr != nil && isTmuxTargetMissing(killErr, outText)
+	if killErr != nil && !missing {
+		// Non-missing kill failure: window may still be live. Do not release
+		// delegated resources; surface the kill error for retry.
+		return fmt.Errorf("kill tmux window: %w: %s", killErr, outText)
+	}
 	if delegated {
-		releaseErr = manager.Release(sessionID, unit)
-	}
-	if killErr != nil && releaseErr != nil {
-		return fmt.Errorf("kill tmux window: %w: %s; release delegated resources: %v", killErr, strings.TrimSpace(string(out)), releaseErr)
-	}
-	if killErr != nil {
-		return fmt.Errorf("kill tmux window: %w: %s", killErr, strings.TrimSpace(string(out)))
-	}
-	if releaseErr != nil {
-		return fmt.Errorf("release delegated resources: %w", releaseErr)
+		if releaseErr := manager.Release(sessionID, unit); releaseErr != nil {
+			return fmt.Errorf("%w: %v", ErrDelegatedResourceRelease, releaseErr)
+		}
 	}
 	return nil
+}
+
+func isTmuxTargetMissing(err error, output string) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error() + " " + output))
+	if isNoTmuxServerError(err) || isNoTmuxServerError(fmt.Errorf("%s", output)) {
+		return true
+	}
+	return strings.Contains(text, "can't find window") ||
+		strings.Contains(text, "couldn't find window") ||
+		strings.Contains(text, "can't find session") ||
+		strings.Contains(text, "couldn't find session") ||
+		strings.Contains(text, "no such window") ||
+		strings.Contains(text, "no such session") ||
+		strings.Contains(text, "session not found") ||
+		strings.Contains(text, "window not found")
 }
 
 func tmuxDelegatedResource(target string) (bool, string) {

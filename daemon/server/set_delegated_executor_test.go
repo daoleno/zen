@@ -32,11 +32,18 @@ func (w *brainServiceTestWatcher) GetAgent(id string) *classifier.Agent {
 }
 
 func (w *brainServiceTestWatcher) HasSession(target string) bool {
+	presence, err := w.ProbeSession(target)
+	return err == nil && presence == watcher.SessionPresencePresent
+}
+
+func (w *brainServiceTestWatcher) ProbeSession(target string) (watcher.SessionPresence, error) {
 	if w.sessions == nil {
-		return false
+		return watcher.SessionPresenceAbsent, nil
 	}
-	_, ok := w.sessions[target]
-	return ok
+	if _, ok := w.sessions[target]; ok {
+		return watcher.SessionPresencePresent, nil
+	}
+	return watcher.SessionPresenceAbsent, nil
 }
 
 func (w *brainServiceTestWatcher) CreateSession(string, watcher.CreateSessionOptions) (string, error) {

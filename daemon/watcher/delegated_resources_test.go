@@ -18,6 +18,7 @@ type fakeDelegatedResourceManager struct {
 	boundTarget string
 	boundUnit   string
 	released    []string
+	releaseErr  error
 }
 
 func (m *fakeDelegatedResourceManager) Prepare(int) (*delegatedResourceSpec, error) {
@@ -40,7 +41,7 @@ func (*fakeDelegatedResourceManager) Reconcile([]tmuxWindow) {}
 
 func (m *fakeDelegatedResourceManager) Release(target, unit string) error {
 	m.released = append(m.released, target+"\t"+unit)
-	return nil
+	return m.releaseErr
 }
 
 func (m *fakeDelegatedResourceManager) Snapshot(target string) SessionResourceSnapshot {

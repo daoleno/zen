@@ -115,6 +115,65 @@ function registeredHandlerCount(
   );
 }
 
+function providerCatalogPayload(requestId: string, revision = 1) {
+  return {
+    type: "providers",
+    request_id: requestId,
+    revision,
+    connections: [
+      {
+        id: "deepseek-main",
+        name: "DeepSeek",
+        preset_id: "deepseek",
+        clients: ["codex"],
+        credential_ready: true,
+      },
+    ],
+    defaults: {
+      codex: {
+        connection_id: "deepseek-main",
+        model_id: "deepseek-chat",
+      },
+    },
+    presets: [
+      {
+        id: "deepseek",
+        label: "DeepSeek",
+        clients: ["codex"],
+      },
+      {
+        id: "custom",
+        label: "Custom Gateway",
+        clients: ["codex", "claude"],
+        advanced: true,
+      },
+    ],
+    models: {
+      "deepseek-main": [
+        {
+          id: "deepseek-chat",
+          available: true,
+          source: "discovered",
+        },
+      ],
+    },
+  };
+}
+
+function providerSelection(overrides?: Record<string, unknown>) {
+  return {
+    session_id: "agent-a",
+    client: "codex",
+    connection_id: "deepseek-main",
+    connection_name: "DeepSeek",
+    provider_label: "DeepSeek",
+    model_id: "deepseek-chat",
+    credential_ready: true,
+    hot_switchable: true,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   FakeWebSocket.instances = [];
 });
@@ -681,6 +740,236 @@ describe("generic WebSocket live boundary", () => {
     });
 
     unsubscribe();
+    client.disconnectAll();
+  });
+});
+
+describe("Provider public WebSocket boundary", () => {
+  test("ordinary create omits profile_id and accepts a correlated ordinary reply", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.createSession(server.id, {
+      cwd: "/workspace",
+      command: "codex",
+      name: "Fresh",
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "create_session",
+      cwd: "/workspace",
+      command: "codex",
+      name: "Fresh",
+    });
+    expect(outbound.profile_id).toBeUndefined();
+
+    socket.receive({
+      type: "session_created",
+      request_id: outbound.request_id,
+      agent_id: "agent-new",
+    });
+    await expect(pending).resolves.toEqual({
+      agentId: "agent-new",
+      persistence: undefined,
+    });
+    client.disconnectAll();
+  });
+
+  test("list_providers ignores a stale request id and returns only the correlated catalog", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.listProviders(server.id);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound.type).toBe("list_providers");
+
+    let settled = false;
+    void pending.finally(() => {
+      settled = true;
+    });
+    socket.receive(providerCatalogPayload("stale-request", 99));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    socket.receive(providerCatalogPayload(outbound.request_id, 4));
+    const catalog = await pending;
+    expect(catalog.revision).toBe(4);
+    expect(catalog.connections[0]?.id).toBe("deepseek-main");
+    expect(registeredHandlerCount(client)).toBe(0);
+    client.disconnectAll();
+  });
+
+  test("Provider catalog writes use revisioned public fields and parse durability", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const upsertPending = client.upsertProviderConnection(server.id, {
+      operation: "create",
+      revision: 3,
+      connection: { preset_id: "deepseek" },
+    });
+    const upsert = JSON.parse(socket.sent.at(-1)!);
+    expect(upsert).toEqual({
+      type: "upsert_provider_connection",
+      request_id: upsert.request_id,
+      provider_connection: { preset_id: "deepseek" },
+      revision: 3,
+      operation: "create",
+    });
+    expect(JSON.stringify(upsert)).not.toMatch(/api_key|credential|secret/i);
+    socket.receive({
+      ...providerCatalogPayload(upsert.request_id, 4),
+      persistence_outcome: "applied",
+      persistence_durable: false,
+      persistence_warning: "directory sync pending",
+    });
+    const upserted = await upsertPending;
+    expect(upserted.snapshot.revision).toBe(4);
+    expect(upserted.persistence).toMatchObject({
+      applied: true,
+      durable: false,
+      warning: "directory sync pending",
+    });
+
+    const defaultPending = client.setProviderDefault(server.id, {
+      client: "codex",
+      connectionId: "deepseek-main",
+      modelId: "deepseek-chat",
+      revision: 4,
+    });
+    const setDefault = JSON.parse(socket.sent.at(-1)!);
+    expect(setDefault).toMatchObject({
+      type: "set_provider_default",
+      client: "codex",
+      executor_id: "codex",
+      connection_id: "deepseek-main",
+      model_id: "deepseek-chat",
+      revision: 4,
+    });
+    expect(setDefault.profile_id).toBeUndefined();
+    socket.receive({
+      ...providerCatalogPayload(setDefault.request_id, 5),
+      persistence_outcome: "applied",
+      persistence_durable: true,
+    });
+    await expect(defaultPending).resolves.toMatchObject({
+      snapshot: { revision: 5 },
+    });
+    client.disconnectAll();
+  });
+
+  test("session Provider get and activation send no legacy aliases or generation", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const getPending = client.getSessionProvider(server.id, "agent-a");
+    const get = JSON.parse(socket.sent.at(-1)!);
+    expect(get).toEqual({
+      type: "get_session_provider",
+      request_id: get.request_id,
+      agent_id: "agent-a",
+    });
+    socket.receive({
+      type: "session_provider",
+      request_id: get.request_id,
+      selection: providerSelection(),
+    });
+    await expect(getPending).resolves.toMatchObject({
+      connection_id: "deepseek-main",
+      model_id: "deepseek-chat",
+    });
+
+    const activatePending = client.activateSessionProvider(server.id, {
+      agentId: "agent-a",
+      connectionId: "deepseek-main",
+      modelId: "deepseek-chat",
+    });
+    const activate = JSON.parse(socket.sent.at(-1)!);
+    expect(activate).toEqual({
+      type: "activate_session_provider",
+      request_id: activate.request_id,
+      agent_id: "agent-a",
+      connection_id: "deepseek-main",
+      model_id: "deepseek-chat",
+    });
+    expect(activate.generation).toBeUndefined();
+    expect(activate.profile_id).toBeUndefined();
+    socket.receive({
+      type: "session_provider_activated",
+      request_id: activate.request_id,
+      selection: providerSelection(),
+      persistence_outcome: "applied",
+      persistence_durable: true,
+    });
+    await expect(activatePending).resolves.toMatchObject({
+      selection: {
+        session_id: "agent-a",
+        connection_id: "deepseek-main",
+        model_id: "deepseek-chat",
+      },
+    });
+    client.disconnectAll();
+  });
+
+  test("activation rejects a mismatched connection/model reply", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.activateSessionProvider(server.id, {
+      agentId: "agent-a",
+      connectionId: "deepseek-main",
+      modelId: "deepseek-chat",
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "session_provider_activated",
+      request_id: outbound.request_id,
+      selection: providerSelection({
+        connection_id: "other-connection",
+        model_id: "other-model",
+      }),
+      persistence_outcome: "applied",
+      persistence_durable: true,
+    });
+    await expect(pending).rejects.toThrow(/invalid activation selection/i);
+    expect(registeredHandlerCount(client)).toBe(0);
+    client.disconnectAll();
+  });
+
+  test("credential is write-only and daemon error text cannot echo it", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+    const submittedKey = "sk-provider-test-never-echo";
+
+    const pending = client.setProviderCredential(
+      server.id,
+      "deepseek-main",
+      submittedKey,
+    );
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toEqual({
+      type: "set_provider_credential",
+      request_id: outbound.request_id,
+      connection_id: "deepseek-main",
+      credential: submittedKey,
+    });
+
+    socket.receive({
+      type: "error",
+      request_id: outbound.request_id,
+      code: "credential_store_failed",
+      message: `credential ${submittedKey} failed`,
+    });
+    const error = (await pending.catch((reason) => reason as Error)) as Error;
+    expect(error.message).not.toContain(submittedKey);
+    expect(error.message).toMatch(/API key/i);
+    expect(registeredHandlerCount(client)).toBe(0);
     client.disconnectAll();
   });
 });

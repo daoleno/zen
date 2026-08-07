@@ -49,6 +49,32 @@ import {
   structuredInputMessage,
   type StructuredCommandReceipt,
 } from "./structuredWebSocketTransport";
+import {
+  ProviderError,
+  PROVIDER_ERROR_CODES,
+  ambiguousProviderMutation,
+  assertProviderActivationMatches,
+  classifyMutationPersistence,
+  invalidProviderReply,
+  newProviderRequestId,
+  offlineProviderError,
+  parseOptionalMutationPersistence,
+  parseProviderCredentialResult,
+  parseProviderModelsResult,
+  parseProviderSessionSelection,
+  parseProvidersSnapshot,
+  providerErrorFromPayload,
+  requireAppliedPersistence,
+  type CreateSessionResult,
+  type ProviderActivationResult,
+  type ProviderConnectionInput,
+  type ProviderCredentialResult,
+  type ProviderDefaultInput,
+  type ProviderModelsResult,
+  type ProviderSessionSelection,
+  type ProvidersMutationResult,
+  type ProvidersSnapshot,
+} from "./providers";
 
 type MessageHandler = (data: any) => void;
 
@@ -578,20 +604,17 @@ export class MultiServerWebSocketClient {
       name?: string;
     },
   ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<string>((resolve, reject) => {
+    const requestId = newProviderRequestId();
+    return new Promise<CreateSessionResult>((resolve, reject) => {
       const cleanup = () => {
-        if (timer) {
-          clearTimeout(timer);
-        }
+        if (timer) clearTimeout(timer);
         this.off("session_created", handleCreated);
         this.off("error", handleError);
       };
-
       const handleCreated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
           return;
+        }
         cleanup();
         if (
           payload.agent_session &&
@@ -601,25 +624,69 @@ export class MultiServerWebSocketClient {
             agent_session: payload.agent_session,
           });
         }
-        if (typeof payload.agent_id === "string" && payload.agent_id) {
-          resolve(payload.agent_id);
+        if (typeof payload.agent_id !== "string" || !payload.agent_id) {
+          reject(new Error("Daemon returned an invalid session id."));
           return;
         }
-        reject(new Error("Daemon returned an invalid session id."));
+        try {
+          const persistence = parseOptionalMutationPersistence(payload);
+          if (persistence) {
+            const classification = classifyMutationPersistence(persistence);
+            if (classification === "ambiguous") {
+              reject(ambiguousProviderMutation(persistence.warning));
+              return;
+            }
+            if (classification === "not_applied") {
+              reject(
+                providerErrorFromPayload({
+                  code: payload.code || PROVIDER_ERROR_CODES.invalid,
+                  message:
+                    payload.persistence_warning ||
+                    payload.message ||
+                    "Session was not created.",
+                }),
+              );
+              return;
+            }
+          }
+          resolve({
+            agentId: payload.agent_id,
+            persistence,
+          });
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid create_session payload.",
+                ),
+          );
+        }
       };
-
       const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
           return;
+        }
         cleanup();
+        if (payload.code) {
+          reject(providerErrorFromPayload(payload));
+          return;
+        }
         reject(new Error(payload.message || "Failed to create terminal."));
       };
-
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while creating a new terminal."));
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while creating a new terminal.",
+            "timeout",
+            true,
+          ),
+        );
       }, 10000);
-
       this.on("session_created", handleCreated);
       this.on("error", handleError);
       this.sendRequestNow(
@@ -631,6 +698,543 @@ export class MultiServerWebSocketClient {
           cwd: options?.cwd,
           command: options?.command,
           name: options?.name,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  listProviders(serverId: string): Promise<ProvidersSnapshot> {
+    return this.requestProvidersCatalog(
+      serverId,
+      { type: "list_providers" },
+      "Timed out while loading Providers.",
+      true,
+    ).then((result) => result.snapshot);
+  }
+
+  upsertProviderConnection(
+    serverId: string,
+    input: {
+      connection: ProviderConnectionInput;
+      revision: number;
+      operation?: "create" | "update";
+    },
+  ): Promise<ProvidersMutationResult> {
+    return this.requestProvidersCatalog(
+      serverId,
+      {
+        type: "upsert_provider_connection",
+        provider_connection: input.connection,
+        revision: input.revision,
+        operation: input.operation ?? "update",
+      },
+      "Timed out while saving Provider connection.",
+      false,
+    );
+  }
+
+  deleteProviderConnection(
+    serverId: string,
+    connectionId: string,
+    revision: number,
+  ): Promise<ProvidersMutationResult> {
+    return this.requestProvidersCatalog(
+      serverId,
+      {
+        type: "delete_provider_connection",
+        connection_id: connectionId,
+        revision,
+      },
+      "Timed out while deleting Provider connection.",
+      false,
+    );
+  }
+
+  setProviderDefault(
+    serverId: string,
+    input: ProviderDefaultInput,
+  ): Promise<ProvidersMutationResult> {
+    return this.requestProvidersCatalog(
+      serverId,
+      {
+        type: "set_provider_default",
+        client: input.client,
+        executor_id: input.client,
+        connection_id: input.connectionId,
+        ...(input.modelId?.trim()
+          ? { model_id: input.modelId.trim() }
+          : {}),
+        revision: input.revision,
+      },
+      "Timed out while updating Provider default.",
+      false,
+    );
+  }
+
+  discoverProviderModels(
+    serverId: string,
+    connectionId: string,
+  ): Promise<ProviderModelsResult> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("provider_models", handleModels);
+        this.off("error", handleError);
+      };
+      const handleModels = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const parsed = parseProviderModelsResult(payload, connectionId);
+          if (!parsed) {
+            reject(invalidProviderReply("Daemon returned invalid provider models."));
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error ? error.message : "Invalid models payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while discovering models.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 20000);
+      this.on("provider_models", handleModels);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "discover_provider_models",
+          request_id: requestId,
+          connection_id: connectionId,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getSessionProvider(
+    serverId: string,
+    agentId: string,
+  ): Promise<ProviderSessionSelection> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("session_provider", handleSelection);
+        this.off("error", handleError);
+      };
+      const handleSelection = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const selection = parseProviderSessionSelection(
+            payload.selection,
+            agentId,
+          );
+          if (!selection) {
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid session provider selection.",
+              ),
+            );
+            return;
+          }
+          resolve(selection);
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid session provider payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while loading session provider.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 15000);
+      this.on("session_provider", handleSelection);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "get_session_provider",
+          request_id: requestId,
+          agent_id: agentId,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  activateSessionProvider(
+    serverId: string,
+    input: { agentId: string; connectionId: string; modelId: string },
+  ): Promise<ProviderActivationResult> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("session_provider_activated", handleActivated);
+        this.off("error", handleError);
+      };
+      const handleActivated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const persistence = requireAppliedPersistence(payload);
+          const selection = parseProviderSessionSelection(
+            payload.selection,
+            input.agentId,
+          );
+          if (
+            !selection ||
+            !assertProviderActivationMatches(selection, input)
+          ) {
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid activation selection.",
+              ),
+            );
+            return;
+          }
+          resolve({ selection, persistence });
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid activation payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while switching model.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 20000);
+      this.on("session_provider_activated", handleActivated);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "activate_session_provider",
+          request_id: requestId,
+          agent_id: input.agentId,
+          connection_id: input.connectionId,
+          model_id: input.modelId,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  setProviderCredential(
+    serverId: string,
+    connectionId: string,
+    credential: string,
+  ): Promise<ProviderCredentialResult> {
+    let transientCredential = credential.trim();
+    if (!transientCredential) {
+      return Promise.reject(
+        new ProviderError(
+          PROVIDER_ERROR_CODES.invalid,
+          "Enter an API key.",
+          "credential",
+          false,
+        ),
+      );
+    }
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("provider_credential", handleResult);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const parsed = parseProviderCredentialResult(payload, connectionId);
+          if (!parsed) {
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid credential result.",
+              ),
+            );
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid credential payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload, { credentialWrite: true }));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while saving API key.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 15000);
+      this.on("provider_credential", handleResult);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "set_provider_credential",
+          request_id: requestId,
+          connection_id: connectionId,
+          credential: transientCredential,
+        },
+        cleanup,
+        reject,
+      );
+      transientCredential = "";
+    });
+  }
+
+  clearProviderCredential(
+    serverId: string,
+    connectionId: string,
+  ): Promise<ProviderCredentialResult> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("provider_credential", handleResult);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const parsed = parseProviderCredentialResult(payload, connectionId);
+          if (!parsed) {
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid credential result.",
+              ),
+            );
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid credential payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload, { credentialWrite: true }));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Timed out while clearing API key.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 15000);
+      this.on("provider_credential", handleResult);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "clear_provider_credential",
+          request_id: requestId,
+          connection_id: connectionId,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  private requestProvidersCatalog(
+    serverId: string,
+    body: Record<string, unknown>,
+    timeoutMessage: string,
+    isList: boolean,
+  ): Promise<ProvidersMutationResult> {
+    if (!this.connections.get(serverId)) {
+      return Promise.reject(offlineProviderError());
+    }
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("providers", handleCatalog);
+        this.off("error", handleError);
+      };
+      const handleCatalog = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const snapshot = parseProvidersSnapshot(payload);
+          if (!snapshot) {
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid Providers catalog.",
+              ),
+            );
+            return;
+          }
+          const persistence = isList
+            ? parseOptionalMutationPersistence(payload) ?? {
+                applied: true,
+                durable: true,
+                outcome: "applied",
+              }
+            : requireAppliedPersistence(payload);
+          if (!isList) {
+            // requireApplied already validated
+          } else if (persistence.ambiguous) {
+            reject(ambiguousProviderMutation(persistence.warning));
+            return;
+          }
+          resolve({ snapshot, catalog: snapshot, persistence });
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Daemon returned an invalid Providers payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            timeoutMessage,
+            "timeout",
+            true,
+          ),
+        );
+      }, 15000);
+      this.on("providers", handleCatalog);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          ...body,
+          request_id: requestId,
         },
         cleanup,
         reject,

@@ -1,5 +1,6 @@
 import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../../store/agents";
+import type { BrainAgentRef } from "../../../store/brain";
 import type { WorkItem } from "../../../store/work";
 import type {
   StoredAgentAliases,
@@ -23,6 +24,8 @@ interface UseTerminalScreenModelsInput {
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   interfaceRenderModes: StoredInterfaceRenderModes;
+  brainHostAgent?: BrainAgentRef | null;
+  brainHostServerId?: string | null;
 }
 
 export function useTerminalScreenModels({
@@ -37,6 +40,8 @@ export function useTerminalScreenModels({
   serverConnections,
   serverConnectionIssues,
   interfaceRenderModes,
+  brainHostAgent,
+  brainHostServerId,
 }: UseTerminalScreenModelsInput) {
   const theme = useTerminalThemeChrome();
   const route = useTerminalRouteModel({
@@ -50,6 +55,8 @@ export function useTerminalScreenModels({
     serverConnections,
     serverConnectionIssues,
     interfaceRenderModes,
+    brainHostAgent,
+    brainHostServerId,
   });
   const viewport = useTerminalViewportModel({
     hasTerminalRoute: route.hasTerminalRoute,

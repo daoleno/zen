@@ -3,7 +3,7 @@ import {
   ScrollView,
   StyleSheet,
 } from "react-native";
-import { AppButton, AppText } from "../ui";
+import { AppText } from "../ui";
 import { NewTerminalAdvancedForm } from "./NewTerminalAdvancedForm";
 import {
   NewTerminalQuickLaunchSection,
@@ -52,19 +52,16 @@ export function NewTerminalSheetContent({
   onNameChange,
   onPickDirectory,
   onSubmitAdvanced,
-  onCancel,
 }: NewTerminalSheetContentProps) {
   return (
     <ScrollView
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="always"
-      keyboardDismissMode="none"
-      bounces={false}
     >
-      <AppText variant="title" tone="primary" style={styles.title}>
+      <AppText variant="title" style={styles.title}>
         {title}
       </AppText>
-
       <NewTerminalQuickLaunchSection
         serverOptions={serverOptions}
         selectedServerId={selectedServerId}
@@ -79,14 +76,13 @@ export function NewTerminalSheetContent({
         onToggleAdvanced={onToggleAdvanced}
         onPickDirectory={onPickDirectory}
       />
-
       {advanced ? (
         <NewTerminalAdvancedForm
           cwd={cwd}
           command={command}
           name={name}
-          canSubmit={canSubmit}
           submitting={submitting}
+          canSubmit={canSubmit}
           canPickDirectory={canPickDirectory}
           onCwdChange={onCwdChange}
           onCommandChange={onCommandChange}
@@ -95,24 +91,16 @@ export function NewTerminalSheetContent({
           onSubmit={onSubmitAdvanced}
         />
       ) : null}
-
-      <AppButton
-        label="Cancel"
-        variant="ghost"
-        onPress={onCancel}
-        style={styles.cancelBtn}
-      />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  title: {
-    marginBottom: 14,
+  content: {
+    gap: 12,
+    paddingBottom: 8,
   },
-  cancelBtn: {
-    minHeight: 34,
-    borderRadius: 10,
-    marginTop: 8,
+  title: {
+    marginBottom: 4,
   },
 });

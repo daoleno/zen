@@ -57,6 +57,17 @@ import {
 } from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 import { wsClient } from "../../services/websocket";
+import {
+  blockCreateAfterAmbiguity,
+  bumpAgentSessionListReceipt,
+  clearCreateAmbiguityForServer,
+  isCreateBlockedByAmbiguity,
+  reconcileCreateSessionFailure,
+  reconcileCreateSessionSuccess,
+  shouldUnlockCreateAfterAmbiguity,
+  type CreateAmbiguityGateState,
+} from "../../services/providers";
+import { isAgentSessionListFreshForConnection } from "../../store/agents";
 import { makeSessionKey } from "../../services/sessionKeys";
 import { presentAgent } from "../../services/agentPresentation";
 import {
@@ -111,6 +122,10 @@ export default function InboxScreen() {
     string | null
   >(null);
   const [creatingServerId, setCreatingServerId] = useState<string | null>(null);
+  const [createAmbiguityBlocks, setCreateAmbiguityBlocks] =
+    useState<CreateAmbiguityGateState>({});
+  const [agentSessionListReceiptByServer, setAgentSessionListReceiptByServer] =
+    useState<Record<string, number>>({});
   const [serviceSheetVisible, setServiceSheetVisible] = useState(false);
   const [sessionServices, setSessionServices] = useState<
     DiscoveredSessionService[]
@@ -294,7 +309,13 @@ export default function InboxScreen() {
   const finishCreateTerminal = async (
     serverId: string,
     agentId: string,
-    hint?: { cwd: string; command: string; name: string; startedAt: number },
+    hint?: {
+      cwd: string;
+      command: string;
+      name: string;
+      startedAt: number;
+      durabilityWarning?: string | null;
+    },
   ) => {
     const sessionKey = makeSessionKey(serverId, agentId);
     const openedAt = Date.now();
@@ -310,6 +331,9 @@ export default function InboxScreen() {
             name: hint.name,
             startedAt: String(hint.startedAt),
             initialComposerFocus: "1",
+            ...(hint.durabilityWarning
+              ? { createDurabilityWarning: hint.durabilityWarning }
+              : {}),
           }
         : { id: agentId, serverId },
     });
@@ -321,6 +345,51 @@ export default function InboxScreen() {
     );
     return onServer[0]?.cwd?.trim() || "";
   };
+
+  useEffect(() => {
+    const onAgentSessionList = (payload: { serverId?: string }) => {
+      const serverId = payload?.serverId?.trim();
+      if (!serverId) return;
+      setAgentSessionListReceiptByServer((current) =>
+        bumpAgentSessionListReceipt(current, serverId),
+      );
+    };
+    wsClient.on("agent_session_list", onAgentSessionList);
+    return () => {
+      wsClient.off("agent_session_list", onAgentSessionList);
+    };
+  }, []);
+
+  useEffect(() => {
+    setCreateAmbiguityBlocks((current) => {
+      let next = current;
+      for (const [serverId, block] of Object.entries(current)) {
+        const connectionGeneration =
+          state.connectionGenerationByServer[serverId] ?? 0;
+        const listReceipt = agentSessionListReceiptByServer[serverId] ?? 0;
+        const listFresh = isAgentSessionListFreshForConnection(
+          state,
+          serverId,
+        );
+        if (
+          shouldUnlockCreateAfterAmbiguity({
+            block,
+            connectionGeneration,
+            listReceipt,
+            listFreshForConnection: listFresh,
+          })
+        ) {
+          next = clearCreateAmbiguityForServer(next, serverId);
+        }
+      }
+      return next;
+    });
+  }, [
+    agentSessionListReceiptByServer,
+    state.agentSessionListGenerationByServer,
+    state.connectionGenerationByServer,
+    state.serverConnections,
+  ]);
 
   const createTerminalOnServer = async (input: {
     serverId: string;
@@ -338,19 +407,87 @@ export default function InboxScreen() {
     }
 
     setCreateSheetVisible(false);
+    const connectionGeneration =
+      state.connectionGenerationByServer[server.id] ?? 0;
+    const listReceipt = agentSessionListReceiptByServer[server.id] ?? 0;
+    const listFresh = isAgentSessionListFreshForConnection(state, server.id);
+    if (
+      isCreateBlockedByAmbiguity({
+        blocks: createAmbiguityBlocks,
+        serverId: server.id,
+        connectionGeneration,
+        listReceipt,
+        listFreshForConnection: listFresh,
+      })
+    ) {
+      wsClient.listAgentSessions(server.id);
+      Alert.alert(
+        "Refresh required",
+        "Previous create result was ambiguous. Waiting for a confirmed session list before creating another terminal.",
+      );
+      return;
+    }
     setCreatingServerId(server.id);
+    let dispatched = false;
     try {
       const startedAt = Date.now();
-      const agentId = await wsClient.createSession(server.id, {
+      const pending = wsClient.createSession(server.id, {
         cwd: input.cwd,
         command: input.command,
         name: input.name,
       });
-      await finishCreateTerminal(server.id, agentId, { ...input, startedAt });
+      dispatched = true;
+      const created = await pending;
+      const reconciled = reconcileCreateSessionSuccess(created);
+      if (reconciled.kind === "ambiguous" || reconciled.kind === "failed") {
+        if (reconciled.requiresReconcileBeforeCreate) {
+          setCreateAmbiguityBlocks((current) =>
+            blockCreateAfterAmbiguity(current, {
+              serverId: server.id,
+              connectionGeneration:
+                state.connectionGenerationByServer[server.id] ?? 0,
+              listReceipt: agentSessionListReceiptByServer[server.id] ?? 0,
+            }),
+          );
+          wsClient.listAgentSessions(server.id);
+        }
+        Alert.alert(
+          reconciled.kind === "ambiguous"
+            ? "Refresh required"
+            : "Could not create terminal",
+          reconciled.message,
+        );
+        return;
+      }
+      setCreateAmbiguityBlocks((current) =>
+        clearCreateAmbiguityForServer(current, server.id),
+      );
+      await finishCreateTerminal(server.id, reconciled.agentId, {
+        ...input,
+        startedAt,
+        durabilityWarning: reconciled.durabilityWarning,
+      });
     } catch (error: any) {
+      const reconciled = reconcileCreateSessionFailure(error, dispatched);
+      if (
+        reconciled.kind === "ambiguous" ||
+        (reconciled.kind === "failed" && reconciled.requiresReconcileBeforeCreate)
+      ) {
+        setCreateAmbiguityBlocks((current) =>
+          blockCreateAfterAmbiguity(current, {
+            serverId: server.id,
+            connectionGeneration:
+              state.connectionGenerationByServer[server.id] ?? 0,
+            listReceipt: agentSessionListReceiptByServer[server.id] ?? 0,
+          }),
+        );
+        wsClient.listAgentSessions(server.id);
+      }
       Alert.alert(
-        "Could not create terminal",
-        error?.message || "Try reconnecting to that daemon first.",
+        reconciled.kind === "ambiguous"
+          ? "Refresh required"
+          : "Could not create terminal",
+        reconciled.kind === "navigable" ? "Create failed." : reconciled.message,
       );
     } finally {
       setCreatingServerId(null);

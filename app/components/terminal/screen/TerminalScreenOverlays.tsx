@@ -1,9 +1,21 @@
 import React from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
+import { TypeScale } from "../../../constants/tokens";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
+import type {
+  ProviderConnection,
+  ProviderError,
+  ProviderModel,
+  ProviderSessionSelection,
+} from "../../../services/providers";
+import {
+  SessionModelSheet,
+  type SessionModelChoice,
+} from "../../providers/SessionModelSheet";
 import { GitDiffSheet } from "../GitDiffSheet";
 import { NewTerminalSheet } from "../NewTerminalSheet";
 import { SessionResourceSheet } from "../SessionResourceSheet";
@@ -20,6 +32,20 @@ export interface TerminalScreenOverlaysProps {
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
+  routeSheetVisible: boolean;
+  routeSheetLoading: boolean;
+  routeSheetActivating: boolean;
+  routeSheetError?: ProviderError | string | null;
+  routeSheetDurabilityWarning?: string | null;
+  routeSheetRequiresRefresh?: boolean;
+  routeSheetNonRouted?: boolean;
+  routeSheetManagedReadOnly?: boolean;
+  routeSheetActivationEnabled?: boolean;
+  routeSheetSelection?: ProviderSessionSelection | null;
+  routeSheetConnections: ProviderConnection[];
+  routeSheetModelsByConnection: Record<string, ProviderModel[]>;
+  createDurabilityWarning?: string | null;
+  onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
   menuVisible: boolean;
   menuPosition: { left: number; top: number };
@@ -38,6 +64,11 @@ export interface TerminalScreenOverlaysProps {
   theme: TerminalThemePalette;
   onCloseResourceSheet(): void;
   onRetryResourceSheet(): void;
+  onCloseRouteSheet(): void;
+  onRetryRouteSheet(): void;
+  onActivateSessionModel(choice: SessionModelChoice): void;
+  onOpenModel?(): void;
+  onOpenProvidersSettings(): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
   onRename(): void;
@@ -56,6 +87,20 @@ export function TerminalScreenOverlays({
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
+  routeSheetVisible,
+  routeSheetLoading,
+  routeSheetActivating,
+  routeSheetError,
+  routeSheetDurabilityWarning,
+  routeSheetRequiresRefresh,
+  routeSheetNonRouted,
+  routeSheetManagedReadOnly,
+  routeSheetActivationEnabled,
+  routeSheetSelection,
+  routeSheetConnections,
+  routeSheetModelsByConnection,
+  createDurabilityWarning,
+  onDismissCreateDurabilityWarning,
   creatingSession,
   menuVisible,
   menuPosition,
@@ -74,6 +119,11 @@ export function TerminalScreenOverlays({
   theme,
   onCloseResourceSheet,
   onRetryResourceSheet,
+  onCloseRouteSheet,
+  onRetryRouteSheet,
+  onActivateSessionModel,
+  onOpenModel,
+  onOpenProvidersSettings,
   onNewTerminal,
   onCloseMenu,
   onRename,
@@ -88,6 +138,31 @@ export function TerminalScreenOverlays({
 }: TerminalScreenOverlaysProps) {
   return (
     <>
+      {createDurabilityWarning ? (
+        <View
+          style={[
+            styles.durabilityBanner,
+            { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
+          ]}
+          accessibilityRole="summary"
+        >
+          <Text style={[styles.durabilityText, { color: chrome.textMuted }]}>
+            {createDurabilityWarning}
+          </Text>
+          {onDismissCreateDurabilityWarning ? (
+            <Pressable
+              onPress={onDismissCreateDurabilityWarning}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss durability warning"
+            >
+              <Text style={[styles.durabilityDismiss, { color: chrome.accent }]}>
+                Dismiss
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
       <SessionResourceSheet
         visible={resourceSheetVisible}
         loading={resourceSheetLoading}
@@ -96,6 +171,25 @@ export function TerminalScreenOverlays({
         chrome={chrome}
         onClose={onCloseResourceSheet}
         onRetry={onRetryResourceSheet}
+      />
+
+      <SessionModelSheet
+        visible={routeSheetVisible}
+        loading={routeSheetLoading}
+        activating={routeSheetActivating}
+        error={routeSheetError}
+        durabilityWarning={routeSheetDurabilityWarning}
+        requiresRefreshBeforeMutation={routeSheetRequiresRefresh}
+        managedReadOnly={routeSheetManagedReadOnly}
+        activationEnabled={routeSheetActivationEnabled}
+        selection={routeSheetSelection}
+        connections={routeSheetConnections}
+        modelsByConnection={routeSheetModelsByConnection}
+        chrome={chrome}
+        onClose={onCloseRouteSheet}
+        onRetry={onRetryRouteSheet}
+        onOpenProvidersSettings={onOpenProvidersSettings}
+        onActivate={onActivateSessionModel}
       />
 
       <TerminalActionPopover
@@ -114,6 +208,7 @@ export function TerminalScreenOverlays({
         onNewTerminal={onNewTerminal}
         onRename={onRename}
         onOpenLinkedWork={onOpenLinkedWork}
+        onOpenModel={onOpenModel}
         onToggleRenderMode={onToggleRenderMode}
         onTerminate={onTerminate}
       />
@@ -147,3 +242,23 @@ export function TerminalScreenOverlays({
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  durabilityBanner: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  durabilityText: {
+    ...TypeScale.caption,
+    lineHeight: 16,
+  },
+  durabilityDismiss: {
+    ...TypeScale.label,
+  },
+});

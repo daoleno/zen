@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/work"
 )
 
@@ -50,7 +52,9 @@ func TestAgentSessionWireUsesConfiguredExecutorCapabilityForGenericCommand(t *te
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(payload), `"id":"future-1"`) ||
-		!strings.Contains(string(payload), `"capabilities":{"structured_events":true}`) {
+		!strings.Contains(string(payload), `"structured_events":true`) ||
+		!strings.Contains(string(payload), `"model_profile_managed":false`) ||
+		!strings.Contains(string(payload), `"model_profile_active_switch":false`) {
 		t.Fatalf("agent wire payload = %s", payload)
 	}
 }
@@ -86,5 +90,156 @@ func TestAgentSessionWireDoesNotInferStructuredProviderFromShellTitle(t *testing
 		if wire == nil || wire.Capabilities.StructuredEvents {
 			t.Fatalf("plain shell titled %q capabilities = %#v", name, wire)
 		}
+	}
+}
+
+func TestAgentSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
+	root := t.TempDir()
+	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
+		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
+		RoutesPath:   filepath.Join(root, "route-bindings.json"),
+		ListenerPath: filepath.Join(root, "route-listener.json"),
+		Lookup:       func(string) (string, bool) { return "ready", true },
+		Verifier:     wsProfileVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	srv := &Server{}
+	srv.SetModelProfiles(owner)
+
+	// Non-routed: no binding — even Codex-named sessions stay unauthorized.
+	bypass := srv.agentSessionWire(&classifier.Agent{ID: "shell:@1", Name: "Codex", Command: "codex"})
+	if bypass.Capabilities.ModelProfileManaged || bypass.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("non-routed must not authorize: %#v", bypass.Capabilities)
+	}
+
+	routedProfile := modelprofiles.Profile{
+		ID: "codex-routed", Name: "Routed", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "acme", ProviderLabel: "Acme",
+		Protocol: modelprofiles.ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "up-1",
+		ClientModelProvenance: modelprofiles.ContractProvenanceBuiltinCatalog,
+		BaseURL:               "https://gateway.example/v1",
+		AuthMode:              modelprofiles.AuthModeBearerEnv,
+		CredentialEnv:         "ACME_KEY",
+	}
+	if _, err := owner.UpsertProfile(routedProfile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, routedProfile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "tmux:@routed"); err != nil {
+		t.Fatal(err)
+	}
+	routed := srv.agentSessionWire(&classifier.Agent{ID: "tmux:@routed", Name: "zsh notes", Command: "zsh"})
+	if !routed.Capabilities.ModelProfileManaged || !routed.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("routed capabilities %#v", routed.Capabilities)
+	}
+	// Must not infer from command/name — zsh command with route still authorized by table only.
+	if routed.Capabilities.StructuredEvents {
+		t.Fatal("zsh must not gain structured_events from route presence")
+	}
+
+	nativeProfile := modelprofiles.Profile{
+		ID: "codex-native", Name: "Native", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "openai", ProviderLabel: "OpenAI",
+		Protocol: modelprofiles.ProtocolOpenAINative, ClientModel: "gpt-5", Model: "gpt-5",
+		ClientModelProvenance: modelprofiles.ContractProvenanceBuiltinCatalog,
+		AuthMode:              modelprofiles.AuthModeNone,
+	}
+	if _, err := owner.UpsertProfile(nativeProfile, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	nativePlan, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, nativeProfile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(nativePlan.ProvisionalID, "tmux:@native"); err != nil {
+		t.Fatal(err)
+	}
+	native := srv.agentSessionWire(&classifier.Agent{ID: "tmux:@native", Name: "Codex", Command: "codex"})
+	if !native.Capabilities.ModelProfileManaged || native.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("native managed=true switch=false: %#v", native.Capabilities)
+	}
+
+	anthropicProfile := modelprofiles.Profile{
+		ID: "claude-main", Name: "Claude", ExecutorID: modelprofiles.ExecutorClaude,
+		ProviderID: "anthropic", ProviderLabel: "Anthropic",
+		Protocol: modelprofiles.ProtocolAnthropicMessages, ClientModel: "claude-sonnet-4-6", Model: "claude-sonnet-4-6",
+		ClientModelProvenance: modelprofiles.ContractProvenanceBuiltinCatalog,
+		BaseURL:               "https://api.anthropic.com",
+		AuthMode:              modelprofiles.AuthModeBearerEnv,
+		CredentialEnv:         "ANTHROPIC_API_KEY",
+	}
+	if _, err := owner.UpsertProfile(anthropicProfile, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	anthropicPlan, err := owner.PrepareLaunch(modelprofiles.ExecutorClaude, anthropicProfile.ID, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(anthropicPlan.ProvisionalID, "tmux:@anthropic"); err != nil {
+		t.Fatal(err)
+	}
+	anthropic := srv.agentSessionWire(&classifier.Agent{ID: "tmux:@anthropic", Name: "notes", Command: "zsh"})
+	if !anthropic.Capabilities.ModelProfileManaged || !anthropic.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("anthropic managed=true switch=true: %#v", anthropic.Capabilities)
+	}
+
+	// List projection matches per-session wire.
+	list := srv.agentSessionsWire([]*classifier.Agent{
+		{ID: "tmux:@routed", Command: "zsh"},
+		{ID: "tmux:@native", Command: "codex"},
+		{ID: "tmux:@anthropic", Command: "zsh"},
+		{ID: "shell:@1", Command: "codex"},
+	})
+	if len(list) != 4 {
+		t.Fatalf("list len=%d", len(list))
+	}
+	if !list[0].Capabilities.ModelProfileManaged || !list[0].Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("list responses %#v", list[0].Capabilities)
+	}
+	if !list[1].Capabilities.ModelProfileManaged || list[1].Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("list native %#v", list[1].Capabilities)
+	}
+	if !list[2].Capabilities.ModelProfileManaged || !list[2].Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("list anthropic %#v", list[2].Capabilities)
+	}
+	if list[3].Capabilities.ModelProfileManaged || list[3].Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("list ordinary %#v", list[3].Capabilities)
+	}
+
+	// Restart projection must match (route table reload).
+	profiles, routes := owner.Store().Path(), owner.RoutesFile().Path()
+	listener := filepath.Join(root, "route-listener.json")
+	addr := owner.ListenAddr()
+	_ = owner.Close()
+	owner2, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
+		ProfilesPath: profiles, RoutesPath: routes, ListenerPath: listener,
+		Lookup: func(string) (string, bool) { return "ready", true }, Verifier: wsProfileVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner2.Close() })
+	if owner2.ListenAddr() != addr {
+		t.Fatalf("listener %q -> %q", addr, owner2.ListenAddr())
+	}
+	srv2 := &Server{}
+	srv2.SetModelProfiles(owner2)
+	restarted := srv2.agentSessionWire(&classifier.Agent{ID: "tmux:@routed", Command: "zsh"})
+	if !restarted.Capabilities.ModelProfileManaged || !restarted.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("restart routed %#v", restarted.Capabilities)
+	}
+	restartNative := srv2.agentSessionWire(&classifier.Agent{ID: "tmux:@native", Command: "codex"})
+	if !restartNative.Capabilities.ModelProfileManaged || restartNative.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("restart native %#v", restartNative.Capabilities)
+	}
+	restartAnthropic := srv2.agentSessionWire(&classifier.Agent{ID: "tmux:@anthropic", Command: "zsh"})
+	if !restartAnthropic.Capabilities.ModelProfileManaged || !restartAnthropic.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("restart anthropic %#v", restartAnthropic.Capabilities)
 	}
 }
