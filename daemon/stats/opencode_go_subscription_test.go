@@ -184,7 +184,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}, nil)
 		defer server.Close()
 
-		usage, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now)
+		usage, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}, nil)
 		defer server.Close()
 
-		if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err != nil {
+		if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err != nil {
 			t.Fatal(err)
 		}
 		if len(attempts) != 2 || attempts[0] != "minimax-m3" || attempts[1] != "deepseek-v4-flash" {
@@ -256,7 +256,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}, nil)
 		defer server.Close()
 
-		if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err != nil {
+		if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -268,7 +268,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}, nil)
 		defer server.Close()
 
-		if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err == nil {
+		if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err == nil {
 			t.Fatal("expected 2xx-only challenge to fail closed")
 		}
 	})
@@ -280,7 +280,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}, nil)
 		defer server.Close()
 
-		if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err == nil {
+		if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err == nil {
 			t.Fatal("expected auth failure to fail closed")
 		}
 	})
@@ -301,7 +301,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 					_, _ = w.Write([]byte(tt.body))
 				}, nil)
 				defer server.Close()
-				if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err == nil {
+				if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err == nil {
 					t.Fatal("expected response to fail closed")
 				}
 			})
@@ -325,7 +325,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 					_, _ = w.Write([]byte(tt.body))
 				}, nil)
 				defer server.Close()
-				if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err == nil {
+				if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err == nil {
 					t.Fatal("expected response to fail closed")
 				}
 			})
@@ -600,8 +600,8 @@ func TestFetchOpenCodeGoServerUsage(t *testing.T) {
 		}))
 		defer server.Close()
 
-		windows := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
-		if len(windows) != 3 {
+		windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
+		if status != openCodeGoServerUsageOK || len(windows) != 3 {
 			t.Fatalf("windows = %#v", windows)
 		}
 	})
@@ -616,6 +616,7 @@ func TestFetchOpenCodeGoServerUsage(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Fatalf("first request method = %s, want GET", r.Method)
 				}
+				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"result":{}}`))
 				return
 			}
@@ -641,8 +642,8 @@ func TestFetchOpenCodeGoServerUsage(t *testing.T) {
 		}))
 		defer server.Close()
 
-		windows := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
-		if len(windows) != 2 {
+		windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
+		if status != openCodeGoServerUsageOK || len(windows) != 2 {
 			t.Fatalf("windows = %#v", windows)
 		}
 		if postBody != `["wrk_TEST123"]` {
@@ -673,7 +674,7 @@ func TestFetchOpenCodeGoServerUsage(t *testing.T) {
 					_, _ = w.Write([]byte(tt.body))
 				}))
 				defer server.Close()
-				if windows := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now); len(windows) != 0 {
+				if windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now); status != openCodeGoServerFailed || len(windows) != 0 {
 					t.Fatalf("windows = %#v, want none", windows)
 				}
 			})
@@ -681,7 +682,7 @@ func TestFetchOpenCodeGoServerUsage(t *testing.T) {
 	})
 
 	t.Run("nil credential yields no request", func(t *testing.T) {
-		if windows := fetchOpenCodeGoServerUsage(context.Background(), failingOpenCodeGoClient{}, "https://example.invalid/_server", nil, now); len(windows) != 0 {
+		if windows, status := fetchOpenCodeGoServerUsage(context.Background(), failingOpenCodeGoClient{}, "https://example.invalid/_server", nil, now); status != openCodeGoServerFailed || len(windows) != 0 {
 			t.Fatalf("windows = %#v", windows)
 		}
 	})
@@ -952,10 +953,165 @@ func TestOpenCodeGoChallengeAttemptBounding(t *testing.T) {
 	}, nil)
 	defer server.Close()
 
-	if _, err := fetchOpenCodeGoSubscription(context.Background(), server.Client(), server.URL, server.URL, server.URL, auth, nil, now); err == nil {
+	if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err == nil {
 		t.Fatal("expected challenge to fail closed")
 	}
 	if attempts != opencodeGoChallengeMaxAttempts || len(modelIDs) != opencodeGoChallengeMaxAttempts {
 		t.Fatalf("attempts = %d models = %v, want %d", attempts, modelIDs, opencodeGoChallengeMaxAttempts)
 	}
+}
+
+func TestCollectOpenCodeGoDashboardConfirmsWithoutAuthEntry(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("OPENCODE_GO_WORKSPACE_ID", "wrk_COLLECT")
+	t.Setenv("OPENCODE_GO_AUTH_COOKIE", "cookie-collect")
+
+	for _, tt := range []struct {
+		name     string
+		authFile string // "" = absent, otherwise contents
+	}{
+		{name: "absent auth file"},
+		{name: "malformed auth file", authFile: `{`},
+		{name: "zen only auth", authFile: `{"opencode":{"type":"api","key":"zen-key"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tt.authFile != "" {
+				writeOpenCodeGoAuthFixture(t, home, tt.authFile)
+			}
+			var modelsCalls int
+			server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"deepseek-v4-flash"}]}`, http.StatusOK, nil, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(openCodeGoServerPlainFixture))
+			})
+			defer server.Close()
+			// models route is never reached when dashboard evidence succeeds
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Server-Id") != "" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(openCodeGoServerPlainFixture))
+					return
+				}
+				modelsCalls++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`boom`))
+			})
+
+			c := &Collector{opencodeGoClient: server.Client(), opencodeGoEndpoint: server.URL, opencodeGoChatEndpoint: server.URL, opencodeGoServerEndpoint: server.URL, opencodeGoTimeout: time.Second, now: time.Now}
+			got := c.collectOpenCodeGoSubscription(home)
+			if got == nil || !got.UsageAvailable || len(got.Windows) != 3 {
+				t.Fatalf("dashboard must confirm without auth entry: %#v", got)
+			}
+			if modelsCalls != 0 {
+				t.Fatalf("models endpoint called %d times despite dashboard evidence", modelsCalls)
+			}
+		})
+	}
+}
+
+func TestCollectOpenCodeGoDashboardFailsWithoutAuthNoCard(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("OPENCODE_GO_WORKSPACE_ID", "wrk_COLLECT")
+	t.Setenv("OPENCODE_GO_AUTH_COOKIE", "cookie-collect")
+	home := t.TempDir()
+	server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"deepseek-v4-flash"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}`))
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`<html>login</html>`))
+	})
+	defer server.Close()
+
+	c := &Collector{opencodeGoClient: server.Client(), opencodeGoEndpoint: server.URL, opencodeGoChatEndpoint: server.URL, opencodeGoServerEndpoint: server.URL, opencodeGoTimeout: time.Second, now: time.Now}
+	if got := c.collectOpenCodeGoSubscription(home); got != nil {
+		t.Fatalf("dashboard failure without auth must not confirm: %#v", got)
+	}
+}
+
+func TestFetchOpenCodeGoServerUsagePostBoundary(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	cred := &openCodeGoDashboardCredential{workspaceID: "wrk_TEST123", authCookie: "cookie-value", source: "test"}
+
+	t.Run("post fallback only after valid 200 without usage", func(t *testing.T) {
+		for _, tt := range []struct {
+			name        string
+			getStatus   int
+			getBody     string
+			getType     string
+			postBody    string
+			wantCalls   int
+			wantStatus  openCodeGoServerStatus
+			wantWindows int
+		}{
+			{name: "get 200 no usage then post success", getStatus: 200, getBody: `{"result":{}}`, getType: "application/json", postBody: openCodeGoServerNoMonthlyFixture, wantCalls: 2, wantStatus: openCodeGoServerUsageOK, wantWindows: 2},
+			{name: "get 200 no usage then post no usage", getStatus: 200, getBody: `{}`, getType: "application/json", postBody: `{}`, wantCalls: 2, wantStatus: openCodeGoServerNoUsage},
+			{name: "get 401 no post", getStatus: 401, getBody: `<html>login</html>`, getType: "text/html", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get 403 no post", getStatus: 403, getBody: `forbidden`, getType: "text/plain", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get 429 no post", getStatus: 429, getBody: `<html>too many</html>`, getType: "text/html", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get 500 no post", getStatus: 500, getBody: `boom`, getType: "text/plain", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get signed out no post", getStatus: 200, getBody: `<html>Sign in with your account</html>`, getType: "text/html", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get null no post", getStatus: 200, getBody: `null`, getType: "application/json", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get wrapper null no post", getStatus: 200, getBody: `{"data":null}`, getType: "application/json", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get html with embedded usage no post", getStatus: 200, getBody: `<html><script>{"rollingUsage":{"usagePercent":12.5,"resetInSec":3600},"weeklyUsage":{"usagePercent":25,"resetInSec":7200}}</script></html>`, getType: "text/html", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get missing content type no post", getStatus: 200, getBody: openCodeGoServerPlainFixture, getType: "", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+			{name: "get octet stream no post", getStatus: 200, getBody: openCodeGoServerPlainFixture, getType: "application/octet-stream", wantCalls: 1, wantStatus: openCodeGoServerFailed},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				calls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if tt.getType != "" {
+						w.Header().Set("Content-Type", tt.getType)
+					}
+					if calls == 1 {
+						w.WriteHeader(tt.getStatus)
+						_, _ = w.Write([]byte(tt.getBody))
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(tt.postBody))
+				}))
+				defer server.Close()
+
+				windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
+				if status != tt.wantStatus {
+					t.Fatalf("status = %v, want %v (windows %#v)", status, tt.wantStatus, windows)
+				}
+				if len(windows) != tt.wantWindows {
+					t.Fatalf("windows = %#v, want %d", windows, tt.wantWindows)
+				}
+				if calls != tt.wantCalls {
+					t.Fatalf("calls = %d, want %d", calls, tt.wantCalls)
+				}
+			})
+		}
+	})
+
+	t.Run("text/javascript content type accepted", func(t *testing.T) {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "text/javascript")
+			_, _ = w.Write([]byte(openCodeGoServerSolidFixture))
+		}))
+		defer server.Close()
+		windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
+		if status != openCodeGoServerUsageOK || len(windows) != 3 || calls != 1 {
+			t.Fatalf("status = %v windows = %#v calls = %d", status, windows, calls)
+		}
+	})
+
+	t.Run("application/json with charset accepted", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(openCodeGoServerPlainFixture))
+		}))
+		defer server.Close()
+		windows, status := fetchOpenCodeGoServerUsage(context.Background(), server.Client(), server.URL, cred, now)
+		if status != openCodeGoServerUsageOK || len(windows) != 3 {
+			t.Fatalf("status = %v windows = %#v", status, windows)
+		}
+	})
 }

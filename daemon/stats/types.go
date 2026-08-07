@@ -29,11 +29,12 @@ type CodexUsageWindow struct {
 }
 
 // OpenCodeGoSubscriptionUsage describes an OpenCode Go subscription confirmed
-// against the official OpenCode Go API. UsageAvailable is true only when the
-// authenticated dashboard page yielded at least one usage window; it is never
-// guessed or reused from an older refresh. Window limits are the plan facts
-// published in the OpenCode Go documentation ($12/5h, $30/week, $60/month).
-// The projection contains no credentials, account identifiers, or cookies.
+// against the official OpenCode Go services. UsageAvailable is true only when
+// the authenticated subscription server-function response yielded at least
+// one usage window in the same refresh; it is never guessed or reused from an
+// older refresh. Window limits are the plan facts published in the OpenCode
+// Go documentation ($12/5h, $30/week, $60/month). The projection contains no
+// credentials, account identifiers, or cookies.
 type OpenCodeGoSubscriptionUsage struct {
 	AuthKind       string                  `json:"authKind"`
 	State          string                  `json:"state"`

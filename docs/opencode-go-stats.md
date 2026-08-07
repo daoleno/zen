@@ -96,9 +96,18 @@ User-Agent: <browser user agent>
 ```
 
 The workspace ID travels as a URL-encoded JSON array in the `args` query
-parameter. When the GET returns 200 but the body carries no usage windows, a
-POST to `/_server` is attempted with the same headers and a JSON body of
-`["<workspaceId>"]`. Every request uses a fresh `X-Server-Instance`.
+parameter. When the GET returns a 200 server-function response without usage
+windows, a POST to `/_server` is attempted with the same headers and a JSON
+body of `["<workspaceId>"]`. Every request uses a fresh `X-Server-Instance`.
+The POST fallback runs **only** after a valid 200 response without usage;
+transport errors, non-200 statuses, auth failures, signed-out text, explicit
+null payloads (including wrapper nulls such as `{"data":null}`), and
+unacceptable content types all fail closed immediately with no second
+request.
+
+The response Content-Type is enforced: only `application/json`,
+`text/javascript`, and `application/javascript` are accepted. `text/html` is
+always rejected, even when the body embeds plausible usage fields.
 
 The response is `text/javascript` with serialized objects. Parsing tries
 strict JSON first (top-level or under `data`/`result`/`usage`/`billing`/
@@ -112,11 +121,15 @@ Fail-closed rules:
 - `401`/`403`, `429`, `5xx`, and any non-200 response yield no usage.
 - Signed-out text (`login`, `sign in`, `auth/authorize`,
   `not associated with an account`, `actor of type "public"`), explicit
-  `null` payloads, and malformed responses yield no usage.
-- Page HTML is never treated as success evidence.
+  `null` payloads (including wrapper nulls), and malformed responses yield no
+  usage.
+- Page HTML is never treated as success evidence: `text/html` responses fail
+  closed regardless of contents.
 - A server-function success (at least the rolling window parsed) confirms
-  the subscription itself; otherwise the non-generating invalid-request
-  auth challenge below is required for the card.
+  the subscription on its own — it does not depend on the OpenCode auth
+  entry, the API key, the models endpoint, or the challenge. Only when the
+  dashboard yields nothing is the non-generating invalid-request auth
+  challenge below required for the card.
 
 The legacy `/workspace/<id>/go` HTML-page scrape is explicitly deprecated and
 is not used; the server-function contract above is the only dashboard usage

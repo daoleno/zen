@@ -251,14 +251,36 @@ func openCodeGoDashboardCredentialFromFile(path string) *openCodeGoDashboardCred
 	return &openCodeGoDashboardCredential{workspaceID: workspaceID, authCookie: authCookie, source: path}
 }
 
-// fetchOpenCodeGoSubscription confirms the OpenCode Go subscription with the
-// non-generating invalid-request auth challenge (and, when dashboard
-// credentials are configured, the authenticated subscription server-function
-// response). The models endpoint is only used to discover current Go models
-// and is never treated as evidence. The projection is produced only when the
-// subscription is positively confirmed; otherwise an error is returned so no
-// card exists.
-func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClient, modelsEndpoint, chatEndpoint, serverEndpoint string, auth openCodeGoAuthMaterial, dashboard *openCodeGoDashboardCredential, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
+// fetchOpenCodeGoServerEvidence confirms the OpenCode Go subscription purely
+// from the authenticated subscription server-function response: a valid
+// dashboard credential whose _server response yields usage windows (the
+// rolling window at minimum) is independent evidence of the Go subscription.
+// It does not require the OpenCode auth entry, the API key, the public models
+// endpoint, or the auth challenge.
+func fetchOpenCodeGoServerEvidence(ctx context.Context, client openCodeGoHTTPClient, serverEndpoint string, dashboard *openCodeGoDashboardCredential, now time.Time) (*OpenCodeGoSubscriptionUsage, bool) {
+	if dashboard == nil || strings.TrimSpace(dashboard.workspaceID) == "" || strings.TrimSpace(dashboard.authCookie) == "" {
+		return nil, false
+	}
+	windows, status := fetchOpenCodeGoServerUsage(ctx, client, serverEndpoint, dashboard, now)
+	if status != openCodeGoServerUsageOK || len(windows) == 0 {
+		return nil, false
+	}
+	return &OpenCodeGoSubscriptionUsage{
+		AuthKind:       "official",
+		State:          "available",
+		Plan:           "go",
+		FetchedAt:      now.UTC().Format(time.RFC3339),
+		UsageAvailable: true,
+		Windows:        windows,
+	}, true
+}
+
+// fetchOpenCodeGoSubscriptionViaAPI confirms the OpenCode Go subscription with
+// the non-generating invalid-request auth challenge. The models endpoint is
+// only used to discover current Go models and is never treated as evidence.
+// The projection is produced only when the challenge positively confirms the
+// subscription; otherwise an error is returned so no card exists.
+func fetchOpenCodeGoSubscriptionViaAPI(ctx context.Context, client openCodeGoHTTPClient, modelsEndpoint, chatEndpoint string, auth openCodeGoAuthMaterial, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
 	if auth.kind != "official" || strings.TrimSpace(auth.token) == "" {
 		return nil, errors.New("official OpenCode Go authentication required")
 	}
@@ -266,27 +288,15 @@ func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClien
 	if err != nil {
 		return nil, err
 	}
-
-	usage := &OpenCodeGoSubscriptionUsage{
+	if !runOpenCodeGoAuthChallenge(ctx, client, chatEndpoint, auth, models) {
+		return nil, errors.New("opencode go subscription not confirmed")
+	}
+	return &OpenCodeGoSubscriptionUsage{
 		AuthKind:  "official",
 		State:     "available",
 		Plan:      "go",
 		FetchedAt: now.UTC().Format(time.RFC3339),
-	}
-	windows := fetchOpenCodeGoServerUsage(ctx, client, serverEndpoint, dashboard, now)
-	if len(windows) > 0 {
-		usage.UsageAvailable = true
-		usage.Windows = windows
-	}
-
-	confirmed := len(windows) > 0
-	if !confirmed {
-		confirmed = runOpenCodeGoAuthChallenge(ctx, client, chatEndpoint, auth, models)
-	}
-	if !confirmed {
-		return nil, errors.New("opencode go subscription not confirmed")
-	}
-	return usage, nil
+	}, nil
 }
 
 // discoverOpenCodeGoModels fetches the currently served Go model IDs from the
@@ -404,34 +414,58 @@ func runOpenCodeGoAuthChallenge(ctx context.Context, client openCodeGoHTTPClient
 	return false
 }
 
+// openCodeGoServerStatus classifies a subscription server-function exchange.
+type openCodeGoServerStatus int
+
+const (
+	// openCodeGoServerFailed covers transport errors, non-200 responses, auth
+	// failures, signed-out text, explicit null payloads, and unacceptable
+	// content types. It never triggers a second request.
+	openCodeGoServerFailed openCodeGoServerStatus = iota
+	// openCodeGoServerNoUsage is a 200 server-function response without
+	// usage windows; it is the only state that triggers the POST fallback.
+	openCodeGoServerNoUsage
+	// openCodeGoServerUsageOK means usage windows were parsed.
+	openCodeGoServerUsageOK
+)
+
 // fetchOpenCodeGoServerUsage reads the rolling/weekly/monthly usage windows
 // through the OpenCode subscription server-function. The GET carries the
-// workspace ID as a JSON-encoded args query parameter; if the GET response
-// yields no usage windows, a POST with the same headers and a JSON body of
-// the args is attempted. 401/403, signed-out text, explicit null payloads,
-// non-200 responses, and malformed bodies all fail closed with no windows.
-func fetchOpenCodeGoServerUsage(ctx context.Context, client openCodeGoHTTPClient, serverEndpoint string, dashboard *openCodeGoDashboardCredential, now time.Time) []OpenCodeGoUsageWindow {
+// workspace ID as a JSON-encoded args query parameter. The POST fallback is
+// attempted only when the GET returned a 200 server-function response without
+// usage windows; transport errors, non-200 statuses, auth failures,
+// signed-out text, explicit null payloads (including wrapper nulls), and
+// unacceptable content types all fail closed immediately with no second
+// request.
+func fetchOpenCodeGoServerUsage(ctx context.Context, client openCodeGoHTTPClient, serverEndpoint string, dashboard *openCodeGoDashboardCredential, now time.Time) ([]OpenCodeGoUsageWindow, openCodeGoServerStatus) {
 	if dashboard == nil || strings.TrimSpace(dashboard.workspaceID) == "" || strings.TrimSpace(dashboard.authCookie) == "" {
-		return nil
+		return nil, openCodeGoServerFailed
 	}
 	args := []string{dashboard.workspaceID}
 
 	text, ok := fetchOpenCodeGoServerText(ctx, client, serverEndpoint, opencodeGoSubscriptionServerID, args, http.MethodGet, dashboard)
-	if ok {
-		if windows := parseOpenCodeGoServerUsage(text, now); len(windows) > 0 {
-			return windows
-		}
+	if !ok {
+		return nil, openCodeGoServerFailed
 	}
+	if windows := parseOpenCodeGoServerUsage(text, now); len(windows) > 0 {
+		return windows, openCodeGoServerUsageOK
+	}
+
 	text, ok = fetchOpenCodeGoServerText(ctx, client, serverEndpoint, opencodeGoSubscriptionServerID, args, http.MethodPost, dashboard)
 	if !ok {
-		return nil
+		return nil, openCodeGoServerFailed
 	}
-	return parseOpenCodeGoServerUsage(text, now)
+	windows := parseOpenCodeGoServerUsage(text, now)
+	if len(windows) > 0 {
+		return windows, openCodeGoServerUsageOK
+	}
+	return nil, openCodeGoServerNoUsage
 }
 
 // fetchOpenCodeGoServerText performs one server-function request. It returns
-// the response body only when the response is a 200 that does not look signed
-// out and is not an explicit null payload; every other outcome fails closed.
+// the response body only when the response is a 200 with an acceptable
+// server-function content type that does not look signed out and is not an
+// explicit null payload; every other outcome fails closed.
 func fetchOpenCodeGoServerText(ctx context.Context, client openCodeGoHTTPClient, serverEndpoint, serverID string, args []string, method string, dashboard *openCodeGoDashboardCredential) (string, bool) {
 	endpoint, err := openCodeGoServerRequestURL(serverEndpoint, serverID, args, method)
 	if err != nil {
@@ -468,11 +502,26 @@ func fetchOpenCodeGoServerText(ctx context.Context, client openCodeGoHTTPClient,
 	if readErr != nil || resp.StatusCode != http.StatusOK {
 		return "", false
 	}
+	if !openCodeGoServerContentTypeOK(resp.Header.Get("Content-Type")) {
+		return "", false
+	}
 	text := string(body)
 	if openCodeGoLooksSignedOut(text) || openCodeGoIsNullPayload(text) {
 		return "", false
 	}
 	return text, true
+}
+
+// openCodeGoServerContentTypeOK accepts only the server-function MIME types.
+// Page HTML (text/html) is always rejected regardless of its contents.
+func openCodeGoServerContentTypeOK(contentType string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	switch mediaType {
+	case "application/json", "text/javascript", "application/javascript":
+		return true
+	default:
+		return false
+	}
 }
 
 // openCodeGoServerRequestURL builds the server-function URL: for GET the
@@ -522,6 +571,9 @@ func openCodeGoLooksSignedOut(text string) bool {
 	return false
 }
 
+// openCodeGoIsNullPayload detects explicit empty payloads: a bare null or a
+// JSON object whose wrapper keys (data/result/usage/billing/payload) are
+// null. Such responses are fail-closed without a POST fallback.
 func openCodeGoIsNullPayload(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if strings.EqualFold(trimmed, "null") {
@@ -531,7 +583,17 @@ func openCodeGoIsNullPayload(text string) bool {
 	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
 		return false
 	}
-	return value == nil
+	if value == nil {
+		return true
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, key := range []string{"data", "result", "usage", "billing", "payload"} {
+			if nested, exists := object[key]; exists && nested == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // parseOpenCodeGoServerUsage extracts usage windows from the subscription
@@ -727,24 +789,31 @@ func openCodeGoFloat(value any) (float64, bool) {
 	}
 }
 
-// collectOpenCodeGoSubscription returns the subscription projection only when
-// the most recent verification positively confirmed the OpenCode Go
-// subscription: the subscription server-function yielded usage windows, or
-// the non-generating invalid-request auth challenge yielded the exact
-// invalid_request_error 400. Any negative or ambiguous outcome (missing
-// credentials, auth failure, network failure, ambiguous response, no
-// challenge signal) yields nil so the app can never retain or produce a Go
-// card.
+// collectOpenCodeGoSubscription returns the subscription projection when the
+// most recent verification positively confirmed the OpenCode Go subscription.
+// The dashboard evidence path is independent and runs first: a valid
+// dashboard credential whose subscription server-function response yields
+// usage windows confirms the subscription on its own, without the OpenCode
+// auth entry, the API key, the models endpoint, or the challenge. Only when
+// the dashboard yields nothing does the API path require the opencode-go
+// auth entry and confirm via model discovery plus the non-generating
+// invalid-request auth challenge. A read error on the auth file never blocks
+// a dashboard-confirmed result. Any negative or ambiguous outcome yields nil
+// so the app can never retain or produce a Go card.
 func (c *Collector) collectOpenCodeGoSubscription(home string) *OpenCodeGoSubscriptionUsage {
+	ctx, cancel := context.WithTimeout(context.Background(), c.opencodeGoTimeout)
+	defer cancel()
+
+	dashboard := readOpenCodeGoDashboardCredential(home)
+	if usage, ok := fetchOpenCodeGoServerEvidence(ctx, c.opencodeGoClient, c.opencodeGoServerEndpoint, dashboard, c.now()); ok {
+		return usage
+	}
+
 	auth, err := readOpenCodeGoAuth(home)
 	if err != nil || auth.kind != "official" {
 		return nil
 	}
-	dashboard := readOpenCodeGoDashboardCredential(home)
-
-	ctx, cancel := context.WithTimeout(context.Background(), c.opencodeGoTimeout)
-	defer cancel()
-	usage, err := fetchOpenCodeGoSubscription(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, c.opencodeGoChatEndpoint, c.opencodeGoServerEndpoint, auth, dashboard, c.now())
+	usage, err := fetchOpenCodeGoSubscriptionViaAPI(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, c.opencodeGoChatEndpoint, auth, c.now())
 	if err != nil {
 		return nil
 	}
