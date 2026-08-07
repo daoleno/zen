@@ -6,32 +6,32 @@ import {
   type StatsPayload,
 } from './statsPayloadMerge';
 
-// The exact model rows the daemon emits for the real local account after the
-// zero-config OpenCode collection (captured live on 2026-08-07, redacted:
-// model IDs and observed numbers only, no credentials or message content).
-const LIVE_OPENCODE_MODEL_ROWS = [
+// Clearly synthetic representative OpenCode model rows for the daemon-payload
+// merge contract. Model names cover the OpenCode feature surface; every value
+// is fictional, and each row's breakdown sums to its totalTokens.
+const OPENCODE_MODEL_FIXTURE = [
   {
     name: 'deepseek-v4-flash',
-    totalTokens: 290582798,
+    totalTokens: 290000000,
     totalTokensKnown: true,
-    inputTokens: 2536836,
-    outputTokens: 517844,
-    reasoningTokens: 553830,
-    cacheRead: 286572288,
-    cacheCreate: 0,
+    inputTokens: 2500000,
+    outputTokens: 520000,
+    reasoningTokens: 550000,
+    cacheRead: 286420000,
+    cacheCreate: 10000,
     tokenBreakdownKnown: true,
-    cost: 0.728814,
+    cost: 0.73,
     costKnown: true,
-    sessions: 1902,
+    sessions: 1900,
   },
   {
     name: 'kimi-k2.5-free',
-    totalTokens: 4179180,
+    totalTokens: 4180000,
     totalTokensKnown: true,
-    inputTokens: 233019,
-    outputTokens: 18647,
-    reasoningTokens: 7386,
-    cacheRead: 3920128,
+    inputTokens: 233000,
+    outputTokens: 18000,
+    reasoningTokens: 7000,
+    cacheRead: 3922000,
     cacheCreate: 0,
     tokenBreakdownKnown: true,
     cost: 0,
@@ -72,23 +72,23 @@ function rangeWith(models) {
 }
 
 describe('OpenCode local usage contract (daemon payload to App visibility)', () => {
-  test('live OpenCode model rows survive the transport merge unchanged', () => {
+  test('OpenCode model rows survive the transport merge unchanged', () => {
     const merged = mergeStatsPayloads([
-      wirePayload({ all: rangeWith(LIVE_OPENCODE_MODEL_ROWS) }),
+      wirePayload({ all: rangeWith(OPENCODE_MODEL_FIXTURE) }),
     ]);
     expect(merged).not.toBeNull();
     expect(merged.codexSubscriptions).toEqual([]);
     const models = merged.ranges.all.models;
-    expect(models).toEqual(LIVE_OPENCODE_MODEL_ROWS);
+    expect(models).toEqual(OPENCODE_MODEL_FIXTURE);
     expect(models.map(m => m.name)).toContain('deepseek-v4-flash');
     const deepseek = models.find(m => m.name === 'deepseek-v4-flash');
-    expect(deepseek.sessions).toBe(1902);
-    expect(deepseek.cost).toBeCloseTo(0.728814, 6);
+    expect(deepseek.sessions).toBe(1900);
+    expect(deepseek.cost).toBeCloseTo(0.73, 6);
     expect(deepseek.costKnown).toBe(true);
   });
 
   test('the model-usage section shows only when actual usage rows exist', () => {
-    expect(hasRangeStats(rangeWith(LIVE_OPENCODE_MODEL_ROWS))).toBe(true);
+    expect(hasRangeStats(rangeWith(OPENCODE_MODEL_FIXTURE))).toBe(true);
     expect(hasRangeStats(rangeWith([]))).toBe(false);
     expect(hasRangeStats(null)).toBe(false);
     expect(hasRangeStats(undefined)).toBe(false);
@@ -114,8 +114,8 @@ describe('OpenCode local usage contract (daemon payload to App visibility)', () 
   });
 
   test('duplicate payloads from one daemon merge into a single source', () => {
-    const payload = wirePayload({ all: rangeWith(LIVE_OPENCODE_MODEL_ROWS) });
+    const payload = wirePayload({ all: rangeWith(OPENCODE_MODEL_FIXTURE) });
     const merged = mergeStatsPayloads([payload, { ...payload }, { ...payload }]);
-    expect(merged.ranges.all.models).toHaveLength(LIVE_OPENCODE_MODEL_ROWS.length);
+    expect(merged.ranges.all.models).toHaveLength(OPENCODE_MODEL_FIXTURE.length);
   });
 });
