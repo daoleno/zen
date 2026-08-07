@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/google/uuid"
 )
 
 const tmuxSendInputChunkBytes = 1024
@@ -203,7 +204,10 @@ type Watcher struct {
 	providerActivityProbe ProviderActivityProbe
 	pollGeneration        int64
 	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
-	delegatedTurns        map[string]delegatedTurnRecord
+	turnLedger            TurnLedger
+	ledgerTurns           map[string]TurnSnapshot // projection cache of the canonical ledger, never a truth owner
+	appliedFactIDs        map[string]string       // session -> last applied provider FactID (skip identical applies)
+	ledgerTurnReadAt      map[string]time.Time    // TTL for authoritative ledger re-reads
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
@@ -225,10 +229,24 @@ func New(pollInterval time.Duration) *Watcher {
 		hidden:         make(map[string]bool),
 		delegated:      make(map[string]bool),
 		agentEpoch:     make(map[string]int64),
-		delegatedTurns: make(map[string]delegatedTurnRecord),
+		ledgerTurns:    make(map[string]TurnSnapshot),
+		appliedFactIDs: make(map[string]string),
+		ledgerTurnReadAt: make(map[string]time.Time),
 		events:         make(chan SessionEvent, 100),
 		resources:      noopDelegatedResourceManager{},
 		sessionInput:   defaultSessionInputOwner,
+	}
+}
+
+// SetTurnLedger installs the canonical per-turn ledger. The watcher applies
+// provider/control/liveness facts through it and projects Session state from
+// its snapshots; it holds no competing lifecycle state machine.
+func (w *Watcher) SetTurnLedger(ledger TurnLedger) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.turnLedger = ledger
+	if w.sessionInput != nil {
+		w.sessionInput.ledger = ledger
 	}
 }
 
@@ -457,6 +475,12 @@ func (w *Watcher) GetAgent(id string) *classifier.Agent {
 
 // UpdateAgentProgress applies a control-plane lifecycle progress update to a
 // known agent and emits the same state/metadata events used by watcher polling.
+//
+// For canonical-turn sessions the progress is a Control-class fact applied
+// through the single reducer: running/attention renew or block the turn,
+// done/failed are provisional hints that never change canonical status, and
+// the lease fields refresh the projection only. For markerless sessions the
+// legacy projection behavior is preserved.
 func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -468,26 +492,21 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 
 	now := time.Now().UTC()
-	progressState := classifier.ProgressState(progress)
-	w.mu.RLock()
-	currentTurn, hasCurrentTurn := w.delegatedTurns[id]
-	w.mu.RUnlock()
-	progressSettledTurn := false
-	if hasCurrentTurn && !delegatedTurnTerminal(currentTurn.Status) &&
-		(progressState == classifier.StateDone || progressState == classifier.StateFailed) {
-		next, changed := settleDelegatedTurnFromProgress(
-			currentTurn,
-			progressState,
-			progress.Summary,
-			now,
-		)
-		if changed {
-			confirmed, err := w.sessionInputOwner().settleDelegatedTurnFromProgress(id, currentTurn.ID, next)
-			if err != nil {
-				return nil, err
+	turn, hasCurrentTurn, turnErr := w.ledgerTurnFor(id, now)
+	if turnErr != nil {
+		return nil, turnErr
+	}
+	appliedFact := false
+	if hasCurrentTurn && w.turnLedger != nil {
+		if fact := controlFactFromProgress(id, turn.TurnID, progress, now); fact != nil {
+			snapshot, changed, applyErr := w.turnLedger.ApplyTurnFact(*fact)
+			if applyErr != nil {
+				return nil, applyErr
 			}
-			currentTurn = confirmed
-			progressSettledTurn = true
+			appliedFact = changed
+			if changed {
+				turn = snapshot
+			}
 		}
 	}
 	var event SessionEvent
@@ -501,32 +520,24 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 	oldState := agent.State
 	classifier.ApplyProgress(agent, progress, now)
-	if hasCurrentTurn && !progressSettledTurn &&
-		(progressState == classifier.StateDone || progressState == classifier.StateFailed) {
-		// Terminal progress cannot settle a live accepted turn until
-		// provider-native running has correlated that turn. Drop the entire
-		// stale terminal-attempt projection so Session List retains no failed
-		// attention, phase, task class, event kind, or lease.
-		agent.State = classifier.StateRunning
-		agent.Attention = "none"
-		agent.NeedsAttention = false
-		agent.Phase = ""
-		agent.TaskClass = ""
-		agent.EventKind = ""
-		agent.DetailsJSON = ""
-		agent.LastProgressAt = nil
-		agent.ExpectedNextCheckAt = nil
-		agent.LeaseSeconds = 0
-	}
-	if progressSettledTurn {
-		w.delegatedTurns[id] = currentTurn
+	if hasCurrentTurn {
+		// The canonical turn owns the Session projection: status, attention,
+		// and summary come from the ledger, and stale terminal-attempt
+		// metadata (attention/phase/lease) never survives.
+		w.ledgerTurns[id] = turn
+		w.ledgerTurnReadAt[id] = now
+		clearStaleAttemptMetadata(agent)
+		newState, summary := projectDelegatedTurn(agent, turn)
+		agent.State = newState
+		agent.Summary = summary
+		_ = appliedFact
 	}
 	snapshot = cloneAgent(agent)
 	event = SessionEvent{
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
-		TurnID:  currentTurn.ID,
+		TurnID:  turn.TurnID,
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -539,17 +550,65 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	return snapshot, nil
 }
 
-// RecordAgentInputDispatched clears an older terminal projection only after
-// the shared Session input owner observed a real provider turn start.
-func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
+// controlFactFromProgress derives the Control-class fact for one progress
+// submission. The caller-minted progress_event_id is the stable logical event
+// identity (C.3.1): identical later heartbeats with distinct IDs are distinct
+// facts that each renew the lease, while a transport retry reusing the same ID
+// dedupes. The payload hash is audit metadata only, never identity.
+func controlFactFromProgress(id, turnID string, progress classifier.AgentProgress, now time.Time) *TurnFact {
+	progressEventID := strings.TrimSpace(progress.ProgressEventID)
+	if progressEventID == "" {
+		progressEventID = uuid.NewString()
+	}
+	base := TurnFact{
+		SessionID: id,
+		TurnID:    turnID,
+		Class:     EvidenceControl,
+		At:        now,
+		Summary:   strings.TrimSpace(progress.Summary),
+	}
+	progressState := classifier.ProgressState(progress)
+	switch progressState {
+	case classifier.StateRunning:
+		base.Kind = "running"
+		base.SourceID = "control\x00" + progressEventID
+		return &base
+	case classifier.StateBlocked:
+		base.Kind = "attention"
+		base.SourceID = "control\x00" + progressEventID
+		return &base
+	case classifier.StateDone:
+		base.Kind = "done"
+		base.SourceID = "control\x00" + progressEventID
+		return &base
+	case classifier.StateFailed:
+		base.Kind = "failed"
+		base.SourceID = "control\x00" + progressEventID
+		return &base
+	default:
+		return nil
+	}
+}
+
+// RebindDelegatedTurnProjection re-reads the canonical ledger turn and rebinds
+// the Session projection (list/capture) to it, clearing stale terminal
+// metadata from a previous turn. The control app calls it immediately after a
+// delegated dispatch returns — accepted or ambiguous — so a reused Session
+// never inherits the previous turn's done projection while its new provider
+// turn is live or admitted.
+func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("missing agent id")
 	}
-	if handoffStartedAt.IsZero() {
-		return nil, fmt.Errorf("missing handoff start time")
+	now := time.Now().UTC()
+	turn, hasTurn, err := w.ledgerTurnFor(id, now)
+	if err != nil {
+		return nil, err
 	}
-
+	if !hasTurn {
+		return nil, fmt.Errorf("delegated Session %s has no canonical turn", id)
+	}
 	var event SessionEvent
 	var snapshot *classifier.Agent
 	w.mu.Lock()
@@ -558,38 +617,20 @@ func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt
 		w.mu.Unlock()
 		return nil, fmt.Errorf("agent session not found")
 	}
-	w.delegatedTurns[id] = delegatedTurnRecord{
-		SchemaVersion: delegatedTurnSchema,
-		ID:            strings.TrimSpace(turnID),
-		Status:        delegatedTurnRunning,
-		AcceptedAt:    handoffStartedAt.UTC(),
-	}
-	if agent.LastProgressAt != nil && !agent.LastProgressAt.Before(handoffStartedAt) &&
-		(agent.State == classifier.StateRunning || agent.State == classifier.StateBlocked) {
-		snapshot = cloneAgent(agent)
-		w.mu.Unlock()
-		return snapshot, nil
-	}
-
 	oldState := agent.State
-	agent.State = classifier.StateRunning
-	agent.Summary = strings.TrimSpace(summary)
-	agent.Phase = strings.TrimSpace(phase)
-	agent.Attention = "none"
-	agent.NeedsAttention = false
-	agent.TaskClass = ""
-	agent.EventKind = ""
-	agent.DetailsJSON = ""
-	agent.LastProgressAt = nil
-	agent.ExpectedNextCheckAt = nil
-	agent.LeaseSeconds = 0
-	agent.UpdatedAt = time.Now().UTC()
+	w.ledgerTurns[id] = turn
+	w.ledgerTurnReadAt[id] = now
+	clearStaleAttemptMetadata(agent)
+	newState, summary := projectDelegatedTurn(agent, turn)
+	agent.State = newState
+	agent.Summary = summary
+	agent.UpdatedAt = now
 	snapshot = cloneAgent(agent)
 	event = SessionEvent{
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
-		TurnID:  strings.TrimSpace(turnID),
+		TurnID:  turn.TurnID,
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -648,6 +689,62 @@ func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 	return SessionPresenceUnknown, fmt.Errorf("tmux has-session %s: %w: %s", probeTarget, err, strings.TrimSpace(string(out)))
 }
 
+// LegacyDelegatedTurnMarkers reads the raw pre-protocol @zen_delegated_turn
+// options from the current tmux inventory for the one-shot ledger migration.
+func (w *Watcher) LegacyDelegatedTurnMarkers() []LegacyDelegatedTurnMarker {
+	windows, err := listTmuxWindowsFunc()
+	if err != nil {
+		return nil
+	}
+	markers := []LegacyDelegatedTurnMarker{}
+	for _, win := range windows {
+		if strings.TrimSpace(win.delegatedTurnRaw) != "" {
+			markers = append(markers, LegacyDelegatedTurnMarker{
+				Target: win.target,
+				Raw:    win.delegatedTurnRaw,
+			})
+		}
+	}
+	return markers
+}
+
+// ClearDelegatedTurnMarkers unsets the migrated @zen_delegated_turn options.
+// All later lifecycle writes go to the canonical ledger.
+func (w *Watcher) ClearDelegatedTurnMarkers(targets []string) {
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		_ = exec.Command(
+			"tmux", "set-option", "-w", "-u", "-t", target,
+			"@"+delegatedTurnOption,
+		).Run()
+	}
+}
+
+// ProbeProviderEvidence returns the current provider-native observation for a
+// session. The brain service uses it during the legacy-marker reconciliation
+// sweep (migration Phase 1b).
+func (w *Watcher) ProbeProviderEvidence(sessionID string) (ProviderActivityObservation, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ProviderActivityObservation{}, false, fmt.Errorf("missing session id")
+	}
+	agent := w.GetAgent(sessionID)
+	if agent == nil {
+		return ProviderActivityObservation{}, false, nil
+	}
+	w.mu.RLock()
+	probe := w.providerActivityProbe
+	w.mu.RUnlock()
+	if probe == nil {
+		return ProviderActivityObservation{}, false, nil
+	}
+	observation := probe.ObserveProviderActivity(*agent, time.Now().UTC())
+	return observation, providerFactRelevant(observation), nil
+}
+
 // Run starts the polling loop. Blocks until context is cancelled.
 func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.pollInterval)
@@ -676,19 +773,21 @@ func (w *Watcher) poll() {
 	processSnapshotAt := time.Now()
 
 	type paneObs struct {
-		win     tmuxWindow
-		content string
-		alive   bool
-		lines   []string
+		win        tmuxWindow
+		content    string
+		alive      bool
+		deadStatus int
+		lines      []string
 	}
 	observations := make([]paneObs, 0, len(windows))
 	for _, win := range windows {
-		content, alive := capturePaneContentFunc(win.target)
+		content, alive, deadStatus := capturePaneContentFunc(win.target)
 		observations = append(observations, paneObs{
-			win:     win,
-			content: content,
-			alive:   alive,
-			lines:   strings.Split(content, "\n"),
+			win:        win,
+			content:    content,
+			alive:      alive,
+			deadStatus: deadStatus,
+			lines:      strings.Split(content, "\n"),
 		})
 	}
 
@@ -699,6 +798,7 @@ func (w *Watcher) poll() {
 		content           string
 		lines             []string
 		alive             bool
+		deadStatus        int
 		panePID           int
 		classified        classifier.AgentState
 		classifiedSummary string
@@ -772,6 +872,7 @@ func (w *Watcher) poll() {
 			content:           obs.content,
 			lines:             obs.lines,
 			alive:             obs.alive,
+			deadStatus:        obs.deadStatus,
 			panePID:           win.panePID,
 			classified:        classified,
 			classifiedSummary: classifiedSummary,
@@ -791,7 +892,7 @@ func (w *Watcher) poll() {
 		preparedAgent
 		activity classifier.ActivitySignal
 		provider ProviderActivityObservation
-		turn     delegatedTurnRecord
+		turn     TurnSnapshot
 		hasTurn  bool
 		turnErr  error
 	}
@@ -809,43 +910,18 @@ func (w *Watcher) poll() {
 				ToolChildActive: toolChild,
 			})
 		}
-		turn, hasTurn, turnErr := decodeDelegatedTurn(item.delegatedTurnRaw)
-		if providerProbe != nil && (turnErr != nil || hasTurn && delegatedTurnTerminal(turn.Status)) {
-			providerProbe.ForgetProviderActivity(item.id)
+		// Canonical-turn path: read the ledger snapshot and apply provider +
+		// liveness facts through the single reducer. Pane/classifier activity
+		// never terminalizes and never sets attention for turn-tracked
+		// sessions; it only refreshes the projection.
+		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
+		provider := ProviderActivityObservation{}
+		if hasTurn && turnErr == nil && !TurnTerminal(turn.Status) && providerProbe != nil {
+			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
-		provider, shouldObserve := providerActivityForDelegatedTurn(
-			item.agentSnap,
-			item.now,
-			turn,
-			hasTurn,
-			turnErr,
-			providerProbe,
-		)
-		if shouldObserve {
-			activity = delegatedTurnFallbackPaneActivity(
-				turn,
-				provider,
-				activity,
-				item.contentChanged && item.existed &&
-					delegatedTurnPaneIdentity(item.content) != turn.PaneBaseline,
-			)
-			turn, hasTurn, turnErr = w.sessionInputOwner().observeDelegatedTurn(
-				item.id,
-				turn.ID,
-				delegatedTurnObservation{
-					Provider:     provider,
-					Pane:         activity,
-					PaneIdentity: delegatedTurnPaneIdentity(item.content),
-					Live:         item.alive,
-					Now:          item.now,
-					StartTimeout: inputReadyTimeout(item.agentSnap.Command),
-				},
-				w.targetForSession,
-			)
-			if turnErr == nil && hasTurn && delegatedTurnTerminal(turn.Status) &&
-				providerProbe != nil {
-				providerProbe.ForgetProviderActivity(item.id)
-			}
+		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnTerminal(turn.Status)) {
+			providerProbe.ForgetProviderActivity(item.id)
 		}
 		results = append(results, probedAgent{
 			preparedAgent: item,
@@ -876,26 +952,14 @@ func (w *Watcher) poll() {
 		}
 
 		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
-		previousTurn, hadPreviousTurn := w.delegatedTurns[r.id]
+		previousTurn, hadPreviousTurn := w.ledgerTurns[r.id]
 		if r.turnErr != nil {
-			newState = classifier.StateFailed
-			summary = "Delegated turn metadata could not be reconciled: " + r.turnErr.Error()
+			// Ledger read failure is transient; keep the last projection
+			// instead of fabricating a terminal state.
 		} else if r.hasTurn {
-			w.delegatedTurns[r.id] = r.turn
-			switch r.turn.Status {
-			case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle, delegatedTurnAmbiguous:
-				newState, summary = applyLiveTurnProjection(agent, r.turn, newState, summary)
-			case delegatedTurnDone:
-				newState = classifier.StateDone
-				if turnSummary := strings.TrimSpace(r.turn.Summary); turnSummary != "" {
-					summary = turnSummary
-				}
-			case delegatedTurnFailed:
-				newState = classifier.StateFailed
-				if turnSummary := strings.TrimSpace(r.turn.Summary); turnSummary != "" {
-					summary = turnSummary
-				}
-			}
+			w.ledgerTurns[r.id] = r.turn
+			clearStaleAttemptMetadata(agent)
+			newState, summary = projectDelegatedTurn(agent, r.turn)
 		}
 		agent.State = newState
 		agent.Summary = summary
@@ -944,7 +1008,7 @@ func (w *Watcher) poll() {
 				Agent:    cloneAgent(agent),
 				OldState: string(r.oldState),
 				NewState: string(newState),
-				TurnID:   r.turn.ID,
+				TurnID:   r.turn.TurnID,
 			}
 		}
 
@@ -960,7 +1024,16 @@ func (w *Watcher) poll() {
 	for id := range w.agents {
 		if !seen[id] {
 			old := w.agents[id]
-			turnID := w.delegatedTurns[id].ID
+			turn, hasTurn := w.ledgerTurns[id]
+			if hasTurn && !TurnTerminal(turn.Status) {
+				// Positive identity disappearance (CR.3): the inventory
+				// succeeded, the target is absent, and the recorded process
+				// identity is gone from the same-poll process snapshot. End
+				// is not outcome: without a readable bound Provider terminal
+				// this resolves to Unknown + session.uncertain, never Failed.
+				// A bound terminal readable at death decides first (C.2.4).
+				w.resolveRemovedTurnFacts(id, *old, turn, providerProbe, processes, processSnapshotAt)
+			}
 			if providerProbe != nil {
 				providerProbe.ForgetProviderActivity(id)
 			}
@@ -969,7 +1042,9 @@ func (w *Watcher) poll() {
 			delete(w.hidden, id)
 			delete(w.delegated, id)
 			delete(w.agentEpoch, id)
-			delete(w.delegatedTurns, id)
+			delete(w.ledgerTurns, id)
+			delete(w.appliedFactIDs, id)
+			delete(w.ledgerTurnReadAt, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -980,7 +1055,7 @@ func (w *Watcher) poll() {
 				Agent:    archived,
 				OldState: string(old.State),
 				NewState: string(classifier.StateRemoved),
-				TurnID:   turnID,
+				TurnID:   turn.TurnID,
 			}
 		}
 	}
@@ -997,47 +1072,310 @@ func (w *Watcher) compactAgentOrderLocked() {
 	w.agentOrder = next
 }
 
-// applyLiveTurnProjection projects a live nonterminal delegated turn above any
-// stale terminal attempt state (a sticky failed/done projection left by an
-// ambiguous handoff attempt or a failed progress report). While the turn is
-// active, the turn is the authoritative Session lifecycle: Session List must
-// show running, and the retained failed-attempt metadata (attention, phase,
-// task class, event kind, needs-attention, lease) must not survive. Terminal
-// turn statuses are never promoted; they remain the only way back to done.
-func applyLiveTurnProjection(
-	agent *classifier.Agent,
-	turn delegatedTurnRecord,
-	state classifier.AgentState,
-	summary string,
-) (classifier.AgentState, string) {
-	if delegatedTurnTerminal(turn.Status) {
-		return state, summary
-	}
+// projectDelegatedTurn projects the canonical ledger turn onto the Session
+// (list/capture/close/Work all read this same canonical owner). Hints are
+// attached notes only: they never change the status text.
+func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifier.AgentState, string) {
+	var state classifier.AgentState
+	summary := strings.TrimSpace(turn.Summary)
 	switch turn.Status {
-	case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle:
-		if state == classifier.StateUnknown || state == classifier.StateDone || state == classifier.StateFailed {
-			state = classifier.StateRunning
-			summary = strings.TrimSpace(summary)
-			if summary == "" {
-				summary = "Delegated turn running"
-			}
-		}
-	case delegatedTurnAmbiguous:
+	case TurnAdmitted:
 		state = classifier.StateRunning
-		summary = "Delegated handoff outcome is ambiguous; observing provider activity"
+		summary = "Delegated input outcome pending; observing provider activity"
+	case TurnAccepted:
+		state = classifier.StateRunning
+		if summary == "" {
+			summary = "Delegated turn started"
+		}
+	case TurnRunning:
+		state = classifier.StateRunning
+		if summary == "" {
+			summary = "Delegated turn running"
+		}
+	case TurnBlocked:
+		state = classifier.StateBlocked
+		if summary == "" {
+			summary = "Delegated Session needs input"
+		}
+	case TurnDone:
+		state = classifier.StateDone
+		if summary == "" {
+			summary = "Delegated turn completed"
+		}
+	case TurnFailed:
+		state = classifier.StateFailed
+		if summary == "" {
+			summary = "Delegated turn failed"
+		}
+	case TurnUnknown:
+		state = classifier.StateUnknown
+		if summary == "" {
+			summary = "Delegated Session outcome is unknown; inspect and reconcile"
+		}
+	default:
+		state = classifier.StateUnknown
 	}
-	if agent != nil && agent.Attention == "failed" {
+	if agent != nil && turn.Status == TurnBlocked {
+		agent.Attention = "user_input"
+		agent.NeedsAttention = true
+	} else if agent != nil {
 		agent.Attention = "none"
 		agent.NeedsAttention = false
-		agent.Phase = ""
-		agent.TaskClass = ""
-		agent.EventKind = ""
-		agent.DetailsJSON = ""
-		agent.LastProgressAt = nil
-		agent.ExpectedNextCheckAt = nil
-		agent.LeaseSeconds = 0
 	}
 	return state, summary
+}
+
+// clearStaleAttemptMetadata removes failed-attempt projection residue (a
+// sticky attention/phase/lease from an ambiguous handoff attempt or a
+// non-canonical progress report) while a canonical turn owns the Session.
+// A live running lease is never cleared: it drives session.stale.
+func clearStaleAttemptMetadata(agent *classifier.Agent) {
+	if agent == nil || agent.Attention != "failed" {
+		return
+	}
+	agent.Attention = "none"
+	agent.NeedsAttention = false
+	agent.Phase = ""
+	agent.TaskClass = ""
+	agent.EventKind = ""
+	agent.DetailsJSON = ""
+	agent.LastProgressAt = nil
+	agent.ExpectedNextCheckAt = nil
+	agent.LeaseSeconds = 0
+}
+
+// ledgerTurnFor returns the canonical ledger snapshot for the session, re-
+// reading the durable ledger at most every two seconds. The cache is a pure
+// projection: every ApplyTurnFact result refreshes it, and every re-read
+// refreshes from the authoritative record.
+func (w *Watcher) ledgerTurnFor(sessionID string, now time.Time) (TurnSnapshot, bool, error) {
+	if w == nil || w.turnLedger == nil {
+		return TurnSnapshot{}, false, nil
+	}
+	w.mu.RLock()
+	cached, hasCached := w.ledgerTurns[sessionID]
+	readAt := w.ledgerTurnReadAt[sessionID]
+	w.mu.RUnlock()
+	if hasCached && now.Sub(readAt) < 2*time.Second {
+		return cached, true, nil
+	}
+	turn, hasTurn, err := w.turnLedger.Turn(sessionID)
+	if err != nil {
+		return turn, hasTurn, err
+	}
+	if hasTurn {
+		w.mu.Lock()
+		w.ledgerTurns[sessionID] = turn
+		w.ledgerTurnReadAt[sessionID] = now
+		w.mu.Unlock()
+	}
+	return turn, hasTurn, nil
+}
+
+// applyPollFacts applies one poll's provider + liveness observations through
+// the single canonical reducer and returns the latest snapshot.
+func (w *Watcher) applyPollFacts(
+	id string,
+	alive bool,
+	deadStatus int,
+	now time.Time,
+	turn TurnSnapshot,
+	provider ProviderActivityObservation,
+) TurnSnapshot {
+	ledger := w.turnLedger
+	if ledger == nil {
+		return turn
+	}
+	facts := []TurnFact{}
+	if providerFactRelevant(provider) {
+		if fact := admissionFactFromObservation(id, turn, provider); fact != nil {
+			facts = append(facts, *fact)
+		}
+		if fact := activityFactFromObservation(id, turn, provider); fact != nil {
+			facts = append(facts, *fact)
+		}
+	}
+	if !alive {
+		if deadStatus >= 0 {
+			if deadStatus != 0 {
+				// Authoritative abnormal exit for the recorded pane identity:
+				// final-grade Failed (or Unknown from Admitted).
+				facts = append(facts, TurnFact{
+					SessionID:    id,
+					TurnID:       turn.TurnID,
+					Class:        EvidenceLiveness,
+					Kind:         "failed",
+					AbnormalExit: true,
+					SourceID:     "liveness\x00abnormal-exit",
+					At:           now,
+					Summary:      "Delegated provider process exited abnormally",
+				})
+			} else {
+				facts = append(facts, TurnFact{
+					SessionID:   id,
+					TurnID:      turn.TurnID,
+					Class:       EvidenceLiveness,
+					Kind:        "uncertain",
+					ProcessDead: true,
+					SourceID:    "liveness\x00process-dead",
+					At:          now,
+					Summary:     "Delegated provider process exited; outcome is unknown",
+				})
+			}
+		}
+		// PaneAbsent (no dead status readable): transient absence never
+		// terminalizes (CR.3).
+	} else if generation := w.currentPaneGeneration(id); generation != "" &&
+		strings.TrimSpace(turn.PaneGeneration) != "" && generation != turn.PaneGeneration {
+		// A different live pane identity owns the target: the recorded
+		// process is provably gone (CR.3 SessionReplaced).
+		facts = append(facts, TurnFact{
+			SessionID:       id,
+			TurnID:          turn.TurnID,
+			Class:           EvidenceLiveness,
+			Kind:            "uncertain",
+			SessionReplaced: true,
+			SourceID:        "liveness\x00session-replaced",
+			At:              now,
+			Summary:         "Delegated Session was replaced; outcome is unknown",
+		})
+	}
+	for _, fact := range facts {
+		factID := fact.TurnFactIDFor()
+		w.mu.RLock()
+		applied := w.appliedFactIDs[id] == factID
+		w.mu.RUnlock()
+		if applied {
+			continue
+		}
+		snapshot, changed, err := ledger.ApplyTurnFact(fact)
+		if err != nil {
+			continue
+		}
+		w.mu.Lock()
+		w.appliedFactIDs[id] = factID
+		if changed {
+			w.ledgerTurns[id] = snapshot
+			w.ledgerTurnReadAt[id] = now
+			turn = snapshot
+		}
+		w.mu.Unlock()
+	}
+	return turn
+}
+
+// resolveRemovedTurnFacts applies a removed session's provider facts (a bound
+// terminal readable at death decides first) and then the end-of-identity
+// liveness fact, per the same canonical reducer.
+func (w *Watcher) resolveRemovedTurnFacts(
+	id string,
+	agent classifier.Agent,
+	turn TurnSnapshot,
+	probe ProviderActivityProbe,
+	processes map[int]processInfo,
+	processSnapshotAt time.Time,
+) {
+	if w == nil || w.turnLedger == nil || TurnTerminal(turn.Status) {
+		return
+	}
+	now := time.Now().UTC()
+	provider := ProviderActivityObservation{}
+	if probe != nil {
+		provider = probe.ObserveProviderActivity(agent, now)
+	}
+	if providerFactRelevant(provider) {
+		if fact := admissionFactFromObservation(id, turn, provider); fact != nil {
+			_, _, _ = w.turnLedger.ApplyTurnFact(*fact)
+		}
+		if fact := activityFactFromObservation(id, turn, provider); fact != nil {
+			_, _, _ = w.turnLedger.ApplyTurnFact(*fact)
+		}
+	}
+	// ProcessDead, no bound terminal readable: Unknown + session.uncertain.
+	_, _, _ = w.turnLedger.ApplyTurnFact(TurnFact{
+		SessionID:   id,
+		TurnID:      turn.TurnID,
+		Class:       EvidenceLiveness,
+		Kind:        "uncertain",
+		ProcessDead: true,
+		SourceID:    "liveness\x00process-dead",
+		At:          now,
+		Summary:     "Delegated Session disappeared; outcome is unknown",
+	})
+}
+
+func providerFactRelevant(provider ProviderActivityObservation) bool {
+	return strings.TrimSpace(provider.ID) != "" ||
+		strings.TrimSpace(provider.AdmissionID) != "" ||
+		!provider.StartedAt.IsZero()
+}
+
+// admissionFactFromObservation derives the admission-correlated fact for an
+// Admitted/Accepted turn with no recorded provider identity. The admission
+// tuple must start inside the turn's admission window (C.6).
+func admissionFactFromObservation(sessionID string, turn TurnSnapshot, provider ProviderActivityObservation) *TurnFact {
+	if turn.Status != TurnAdmitted && turn.Status != TurnAccepted {
+		return nil
+	}
+	if turn.HasAdmission || strings.TrimSpace(provider.AdmissionID) == "" {
+		return nil
+	}
+	if !provider.StartedAt.IsZero() && provider.StartedAt.Before(turn.AcceptedAt) {
+		return nil
+	}
+	return &TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turn.TurnID,
+		Class:      EvidenceProvider,
+		Kind:       "admission",
+		SourceID:   fmt.Sprintf("provider\x00%s\x00%s\x00%s\x00%d", sessionID, strings.TrimSpace(provider.AdmissionStream), strings.TrimSpace(provider.AdmissionID), provider.AdmissionCursor),
+		Cursor:     provider.AdmissionCursor,
+		Admission:  admissionFromObservation(provider),
+		ActivityID: strings.TrimSpace(provider.ID),
+		StartedAt:  provider.StartedAt,
+		At:         time.Now().UTC(),
+		Summary:    "Provider admitted the delegated input",
+	}
+}
+
+// activityFactFromObservation derives the provider activity fact (running /
+// done / failed). The source identity is the adapter's native durable
+// activity identity plus its monotone cursor, so the deterministic FactID
+// dedupes across restart and reorder.
+func activityFactFromObservation(sessionID string, turn TurnSnapshot, provider ProviderActivityObservation) *TurnFact {
+	kind := ""
+	switch strings.TrimSpace(provider.Status) {
+	case "running":
+		kind = "running"
+	case "completed":
+		kind = "done"
+	case "failed", "interrupted", "cancelled":
+		kind = "failed"
+	default:
+		return nil
+	}
+	return &TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turn.TurnID,
+		Class:      EvidenceProvider,
+		Kind:       kind,
+		SourceID:   providerFactSourceID(sessionID, provider),
+		Cursor:     provider.AdmissionCursor,
+		Admission:  admissionFromObservation(provider),
+		ActivityID: strings.TrimSpace(provider.ID),
+		StartedAt:  provider.StartedAt,
+		SettledAt:  provider.SettledAt,
+		At:         time.Now().UTC(),
+		Summary:    "Delegated provider activity " + strings.TrimSpace(provider.Status),
+	}
+}
+
+func (w *Watcher) currentPaneGeneration(sessionID string) string {
+	owner := w.sessionInputOwner()
+	if owner == nil {
+		return ""
+	}
+	return owner.io.pane(sessionID).generation
 }
 
 // sessionActivityAdvanced reports whether a poll apply advanced meaningful
@@ -1048,16 +1386,16 @@ func applyLiveTurnProjection(
 func sessionActivityAdvanced(
 	contentChanged bool,
 	oldState, newState classifier.AgentState,
-	previousTurn delegatedTurnRecord,
+	previousTurn TurnSnapshot,
 	hadPreviousTurn bool,
-	turn delegatedTurnRecord,
+	turn TurnSnapshot,
 	hasTurn bool,
 ) bool {
 	if contentChanged || oldState != newState {
 		return true
 	}
 	return hasTurn && (!hadPreviousTurn ||
-		previousTurn.ID != turn.ID ||
+		previousTurn.TurnID != turn.TurnID ||
 		previousTurn.Status != turn.Status)
 }
 
@@ -1068,7 +1406,7 @@ func sessionActivityAdvanced(
 // structured progress, authoritative provider activity, process start time.
 func sessionDiscoveryActivityTime(
 	agent *classifier.Agent,
-	turn delegatedTurnRecord,
+	turn TurnSnapshot,
 	hasTurn bool,
 	provider ProviderActivityObservation,
 ) time.Time {
@@ -1300,22 +1638,35 @@ func tmuxBoolOption(value string) bool {
 	}
 }
 
-// capturePaneContent captures the visible content of a tmux window's active pane.
-func capturePaneContent(target string) (string, bool) {
+// capturePaneContent captures the visible content of a tmux window's active
+// pane. The second result reports pane liveness; the third is the recorded
+// pane exit status (#{pane_dead_status}) when the pane is dead, or -1 when
+// unknown. Exit status is authoritative abnormal-exit evidence only for the
+// recorded pane identity; absence of the pane is never death by itself.
+func capturePaneContent(target string) (string, bool, int) {
 	cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-200")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", false
+		return "", false, -1
 	}
 
-	cmdAlive := exec.Command("tmux", "list-panes", "-t", target, "-F", "#{pane_dead}")
+	cmdAlive := exec.Command("tmux", "list-panes", "-t", target, "-F", "#{pane_dead}\t#{pane_dead_status}")
 	aliveOut, err := cmdAlive.Output()
 	alive := true
-	if err == nil && strings.TrimSpace(string(aliveOut)) == "1" {
-		alive = false
+	deadStatus := -1
+	if err == nil {
+		fields := strings.Split(strings.TrimSpace(string(aliveOut)), "\t")
+		if len(fields) >= 1 && fields[0] == "1" {
+			alive = false
+			if len(fields) >= 2 && strings.TrimSpace(fields[1]) != "" {
+				if status, parseErr := strconv.Atoi(strings.TrimSpace(fields[1])); parseErr == nil {
+					deadStatus = status
+				}
+			}
+		}
 	}
 
-	return string(out), alive
+	return string(out), alive, deadStatus
 }
 
 // CapturePaneContent returns a plain-text snapshot of a tmux window's active pane.
@@ -1531,10 +1882,8 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 		resolver,
 		identity.Command,
 		payload,
-		delegatedTurnRecord{
-			SchemaVersion:   delegatedTurnSchema,
+		delegatedTurnDraft{
 			ID:              strings.TrimSpace(turnID),
-			Status:          delegatedTurnDispatched,
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
 		},
@@ -1580,10 +1929,8 @@ func (w *Watcher) SubmitDelegatedInput(
 		w.targetForSession,
 		identity.Command,
 		payload,
-		delegatedTurnRecord{
-			SchemaVersion:   delegatedTurnSchema,
+		delegatedTurnDraft{
 			ID:              strings.TrimSpace(turnID),
-			Status:          delegatedTurnDispatched,
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
 		},
@@ -1641,6 +1988,7 @@ func (w *Watcher) delegatedInputConfirmer(
 					return delegatedInputConfirmation{
 						Outcome:          InputAccepted,
 						ProviderActivity: firstNonEmptyString(observation.ID, evidence.ID),
+						Admission:        evidence,
 					}, nil
 				case delegatedAdmissionMismatched:
 					return delegatedInputConfirmation{Outcome: InputAmbiguous},
@@ -1860,7 +2208,7 @@ func waitForInputReadyGuarded(
 		if guard != nil && guard() != nil {
 			return false
 		}
-		content, alive := capturePaneContent(sessionID)
+		content, alive, _ := capturePaneContent(sessionID)
 		if !alive {
 			return false
 		}

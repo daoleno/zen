@@ -133,6 +133,26 @@ func (w *fakeControlWatcher) UpdateAgentProgress(id string, progress classifier.
 	return &cp, nil
 }
 
+func (w *fakeControlWatcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, error) {
+	agent := w.agents[id]
+	if agent == nil {
+		return nil, os.ErrNotExist
+	}
+	agent.State = classifier.StateRunning
+	agent.Summary = "Delegated turn running"
+	agent.Attention = "none"
+	agent.NeedsAttention = false
+	agent.Phase = ""
+	agent.TaskClass = ""
+	agent.EventKind = ""
+	agent.DetailsJSON = ""
+	agent.LastProgressAt = nil
+	agent.ExpectedNextCheckAt = nil
+	agent.LeaseSeconds = 0
+	cp := *agent
+	return &cp, nil
+}
+
 func (w *fakeControlWatcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
 	agent := w.agents[id]
 	if agent == nil {
@@ -236,6 +256,16 @@ func (w *fakeControlWatcher) KillSession(sessionID string) error {
 
 func (w *fakeControlWatcher) CapturePaneContent(sessionID string) (string, error) {
 	return w.captures[sessionID], nil
+}
+
+func (w *fakeControlWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker {
+	return nil
+}
+
+func (w *fakeControlWatcher) ClearDelegatedTurnMarkers([]string) {}
+
+func (w *fakeControlWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
+	return watcher.ProviderActivityObservation{}, false, nil
 }
 
 func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
@@ -1024,8 +1054,10 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
 		t.Fatalf("response = %#v", resp)
 	}
+	// A definite non-submission must not falsely terminalize the Session:
+	// the canonical turn stays Admitted and the projection stays running.
 	agent := fw.agents["brain-agent-unsubmitted:@1"]
-	if agent == nil || agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
+	if agent == nil || agent.State != classifier.StateRunning || agent.NeedsAttention {
 		t.Fatalf("agent after failed initial prompt = %#v", agent)
 	}
 	items, err := app.brainStore.ListWork()
@@ -1069,11 +1101,8 @@ func TestControlAppAmbiguousSpawnFailureProjectsNonterminalAttempt(t *testing.T)
 	if agent.State != classifier.StateRunning {
 		t.Fatalf("ambiguous spawn terminalized the Session: %#v", agent)
 	}
-	if agent.Attention != "none" || agent.NeedsAttention || agent.EventKind != "" || agent.TaskClass != "" || agent.Phase != "" {
+	if agent.NeedsAttention || agent.EventKind != "" || agent.TaskClass != "" || agent.Phase != "" {
 		t.Fatalf("ambiguous spawn retained failed-attempt attention: %#v", agent)
-	}
-	if !strings.Contains(agent.Summary, "will not be replayed") {
-		t.Fatalf("ambiguous spawn summary = %q", agent.Summary)
 	}
 	if len(fw.sent) != 1 {
 		t.Fatalf("ambiguous spawn submitted the prompt %d times, want exactly once", len(fw.sent))
@@ -1113,9 +1142,11 @@ func TestControlAppDefinitelyNotSubmittedSpawnFailureStillProjectsFailure(t *tes
 	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
 		t.Fatalf("response = %#v", resp)
 	}
+	// The input provably never reached the provider: the Session must not be
+	// falsely terminalized; the Work surfaces the launch failure.
 	agent := fw.agents["brain-agent-notsubmitted:@1"]
-	if agent == nil || agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
-		t.Fatalf("definitely-not-submitted spawn must still project failure: %#v", agent)
+	if agent == nil || agent.State != classifier.StateRunning || agent.NeedsAttention {
+		t.Fatalf("definitely-not-submitted spawn projected a false failure: %#v", agent)
 	}
 	items, err := app.brainStore.ListWork()
 	if err != nil {

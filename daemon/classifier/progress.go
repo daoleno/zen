@@ -16,6 +16,12 @@ type AgentProgress struct {
 	EventKind    string
 	DetailsJSON  string
 	LeaseSeconds int
+	// ProgressEventID is the caller-minted logical event identity: created
+	// once per logical progress submission and reused on transport retry, so
+	// identical later heartbeats are distinct facts while a retry dedupes.
+	// It is audit metadata for the deterministic FactID (C.3.1); the payload
+	// hash is never identity.
+	ProgressEventID string
 }
 
 func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
@@ -26,6 +32,7 @@ func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
 	progress.TaskClass = strings.TrimSpace(progress.TaskClass)
 	progress.EventKind = strings.TrimSpace(progress.EventKind)
 	progress.DetailsJSON = strings.TrimSpace(progress.DetailsJSON)
+	progress.ProgressEventID = strings.TrimSpace(progress.ProgressEventID)
 
 	if !validProgressStatus(progress.Status) {
 		return AgentProgress{}, fmt.Errorf("invalid status %q; valid values are running, done, failed, blocked", progress.Status)

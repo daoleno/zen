@@ -9,14 +9,13 @@ import (
 
 func TestSessionActivityAdvancedDecision(t *testing.T) {
 	base := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	runningTurn := delegatedTurnRecord{
-		SchemaVersion: delegatedTurnSchema,
-		ID:            "turn-1",
-		Status:        delegatedTurnRunning,
-		AcceptedAt:    base,
+	runningTurn := TurnSnapshot{
+		TurnID:     "turn-1",
+		Status:     TurnRunning,
+		AcceptedAt: base,
 	}
 	doneTurn := runningTurn
-	doneTurn.Status = delegatedTurnDone
+	doneTurn.Status = TurnDone
 	doneTurn.SettledAt = &base
 
 	cases := []struct {
@@ -24,9 +23,9 @@ func TestSessionActivityAdvancedDecision(t *testing.T) {
 		contentChanged bool
 		oldState       classifier.AgentState
 		newState       classifier.AgentState
-		previousTurn   delegatedTurnRecord
+		previousTurn   TurnSnapshot
 		hadPrevious    bool
-		turn           delegatedTurnRecord
+		turn           TurnSnapshot
 		hasTurn        bool
 		want           bool
 	}{
@@ -71,7 +70,7 @@ func TestSessionActivityAdvancedDecision(t *testing.T) {
 			newState:     classifier.StateRunning,
 			previousTurn: runningTurn,
 			hadPrevious:  true,
-			turn:         func() delegatedTurnRecord { t := runningTurn; t.ID = "turn-2"; return t }(),
+			turn:         func() TurnSnapshot { t := runningTurn; t.TurnID = "turn-2"; return t }(),
 			hasTurn:      true,
 			want:         true,
 		},
@@ -121,17 +120,16 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 	settled := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 
 	baseAgent := &classifier.Agent{StartedAt: started}
-	baseTurn := delegatedTurnRecord{
-		SchemaVersion: delegatedTurnSchema,
-		ID:            "turn-1",
-		Status:        delegatedTurnRunning,
-		AcceptedAt:    accepted,
+	baseTurn := TurnSnapshot{
+		TurnID:     "turn-1",
+		Status:     TurnRunning,
+		AcceptedAt: accepted,
 	}
 
 	cases := []struct {
 		name     string
 		agent    *classifier.Agent
-		turn     delegatedTurnRecord
+		turn     TurnSnapshot
 		hasTurn  bool
 		provider ProviderActivityObservation
 		want     time.Time
@@ -171,9 +169,9 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 		{
 			name:  "turn settlement is the latest provable activity",
 			agent: baseAgent,
-			turn: func() delegatedTurnRecord {
+			turn: func() TurnSnapshot {
 				turn := baseTurn
-				turn.Status = delegatedTurnDone
+				turn.Status = TurnDone
 				turn.SettledAt = &settled
 				return turn
 			}(),
@@ -204,8 +202,8 @@ func installFakePollSeams(
 	previousCapture := capturePaneContentFunc
 	previousSnapshot := snapshotProcessesFunc
 	listTmuxWindowsFunc = func() ([]tmuxWindow, error) { return windows, nil }
-	capturePaneContentFunc = func(target string) (string, bool) {
-		return contentByTarget[target], true
+	capturePaneContentFunc = func(target string) (string, bool, int) {
+		return contentByTarget[target], true, -1
 	}
 	snapshotProcessesFunc = func() map[int]processInfo { return processes }
 	return func() {
@@ -456,12 +454,12 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 	// Pane dies: same captured lines, but liveness flips. Classification moves
 	// sess-a to done with no content change.
 	previousCapture := capturePaneContentFunc
-	capturePaneContentFunc = func(target string) (string, bool) {
-		content, alive := previousCapture(target)
+	capturePaneContentFunc = func(target string) (string, bool, int) {
+		content, alive, deadStatus := previousCapture(target)
 		if target == "sess-a:@1" {
-			return content, false
+			return content, false, 1
 		}
-		return content, alive
+		return content, alive, deadStatus
 	}
 
 	w.poll()
@@ -500,9 +498,18 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 4, 0, time.UTC),
 	})
 	settledAt := time.Date(2026, 8, 7, 9, 59, 0, 0, time.UTC)
-	turnJSON := `{"schema_version":1,"id":"turn-1","status":"done","accepted_at":"2026-08-07T09:58:00Z","process_identity":"proc-1","pane_baseline":"baseline-1","settled_at":"2026-08-07T09:59:00Z","summary":"Finished verification"}`
+	ledger := newFakeTurnLedger()
+	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
+		SessionID:  "brain-agent-worker:@1",
+		TurnID:     "turn-1",
+		Status:     TurnDone,
+		AcceptedAt: time.Date(2026, 8, 7, 9, 58, 0, 0, time.UTC),
+		SettledAt:  &settledAt,
+		Summary:    "Finished verification",
+	})
+	w.turnLedger = ledger
 	windows := []tmuxWindow{
-		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "claude", panePID: 333, delegatedTurnRaw: turnJSON},
+		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "claude", panePID: 333},
 	}
 	restore := installFakePollSeams(windows, map[string]string{
 		"brain-agent-worker:@1": "Claude Code\nFinished verification\n",

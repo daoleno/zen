@@ -73,6 +73,16 @@ func (w *brainServiceTestWatcher) CapturePaneContent(string) (string, error) {
 	return "", nil
 }
 
+func (w *brainServiceTestWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker {
+	return nil
+}
+
+func (w *brainServiceTestWatcher) ClearDelegatedTurnMarkers([]string) {}
+
+func (w *brainServiceTestWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
+	return watcher.ProviderActivityObservation{}, false, nil
+}
+
 // killTrackingWatcher adds CreateSession and KillSession tracking needed for
 // snapshot/live delegated coverage.
 type killTrackingWatcher struct {

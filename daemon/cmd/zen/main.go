@@ -173,6 +173,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize brain store: %w", err)
 	}
 	brainService := brain.NewService(brainStore, w, execs)
+	w.SetTurnLedger(brainService)
 	calendarRoot, err := calendar.DefaultRoot()
 	if err != nil {
 		return fmt.Errorf("resolve calendar root: %w", err)
@@ -982,6 +983,7 @@ func runAgentProgress(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.EventKind, "event-kind", "", "semantic progress event: progress, invariant, artifact, risk, needs_judgment, verification, or done")
 	fs.StringVar(&req.DetailsJSON, "details-json", "", "optional JSON details for the semantic event")
 	fs.IntVar(&req.LeaseSeconds, "lease", 0, "seconds until the next expected progress update")
+	fs.StringVar(&req.ProgressEventID, "progress-event-id", "", "logical progress submission id, minted once per submission and reused on retry; generated per call when empty")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent progress --status running --phase working --attention none --summary 'Reading files' --lease 300 [flags]")
 		fmt.Fprintln(stderr, "")

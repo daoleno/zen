@@ -916,6 +916,13 @@ func (w *fakeWatcher) InputReceiptResult(_ string, receipt string) (watcher.Inpu
 	return watcher.InputResult{Outcome: outcome, Receipt: receipt}, found, nil
 }
 
+func (w *fakeWatcher) setReceiptOutcome(receipt string, outcome watcher.InputOutcome) {
+	if w.outcomes == nil {
+		w.outcomes = map[string]watcher.InputOutcome{}
+	}
+	w.outcomes[receipt] = outcome
+}
+
 func (w *fakeWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	if w.killLeavesLive && w.killErr != nil {
@@ -939,6 +946,16 @@ func (w *fakeWatcher) KillSession(sessionID string) error {
 
 func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
 	return w.captures[sessionID], nil
+}
+
+func (w *fakeWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker {
+	return nil
+}
+
+func (w *fakeWatcher) ClearDelegatedTurnMarkers([]string) {}
+
+func (w *fakeWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
+	return watcher.ProviderActivityObservation{}, false, nil
 }
 
 func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {

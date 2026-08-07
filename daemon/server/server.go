@@ -112,6 +112,7 @@ type Server struct {
 	brainWorkSubID         int
 	brainWorkSub           <-chan brain.WorkChange
 	brainMigrationComplete bool
+	turnLedgerMigrationComplete bool
 
 	clients           map[*websocket.Conn]*authenticatedClient
 	active            map[*websocket.Conn]string
@@ -2844,6 +2845,23 @@ func (s *Server) heartbeat(ctx context.Context) {
 						log.Printf("brain delegated Session migration failed: %v", err)
 					} else {
 						s.brainMigrationComplete = true
+					}
+				}
+				if !s.turnLedgerMigrationComplete {
+					// One-shot canonical-turn migration: legacy tmux markers
+					// import as attached hints (never final), reconcile against
+					// turn-bound provider history, then unset the markers.
+					targets, migrated, err := s.brain.MigrateTurnLedgerV1(
+						s.watcher.LegacyDelegatedTurnMarkers(),
+						allAgentSessions,
+					)
+					if err != nil {
+						log.Printf("brain canonical turn ledger migration failed: %v", err)
+					} else if migrated {
+						s.watcher.ClearDelegatedTurnMarkers(targets)
+						s.turnLedgerMigrationComplete = true
+					} else {
+						s.turnLedgerMigrationComplete = true
 					}
 				}
 				s.brain.ReconcileDelegatedSessions(allAgentSessions)

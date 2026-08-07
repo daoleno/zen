@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 4
+const orchestrationSchemaVersion = 5
 
 var (
 	ErrWorkNotFound      = errors.New("Brain Work not found")
@@ -66,6 +66,10 @@ type Work struct {
 // WorkEvent is an append-only fact. Event.ID is also its delivery receipt.
 // Only Actionable events participate in Brain scheduling. A claimed Event is
 // bound to one Host Session and consumed only after its exact input is accepted.
+// Resolution/ResolvedBy/ResolvedAt/DiscardedAt/ReplayOf are the durable
+// actor-recorded audit trail for held delivery claims (C.2.6); they are set
+// only by explicit MarkDeliveredClaim/DiscardClaim/ReplayEvent operations,
+// never by elapsed time.
 type WorkEvent struct {
 	ID                    string     `json:"event_id"`
 	WorkID                string     `json:"work_id"`
@@ -80,7 +84,19 @@ type WorkEvent struct {
 	DeliveryHostSessionID string     `json:"delivery_host_session_id,omitempty"`
 	ConsumedAt            *time.Time `json:"consumed_at,omitempty"`
 	ReadAt                *time.Time `json:"read_at,omitempty"`
+	Resolution            string     `json:"resolution,omitempty"`
+	ResolvedBy            string     `json:"resolved_by,omitempty"`
+	ResolvedAt            *time.Time `json:"resolved_at,omitempty"`
+	DiscardedAt           *time.Time `json:"discarded_at,omitempty"`
+	ReplayOf              string     `json:"replay_of,omitempty"`
 }
+
+// WorkEventResolution values for held-claim closure (C.2.6).
+const (
+	EventResolutionMarkDelivered = "mark_delivered"
+	EventResolutionDiscard       = "discard"
+	EventResolutionReplayed      = "replayed"
+)
 
 type WorkUpdate struct {
 	Title            *string
@@ -114,6 +130,7 @@ type orchestrationDatabase struct {
 	Migrations      orchestrationMigrations `json:"migrations"`
 	BrainWork       []Work                  `json:"brain_work"`
 	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
+	BrainTurns      []TurnRecord            `json:"brain_turns"`
 }
 
 // workRecord is the on-disk Work shape during decode. Unknown never-released
@@ -140,10 +157,12 @@ type orchestrationDatabaseRecord struct {
 	Migrations      orchestrationMigrations `json:"migrations"`
 	BrainWork       []workRecord            `json:"brain_work"`
 	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
+	BrainTurns      []TurnRecord            `json:"brain_turns"`
 }
 
 type orchestrationMigrations struct {
 	DelegatedSessionsV1At *time.Time `json:"delegated_sessions_v1_at,omitempty"`
+	TurnLedgerV1At        *time.Time `json:"turn_ledger_v1_at,omitempty"`
 }
 
 type orchestrationV0 struct {
@@ -237,6 +256,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			Migrations:      orchestrationMigrations{},
 			BrainWork:       []Work{},
 			BrainWorkEvents: []WorkEvent{},
+			BrainTurns:      []TurnRecord{},
 		}, true, nil
 	case 2:
 		var legacy legacyOrchestrationDatabase
@@ -256,6 +276,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			Migrations:      legacy.Migrations,
 			BrainWork:       worksFromRecords(legacy.BrainWork),
 			BrainWorkEvents: make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
+			BrainTurns:      []TurnRecord{},
 		}
 		for _, old := range legacy.BrainWorkEvents {
 			event := WorkEvent{
@@ -288,6 +309,26 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			Migrations:      record.Migrations,
 			BrainWork:       worksFromRecords(record.BrainWork),
 			BrainWorkEvents: record.BrainWorkEvents,
+			BrainTurns:      []TurnRecord{},
+		}
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		return database, true, nil
+	case 4:
+		var record orchestrationDatabaseRecord
+		if err := json.Unmarshal(trimmed, &record); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if record.BrainWork == nil || record.BrainWorkEvents == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
+		}
+		database := orchestrationDatabase{
+			SchemaVersion:   orchestrationSchemaVersion,
+			Migrations:      record.Migrations,
+			BrainWork:       worksFromRecords(record.BrainWork),
+			BrainWorkEvents: record.BrainWorkEvents,
+			BrainTurns:      []TurnRecord{},
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
@@ -307,6 +348,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			Migrations:      record.Migrations,
 			BrainWork:       worksFromRecords(record.BrainWork),
 			BrainWorkEvents: record.BrainWorkEvents,
+			BrainTurns:      record.BrainTurns,
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
@@ -433,6 +475,9 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 		}
 		dedupeKeys[key] = struct{}{}
 	}
+	if err := validateTurnLedger(database.BrainTurns, workIDs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -530,6 +575,9 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 	if database.BrainWorkEvents == nil {
 		database.BrainWorkEvents = []WorkEvent{}
 	}
+	if database.BrainTurns == nil {
+		database.BrainTurns = []TurnRecord{}
+	}
 	sort.Slice(database.BrainWork, func(left, right int) bool {
 		if database.BrainWork[left].CreatedAt.Equal(database.BrainWork[right].CreatedAt) {
 			return database.BrainWork[left].ID < database.BrainWork[right].ID
@@ -541,6 +589,12 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 			return database.BrainWorkEvents[left].ID < database.BrainWorkEvents[right].ID
 		}
 		return database.BrainWorkEvents[left].CreatedAt.Before(database.BrainWorkEvents[right].CreatedAt)
+	})
+	sort.Slice(database.BrainTurns, func(left, right int) bool {
+		if database.BrainTurns[left].SessionID == database.BrainTurns[right].SessionID {
+			return database.BrainTurns[left].TurnID < database.BrainTurns[right].TurnID
+		}
+		return database.BrainTurns[left].SessionID < database.BrainTurns[right].SessionID
 	})
 	if err := validateOrchestrationDatabase(database); err != nil {
 		return err
@@ -1266,7 +1320,7 @@ func compactWorkResultText(value string) string {
 
 func isProjectedWorkResultEvent(kind string) bool {
 	switch strings.TrimSpace(kind) {
-	case "session.done", "session.failed", "session.needs_input", "session.stale":
+	case "session.done", "session.failed", "session.needs_input", "session.stale", "session.uncertain":
 		return true
 	default:
 		return false
@@ -1276,6 +1330,7 @@ func isProjectedWorkResultEvent(kind string) bool {
 func isResultEvent(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "session.done", "session.failed", "session.needs_input", "session.stale",
+		"session.uncertain", "delivery.uncertain",
 		"calendar.result", "calendar.failure":
 		return true
 	default:

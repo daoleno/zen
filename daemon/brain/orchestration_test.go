@@ -1073,9 +1073,15 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
-				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-			}}
+			// The tmux receipt ledger proves the mutation may have begun:
+			// the claim is held forever, surfaced as a deduped
+			// delivery.ambiguous note, and never replayed (C.2.7).
+			restartedWatcher := &fakeWatcher{
+				sessions: map[string]*classifier.Agent{
+					hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+				},
+			}
+			restartedWatcher.setReceiptOutcome(event.ID, watcher.InputAmbiguous)
 			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || woke {
 				t.Fatalf("restart replayed ambiguity: woke=%v err=%v", woke, dispatchErr)
 			}
@@ -1083,12 +1089,75 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 1 || events[0].ID != event.ID || events[0].ClaimedAt == nil ||
+			if len(events) != 2 || events[0].ID != event.ID || events[0].ClaimedAt == nil ||
+				events[0].ConsumedAt != nil ||
 				len(restartedWatcher.sentCalls) != 0 {
-				t.Fatalf("ambiguous Event did not remain singly claimed: events=%#v sends=%#v",
+				t.Fatalf("ambiguous Event did not remain singly held: events=%#v sends=%#v",
 					events, restartedWatcher.sentCalls)
 			}
+			note := events[1]
+			if note.Kind != "delivery.ambiguous" || note.Actionable ||
+				note.DedupeKey != "delivery:"+event.ID+":ambiguous" {
+				t.Fatalf("ambiguous delivery note = %#v", note)
+			}
 		})
+	}
+}
+
+func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title:            "Absent receipt releases",
+		Objective:        "Host receipts are written before the host mutates.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID:     item.ID,
+		Kind:       "session.done",
+		DedupeKey:  "absent-receipt",
+		Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claim once with a send failure that leaves no receipt (provably never
+	// submitted), then restart with an empty receipt ledger: the claim is
+	// released immediately and the event becomes dispatchable again.
+	failedWatcher := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		},
+		sendErr: errors.New("tmux queue did not start"),
+	}
+	if _, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil {
+		t.Fatal("failed dispatch did not error")
+	}
+	restarted, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+	}}
+	if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
+		t.Fatalf("absent-receipt restart dispatch woke=%v err=%v", woke, dispatchErr)
+	}
+	if len(restartedWatcher.sentCalls) != 1 ||
+		restartedWatcher.receipts[hostID] != event.ID {
+		t.Fatalf("absent-receipt restart sent %#v receipts=%#v, want re-dispatch of %q",
+			restartedWatcher.sentCalls, restartedWatcher.receipts, event.ID)
 	}
 }
 

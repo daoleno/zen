@@ -41,6 +41,15 @@ type Watcher interface {
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
+	// LegacyDelegatedTurnMarkers returns the raw pre-protocol tmux
+	// @zen_delegated_turn options for the one-shot ledger migration.
+	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
+	// ClearDelegatedTurnMarkers unsets the migrated @zen_delegated_turn
+	// options; all later writes go to the canonical ledger.
+	ClearDelegatedTurnMarkers(targets []string)
+	// ProbeProviderEvidence returns the current provider-native observation
+	// for a session, used by the legacy-marker reconciliation sweep.
+	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 }
 
 type Service struct {
@@ -134,6 +143,35 @@ func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Serv
 		execs:   execs,
 		now:     time.Now,
 	}
+}
+
+// Turn returns the canonical ledger snapshot for the session. It implements
+// watcher.TurnLedger so the watcher reads the same canonical owner.
+func (s *Service) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSnapshot{}, false, nil
+	}
+	return s.store.Turn(sessionID)
+}
+
+// ApplyTurnFact applies one observation through the single canonical reducer.
+// It implements watcher.TurnLedger; the store persists turn + derived Work +
+// outbox event atomically, so this method never dispatches directly — the
+// resulting Session event / reconcile loop re-drives DispatchPendingEvent.
+func (s *Service) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSnapshot{}, false, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.ApplyTurnFact(fact)
+}
+
+// AdmitTurn durably records the pre-dispatch Admitted turn. It implements
+// watcher.TurnLedgerAdmitter; a markerless accepted input is unrepresentable.
+func (s *Service) AdmitTurn(admitted watcher.AdmittedTurn) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("brain store is not configured")
+	}
+	return s.store.AdmitTurn(admitted)
 }
 
 func (s *Service) Snapshot() (Snapshot, error) {
@@ -304,6 +342,13 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 		return HousekeepingReport{}, err
 	}
 	changedPaths := changedWorkspacePaths(before, after)
+	// Closed-turn ledger rows whose terminal events were consumed are pruned
+	// (C.12 Phase 3); held/uncertain rows are never pruned.
+	prunedTurns, pruneErr := s.store.PruneSettledTurns(s.nowUTC().AddDate(0, 0, -7))
+	if pruneErr != nil {
+		return HousekeepingReport{}, pruneErr
+	}
+	_ = prunedTurns
 	context, err := s.Context()
 	if err != nil {
 		return HousekeepingReport{}, err
@@ -435,6 +480,12 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 
 // RouteSessionEvent records the executor fact against its owning Work before
 // attempting a wake. Provider transcript state is never scheduler authority.
+//
+// Sessions with a canonical ledger turn are already owned by the single
+// reducer: Work status and outbox events were derived atomically at fact-apply
+// time (watcher poll facts, control-plane facts, liveness facts). This route
+// only re-drives delivery for those sessions. Markerless/projection sessions
+// keep the legacy projection path below.
 func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if s == nil || s.store == nil || event.Agent == nil {
 		return false, nil
@@ -458,6 +509,18 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	}
 	if !found {
 		return false, nil
+	}
+	if _, hasTurn, turnErr := s.store.Turn(agent.ID); turnErr != nil {
+		return false, turnErr
+	} else if hasTurn {
+		// Canonical-turn path: the ledger already derived Work + Events; this
+		// route only re-drives delivery of newly actionable rows.
+		if event.Type == "agent_removed" {
+			// Liveness was applied by the watcher before the removal event;
+			// ownership stays attached until Brain resolves session.uncertain.
+			return s.DispatchPendingEvent()
+		}
+		return s.DispatchPendingEvent()
 	}
 	if event.Type == "agent_removed" {
 		terminal, err := s.removalFollowsTerminalSession(item.ID, agent.ID)
@@ -745,7 +808,7 @@ func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
 func isSessionLifecycleKind(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "session.running", "session.waiting", "session.needs_input",
-		"session.done", "session.failed", "session.stale":
+		"session.done", "session.failed", "session.stale", "session.uncertain":
 		return true
 	default:
 		return false
@@ -796,10 +859,214 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 	return s.store.MigrateDelegatedSessionsV1(candidates)
 }
 
-// DispatchPendingEvent is the complete automatic scheduler: claim one durable
-// actionable Event, send its compact complete delta, and consume that exact
-// claim after Session Input accepts it. A claimed Event is never replayed after
-// an ambiguous send.
+// MigrateTurnLedgerV1 performs the one-shot canonical-turn migration
+// (C.2.8): legacy tmux markers import as attached hints only — canonical
+// status is Admitted/Running, never Done/Failed — then Phase 1b reconciles
+// each hinted row against turn-bound provider history: a bound terminal sets
+// the canonical terminal (in-place flip when the kind matches); history
+// showing the turn still running drops the hint; unavailable history with a
+// gone session resolves to Unknown + session.uncertain; unavailable history
+// with a live session keeps the hint attached with canonical Running. Returns
+// the targets whose markers should be cleared, and whether migration ran.
+func (s *Service) MigrateTurnLedgerV1(
+	markers []watcher.LegacyDelegatedTurnMarker,
+	agents []*classifier.Agent,
+) ([]string, bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, nil
+	}
+	byID := make(map[string]*classifier.Agent, len(agents))
+	for _, agent := range agents {
+		if agent != nil {
+			byID[agent.ID] = agent
+		}
+	}
+	imports := []TurnLedgerImport{}
+	targets := []string{}
+	for _, marker := range markers {
+		legacy, ok, err := watcher.DecodeLegacyDelegatedTurn(marker.Raw)
+		if err != nil || !ok {
+			continue
+		}
+		sessionID := strings.TrimSpace(marker.Target)
+		if sessionID == "" {
+			continue
+		}
+		workItem, found, workErr := s.store.WorkByOwnerSession(sessionID)
+		if workErr != nil || !found {
+			continue
+		}
+		status := watcher.TurnRunning
+		hint := (*watcher.TurnHint)(nil)
+		switch legacy.Status {
+		case "ambiguous", "dispatched":
+			status = watcher.TurnAdmitted
+		case "done":
+			hint = &watcher.TurnHint{
+				Kind:    "session.done",
+				Class:   watcher.EvidenceLegacy,
+				At:      legacyAcceptedAt(legacy),
+				Summary: "Legacy tmux marker reported done",
+			}
+		case "failed":
+			hint = &watcher.TurnHint{
+				Kind:    "session.failed",
+				Class:   watcher.EvidenceLegacy,
+				At:      legacyAcceptedAt(legacy),
+				Summary: "Legacy tmux marker reported failed",
+			}
+		default:
+			// running/idle and anything unknown: canonical Running only.
+		}
+		if legacy.AcceptedAt.IsZero() {
+			continue
+		}
+		imports = append(imports, TurnLedgerImport{
+			SessionID:       sessionID,
+			TurnID:          firstNonEmpty(legacy.ID, sessionTurnID(sessionID, legacy.AcceptedAt)),
+			WorkID:          workItem.ID,
+			Status:          status,
+			AcceptedAt:      legacy.AcceptedAt.UTC(),
+			ProcessIdentity: legacy.ProcessIdentity,
+			Summary:         legacy.Summary,
+			Hint:            hint,
+		})
+		targets = append(targets, sessionID)
+	}
+	migrated, err := s.store.MigrateTurnLedgerV1(imports)
+	if err != nil {
+		return nil, false, err
+	}
+	if !migrated {
+		return nil, false, nil
+	}
+	s.reconcileLegacyTurnHints(imports, byID)
+	return targets, true, nil
+}
+
+func legacyAcceptedAt(legacy watcher.LegacyDelegatedTurn) time.Time {
+	if legacy.SettledAt != nil {
+		return legacy.SettledAt.UTC()
+	}
+	return legacy.AcceptedAt.UTC()
+}
+
+// sessionTurnID keeps the canonical TurnID shape shared with the control app:
+// "<agentID>:turn:<unixnano>".
+func sessionTurnID(sessionID string, acceptedAt time.Time) string {
+	return fmt.Sprintf("%s:turn:%d", strings.TrimSpace(sessionID), acceptedAt.UnixNano())
+}
+
+// reconcileLegacyTurnHints is migration Phase 1b (C.2.8): per hinted row, read
+// turn-bound provider history and reconcile the attached hint through the same
+// canonical reducer.
+func (s *Service) reconcileLegacyTurnHints(imports []TurnLedgerImport, agents map[string]*classifier.Agent) {
+	if s.watcher == nil {
+		return
+	}
+	for _, candidate := range imports {
+		if candidate.Hint == nil {
+			continue
+		}
+		sessionID := candidate.SessionID
+		agent := agents[sessionID]
+		observation, ok, probeErr := s.watcher.ProbeProviderEvidence(sessionID)
+		if probeErr != nil || !ok || observation.ID == "" {
+			// History unavailable: session gone → Unknown + session.uncertain;
+			// session live → hint stays attached, canonical stays Running.
+			if agent == nil || !s.watcher.HasSession(sessionID) {
+				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+					SessionID: sessionID,
+					TurnID:    candidate.TurnID,
+					Class:     watcher.EvidenceLiveness,
+					Kind:      "uncertain",
+					SourceID:  "liveness\x00migration-reconcile\x00" + sessionID,
+					At:        s.nowUTC(),
+					Summary:   "Legacy delegated Session ended before its outcome could be reconciled",
+				})
+			}
+			continue
+		}
+		if !observation.StartedAt.IsZero() && observation.StartedAt.Before(candidate.AcceptedAt) {
+			continue
+		}
+		switch observation.Status {
+		case "completed":
+			_, _, _ = s.store.ApplyTurnFact(s.providerTerminalFact(sessionID, candidate.TurnID, observation, "done"))
+		case "failed", "interrupted", "cancelled":
+			_, _, _ = s.store.ApplyTurnFact(s.providerTerminalFact(sessionID, candidate.TurnID, observation, "failed"))
+		case "running":
+			// History shows the turn still running: drop the hint, canonical
+			// stays Running (the reducer drops same-kind hints on bound
+			// provider running facts).
+			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+				SessionID:  sessionID,
+				TurnID:     candidate.TurnID,
+				Class:      watcher.EvidenceProvider,
+				Kind:       "running",
+				SourceID:   providerFactSourceID(sessionID, observation),
+				Cursor:     observation.AdmissionCursor,
+				Admission:  admissionFromObservation(observation),
+				ActivityID: strings.TrimSpace(observation.ID),
+				StartedAt:  observation.StartedAt,
+				At:         s.nowUTC(),
+				Summary:    "Delegated turn running",
+			})
+		}
+	}
+}
+
+func (s *Service) providerTerminalFact(
+	sessionID, turnID string,
+	observation watcher.ProviderActivityObservation,
+	kind string,
+) watcher.TurnFact {
+	return watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       kind,
+		SourceID:   providerFactSourceID(sessionID, observation),
+		Cursor:     observation.AdmissionCursor,
+		Admission:  admissionFromObservation(observation),
+		ActivityID: strings.TrimSpace(observation.ID),
+		StartedAt:  observation.StartedAt,
+		SettledAt:  observation.SettledAt,
+		At:         s.nowUTC(),
+		Summary:    "Delegated provider completed the turn",
+	}
+}
+
+func providerFactSourceID(sessionID string, observation watcher.ProviderActivityObservation) string {
+	return fmt.Sprintf("provider\x00%s\x00%s\x00%s\x00%d",
+		sessionID,
+		firstNonEmpty(observation.AdmissionStream, "stream"),
+		firstNonEmpty(observation.ID, observation.AdmissionID),
+		observation.AdmissionCursor,
+	)
+}
+
+func admissionFromObservation(observation watcher.ProviderActivityObservation) watcher.TurnAdmission {
+	return watcher.TurnAdmission{
+		Stream: strings.TrimSpace(observation.AdmissionStream),
+		ID:     strings.TrimSpace(observation.AdmissionID),
+		Cursor: observation.AdmissionCursor,
+		SHA256: strings.TrimSpace(observation.InputSHA256),
+		At:     observation.AdmissionAt.UTC(),
+	}
+}
+
+// DispatchPendingEvent is the complete automatic scheduler: resolve every held
+// claim it can, claim one durable actionable Event, send its compact complete
+// delta, and consume that exact claim after Session Input accepts it.
+//
+// Claim recovery is four-state with no time-based release (C.2.7): a provably
+// absent receipt releases the claim immediately; an accepted receipt consumes
+// it; an ambiguous receipt or an inaccessible host holds the claim forever and
+// surfaces a deduped delivery diagnostic (`delivery.ambiguous` note,
+// `delivery.uncertain` actionable) while unrelated events keep dispatching.
+// Held claims close only via explicit MarkDeliveredClaim/DiscardClaim/
+// ReplayEvent or a receipt-state change — never by elapsed time.
 func (s *Service) DispatchPendingEvent() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -810,26 +1077,61 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if len(claimedEvents) != 0 {
-		claimed := claimedEvents[0]
-		if claimed.DeliveryHostSessionID == "" ||
-			!s.watcher.HasSession(claimed.DeliveryHostSessionID) {
-			return false, nil
+	for _, claimed := range claimedEvents {
+		if claimed.DeliveryHostSessionID == "" {
+			continue
 		}
-		result, found, receiptErr := s.watcher.InputReceiptResult(
-			claimed.DeliveryHostSessionID,
-			claimed.ID,
-		)
-		if receiptErr != nil || !found || result.Outcome != watcher.InputAccepted {
-			return false, receiptErr
+		hostID := claimed.DeliveryHostSessionID
+		if !s.watcher.HasSession(hostID) {
+			// Inaccessible/destroyed host: hold forever; never auto-release,
+			// never auto-redispatch; surface an actionable delivery.uncertain
+			// so Brain decides. Held claims never block unrelated events.
+			_, _, _ = s.store.AppendDeliveryNote(
+				claimed.WorkID,
+				claimed.ID,
+				"delivery.uncertain",
+				"delivery:"+claimed.ID+":uncertain",
+				"Delivery host Session "+hostID+" is no longer available for Work Event "+claimed.ID+"; resolve manually (mark_delivered, discard, or replay).",
+				true,
+			)
+			continue
 		}
-		if _, _, err := s.store.ConsumeClaimedWorkEvent(
-			claimed.ID,
-			claimed.DeliveryHostSessionID,
-		); err != nil {
-			return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.ID)
+		if receiptErr != nil || !found {
+			if receiptErr != nil {
+				// Transient receipt-ledger read failure: retry on the next
+				// wake; never release by elapsed time.
+				continue
+			}
+			// Receipt absent: host receipts are written before the host
+			// mutates, so the mutation provably never began. Release.
+			if releaseErr := s.store.ReleaseEventClaim(claimed.ID, hostID); releaseErr != nil {
+				return false, fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+			}
+			continue
 		}
-		return false, nil
+		switch result.Outcome {
+		case watcher.InputAccepted:
+			if _, _, err := s.store.ConsumeClaimedWorkEvent(claimed.ID, hostID); err != nil {
+				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+			}
+		case watcher.InputAmbiguous:
+			// Mutation may have begun: hold forever; never release, never
+			// re-send; append a non-actionable delivery.ambiguous note.
+			_, _, _ = s.store.AppendDeliveryNote(
+				claimed.WorkID,
+				claimed.ID,
+				"delivery.ambiguous",
+				"delivery:"+claimed.ID+":ambiguous",
+				"Delivery of Work Event "+claimed.ID+" stayed ambiguous; it will not be replayed automatically.",
+				false,
+			)
+		default:
+			// InputNotSubmitted: the receipt exists and proves non-submission.
+			if releaseErr := s.store.ReleaseEventClaim(claimed.ID, hostID); releaseErr != nil {
+				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
+			}
+		}
 	}
 	hostSession, err := s.store.HostSession()
 	if err != nil {
@@ -990,6 +1292,46 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			continue
 		}
 		agent := byID[item.OwnerSessionID]
+		turn, hasTurn, turnErr := s.store.Turn(item.OwnerSessionID)
+		if turnErr != nil {
+			log.Printf("brain Session canonical turn read failed for %s: %v", item.OwnerSessionID, turnErr)
+			continue
+		}
+		if hasTurn {
+			// Canonical-turn path: the ledger owns Work + Events. Terminal
+			// turns are immutable and their events are already durable; only
+			// the lease-expiry stale wake is re-derived here.
+			if watcher.TurnTerminal(turn.Status) {
+				continue
+			}
+			if agent != nil && agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
+				continue
+			}
+			leaseActive := agent != nil && agent.ExpectedNextCheckAt != nil &&
+				!now.After(agent.ExpectedNextCheckAt.UTC())
+			if agent != nil && !agent.PaneAlive && agent.ProcessID <= 0 && !leaseActive {
+				continue
+			}
+			if agent == nil || agent.ExpectedNextCheckAt == nil || agent.LastProgressAt == nil {
+				continue
+			}
+			if now.Before(agent.ExpectedNextCheckAt.UTC()) {
+				continue
+			}
+			// Lease expired with a live nonterminal turn: one actionable
+			// session.stale per turn (dedupe session:<sid>:turn:<tid>:stale)
+			// wakes Brain; the reducer never terminalizes from a clock.
+			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: item.OwnerSessionID,
+				TurnID:    turn.TurnID,
+				Class:     watcher.EvidenceControl,
+				Kind:      "stale",
+				SourceID:  "lease:expiry:" + turn.TurnID,
+				At:        now,
+				Summary:   "Delegated Session progress lease expired",
+			})
+			continue
+		}
 		if agent == nil {
 			_, knownDelegated := s.delegatedInventory[item.OwnerSessionID]
 			if _, knownUnmanaged := s.unmanagedInventory[item.OwnerSessionID]; knownUnmanaged {

@@ -36,6 +36,20 @@ type InputResult struct {
 	Duplicate bool
 }
 
+// delegatedTurnDraft is the pre-dispatch turn identity minted by the control
+// plane. It is durably admitted to the canonical ledger (persist A) before
+// any provider mutation can begin, so a markerless accepted input is
+// unrepresentable (C.2 invariant 2).
+type delegatedTurnDraft struct {
+	ID              string
+	AcceptedAt      time.Time
+	ProcessIdentity string
+	PaneGeneration  string
+	Receipt         string
+}
+
+// delegatedAdmissionEvidence is the provider-native admission tuple observed
+// before and after the mutation boundary.
 type delegatedAdmissionEvidence struct {
 	Stream      string
 	ID          string
@@ -47,6 +61,7 @@ type delegatedAdmissionEvidence struct {
 type delegatedInputConfirmation struct {
 	Outcome          InputOutcome
 	ProviderActivity string
+	Admission        delegatedAdmissionEvidence
 }
 
 type delegatedInputConfirmer struct {
@@ -122,9 +137,6 @@ type sessionInputIO interface {
 	runQueue(args []string) (started bool, err error)
 	receiptLedger(target string) (sessionInputReceiptLedger, error)
 	writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error
-	delegatedTurn(target string) (delegatedTurnRecord, bool, error)
-	writeDelegatedTurn(target string, turn delegatedTurnRecord) error
-	clearDelegatedTurn(target string) error
 	paneContent(target string) (string, error)
 }
 
@@ -230,43 +242,6 @@ func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputR
 	return nil
 }
 
-func (realSessionInputIO) delegatedTurn(target string) (delegatedTurnRecord, bool, error) {
-	value, err := tmuxWindowUserOption(target, delegatedTurnOption)
-	if err != nil {
-		return delegatedTurnRecord{}, false, err
-	}
-	return decodeDelegatedTurn(value)
-}
-
-func (realSessionInputIO) writeDelegatedTurn(target string, turn delegatedTurnRecord) error {
-	if err := validateDelegatedTurn(turn); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(turn)
-	if err != nil {
-		return fmt.Errorf("encode delegated turn: %w", err)
-	}
-	out, err := exec.Command(
-		"tmux", "set-option", "-w", "-t", target,
-		"@"+delegatedTurnOption, string(raw),
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("write delegated turn: %w%s", err, commandOutputSuffix(out))
-	}
-	return nil
-}
-
-func (realSessionInputIO) clearDelegatedTurn(target string) error {
-	out, err := exec.Command(
-		"tmux", "set-option", "-w", "-u", "-t", target,
-		"@"+delegatedTurnOption,
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("clear delegated turn: %w%s", err, commandOutputSuffix(out))
-	}
-	return nil
-}
-
 func (realSessionInputIO) paneContent(target string) (string, error) {
 	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-200").Output()
 	if err != nil {
@@ -285,6 +260,7 @@ type sessionInputOwner struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionInputSession
 	io       sessionInputIO
+	ledger   TurnLedger
 }
 
 func newSessionInputOwner(io sessionInputIO) *sessionInputOwner {
@@ -405,7 +381,7 @@ func (owner *sessionInputOwner) submitDelegated(
 	resolver func(string) (targetProcessIdentity, bool),
 	command string,
 	payload string,
-	turn delegatedTurnRecord,
+	turn delegatedTurnDraft,
 	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
 	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, turn.ID, &turn, confirm)
@@ -418,7 +394,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 	command string,
 	payload string,
 	receipt string,
-	turn *delegatedTurnRecord,
+	turn *delegatedTurnDraft,
 	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
@@ -455,33 +431,33 @@ func (owner *sessionInputOwner) submitWithTurn(
 				result.Outcome = entry.Outcome
 				if entry.Outcome == InputAccepted {
 					result.Duplicate = true
-					currentTurn, exists, turnErr := owner.io.delegatedTurn(baseline.paneID)
+					currentTurn, exists, turnErr := owner.ledgerTurn(sessionID)
 					if turnErr != nil {
 						return ambiguousSubmission(
 							result.Receipt,
-							fmt.Errorf("input was already accepted but its delegated turn could not be read: %w", turnErr),
+							fmt.Errorf("input was already accepted but its canonical turn could not be read: %w", turnErr),
 						)
 					}
 					if exists {
-						result.TurnID = currentTurn.ID
+						result.TurnID = currentTurn.TurnID
 					} else if turn != nil {
 						return ambiguousSubmission(
 							result.Receipt,
-							fmt.Errorf("input was already accepted but its durable delegated turn marker is missing"),
+							fmt.Errorf("input was already accepted but its durable canonical turn is missing"),
 						)
 					}
 					return nil
 				}
 				if turn != nil {
-					currentTurn, exists, turnErr := owner.io.delegatedTurn(baseline.paneID)
+					currentTurn, exists, turnErr := owner.ledgerTurn(sessionID)
 					if turnErr != nil {
 						return ambiguousSubmission(
 							result.Receipt,
-							fmt.Errorf("input was already ambiguous and its delegated turn could not be read: %w", turnErr),
+							fmt.Errorf("input was already ambiguous and its canonical turn could not be read: %w", turnErr),
 						)
 					}
-					if exists && !delegatedTurnTerminal(currentTurn.Status) {
-						result.TurnID = currentTurn.ID
+					if exists && !TurnTerminal(currentTurn.Status) {
+						result.TurnID = currentTurn.TurnID
 					}
 				}
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior attempt may already have submitted"))
@@ -500,19 +476,16 @@ func (owner *sessionInputOwner) submitWithTurn(
 		if err := validateSameSessionInputPane(baseline, current); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
-		var previousTurn delegatedTurnRecord
-		previousTurnExists := false
 		if turn != nil {
-			existing, exists, turnErr := owner.io.delegatedTurn(current.paneID)
+			existing, exists, turnErr := owner.ledgerTurn(sessionID)
 			if turnErr != nil {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read current delegated turn: %w", turnErr))
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
 			}
-			previousTurn, previousTurnExists = existing, exists
-			if exists && existing.ID != turn.ID && !delegatedTurnTerminal(existing.Status) {
+			if exists && existing.TurnID != turn.ID && !TurnTerminal(existing.Status) {
 				// A submitted message while work is active is steering for the
 				// current turn. Keep its distinct input receipt, but do not
 				// create a second lifecycle identity or reset settlement.
-				result.TurnID = existing.ID
+				result.TurnID = existing.TurnID
 				turn = nil
 			} else {
 				result.TurnID = turn.ID
@@ -553,31 +526,38 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 		}
 		if turn != nil {
-			preDispatchPane, paneErr := owner.io.paneContent(current.paneID)
-			if paneErr != nil {
+			// Persist A: the canonical Admitted record is durable before the
+			// submit queue runs. Failure fails closed as not-submitted.
+			if owner.ledger == nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
 						current.paneID,
 						originalLedger,
 						result.Receipt,
-						fmt.Errorf("capture pre-dispatch pane baseline: %w", paneErr),
+						fmt.Errorf("canonical turn ledger is unavailable"),
 					)
 				}
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("capture pre-dispatch pane baseline: %w", paneErr))
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn ledger is unavailable"))
 			}
-			turn.Status = delegatedTurnAmbiguous
-			turn.PaneBaseline = delegatedTurnPaneIdentity(preDispatchPane)
-			turn.ComposerObserved = false
-			if err := owner.io.writeDelegatedTurn(current.paneID, *turn); err != nil {
+			admitErr := owner.ledger.(TurnLedgerAdmitter).AdmitTurn(AdmittedTurn{
+				SessionID:       sessionID,
+				TurnID:          turn.ID,
+				Receipt:         firstNonEmptyString(turn.Receipt, result.Receipt),
+				AcceptedAt:      turn.AcceptedAt,
+				ProcessIdentity: turn.ProcessIdentity,
+				PaneGeneration:  firstNonEmptyString(turn.PaneGeneration, current.generation),
+				PayloadSHA256:   payloadDigest,
+			})
+			if admitErr != nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
 						current.paneID,
 						originalLedger,
 						result.Receipt,
-						fmt.Errorf("persist delegated turn ambiguity: %w", err),
+						fmt.Errorf("persist delegated turn admission: %w", admitErr),
 					)
 				}
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("persist delegated turn ambiguity: %w", err))
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("persist delegated turn admission: %w", admitErr))
 			}
 		}
 
@@ -585,18 +565,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 		var admissionBaseline delegatedAdmissionEvidence
 		if requiresConfirmation {
 			if confirm.baseline == nil || confirm.confirm == nil {
-				if turn != nil {
-					if rollbackErr := owner.restoreDelegatedTurn(
-						current.paneID,
-						previousTurn,
-						previousTurnExists,
-					); rollbackErr != nil {
-						return definitelyNotSubmitted(
-							result.Receipt,
-							fmt.Errorf("delegated provider admission observer is unavailable; restore delegated turn: %w", rollbackErr),
-						)
-					}
-				}
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
 						current.paneID,
@@ -613,18 +581,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 			var baselineErr error
 			admissionBaseline, baselineErr = confirm.baseline()
 			if baselineErr != nil {
-				if turn != nil {
-					if rollbackErr := owner.restoreDelegatedTurn(
-						current.paneID,
-						previousTurn,
-						previousTurnExists,
-					); rollbackErr != nil {
-						return definitelyNotSubmitted(
-							result.Receipt,
-							fmt.Errorf("capture provider admission baseline: %v; restore delegated turn: %w", baselineErr, rollbackErr),
-						)
-					}
-				}
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
 						current.paneID,
@@ -650,18 +606,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 				result.Outcome = InputAmbiguous
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("run target-bound tmux command queue: %w", queueErr))
 			}
-			if turn != nil {
-				if rollbackErr := owner.restoreDelegatedTurn(
-					current.paneID,
-					previousTurn,
-					previousTurnExists,
-				); rollbackErr != nil {
-					return definitelyNotSubmitted(
-						result.Receipt,
-						fmt.Errorf("start target-bound tmux command queue: %v; restore delegated turn: %w", queueErr, rollbackErr),
-					)
-				}
-			}
 			if result.Receipt != "" {
 				return owner.rollbackReceiptMarker(
 					current.paneID,
@@ -672,8 +616,10 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("start target-bound tmux command queue: %w", queueErr))
 		}
+		var confirmation delegatedInputConfirmation
 		if requiresConfirmation {
-			confirmation, confirmErr := confirm.confirm(
+			var confirmErr error
+			confirmation, confirmErr = confirm.confirm(
 				admissionBaseline,
 				mutationBoundary,
 				payloadDigest,
@@ -688,10 +634,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 					result.Receipt,
 					fmt.Errorf("provider turn start was not authoritatively observed"),
 				)
-			}
-			if turn != nil {
-				turn.Status = delegatedTurnRunning
-				turn.ProviderActivity = strings.TrimSpace(confirmation.ProviderActivity)
 			}
 		}
 		if result.Receipt != "" {
@@ -718,21 +660,38 @@ func (owner *sessionInputOwner) submitWithTurn(
 				)
 			}
 		}
-		if turn != nil {
-			paneContent, paneErr := owner.io.paneContent(current.paneID)
-			if paneErr != nil {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(
-					result.Receipt,
-					fmt.Errorf("submit succeeded but post-dispatch pane baseline was not observed: %w", paneErr),
-				)
+		if turn != nil && confirmation.Outcome == InputAccepted {
+			// Persist B: the correlated admission tuple promotes the durable
+			// Admitted record to Accepted. The receipt state is part of the
+			// deterministic FactID, so ambiguous → accepted promotion is a
+			// distinct fact and same-state retries dedupe.
+			admission := confirmation.Admission
+			receipt := firstNonEmptyString(turn.Receipt, result.Receipt)
+			if receipt == "" {
+				receipt = turn.ID
 			}
-			turn.PaneBaseline = delegatedTurnPaneIdentity(paneContent)
-			if err := owner.io.writeDelegatedTurn(current.paneID, *turn); err != nil {
+			_, _, applyErr := owner.ledger.ApplyTurnFact(TurnFact{
+				SessionID:  sessionID,
+				TurnID:     turn.ID,
+				Class:      EvidenceReceipt,
+				Kind:       "admission",
+				SourceID:   "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
+				Admission: TurnAdmission{
+					Stream: strings.TrimSpace(admission.Stream),
+					ID:     strings.TrimSpace(admission.ID),
+					Cursor: admission.Cursor,
+					SHA256: strings.TrimSpace(admission.InputSHA256),
+					At:     admission.StartedAt.UTC(),
+				},
+				ActivityID: strings.TrimSpace(confirmation.ProviderActivity),
+				At:         time.Now().UTC(),
+				Summary:    "Delegated input accepted",
+			})
+			if applyErr != nil {
 				result.Outcome = InputAmbiguous
 				return ambiguousSubmission(
 					result.Receipt,
-					fmt.Errorf("submit succeeded but delegated turn acceptance was not confirmed: %w", err),
+					fmt.Errorf("submit succeeded but canonical turn acceptance was not confirmed: %w", applyErr),
 				)
 			}
 		}
@@ -745,29 +704,13 @@ func (owner *sessionInputOwner) submitWithTurn(
 	return result, err
 }
 
-func (owner *sessionInputOwner) restoreDelegatedTurn(
-	target string,
-	previous delegatedTurnRecord,
-	existed bool,
-) error {
-	if existed {
-		if err := owner.io.writeDelegatedTurn(target, previous); err != nil {
-			return err
-		}
-	} else if err := owner.io.clearDelegatedTurn(target); err != nil {
-		return err
+// ledgerTurn reads the current canonical turn for the session through the
+// injected ledger; sessions without a ledger have no canonical turn.
+func (owner *sessionInputOwner) ledgerTurn(sessionID string) (TurnSnapshot, bool, error) {
+	if owner == nil || owner.ledger == nil {
+		return TurnSnapshot{}, false, nil
 	}
-	confirmed, found, err := owner.io.delegatedTurn(target)
-	if err != nil {
-		return err
-	}
-	if found != existed {
-		return fmt.Errorf("delegated turn rollback existence did not match")
-	}
-	if existed && (confirmed.ID != previous.ID || confirmed.Status != previous.Status) {
-		return fmt.Errorf("delegated turn rollback readback did not match")
-	}
-	return nil
+	return owner.ledger.Turn(sessionID)
 }
 
 func emptySessionInputReceiptLedger() sessionInputReceiptLedger {

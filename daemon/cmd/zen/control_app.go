@@ -27,7 +27,7 @@ type controlWatcher interface {
 	ProbeSession(target string) (watcher.SessionPresence, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
-	RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
+	RebindDelegatedTurnProjection(id string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
@@ -38,6 +38,9 @@ type controlWatcher interface {
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
+	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
+	ClearDelegatedTurnMarkers(targets []string)
+	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 }
 
 type controlApp struct {
@@ -721,8 +724,10 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 
 // submitAgentHandoff is the single control-plane owner for initial delegated
 // prompts and confirmed follow-ups for every interactive provider. The watcher owns the
-// paste-once/Enter-once provider transaction; this owner settles the canonical
-// Agent projection from that same result and never replays an ambiguous send.
+// paste-once/Enter-once provider transaction and the canonical Admitted
+// ledger record (persisted before the submit queue runs); this owner rebinds
+// the Session projection from the canonical turn and never replays an
+// ambiguous send.
 func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
 	turnID := delegatedTurnID(agentID, handoffStartedAt)
@@ -749,13 +754,17 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initia
 	if result.Duplicate {
 		return nil
 	}
+	// Rebind the Session projection to the canonical turn: a reused Session
+	// never inherits the previous turn's done state while its new provider
+	// turn is live or admitted (the live OpenCode incident), and steering
+	// keeps the existing nonterminal turn's identity.
+	_, _ = a.watcher.RebindDelegatedTurnProjection(agentID)
 	if !initial && strings.TrimSpace(result.TurnID) != "" &&
 		strings.TrimSpace(result.TurnID) != turnID {
 		// Steering was delivered to the existing nonterminal turn. It does not
 		// reset lifecycle metadata or manufacture a new running Event.
 		return nil
 	}
-	a.recordAgentHandoffAccepted(agentID, turnID, handoffStartedAt, initial)
 	return nil
 }
 
@@ -763,44 +772,18 @@ func delegatedTurnID(agentID string, acceptedAt time.Time) string {
 	return fmt.Sprintf("%s:turn:%d", strings.TrimSpace(agentID), acceptedAt.UnixNano())
 }
 
-func (a *controlApp) recordAgentHandoffAccepted(agentID, turnID string, handoffStartedAt time.Time, initial bool) {
-	if a == nil || a.watcher == nil {
-		return
-	}
-	phase := "working"
-	summary := "Delegated turn started"
-	if initial {
-		phase = "starting"
-		summary = "Initial delegated turn started"
-	}
-	_, _ = a.watcher.RecordAgentInputDispatched(agentID, turnID, handoffStartedAt, phase, summary)
-}
-
-// recordSubmissionFailure projects a failed initial handoff. An ambiguous
-// outcome must fail closed against replay but must not falsely terminalize a
-// still-live provider Session: it is recorded as a nonterminal attempt fact
-// (running, no attention) so the authoritative turn can later settle and emit
-// the real completion Event.
+// recordSubmissionFailure rebinds the Session projection from the canonical
+// turn after an initial handoff failure. An ambiguous outcome fails closed
+// against replay but never falsely terminalizes a still-live provider
+// Session: the canonical turn stays Admitted and the projection stays
+// running until provider correlation or liveness rules reconcile it (C.6).
 func (a *controlApp) recordSubmissionFailure(agentID, summary string, outcome watcher.InputOutcome) {
 	if a == nil || a.watcher == nil {
 		return
 	}
-	if outcome == watcher.InputAmbiguous {
-		_, _ = a.watcher.UpdateAgentProgress(agentID, classifier.AgentProgress{
-			Status:    "running",
-			Attention: "none",
-			Summary:   summary,
-		})
-		return
-	}
-	_, _ = a.watcher.UpdateAgentProgress(agentID, classifier.AgentProgress{
-		Status:    "failed",
-		Phase:     "starting",
-		Attention: "failed",
-		Summary:   summary,
-		TaskClass: "lasting_design",
-		EventKind: "risk",
-	})
+	_ = summary
+	_ = outcome
+	_, _ = a.watcher.RebindDelegatedTurnProjection(agentID)
 }
 
 func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
@@ -855,14 +838,15 @@ func (a *controlApp) handleAgentProgress(req control.Request) control.Response {
 		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
 	}
 	progress, err := classifier.ValidateProgress(classifier.AgentProgress{
-		Status:       req.Status,
-		Phase:        req.Phase,
-		Attention:    req.Attention,
-		Summary:      req.Summary,
-		TaskClass:    req.TaskClass,
-		EventKind:    req.EventKind,
-		DetailsJSON:  req.DetailsJSON,
-		LeaseSeconds: req.LeaseSeconds,
+		Status:          req.Status,
+		Phase:           req.Phase,
+		Attention:       req.Attention,
+		Summary:         req.Summary,
+		TaskClass:       req.TaskClass,
+		EventKind:       req.EventKind,
+		DetailsJSON:     req.DetailsJSON,
+		LeaseSeconds:    req.LeaseSeconds,
+		ProgressEventID: req.ProgressEventID,
 	})
 	if err != nil {
 		return control.ErrorResponse("invalid_progress", err.Error())
@@ -887,7 +871,13 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to close a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to close this external session.")
 	}
-	if agent != nil && !req.Force && closeRequiresForce(agent) {
+	requiresForce := agent != nil && !req.Force && closeRequiresForce(agent)
+	if agent != nil && !req.Force && a.brainStore != nil {
+		if turn, hasTurn, turnErr := a.brainStore.Turn(agentID); turnErr == nil && hasTurn {
+			requiresForce = canonicalCloseAdmission(turn, hasTurn)
+		}
+	}
+	if requiresForce {
 		return control.ErrorResponse("agent_running_requires_force", "Agent is still running or unresolved. Send it a cancellation request first, wait for done/failed/blocked, or close with force.")
 	}
 	var release func(string) (modelprofiles.PersistResult, error)
@@ -1326,6 +1316,23 @@ func closeRequiresForce(agent *classifier.Agent) bool {
 	}
 	switch agent.State {
 	case classifier.StateDone, classifier.StateFailed, classifier.StateBlocked:
+		return false
+	default:
+		return true
+	}
+}
+
+// canonicalCloseAdmission implements C.2.5 for canonical-turn sessions: close
+// is admitted when the canonical ledger status is terminal (Done/Failed/
+// Unknown); force is required otherwise. This is the same canonical row that
+// capture and list project, so the lifecycle-close split (capture=done vs
+// close=requires_force) cannot recur.
+func canonicalCloseAdmission(turn watcher.TurnSnapshot, hasTurn bool) bool {
+	if !hasTurn {
+		return true
+	}
+	switch turn.Status {
+	case watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown:
 		return false
 	default:
 		return true

@@ -486,13 +486,26 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
-func TestRecordAgentInputDispatchedClearsOlderStickyFailure(t *testing.T) {
+func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
 	<-w.Events()
+
+	// A stale failed progress report never changes canonical status; the
+	// canonical Admitted turn keeps the Session projection running.
+	ledger := newFakeTurnLedger()
+	acceptedAt := time.Now().UTC()
+	if err := ledger.AdmitTurn(AdmittedTurn{
+		SessionID:  "brain-agent-worker:@1",
+		TurnID:     "brain-agent-worker:@1:turn:1",
+		AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.turnLedger = ledger
 
 	failed, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
 		Status:    "failed",
@@ -506,41 +519,41 @@ func TestRecordAgentInputDispatchedClearsOlderStickyFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-w.Events()
-	if failed.LastProgressAt == nil {
-		t.Fatal("failed progress did not record its timestamp")
+	// A control failed report is a hint: the canonical Admitted turn keeps the
+	// Session projection running and no stale failure metadata survives.
+	if failed.State != classifier.StateRunning || failed.Attention != "none" ||
+		failed.NeedsAttention || failed.LastProgressAt != nil ||
+		failed.TaskClass != "" || failed.EventKind != "" {
+		t.Fatalf("failed hint polluted the canonical projection: %#v", failed)
 	}
 
-	accepted, err := w.RecordAgentInputDispatched(
-		"brain-agent-worker:@1",
-		"turn-1",
-		failed.LastProgressAt.Add(time.Nanosecond),
-		"working",
-		"Delegated input dispatched",
-	)
+	accepted, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
 	if err != nil {
-		t.Fatalf("RecordAgentInputDispatched returned error: %v", err)
+		t.Fatalf("RebindDelegatedTurnProjection returned error: %v", err)
 	}
 	if accepted.State != classifier.StateRunning || accepted.Attention != "none" || accepted.NeedsAttention {
-		t.Fatalf("accepted handoff = %#v", accepted)
+		t.Fatalf("rebound projection = %#v", accepted)
 	}
 	if accepted.LastProgressAt != nil || accepted.ExpectedNextCheckAt != nil || accepted.LeaseSeconds != 0 {
-		t.Fatalf("accepted handoff retained sticky lifecycle progress = %#v", accepted)
+		t.Fatalf("rebound projection retained sticky lifecycle progress = %#v", accepted)
 	}
 	if accepted.TaskClass != "" || accepted.EventKind != "" || accepted.DetailsJSON != "" {
-		t.Fatalf("accepted handoff retained failure metadata = %#v", accepted)
+		t.Fatalf("rebound projection retained failure metadata = %#v", accepted)
 	}
 
 	select {
 	case ev := <-w.Events():
-		if ev.Type != "agent_state_change" || ev.OldState != "failed" || ev.NewState != "running" {
+		// The failed hint never flips the canonical projection; the rebind
+		// emits the same nonterminal metadata event.
+		if ev.Type != "agent_metadata_change" && ev.Type != "agent_state_change" {
 			t.Fatalf("event = %#v", ev)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for accepted handoff event")
+		t.Fatal("timed out waiting for rebound projection event")
 	}
 }
 
-func TestRecordAgentInputDispatchedDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
+func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
@@ -548,6 +561,27 @@ func TestRecordAgentInputDispatchedDoesNotOverwriteNewerLifecycleProgress(t *tes
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
 	<-w.Events()
 	handoffStartedAt := time.Now().UTC()
+
+	ledger := newFakeTurnLedger()
+	if err := ledger.AdmitTurn(AdmittedTurn{
+		SessionID:  "brain-agent-worker:@1",
+		TurnID:     "brain-agent-worker:@1:turn:1",
+		AcceptedAt: handoffStartedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The turn is accepted (correlated admission) before the progress arrives.
+	if _, _, err := ledger.ApplyTurnFact(TurnFact{
+		SessionID: "brain-agent-worker:@1",
+		TurnID:    "brain-agent-worker:@1:turn:1",
+		Class:     EvidenceReceipt,
+		Kind:      "admission",
+		SourceID:  "receipt\x00brain-agent-worker:@1:turn:1\x00accepted\x00payload",
+		Admission: TurnAdmission{Stream: "test", ID: "admission-1", Cursor: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.turnLedger = ledger
 
 	progress, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
 		Status:       "running",
@@ -565,24 +599,19 @@ func TestRecordAgentInputDispatchedDoesNotOverwriteNewerLifecycleProgress(t *tes
 	if progress.LastProgressAt == nil || progress.LastProgressAt.Before(handoffStartedAt) {
 		t.Fatalf("test progress timestamp = %#v, handoff start = %s", progress.LastProgressAt, handoffStartedAt)
 	}
+	// Control running refreshes the canonical summary from Accepted.
+	if progress.Summary != "Running focused tests" {
+		t.Fatalf("control summary did not refresh canonical projection: %#v", progress)
+	}
 
-	accepted, err := w.RecordAgentInputDispatched(
-		"brain-agent-worker:@1",
-		"turn-2",
-		handoffStartedAt,
-		"starting",
-		"Initial delegated prompt dispatched",
-	)
+	// Rebind after an accepted dispatch projects canonical status; progress
+	// lease metadata survives and the canonical summary is preserved.
+	accepted, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
 	if err != nil {
-		t.Fatalf("RecordAgentInputDispatched returned error: %v", err)
+		t.Fatalf("RebindDelegatedTurnProjection returned error: %v", err)
 	}
 	if accepted.Summary != "Running focused tests" || accepted.Phase != "verifying" || accepted.EventKind != "verification" {
 		t.Fatalf("newer lifecycle progress was overwritten: %#v", accepted)
-	}
-	select {
-	case ev := <-w.Events():
-		t.Fatalf("settlement emitted an event after newer progress won: %#v", ev)
-	default:
 	}
 }
 
