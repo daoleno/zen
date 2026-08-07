@@ -40,12 +40,6 @@ import {
   isOfficialCodexSubscription,
 } from '../services/codexSubscriptionStats';
 import {
-  OPENCODE_GO_PLAN_LABEL,
-  isOfficialOpenCodeGoSubscription,
-  openCodeGoLimitLabel,
-  openCodeGoWindowLabel,
-} from '../services/opencodeGoSubscriptionStats';
-import {
   INITIAL_STATS_RANGE,
   STATS_RANGE_TABS,
   statsRangeAt,
@@ -54,6 +48,7 @@ import {
 } from '../services/statsTabs';
 import {
   EMPTY_RANGE,
+  hasRangeStats,
   isCostKnown,
   isTokenBreakdownKnown,
   isTotalTokensKnown,
@@ -257,18 +252,6 @@ function fmtReset(value?: string): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return 'Reset time unavailable';
   return `Resets ${date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
-}
-
-function hasRangeStats(data?: RangeData | null): boolean {
-  if (!data) return false;
-  return data.sessions > 0 ||
-    data.cost > 0 ||
-    data.totalTokens > 0 ||
-    (data.models?.length ?? 0) > 0 ||
-    (data.projects?.length ?? 0) > 0 ||
-    (data.skills?.length ?? 0) > 0 ||
-    (data.tools?.length ?? 0) > 0 ||
-    (data.days?.length ?? 0) > 0;
 }
 
 function dayOfWeekMon0(dateStr: string): number {
@@ -674,9 +657,7 @@ function StatsRangeScene({
   const hasData = hasRangeStats(data);
   const codexSubscriptions = (statsData?.codexSubscriptions ?? [])
     .filter(isOfficialCodexSubscription);
-  const opencodeGoSubscriptions = (statsData?.opencodeGoSubscriptions ?? [])
-    .filter(isOfficialOpenCodeGoSubscription);
-  const showStatsContent = hasData || codexSubscriptions.length > 0 || opencodeGoSubscriptions.length > 0;
+  const showStatsContent = hasData || codexSubscriptions.length > 0;
   const hasAnyStats = useMemo(
     () => Object.values(statsData?.ranges ?? {}).some(item => hasRangeStats(item)),
     [statsData],
@@ -767,48 +748,6 @@ function StatsRangeScene({
                 )}
               </View>
             ))}
-
-            {opencodeGoSubscriptions.map((subscription, index) => {
-              const windows = subscription.usageAvailable
-                ? (subscription.windows ?? []).filter(window => Number.isFinite(window.usedPercent))
-                : [];
-              return (
-                <View key={`opencode-go:${subscription.serverLabel ?? 'server'}:${index}`} style={[s.card, s.codexCard]}>
-                  <View style={s.codexTitleRow}>
-                    <View style={s.codexTitleBlock}>
-                      <Text style={s.label}>OpenCode Go subscription</Text>
-                      <Text style={s.codexPlan}>
-                        {OPENCODE_GO_PLAN_LABEL}
-                      </Text>
-                    </View>
-                  </View>
-                  {windows.length > 0 ? (
-                    <View style={s.codexWindows}>
-                      {windows.map(window => {
-                        const used = normalizeCodexUsedPercent(window.usedPercent);
-                        const limit = openCodeGoLimitLabel(window.limitUsd);
-                        return (
-                          <View key={window.name} style={s.codexWindow} accessible accessibilityLabel={`${openCodeGoWindowLabel(window.name)}, ${used.toFixed(0)} percent used${limit ? `, ${limit} limit` : ''}, ${fmtReset(window.resetsAt)}`}>
-                            <View style={s.codexWindowHeader}>
-                              <Text style={s.codexWindowLabel}>{openCodeGoWindowLabel(window.name)}</Text>
-                              <Text style={s.codexRemaining}>{used.toFixed(0)}% used{limit ? ` · ${limit}` : ''}</Text>
-                            </View>
-                            <View style={s.codexTrack}>
-                              <View style={[s.codexFill, { width: `${used}%` }]} />
-                            </View>
-                            <Text style={s.codexReset}>{fmtReset(window.resetsAt)}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  ) : (
-                    <Text style={s.codexNotice}>
-                      Active Go subscription confirmed, but live usage is unavailable. Set OPENCODE_GO_WORKSPACE_ID and OPENCODE_GO_AUTH_COOKIE (or a ~/.config/opencode-bar/opencode-go.json config file) to show 5-hour, weekly, and monthly usage.
-                    </Text>
-                  )}
-                </View>
-              );
-            })}
 
             {/* ── Summary ── */}
             {hasData && <View style={[s.card, s.summaryCard]}>

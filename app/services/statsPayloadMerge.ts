@@ -1,7 +1,6 @@
 import {
   isOfficialCodexSubscription,
 } from "./codexSubscriptionStats";
-import { isOfficialOpenCodeGoSubscription } from "./opencodeGoSubscriptionStats";
 
 // ── Wire payload contract (mirrors daemon/stats/types.go and the daemon
 // get_stats handler) ─────────────────────────────────────────
@@ -10,8 +9,6 @@ export interface StatsPayload {
   ranges: Record<string, RangeData>;
   codexSubscription?: CodexSubscriptionUsage;
   codexSubscriptions?: CodexSubscriptionUsage[];
-  opencodeGoSubscription?: OpenCodeGoSubscriptionUsage;
-  opencodeGoSubscriptions?: OpenCodeGoSubscriptionUsage[];
   serverId?: string;
   serverUrl?: string;
   daemonId?: string;
@@ -33,24 +30,6 @@ export interface CodexSubscriptionUsage {
   fetchedAt?: string;
   stale?: boolean;
   serverLabel?: string;
-}
-
-export interface OpenCodeGoSubscriptionUsage {
-  authKind: "official" | "api_key" | "absent" | "unknown";
-  state: "available" | "unavailable";
-  plan?: string;
-  fetchedAt?: string;
-  usageAvailable?: boolean;
-  windows?: OpenCodeGoUsageWindow[];
-  serverLabel?: string;
-}
-
-export interface OpenCodeGoUsageWindow {
-  name: string;
-  usedPercent: number;
-  limitUsd?: number;
-  resetInSeconds?: number;
-  resetsAt?: string;
 }
 
 export interface DayCell {
@@ -300,11 +279,19 @@ export function mergeStatsPayloads(payloads: StatsPayload[]): StatsPayload | nul
       windows: p.codexSubscription!.windows?.map(window => ({ ...window })),
       serverLabel: p.serverId ?? p.serverUrl,
     }));
-  const opencodeGoSubscriptions = uniquePayloads
-    .filter(p => isOfficialOpenCodeGoSubscription(p.opencodeGoSubscription))
-    .map(p => ({
-      ...p.opencodeGoSubscription!,
-      serverLabel: p.serverId ?? p.serverUrl,
-    }));
-  return { ranges, codexSubscriptions, opencodeGoSubscriptions };
+  return { ranges, codexSubscriptions };
+}
+
+// hasRangeStats reports whether a range carries any observed usage, the
+// condition for rendering the model-usage section.
+export function hasRangeStats(data?: RangeData | null): boolean {
+  if (!data) return false;
+  return data.sessions > 0 ||
+    data.cost > 0 ||
+    data.totalTokens > 0 ||
+    (data.models?.length ?? 0) > 0 ||
+    (data.projects?.length ?? 0) > 0 ||
+    (data.skills?.length ?? 0) > 0 ||
+    (data.tools?.length ?? 0) > 0 ||
+    (data.days?.length ?? 0) > 0;
 }

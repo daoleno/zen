@@ -18,19 +18,15 @@ import (
 	"time"
 )
 
-// Collector scans local Claude Code, Codex CLI, Grok, and Cursor Agent data files and builds
-// aggregated stats. All reads are read-only — it never modifies source files.
+// Collector scans local Claude Code, Codex CLI, Grok, Cursor Agent, and
+// OpenCode data files and builds aggregated stats. All reads are read-only —
+// it never modifies source files.
 type Collector struct {
 	mu                       sync.RWMutex
 	cached                   *StatsResponse
 	codexUsageClient         codexUsageHTTPClient
 	codexUsageEndpoint       string
 	codexUsageTimeout        time.Duration
-	opencodeGoClient         openCodeGoHTTPClient
-	opencodeGoEndpoint       string
-	opencodeGoChatEndpoint   string
-	opencodeGoServerEndpoint string
-	opencodeGoTimeout        time.Duration
 	now                      func() time.Time
 	lastCodexSubscription    *CodexSubscriptionUsage
 	lastCodexAuthFingerprint string
@@ -40,15 +36,10 @@ type Collector struct {
 func NewCollector() *Collector {
 	loadPricingCache(homeDir())
 	return &Collector{
-		codexUsageClient:         &http.Client{Timeout: 8 * time.Second},
-		codexUsageEndpoint:       codexUsageEndpoint,
-		codexUsageTimeout:        8 * time.Second,
-		opencodeGoClient:         &http.Client{Timeout: 15 * time.Second},
-		opencodeGoEndpoint:       opencodeGoModelsEndpoint,
-		opencodeGoChatEndpoint:   opencodeGoChatEndpoint,
-		opencodeGoServerEndpoint: opencodeGoServerEndpoint,
-		opencodeGoTimeout:        15 * time.Second,
-		now:                      time.Now,
+		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
+		codexUsageEndpoint: codexUsageEndpoint,
+		codexUsageTimeout:  8 * time.Second,
+		now:                time.Now,
 	}
 }
 
@@ -279,6 +270,7 @@ func (c *Collector) refresh() {
 	agentByDate := c.collectClaudeSessionStats(home)
 	mergeDateAgg(agentByDate, c.collectGrokStats(home))
 	mergeDateAgg(agentByDate, c.collectCursorAgentStats(home))
+	mergeDateAgg(agentByDate, c.collectOpenCodeStats(home))
 
 	// Collect Codex CLI data.
 	codexDaily, codexModelsByDate, codexProjectsByDate := c.collectCodexStats(home)
@@ -330,13 +322,11 @@ func (c *Collector) refresh() {
 	c.mu.Unlock()
 
 	subscription := c.collectCodexSubscription(home)
-	opencodeGoSubscription := c.collectOpenCodeGoSubscription(home)
 	c.mu.Lock()
 	c.cached = &StatsResponse{
-		Type:                   "stats_data",
-		Ranges:                 ranges,
-		CodexSubscription:      subscription,
-		OpenCodeGoSubscription: opencodeGoSubscription,
+		Type:              "stats_data",
+		Ranges:            ranges,
+		CodexSubscription: subscription,
 	}
 	c.mu.Unlock()
 
@@ -356,6 +346,8 @@ type modelAggEntry struct {
 	reasoning             int64
 	cacheRead             int64
 	cacheCreate           int64
+	cost                  float64 // observed cost when costRecorded
+	costRecorded          bool    // true when the source records exact cost
 	costUnknown           bool
 	totalTokensUnknown    bool
 	tokenBreakdownUnknown bool
@@ -1288,8 +1280,13 @@ func buildDailySessions(claudeByDate map[string]*dateAgg, codexDaily map[string]
 func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 	var result []ModelStat
 	for modelID, m := range modelAgg {
-		cost, known := computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
-		costKnown := known && !m.costUnknown
+		cost := m.cost
+		costKnown := !m.costUnknown
+		if !m.costRecorded {
+			var known bool
+			cost, known = computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
+			costKnown = known && !m.costUnknown
+		}
 		result = append(result, ModelStat{
 			Name:                displayName(modelID),
 			TotalTokens:         m.totalTokens,
@@ -1449,7 +1446,11 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dc.CacheRead += m.cacheRead
 			dc.CacheCreate += m.cacheCreate
 			dc.Sessions += m.sessions
-			cost, known := computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
+			cost := m.cost
+			known := m.costRecorded
+			if !m.costRecorded {
+				cost, known = computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
+			}
 			dc.Cost += cost
 			if !known || m.costUnknown {
 				dc.CostKnown = false
@@ -1779,6 +1780,8 @@ func mergeModelAgg(dst, src map[string]modelAggEntry) {
 		current.reasoning += item.reasoning
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
+		current.cost += item.cost
+		current.costRecorded = current.costRecorded || item.costRecorded
 		current.costUnknown = current.costUnknown || item.costUnknown
 		current.totalTokensUnknown = current.totalTokensUnknown || item.totalTokensUnknown
 		current.tokenBreakdownUnknown = current.tokenBreakdownUnknown || item.tokenBreakdownUnknown

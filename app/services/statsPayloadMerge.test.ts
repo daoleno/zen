@@ -1,39 +1,48 @@
 // @ts-nocheck
 import { describe, expect, test } from 'bun:test';
-import { mergeStatsPayloads, type StatsPayload } from './statsPayloadMerge';
-import { isOfficialOpenCodeGoSubscription } from './opencodeGoSubscriptionStats';
-import { normalizeCodexUsedPercent } from './codexSubscriptionStats';
+import {
+  hasRangeStats,
+  mergeStatsPayloads,
+  type StatsPayload,
+} from './statsPayloadMerge';
 
-// The wire payload the live daemon served for the real subscribed account on
-// 2026-08-07 (redacted; contains no credentials by design). This is the exact
-// `opencodeGoSubscription` value the daemon get_stats handler emits after
-// positive confirmation without dashboard credentials.
-const LIVE_DAEMON_OPENGCODE_GO_SUBSCRIPTION = {
-  authKind: 'official',
-  state: 'available',
-  plan: 'go',
-  fetchedAt: '2026-08-07T15:27:58Z',
-  usageAvailable: false,
-};
+// The exact model rows the daemon emits for the real local account after the
+// zero-config OpenCode collection (captured live on 2026-08-07, redacted:
+// model IDs and observed numbers only, no credentials or message content).
+const LIVE_OPENCODE_MODEL_ROWS = [
+  {
+    name: 'deepseek-v4-flash',
+    totalTokens: 290582798,
+    totalTokensKnown: true,
+    inputTokens: 2536836,
+    outputTokens: 517844,
+    reasoningTokens: 553830,
+    cacheRead: 286572288,
+    cacheCreate: 0,
+    tokenBreakdownKnown: true,
+    cost: 0.728814,
+    costKnown: true,
+    sessions: 1902,
+  },
+  {
+    name: 'kimi-k2.5-free',
+    totalTokens: 4179180,
+    totalTokensKnown: true,
+    inputTokens: 233019,
+    outputTokens: 18647,
+    reasoningTokens: 7386,
+    cacheRead: 3920128,
+    cacheCreate: 0,
+    tokenBreakdownKnown: true,
+    cost: 0,
+    costKnown: true,
+    sessions: 117,
+  },
+];
 
-// The documented server-function window shape (see docs/opencode-go-stats.md).
-const WINDOWED_OPENGCODE_GO_SUBSCRIPTION = {
-  authKind: 'official',
-  state: 'available',
-  plan: 'go',
-  fetchedAt: '2026-08-07T12:00:00Z',
-  usageAvailable: true,
-  windows: [
-    { name: 'rolling', usedPercent: 12.5, limitUsd: 12, resetInSeconds: 3600, resetsAt: '2026-08-07T13:00:00Z' },
-    { name: 'weekly', usedPercent: 25, limitUsd: 30, resetInSeconds: 7200, resetsAt: '2026-08-07T14:00:00Z' },
-    { name: 'monthly', usedPercent: 50, limitUsd: 60, resetInSeconds: 10800, resetsAt: '2026-08-07T15:00:00Z' },
-  ],
-};
-
-function wirePayload(subscription): StatsPayload {
+function wirePayload(ranges): StatsPayload {
   return {
-    ranges: { day: { cost: 0, costKnown: true, totalTokens: 0, sessions: 0, models: [], projects: [], skills: [], tools: [], days: [] } },
-    opencodeGoSubscription: subscription,
+    ranges,
     serverId: 'server-a',
     serverUrl: 'https://daemon-a.test',
     daemonId: 'd'.repeat(64),
@@ -41,50 +50,72 @@ function wirePayload(subscription): StatsPayload {
   };
 }
 
-describe('OpenCode Go card end-to-end contract (daemon payload to App visibility)', () => {
-  test('the live confirmed subscription survives transport merge and renders as a card candidate', () => {
-    const merged = mergeStatsPayloads([wirePayload(LIVE_DAEMON_OPENGCODE_GO_SUBSCRIPTION)]);
-    expect(merged).not.toBeNull();
-    expect(merged.opencodeGoSubscriptions).toHaveLength(1);
-    const card = merged.opencodeGoSubscriptions[0];
-    expect(isOfficialOpenCodeGoSubscription(card)).toBe(true);
-    expect(card.plan).toBe('go');
-    expect(card.serverLabel).toBe('server-a');
-    // No dashboard credentials on the live host: the card shows the
-    // "subscription confirmed, live usage unavailable" notice branch.
-    expect(card.usageAvailable).toBe(false);
-    expect(card.windows ?? []).toHaveLength(0);
-  });
+function rangeWith(models) {
+  return {
+    cost: models.reduce((s, m) => s + m.cost, 0),
+    costKnown: models.every(m => m.costKnown),
+    totalTokens: models.reduce((s, m) => s + m.totalTokens, 0),
+    totalTokensKnown: true,
+    inputTokens: models.reduce((s, m) => s + m.inputTokens, 0),
+    outputTokens: models.reduce((s, m) => s + m.outputTokens, 0),
+    reasoningTokens: models.reduce((s, m) => s + m.reasoningTokens, 0),
+    cacheRead: models.reduce((s, m) => s + m.cacheRead, 0),
+    cacheCreate: models.reduce((s, m) => s + m.cacheCreate, 0),
+    tokenBreakdownKnown: true,
+    sessions: models.reduce((s, m) => s + m.sessions, 0),
+    models,
+    projects: [],
+    skills: [],
+    tools: [],
+    days: [],
+  };
+}
 
-  test('an API-key-only or uncertain account never renders a card', () => {
+describe('OpenCode local usage contract (daemon payload to App visibility)', () => {
+  test('live OpenCode model rows survive the transport merge unchanged', () => {
     const merged = mergeStatsPayloads([
-      wirePayload({ authKind: 'api_key', state: 'available' }),
-      wirePayload({ authKind: 'unknown', state: 'available' }),
-      wirePayload({ authKind: 'official', state: 'unavailable', plan: 'go' }),
+      wirePayload({ all: rangeWith(LIVE_OPENCODE_MODEL_ROWS) }),
     ]);
-    expect(merged.opencodeGoSubscriptions).toHaveLength(0);
+    expect(merged).not.toBeNull();
+    expect(merged.codexSubscriptions).toEqual([]);
+    const models = merged.ranges.all.models;
+    expect(models).toEqual(LIVE_OPENCODE_MODEL_ROWS);
+    expect(models.map(m => m.name)).toContain('deepseek-v4-flash');
+    const deepseek = models.find(m => m.name === 'deepseek-v4-flash');
+    expect(deepseek.sessions).toBe(1902);
+    expect(deepseek.cost).toBeCloseTo(0.728814, 6);
+    expect(deepseek.costKnown).toBe(true);
   });
 
-  test('a payload without the subscription never renders a card', () => {
-    const merged = mergeStatsPayloads([wirePayload(undefined)]);
-    expect(merged.opencodeGoSubscriptions).toHaveLength(0);
+  test('the model-usage section shows only when actual usage rows exist', () => {
+    expect(hasRangeStats(rangeWith(LIVE_OPENCODE_MODEL_ROWS))).toBe(true);
+    expect(hasRangeStats(rangeWith([]))).toBe(false);
+    expect(hasRangeStats(null)).toBe(false);
+    expect(hasRangeStats(undefined)).toBe(false);
+    expect(
+      hasRangeStats({
+        cost: 0,
+        costKnown: true,
+        totalTokens: 0,
+        sessions: 0,
+        models: [],
+        projects: [],
+        skills: [],
+        tools: [],
+        days: [],
+      }),
+    ).toBe(false);
   });
 
-  test('documented usage windows survive the merge with renderable values', () => {
-    const merged = mergeStatsPayloads([wirePayload(WINDOWED_OPENGCODE_GO_SUBSCRIPTION)]);
-    expect(merged.opencodeGoSubscriptions).toHaveLength(1);
-    const card = merged.opencodeGoSubscriptions[0];
-    expect(card.usageAvailable).toBe(true);
-    const windows = (card.windows ?? []).filter(w => Number.isFinite(w.usedPercent));
-    expect(windows.map(w => w.name)).toEqual(['rolling', 'weekly', 'monthly']);
-    // The exact values the Stats screen renders (normalized percent + labels).
-    expect(windows.map(w => normalizeCodexUsedPercent(w.usedPercent))).toEqual([12.5, 25, 50]);
-    expect(windows.map(w => w.limitUsd)).toEqual([12, 30, 60]);
+  test('zero-usage payloads merge without inventing rows', () => {
+    const merged = mergeStatsPayloads([wirePayload({ all: rangeWith([]) })]);
+    expect(merged.ranges.all.models).toEqual([]);
+    expect(hasRangeStats(merged.ranges.all)).toBe(false);
   });
 
-  test('duplicate payloads from one daemon merge into a single card', () => {
-    const payload = wirePayload(LIVE_DAEMON_OPENGCODE_GO_SUBSCRIPTION);
+  test('duplicate payloads from one daemon merge into a single source', () => {
+    const payload = wirePayload({ all: rangeWith(LIVE_OPENCODE_MODEL_ROWS) });
     const merged = mergeStatsPayloads([payload, { ...payload }, { ...payload }]);
-    expect(merged.opencodeGoSubscriptions).toHaveLength(1);
+    expect(merged.ranges.all.models).toHaveLength(LIVE_OPENCODE_MODEL_ROWS.length);
   });
 });

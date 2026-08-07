@@ -2,10 +2,9 @@ package stats
 
 // StatsResponse is sent to the app in response to a "get_stats" request.
 type StatsResponse struct {
-	Type                   string                       `json:"type"`
-	Ranges                 map[string]*RangeData        `json:"ranges"`
-	CodexSubscription      *CodexSubscriptionUsage      `json:"codexSubscription,omitempty"`
-	OpenCodeGoSubscription *OpenCodeGoSubscriptionUsage `json:"opencodeGoSubscription,omitempty"`
+	Type              string                  `json:"type"`
+	Ranges            map[string]*RangeData   `json:"ranges"`
+	CodexSubscription *CodexSubscriptionUsage `json:"codexSubscription,omitempty"`
 }
 
 // CodexSubscriptionUsage describes official ChatGPT-backed Codex quota. It
@@ -26,33 +25,6 @@ type CodexUsageWindow struct {
 	UsedPercent   float64 `json:"usedPercent"`
 	WindowMinutes int64   `json:"windowMinutes,omitempty"`
 	ResetsAt      string  `json:"resetsAt,omitempty"`
-}
-
-// OpenCodeGoSubscriptionUsage describes an OpenCode Go subscription confirmed
-// against the official OpenCode Go services. UsageAvailable is true only when
-// the authenticated subscription server-function response yielded at least
-// one usage window in the same refresh; it is never guessed or reused from an
-// older refresh. Window limits are the plan facts published in the OpenCode
-// Go documentation ($12/5h, $30/week, $60/month). The projection contains no
-// credentials, account identifiers, or cookies.
-type OpenCodeGoSubscriptionUsage struct {
-	AuthKind       string                  `json:"authKind"`
-	State          string                  `json:"state"`
-	Plan           string                  `json:"plan,omitempty"`
-	FetchedAt      string                  `json:"fetchedAt,omitempty"`
-	UsageAvailable bool                    `json:"usageAvailable"`
-	Windows        []OpenCodeGoUsageWindow `json:"windows,omitempty"`
-}
-
-// OpenCodeGoUsageWindow is one dashboard usage window. UsedPercent is the
-// dashboard's consumed-percentage (0 unused, 100 exhausted); LimitUSD is the
-// documented plan limit for the window.
-type OpenCodeGoUsageWindow struct {
-	Name           string  `json:"name"`
-	UsedPercent    float64 `json:"usedPercent"`
-	LimitUSD       float64 `json:"limitUsd"`
-	ResetInSeconds int64   `json:"resetInSeconds,omitempty"`
-	ResetsAt       string  `json:"resetsAt,omitempty"`
 }
 
 // RangeData holds aggregated stats for a single time range.
