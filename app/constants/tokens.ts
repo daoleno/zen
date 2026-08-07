@@ -90,6 +90,9 @@ export const Typography = {
   chatFontMedium: 'SourceHanSansSC-Medium',
   chatMonoFont: 'MapleMono-CN-Regular',
   chatMonoFontBold: 'MapleMono-CN-SemiBold',
+  // UI mono typography (chat code blocks, previews). The terminal GRID has
+  // its own denser typography in terminalFontDensity.ts: grid glyph size is
+  // the PTY column budget and is deliberately smaller than readable UI copy.
   terminalSize: 13,
   agentNameSize: 15,
   statusTextSize: 13,

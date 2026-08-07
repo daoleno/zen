@@ -1,13 +1,59 @@
 import { describe, expect, test } from "bun:test";
 import {
+  TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM,
+  TERMINAL_GRID_FONT_SIZE_CSS_PX,
+  TERMINAL_GRID_LINE_HEIGHT_RATIO,
   TERMINAL_GRID_SIZE_SOURCE,
   TERMINAL_TEXT_SIZE_ADJUST_CSS,
   TERMINAL_WEBVIEW_TEXT_ZOOM_PERCENT,
+  terminalGridCellWidthFallbackCssPx,
+  terminalGridLineHeightCssPx,
   terminalGridSize,
   terminalWebViewDensityProps,
 } from "./terminalFontDensity";
 
+const MAPLE_MONO_LATIN_CELL_EM = 0.6;
+
 describe("Terminal font-density contract", () => {
+  test("the default grid font token is compact: 8 CSS px, separate from UI mono typography", () => {
+    expect(TERMINAL_GRID_FONT_SIZE_CSS_PX).toBe(8);
+    expect(TERMINAL_GRID_LINE_HEIGHT_RATIO).toBe(1.28);
+    expect(terminalGridLineHeightCssPx(TERMINAL_GRID_FONT_SIZE_CSS_PX)).toBe(11);
+    expect(TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM).toBeCloseTo(0.62, 5);
+  });
+
+  test("a realistic 360dp portrait viewport gets a Termius-comparable column budget", () => {
+    const cellWidth = TERMINAL_GRID_FONT_SIZE_CSS_PX * MAPLE_MONO_LATIN_CELL_EM;
+    const grid = terminalGridSize(
+      360,
+      640,
+      cellWidth,
+      terminalGridLineHeightCssPx(TERMINAL_GRID_FONT_SIZE_CSS_PX),
+    );
+
+    expect(cellWidth).toBeCloseTo(4.8, 5);
+    expect(grid.cols).toBeGreaterThanOrEqual(70);
+    expect(grid.cols).toBeLessThanOrEqual(80);
+    expect(grid.cols).toBe(75);
+    expect(grid.rows).toBeGreaterThanOrEqual(50);
+  });
+
+  test("advertised columns fit the rendered cell metrics: the PTY is never lied to", () => {
+    const cellWidth = TERMINAL_GRID_FONT_SIZE_CSS_PX * MAPLE_MONO_LATIN_CELL_EM;
+    const viewportWidth = 360;
+    const grid = terminalGridSize(viewportWidth, 640, cellWidth, 11);
+
+    expect(grid.cols * cellWidth).toBeLessThanOrEqual(viewportWidth);
+    expect((grid.cols + 1) * cellWidth).toBeGreaterThan(viewportWidth);
+  });
+
+  test("the fallback cell width stays inside the font's measured 0.6em cell", () => {
+    const fallback = terminalGridCellWidthFallbackCssPx(TERMINAL_GRID_FONT_SIZE_CSS_PX);
+    const measured = TERMINAL_GRID_FONT_SIZE_CSS_PX * MAPLE_MONO_LATIN_CELL_EM;
+    expect(fallback).toBeCloseTo(4.96, 5);
+    expect(Math.abs(fallback - measured) / measured).toBeLessThan(0.05);
+  });
+
   test("Android pins WebView text zoom to 100% so the system font scale cannot inflate the terminal grid", () => {
     expect(TERMINAL_WEBVIEW_TEXT_ZOOM_PERCENT).toBe(100);
     expect(terminalWebViewDensityProps("android")).toEqual({ textZoom: 100 });

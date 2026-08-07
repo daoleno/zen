@@ -21,7 +21,6 @@ import { WebView } from 'react-native-webview';
 import {
   buildTerminalChrome,
 } from '../../constants/terminalThemes';
-import { Typography } from '../../constants/tokens';
 import { buildGhosttyTerminalHtml } from './ghosttyWebViewHtml';
 import { TerminalInputHandler } from './TerminalInputHandler';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
@@ -32,7 +31,10 @@ import {
   terminalFontCache,
 } from './terminalSurfaceBootstrap';
 import { terminalWebViewBaseUrl } from './terminalWebViewSource';
-import { terminalWebViewDensityProps } from './terminalFontDensity';
+import {
+  TERMINAL_GRID_FONT_SIZE_CSS_PX,
+  terminalWebViewDensityProps,
+} from './terminalFontDensity';
 import { useGhosttyTerminalController } from './useGhosttyTerminalController';
 
 export const TerminalSurfaceGhosttyWebView = forwardRef<
@@ -97,7 +99,7 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
     () => buildGhosttyTerminalHtml(
       initialThemeRef.current,
       font.uri,
-      Typography.terminalSize,
+      TERMINAL_GRID_FONT_SIZE_CSS_PX,
       renderer.generation,
     ),
     [font.uri, renderer.generation],

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TERMINAL_GRID_FONT_SIZE_CSS_PX } from "./terminalFontDensity";
 import { buildGhosttyTerminalHtml } from "./ghosttyWebViewHtml";
 
 const theme = {
@@ -9,6 +10,14 @@ const theme = {
 } as Parameters<typeof buildGhosttyTerminalHtml>[0];
 
 describe("Ghostty WebView bootstrap boundary", () => {
+  test("an invalid font size falls back to the compact grid default token", () => {
+    const html = buildGhosttyTerminalHtml(theme, null, NaN, 0);
+
+    expect(html).toContain(`font-size: ${TERMINAL_GRID_FONT_SIZE_CSS_PX}px;`);
+    expect(html).toContain(
+      `const FONT_SIZE = ${TERMINAL_GRID_FONT_SIZE_CSS_PX};`,
+    );
+  });
   test("a missing bundled font produces usable fallback HTML", () => {
     const html = buildGhosttyTerminalHtml(theme, null, 13, 0);
 

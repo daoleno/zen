@@ -13,7 +13,46 @@
  * setTextZoom()"). Pinning text zoom to 100% keeps the terminal at the
  * intended CSS pixel density. iOS WKWebView does not apply Dynamic Type to
  * web content, so iOS needs no adjustment and shares the same contract.
+ *
+ * Grid typography is separate from UI mono typography: the grid is a dense
+ * canvas whose cell budget decides how much of a provider TUI fits without
+ * wrapping, while UI mono copy (chat code, previews) keeps a readable token.
  */
+
+/**
+ * Default terminal grid font size in CSS pixels. Chosen so a normal portrait
+ * phone yields a terminal-like column budget comparable to Termius: the
+ * bundled MapleMono-CN Latin cell is 0.6em wide, so 8px renders a 4.8px cell
+ * and a 360dp viewport fits floor(360 / 4.8) = 75 columns, inside the
+ * 75-80 column band observed for Termius at the same device width. The
+ * previous 13px default measured 7.8px cells and left only ~45 columns,
+ * which forced OpenCode/Codex/Claude label layouts to wrap.
+ */
+export const TERMINAL_GRID_FONT_SIZE_CSS_PX = 8;
+
+/**
+ * Line height ratio for the grid. 1.28 keeps rows tight while clearing the
+ * bundled font's own metrics (MapleMono-CN ascender + descender = 1.32em),
+ * so glyphs never clip and the row budget stays close to the column budget.
+ */
+export const TERMINAL_GRID_LINE_HEIGHT_RATIO = 1.28;
+
+/**
+ * Fallback Latin cell width in em, used only when the DOM measurement is
+ * unavailable. 0.62 tracks the bundled font's 0.6em advance closely enough
+ * that the advertised grid never diverges from rendered metrics.
+ */
+export const TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM = 0.62;
+
+export function terminalGridLineHeightCssPx(fontSize: number): number {
+  const size = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : TERMINAL_GRID_FONT_SIZE_CSS_PX;
+  return Math.ceil(size * TERMINAL_GRID_LINE_HEIGHT_RATIO);
+}
+
+export function terminalGridCellWidthFallbackCssPx(fontSize: number): number {
+  const size = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : TERMINAL_GRID_FONT_SIZE_CSS_PX;
+  return size * TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM;
+}
 
 export const TERMINAL_WEBVIEW_TEXT_ZOOM_PERCENT = 100;
 

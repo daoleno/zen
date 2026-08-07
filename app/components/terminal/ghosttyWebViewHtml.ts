@@ -1,7 +1,11 @@
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
 import {
+  TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM,
+  TERMINAL_GRID_FONT_SIZE_CSS_PX,
+  TERMINAL_GRID_LINE_HEIGHT_RATIO,
   TERMINAL_GRID_SIZE_SOURCE,
   TERMINAL_TEXT_SIZE_ADJUST_CSS,
+  terminalGridLineHeightCssPx,
 } from './terminalFontDensity';
 import { TERMINAL_SCROLL_GESTURE_CONTROLLER_SOURCE } from './terminalScrollGesture';
 
@@ -13,8 +17,8 @@ export function buildGhosttyTerminalHtml(
 ) {
   const terminalFontSize = Number.isFinite(fontSize) && fontSize > 0
     ? fontSize
-    : 13;
-  const lineHeight = Math.ceil(terminalFontSize * 1.28);
+    : TERMINAL_GRID_FONT_SIZE_CSS_PX;
+  const lineHeight = terminalGridLineHeightCssPx(terminalFontSize);
   const safeRendererGeneration = Number.isSafeInteger(rendererGeneration) &&
     rendererGeneration >= 0
     ? rendererGeneration
@@ -134,8 +138,8 @@ export function buildGhosttyTerminalHtml(
     </div>
     <script>
       const FONT_SIZE = ${terminalFontSize};
-      const LINE_HEIGHT_RATIO = 1.28;
-      const CELL_WIDTH_FALLBACK = 0.62;
+      const LINE_HEIGHT_RATIO = ${TERMINAL_GRID_LINE_HEIGHT_RATIO};
+      const CELL_WIDTH_FALLBACK = ${TERMINAL_GRID_CELL_WIDTH_FALLBACK_EM};
       const LINE_HEIGHT_PX = Math.ceil(FONT_SIZE * LINE_HEIGHT_RATIO);
       const HAS_BUNDLED_FONT = ${escapedFontUri !== null};
       const FONT_READY_TIMEOUT_MS = 1200;
