@@ -59,6 +59,13 @@ func TurnTerminal(status TurnStatus) bool {
 	}
 }
 
+// TurnImmutable reports whether the canonical status is globally final:
+// Done and Failed can never be mutated, while Unknown is still probed so a
+// later turn-bound Provider terminal can upgrade it (C.2.4).
+func TurnImmutable(status TurnStatus) bool {
+	return status == TurnDone || status == TurnFailed
+}
+
 // TurnAdmission is the durable admission tuple bound to a turn. It proves the
 // provider admitted the exact input (stream identity + monotone cursor +
 // payload digest), never settlement.
@@ -89,19 +96,22 @@ type TurnHint struct {
 // TurnSnapshot is the canonical per-turn projection the watcher consumes. It
 // is a pure read of the durable ledger record; it is never written directly.
 type TurnSnapshot struct {
-	SessionID     string
-	TurnID        string
-	Status        TurnStatus
-	AcceptedAt    time.Time
-	SettledAt     *time.Time
-	Summary       string
-	Attention     string
-	ActivityID    string
-	Admission     TurnAdmission
-	HasAdmission  bool
-	Hints         []TurnHint
+	SessionID      string
+	TurnID         string
+	Status         TurnStatus
+	AcceptedAt     time.Time
+	SettledAt      *time.Time
+	Summary        string
+	Attention      string
+	ActivityID     string
+	Admission      TurnAdmission
+	HasAdmission   bool
+	Hints          []TurnHint
 	PaneGeneration string
-	UpdatedAt     time.Time
+	// ProcessIdentity is the recorded provider process identity at admission;
+	// it anchors deterministic liveness FactIDs (never observation time).
+	ProcessIdentity string
+	UpdatedAt       time.Time
 }
 
 // TurnFact is one provider-neutral observation applied to the canonical turn

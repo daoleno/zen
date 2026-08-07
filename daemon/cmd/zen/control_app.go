@@ -793,8 +793,12 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initia
 	// Rebind the Session projection to the canonical turn: a reused Session
 	// never inherits the previous turn's done state while its new provider
 	// turn is live or admitted (the live OpenCode incident), and steering
-	// keeps the existing nonterminal turn's identity.
-	_, _ = a.watcher.RebindDelegatedTurnProjection(agentID)
+	// keeps the existing nonterminal turn's identity. A rebind failure is
+	// non-fatal for the send (the watcher poll re-projects within one poll
+	// interval) but must not be swallowed silently.
+	if _, rebindErr := a.watcher.RebindDelegatedTurnProjection(agentID); rebindErr != nil {
+		log.Printf("delegated Session %s projection rebind failed after accepted input: %v", agentID, rebindErr)
+	}
 	if !initial && strings.TrimSpace(result.TurnID) != "" &&
 		strings.TrimSpace(result.TurnID) != turnID {
 		// Steering was delivered to the existing nonterminal turn. It does not
@@ -819,7 +823,9 @@ func (a *controlApp) recordSubmissionFailure(agentID, summary string, outcome wa
 	}
 	_ = summary
 	_ = outcome
-	_, _ = a.watcher.RebindDelegatedTurnProjection(agentID)
+	if _, rebindErr := a.watcher.RebindDelegatedTurnProjection(agentID); rebindErr != nil {
+		log.Printf("delegated Session %s projection rebind failed after submission failure: %v", agentID, rebindErr)
+	}
 }
 
 func (a *controlApp) handleAgentCapture(req control.Request) control.Response {

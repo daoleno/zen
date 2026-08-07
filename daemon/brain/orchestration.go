@@ -1067,7 +1067,10 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 }
 
 func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
-	if !event.Actionable || event.ConsumedAt != nil || event.DiscardedAt != nil {
+	if !event.Actionable || event.ConsumedAt != nil || event.DiscardedAt != nil ||
+		event.Resolution != "" {
+		// Resolved rows (mark_delivered, discard, replay) leave the held set
+		// forever; they are never claimed, re-listed, or re-dispatched.
 		return false
 	}
 	index := workIndex(database.BrainWork, event.WorkID)

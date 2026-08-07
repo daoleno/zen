@@ -260,3 +260,32 @@ func TestE2EMissingHeartbeatWakesStale(t *testing.T) {
 		t.Fatalf("stale duplicate deliveries = %d, want one", len(hostWatcher.sentCalls))
 	}
 }
+
+// TestE2ERestartAbsentCanonicalSessionWakesUncertain covers P1.3: after a
+// daemon restart, a canonical Session absent from the inventory produces
+// exactly one actionable uncertain wake instead of silently continuing.
+func TestE2ERestartAbsentCanonicalSessionWakesUncertain(t *testing.T) {
+	store, service, hostWatcher, sessionID, turnID := e2eStore(t)
+	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	e2eAdmission(t, store, sessionID, turnID, at)
+
+	// Daemon restart: the inventory contains no agents at all.
+	service.ReconcileDelegatedSessions(nil)
+	if len(hostWatcher.sentCalls) != 1 {
+		t.Fatalf("restart-absent deliveries = %d, want exactly one", len(hostWatcher.sentCalls))
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	if workItem.Status != WorkNeedsInput ||
+		!strings.Contains(workItem.NextAction, "Confirm whether the delegated Session received the prompt") {
+		t.Fatalf("Work after restart-absent wake = %v", workItem)
+	}
+	// Reconcile keeps running every heartbeat: no duplicate wake.
+	service.ReconcileDelegatedSessions(nil)
+	if len(hostWatcher.sentCalls) != 1 {
+		t.Fatalf("restart-absent duplicate deliveries = %d, want one", len(hostWatcher.sentCalls))
+	}
+	snapshot, hasTurn, _ := store.Turn(sessionID)
+	if !hasTurn || snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("restart-absent turn = %+v hasTurn=%v, want Unknown", snapshot, hasTurn)
+	}
+}

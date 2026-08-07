@@ -913,14 +913,15 @@ func (w *Watcher) poll() {
 		// Canonical-turn path: read the ledger snapshot and apply provider +
 		// liveness facts through the single reducer. Pane/classifier activity
 		// never terminalizes and never sets attention for turn-tracked
-		// sessions; it only refreshes the projection.
+		// sessions; it only refreshes the projection. Unknown turns are still
+		// probed so a later turn-bound Provider terminal can upgrade them.
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
 		provider := ProviderActivityObservation{}
-		if hasTurn && turnErr == nil && !TurnTerminal(turn.Status) && providerProbe != nil {
+		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) && providerProbe != nil {
 			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
 			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
-		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnTerminal(turn.Status)) {
+		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
 		}
 		results = append(results, probedAgent{
@@ -1025,13 +1026,13 @@ func (w *Watcher) poll() {
 		if !seen[id] {
 			old := w.agents[id]
 			turn, hasTurn := w.ledgerTurns[id]
-			if hasTurn && !TurnTerminal(turn.Status) {
+			if hasTurn && !TurnImmutable(turn.Status) {
 				// Positive identity disappearance (CR.3): the inventory
-				// succeeded, the target is absent, and the recorded process
-				// identity is gone from the same-poll process snapshot. End
-				// is not outcome: without a readable bound Provider terminal
-				// this resolves to Unknown + session.uncertain, never Failed.
-				// A bound terminal readable at death decides first (C.2.4).
+				// succeeded and the target is absent from it, so the recorded
+				// pane/process identity is gone. End is not outcome: without a
+				// readable bound Provider terminal this resolves to Unknown +
+				// session.uncertain, never Failed. A bound terminal readable
+				// at death decides first (C.2.4).
 				w.resolveRemovedTurnFacts(id, *old, turn, providerProbe)
 			}
 			if providerProbe != nil {
@@ -1197,7 +1198,14 @@ func (w *Watcher) applyPollFacts(
 	}
 	if !alive {
 		if deadStatus >= 0 {
-			if deadStatus != 0 {
+			// Abnormal-exit proof requires the recorded pane/process
+			// lifetime: the dead pane must be the recorded pane (PaneGeneration
+			// match). A missing or mismatched identity can never fail the
+			// recorded turn — it resolves Unknown + session.uncertain.
+			recordedGeneration := strings.TrimSpace(turn.PaneGeneration)
+			generation := w.currentPaneGeneration(id)
+			recordedPaneDead := recordedGeneration != "" && generation == recordedGeneration
+			if deadStatus != 0 && recordedPaneDead {
 				// Authoritative abnormal exit for the recorded pane identity:
 				// final-grade Failed (or Unknown from Admitted).
 				facts = append(facts, TurnFact{
@@ -1206,7 +1214,7 @@ func (w *Watcher) applyPollFacts(
 					Class:        EvidenceLiveness,
 					Kind:         "failed",
 					AbnormalExit: true,
-					SourceID:     "liveness\x00abnormal-exit",
+					SourceID:     "liveness\x00" + turn.ProcessIdentity + "\x00abnormal-exit",
 					At:           now,
 					Summary:      "Delegated provider process exited abnormally",
 				})
@@ -1217,7 +1225,7 @@ func (w *Watcher) applyPollFacts(
 					Class:       EvidenceLiveness,
 					Kind:        "uncertain",
 					ProcessDead: true,
-					SourceID:    "liveness\x00process-dead",
+					SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
 					At:          now,
 					Summary:     "Delegated provider process exited; outcome is unknown",
 				})
@@ -1235,7 +1243,7 @@ func (w *Watcher) applyPollFacts(
 			Class:           EvidenceLiveness,
 			Kind:            "uncertain",
 			SessionReplaced: true,
-			SourceID:        "liveness\x00session-replaced",
+			SourceID:        "liveness\x00" + turn.ProcessIdentity + "\x00session-replaced",
 			At:              now,
 			Summary:         "Delegated Session was replaced; outcome is unknown",
 		})
@@ -1268,13 +1276,14 @@ func (w *Watcher) applyPollFacts(
 // terminal readable at death decides first) and then the end-of-identity
 // liveness fact, per the same canonical reducer. The recorded identity is
 // considered gone because the target is absent from a successful inventory.
+// Unknown turns are still probed so a readable bound terminal upgrades them.
 func (w *Watcher) resolveRemovedTurnFacts(
 	id string,
 	agent classifier.Agent,
 	turn TurnSnapshot,
 	probe ProviderActivityProbe,
 ) {
-	if w == nil || w.turnLedger == nil || TurnTerminal(turn.Status) {
+	if w == nil || w.turnLedger == nil || TurnImmutable(turn.Status) {
 		return
 	}
 	now := time.Now().UTC()
@@ -1297,7 +1306,7 @@ func (w *Watcher) resolveRemovedTurnFacts(
 		Class:       EvidenceLiveness,
 		Kind:        "uncertain",
 		ProcessDead: true,
-		SourceID:    "liveness\x00process-dead",
+		SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
 		At:          now,
 		Summary:     "Delegated Session disappeared; outcome is unknown",
 	})

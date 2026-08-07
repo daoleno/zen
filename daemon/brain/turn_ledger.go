@@ -155,19 +155,20 @@ func validateTurnRecord(turn TurnRecord) error {
 
 func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 	snapshot := watcher.TurnSnapshot{
-		SessionID:      t.SessionID,
-		TurnID:         t.TurnID,
-		Status:         t.Status,
-		AcceptedAt:     t.AcceptedAt,
-		SettledAt:      t.SettledAt,
-		Summary:        t.Summary,
-		Attention:      t.Attention,
-		ActivityID:     t.ActivityID,
-		Admission:      t.Admission,
-		HasAdmission:   !t.Admission.Empty(),
-		Hints:          append([]watcher.TurnHint(nil), t.Hints...),
-		PaneGeneration: t.PaneGeneration,
-		UpdatedAt:      t.UpdatedAt,
+		SessionID:       t.SessionID,
+		TurnID:          t.TurnID,
+		Status:          t.Status,
+		AcceptedAt:      t.AcceptedAt,
+		SettledAt:       t.SettledAt,
+		Summary:         t.Summary,
+		Attention:       t.Attention,
+		ActivityID:      t.ActivityID,
+		Admission:       t.Admission,
+		HasAdmission:    !t.Admission.Empty(),
+		Hints:           append([]watcher.TurnHint(nil), t.Hints...),
+		PaneGeneration:  t.PaneGeneration,
+		ProcessIdentity: t.ProcessIdentity,
+		UpdatedAt:       t.UpdatedAt,
 	}
 	return snapshot
 }
@@ -298,6 +299,16 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.TurnDone, watcher.TurnFailed:
 		// Globally final and immutable: nothing can mutate a terminal turn.
 		return mutation, nil
+	case watcher.TurnUnknown:
+		// Unknown is final for scheduling until a later turn-bound Provider
+		// terminal upgrades it (C.2.4). Only a bound Provider done/failed
+		// fact may move canonical status; every other fact — running,
+		// attention, control, liveness, pane — is ignored.
+		if fact.Class != watcher.EvidenceProvider ||
+			(fact.Kind != "done" && fact.Kind != "failed") ||
+			!providerFactBinds(turn, fact) {
+			return mutation, nil
+		}
 	}
 
 	status := turn.Status
@@ -898,10 +909,16 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	return turn.snapshot(), true, nil
 }
 
-// MigrateTurnLedgerV1 performs the one-shot legacy tmux-marker import
+// MigrateTurnLedgerV1 performs the resumable legacy tmux-marker import
 // (C.2.8): canonical status is Admitted/Running only; done/failed markers
 // attach a Legacy hint that never changes canonical status. All later writes
-// go to the ledger. Returns false when already migrated.
+// go to the ledger.
+//
+// The migration is crash-resumable and idempotent: this import phase never
+// persists the completion marker — CompleteTurnLedgerV1Migration does that
+// only after every later phase (Phase 1b reconciliation, marker cleanup)
+// finished. A crash between phases re-runs import (existing rows skipped),
+// reconciliation (deterministic FactIDs dedupe), and completion (no-op).
 func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("brain store is not configured")
@@ -912,9 +929,6 @@ func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
 		return false, err
-	}
-	if database.Migrations.TurnLedgerV1At != nil {
-		return false, nil
 	}
 	imported := false
 	for _, candidate := range imports {
@@ -979,14 +993,35 @@ func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 		database.BrainTurns = append(database.BrainTurns, record)
 		imported = true
 	}
-	database.Migrations.TurnLedgerV1At = &now
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return false, err
 	}
 	if imported {
 		s.broadcastWorkChange("")
 	}
-	return true, nil
+	return imported, nil
+}
+
+// CompleteTurnLedgerV1Migration durably records that every migration phase
+// finished. It is the ONLY writer of the TurnLedgerV1At marker and must run
+// after import, Phase 1b reconciliation, and marker cleanup, so a crash in
+// any earlier phase never skips the remaining work. Idempotent.
+func (s *Store) CompleteTurnLedgerV1Migration() error {
+	if s == nil {
+		return fmt.Errorf("brain store is not configured")
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return err
+	}
+	if database.Migrations.TurnLedgerV1At != nil {
+		return nil
+	}
+	database.Migrations.TurnLedgerV1At = &now
+	return s.persistOrchestrationLocked(database)
 }
 
 // PruneSettledTurns removes closed-turn ledger rows whose terminal events are
@@ -1116,6 +1151,12 @@ func (s *Store) DiscardClaim(eventID, actor, reason string) error {
 // ReplayEvent performs an explicit user-authorized replay as a new event with
 // a new identity and key (C.2.6.3). This is the only mechanism that creates a
 // second actionable row for one semantic fact, and only with authorization.
+//
+// Replay is a bounded transition: the original must be an unresolved held
+// claim (ClaimedAt set, not consumed, not discarded, never resolved before),
+// so a second replay of the same original is rejected and the resolved
+// original leaves the held set forever. The replay row retains the audited
+// ReplayOf identity; the original records the resolution actor and time.
 func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 	eventID = strings.TrimSpace(eventID)
 	actor = strings.TrimSpace(actor)
@@ -1134,8 +1175,14 @@ func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 		return WorkEvent{}, ErrEventClaim
 	}
 	original := database.BrainWorkEvents[index]
+	if original.ClaimedAt == nil {
+		return WorkEvent{}, fmt.Errorf("event %s is not a held claim; no replay", eventID)
+	}
 	if original.ConsumedAt != nil || original.DiscardedAt != nil {
 		return WorkEvent{}, fmt.Errorf("event %s is already resolved; no replay", eventID)
+	}
+	if original.Resolution != "" {
+		return WorkEvent{}, fmt.Errorf("event %s was already replayed; a second replay is not authorized", eventID)
 	}
 	nonce := uuid.NewString()
 	replay := WorkEvent{

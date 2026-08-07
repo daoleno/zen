@@ -126,6 +126,71 @@ func TestReplayEventCreatesAuditedNewEvent(t *testing.T) {
 	}
 }
 
+// TestReplayEventIsBoundedToOneReplayOfHeldClaim covers the P1.1 contract:
+// replay requires an unresolved held claim, a second replay of the same
+// original is rejected, and the resolved original leaves the held set.
+func TestReplayEventIsBoundedToOneReplayOfHeldClaim(t *testing.T) {
+	store, _, event := claimResolutionStore(t)
+	if _, err := store.ReplayEvent(event.ID, "user", "first replay"); err != nil {
+		t.Fatal(err)
+	}
+	// The resolved original is excluded from the held set forever.
+	claimed, err := store.ClaimedActionableEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range claimed {
+		if row.ID == event.ID {
+			t.Fatalf("resolved original still in held set: %#v", claimed)
+		}
+	}
+	// A second replay of the same original is rejected.
+	if _, err := store.ReplayEvent(event.ID, "user", "second replay"); err == nil {
+		t.Fatal("second replay of the same original was accepted")
+	}
+	// The single audited replay identity is retained exactly once.
+	events, _ := store.ListWorkEvents(event.WorkID)
+	replays := 0
+	for _, row := range events {
+		if row.ReplayOf == event.ID {
+			replays++
+		}
+	}
+	if replays != 1 {
+		t.Fatalf("replay rows for %s = %d, want exactly one", event.ID, replays)
+	}
+}
+
+// TestReplayEventRequiresHeldClaim covers the P1.1 contract: replay without a
+// held claim (unclaimed, consumed, discarded, or already resolved) is
+// rejected.
+func TestReplayEventRequiresHeldClaim(t *testing.T) {
+	store, _, event := claimResolutionStore(t)
+	// Release the claim: an unclaimed event cannot be replayed.
+	if err := store.ReleaseEventClaim(event.ID, "brain-agent-brain-hidden:@1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplayEvent(event.ID, "user", "no held claim"); err == nil {
+		t.Fatal("replay of an unclaimed event was accepted")
+	}
+	// A discarded claim cannot be replayed.
+	store2, _, event2 := claimResolutionStore(t)
+	if err := store2.DiscardClaim(event2.ID, "user", "moot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store2.ReplayEvent(event2.ID, "user", "discarded"); err == nil {
+		t.Fatal("replay of a discarded claim was accepted")
+	}
+	// A consumed claim cannot be replayed.
+	store3, _, event3 := claimResolutionStore(t)
+	if err := store3.MarkDeliveredClaim(event3.ID, "user", "delivered"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store3.ReplayEvent(event3.ID, "user", "consumed"); err == nil {
+		t.Fatal("replay of a consumed claim was accepted")
+	}
+}
+
 // TestClaimResolutionRequiresActorAndReason enforces the authorization gate:
 // automatic or time-based resolution is prohibited.
 func TestClaimResolutionRequiresActorAndReason(t *testing.T) {

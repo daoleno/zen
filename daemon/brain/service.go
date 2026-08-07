@@ -514,12 +514,9 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		return false, turnErr
 	} else if hasTurn {
 		// Canonical-turn path: the ledger already derived Work + Events; this
-		// route only re-drives delivery of newly actionable rows.
-		if event.Type == "agent_removed" {
-			// Liveness was applied by the watcher before the removal event;
-			// ownership stays attached until Brain resolves session.uncertain.
-			return s.DispatchPendingEvent()
-		}
+		// route only re-drives delivery of newly actionable rows. Liveness on
+		// agent_removed was applied by the watcher before the removal event;
+		// ownership stays attached until Brain resolves session.uncertain.
 		return s.DispatchPendingEvent()
 	}
 	if event.Type == "agent_removed" {
@@ -859,21 +856,27 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 	return s.store.MigrateDelegatedSessionsV1(candidates)
 }
 
-// MigrateTurnLedgerV1 performs the one-shot canonical-turn migration
-// (C.2.8): legacy tmux markers import as attached hints only — canonical
-// status is Admitted/Running, never Done/Failed — then Phase 1b reconciles
-// each hinted row against turn-bound provider history: a bound terminal sets
-// the canonical terminal (in-place flip when the kind matches); history
-// showing the turn still running drops the hint; unavailable history with a
-// gone session resolves to Unknown + session.uncertain; unavailable history
-// with a live session keeps the hint attached with canonical Running. Returns
-// the targets whose markers should be cleared, and whether migration ran.
+// MigrateTurnLedgerV1 performs the canonical-turn migration (C.2.8): legacy
+// tmux markers import as attached hints only — canonical status is
+// Admitted/Running, never Done/Failed — then Phase 1b reconciles each hinted
+// row against turn-bound provider history: a bound terminal sets the
+// canonical terminal (in-place flip when the kind matches); history showing
+// the turn still running drops the hint; unavailable history with a gone
+// session resolves to Unknown + session.uncertain; unavailable history with a
+// live session keeps the hint attached with canonical Running. Returns the
+// targets whose markers should be cleared.
+//
+// The whole migration is crash-resumable and idempotent: every phase re-runs
+// safely (import skips existing rows, Phase 1b facts dedupe by deterministic
+// FactID, completion is a no-op), and the durable completion marker is
+// persisted only after Phase 1b finished — never before — so a crash between
+// phases resumes from the remaining work instead of skipping it.
 func (s *Service) MigrateTurnLedgerV1(
 	markers []watcher.LegacyDelegatedTurnMarker,
 	agents []*classifier.Agent,
-) ([]string, bool, error) {
+) ([]string, error) {
 	if s == nil || s.store == nil {
-		return nil, false, nil
+		return nil, nil
 	}
 	byID := make(map[string]*classifier.Agent, len(agents))
 	for _, agent := range agents {
@@ -933,15 +936,18 @@ func (s *Service) MigrateTurnLedgerV1(
 		})
 		targets = append(targets, sessionID)
 	}
-	migrated, err := s.store.MigrateTurnLedgerV1(imports)
-	if err != nil {
-		return nil, false, err
+	// Phase 1: import rows (idempotent; completion marker NOT persisted).
+	if _, err := s.store.MigrateTurnLedgerV1(imports); err != nil {
+		return nil, err
 	}
-	if !migrated {
-		return nil, false, nil
-	}
+	// Phase 1b: reconcile legacy hints against provider history (idempotent
+	// via deterministic FactIDs).
 	s.reconcileLegacyTurnHints(imports, byID)
-	return targets, true, nil
+	// Completion marker LAST: a crash before this point resumes all phases.
+	if err := s.store.CompleteTurnLedgerV1Migration(); err != nil {
+		return nil, err
+	}
+	return targets, nil
 }
 
 func legacyAcceptedAt(legacy watcher.LegacyDelegatedTurn) time.Time {
@@ -1298,13 +1304,33 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			continue
 		}
 		if hasTurn {
-			// Canonical-turn path: the ledger owns Work + Events. Terminal
-			// turns are immutable and their events are already durable; only
-			// the lease-expiry stale wake is re-derived here.
-			if watcher.TurnTerminal(turn.Status) {
+			// Canonical-turn path: the ledger owns Work + Events. Immutable
+			// terminal turns (Done/Failed) are final; Unknown is still probed
+			// for a later bound Provider terminal. Only the lease-expiry
+			// stale wake and the restart-absent recovery are re-derived here.
+			if watcher.TurnImmutable(turn.Status) {
 				continue
 			}
-			if agent != nil && agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
+			if agent == nil {
+				// A canonical Session absent from a successful inventory
+				// (daemon was down, or the window vanished): end-of-identity
+				// recovery. Without a readable bound Provider terminal this
+				// resolves Unknown + one actionable session.uncertain
+				// (deduped once per turn) so Brain reconciles; the reducer
+				// never fabricates Failed from disappearance.
+				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+					SessionID:   item.OwnerSessionID,
+					TurnID:      turn.TurnID,
+					Class:       watcher.EvidenceLiveness,
+					Kind:        "uncertain",
+					ProcessDead: true,
+					SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
+					At:          now,
+					Summary:     "Delegated Session is absent after restart; outcome is unknown",
+				})
+				continue
+			}
+			if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 				continue
 			}
 			leaseActive := agent != nil && agent.ExpectedNextCheckAt != nil &&

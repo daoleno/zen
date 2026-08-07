@@ -2848,19 +2848,21 @@ func (s *Server) heartbeat(ctx context.Context) {
 					}
 				}
 				if !s.turnLedgerMigrationComplete {
-					// One-shot canonical-turn migration: legacy tmux markers
-					// import as attached hints (never final), reconcile against
+					// Canonical-turn migration: legacy tmux markers import as
+					// attached hints (never final), reconcile against
 					// turn-bound provider history, then unset the markers.
-					targets, migrated, err := s.brain.MigrateTurnLedgerV1(
+					// Every phase is crash-resumable and idempotent; the
+					// durable completion marker is persisted only after all
+					// phases finished, and marker cleanup is re-attempted
+					// here until it succeeds.
+					targets, err := s.brain.MigrateTurnLedgerV1(
 						s.watcher.LegacyDelegatedTurnMarkers(),
 						allAgentSessions,
 					)
 					if err != nil {
 						log.Printf("brain canonical turn ledger migration failed: %v", err)
-					} else if migrated {
-						s.watcher.ClearDelegatedTurnMarkers(targets)
-						s.turnLedgerMigrationComplete = true
 					} else {
+						s.watcher.ClearDelegatedTurnMarkers(targets)
 						s.turnLedgerMigrationComplete = true
 					}
 				}

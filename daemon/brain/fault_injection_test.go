@@ -304,3 +304,76 @@ func TestFaultMarkerlessAcceptedTurnUnrepresentable(t *testing.T) {
 		t.Fatalf("markerless admission = %v, want fail-closed", err)
 	}
 }
+
+// TestFaultDeadPaneUnknownThenLateBoundTerminal covers P1.2: a dead pane
+// resolves Unknown + one actionable session.uncertain; a later bound Provider
+// terminal upgrades canonical status to Done/Failed with exactly one
+// actionable wake of that kind; the uncertain row is retained as audit.
+func TestFaultDeadPaneUnknownThenLateBoundTerminal(t *testing.T) {
+	for _, kind := range []string{"done", "failed"} {
+		t.Run(kind, func(t *testing.T) {
+			store, sessionID, turnID := ledgerTestStore(t)
+			at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+			admission := admittedAcceptedTurn(t, store, sessionID, turnID, at)
+
+			// Dead pane, no bound terminal readable: Unknown + uncertain.
+			if snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: sessionID, TurnID: turnID,
+				Class: watcher.EvidenceLiveness, Kind: "uncertain",
+				ProcessDead: true,
+				SourceID:    "liveness\x00proc-identity-1\x00process-dead",
+				SettledAt:   at.Add(20 * time.Second),
+				At:          at.Add(21 * time.Second),
+			}); err != nil || snapshot.Status != watcher.TurnUnknown {
+				t.Fatalf("dead pane = %+v err=%v, want Unknown", snapshot, err)
+			}
+
+			// Late bound Provider terminal upgrades Unknown exactly once.
+			terminal := watcher.TurnFact{
+				SessionID:  sessionID, TurnID: turnID,
+				Class:      watcher.EvidenceProvider,
+				Kind:       kind,
+				SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
+				Admission:  admission,
+				ActivityID: "activity-1",
+				StartedAt:  at.Add(3 * time.Second),
+				SettledAt:  at.Add(30 * time.Second),
+				At:         at.Add(31 * time.Second),
+			}
+			snapshot, changed, err := store.ApplyTurnFact(terminal)
+			if err != nil || !changed {
+				t.Fatalf("late bound terminal = (%+v, %v, %v)", snapshot, changed, err)
+			}
+			want := watcher.TurnDone
+			if kind == "failed" {
+				want = watcher.TurnFailed
+			}
+			if snapshot.Status != want {
+				t.Fatalf("late bound terminal status = %s, want %s", snapshot.Status, want)
+			}
+
+			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			events, _ := store.ListWorkEvents(workItem.ID)
+			uncertain := 0
+			terminalActionable := 0
+			for _, event := range events {
+				switch {
+				case strings.HasSuffix(event.DedupeKey, ":session.uncertain"):
+					uncertain++
+				case strings.HasSuffix(event.DedupeKey, ":session."+kind) && event.Actionable:
+					terminalActionable++
+				}
+			}
+			if uncertain != 1 || terminalActionable != 1 {
+				t.Fatalf("wake counts: uncertain=%d terminal=%d events=%#v", uncertain, terminalActionable, events)
+			}
+
+			// Done/Failed stay immutable: a later running fact is ignored.
+			reopen := terminal
+			reopen.Kind = "running"
+			if _, changed, err := store.ApplyTurnFact(reopen); err != nil || changed {
+				t.Fatalf("immutable terminal reopened: changed=%v err=%v", changed, err)
+			}
+		})
+	}
+}
