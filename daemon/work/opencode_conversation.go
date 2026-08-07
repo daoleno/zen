@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
@@ -332,6 +333,13 @@ type openCodeCacheEntry struct {
 	// lastChangedIDs are the event ids affected by the last content-changing
 	// load, used by the server for cheap memoized fingerprint deltas.
 	lastChangedIDs []string
+
+	// applyGeneration counts completed in-place mutations of this entry.
+	// load() captures it under the lock before its SQLite fetches and returns
+	// the cached result if it changed while fetching: a concurrent refresh
+	// applied with a cursor >= ours, so its state contains every row we
+	// fetched and serving it is lossless.
+	applyGeneration uint64
 }
 
 // openCodeConversationCache is a process-wide bounded cache of parsed OpenCode
@@ -351,12 +359,24 @@ type openCodeConversationCacheImpl struct {
 	mu         sync.Mutex
 	entries    map[openCodeCacheRef]*openCodeCacheEntry
 	entryOrder []openCodeCacheRef
+
+	// versionSeq is the process-global monotonic content-version source.
+	// Entry versions are drawn from it on every content-changing rebuild, so
+	// an entry that is evicted, removed, and reloaded can never reuse a
+	// version value the server already observed for a previous generation of
+	// the same session — the server O(1) fast path can never suppress changed
+	// content after a reload.
+	versionSeq atomic.Uint64
 }
 
 func newOpenCodeConversationCache() *openCodeConversationCacheImpl {
 	return &openCodeConversationCacheImpl{
 		entries: map[openCodeCacheRef]*openCodeCacheEntry{},
 	}
+}
+
+func (c *openCodeConversationCacheImpl) nextVersion() int64 {
+	return int64(c.versionSeq.Add(1))
 }
 
 func openCodeCacheKey(dbPath, sessionID string) openCodeCacheRef {
@@ -387,6 +407,20 @@ func (c *openCodeConversationCacheImpl) read(dbPath, sessionID string) (CodexCon
 // incremental row fetches, then rebuilds the conversation only when rows
 // actually changed. Returns the conversation, its content version, and the
 // event ids changed by this load.
+//
+// All SQLite subprocess I/O happens OUTSIDE the process-wide cache lock; the
+// lock is held only to snapshot state before the fetches and to revalidate
+// and apply afterwards. The apply is guarded by the entry's applyGeneration:
+// if another goroutine refreshed the entry while we fetched, its cursor was
+// >= ours, so it already contains every row we fetched and returning the
+// cached result is lossless.
+//
+// Every changed stamp also fetches the authoritative message/part row-ID
+// sets. The cached key sets are checked against them on both sides of the
+// fetch; any cached id missing from the authoritative set — a plain deletion
+// or an equal-count delete+insert replacement — triggers a full cursor-zero
+// read that atomically replaces the row/payload maps. Additions need no full
+// read: the incremental cursor fetch already brings new rows.
 func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexConversation, int64, []string, error) {
 	sqlite3, err := exec.LookPath("sqlite3")
 	if err != nil {
@@ -394,7 +428,7 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 	}
 	key := openCodeCacheKey(dbPath, sessionID)
 
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		stamp, err := openCodeConversationStamp(dbPath)
 		if err != nil {
 			c.remove(key)
@@ -422,14 +456,20 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 			c.mu.Unlock()
 			return conversation, version, changedIDs, nil
 		}
+		generation := entry.applyGeneration
 		messageCursor := entry.messageCursorMS
 		partCursor := entry.partCursorMS
-		wantMessages := len(entry.messageRows)
-		wantParts := len(entry.partRows)
+		cachedMessageIDs := make(map[string]struct{}, len(entry.messageRows))
+		for id := range entry.messageRows {
+			cachedMessageIDs[id] = struct{}{}
+		}
+		cachedPartIDs := make(map[string]struct{}, len(entry.partRows))
+		for id := range entry.partRows {
+			cachedPartIDs[id] = struct{}{}
+		}
 		c.mu.Unlock()
 
-		// Fetch rows changed since the cursor. Cursor 0 is the initial full
-		// read. All sqlite3 spawns happen outside the cache lock.
+		// ---- All SQLite subprocess I/O happens outside the cache lock. ----
 		newMessages, err := queryOpenCodeMessagesSince(sqlite3, dbPath, sessionID, messageCursor)
 		if err != nil {
 			return CodexConversation{}, 0, nil, err
@@ -438,10 +478,30 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 		if err != nil {
 			return CodexConversation{}, 0, nil, err
 		}
-		messageCount, partCount, err := queryOpenCodeSessionCounts(sqlite3, dbPath, sessionID)
+		authoritativeMessageIDs, authoritativePartIDs, err := queryOpenCodeSessionRowIDs(sqlite3, dbPath, sessionID)
 		if err != nil {
 			return CodexConversation{}, 0, nil, err
 		}
+
+		// Deletion signal: a cached id absent from the authoritative set
+		// cannot be seen by the time_updated cursor, so the maps must be
+		// replaced from a full cursor-zero read. Additions never trigger this
+		// (the incremental fetch brings them), so a busy streaming writer
+		// does not force full reads per poll.
+		var fullMessages []openCodeMessageRow
+		var fullParts []openCodePartRow
+		if openCodeCachedIDsMissing(cachedMessageIDs, authoritativeMessageIDs) ||
+			openCodeCachedIDsMissing(cachedPartIDs, authoritativePartIDs) {
+			fullMessages, err = queryOpenCodeMessagesSince(sqlite3, dbPath, sessionID, 0)
+			if err != nil {
+				return CodexConversation{}, 0, nil, err
+			}
+			fullParts, err = queryOpenCodePartsSince(sqlite3, dbPath, sessionID, 0)
+			if err != nil {
+				return CodexConversation{}, 0, nil, err
+			}
+		}
+
 		after, err := openCodeConversationStamp(dbPath)
 		if err != nil {
 			c.remove(key)
@@ -449,74 +509,67 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 		}
 		if !stamp.equal(after) {
 			// The source moved while we fetched (an active OpenCode writer).
-			// Retry once against the new stamp; if it moves again, apply the
+			// Retry against the new stamp; on the last attempt apply the
 			// fetched rows anyway — the >= cursor makes the next poll
 			// self-heal, so a busy writer can never wedge the reader.
-			if attempt >= 1 {
-				after = stamp
-			} else {
+			if attempt < 3 {
 				continue
 			}
+			after = stamp
 		}
 
+		// ---- Apply under the lock; SQLite work is already done. ----
 		c.mu.Lock()
-		if entry.stamp.equal(after) {
-			// Another goroutine already refreshed this entry with the current
-			// source state; reuse its result.
+		if entry.applyGeneration != generation {
+			// A concurrent refresh applied while we fetched; its cursor was
+			// >= ours, so it contains every row we fetched — serving the
+			// cached result is lossless.
 			conversation := entry.conversation
 			version := entry.version
 			changedIDs := entry.lastChangedIDs
 			c.mu.Unlock()
 			return conversation, version, changedIDs, nil
 		}
+		currentMessageIDs := make(map[string]struct{}, len(entry.messageRows))
+		for id := range entry.messageRows {
+			currentMessageIDs[id] = struct{}{}
+		}
+		currentPartIDs := make(map[string]struct{}, len(entry.partRows))
+		for id := range entry.partRows {
+			currentPartIDs[id] = struct{}{}
+		}
 
-		// A row-count drop below the cached row count means rows were deleted.
-		// Deleted rows are invisible to the time_updated cursor (their
-		// time_updated is older than the cursor), so the caches must be
-		// replaced from a full cursor-zero read; otherwise the deleted
-		// message/tool event would stay visible forever. New rows are caught
-		// by the next incremental poll, so only a drop triggers the full read.
 		changedRows := false
 		fullRead := false
-		if messageCount < wantMessages || partCount < wantParts {
-			fullMessages, err := queryOpenCodeMessagesSince(sqlite3, dbPath, sessionID, 0)
-			if err != nil {
-				c.mu.Unlock()
-				return CodexConversation{}, 0, nil, err
-			}
-			fullParts, err := queryOpenCodePartsSince(sqlite3, dbPath, sessionID, 0)
-			if err != nil {
-				c.mu.Unlock()
-				return CodexConversation{}, 0, nil, err
-			}
+		if fullMessages != nil &&
+			(openCodeCachedIDsMissing(currentMessageIDs, authoritativeMessageIDs) ||
+				openCodeCachedIDsMissing(currentPartIDs, authoritativePartIDs)) {
+			// Full replacement (memory only under the lock): the row and
+			// payload maps are atomically rebuilt from the cursor-zero read.
 			entry.messageRows = make(map[string]openCodeMessageRow, len(fullMessages))
 			entry.partRows = make(map[string]openCodePartRow, len(fullParts))
 			entry.messagePayloads = make(map[string]openCodeMessagePayload, len(fullMessages))
 			entry.partPayloads = make(map[string]openCodePartPayload, len(fullParts))
 			messageCursor = applyOpenCodeMessageFetches(entry, fullMessages, &changedRows)
 			partCursor = applyOpenCodePartFetches(entry, fullParts, &changedRows)
-			// The full read replaces the caches wholesale, so the
-			// identical-content fast path below must never trigger even when
-			// the replacement applied zero rows: the conversation must be
-			// rebuilt without the deleted events.
+			// The replacement is a change even when it applied zero rows: the
+			// conversation must be rebuilt without the deleted events.
 			fullRead = true
 			changedRows = true
-			// The full read replaces the caches, so the count check for the
-			// identical-content fast path below must compare against the
-			// replaced sizes.
-			wantMessages = len(entry.messageRows)
-			wantParts = len(entry.partRows)
 		} else {
 			messageCursor = applyOpenCodeMessageFetches(entry, newMessages, &changedRows)
 			partCursor = applyOpenCodePartFetches(entry, newParts, &changedRows)
 		}
 
-		if !fullRead && !changedRows && wantMessages == messageCount && wantParts == partCount {
+		if !fullRead && !changedRows &&
+			!openCodeCachedIDsMissing(currentMessageIDs, authoritativeMessageIDs) &&
+			!openCodeCachedIDsMissing(currentPartIDs, authoritativePartIDs) {
 			// Content is identical: keep the conversation and version, but
 			// advance cursors/stamp so the next read is fast again.
 			entry.stamp = after
 			entry.messageCursorMS = messageCursor
 			entry.partCursorMS = partCursor
+			entry.applyGeneration++
 			conversation := entry.conversation
 			version := entry.version
 			changedIDs := entry.lastChangedIDs
@@ -524,14 +577,17 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 			return conversation, version, changedIDs, nil
 		}
 
-		// Row content changed or rows were added/removed: rebuild.
+		// Row content changed or rows were added/removed: rebuild. The
+		// version is drawn from the process-global monotonic source so it
+		// never repeats across entry eviction/removal/reload.
 		conversation, changedEventIDs := rebuildOpenCodeConversation(entry, sessionID)
 		entry.conversation = conversation
-		entry.version++
+		entry.version = c.nextVersion()
 		entry.lastChangedIDs = changedEventIDs
 		entry.stamp = after
 		entry.messageCursorMS = messageCursor
 		entry.partCursorMS = partCursor
+		entry.applyGeneration++
 		version := entry.version
 		c.mu.Unlock()
 		return conversation, version, changedEventIDs, nil
@@ -1134,21 +1190,47 @@ func runOpenCodeDataQuery(sqlite3, dbPath, query string) ([]string, error) {
 	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"), nil
 }
 
-func queryOpenCodeSessionCounts(sqlite3, dbPath, sessionID string) (int, int, error) {
+// queryOpenCodeSessionRowIDs returns the authoritative message and part id
+// sets for a session in one spawn. 'm'/'p' discriminators are unconditionally
+// prepended by SQL, so the first character of every returned line is exact
+// regardless of the id's own prefix.
+func queryOpenCodeSessionRowIDs(sqlite3, dbPath, sessionID string) (map[string]struct{}, map[string]struct{}, error) {
 	query := fmt.Sprintf(
-		`SELECT (SELECT count(*) FROM message WHERE session_id = %s), (SELECT count(*) FROM part WHERE session_id = %s);`,
+		`SELECT 'm'||id FROM message WHERE session_id = %s UNION ALL SELECT 'p'||id FROM part WHERE session_id = %s;`,
 		sqliteStringLiteral(sessionID), sqliteStringLiteral(sessionID),
 	)
-	uri := fmt.Sprintf("file:%s?mode=ro", dbPath)
-	out, err := exec.Command(sqlite3, "-cmd", ".timeout 3000", uri, query).CombinedOutput()
+	lines, err := runOpenCodeDataQuery(sqlite3, dbPath, query)
 	if err != nil {
-		return 0, 0, fmt.Errorf("opencode count query: %w: %s", err, strings.TrimSpace(string(out)))
+		return nil, nil, err
 	}
-	var messages, parts int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d|%d", &messages, &parts); err != nil {
-		return 0, 0, fmt.Errorf("opencode count parse: %w: %s", err, strings.TrimSpace(string(out)))
+	messages := make(map[string]struct{}, len(lines)/2)
+	parts := make(map[string]struct{}, len(lines)/2)
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		switch line[0] {
+		case 'm':
+			messages[line[1:]] = struct{}{}
+		case 'p':
+			parts[line[1:]] = struct{}{}
+		}
 	}
 	return messages, parts, nil
+}
+
+// openCodeCachedIDsMissing reports whether any cached row id is absent from
+// the authoritative id set — the deletion signal that no time_updated cursor
+// can ever observe (deleted rows keep their old time_updated, so plain drops
+// and equal-count delete+insert replacements are indistinguishable by cursor
+// or by count).
+func openCodeCachedIDsMissing(cached, authoritative map[string]struct{}) bool {
+	for id := range cached {
+		if _, ok := authoritative[id]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 func sqliteStringLiteral(value string) string {
