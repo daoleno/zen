@@ -659,6 +659,7 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 				Status string          `json:"status"`
 				Input  json.RawMessage `json:"input"`
 				Output string          `json:"output"`
+				Error  string          `json:"error"`
 			} `json:"state"`
 		}
 		if json.Unmarshal([]byte(part.Data), &payload) != nil {
@@ -733,6 +734,12 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 				status = "running"
 			}
 			input := strings.TrimSpace(string(payload.State.Input))
+			output := strings.TrimSpace(payload.State.Output)
+			if output == "" {
+				// Upstream ToolStateError carries the failure text in state.error
+				// (no state.output), so a failed card must not collapse to empty.
+				output = strings.TrimSpace(payload.State.Error)
+			}
 			event := CodexConversationEvent{
 				ID:        firstNonEmpty(part.ID, fmt.Sprintf("%s:tool:%d", b.sessionID, b.seq)),
 				Seq:       b.seq,
@@ -741,7 +748,7 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 				ToolName:  strings.TrimSpace(payload.Tool),
 				CallID:    callID,
 				Input:     input,
-				Output:    payload.State.Output,
+				Output:    output,
 				Status:    status,
 				Partial:   status == "running" || status == "pending",
 			}

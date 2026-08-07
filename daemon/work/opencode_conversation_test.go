@@ -383,6 +383,182 @@ func TestOpenCodeSubtaskRunningWhileStepsOpen(t *testing.T) {
 	}
 }
 
+// openCodeUpstreamSessions is a helper around real OpenCode v1.18.x shapes:
+// part.data carries the Part union with type discriminator and tool state
+// discriminated by status (pending/running/completed/error), message.data
+// carries role + optional finish/time.completed, and timestamps are
+// milliseconds. Both polls below rewrite the same part IDs to simulate the
+// watcher observing the same live session across polls and restarts.
+func TestOpenCodeRealUpstreamToolShapesAcrossPolls(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 8, 7, 0, 0, 10, 0, time.UTC)
+	session := []openCodeSessionSeed{
+		{ID: "ses_up", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(9 * time.Second).UnixMilli()},
+	}
+	messages := []openCodeMessageSeed{
+		{ID: "msg_user", SessionID: "ses_up", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"role":"user","time":{"created":1}}`},
+		{ID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","time":{"created":1}}`},
+	}
+	// Poll 1: in-flight turn with interleaved reasoning/text and two concurrent
+	// tools (one running, one pending) using the exact upstream state shapes.
+	// A live OpenCode turn has no finish/completed on the assistant message row
+	// while parts are still streaming.
+	inFlightParts := []openCodePartSeed{
+		{ID: "prt_user", MessageID: "msg_user", SessionID: "ses_up", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"type":"text","text":"run both tools"}`},
+		{ID: "prt_start", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"snapshot":"8ac09ffb","type":"step-start"}`},
+		{ID: "prt_reason", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(3 * time.Second).UnixMilli(), Data: `{"type":"reasoning","text":"thinking hard","time":{"start":1,"end":2}}`},
+		{ID: "prt_text1", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(4 * time.Second).UnixMilli(), Data: `{"type":"text","text":"starting"}`},
+		{ID: "prt_tool_a", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(5 * time.Second).UnixMilli(), Data: `{"type":"tool","tool":"bash","callID":"call_00_a","state":{"metadata":{"output":""},"status":"running","input":{"command":"true"},"time":{"start":1}}}`},
+		{ID: "prt_tool_b", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(6 * time.Second).UnixMilli(), Data: `{"type":"tool","tool":"read","callID":"call_00_b","state":{"status":"pending","input":{"filePath":"/repo/a.txt"},"raw":""}}`},
+		{ID: "prt_text2", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(7 * time.Second).UnixMilli(), Data: `{"type":"text","text":"between tools"}`},
+	}
+	// Poll 2: same part IDs settled: tool a completed with output/title,
+	// tool b failed carrying state.error (no state.output), an unknown part
+	// type plus a snapshot part that must not drop surrounding messages, and a
+	// step-finish closing the turn. The assistant message now carries the
+	// authoritative finish and time.completed.
+	settledMessages := []openCodeMessageSeed{
+		messages[0],
+		{ID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + intString(started.Add(8*time.Second).UnixMilli()) + `}}`},
+	}
+	settledParts := []openCodePartSeed{
+		inFlightParts[0], inFlightParts[1], inFlightParts[2], inFlightParts[3],
+		{ID: "prt_tool_a", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(5 * time.Second).UnixMilli(), Data: `{"type":"tool","tool":"bash","callID":"call_00_a","state":{"status":"completed","input":{"command":"true"},"output":"ok\n","title":"Run command: true","metadata":{"output":"ok\n","exit":0,"truncated":false},"time":{"start":1,"end":2}}}`},
+		{ID: "prt_tool_b", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(6 * time.Second).UnixMilli(), Data: `{"type":"tool","tool":"read","callID":"call_00_b","state":{"status":"error","input":{"filePath":"/repo/a.txt"},"error":"Error: ENOENT: no such file or directory","metadata":{"output":""},"time":{"start":1,"end":2}}}`},
+		{ID: "prt_text2", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(7 * time.Second).UnixMilli(), Data: `{"type":"text","text":"between tools"}`},
+		{ID: "prt_unknown", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(8 * time.Second).UnixMilli(), Data: `{"type":"compaction","auto":false}`},
+		{ID: "prt_snapshot", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(9 * time.Second).UnixMilli(), Data: `{"snapshot":"8ac09ffb","type":"snapshot"}`},
+		{ID: "prt_finish", MessageID: "msg_asst", SessionID: "ses_up", CreatedMS: started.Add(10 * time.Second).UnixMilli(), Data: `{"reason":"stop","snapshot":"8ac09ffb","type":"step-finish","tokens":{"total":10,"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0.0001}`},
+	}
+
+	createOpenCodeFixtureDB(t, dbPath, session, messages, inFlightParts)
+	inFlight, err := parseOpenCodeConversation(dbPath, "ses_up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Restart/upsert simulation: a fresh read of the same session (new DB file
+	// bytes, same part IDs) must not duplicate events and must preserve stable
+	// identity, then the settled snapshot replaces the in-flight projection.
+	createOpenCodeFixtureDB(t, dbPath, session, messages, inFlightParts)
+	inFlightSecond, err := parseOpenCodeConversation(dbPath, "ses_up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inFlight.Events) != len(inFlightSecond.Events) {
+		t.Fatalf("restart duplicate drift: %d vs %d events", len(inFlight.Events), len(inFlightSecond.Events))
+	}
+	for i := range inFlight.Events {
+		if inFlight.Events[i].ID != inFlightSecond.Events[i].ID {
+			t.Fatalf("restart identity drift at %d: %s vs %s", i, inFlight.Events[i].ID, inFlightSecond.Events[i].ID)
+		}
+	}
+
+	eventByCall := map[string]CodexConversationEvent{}
+	kindCounts := map[string]int{}
+	for _, event := range inFlight.Events {
+		kindCounts[event.Kind]++
+		if event.Kind == "tool_call" {
+			eventByCall[event.CallID] = event
+		}
+	}
+	if kindCounts["tool_call"] != 2 {
+		t.Fatalf("in-flight tool_call events = %d, want 2: %#v", kindCounts["tool_call"], inFlight.Events)
+	}
+	if kindCounts["reasoning"] != 1 || kindCounts["assistant_message"] != 2 || kindCounts["user_message"] != 1 {
+		t.Fatalf("in-flight kinds = %#v", kindCounts)
+	}
+	runningTool := eventByCall["call_00_a"]
+	if runningTool.Status != "running" || !runningTool.Partial || runningTool.Input != `{"command":"true"}` {
+		t.Fatalf("running tool = %#v", runningTool)
+	}
+	pendingTool := eventByCall["call_00_b"]
+	if pendingTool.Status != "pending" || !pendingTool.Partial || pendingTool.ToolName != "read" {
+		t.Fatalf("pending tool = %#v", pendingTool)
+	}
+	if inFlight.Activity == nil || inFlight.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("in-flight activity = %+v", inFlight.Activity)
+	}
+
+	createOpenCodeFixtureDB(t, dbPath, session, settledMessages, settledParts)
+	settled, err := parseOpenCodeConversation(dbPath, "ses_up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settledByCall := map[string]CodexConversationEvent{}
+	settledTexts := 0
+	for _, event := range settled.Events {
+		if event.Kind == "tool_call" {
+			settledByCall[event.CallID] = event
+		}
+		if event.Kind == "assistant_message" {
+			settledTexts++
+		}
+	}
+	completed := settledByCall["call_00_a"]
+	if completed.Status != "completed" || completed.Partial {
+		t.Fatalf("completed tool = %#v", completed)
+	}
+	if completed.Output != "ok" {
+		t.Fatalf("completed output = %q, want %q", completed.Output, "ok")
+	}
+	failed := settledByCall["call_00_b"]
+	if failed.Status != "failed" || failed.Partial {
+		t.Fatalf("error tool = %#v", failed)
+	}
+	if !strings.Contains(failed.Output, "ENOENT") {
+		t.Fatalf("error tool must surface state.error as output, got %q", failed.Output)
+	}
+	// Unknown/snapshot parts must fail closed: skipped without dropping the
+	// interleaved assistant text or any tool event.
+	if settledTexts != 2 {
+		t.Fatalf("settled assistant texts = %d, want 2: %#v", settledTexts, settled.Events)
+	}
+	if len(settled.Events) != len(inFlight.Events) {
+		t.Fatalf("settled event count = %d, want %d (no dup/regression): %#v", len(settled.Events), len(inFlight.Events), settled.Events)
+	}
+	if settled.Activity == nil || settled.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("settled activity = %+v", settled.Activity)
+	}
+}
+
+func TestOpenCodeMalformedToolPartFailsClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 8, 7, 0, 0, 10, 0, time.UTC)
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_mal", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(5 * time.Second).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_user", SessionID: "ses_mal", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"role":"user"}`},
+		{ID: "msg_asst", SessionID: "ses_mal", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + intString(started.Add(4*time.Second).UnixMilli()) + `}}`},
+	}, []openCodePartSeed{
+		{ID: "p1", MessageID: "msg_user", SessionID: "ses_mal", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"type":"text","text":"before"}`},
+		{ID: "p2", MessageID: "msg_asst", SessionID: "ses_mal", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `not json at all`},
+		{ID: "p3", MessageID: "msg_asst", SessionID: "ses_mal", CreatedMS: started.Add(3 * time.Second).UnixMilli(), Data: `{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"true"},"output":"ok"}}`},
+		{ID: "p4", MessageID: "msg_asst", SessionID: "ses_mal", CreatedMS: started.Add(4 * time.Second).UnixMilli(), Data: `{"type":"text","text":"after"}`},
+	})
+	got, err := parseOpenCodeConversation(dbPath, "ses_mal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tool *CodexConversationEvent
+	for i := range got.Events {
+		if got.Events[i].Kind == "tool_call" {
+			tool = &got.Events[i]
+		}
+	}
+	if tool == nil || tool.Status != "completed" {
+		t.Fatalf("malformed part must not drop the tool event: %#v", got.Events)
+	}
+	texts := 0
+	for _, event := range got.Events {
+		if event.Kind == "assistant_message" && event.Body == "after" {
+			texts++
+		}
+	}
+	if texts != 1 {
+		t.Fatalf("surrounding text dropped by malformed part: %#v", got.Events)
+	}
+}
+
 type openCodeSessionSeed struct {
 	ID, Directory string
 	ParentID      string
