@@ -5,28 +5,55 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	// opencodeGoUsageEndpoint is the official OpenCode Go chat completions
-	// endpoint. The Go subscription is confirmed only by an authenticated
-	// response from this service: an invalid or expired key is rejected with
-	// an AuthError while a valid Go key is accepted.
-	opencodeGoUsageEndpoint = "https://opencode.ai/zen/go/v1/chat/completions"
-	// opencodeGoVerifyModel is a model currently served by OpenCode Go per the
-	// official model catalog. If it is ever retired the check fails closed
-	// (no card) rather than fabricating a subscription.
-	opencodeGoVerifyModel  = "deepseek-v4-flash"
-	maxOpenCodeGoAuthBytes = 2 << 20
-	maxOpenCodeGoBodyBytes = 1 << 20
+	// opencodeGoModelsEndpoint is the official read-only OpenCode Go models
+	// endpoint. The ecosystem treats a 2xx JSON response carrying the model
+	// list as confirmation that the OpenCode Go key is accepted by the Go
+	// provider (see opgginc/opencode-bar). If the endpoint ever starts
+	// rejecting credentials or changes shape, the check fails closed.
+	opencodeGoModelsEndpoint   = "https://opencode.ai/zen/go/v1/models"
+	opencodeGoDashboardBaseURL = "https://opencode.ai/workspace"
+	maxOpenCodeGoAuthBytes     = 2 << 20
+	maxOpenCodeGoBodyBytes     = 8 << 20
 )
+
+// openCodeGoWindowSpecs mirror the official Go dashboard usage windows and the
+// limits published in the OpenCode Go documentation: $12 per 5 hours, $30 per
+// week, $60 per month. The limits are plan facts from the docs; current used
+// percentages come only from the authenticated dashboard page.
+type openCodeGoWindowSpec struct {
+	field    string
+	name     string
+	limitUSD float64
+}
+
+var openCodeGoWindowSpecs = []openCodeGoWindowSpec{
+	{field: "rollingUsage", name: "rolling", limitUSD: 12},
+	{field: "weeklyUsage", name: "weekly", limitUSD: 30},
+	{field: "monthlyUsage", name: "monthly", limitUSD: 60},
+}
+
+var openCodeGoWindowObjectRes = func() []*regexp.Regexp {
+	res := make([]*regexp.Regexp, 0, len(openCodeGoWindowSpecs))
+	for _, spec := range openCodeGoWindowSpecs {
+		res = append(res, regexp.MustCompile(`["']?`+regexp.QuoteMeta(spec.field)+`["']?\s*:\s*(?:\$R\[\d+\]\s*=\s*)?\{([^{}]*)\}`))
+	}
+	return res
+}()
 
 type openCodeGoHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
@@ -42,6 +69,15 @@ type openCodeGoAuthMaterial struct {
 type openCodeGoAuthFile struct {
 	Type string `json:"type"`
 	Key  string `json:"key"`
+}
+
+// openCodeGoDashboardCredential addresses the OpenCode dashboard usage page.
+// The values are sensitive and are never serialized, logged, or cached; only
+// source is used in logs.
+type openCodeGoDashboardCredential struct {
+	workspaceID string
+	authCookie  string
+	source      string
 }
 
 // openCodeGoAuthPath resolves the auth file location the official CLI uses
@@ -94,78 +130,237 @@ func readOpenCodeGoAuth(home string) (openCodeGoAuthMaterial, error) {
 	return openCodeGoAuthMaterial{kind: "official", token: token}, nil
 }
 
-// fetchOpenCodeGoSubscription confirms the OpenCode Go subscription by
-// authenticating against the official Go API with a request that is rejected
-// before any tokens are consumed. A 400 invalid_request_error or a 200 proves
-// the key was accepted by the Go service; an AuthError (401), any other
-// status, an unparseable body, or a network failure proves nothing and yields
-// an error so no card can be produced.
-func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
+// readOpenCodeGoDashboardCredential resolves dashboard credentials using the
+// conventions shared with opgginc/opencode-bar and opencode-quota: environment
+// variables first, then an explicit config file override, then the standard
+// config locations. Browser cookie scanning is intentionally not implemented.
+func readOpenCodeGoDashboardCredential(home string) *openCodeGoDashboardCredential {
+	if workspaceID := strings.TrimSpace(os.Getenv("OPENCODE_GO_WORKSPACE_ID")); workspaceID != "" {
+		if authCookie := strings.TrimSpace(os.Getenv("OPENCODE_GO_AUTH_COOKIE")); authCookie != "" {
+			return &openCodeGoDashboardCredential{workspaceID: workspaceID, authCookie: authCookie, source: "environment"}
+		}
+	}
+	if override := strings.TrimSpace(os.Getenv("OPENCODE_GO_CONFIG_FILE")); override != "" {
+		if cred := openCodeGoDashboardCredentialFromFile(override); cred != nil {
+			return cred
+		}
+	}
+	for _, path := range openCodeGoDashboardConfigCandidates(home) {
+		if cred := openCodeGoDashboardCredentialFromFile(path); cred != nil {
+			return cred
+		}
+	}
+	return nil
+}
+
+func openCodeGoDashboardConfigCandidates(home string) []string {
+	var candidates []string
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		candidates = append(candidates,
+			filepath.Join(xdg, "opencode-bar", "opencode-go.json"),
+			filepath.Join(xdg, "opencode-quota", "opencode-go.json"),
+		)
+	}
+	if runtime.GOOS == "darwin" {
+		candidates = append(candidates,
+			filepath.Join(home, "Library", "Application Support", "opencode-bar", "opencode-go.json"),
+			filepath.Join(home, "Library", "Application Support", "opencode-quota", "opencode-go.json"),
+		)
+	}
+	candidates = append(candidates,
+		filepath.Join(home, ".config", "opencode-bar", "opencode-go.json"),
+		filepath.Join(home, ".config", "opencode-quota", "opencode-go.json"),
+	)
+	return candidates
+}
+
+func openCodeGoDashboardCredentialFromFile(path string) *openCodeGoDashboardCredential {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var entry map[string]string
+	if err := json.NewDecoder(io.LimitReader(f, maxOpenCodeGoAuthBytes)).Decode(&entry); err != nil {
+		return nil
+	}
+	workspaceID := firstNonEmptyString(
+		strings.TrimSpace(entry["workspaceId"]),
+		strings.TrimSpace(entry["workspaceID"]),
+		strings.TrimSpace(entry["workspace_id"]),
+	)
+	authCookie := firstNonEmptyString(
+		strings.TrimSpace(entry["authCookie"]),
+		strings.TrimSpace(entry["auth_cookie"]),
+		strings.TrimSpace(entry["cookie"]),
+	)
+	if workspaceID == "" || authCookie == "" {
+		return nil
+	}
+	return &openCodeGoDashboardCredential{workspaceID: workspaceID, authCookie: authCookie, source: path}
+}
+
+// fetchOpenCodeGoSubscription confirms the OpenCode Go subscription with the
+// read-only models request and, when dashboard credentials are available,
+// attaches the usage windows parsed from the authenticated dashboard page.
+// Verification failure yields an error so no card can be produced; dashboard
+// failure is fail-closed and only downgrades usage availability.
+func fetchOpenCodeGoSubscription(ctx context.Context, client openCodeGoHTTPClient, modelsEndpoint, dashboardBaseURL string, auth openCodeGoAuthMaterial, dashboard *openCodeGoDashboardCredential, now time.Time) (*OpenCodeGoSubscriptionUsage, error) {
 	if auth.kind != "official" || strings.TrimSpace(auth.token) == "" {
 		return nil, errors.New("official OpenCode Go authentication required")
 	}
-	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ok"}],"max_tokens":0,"stream":false}`, opencodeGoVerifyModel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))
-	if err != nil {
+	if err := verifyOpenCodeGoKey(ctx, client, modelsEndpoint, auth); err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+auth.token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "zen-stats")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request opencode go: %w", err)
-	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOpenCodeGoBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("read opencode go response: %w", err)
-	}
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		if !json.Valid(body) {
-			return nil, errors.New("opencode go response is not valid json")
-		}
-	case http.StatusBadRequest:
-		var errorBody struct {
-			Error struct {
-				Type string `json:"type"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(body, &errorBody); err != nil {
-			return nil, errors.New("opencode go rejected response is not parseable")
-		}
-		if errorBody.Error.Type != "invalid_request_error" {
-			return nil, fmt.Errorf("opencode go rejected request with error type %q", errorBody.Error.Type)
-		}
-	default:
-		return nil, fmt.Errorf("opencode go endpoint returned status %d", resp.StatusCode)
-	}
-
-	return &OpenCodeGoSubscriptionUsage{
+	usage := &OpenCodeGoSubscriptionUsage{
 		AuthKind:  "official",
 		State:     "available",
 		Plan:      "go",
 		FetchedAt: now.UTC().Format(time.RFC3339),
-	}, nil
+	}
+	if windows := fetchOpenCodeGoDashboardWindows(ctx, client, dashboardBaseURL, dashboard, now); len(windows) > 0 {
+		usage.UsageAvailable = true
+		usage.Windows = windows
+	}
+	return usage, nil
+}
+
+func verifyOpenCodeGoKey(ctx context.Context, client openCodeGoHTTPClient, endpoint string, auth openCodeGoAuthMaterial) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+auth.token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "zen-stats")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request opencode go models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("opencode go models endpoint returned status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Data   []json.RawMessage `json:"data"`
+		Models []json.RawMessage `json:"models"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxOpenCodeGoBodyBytes))
+	if err := decoder.Decode(&payload); err != nil {
+		return errors.New("opencode go models response is not parseable json")
+	}
+	if payload.Data == nil && payload.Models == nil {
+		return errors.New("opencode go models response has no model list")
+	}
+	return nil
+}
+
+func fetchOpenCodeGoDashboardWindows(ctx context.Context, client openCodeGoHTTPClient, dashboardBaseURL string, dashboard *openCodeGoDashboardCredential, now time.Time) []OpenCodeGoUsageWindow {
+	if dashboard == nil || strings.TrimSpace(dashboard.workspaceID) == "" || strings.TrimSpace(dashboard.authCookie) == "" {
+		return nil
+	}
+	endpoint := fmt.Sprintf("%s/%s/go", strings.TrimRight(dashboardBaseURL, "/"), url.PathEscape(dashboard.workspaceID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Cookie", openCodeGoCookieHeader(dashboard.authCookie))
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOpenCodeGoBodyBytes))
+	if err != nil {
+		return nil
+	}
+	return parseOpenCodeGoDashboardWindows(string(body), now)
+}
+
+func openCodeGoCookieHeader(raw string) string {
+	if strings.Contains(raw, "auth=") {
+		return raw
+	}
+	return "auth=" + raw
+}
+
+// parseOpenCodeGoDashboardWindows extracts the 5-hour, weekly, and monthly
+// usage windows from the dashboard page markup. The page embeds the windows
+// as JSON or SolidJS-serialized objects (for example inside __next_f payloads
+// or $R[n]={...} expressions). Windows that cannot be parsed are omitted and
+// no value is ever guessed; a page without any parseable window (login page,
+// markup drift, rate-limit page) yields no windows.
+func parseOpenCodeGoDashboardWindows(page string, now time.Time) []OpenCodeGoUsageWindow {
+	text := openCodeGoNormalizeDashboardHTML(page)
+	var windows []OpenCodeGoUsageWindow
+	for i, spec := range openCodeGoWindowSpecs {
+		match := openCodeGoWindowObjectRes[i].FindStringSubmatch(text)
+		if match == nil {
+			continue
+		}
+		used, usedOK := openCodeGoCaptureNumber(match[1], "usagePercent")
+		reset, resetOK := openCodeGoCaptureNumber(match[1], "resetInSec")
+		if !usedOK || !resetOK || math.IsNaN(used) || math.IsInf(used, 0) || used < 0 {
+			continue
+		}
+		seconds := int64(math.Round(reset))
+		if seconds < 0 {
+			seconds = 0
+		}
+		windows = append(windows, OpenCodeGoUsageWindow{
+			Name:           spec.name,
+			UsedPercent:    used,
+			LimitUSD:       spec.limitUSD,
+			ResetInSeconds: seconds,
+			ResetsAt:       now.Add(time.Duration(seconds) * time.Second).UTC().Format(time.RFC3339),
+		})
+	}
+	return windows
+}
+
+func openCodeGoCaptureNumber(body, name string) (float64, bool) {
+	re := regexp.MustCompile(`["']?` + regexp.QuoteMeta(name) + `["']?\s*:\s*"?(-?\d+(?:\.\d+)?)"?`)
+	match := re.FindStringSubmatch(body)
+	if match == nil {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func openCodeGoNormalizeDashboardHTML(page string) string {
+	text := html.UnescapeString(page)
+	text = strings.ReplaceAll(text, `\"`, `"`)
+	text = strings.ReplaceAll(text, `\u0022`, `"`)
+	return text
 }
 
 // collectOpenCodeGoSubscription returns the subscription projection only when
-// the most recent authoritative check against the official OpenCode Go API
-// positively confirmed it. Any negative or ambiguous outcome (missing
-// credentials, auth failure, expired key, network failure, malformed body)
-// yields nil so the app can never retain or produce a Go card.
+// the most recent read-only verification against the official OpenCode Go
+// API succeeded. Any negative or ambiguous outcome (missing credentials, auth
+// failure, network failure, malformed body) yields nil so the app can never
+// retain or produce a Go card. Usage windows are present only when the
+// authenticated dashboard page parsed successfully in the same refresh.
 func (c *Collector) collectOpenCodeGoSubscription(home string) *OpenCodeGoSubscriptionUsage {
 	auth, err := readOpenCodeGoAuth(home)
 	if err != nil || auth.kind != "official" {
 		return nil
 	}
+	dashboard := readOpenCodeGoDashboardCredential(home)
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.opencodeGoTimeout)
 	defer cancel()
-	usage, err := fetchOpenCodeGoSubscription(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, auth, c.now())
+	usage, err := fetchOpenCodeGoSubscription(ctx, c.opencodeGoClient, c.opencodeGoEndpoint, c.opencodeGoDashboardEndpoint, auth, dashboard, c.now())
 	if err != nil {
 		return nil
 	}

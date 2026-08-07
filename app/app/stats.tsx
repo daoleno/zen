@@ -42,6 +42,8 @@ import {
 import {
   OPENCODE_GO_PLAN_LABEL,
   isOfficialOpenCodeGoSubscription,
+  openCodeGoLimitLabel,
+  openCodeGoWindowLabel,
 } from '../services/opencodeGoSubscriptionStats';
 import {
   INITIAL_STATS_RANGE,
@@ -164,7 +166,17 @@ interface OpenCodeGoSubscriptionUsage {
   state: 'available' | 'unavailable';
   plan?: string;
   fetchedAt?: string;
+  usageAvailable?: boolean;
+  windows?: OpenCodeGoUsageWindow[];
   serverLabel?: string;
+}
+
+interface OpenCodeGoUsageWindow {
+  name: string;
+  usedPercent: number;
+  limitUsd?: number;
+  resetInSeconds?: number;
+  resetsAt?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────
@@ -1043,21 +1055,47 @@ function StatsRangeScene({
               </View>
             ))}
 
-            {opencodeGoSubscriptions.map((subscription, index) => (
-              <View key={`opencode-go:${subscription.serverLabel ?? 'server'}:${index}`} style={[s.card, s.codexCard]}>
-                <View style={s.codexTitleRow}>
-                  <View style={s.codexTitleBlock}>
-                    <Text style={s.label}>OpenCode Go subscription</Text>
-                    <Text style={s.codexPlan}>
-                      {OPENCODE_GO_PLAN_LABEL}
-                    </Text>
+            {opencodeGoSubscriptions.map((subscription, index) => {
+              const windows = subscription.usageAvailable
+                ? (subscription.windows ?? []).filter(window => Number.isFinite(window.usedPercent))
+                : [];
+              return (
+                <View key={`opencode-go:${subscription.serverLabel ?? 'server'}:${index}`} style={[s.card, s.codexCard]}>
+                  <View style={s.codexTitleRow}>
+                    <View style={s.codexTitleBlock}>
+                      <Text style={s.label}>OpenCode Go subscription</Text>
+                      <Text style={s.codexPlan}>
+                        {OPENCODE_GO_PLAN_LABEL}
+                      </Text>
+                    </View>
                   </View>
+                  {windows.length > 0 ? (
+                    <View style={s.codexWindows}>
+                      {windows.map(window => {
+                        const used = normalizeCodexUsedPercent(window.usedPercent);
+                        const limit = openCodeGoLimitLabel(window.limitUsd);
+                        return (
+                          <View key={window.name} style={s.codexWindow} accessible accessibilityLabel={`${openCodeGoWindowLabel(window.name)}, ${used.toFixed(0)} percent used${limit ? `, ${limit} limit` : ''}, ${fmtReset(window.resetsAt)}`}>
+                            <View style={s.codexWindowHeader}>
+                              <Text style={s.codexWindowLabel}>{openCodeGoWindowLabel(window.name)}</Text>
+                              <Text style={s.codexRemaining}>{used.toFixed(0)}% used{limit ? ` · ${limit}` : ''}</Text>
+                            </View>
+                            <View style={s.codexTrack}>
+                              <View style={[s.codexFill, { width: `${used}%` }]} />
+                            </View>
+                            <Text style={s.codexReset}>{fmtReset(window.resetsAt)}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <Text style={s.codexNotice}>
+                      Active Go subscription confirmed, but live usage is unavailable. Set OPENCODE_GO_WORKSPACE_ID and OPENCODE_GO_AUTH_COOKIE (or a ~/.config/opencode-bar/opencode-go.json config file) to show 5-hour, weekly, and monthly usage.
+                    </Text>
+                  )}
                 </View>
-                <Text style={s.codexNotice}>
-                  Active Go subscription confirmed. Usage is tracked in the OpenCode console (opencode.ai/auth).
-                </Text>
-              </View>
-            ))}
+              );
+            })}
 
             {/* ── Summary ── */}
             {hasData && <View style={[s.card, s.summaryCard]}>

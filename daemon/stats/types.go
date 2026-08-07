@@ -29,15 +29,29 @@ type CodexUsageWindow struct {
 }
 
 // OpenCodeGoSubscriptionUsage describes an OpenCode Go subscription confirmed
-// against the official OpenCode Go API. The API exposes plan access but no
-// usage windows, amounts, reset times, or model-specific limits, so this
-// projection intentionally carries only the confirmed plan status. It
-// contains no credentials or account identifiers.
+// against the official OpenCode Go API. UsageAvailable is true only when the
+// authenticated dashboard page yielded at least one usage window; it is never
+// guessed or reused from an older refresh. Window limits are the plan facts
+// published in the OpenCode Go documentation ($12/5h, $30/week, $60/month).
+// The projection contains no credentials, account identifiers, or cookies.
 type OpenCodeGoSubscriptionUsage struct {
-	AuthKind  string `json:"authKind"`
-	State     string `json:"state"`
-	Plan      string `json:"plan,omitempty"`
-	FetchedAt string `json:"fetchedAt,omitempty"`
+	AuthKind       string                  `json:"authKind"`
+	State          string                  `json:"state"`
+	Plan           string                  `json:"plan,omitempty"`
+	FetchedAt      string                  `json:"fetchedAt,omitempty"`
+	UsageAvailable bool                    `json:"usageAvailable"`
+	Windows        []OpenCodeGoUsageWindow `json:"windows,omitempty"`
+}
+
+// OpenCodeGoUsageWindow is one dashboard usage window. UsedPercent is the
+// dashboard's consumed-percentage (0 unused, 100 exhausted); LimitUSD is the
+// documented plan limit for the window.
+type OpenCodeGoUsageWindow struct {
+	Name           string  `json:"name"`
+	UsedPercent    float64 `json:"usedPercent"`
+	LimitUSD       float64 `json:"limitUsd"`
+	ResetInSeconds int64   `json:"resetInSeconds,omitempty"`
+	ResetsAt       string  `json:"resetsAt,omitempty"`
 }
 
 // RangeData holds aggregated stats for a single time range.

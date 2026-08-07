@@ -21,30 +21,32 @@ import (
 // Collector scans local Claude Code, Codex CLI, Grok, and Cursor Agent data files and builds
 // aggregated stats. All reads are read-only — it never modifies source files.
 type Collector struct {
-	mu                       sync.RWMutex
-	cached                   *StatsResponse
-	codexUsageClient         codexUsageHTTPClient
-	codexUsageEndpoint       string
-	codexUsageTimeout        time.Duration
-	opencodeGoClient         openCodeGoHTTPClient
-	opencodeGoEndpoint       string
-	opencodeGoTimeout        time.Duration
-	now                      func() time.Time
-	lastCodexSubscription    *CodexSubscriptionUsage
-	lastCodexAuthFingerprint string
+	mu                          sync.RWMutex
+	cached                      *StatsResponse
+	codexUsageClient            codexUsageHTTPClient
+	codexUsageEndpoint          string
+	codexUsageTimeout           time.Duration
+	opencodeGoClient            openCodeGoHTTPClient
+	opencodeGoEndpoint          string
+	opencodeGoDashboardEndpoint string
+	opencodeGoTimeout           time.Duration
+	now                         func() time.Time
+	lastCodexSubscription       *CodexSubscriptionUsage
+	lastCodexAuthFingerprint    string
 }
 
 // NewCollector creates a stats collector.
 func NewCollector() *Collector {
 	loadPricingCache(homeDir())
 	return &Collector{
-		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
-		codexUsageEndpoint: codexUsageEndpoint,
-		codexUsageTimeout:  8 * time.Second,
-		opencodeGoClient:   &http.Client{Timeout: 8 * time.Second},
-		opencodeGoEndpoint: opencodeGoUsageEndpoint,
-		opencodeGoTimeout:  8 * time.Second,
-		now:                time.Now,
+		codexUsageClient:            &http.Client{Timeout: 8 * time.Second},
+		codexUsageEndpoint:          codexUsageEndpoint,
+		codexUsageTimeout:           8 * time.Second,
+		opencodeGoClient:            &http.Client{Timeout: 8 * time.Second},
+		opencodeGoEndpoint:          opencodeGoModelsEndpoint,
+		opencodeGoDashboardEndpoint: opencodeGoDashboardBaseURL,
+		opencodeGoTimeout:           8 * time.Second,
+		now:                         time.Now,
 	}
 }
 
