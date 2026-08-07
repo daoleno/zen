@@ -74,4 +74,20 @@ describe("Interface native Markdown mobile contract", () => {
       prepareInterfaceMarkdown("![alt](https://example.com/x.png)", false),
     ).toBe("[alt](https://example.com/x.png)");
   });
+
+  test("keeps inline code without opaque fragment backgrounds in the style model", () => {
+    const model = readFileSync(
+      join(import.meta.dir, "InterfaceNativeMarkdownBodyModel.ts"),
+      "utf8",
+    );
+    const codeOwner = readFileSync(
+      join(import.meta.dir, "InterfaceInlineCodeStyle.ts"),
+      "utf8",
+    );
+    expect(model).toContain("code: interfaceInlineCodeStyle(theme, compact)");
+    expect(codeOwner).toContain('backgroundColor: "transparent"');
+    expect(codeOwner).toContain('borderColor: "transparent"');
+    expect(codeOwner).toContain("theme.cyan");
+    expect(codeOwner).not.toContain("surfaceMuted");
+  });
 });

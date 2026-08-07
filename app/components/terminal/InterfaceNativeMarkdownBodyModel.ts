@@ -4,6 +4,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { interfaceInlineCodeStyle } from "./InterfaceInlineCodeStyle";
 
 export {
   INTERFACE_MARKDOWN_MOBILE_RENDERER,
@@ -77,15 +78,7 @@ export function interfaceMarkdownStyle(
       fontFamily: Typography.chatFontMedium,
       underline: true,
     },
-    code: {
-      color: theme.cyan,
-      backgroundColor: chrome.surfaceMuted,
-      borderColor: chrome.border,
-      fontFamily: Typography.chatMonoFont,
-      fontSize: compact ? 12 : 13,
-      lineHeight: compact ? 18 : 20,
-      letterSpacing: 0,
-    },
+    code: interfaceInlineCodeStyle(theme, compact),
     codeBlock: {
       color: chrome.text,
       backgroundColor: compact ? chrome.surfaceMuted : chrome.surface,

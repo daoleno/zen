@@ -7,6 +7,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { recognizeSessionFileReference } from "../../services/sessionFilePreview";
+import { interfaceInlineCodeStyle } from "./InterfaceInlineCodeStyle";
 import { tokenizeInlineMessage } from "./InterfaceMessageBodyModel";
 import { useSessionFilePreviewContext } from "./SessionFilePreviewContext";
 
@@ -88,7 +89,9 @@ export function InterfaceInlineMessage({
               style={[
                 styles.messageInlineCode,
                 compact ? styles.messageInlineCodeCompact : null,
-                { color: theme.cyan, backgroundColor: chrome.surfaceMuted },
+                {
+                  color: interfaceInlineCodeStyle(theme, compact).color,
+                },
               ]}
             >
               {part.text}
