@@ -2,9 +2,10 @@ package stats
 
 // StatsResponse is sent to the app in response to a "get_stats" request.
 type StatsResponse struct {
-	Type              string                  `json:"type"`
-	Ranges            map[string]*RangeData   `json:"ranges"`
-	CodexSubscription *CodexSubscriptionUsage `json:"codexSubscription,omitempty"`
+	Type                   string                       `json:"type"`
+	Ranges                 map[string]*RangeData        `json:"ranges"`
+	CodexSubscription      *CodexSubscriptionUsage      `json:"codexSubscription,omitempty"`
+	OpenCodeGoSubscription *OpenCodeGoSubscriptionUsage `json:"opencodeGoSubscription,omitempty"`
 }
 
 // CodexSubscriptionUsage describes official ChatGPT-backed Codex quota. It
@@ -25,6 +26,18 @@ type CodexUsageWindow struct {
 	UsedPercent   float64 `json:"usedPercent"`
 	WindowMinutes int64   `json:"windowMinutes,omitempty"`
 	ResetsAt      string  `json:"resetsAt,omitempty"`
+}
+
+// OpenCodeGoSubscriptionUsage describes an OpenCode Go subscription confirmed
+// against the official OpenCode Go API. The API exposes plan access but no
+// usage windows, amounts, reset times, or model-specific limits, so this
+// projection intentionally carries only the confirmed plan status. It
+// contains no credentials or account identifiers.
+type OpenCodeGoSubscriptionUsage struct {
+	AuthKind  string `json:"authKind"`
+	State     string `json:"state"`
+	Plan      string `json:"plan,omitempty"`
+	FetchedAt string `json:"fetchedAt,omitempty"`
 }
 
 // RangeData holds aggregated stats for a single time range.

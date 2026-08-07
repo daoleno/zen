@@ -26,6 +26,9 @@ type Collector struct {
 	codexUsageClient         codexUsageHTTPClient
 	codexUsageEndpoint       string
 	codexUsageTimeout        time.Duration
+	opencodeGoClient         openCodeGoHTTPClient
+	opencodeGoEndpoint       string
+	opencodeGoTimeout        time.Duration
 	now                      func() time.Time
 	lastCodexSubscription    *CodexSubscriptionUsage
 	lastCodexAuthFingerprint string
@@ -38,6 +41,9 @@ func NewCollector() *Collector {
 		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
 		codexUsageEndpoint: codexUsageEndpoint,
 		codexUsageTimeout:  8 * time.Second,
+		opencodeGoClient:   &http.Client{Timeout: 8 * time.Second},
+		opencodeGoEndpoint: opencodeGoUsageEndpoint,
+		opencodeGoTimeout:  8 * time.Second,
 		now:                time.Now,
 	}
 }
@@ -320,11 +326,13 @@ func (c *Collector) refresh() {
 	c.mu.Unlock()
 
 	subscription := c.collectCodexSubscription(home)
+	opencodeGoSubscription := c.collectOpenCodeGoSubscription(home)
 	c.mu.Lock()
 	c.cached = &StatsResponse{
-		Type:              "stats_data",
-		Ranges:            ranges,
-		CodexSubscription: subscription,
+		Type:                   "stats_data",
+		Ranges:                 ranges,
+		CodexSubscription:      subscription,
+		OpenCodeGoSubscription: opencodeGoSubscription,
 	}
 	c.mu.Unlock()
 

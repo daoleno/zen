@@ -1232,6 +1232,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" {
 				payload["codexSubscription"] = resp.CodexSubscription
 			}
+			if resp.OpenCodeGoSubscription != nil && resp.OpenCodeGoSubscription.AuthKind == "official" {
+				payload["opencodeGoSubscription"] = resp.OpenCodeGoSubscription
+			}
 			s.sendJSON(conn, payload)
 		} else {
 			s.sendJSON(conn, map[string]any{

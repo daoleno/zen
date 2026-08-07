@@ -40,6 +40,10 @@ import {
   isOfficialCodexSubscription,
 } from '../services/codexSubscriptionStats';
 import {
+  OPENCODE_GO_PLAN_LABEL,
+  isOfficialOpenCodeGoSubscription,
+} from '../services/opencodeGoSubscriptionStats';
+import {
   INITIAL_STATS_RANGE,
   STATS_RANGE_TABS,
   statsRangeAt,
@@ -130,6 +134,8 @@ export interface StatsPayload {
   ranges: Record<string, RangeData>;
   codexSubscription?: CodexSubscriptionUsage;
   codexSubscriptions?: CodexSubscriptionUsage[];
+  opencodeGoSubscription?: OpenCodeGoSubscriptionUsage;
+  opencodeGoSubscriptions?: OpenCodeGoSubscriptionUsage[];
   serverId?: string;
   serverUrl?: string;
   daemonId?: string;
@@ -150,6 +156,14 @@ interface CodexSubscriptionUsage {
   windows?: CodexUsageWindow[];
   fetchedAt?: string;
   stale?: boolean;
+  serverLabel?: string;
+}
+
+interface OpenCodeGoSubscriptionUsage {
+  authKind: 'official' | 'api_key' | 'absent' | 'unknown';
+  state: 'available' | 'unavailable';
+  plan?: string;
+  fetchedAt?: string;
   serverLabel?: string;
 }
 
@@ -485,7 +499,13 @@ function mergeStatsPayloads(payloads: StatsPayload[]): StatsPayload | null {
       windows: p.codexSubscription!.windows?.map(window => ({ ...window })),
       serverLabel: p.serverId ?? p.serverUrl,
     }));
-  return { ranges, codexSubscriptions };
+  const opencodeGoSubscriptions = uniquePayloads
+    .filter(p => isOfficialOpenCodeGoSubscription(p.opencodeGoSubscription))
+    .map(p => ({
+      ...p.opencodeGoSubscription!,
+      serverLabel: p.serverId ?? p.serverUrl,
+    }));
+  return { ranges, codexSubscriptions, opencodeGoSubscriptions };
 }
 
 function fmtReset(value?: string): string {
@@ -929,7 +949,9 @@ function StatsRangeScene({
   const hasData = hasRangeStats(data);
   const codexSubscriptions = (statsData?.codexSubscriptions ?? [])
     .filter(isOfficialCodexSubscription);
-  const showStatsContent = hasData || codexSubscriptions.length > 0;
+  const opencodeGoSubscriptions = (statsData?.opencodeGoSubscriptions ?? [])
+    .filter(isOfficialOpenCodeGoSubscription);
+  const showStatsContent = hasData || codexSubscriptions.length > 0 || opencodeGoSubscriptions.length > 0;
   const hasAnyStats = useMemo(
     () => Object.values(statsData?.ranges ?? {}).some(item => hasRangeStats(item)),
     [statsData],
@@ -1018,6 +1040,22 @@ function StatsRangeScene({
                           : 'Zen could not confidently identify official Codex subscription authentication.'}
                   </Text>
                 )}
+              </View>
+            ))}
+
+            {opencodeGoSubscriptions.map((subscription, index) => (
+              <View key={`opencode-go:${subscription.serverLabel ?? 'server'}:${index}`} style={[s.card, s.codexCard]}>
+                <View style={s.codexTitleRow}>
+                  <View style={s.codexTitleBlock}>
+                    <Text style={s.label}>OpenCode Go subscription</Text>
+                    <Text style={s.codexPlan}>
+                      {OPENCODE_GO_PLAN_LABEL}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={s.codexNotice}>
+                  Active Go subscription confirmed. Usage is tracked in the OpenCode console (opencode.ai/auth).
+                </Text>
               </View>
             ))}
 
