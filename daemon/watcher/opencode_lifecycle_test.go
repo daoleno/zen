@@ -333,3 +333,96 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceFailsOnceAtStartTimeout(t *
 		t.Fatalf("late provider activity reopened terminal turn: before=%+v after=%+v", settled, after)
 	}
 }
+
+// TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity
+// reproduces the reported failure on f461215: after a follow-up turn was
+// accepted, the provider observation still carried the previous turn's
+// completed Activity (the reader cache reused the old Activity while new rows
+// were only in the SQLite WAL), and the quiet prompt-like TUI frame then
+// settled the new accepted turn via the generic quiet-window fallback. A
+// stale structured provider fact must never terminalize a newer accepted
+// turn; only an authoritative Activity for that turn may, exactly once.
+func TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	now := time.Now().UTC()
+	identity := testSessionInputIdentity("opencode")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	sessionID := "opencode-followup-stale:@1"
+	io.hasTurn = true
+	io.turn = delegatedTurnRecord{
+		SchemaVersion:    delegatedTurnSchema,
+		ID:               "turn:followup",
+		Status:           delegatedTurnRunning,
+		AcceptedAt:       now.Add(-time.Second),
+		ProcessIdentity:  delegatedTurnIdentity(identity),
+		PaneBaseline:     "baseline",
+		ProviderActivity: "act-new",
+	}
+	stale := ProviderActivityObservation{
+		ID:              "act-old-turn",
+		Status:          "completed",
+		StartedAt:       now.Add(-2 * time.Minute),
+		SettledAt:       now.Add(-time.Minute),
+		Structured:      true,
+		FallbackAllowed: true,
+	}
+	quietPromptFrame := classifier.ActivitySignal{State: classifier.StateUnknown, Source: "generic_pane_stable"}
+	// Repeated polls with the stale completed Activity and a quiet prompt-like
+	// pane frame, the second far past the generic quiet window: the new
+	// accepted turn must hold running, never idle/settled.
+	for _, at := range []time.Time{now, now.Add(45 * time.Second)} {
+		turn, found, err := owner.observeDelegatedTurn(sessionID, "turn:followup", delegatedTurnObservation{
+			Provider: stale,
+			Pane:     quietPromptFrame,
+			Live:     true,
+			Now:      at,
+		}, resolver)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found || turn.Status != delegatedTurnRunning || turn.IdleSince != nil {
+			t.Fatalf("stale completed Activity terminalized/idled the accepted turn: %+v", turn)
+		}
+	}
+	// The new turn's authoritative running Activity correlates it.
+	turn, _, err := owner.observeDelegatedTurn(sessionID, "turn:followup", delegatedTurnObservation{
+		Provider: ProviderActivityObservation{ID: "act-new", Status: "running", StartedAt: now.Add(2 * time.Second), Structured: true},
+		Pane:     quietPromptFrame,
+		Live:     true,
+		Now:      now.Add(3 * time.Second),
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Status != delegatedTurnRunning || turn.ProviderActivity != "act-new" {
+		t.Fatalf("authoritative running did not correlate the follow-up turn: %+v", turn)
+	}
+	// Authoritative settlement: exactly one done for the new turn.
+	turn, _, err = owner.observeDelegatedTurn(sessionID, "turn:followup", delegatedTurnObservation{
+		Provider: ProviderActivityObservation{ID: "act-new", Status: "completed", StartedAt: now.Add(2 * time.Second), SettledAt: now.Add(10 * time.Second), Structured: true},
+		Pane:     quietPromptFrame,
+		Live:     true,
+		Now:      now.Add(11 * time.Second),
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Status != delegatedTurnDone || turn.SettledAt == nil {
+		t.Fatalf("authoritative settlement = %+v, want done exactly once", turn)
+	}
+	settled := turn
+	// Duplicate settlement and stale observations stay immutable.
+	if _, _, err := owner.observeDelegatedTurn(sessionID, "turn:followup", delegatedTurnObservation{
+		Provider: stale,
+		Pane:     quietPromptFrame,
+		Live:     true,
+		Now:      now.Add(20 * time.Second),
+	}, resolver); err != nil {
+		t.Fatal(err)
+	}
+	after, _, _ := io.delegatedTurn("%9")
+	if after != settled {
+		t.Fatalf("terminal follow-up turn mutated: before=%+v after=%+v", settled, after)
+	}
+}

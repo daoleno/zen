@@ -218,7 +218,15 @@ func reduceDelegatedTurn(turn delegatedTurnRecord, observation delegatedTurnObse
 		turn.SettledAt = &now
 		return turn, true
 	}
-	if observation.Provider.Structured && !observation.Provider.FallbackAllowed {
+	// A structured provider observation that carries a real activity identity
+	// but whose Activity started before this accepted turn is a past turn's
+	// fact, not evidence about this turn. The provider tracks the session and
+	// will emit this turn's fact once its Activity starts; the pane-quiet
+	// fallback must never terminalize the new accepted turn from an old
+	// completed Activity plus a quiet prompt-like frame (OpenCode exposes an
+	// input prompt while a turn remains active).
+	if observation.Provider.Structured &&
+		(observation.Provider.ID != "" || !observation.Provider.FallbackAllowed) {
 		return turn, false
 	}
 	switch observation.Pane.State {

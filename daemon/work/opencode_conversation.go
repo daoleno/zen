@@ -152,7 +152,9 @@ func (r *ProviderConversationReader) loadOpenCodeConversation(dbPath, sessionID 
 		previous.sessionID == sessionID &&
 		previous.path == dbPath &&
 		previous.size == stamp.size &&
-		previous.modTime.Equal(stamp.modTime) {
+		previous.modTime.Equal(stamp.modTime) &&
+		previous.walSize == stamp.walSize &&
+		previous.walModTime.Equal(stamp.walModTime) {
 		return previous.conversation, nil
 	}
 	r.resetSource()
@@ -173,14 +175,18 @@ func (r *ProviderConversationReader) loadOpenCodeConversation(dbPath, sessionID 
 		sessionID:    sessionID,
 		size:         after.size,
 		modTime:      after.modTime,
+		walSize:      after.walSize,
+		walModTime:   after.walModTime,
 		conversation: conversation,
 	}
 	return conversation, nil
 }
 
 type openCodeStamp struct {
-	size    int64
-	modTime time.Time
+	size       int64
+	modTime    time.Time
+	walSize    int64
+	walModTime time.Time
 }
 
 func openCodeConversationStamp(dbPath, sessionID string) (openCodeStamp, error) {
@@ -188,8 +194,16 @@ func openCodeConversationStamp(dbPath, sessionID string) (openCodeStamp, error) 
 	if err != nil {
 		return openCodeStamp{}, err
 	}
-	_ = sessionID
-	return openCodeStamp{size: info.Size(), modTime: info.ModTime()}, nil
+	stamp := openCodeStamp{size: info.Size(), modTime: info.ModTime()}
+	// SQLite WAL mode keeps new rows in the -wal file; the main file's stat
+	// changes only at checkpoint. Without the WAL in the stamp the cache
+	// returns a stale conversation (the previous completed Activity) while a
+	// newly accepted turn is already in the WAL.
+	if wal, err := os.Stat(dbPath + "-wal"); err == nil {
+		stamp.walSize = wal.Size()
+		stamp.walModTime = wal.ModTime()
+	}
+	return stamp, nil
 }
 
 func openCodeDBPath() (string, error) {
@@ -573,13 +587,11 @@ func (b *openCodeConversationBuilder) consumeMessage(message openCodeMessageRow,
 }
 
 // settleFromAssistantMessage uses OpenCode's authoritative message finish /
-// time.completed markers. step-finish parts remain the primary in-flight
-// signal; message finish covers completed turns where part projection alone
-// would leave Activity running. A finish that means the assistant yielded to
-// a tool or is otherwise mid-turn must not settle the Activity: the first
-// assistant message echo finishes with tool-calls while the provider is only
-// starting real work, and treating it as completion pinned live Sessions to
-// done.
+// time.completed markers: the assistant message row is the only turn-terminal
+// fact. step-finish parts are per-step signals and must never settle the
+// Activity (the first assistant message echo finishes with tool-calls while
+// the provider is only starting real work, and treating it as completion
+// pinned live Sessions to done).
 func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCodeMessageRow, timestamp string) {
 	var meta struct {
 		Finish string `json:"finish"`
@@ -680,18 +692,14 @@ func (b *openCodeConversationBuilder) projectAssistantParts(messageID, timestamp
 				)
 			}
 		case "step-finish":
+			// A step-finish part closes one assistant step, never the turn.
+			// OpenCode writes one step per assistant message and mirrors the
+			// step outcome onto the message row (finish/time.completed), so the
+			// step sequence goes 1 -> 0 on every step-finish while the turn is
+			// still Thinking/Preparing edit/Build. Settling the whole Activity
+			// here pinned live turns to done after every tool-call step.
 			if b.openSteps > 0 {
 				b.openSteps--
-			}
-			reason := strings.ToLower(strings.TrimSpace(payload.Reason))
-			status := ProviderActivityCompleted
-			if reason == "error" || reason == "failed" {
-				status = ProviderActivityFailed
-			} else if reason == "abort" || reason == "aborted" || reason == "interrupted" {
-				status = ProviderActivityInterrupted
-			}
-			if b.openSteps == 0 {
-				b.activityLifecycle.settle("", status, partTime)
 			}
 		case "text":
 			text := strings.TrimSpace(payload.Text)

@@ -43,7 +43,7 @@ func TestOpenCodeExactAdmissionAndLifecycle(t *testing.T) {
 		{ID: "ses_exact", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(5 * time.Second).UnixMilli()},
 	}, []openCodeMessageSeed{
 		{ID: "msg_user", SessionID: "ses_exact", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"role":"user"}`},
-		{ID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant"}`},
+		{ID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + fmt.Sprintf("%d", started.Add(5*time.Second).UnixMilli()) + `}}`},
 	}, []openCodePartSeed{
 		{ID: "p1", MessageID: "msg_user", SessionID: "ses_exact", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"type":"text","text":"` + payload + `"}`},
 		{ID: "p2", MessageID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"type":"step-start"}`},
@@ -75,7 +75,7 @@ func TestOpenCodeExactAdmissionAndLifecycle(t *testing.T) {
 		{ID: "ses_other", Directory: "/repo", CreatedMS: started.Add(30 * time.Second).UnixMilli(), UpdatedMS: started.Add(40 * time.Second).UnixMilli()},
 	}, []openCodeMessageSeed{
 		{ID: "msg_user", SessionID: "ses_exact", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"role":"user"}`},
-		{ID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant"}`},
+		{ID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + fmt.Sprintf("%d", started.Add(5*time.Second).UnixMilli()) + `}}`},
 	}, []openCodePartSeed{
 		{ID: "p1", MessageID: "msg_user", SessionID: "ses_exact", CreatedMS: started.Add(time.Second).UnixMilli(), Data: `{"type":"text","text":"` + payload + `"}`},
 		{ID: "p2", MessageID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"type":"step-start"}`},

@@ -241,3 +241,79 @@ func TestSessionEventDedupeKeyCollapsesSameKindAdmissionAttemptEvents(t *testing
 		t.Fatalf("same-kind admission Events = %d, want exactly one deduplicated: %#v", failed, events)
 	}
 }
+
+// TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce verifies the
+// reusable-Session contract: a follow-up submitted after the previous turn
+// settled done establishes a new turn epoch, its authoritative completion
+// emits exactly one new actionable session.done, and replayed terminal facts
+// never add a duplicate or lose the notification.
+func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-zen-opencode-followup-done:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Follow-up reopen",
+		Objective:        "A follow-up turn after done must notify exactly once.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Wait for the delegated Session.",
+		WaitFor:          "Session " + sessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	event := func(state classifier.AgentState, turnID string) watcher.SessionEvent {
+		return watcher.SessionEvent{
+			Type:     "agent_state_change",
+			AgentID:  sessionID,
+			Agent:    &classifier.Agent{ID: sessionID, State: state, Delegated: true, PaneAlive: true, Summary: "summary"},
+			OldState: string(classifier.StateUnknown),
+			NewState: string(state),
+			TurnID:   turnID,
+		}
+	}
+
+	// Turn 1 settles done: exactly one actionable completion.
+	if _, err := service.RouteSessionEvent(event(classifier.StateRunning, "turn-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-1")); err != nil {
+		t.Fatal(err)
+	}
+	// The follow-up reopens a new epoch.
+	if _, err := service.RouteSessionEvent(event(classifier.StateRunning, "turn-2")); err != nil {
+		t.Fatal(err)
+	}
+	// Authoritative settlement of the follow-up turn: one new notification.
+	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-2")); err != nil {
+		t.Fatal(err)
+	}
+	// Replayed terminal facts for either turn must not add Events.
+	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-2")); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	actionableDone := 0
+	for _, recorded := range events {
+		if recorded.Kind == "session.done" {
+			done++
+			if recorded.Actionable {
+				actionableDone++
+			}
+		}
+	}
+	if done != 2 || actionableDone != 2 {
+		t.Fatalf("session.done Events = %d (actionable %d), want exactly two actionable (one per turn): %#v", done, actionableDone, events)
+	}
+}
