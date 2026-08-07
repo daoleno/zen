@@ -1240,6 +1240,11 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 	if agent == nil {
 		return control.Agent{}
 	}
+	var lastSeenAt *time.Time
+	if !agent.LastSeenAt.IsZero() {
+		value := agent.LastSeenAt
+		lastSeenAt = &value
+	}
 	return control.Agent{
 		ID:                  agent.ID,
 		Name:                agent.Name,
@@ -1257,6 +1262,7 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 		Cwd:                 agent.Cwd,
 		Command:             agent.Command,
 		UpdatedAt:           agent.UpdatedAt,
+		LastSeenAt:          lastSeenAt,
 		Hidden:              agent.Hidden,
 		Delegated:           agent.Delegated,
 	}

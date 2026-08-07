@@ -35,7 +35,7 @@ export interface Agent {
   needs_attention?: boolean;
   last_output_lines: string[];
   started_at?: number;
-  updated_at: number;
+  updated_at?: number;
   process_id?: number;
   delegated?: boolean;
   capabilities?: AgentCapabilities;
@@ -462,7 +462,7 @@ function normalizeAgent(
     details_json: typeof agent.details_json === 'string' ? agent.details_json : undefined,
     needs_attention: agent.needs_attention === true,
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
-    started_at: agent.started_at === undefined ? undefined : normalizeTimestamp(agent.started_at),
+    started_at: normalizeTimestamp(agent.started_at),
     updated_at: normalizeTimestamp(agent.updated_at),
     process_id: typeof agent.process_id === 'number' && Number.isFinite(agent.process_id)
       ? agent.process_id
@@ -478,21 +478,30 @@ function normalizeAgentCapabilities(
   return normalizeAgentSessionCapabilities(capabilities);
 }
 
-function normalizeTimestamp(value: RawAgent['updated_at']): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+/**
+ * Timestamps are seconds or milliseconds since the Unix epoch. Invalid or
+ * missing values become undefined: rows must never silently fall back to the
+ * current device time, which would collapse unrelated sessions to "now" for
+ * both display and ordering.
+ */
+function normalizeTimestamp(
+  value: RawAgent['updated_at'],
+): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     return value > 10_000_000_000 ? value : value * 1000;
   }
 
   if (typeof value === 'string') {
     const parsed = Date.parse(value);
-    if (!Number.isNaN(parsed)) return parsed;
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
   }
 
   if (value instanceof Date) {
-    return value.getTime();
+    const parsed = value.getTime();
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
 
-  return Date.now();
+  return undefined;
 }
 
 const AgentStateContext = createContext<State | null>(null);

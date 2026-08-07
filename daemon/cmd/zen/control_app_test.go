@@ -710,6 +710,89 @@ func TestControlAppAgentListFiltersHiddenAgents(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentListOrderingStableAcrossNoopAndFollowsActivity(t *testing.T) {
+	fw := newFakeControlWatcher()
+	agents := []*classifier.Agent{
+		{
+			ID:        "main:@1",
+			Name:      "Franklin",
+			State:     classifier.StateRunning,
+			UpdatedAt: time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
+		},
+		{
+			ID:        "main:@2",
+			Name:      "Brain",
+			State:     classifier.StateRunning,
+			UpdatedAt: time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
+		},
+		{
+			ID:        "main:@3",
+			Name:      "Chrome",
+			State:     classifier.StateRunning,
+			UpdatedAt: time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC),
+		},
+	}
+	for _, agent := range agents {
+		fw.agents[agent.ID] = agent
+	}
+	app := &controlApp{watcher: fw}
+
+	// No-op list: timestamps unchanged, ordering must be identical every call.
+	var previous []string
+	for attempt := 0; attempt < 3; attempt++ {
+		resp := app.HandleControlRequest(control.Request{Type: "agent_list"})
+		if !resp.OK {
+			t.Fatalf("agent_list attempt %d failed: %#v", attempt, resp)
+		}
+		got := make([]string, 0, len(resp.Agents))
+		for _, agent := range resp.Agents {
+			got = append(got, agent.ID)
+		}
+		want := []string{"main:@3", "main:@2", "main:@1"}
+		if len(got) != len(want) {
+			t.Fatalf("agent_list attempt %d order = %#v, want %#v", attempt, got, want)
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("agent_list attempt %d order = %#v, want %#v", attempt, got, want)
+			}
+		}
+		if previous != nil && !slicesEqual(previous, got) {
+			t.Fatalf("no-op agent_list reordered rows: %#v -> %#v", previous, got)
+		}
+		previous = got
+	}
+
+	// Newer meaningful activity on the oldest session must move it to the front.
+	fw.agents["main:@1"].UpdatedAt = time.Date(2026, 8, 7, 10, 0, 5, 0, time.UTC)
+	resp := app.HandleControlRequest(control.Request{Type: "agent_list"})
+	got := make([]string, 0, len(resp.Agents))
+	for _, agent := range resp.Agents {
+		got = append(got, agent.ID)
+	}
+	want := []string{"main:@1", "main:@3", "main:@2"}
+	if len(got) != len(want) {
+		t.Fatalf("post-activity order = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("post-activity order = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestControlAppAgentSendAndCapture(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{

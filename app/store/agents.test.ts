@@ -99,3 +99,117 @@ describe("authoritative agent counts", () => {
     expect(state.hydratedServers.empty).toBeUndefined();
   });
 });
+
+describe("agent timestamp normalization", () => {
+  test("invalid or missing updated_at becomes undefined, never the device clock", () => {
+    const payload = {
+      type: "UPSERT_SERVER_AGENTS" as const,
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agents: [
+        { id: "missing", name: "missing", status: "unknown" as const, summary: "" },
+        {
+          id: "garbage",
+          name: "garbage",
+          status: "unknown" as const,
+          summary: "",
+          updated_at: "not-a-date",
+        },
+        {
+          id: "epoch-zero",
+          name: "epoch-zero",
+          status: "unknown" as const,
+          summary: "",
+          updated_at: 0,
+        },
+        {
+          id: "epoch-string",
+          name: "epoch-string",
+          status: "unknown" as const,
+          summary: "",
+          updated_at: "0001-01-01T00:00:00Z",
+        },
+      ],
+    };
+
+    const state = agentReducer(initialAgentState, payload);
+    for (const next of state.agents) {
+      expect(next.updated_at).toBeUndefined();
+    }
+  });
+
+  test("valid timestamps preserve seconds and milliseconds forms", () => {
+    const millis = 1_752_960_000_000;
+    const state = agentReducer(initialAgentState, {
+      type: "UPSERT_SERVER_AGENTS",
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agents: [
+        { id: "seconds", name: "seconds", status: "unknown", summary: "", updated_at: Math.floor(millis / 1000) },
+        { id: "millis", name: "millis", status: "unknown", summary: "", updated_at: millis },
+        { id: "iso", name: "iso", status: "unknown", summary: "", updated_at: new Date(millis).toISOString() },
+      ],
+    });
+    const byId = Object.fromEntries(state.agents.map(item => [item.id, item]));
+    expect(byId.seconds.updated_at).toBe(millis);
+    expect(byId.millis.updated_at).toBe(millis);
+    expect(byId.iso.updated_at).toBe(millis);
+  });
+});
+
+describe("agent list ordering", () => {
+  test("repeated no-op snapshots preserve timestamps and ordering exactly", () => {
+    const payload = {
+      type: "UPSERT_SERVER_AGENTS" as const,
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agents: [
+        agent("c", { updated_at: 30 }),
+        agent("a", { updated_at: 40 }),
+        agent("b", { updated_at: 20 }),
+      ],
+    };
+
+    const first = agentReducer(initialAgentState, payload);
+    const second = agentReducer(first, payload);
+    expect(second).toBe(first);
+    expect(second.agents.map(item => item.id)).toEqual(["c", "a", "b"]);
+    expect(second.agents.map(item => item.updated_at)).toEqual([30000, 40000, 20000]);
+  });
+
+  test("ordering changes only when the server reports newer activity", () => {
+    const base = {
+      type: "UPSERT_SERVER_AGENTS" as const,
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agents: [
+        agent("c", { updated_at: 30 }),
+        agent("a", { updated_at: 40 }),
+        agent("b", { updated_at: 20 }),
+      ],
+    };
+    let state = agentReducer(initialAgentState, base);
+
+    // No-op refresh must not reorder.
+    state = agentReducer(state, base);
+    expect(state.agents.map(item => item.id)).toEqual(["c", "a", "b"]);
+
+    // Newer meaningful activity updates that row in place; the App preserves
+    // the server-provided ordering (the daemon reorders by activity time).
+    state = agentReducer(state, {
+      ...base,
+      agents: [
+        agent("c", { updated_at: 30 }),
+        agent("a", { updated_at: 40 }),
+        agent("b", { status: "done", updated_at: 50 }),
+      ],
+    });
+    expect(state.agents.map(item => item.id)).toEqual(["c", "a", "b"]);
+    expect(state.agents.map(item => item.updated_at)).toEqual([30000, 40000, 50000]);
+    expect(state.agents[2].status).toBe("done");
+  });
+});

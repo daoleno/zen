@@ -39,6 +39,7 @@ type Agent struct {
 	LastLines           []string   `json:"last_output_lines"`
 	StartedAt           time.Time  `json:"started_at,omitempty"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+	LastSeenAt          time.Time  `json:"last_seen_at,omitempty"`
 	ProcessID           int        `json:"process_id,omitempty"`
 	Hidden              bool       `json:"hidden,omitempty"`
 	Delegated           bool       `json:"delegated,omitempty"`

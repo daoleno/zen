@@ -119,6 +119,7 @@ type Agent struct {
 	Cwd                 string     `json:"cwd,omitempty"`
 	Command             string     `json:"command,omitempty"`
 	UpdatedAt           time.Time  `json:"updated_at,omitempty"`
+	LastSeenAt          *time.Time `json:"last_seen_at,omitempty"`
 	Hidden              bool       `json:"hidden,omitempty"`
 	Delegated           bool       `json:"delegated,omitempty"`
 }

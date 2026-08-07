@@ -94,6 +94,12 @@ var targetProcessResolver func(string) (targetProcessIdentity, bool)
 var targetCommandResolver func(string) (string, bool)
 var tmuxSubmitSleep = time.Sleep
 
+// Poll observation seams for deterministic tests. Production keeps the real
+// implementations; tests in this package swap them before invoking poll.
+var listTmuxWindowsFunc = listTmuxWindows
+var capturePaneContentFunc = capturePaneContent
+var snapshotProcessesFunc = snapshotProcesses
+
 func currentTargetIdentityResolver() func(string) (targetProcessIdentity, bool) {
 	targetCommandResolverMu.RLock()
 	identityResolver := targetProcessResolver
@@ -207,6 +213,7 @@ type Watcher struct {
 	admissionNow          func() time.Time
 	admissionSleep        func(time.Duration)
 	admissionTimeout      func(string) time.Duration
+	pollNow               func() time.Time
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -657,7 +664,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) poll() {
-	windows, err := listTmuxWindows()
+	windows, err := listTmuxWindowsFunc()
 	if err != nil {
 		if isNoTmuxServerError(err) {
 			w.resourceManager().Reconcile(nil)
@@ -665,7 +672,7 @@ func (w *Watcher) poll() {
 		return
 	}
 	w.resourceManager().Reconcile(windows)
-	processes := snapshotProcesses()
+	processes := snapshotProcessesFunc()
 	processSnapshotAt := time.Now()
 
 	type paneObs struct {
@@ -676,7 +683,7 @@ func (w *Watcher) poll() {
 	}
 	observations := make([]paneObs, 0, len(windows))
 	for _, win := range windows {
-		content, alive := capturePaneContent(win.target)
+		content, alive := capturePaneContentFunc(win.target)
 		observations = append(observations, paneObs{
 			win:     win,
 			content: content,
@@ -751,8 +758,8 @@ func (w *Watcher) poll() {
 
 		agent.PaneAlive = obs.alive
 		agent.LastLines = lastN(obs.lines, 120)
-		now := time.Now()
-		agent.UpdatedAt = now
+		now := w.pollNowValue()
+		agent.LastSeenAt = now
 
 		oldState := agent.State
 		classified, classifiedSummary := classifyPaneAndApplyProgressInvalidation(agent, obs.alive, obs.lines, now)
@@ -869,6 +876,7 @@ func (w *Watcher) poll() {
 		}
 
 		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
+		previousTurn, hadPreviousTurn := w.delegatedTurns[r.id]
 		if r.turnErr != nil {
 			newState = classifier.StateFailed
 			summary = "Delegated turn metadata could not be reconciled: " + r.turnErr.Error()
@@ -891,6 +899,26 @@ func (w *Watcher) poll() {
 		}
 		agent.State = newState
 		agent.Summary = summary
+		if !r.exists {
+			// First observation (fresh watcher, daemon restart, or a brand-new
+			// pane): seed the activity time from provable evidence, never the
+			// observation clock. Pre-existing Sessions rediscovered by one poll
+			// must keep their real activity times, or they would all display
+			// the same discovery instant.
+			if seeded := sessionDiscoveryActivityTime(agent, r.turn, r.hasTurn, r.provider); !seeded.IsZero() {
+				agent.UpdatedAt = seeded
+			}
+		} else if sessionActivityAdvanced(
+			r.contentChanged && r.existed,
+			r.oldState,
+			newState,
+			previousTurn,
+			hadPreviousTurn,
+			r.turn,
+			r.hasTurn,
+		) {
+			agent.UpdatedAt = r.now
+		}
 
 		if !r.exists {
 			w.events <- SessionEvent{
@@ -1010,6 +1038,74 @@ func applyLiveTurnProjection(
 		agent.LeaseSeconds = 0
 	}
 	return state, summary
+}
+
+// sessionActivityAdvanced reports whether a poll apply advanced meaningful
+// Session activity: pane content change, status transition, or a delegated
+// turn appearing / changing identity / settling. Repeated no-op observations
+// (same content, same state, same turn) never advance it. First observations
+// are handled by sessionDiscoveryActivityTime instead.
+func sessionActivityAdvanced(
+	contentChanged bool,
+	oldState, newState classifier.AgentState,
+	previousTurn delegatedTurnRecord,
+	hadPreviousTurn bool,
+	turn delegatedTurnRecord,
+	hasTurn bool,
+) bool {
+	if contentChanged || oldState != newState {
+		return true
+	}
+	return hasTurn && (!hadPreviousTurn ||
+		previousTurn.ID != turn.ID ||
+		previousTurn.Status != turn.Status)
+}
+
+// sessionDiscoveryActivityTime returns the most trustworthy real activity
+// time available when a Session is first observed (fresh watcher, daemon
+// restart, or a brand-new pane). It never returns observation/poll time.
+// Sources, latest wins: delegated turn settlement, turn acceptance, last
+// structured progress, authoritative provider activity, process start time.
+func sessionDiscoveryActivityTime(
+	agent *classifier.Agent,
+	turn delegatedTurnRecord,
+	hasTurn bool,
+	provider ProviderActivityObservation,
+) time.Time {
+	var latest time.Time
+	if agent != nil {
+		if agent.LastProgressAt != nil && agent.LastProgressAt.After(latest) {
+			latest = *agent.LastProgressAt
+		}
+		if agent.StartedAt.After(latest) {
+			latest = agent.StartedAt
+		}
+	}
+	if hasTurn {
+		if turn.SettledAt != nil && turn.SettledAt.After(latest) {
+			latest = *turn.SettledAt
+		}
+		if turn.AcceptedAt.After(latest) {
+			latest = turn.AcceptedAt
+		}
+	}
+	if provider.StartedAt.After(latest) {
+		latest = provider.StartedAt
+	}
+	if provider.SettledAt.After(latest) {
+		latest = provider.SettledAt
+	}
+	if latest.IsZero() {
+		return time.Time{}
+	}
+	return latest.UTC()
+}
+
+func (w *Watcher) pollNowValue() time.Time {
+	if w != nil && w.pollNow != nil {
+		return w.pollNow().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func changedPaneLines(previous, next string) []string {
