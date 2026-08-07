@@ -351,9 +351,11 @@ func discoverOpenCodeGoModels(ctx context.Context, client openCodeGoHTTPClient, 
 
 // runOpenCodeGoAuthChallenge probes the chat completions endpoint with a
 // payload that cannot generate a completion: an empty messages list and a
-// negative max_tokens. Only an exact 400 whose error type and code are both
-// invalid_request_error confirms that the key is accepted by the Go service;
-// such a response proves authentication without producing any token usage.
+// negative max_tokens. Only an exact 400 whose error type is
+// invalid_request_error confirms that the key is accepted by the Go service:
+// the error code may be absent or exactly invalid_request_error, mirroring
+// the live service, and a non-empty conflicting code is never accepted. Such
+// a response proves authentication without producing any token usage.
 // Auth failures (401/403), throttling (429), server errors (5xx), unexpected
 // 2xx responses, HTML, and unknown error shapes are never accepted; 2xx
 // responses are skipped without parsing and inconclusive probe responses move
@@ -398,7 +400,7 @@ func runOpenCodeGoAuthChallenge(ctx context.Context, client openCodeGoHTTPClient
 			if err := json.Unmarshal(body, &errorBody); err != nil {
 				continue
 			}
-			if errorBody.Error.Type == "invalid_request_error" && errorBody.Error.Code == "invalid_request_error" {
+			if errorBody.Error.Type == "invalid_request_error" && (errorBody.Error.Code == "" || errorBody.Error.Code == "invalid_request_error") {
 				return true
 			}
 			continue

@@ -209,9 +209,32 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}
 	})
 
+	t.Run("400 with missing error code confirms", func(t *testing.T) {
+		var gotBody string
+		server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"minimax-m2.7"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer go-secret" {
+				t.Error("missing bearer credential")
+			}
+			gotBody = readRequestBody(t, r)
+			challenge400(w, `{"error":{"type":"invalid_request_error","message":"Invalid max_tokens value"}}`)
+		}, nil)
+		defer server.Close()
+
+		usage, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(gotBody, `"max_tokens":-1`) || !strings.Contains(gotBody, `"messages":[]`) {
+			t.Fatalf("challenge payload must be non-generating: %s", gotBody)
+		}
+		if usage.AuthKind != "official" || usage.State != "available" || usage.Plan != "go" {
+			t.Fatalf("usage = %#v", usage)
+		}
+	})
+
 	t.Run("skips inconclusive models until exact confirmation", func(t *testing.T) {
 		attempts := []string{}
-		server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"minimax-m3"},{"id":"deepseek-v4-flash"},{"id":"glm-5.2"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		server := openCodeGoTestServer(t, `{"object":"list","data":[{"id":"minimax-m3"},{"id":"minimax-m2.7"},{"id":"deepseek-v4-flash"}]}`, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
 			body := readRequestBody(t, r)
 			var payload struct {
 				Model string `json:"model"`
@@ -221,6 +244,8 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 			switch payload.Model {
 			case "minimax-m3":
 				challenge400(w, `{"error":{"type":"server_error","message":"upstream failed"}}`)
+			case "minimax-m2.7":
+				challenge400(w, `{"error":{"type":"invalid_request_error","message":"Empty input messages"}}`)
 			case "glm-5.2":
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = w.Write([]byte(`{"error":{"param":"max_tokens","type":"invalid_request_error","message":"bad"}}`))
@@ -233,7 +258,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		if _, err := fetchOpenCodeGoSubscriptionViaAPI(context.Background(), server.Client(), server.URL, server.URL, auth, now); err != nil {
 			t.Fatal(err)
 		}
-		if len(attempts) != 2 || attempts[0] != "minimax-m3" || attempts[1] != "deepseek-v4-flash" {
+		if len(attempts) != 2 || attempts[0] != "minimax-m3" || attempts[1] != "minimax-m2.7" {
 			t.Fatalf("challenge attempts = %v", attempts)
 		}
 	})
@@ -316,7 +341,7 @@ func TestOpenCodeGoChallengeConfirmsOnlyExactInvalidRequestError(t *testing.T) {
 		}{
 			{name: "html 400", status: http.StatusBadRequest, body: `<!doctype html><html>error</html>`},
 			{name: "unexpected error type", status: http.StatusBadRequest, body: `{"error":{"type":"server_error","message":"boom"}}`},
-			{name: "missing error code", status: http.StatusBadRequest, body: `{"error":{"type":"invalid_request_error"}}`},
+			{name: "conflicting error code", status: http.StatusBadRequest, body: `{"error":{"type":"invalid_request_error","code":"conflicting_code","message":"boom"}}`},
 			{name: "malformed body", status: http.StatusBadRequest, body: `{`},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
