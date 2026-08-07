@@ -31,15 +31,7 @@ type TurnRecord struct {
 	Summary         string               `json:"summary,omitempty"`
 	Facts           []TurnFactRecord     `json:"facts"`
 	Hints           []watcher.TurnHint   `json:"hints,omitempty"`
-	// RecordedIdentity tuple (frozen CR.3): readably persisted so
-	// abnormal-exit Failed can prove the nonzero exit belongs to the exact
-	// recorded process lifetime. Zero values mean continuity is unprovable
-	// (legacy rows, missing identity) and abnormal exits fail closed.
-	PanePID      int   `json:"pane_pid,omitempty"`
-	PaneStart    int64 `json:"pane_start,omitempty"`
-	ProcessID    int   `json:"process_id,omitempty"`
-	ProcessStart int64 `json:"process_start,omitempty"`
-	UpdatedAt    time.Time            `json:"updated_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
 }
 
 // TurnFactRecord is one durable applied observation on a turn. FactID is the
@@ -176,10 +168,6 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 		Hints:           append([]watcher.TurnHint(nil), t.Hints...),
 		PaneGeneration:  t.PaneGeneration,
 		ProcessIdentity: t.ProcessIdentity,
-		PanePID:         t.PanePID,
-		PaneStart:       t.PaneStart,
-		ProcessID:       t.ProcessID,
-		ProcessStart:    t.ProcessStart,
 		UpdatedAt:       t.UpdatedAt,
 	}
 	return snapshot
@@ -233,10 +221,6 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 		PaneGeneration:  strings.TrimSpace(admitted.PaneGeneration),
 		ProcessIdentity: strings.TrimSpace(admitted.ProcessIdentity),
 		PayloadSHA256:   strings.TrimSpace(admitted.PayloadSHA256),
-		PanePID:         admitted.PanePID,
-		PaneStart:       admitted.PaneStart,
-		ProcessID:       admitted.ProcessID,
-		ProcessStart:    admitted.ProcessStart,
 		AcceptedAt:      admitted.AcceptedAt.UTC(),
 		Facts:           []TurnFactRecord{},
 		UpdatedAt:       now,
@@ -544,32 +528,13 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.EvidenceLiveness:
 		switch fact.Kind {
 		case "failed":
-			if !fact.AbnormalExit {
-				return mutation, fmt.Errorf("liveness failed fact requires abnormal-exit proof")
-			}
-			if status == watcher.TurnAdmitted {
-				// An unproven input cannot fail; end-of-identity on Admitted
-				// resolves to Unknown (uncertain, actionable).
-				status = watcher.TurnUnknown
-				attention = ""
-				summary = "Delegated Session ended before input admission was proven"
-			} else {
-				status = watcher.TurnFailed
-				attention = ""
-				summary = firstNonEmpty(fact.Summary, "Delegated Session ended abnormally")
-			}
-			if fact.SettledAt.IsZero() {
-				settledAt = &now
-			} else {
-				settled := fact.SettledAt.UTC()
-				settledAt = &settled
-			}
-			mutation.changed = true
-			if status == watcher.TurnUnknown {
-				applyEvent("session.uncertain", true, summary)
-			} else {
-				applyEvent("session.failed", true, summary)
-			}
+			// Liveness-derived Failed is removed entirely (Round 4): no
+			// production primitive can prove a dead pane's exit status
+			// belongs to the exact recorded process lifetime (wrapper panes
+			// propagate replaced children, snapshots may be unreadable,
+			// dead-pane identity reads fail closed). Such facts are ignored;
+			// only a bound Provider terminal may decide Failed.
+			return mutation, nil
 		case "uncertain":
 			// ProcessDead without a readable bound terminal, or SessionReplaced
 			// with a different live identity: end-of-identity → Unknown, never

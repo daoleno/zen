@@ -48,10 +48,6 @@ func e2eStore(t *testing.T) (*Store, *Service, *fakeWatcher, string, string) {
 		ProcessIdentity: "proc-1",
 		PaneGeneration:  "pane-1",
 		PayloadSHA256:   "payload",
-		PanePID:         100,
-		PaneStart:       1700000000000000000,
-		ProcessID:       200,
-		ProcessStart:    1700000000000000000,
 	}); err != nil {
 		t.Fatal(err)
 	}

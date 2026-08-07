@@ -384,7 +384,11 @@ func TestTurnLeaseExpiryEmitsStaleOnce(t *testing.T) {
 // Failed; ProcessDead/SessionReplaced without a bound terminal resolve to
 // Unknown + one actionable session.uncertain; normal exit never fails.
 func TestTurnLivenessFacts(t *testing.T) {
-	t.Run("abnormal exit fails final-grade", func(t *testing.T) {
+	t.Run("liveness failed fact never decides Failed", func(t *testing.T) {
+		// Round 4: the liveness-derived Failed path is removed entirely — no
+		// production primitive can attribute a dead pane's exit status to the
+		// exact recorded process lifetime. A liveness failed fact is ignored;
+		// only a bound Provider terminal may decide Failed.
 		store, sessionID, turnID := ledgerTestStore(t)
 		acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
@@ -396,7 +400,7 @@ func TestTurnLivenessFacts(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 			SessionID: sessionID, TurnID: turnID,
 			Class: watcher.EvidenceLiveness, Kind: "failed",
 			AbnormalExit: true,
@@ -404,12 +408,24 @@ func TestTurnLivenessFacts(t *testing.T) {
 			SettledAt:    acceptedAt.Add(20 * time.Second),
 			At:           acceptedAt.Add(21 * time.Second),
 		})
-		if err != nil || snapshot.Status != watcher.TurnFailed || snapshot.SettledAt == nil {
-			t.Fatalf("abnormal exit = %+v err=%v", snapshot, err)
+		if err != nil || changed || snapshot.Status != watcher.TurnAccepted {
+			t.Fatalf("liveness failed fact = (%+v, %v, %v), want ignored", snapshot, changed, err)
 		}
 		workItem, _, _ := store.WorkByOwnerSession(sessionID)
-		if workItem.Status != WorkWaiting {
-			t.Fatalf("Work after abnormal exit = %v", workItem)
+		if workItem.Status != WorkRunning {
+			t.Fatalf("Work after liveness failed fact = %v", workItem)
+		}
+		// The dead pane resolves end-of-identity Unknown + uncertain instead.
+		snapshot, _, err = store.ApplyTurnFact(watcher.TurnFact{
+			SessionID: sessionID, TurnID: turnID,
+			Class: watcher.EvidenceLiveness, Kind: "uncertain",
+			ProcessDead: true,
+			SourceID:    "liveness\x00process-dead",
+			SettledAt:   acceptedAt.Add(20 * time.Second),
+			At:          acceptedAt.Add(21 * time.Second),
+		})
+		if err != nil || snapshot.Status != watcher.TurnUnknown {
+			t.Fatalf("dead pane resolution = %+v err=%v, want Unknown", snapshot, err)
 		}
 	})
 	t.Run("normal exit resolves unknown uncertain", func(t *testing.T) {
@@ -435,15 +451,16 @@ func TestTurnLivenessFacts(t *testing.T) {
 			t.Fatal("session.uncertain row missing")
 		}
 	})
-	t.Run("liveness failed without abnormal proof is rejected", func(t *testing.T) {
+	t.Run("liveness failed fact is ignored on any turn", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
-		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 			SessionID: sessionID, TurnID: turnID,
 			Class: watcher.EvidenceLiveness, Kind: "failed",
 			SourceID: "liveness\x00abnormal-exit",
 			At:       time.Now(),
-		}); err == nil {
-			t.Fatal("liveness failed without abnormal-exit proof was accepted")
+		})
+		if err != nil || changed || snapshot.Status != watcher.TurnAdmitted {
+			t.Fatalf("liveness failed fact = (%+v, %v, %v), want ignored", snapshot, changed, err)
 		}
 	})
 }

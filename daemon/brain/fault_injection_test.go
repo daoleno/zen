@@ -66,18 +66,19 @@ func TestFaultCrashBeforeStateCommit(t *testing.T) {
 func TestFaultAmbiguousInputNeverFailed(t *testing.T) {
 	store, sessionID, turnID := ledgerTestStore(t)
 	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	// The turn stays Admitted through silence and control reports; abnormal
-	// exit from Admitted resolves to Unknown, never Failed (C.2.1).
+	// The turn stays Admitted through silence and control reports. A dead
+	// pane (end-of-identity, never Failed — Round 4 removed the
+	// liveness-derived Failed path) resolves Unknown, never Failed.
 	snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,
-		Class: watcher.EvidenceLiveness, Kind: "failed",
-		AbnormalExit: true,
-		SourceID:     "liveness\x00abnormal-exit",
-		SettledAt:    at.Add(20 * time.Second),
-		At:           at.Add(21 * time.Second),
+		Class: watcher.EvidenceLiveness, Kind: "uncertain",
+		ProcessDead: true,
+		SourceID:    "liveness\x00process-dead",
+		SettledAt:   at.Add(20 * time.Second),
+		At:          at.Add(21 * time.Second),
 	})
 	if err != nil || snapshot.Status != watcher.TurnUnknown {
-		t.Fatalf("ambiguous input abnormal exit = %+v err=%v, want Unknown", snapshot, err)
+		t.Fatalf("ambiguous input end-of-identity = %+v err=%v, want Unknown", snapshot, err)
 	}
 	workItem, _, _ := store.WorkByOwnerSession(sessionID)
 	if _, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain"); !found {

@@ -7,16 +7,14 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-// TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn covers the
-// frozen CR.3 RecordedIdentity contract: a non-zero exit produces canonical
-// Failed only when the dead pane matches the recorded pane lifetime AND the
-// pane's process chain was not respawned (recorded PanePID still reported)
-// AND the recorded provider process (ProcessID, ProcessStart) is provably
-// gone. Every missing/mismatched/unprovable continuity resolves Unknown.
-func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
-	recordedStart := int64(1700000000000000000)
-	liveStart := int64(1700000001000000000)
-	turnStart := time.Unix(0, recordedStart).UTC()
+// TestPollDeadPaneNeverFailsWithoutExactAttribution covers the Round-4
+// rule: liveness-derived terminal attribution is removed. A dead pane with a
+// non-zero exit never produces a canonical Failed fact, regardless of how
+// pane/process evidence looks — wrapper/shell panes can propagate a replaced
+// child's status, snapshots may be nil/empty/unreadable (a missing PID
+// proves nothing), and dead-pane identity reads fail closed. Every scenario
+// resolves end-of-identity Unknown + session.uncertain, exactly once.
+func TestPollDeadPaneNeverFailsWithoutExactAttribution(t *testing.T) {
 	tests := []struct {
 		name          string
 		recordedGen   string
@@ -27,7 +25,6 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 		recordedProcStart int64
 		panePID       int
 		processes     map[int]processInfo
-		wantFailed    bool
 	}{
 		{
 			name:          "replaced pane with nonzero exit",
@@ -36,9 +33,8 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       100,
-			wantFailed:    false,
 		},
 		{
 			name:          "unreadable pane identity with nonzero exit",
@@ -47,15 +43,23 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       100,
-			wantFailed:    false,
 		},
 		{
 			name:          "missing recorded identity with nonzero exit",
 			deadStatus:    1,
 			panePID:       100,
-			wantFailed:    false,
+		},
+		{
+			name:          "wrapper pane root not the provider process",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: 1700000000000000000,
+			panePID:       100,
 		},
 		{
 			name:          "same pane respawned with new PID and nonzero exit",
@@ -64,9 +68,8 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       300,
-			wantFailed:    false,
 		},
 		{
 			name:          "recorded process still alive with recorded start",
@@ -75,12 +78,11 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       100,
 			processes: map[int]processInfo{
-				200: {pid: 200, startedAt: turnStart, comm: "opencode"},
+				200: {pid: 200, startedAt: time.Unix(0, 1700000000000000000).UTC(), comm: "opencode"},
 			},
-			wantFailed:    false,
 		},
 		{
 			name:          "recorded process PID reused by different lifetime",
@@ -89,23 +91,43 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       100,
 			processes: map[int]processInfo{
-				200: {pid: 200, startedAt: time.Unix(0, liveStart).UTC(), comm: "opencode"},
+				200: {pid: 200, startedAt: time.Unix(0, 1700000001000000000).UTC(), comm: "opencode"},
 			},
-			wantFailed:    false,
 		},
 		{
-			name:          "exact recorded process lifetime matched is abnormal",
+			name:          "exact recorded lifetime matched still never fails",
 			recordedGen:   "recorded-pane",
 			currentGen:    "recorded-pane",
 			deadStatus:    1,
 			recordedPanePID: 100,
 			recordedProcID:  200,
-			recordedProcStart: recordedStart,
+			recordedProcStart: 1700000000000000000,
 			panePID:       100,
-			wantFailed:    true,
+		},
+		{
+			name:          "nil process snapshot with nonzero exit",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: 1700000000000000000,
+			panePID:       100,
+			processes:     nil,
+		},
+		{
+			name:          "empty process snapshot with nonzero exit",
+			recordedGen:   "recorded-pane",
+			currentGen:    "recorded-pane",
+			deadStatus:    1,
+			recordedPanePID: 100,
+			recordedProcID:  200,
+			recordedProcStart: 1700000000000000000,
+			panePID:       100,
+			processes:     map[int]processInfo{},
 		},
 	}
 	for _, test := range tests {
@@ -120,9 +142,6 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 				AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
 				PaneGeneration:  test.recordedGen,
 				ProcessIdentity: "recorded-proc",
-				PanePID:         test.recordedPanePID,
-				ProcessID:       test.recordedProcID,
-				ProcessStart:    test.recordedProcStart,
 			})
 			w := New(time.Second)
 			owner := newSessionInputOwner(io)
@@ -131,22 +150,22 @@ func TestPollDeadPaneWithReplacedIdentityCannotFailRecordedTurn(t *testing.T) {
 			w.turnLedger = ledger
 
 			turn, _, _ := ledger.Turn("agent:@1")
-			turn = w.applyPollFacts("agent:@1", false, test.deadStatus, test.panePID,
-				time.Now().UTC(), turn, ProviderActivityObservation{}, test.processes)
+			turn = w.applyPollFacts("agent:@1", false, test.deadStatus,
+				time.Now().UTC(), turn, ProviderActivityObservation{})
 
 			kinds := map[string]bool{}
 			for _, fact := range ledger.applied {
 				kinds[fact.Kind] = true
 			}
-			if kinds["failed"] != test.wantFailed {
-				t.Fatalf("failed fact presence = %v (want %v), applied = %#v",
-					kinds["failed"], test.wantFailed, ledger.applied)
+			if kinds["failed"] {
+				t.Fatalf("dead pane produced a failed fact: %#v", ledger.applied)
 			}
-			if !kinds["uncertain"] && !test.wantFailed {
-				t.Fatalf("missing uncertain resolution, applied = %#v", ledger.applied)
+			if !kinds["uncertain"] {
+				t.Fatalf("dead pane missing the uncertain resolution: %#v", ledger.applied)
 			}
 			// The fake ledger resolves every liveness fact to Unknown; the
-			// point of this test is the fact choice, asserted above.
+			// point of this test is the fact choice (never Failed), asserted
+			// above.
 			if turn.Status != TurnUnknown {
 				t.Fatalf("liveness resolution = %+v, want Unknown", turn)
 			}
@@ -282,9 +301,6 @@ func TestPollLivenessAppliesWithoutProviderProbe(t *testing.T) {
 		Status:          TurnRunning,
 		AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
 		ProcessIdentity: "recorded-proc",
-		PanePID:         100,
-		ProcessID:       200,
-		ProcessStart:    1700000000000000000,
 	})
 	w.turnLedger = ledger
 	// No Provider probe installed (nil): the mutable turn must still be

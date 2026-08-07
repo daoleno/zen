@@ -39,19 +39,13 @@ type InputResult struct {
 // delegatedTurnDraft is the pre-dispatch turn identity minted by the control
 // plane. It is durably admitted to the canonical ledger (persist A) before
 // any provider mutation can begin, so a markerless accepted input is
-// unrepresentable (C.2 invariant 2). The RecordedIdentity tuple fields are
-// the readably recorded (PanePID, PaneStart, ProcessID, ProcessStart) that
-// later prove abnormal-exit ownership.
+// unrepresentable (C.2 invariant 2).
 type delegatedTurnDraft struct {
 	ID              string
 	AcceptedAt      time.Time
 	ProcessIdentity string
 	PaneGeneration  string
 	Receipt         string
-	PanePID         int
-	PaneStart       int64
-	ProcessID       int
-	ProcessStart    int64
 }
 
 // delegatedAdmissionEvidence is the provider-native admission tuple observed
@@ -553,10 +547,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 				ProcessIdentity: turn.ProcessIdentity,
 				PaneGeneration:  firstNonEmptyString(turn.PaneGeneration, current.generation),
 				PayloadSHA256:   payloadDigest,
-				PanePID:         turn.PanePID,
-				PaneStart:       turn.PaneStart,
-				ProcessID:       turn.ProcessID,
-				ProcessStart:    turn.ProcessStart,
 			})
 			if admitErr != nil {
 				if result.Receipt != "" {

@@ -925,7 +925,7 @@ func (w *Watcher) poll() {
 			if providerProbe != nil {
 				provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
 			}
-			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.panePID, item.now, turn, provider, processes)
+			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
 		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
@@ -1183,16 +1183,23 @@ func (w *Watcher) ledgerTurnFor(sessionID string, now time.Time) (TurnSnapshot, 
 // the single canonical reducer and returns the latest snapshot. It runs for
 // every mutable ledger-tracked turn regardless of whether a Provider probe
 // is installed: only the Provider observation is gated, so liveness facts
-// (abnormal exit, end-of-identity) always reach the reducer.
+// always reach the reducer.
+//
+// Liveness-derived terminal attribution is deliberately absent (Round 4):
+// production tmux primitives cannot prove that a dead pane's exit status
+// belongs to the exact recorded process lifetime — wrapper/shell panes can
+// propagate a replaced child's status, nil/empty/unreadable process
+// snapshots prove nothing, and dead-pane identity reads fail closed. A dead
+// pane therefore always resolves end-of-identity Unknown + session.uncertain
+// exactly once, never Failed; only a bound Provider terminal fact may decide
+// Failed.
 func (w *Watcher) applyPollFacts(
 	id string,
 	alive bool,
 	deadStatus int,
-	panePID int,
 	now time.Time,
 	turn TurnSnapshot,
 	provider ProviderActivityObservation,
-	processes map[int]processInfo,
 ) TurnSnapshot {
 	ledger := w.turnLedger
 	if ledger == nil {
@@ -1209,45 +1216,24 @@ func (w *Watcher) applyPollFacts(
 	}
 	if !alive {
 		if deadStatus >= 0 {
-			// Abnormal-exit proof requires the exact recorded process
-			// lifetime (frozen CR.3 RecordedIdentity), not only the recorded
-			// pane: the dead pane must be the recorded pane (PaneGeneration
-			// match) AND the pane's process chain must not have been
-			// respawned (the dead pane still reports the recorded PanePID)
-			// AND the recorded provider process (ProcessID, ProcessStart)
-			// must be provably gone from the process snapshot — never still
-			// alive with the recorded start. Any missing, mismatched, or
-			// unprovable continuity resolves Unknown + session.uncertain,
-			// never Failed.
-			recordedGeneration := strings.TrimSpace(turn.PaneGeneration)
-			generation := w.currentPaneGeneration(id)
-			recordedPaneDead := recordedGeneration != "" && generation == recordedGeneration
-			if deadStatus != 0 && recordedPaneDead &&
-				recordedProcessContinuity(turn, panePID, processes) {
-				// Authoritative abnormal exit for the exact recorded process
-				// lifetime: final-grade Failed (or Unknown from Admitted).
-				facts = append(facts, TurnFact{
-					SessionID:    id,
-					TurnID:       turn.TurnID,
-					Class:        EvidenceLiveness,
-					Kind:         "failed",
-					AbnormalExit: true,
-					SourceID:     "liveness\x00" + turn.ProcessIdentity + "\x00abnormal-exit",
-					At:           now,
-					Summary:      "Delegated provider process exited abnormally",
-				})
-			} else {
-				facts = append(facts, TurnFact{
-					SessionID:   id,
-					TurnID:      turn.TurnID,
-					Class:       EvidenceLiveness,
-					Kind:        "uncertain",
-					ProcessDead: true,
-					SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
-					At:          now,
-					Summary:     "Delegated provider process exited; outcome is unknown",
-				})
-			}
+			// A dead pane with a readable exit status still cannot attribute
+			// that status to the exact recorded process lifetime: the pane
+			// root may be a wrapper that propagated a replaced child's exit,
+			// the process snapshot may be nil/empty/unreadable (a missing PID
+			// proves nothing), and dead-pane identity reads fail closed in
+			// production. The liveness-derived Failed path is removed
+			// entirely: end-of-identity resolves Unknown + session.uncertain,
+			// exactly once; only a bound Provider terminal may decide Failed.
+			facts = append(facts, TurnFact{
+				SessionID:   id,
+				TurnID:      turn.TurnID,
+				Class:       EvidenceLiveness,
+				Kind:        "uncertain",
+				ProcessDead: true,
+				SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
+				At:          now,
+				Summary:     "Delegated provider process exited; outcome is unknown",
+			})
 		}
 		// PaneAbsent (no dead status readable): transient absence never
 		// terminalizes (CR.3).
@@ -1394,37 +1380,6 @@ func activityFactFromObservation(sessionID string, turn TurnSnapshot, provider P
 		At:         time.Now().UTC(),
 		Summary:    "Delegated provider activity " + strings.TrimSpace(provider.Status),
 	}
-}
-
-// recordedProcessContinuity proves a dead pane's nonzero exit belongs to the
-// exact recorded process lifetime (frozen CR.3 RecordedIdentity), never only
-// to the recorded pane. It requires all proofs:
-//
-//   - the recorded identity tuple is fully readable (PanePID, ProcessID,
-//     ProcessStart all set; legacy or unrecorded identities are unprovable
-//     and fail closed);
-//   - the dead pane still reports the recorded pane process PID, so the
-//     pane's process chain was not respawned (same-pane replacement with a
-//     new PID fails this check);
-//   - the recorded provider process is provably ended: its PID is free in
-//     the current process snapshot. Any occupant — the same lifetime still
-//     alive (matching ProcessStart) or a reused PID with a different
-//     lifetime — means the dead pane's exit status cannot be attributed to
-//     the recorded process lifetime.
-//
-// Any missing, mismatched, or unprovable continuity returns false and the
-// caller resolves Unknown, never Failed.
-func recordedProcessContinuity(turn TurnSnapshot, panePID int, processes map[int]processInfo) bool {
-	if turn.PanePID <= 0 || turn.ProcessID <= 0 || turn.ProcessStart <= 0 {
-		return false
-	}
-	if panePID != turn.PanePID {
-		return false
-	}
-	if _, occupied := processes[turn.ProcessID]; occupied {
-		return false
-	}
-	return true
 }
 
 func (w *Watcher) currentPaneGeneration(sessionID string) string {
@@ -1951,10 +1906,6 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 			ID:              strings.TrimSpace(turnID),
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
-			PanePID:         identity.PanePID,
-			PaneStart:       identity.PaneStart,
-			ProcessID:       identity.ProcessID,
-			ProcessStart:    identity.ProcessStart,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
@@ -2002,10 +1953,6 @@ func (w *Watcher) SubmitDelegatedInput(
 			ID:              strings.TrimSpace(turnID),
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
-			PanePID:         identity.PanePID,
-			PaneStart:       identity.PaneStart,
-			ProcessID:       identity.ProcessID,
-			ProcessStart:    identity.ProcessStart,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,

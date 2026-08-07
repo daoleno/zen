@@ -316,11 +316,15 @@ func TestE2ERealPollSamePaneReplacementNeverFails(t *testing.T) {
 	}
 }
 
-// TestE2ERealPollMatchedProcessAbnormalExitFails retains the authoritative
-// matched path: the recorded pane AND the exact recorded process lifetime
-// (PanePID and ProcessID continuity, ProcessID free in the snapshot) die
-// with a non-zero exit → canonical Failed with exactly one failed wake.
-func TestE2ERealPollMatchedProcessAbnormalExitFails(t *testing.T) {
+// TestE2ERealPollDeadPaneWithMatchedIdentityNeverFails replaces the former
+// empty-snapshot-to-Failed regression: even a dead pane whose identity looks
+// fully matched (same pane generation, same pane PID, recorded provider PID
+// absent from an empty snapshot) can never resolve Failed from liveness —
+// production tmux primitives cannot prove the exit status belongs to the
+// exact recorded process lifetime. The turn resolves Unknown with exactly
+// one uncertain wake and zero failed wakes; only a bound Provider terminal
+// may decide Failed.
+func TestE2ERealPollDeadPaneWithMatchedIdentityNeverFails(t *testing.T) {
 	store, service, hostWatcher, sessionID, turnID := e2eStore(t)
 	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	e2eAdmission(t, store, sessionID, turnID, at)
@@ -335,31 +339,39 @@ func TestE2ERealPollMatchedProcessAbnormalExitFails(t *testing.T) {
 		CapturePane: func(string) (string, bool, int) {
 			return "OpenCode\n", false, 1 // dead, non-zero exit
 		},
-		SnapshotProcesses: func() map[int]watcher.PollProcess { return nil }, // recorded PID free
-		PaneGeneration:    func(string) string { return "pane-1" },
+		SnapshotProcesses: func() map[int]watcher.PollProcess { return nil }, // empty/unreadable snapshot
+		PaneGeneration:    func(string) string { return "pane-1" },            // same pane
 	}, nil, service)
 	defer cancel()
 
-	waitForTurnStatus(t, store, sessionID, watcher.TurnFailed)
+	waitForTurnStatus(t, store, sessionID, watcher.TurnUnknown)
+	// Let further polls run: the turn must stay Unknown, never Failed.
+	time.Sleep(200 * time.Millisecond)
+	snapshot, _, _ := store.Turn(sessionID)
+	if snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("matched-identity dead pane turn = %s, want Unknown (never Failed)", snapshot.Status)
+	}
 	workItem, _, _ := store.WorkByOwnerSession(sessionID)
 	events, _ := store.ListWorkEvents(workItem.ID)
+	uncertain := 0
 	failed := 0
 	for _, event := range events {
-		if strings.HasSuffix(event.DedupeKey, ":session.failed") && event.Actionable {
+		switch {
+		case strings.HasSuffix(event.DedupeKey, ":session.uncertain"):
+			uncertain++
+		case strings.HasSuffix(event.DedupeKey, ":session.failed"):
 			failed++
 		}
 	}
-	if failed != 1 {
-		t.Fatalf("failed wakes = %d, want exactly one: %#v", failed, events)
+	if uncertain != 1 || failed != 0 {
+		t.Fatalf("wake counts: uncertain=%d failed=%d events=%#v", uncertain, failed, events)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
-		t.Fatalf("failed wake dispatch = woke=%v err=%v", woke, err)
+	for range 2 {
+		_, _ = service.DispatchPendingEvent()
 	}
-	time.Sleep(100 * time.Millisecond)
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-		t.Fatalf("duplicate failed dispatch = woke=%v err=%v", woke, err)
-	}
-	if len(hostWatcher.sentCalls) != 1 {
-		t.Fatalf("failed deliveries = %d, want exactly one", len(hostWatcher.sentCalls))
+	for _, call := range hostWatcher.sentCalls {
+		if strings.Contains(call.text, `"kind":"session.failed"`) {
+			t.Fatalf("delivered a failed wake from liveness: %#v", hostWatcher.sentCalls)
+		}
 	}
 }
