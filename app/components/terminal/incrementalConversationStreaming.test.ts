@@ -162,7 +162,7 @@ describe("incremental structured conversation streaming", () => {
     expect(rebuiltWithoutTransient.events).toEqual([historical]);
   });
 
-  test("delta deletes cannot erase visible history before a replacement snapshot", () => {
+  test("authoritative delta deletes remove exactly the listed ids", () => {
     const finalized = event("finalized", 1, {
       body: "Keep me",
       partial: false,
@@ -184,17 +184,42 @@ describe("incremental structured conversation streaming", () => {
       status: "done",
     });
 
+    // The daemon reports deletions from its authoritative full-read diff, so
+    // an explicit delete removes exactly that id; an upserted replacement
+    // re-adds it.
     const reconciled = reconcileConversationDeltaEvents(
       [finalized, reasoning, later, finalizedTransient],
-      [],
-      ["finalized", "reasoning:active", "tool:ephemeral"],
+      [finalized],
+      ["reasoning:active", "tool:ephemeral"],
     );
 
     expect(reconciled.map((item) => item.id)).toEqual([
       "finalized",
+      "ordinary:later",
+    ]);
+  });
+
+  test("transient streaming omissions stay monotonic without explicit deletes", () => {
+    const reasoning = event("reasoning:active", 2, {
+      kind: "commentary",
+      body: "Still reasoning",
+      partial: true,
+    });
+    const later = event("ordinary:later", 3, {
+      body: "Later message",
+      partial: undefined,
+    });
+
+    // A delta that simply omits events (no deletes listed) must never erase
+    // them: only an explicit authoritative delete can remove history.
+    const reconciled = reconcileConversationDeltaEvents(
+      [reasoning, later],
+      [later],
+    );
+
+    expect(reconciled.map((item) => item.id)).toEqual([
       "reasoning:active",
       "ordinary:later",
-      "tool:ephemeral",
     ]);
   });
 

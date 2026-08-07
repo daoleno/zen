@@ -186,7 +186,14 @@ export function providerActivitiesEqual(
 }
 
 /**
- * Canonical deltas append or stable-upsert; only snapshots replace.
+ * Canonical deltas append, stable-upsert, or apply an authoritative delete;
+ * only snapshots replace wholesale.
+ *
+ * Explicit deletes (real provider row removals reported by the daemon, or an
+ * upsert that cleans to droppable) remove exactly those ids. Any event not
+ * explicitly listed is never removed, so transient streaming omissions can
+ * never erase history — the stream stays monotonic except for authoritative
+ * deletions.
  *
  * The base array is already sorted (reconciliation invariant). Streaming
  * upserts either replace an existing event in place (same order keys) or
@@ -200,14 +207,14 @@ export function reconcileConversationDeltaEvents(
   deletes: string[] = [],
 ) {
   const byId = new Map(previous.map((event) => [event.id, event]));
-  // Canonical deltas append or stable-upsert only. A replacement snapshot is
-  // the sole operation allowed to clear visible history.
-  void deletes;
+  for (const id of deletes) {
+    byId.delete(id);
+  }
   upserts.forEach((event) => byId.set(event.id, event));
-  if (upserts.length === 0) {
+  if (upserts.length === 0 && deletes.length === 0) {
     return previous;
   }
-  if (byId.size === previous.length) {
+  if (deletes.length === 0 && byId.size === previous.length) {
     // Stable-upsert only: every upsert id already existed, so the merged
     // array keeps its previous length and order unless keys moved.
     if (eventsSorted(previous)) {

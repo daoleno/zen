@@ -891,3 +891,190 @@ describe("process-local Chat reducer", () => {
     );
   });
 });
+
+describe("authoritative delta deletes", () => {
+  function snapshotState(
+    events: Array<{ id: string; seq: number; kind: "user_message" | "assistant_message" | "tool"; body?: string }>,
+  ) {
+    return {
+      ...state([]),
+      conversation: {
+        available: true,
+        session_id: "thread-a",
+        source: "opencode_db",
+        events: events.map((event) => ({
+          id: event.id,
+          seq: event.seq,
+          kind: event.kind,
+          body: event.body ?? event.id,
+        })),
+      },
+      streamCursor: { requestId: "stream-a", conversationId: "thread-a", revision: 7, generation: 1 },
+    };
+  }
+
+  test("delta deletes remove exactly the listed events", () => {
+    const base = snapshotState([
+      { id: "msg:1", seq: 1, kind: "user_message" },
+      { id: "msg:2", seq: 2, kind: "assistant_message" },
+      { id: "tool:3", seq: 3, kind: "tool" },
+    ]);
+    const next = interfaceChatThreadReducer(base, {
+      type: "delta",
+      generation: 1,
+      delta: {
+        request_id: "stream-a",
+        conversation_id: "thread-a",
+        revision: 8,
+        base_revision: 7,
+        upserts: [],
+        deletes: ["msg:1", "tool:3"],
+      },
+    });
+    expect(next.conversation?.events.map((event) => event.id)).toEqual([
+      "msg:2",
+    ]);
+  });
+
+  test("a delta without deletes never erases events", () => {
+    const base = snapshotState([
+      { id: "msg:1", seq: 1, kind: "user_message" },
+      { id: "msg:2", seq: 2, kind: "assistant_message" },
+    ]);
+    const next = interfaceChatThreadReducer(base, {
+      type: "delta",
+      generation: 1,
+      delta: {
+        request_id: "stream-a",
+        conversation_id: "thread-a",
+        revision: 8,
+        base_revision: 7,
+        upserts: [{ id: "msg:2", seq: 2, kind: "assistant_message", body: "streamed more" }],
+        deletes: [],
+      },
+    });
+    expect(next.conversation?.events.map((event) => event.id)).toEqual([
+      "msg:1",
+      "msg:2",
+    ]);
+    expect(
+      next.conversation?.events.find((event) => event.id === "msg:2")?.body,
+    ).toBe("streamed more");
+  });
+
+  test("an upsert that cleans to droppable removes the stale base event", () => {
+    const base = snapshotState([
+      { id: "msg:1", seq: 1, kind: "user_message" },
+      { id: "tool:2", seq: 2, kind: "tool" },
+    ]);
+    // The provider's authoritative update carries no visible fields anymore
+    // (including an empty tool_name), so the Interface drop rules remove it;
+    // the stale base card must not linger with the superseded content.
+    const next = interfaceChatThreadReducer(base, {
+      type: "delta",
+      generation: 1,
+      delta: {
+        request_id: "stream-a",
+        conversation_id: "thread-a",
+        revision: 8,
+        base_revision: 7,
+        upserts: [
+          {
+            id: "tool:2",
+            seq: 2,
+            kind: "tool",
+            tool_name: "  ",
+            input: " ",
+            output: " ",
+            status: "done",
+          },
+        ],
+        deletes: [],
+      },
+    });
+    expect(next.conversation?.events.map((event) => event.id)).toEqual([
+      "msg:1",
+    ]);
+  });
+
+  test("revisit reuse never serves content that changed in any field", () => {
+    const baseEvents: Array<{
+      id: string;
+      seq: number;
+      kind: "user_message" | "assistant_message" | "tool";
+      body?: string;
+      unread?: boolean;
+    }> = [
+      { id: "msg:1", seq: 1, kind: "user_message", body: "first" },
+      { id: "msg:2", seq: 2, kind: "assistant_message", body: "second" },
+    ];
+    const first = interfaceChatThreadReducer(
+      { ...state([]), streamCursor: { requestId: "stream-a", conversationId: "thread-a", revision: 0, generation: 1 } },
+      {
+        type: "snapshot",
+        generation: 1,
+        payload: {
+          request_id: "stream-a",
+          conversation_id: "thread-a",
+          revision: 1,
+          conversation: {
+            available: true,
+            session_id: "thread-a",
+            source: "opencode_db",
+            events: baseEvents.map((event) => ({ ...event })),
+          },
+        },
+      },
+    );
+    expect(first.conversation?.events).toHaveLength(2);
+
+    // Revisit with an identical history reuses the cleaned projection.
+    const revisit = interfaceChatThreadReducer(
+      { ...state([]), streamCursor: { requestId: "stream-a", conversationId: "thread-a", revision: 0, generation: 2 } },
+      {
+        type: "snapshot",
+        generation: 2,
+        payload: {
+          request_id: "stream-a",
+          conversation_id: "thread-a",
+          revision: 1,
+          conversation: {
+            available: true,
+            session_id: "thread-a",
+            source: "opencode_db",
+            events: baseEvents.map((event) => ({ ...event })),
+          },
+        },
+      },
+    );
+    expect(revisit.conversation?.events).toHaveLength(2);
+
+    // A field the old 32-bit fingerprint omitted (unread) must force a fresh
+    // clean instead of serving the stale cleaned event.
+    const changedUnread = interfaceChatThreadReducer(
+      { ...state([]), streamCursor: { requestId: "stream-a", conversationId: "thread-a", revision: 0, generation: 3 } },
+      {
+        type: "snapshot",
+        generation: 3,
+        payload: {
+          request_id: "stream-a",
+          conversation_id: "thread-a",
+          revision: 1,
+          conversation: {
+            available: true,
+            session_id: "thread-a",
+            source: "opencode_db",
+            events: [
+              { id: "msg:1", seq: 1, kind: "user_message", body: "first" },
+              { id: "msg:2", seq: 2, kind: "assistant_message", body: "second", unread: true },
+            ],
+          },
+        },
+      },
+    );
+    expect(
+      changedUnread.conversation?.events.find((event) => event.id === "msg:2")
+        ?.unread,
+    ).toBe(true);
+  });
+});

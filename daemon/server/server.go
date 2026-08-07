@@ -1361,6 +1361,22 @@ func (s *Server) loadProviderConversationSnapshot(
 	resolved resolvedCodexConversationAgent,
 	now time.Time,
 ) (work.CodexConversation, error) {
+	conversation, err := s.loadProviderConversation(reader, resolved, now)
+	if err != nil {
+		return work.CodexConversation{}, err
+	}
+	return work.SanitizeConversationProjection(conversation), nil
+}
+
+// loadProviderConversation loads the provider conversation without applying
+// the user-facing sanitize projection. The subscription loop runs the version
+// skip before sanitize so an unchanged poll performs no history work at all;
+// every sent payload is still sanitized afterwards.
+func (s *Server) loadProviderConversation(
+	reader *work.ProviderConversationReader,
+	resolved resolvedCodexConversationAgent,
+	now time.Time,
+) (work.CodexConversation, error) {
 	var conversation work.CodexConversation
 	var err error
 	if s.providerConversationLoader != nil {
@@ -1371,7 +1387,7 @@ func (s *Server) loadProviderConversationSnapshot(
 	if err != nil {
 		return work.CodexConversation{}, err
 	}
-	return work.SanitizeConversationProjection(conversation), nil
+	return conversation, nil
 }
 
 func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
@@ -1543,7 +1559,7 @@ func (s *Server) publishCodexConversationSubscription(
 	}
 
 	now := time.Now()
-	conversation, err := s.loadProviderConversationSnapshot(reader, resolved, now)
+	conversation, err := s.loadProviderConversation(reader, resolved, now)
 	if err != nil {
 		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 			return
@@ -1559,27 +1575,46 @@ func (s *Server) publishCodexConversationSubscription(
 	}
 	readerVersion := reader.ConversationVersion()
 	changedIDs := reader.ChangedEventIDs()
-	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
-	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
+	brainScoped := strings.HasPrefix(strings.TrimSpace(raw.ConversationScopeKey), "brain-thread:")
 
 	// Content-version fast path: the reader proves nothing changed, so the
 	// whole poll is O(1) — no sanitize, fingerprint, eventsByID, or delta.
 	// This requires a content-versioned provider (OpenCode cache), a stable
 	// conversation identity and attachment state, and no Brain overlay (which
-	// changes independently of the provider source).
+	// changes independently of the provider source). The check runs before
+	// sanitize so the unchanged-poll claim is truthful end to end.
 	if readerVersion != 0 && (*previous) != nil &&
 		(*previous).readerVersion == readerVersion &&
 		(*previous).attached == resolved.fromWatcher &&
 		codexConversationIdentity((*previous).conversation) == codexConversationIdentity(conversation) &&
-		!strings.HasPrefix(strings.TrimSpace(raw.ConversationScopeKey), "brain-thread:") {
+		!brainScoped {
 		return
 	}
 
-	fingerprint := codexConversationSubscriptionFingerprintMemoized(
-		conversation,
-		(*previous),
-		changedIDs,
-	)
+	conversation = work.SanitizeConversationProjection(conversation)
+	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
+	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
+
+	// Memoized fingerprints/deltas are only sound when the provider reader
+	// proves an authoritative nonzero content version AND the conversation is
+	// not a Brain-thread overlay (which appends independently of the provider
+	// source). Codex, Claude, Cursor, Grok, and Pi return version 0 and must
+	// retain the full pre-existing fingerprint and delta behavior: their
+	// stable-ID in-place updates change event content without any changed-id
+	// report, and a memoized fingerprint would suppress the delta forever.
+	useMemoized := readerVersion != 0 && !brainScoped
+	var fingerprint codexConversationFingerprintMemo
+	if useMemoized {
+		fingerprint = codexConversationSubscriptionFingerprintMemoized(
+			conversation,
+			(*previous),
+			changedIDs,
+		)
+	} else {
+		fingerprint = codexConversationFingerprintMemo{
+			fingerprint: codexConversationSubscriptionFingerprint(conversation),
+		}
+	}
 	if (*previous) != nil && (*previous).fingerprint == fingerprint.fingerprint {
 		return
 	}
@@ -1612,12 +1647,21 @@ func (s *Server) publishCodexConversationSubscription(
 		return
 	}
 
-	upserts, deletes := codexConversationDeltaMemoized(
-		(*previous).eventsByID,
-		(*previous).eventFingerprints,
-		conversation.Events,
-		next.eventFingerprints,
-	)
+	var upserts []work.CodexConversationEvent
+	var deletes []string
+	if useMemoized {
+		upserts, deletes = codexConversationDeltaMemoized(
+			(*previous).eventsByID,
+			(*previous).eventFingerprints,
+			conversation.Events,
+			next.eventFingerprints,
+		)
+	} else {
+		upserts, deletes = codexConversationDelta(
+			(*previous).eventsByID,
+			conversation.Events,
+		)
+	}
 	if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 		return
 	}

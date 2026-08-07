@@ -320,9 +320,6 @@ type openCodeCacheEntry struct {
 	messageRows map[string]openCodeMessageRow
 	partRows    map[string]openCodePartRow
 
-	messages []openCodeMessageRow
-	parts    []openCodePartRow
-
 	messagePayloads map[string]openCodeMessagePayload
 	partPayloads    map[string]openCodePartPayload
 
@@ -342,21 +339,28 @@ type openCodeCacheEntry struct {
 // readers; sqlite3 spawns happen outside the lock.
 var openCodeConversationCache = newOpenCodeConversationCache()
 
+// openCodeCacheRef is the unambiguous structured cache key. A delimiter-based
+// composite key could collide when a dbPath or sessionID contains the
+// delimiter; struct equality cannot.
+type openCodeCacheRef struct {
+	dbPath    string
+	sessionID string
+}
+
 type openCodeConversationCacheImpl struct {
-	mu          sync.Mutex
-	entries     map[string]*openCodeCacheEntry
-	entryOrder  []string
-	openCodeDBs map[string]string
+	mu         sync.Mutex
+	entries    map[openCodeCacheRef]*openCodeCacheEntry
+	entryOrder []openCodeCacheRef
 }
 
 func newOpenCodeConversationCache() *openCodeConversationCacheImpl {
 	return &openCodeConversationCacheImpl{
-		entries:     map[string]*openCodeCacheEntry{},
+		entries: map[openCodeCacheRef]*openCodeCacheEntry{},
 	}
 }
 
-func openCodeCacheKey(dbPath, sessionID string) string {
-	return dbPath + "|" + sessionID
+func openCodeCacheKey(dbPath, sessionID string) openCodeCacheRef {
+	return openCodeCacheRef{dbPath: dbPath, sessionID: sessionID}
 }
 
 // read returns the cached conversation when the SQLite stamp is unchanged
@@ -368,12 +372,15 @@ func (c *openCodeConversationCacheImpl) read(dbPath, sessionID string) (CodexCon
 		return CodexConversation{}, 0, nil, true, err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	entry, ok := c.entries[openCodeCacheKey(dbPath, sessionID)]
-	c.mu.Unlock()
-	if ok && entry.stamp.equal(stamp) {
-		return entry.conversation, entry.version, entry.lastChangedIDs, false, nil
+	if !ok {
+		return CodexConversation{}, 0, nil, true, nil
 	}
-	return CodexConversation{}, 0, nil, true, nil
+	if !entry.stamp.equal(stamp) {
+		return CodexConversation{}, 0, nil, true, nil
+	}
+	return entry.conversation, entry.version, entry.lastChangedIDs, false, nil
 }
 
 // load refreshes the cache entry for a changed stamp using cursor-based
@@ -463,11 +470,48 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 			return conversation, version, changedIDs, nil
 		}
 
+		// A row-count drop below the cached row count means rows were deleted.
+		// Deleted rows are invisible to the time_updated cursor (their
+		// time_updated is older than the cursor), so the caches must be
+		// replaced from a full cursor-zero read; otherwise the deleted
+		// message/tool event would stay visible forever. New rows are caught
+		// by the next incremental poll, so only a drop triggers the full read.
 		changedRows := false
-		messageCursor = applyOpenCodeMessageFetches(entry, newMessages, &changedRows)
-		partCursor = applyOpenCodePartFetches(entry, newParts, &changedRows)
+		fullRead := false
+		if messageCount < wantMessages || partCount < wantParts {
+			fullMessages, err := queryOpenCodeMessagesSince(sqlite3, dbPath, sessionID, 0)
+			if err != nil {
+				c.mu.Unlock()
+				return CodexConversation{}, 0, nil, err
+			}
+			fullParts, err := queryOpenCodePartsSince(sqlite3, dbPath, sessionID, 0)
+			if err != nil {
+				c.mu.Unlock()
+				return CodexConversation{}, 0, nil, err
+			}
+			entry.messageRows = make(map[string]openCodeMessageRow, len(fullMessages))
+			entry.partRows = make(map[string]openCodePartRow, len(fullParts))
+			entry.messagePayloads = make(map[string]openCodeMessagePayload, len(fullMessages))
+			entry.partPayloads = make(map[string]openCodePartPayload, len(fullParts))
+			messageCursor = applyOpenCodeMessageFetches(entry, fullMessages, &changedRows)
+			partCursor = applyOpenCodePartFetches(entry, fullParts, &changedRows)
+			// The full read replaces the caches wholesale, so the
+			// identical-content fast path below must never trigger even when
+			// the replacement applied zero rows: the conversation must be
+			// rebuilt without the deleted events.
+			fullRead = true
+			changedRows = true
+			// The full read replaces the caches, so the count check for the
+			// identical-content fast path below must compare against the
+			// replaced sizes.
+			wantMessages = len(entry.messageRows)
+			wantParts = len(entry.partRows)
+		} else {
+			messageCursor = applyOpenCodeMessageFetches(entry, newMessages, &changedRows)
+			partCursor = applyOpenCodePartFetches(entry, newParts, &changedRows)
+		}
 
-		if !changedRows && wantMessages == messageCount && wantParts == partCount {
+		if !fullRead && !changedRows && wantMessages == messageCount && wantParts == partCount {
 			// Content is identical: keep the conversation and version, but
 			// advance cursors/stamp so the next read is fast again.
 			entry.stamp = after
@@ -495,7 +539,7 @@ func (c *openCodeConversationCacheImpl) load(dbPath, sessionID string) (CodexCon
 	return CodexConversation{}, 0, nil, fmt.Errorf("opencode conversation source changed continuously during refresh")
 }
 
-func (c *openCodeConversationCacheImpl) remove(key string) {
+func (c *openCodeConversationCacheImpl) remove(key openCodeCacheRef) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.entries[key]; ok {
@@ -647,8 +691,15 @@ func rebuildOpenCodeConversation(entry *openCodeCacheEntry, sessionID string) (C
 // `opencode db path` CLI spawn is expensive (the opencode process startup can
 // take hundreds of milliseconds), so it must never run per poll. The
 // ZEN_OPENCODE_DB override is re-read every call (tests set it dynamically).
+// openCodeDBPathResolved memoizes a successful OpenCode SQLite path
+// resolution. The `opencode db path` CLI spawn is expensive (the opencode
+// process startup can take hundreds of milliseconds), so it must never run
+// per poll. A failed resolution is NOT cached: the discovery is retried on
+// later calls so a transient failure (or a late-arriving opencode install)
+// self-corrects. The ZEN_OPENCODE_DB override is re-read every call (tests
+// set it dynamically).
 var (
-	openCodeDBPathOnce    sync.Once
+	openCodeDBPathMu       sync.Mutex
 	openCodeDBPathResolved string
 )
 
@@ -656,22 +707,25 @@ func openCodeDBPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("ZEN_OPENCODE_DB")); override != "" {
 		return override, nil
 	}
-	openCodeDBPathOnce.Do(func() {
-		sqlitePath, err := lookPathOpenCodeDB()
-		if err == nil && sqlitePath != "" {
-			openCodeDBPathResolved = sqlitePath
-			return
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return
-		}
-		fallback := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-		if _, err := os.Stat(fallback); err == nil {
-			openCodeDBPathResolved = fallback
-		}
-	})
-	return openCodeDBPathResolved, nil
+	openCodeDBPathMu.Lock()
+	defer openCodeDBPathMu.Unlock()
+	if openCodeDBPathResolved != "" {
+		return openCodeDBPathResolved, nil
+	}
+	if sqlitePath, err := lookPathOpenCodeDB(); err == nil && sqlitePath != "" {
+		openCodeDBPathResolved = sqlitePath
+		return openCodeDBPathResolved, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil
+	}
+	fallback := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	if _, err := os.Stat(fallback); err == nil {
+		openCodeDBPathResolved = fallback
+		return openCodeDBPathResolved, nil
+	}
+	return "", nil
 }
 
 func lookPathOpenCodeDB() (string, error) {
@@ -756,7 +810,7 @@ func queryOpenCodeSessionByID(dbPath, sessionID string) (openCodeSessionCandidat
 
 func queryOpenCodeSessionRows(sqlite3, dbPath, query string) ([]openCodeSessionRow, error) {
 	uri := fmt.Sprintf("file:%s?mode=ro", dbPath)
-	out, err := exec.Command(sqlite3, "-json", uri, query).CombinedOutput()
+	out, err := exec.Command(sqlite3, "-cmd", ".timeout 3000", "-json", uri, query).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("opencode db query: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1070,7 +1124,7 @@ func parseOpenCodeRowTimes(timeCreated, timeUpdated string) (int64, int64, error
 
 func runOpenCodeDataQuery(sqlite3, dbPath, query string) ([]string, error) {
 	uri := fmt.Sprintf("file:%s?mode=ro", dbPath)
-	out, err := exec.Command(sqlite3, "-noheader", "-separator", openCodeRowFieldSeparator, uri, query).CombinedOutput()
+	out, err := exec.Command(sqlite3, "-cmd", ".timeout 3000", "-noheader", "-separator", openCodeRowFieldSeparator, uri, query).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("opencode data query: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1086,7 +1140,7 @@ func queryOpenCodeSessionCounts(sqlite3, dbPath, sessionID string) (int, int, er
 		sqliteStringLiteral(sessionID), sqliteStringLiteral(sessionID),
 	)
 	uri := fmt.Sprintf("file:%s?mode=ro", dbPath)
-	out, err := exec.Command(sqlite3, uri, query).CombinedOutput()
+	out, err := exec.Command(sqlite3, "-cmd", ".timeout 3000", uri, query).CombinedOutput()
 	if err != nil {
 		return 0, 0, fmt.Errorf("opencode count query: %w: %s", err, strings.TrimSpace(string(out)))
 	}

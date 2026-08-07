@@ -51,6 +51,10 @@ func TestRealOpenCodeTiming(t *testing.T) {
 			Directory: row.Directory,
 		})
 	}
+	if len(sessions) == 0 {
+		t.Skip("no fresh root OpenCode session found; nothing to time")
+	}
+
 	started := time.Now()
 	conversation, err := parseOpenCodeConversation(dbPath, sessions[0].ID)
 	coldMs := time.Since(started).Milliseconds()
@@ -64,11 +68,27 @@ func TestRealOpenCodeTiming(t *testing.T) {
 		Cwd:     sessions[0].Directory,
 		Command: "opencode",
 	}
+	// Establish the binding, then pin the exact session that was cold-read so
+	// the warm-subscription and idle-poll timings measure the same history (a
+	// directory can hold many sessions and the freshest-root binding may pick
+	// a different one). bind() clears a pre-set pin on its first run.
+	if _, err := reader.Load(agent, AgentProviderOpenCode, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reader.openCodeOwnedSessionID = sessions[0].ID
+	reader.openCodeOwnedCandidate = openCodeSessionCandidate{
+		ID:        sessions[0].ID,
+		CWD:       sessions[0].Directory,
+		Updated:   time.Now().UTC(),
+	}
 	started = time.Now()
 	warm, err := reader.Load(agent, AgentProviderOpenCode, time.Now())
 	warmMs := time.Since(started).Microseconds()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(warm.Events) != len(conversation.Events) {
+		t.Fatalf("warm load bound a different session: %d vs %d events", len(warm.Events), len(conversation.Events))
 	}
 	t.Logf("real-session warm-subscription-load: %d us (events=%d version=%d)", warmMs, len(warm.Events), reader.ConversationVersion())
 
