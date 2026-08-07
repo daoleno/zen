@@ -1,6 +1,7 @@
 import React, { forwardRef, type ReactNode } from "react";
 import {
   StyleSheet,
+  Text,
   TextInput,
   View,
   type StyleProp,
@@ -8,8 +9,11 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { TypeScale, UiTextMetrics } from "../../constants/tokens";
-import { MOBILE_SINGLE_LINE_INPUT_LAYOUT } from "./mobileSingleLineInputModel";
+import { TypeScale, UiTextMetrics, useAppColors } from "../../constants/tokens";
+import {
+  MOBILE_SINGLE_LINE_INPUT_LAYOUT,
+  mobileSingleLineTextInsets,
+} from "./mobileSingleLineInputModel";
 
 export interface MobileSingleLineInputProps extends TextInputProps {
   containerStyle?: StyleProp<ViewStyle>;
@@ -18,6 +22,16 @@ export interface MobileSingleLineInputProps extends TextInputProps {
   trailing?: ReactNode;
 }
 
+/**
+ * The single shared owner for single-line inputs. Placeholder, entered text,
+ * secure text, font scaling, and Android/iOS vertical centering all live
+ * inside one stable control height.
+ *
+ * Android draws the native placeholder top-aligned inside a fixed-height
+ * EditText and clips it at the top edge, so controlled inputs drop the native
+ * placeholder and render it as a centered overlay instead — the same pattern
+ * the chat composer uses. Uncontrolled callers keep the native placeholder.
+ */
 export const MobileSingleLineInput = forwardRef<
   TextInput,
   MobileSingleLineInputProps
@@ -27,18 +41,31 @@ export const MobileSingleLineInput = forwardRef<
     inputStyle,
     leading,
     maxFontSizeMultiplier = MOBILE_SINGLE_LINE_INPUT_LAYOUT.maximumFontSizeMultiplier,
+    placeholder,
+    placeholderTextColor,
     style,
     trailing,
     ...inputProps
   },
   ref,
 ) {
+  const colors = useAppColors();
+  const controlled = "value" in inputProps;
+  const showPlaceholderOverlay = Boolean(
+    placeholder &&
+      controlled &&
+      (inputProps.value == null || inputProps.value.length === 0),
+  );
+  const insets = mobileSingleLineTextInsets(Boolean(leading), Boolean(trailing));
+
   return (
     <View style={[styles.frame, containerStyle]}>
       <TextInput
         {...inputProps}
         ref={ref}
         maxFontSizeMultiplier={maxFontSizeMultiplier}
+        placeholder={controlled ? undefined : placeholder}
+        placeholderTextColor={placeholderTextColor}
         style={[
           styles.input,
           leading ? styles.inputWithLeading : null,
@@ -47,6 +74,26 @@ export const MobileSingleLineInput = forwardRef<
           inputStyle,
         ]}
       />
+      {showPlaceholderOverlay ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.placeholderSlot,
+            { left: insets.left, right: insets.right },
+          ]}
+        >
+          <Text
+            numberOfLines={1}
+            maxFontSizeMultiplier={maxFontSizeMultiplier}
+            style={[
+              styles.placeholderText,
+              { color: placeholderTextColor ?? colors.textTertiary },
+            ]}
+          >
+            {placeholder}
+          </Text>
+        </View>
+      ) : null}
       {leading ? (
         <View pointerEvents="none" style={[styles.accessory, styles.leading]}>
           {leading}
@@ -83,6 +130,18 @@ const styles = StyleSheet.create({
   },
   inputWithTrailing: {
     paddingRight: MOBILE_SINGLE_LINE_INPUT_LAYOUT.accessoryLaneWidth,
+  },
+  placeholderSlot: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+  },
+  placeholderText: {
+    ...TypeScale.body,
+    ...UiTextMetrics,
+    fontSize: MOBILE_SINGLE_LINE_INPUT_LAYOUT.fontSize,
+    lineHeight: MOBILE_SINGLE_LINE_INPUT_LAYOUT.lineHeight,
   },
   accessory: {
     position: "absolute",

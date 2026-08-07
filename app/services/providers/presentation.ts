@@ -153,22 +153,20 @@ export function curatedConnectionInput(
   return { preset_id: preset.id };
 }
 
+/**
+ * Advanced/Custom create input. Zen derives Codex/Claude adapter
+ * compatibility internally, so the App never sends a client or a manual model
+ * id — only the gateway identity the user actually configured.
+ */
 export function advancedConnectionInput(input: {
   existingId?: string;
   name: string;
-  client: string;
   baseUrl: string;
-  manualModelId?: string;
   presetId?: string;
 }): ProviderConnectionInput {
   const name = normalizeProviderId(input.name);
-  const client = normalizeProviderClient(input.client);
   const baseUrl = normalizeProviderId(input.baseUrl);
-  const modelId = normalizeProviderId(input.manualModelId);
   if (!name) throw invalidProviderReply("Display name is required.");
-  if (!isSupportedProviderClient(client)) {
-    throw invalidProviderReply("Choose Codex or Claude.");
-  }
   if (!baseUrl) throw invalidProviderReply("Base URL is required.");
   let parsed: URL;
   try {
@@ -183,9 +181,7 @@ export function advancedConnectionInput(input: {
     id: normalizeProviderId(input.existingId) || undefined,
     name,
     preset_id: normalizeProviderId(input.presetId) || "custom",
-    client,
     base_url: baseUrl,
-    model_id: modelId || undefined,
     advanced: true,
   };
 }

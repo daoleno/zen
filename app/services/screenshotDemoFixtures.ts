@@ -1,6 +1,7 @@
 import type { CodexConversationEvent } from "./codexConversation";
 import type { Agent } from "../store/agents";
 import type { PendingUserMessage } from "../components/terminal/InterfaceChatSession";
+import type { ProvidersSnapshot } from "./providers/types";
 
 export const SCREENSHOT_DEMO_SERVER_ID = "demo-server";
 export const SCREENSHOT_DEMO_SERVER_NAME = "Studio Mac";
@@ -378,3 +379,90 @@ export const SCREENSHOT_STATS_FIXTURE = {
     },
   ],
 } as const;
+
+export const SCREENSHOT_PROVIDERS_FIXTURE: ProvidersSnapshot = {
+  revision: 41,
+  connections: [
+    {
+      id: "conn-openai",
+      name: "OpenAI",
+      preset_id: "openai",
+      clients: ["codex"],
+      credential_ready: true,
+      advanced: false,
+    },
+    {
+      id: "conn-deepseek",
+      name: "DeepSeek",
+      preset_id: "deepseek",
+      clients: ["codex", "claude"],
+      credential_ready: true,
+      advanced: false,
+    },
+    {
+      id: "conn-anthropic",
+      name: "Anthropic",
+      preset_id: "anthropic",
+      clients: ["claude"],
+      credential_ready: false,
+      advanced: false,
+    },
+    {
+      id: "conn-gateway",
+      name: "Studio Gateway",
+      preset_id: "custom",
+      clients: ["codex", "claude"],
+      credential_ready: true,
+      advanced: true,
+      base_url: "https://gateway.studio.example/v1",
+    },
+  ],
+  defaults: {
+    codex: { connection_id: "conn-deepseek", model_id: "deepseek-v4-flash" },
+    claude: { connection_id: "conn-gateway", model_id: "claude-sonnet-4-6" },
+  },
+  presets: [
+    {
+      id: "openai",
+      label: "OpenAI",
+      clients: ["codex"],
+      advanced: false,
+    },
+    {
+      id: "openrouter",
+      label: "OpenRouter",
+      clients: ["codex"],
+      advanced: false,
+    },
+    {
+      id: "anthropic",
+      label: "Anthropic",
+      clients: ["claude"],
+      advanced: false,
+    },
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      clients: ["codex", "claude"],
+      advanced: false,
+    },
+    {
+      id: "custom",
+      label: "Custom Gateway",
+      clients: ["codex", "claude"],
+      advanced: true,
+    },
+  ],
+  models: {
+    "conn-openai": [{ id: "gpt-5", available: true, source: "discovered" }],
+    "conn-deepseek": [
+      { id: "deepseek-v4-flash", available: true, source: "discovered" },
+      { id: "deepseek-v4-pro", available: true, source: "discovered" },
+    ],
+    "conn-anthropic": [],
+    "conn-gateway": [
+      { id: "claude-sonnet-4-6", available: true, source: "discovered" },
+      { id: "claude-opus-4-1", available: true, source: "discovered" },
+    ],
+  },
+};

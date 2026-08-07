@@ -2,10 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
-  ProviderAddForm,
-  ProviderCredentialForm,
   ProvidersPresentation,
-  type ProvidersScreenMode,
+  type ProvidersEditorState,
 } from "../components/providers/ProvidersPresentation";
 import {
   ProviderError,
@@ -46,9 +44,7 @@ export default function ProvidersScreen() {
   const [catalog, setCatalog] = useState<ProvidersSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ProviderError | null>(null);
-  const [mode, setMode] = useState<ProvidersScreenMode>("list");
-  const [credentialTarget, setCredentialTarget] =
-    useState<ProviderConnection | null>(null);
+  const [editor, setEditor] = useState<ProvidersEditorState>(null);
   const [mutating, setMutating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [durabilityWarning, setDurabilityWarning] = useState<string | null>(
@@ -63,8 +59,7 @@ export default function ProvidersScreen() {
 
   const clearProjection = useCallback(() => {
     ownerRef.current.invalidateAll();
-    setMode("list");
-    setCredentialTarget(null);
+    setEditor(null);
     setMutating(false);
     setRefreshing(false);
     setDurabilityWarning(null);
@@ -432,6 +427,10 @@ export default function ProvidersScreen() {
   const offline = !currentConnected;
   const unavailable = error?.kind === "unavailable";
 
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+  }, []);
+
   return (
     <ProvidersPresentation
       catalog={catalog}
@@ -443,15 +442,12 @@ export default function ProvidersScreen() {
       currentServerAvailable={Boolean(currentServerId)}
       durabilityWarning={durabilityWarning}
       requiresRefreshBeforeMutation={requiresRefreshBeforeMutation}
-      mode={mode}
+      editor={editor}
       mutating={mutating}
       onRefresh={() => void loadCatalog({ soft: true })}
       onOpenSettings={() => router.push("/settings")}
-      onAdd={() => setMode("add")}
-      onAddApiKey={(connection) => {
-        setCredentialTarget(connection);
-        setMode("credential");
-      }}
+      onOpenEditor={setEditor}
+      onCloseEditor={closeEditor}
       onClearCredential={(connection) => {
         Alert.alert("Clear API key?", connection.name, [
           { text: "Cancel", style: "cancel" },
@@ -494,101 +490,73 @@ export default function ProvidersScreen() {
       onDiscover={(connection) => {
         void runDiscover(connection);
       }}
-      addSlot={
-        <ProviderAddForm
-          presets={catalog?.presets ?? []}
-          mutating={mutating}
-          onCancel={() => setMode("list")}
-          onSaveCurated={async ({ preset, apiKey }) => {
-            const previous = catalogRef.current;
-            if (!previous) return;
-            const created = await runMutation(() =>
-              wsClient.upsertProviderConnection(currentServerId!, {
-                revision,
-                operation: "create",
-                connection: curatedCreateInput(preset),
-              }),
-            );
-            if (!created) return;
-            let connection: ProviderConnection;
-            try {
-              connection = resolveCreatedConnection({
-                previous,
-                next: created.snapshot,
-                presetId: preset.id,
-              });
-            } catch (identityError) {
-              ownerRef.current.requireCatalogRefresh();
-              syncWriteLockUi();
-              const presented = presentProviderError(identityError);
-              Alert.alert(presented.title, presented.message);
-              setMode("list");
-              void loadCatalog({ soft: true });
-              return;
-            }
-            const ok = await saveCredential(connection.id, apiKey);
-            setMode("list");
-            if (!ok) setCredentialTarget(connection);
-          }}
-          onSaveCustom={async ({ name, client, baseUrl, apiKey, modelId }) => {
-            const previous = catalogRef.current;
-            if (!previous) return;
-            const created = await runMutation(() =>
-              wsClient.upsertProviderConnection(currentServerId!, {
-                revision,
-                operation: "create",
-                connection: customGatewayCreateInput({
-                  name,
-                  client,
-                  baseUrl,
-                  manualModelId: modelId,
-                }),
-              }),
-            );
-            if (!created) return;
-            let connection: ProviderConnection;
-            try {
-              connection = resolveCreatedConnection({
-                previous,
-                next: created.snapshot,
-                presetId: "custom",
-              });
-            } catch (identityError) {
-              ownerRef.current.requireCatalogRefresh();
-              syncWriteLockUi();
-              const presented = presentProviderError(identityError);
-              Alert.alert(presented.title, presented.message);
-              setMode("list");
-              void loadCatalog({ soft: true });
-              return;
-            }
-            await saveCredential(connection.id, apiKey);
-            setMode("list");
-          }}
-        />
-      }
-      credentialSlot={
-        credentialTarget ? (
-          <ProviderCredentialForm
-            connection={credentialTarget}
-            mutating={mutating}
-            onCancel={() => {
-              setCredentialTarget(null);
-              setMode("list");
-            }}
-            onSave={async (apiKey) => {
-              setMutating(true);
-              try {
-                await saveCredential(credentialTarget.id, apiKey);
-                setCredentialTarget(null);
-                setMode("list");
-              } finally {
-                setMutating(false);
-              }
-            }}
-          />
-        ) : null
-      }
+      onSaveCurated={async (preset, apiKey) => {
+        const previous = catalogRef.current;
+        if (!previous) return false;
+        const created = await runMutation(() =>
+          wsClient.upsertProviderConnection(currentServerId!, {
+            revision,
+            operation: "create",
+            connection: curatedCreateInput(preset),
+          }),
+        );
+        if (!created) return false;
+        let connection: ProviderConnection;
+        try {
+          connection = resolveCreatedConnection({
+            previous,
+            next: created.snapshot,
+            presetId: preset.id,
+          });
+        } catch (identityError) {
+          ownerRef.current.requireCatalogRefresh();
+          syncWriteLockUi();
+          const presented = presentProviderError(identityError);
+          Alert.alert(presented.title, presented.message);
+          closeEditor();
+          void loadCatalog({ soft: true });
+          return false;
+        }
+        const ok = await saveCredential(connection.id, apiKey);
+        closeEditor();
+        return ok;
+      }}
+      onSaveCustom={async ({ name, baseUrl, apiKey }) => {
+        const previous = catalogRef.current;
+        if (!previous) return false;
+        const created = await runMutation(() =>
+          wsClient.upsertProviderConnection(currentServerId!, {
+            revision,
+            operation: "create",
+            connection: customGatewayCreateInput({ name, baseUrl }),
+          }),
+        );
+        if (!created) return false;
+        let connection: ProviderConnection;
+        try {
+          connection = resolveCreatedConnection({
+            previous,
+            next: created.snapshot,
+            presetId: "custom",
+          });
+        } catch (identityError) {
+          ownerRef.current.requireCatalogRefresh();
+          syncWriteLockUi();
+          const presented = presentProviderError(identityError);
+          Alert.alert(presented.title, presented.message);
+          closeEditor();
+          void loadCatalog({ soft: true });
+          return false;
+        }
+        const ok = await saveCredential(connection.id, apiKey);
+        closeEditor();
+        return ok;
+      }}
+      onSaveCredential={async (connection, apiKey) => {
+        const ok = await saveCredential(connection.id, apiKey);
+        closeEditor();
+        return ok;
+      }}
     />
   );
 }

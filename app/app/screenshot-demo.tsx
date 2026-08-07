@@ -49,6 +49,7 @@ import { buildChatChrome } from "../theme";
 import {
   SCREENSHOT_BRAIN_EVENTS,
   SCREENSHOT_CHAT_EVENTS,
+  SCREENSHOT_PROVIDERS_FIXTURE,
   SCREENSHOT_SESSION_AGENTS,
   SCREENSHOT_STATS_FIXTURE,
   screenshotChatPendingUserMessages,
@@ -60,6 +61,7 @@ import {
   screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
 import { InterfaceDevicePerformanceDemoGate } from "../components/terminal/InterfaceDevicePerformanceDemo";
+import { ProvidersPresentation } from "../components/providers/ProvidersPresentation";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
@@ -95,6 +97,8 @@ export default function ScreenshotDemoRoute() {
       return <StatsDemo />;
     case "calendar":
       return <CalendarDemo />;
+    case "providers":
+      return <ProvidersDemo />;
     case "profile":
       return <InterfaceDevicePerformanceDemoGate />;
     case "chat":
@@ -623,6 +627,40 @@ function StatsDemo() {
       </View>
       <StatsScreenshotDemo
         statsData={SCREENSHOT_STATS_FIXTURE as unknown as StatsPayload}
+      />
+    </SafeAreaView>
+  );
+}
+
+function ProvidersDemo() {
+  const params = useLocalSearchParams<{
+    editor?: string | string[];
+  }>();
+  const editorOpen =
+    (Array.isArray(params.editor) ? params.editor[0] : params.editor) === "1";
+  return (
+    <SafeAreaView style={styles.flex} edges={["top"]}>
+      <ProvidersPresentation
+        catalog={SCREENSHOT_PROVIDERS_FIXTURE}
+        loading={false}
+        refreshing={false}
+        error={null}
+        offline={false}
+        unavailable={false}
+        currentServerAvailable
+        editor={editorOpen ? { kind: "add" } : null}
+        mutating={false}
+        onRefresh={NOOP}
+        onOpenSettings={NOOP}
+        onOpenEditor={NOOP}
+        onCloseEditor={NOOP}
+        onClearCredential={NOOP}
+        onDelete={NOOP}
+        onSetDefault={NOOP}
+        onDiscover={NOOP}
+        onSaveCurated={() => false}
+        onSaveCustom={() => false}
+        onSaveCredential={() => false}
       />
     </SafeAreaView>
   );

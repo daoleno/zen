@@ -90,9 +90,7 @@ export function curatedCreateInput(preset: ProviderPreset) {
 
 export function customGatewayCreateInput(input: {
   name: string;
-  client: string;
   baseUrl: string;
-  manualModelId?: string;
 }) {
   return advancedConnectionInput(input);
 }

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -6,12 +6,16 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { Radii, TypeScale, useAppColors } from "../../constants/tokens";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  Radii,
+  TypeScale,
+  UiTextMetrics,
+  useAppColors,
+} from "../../constants/tokens";
 import type { ProviderError } from "../../services/providers";
 import type {
   ProviderConnection,
@@ -21,10 +25,17 @@ import type {
 import {
   defaultClientsForConnection,
   futureDefaultRows,
+  providerClientLabel,
 } from "../../services/providers";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
+import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
+import { RisingSheet } from "../ui/RisingSheet";
+import { providerEditorCanSave } from "./providersPresentationModel";
 
-export type ProvidersScreenMode = "list" | "add" | "credential";
+export type ProvidersEditorState =
+  | { kind: "add" }
+  | { kind: "credential"; connection: ProviderConnection }
+  | null;
 
 export interface ProvidersPresentationProps {
   catalog: ProvidersSnapshot | null;
@@ -36,25 +47,29 @@ export interface ProvidersPresentationProps {
   currentServerAvailable: boolean;
   durabilityWarning?: string | null;
   requiresRefreshBeforeMutation?: boolean;
-  mode: ProvidersScreenMode;
+  editor: ProvidersEditorState;
   mutating: boolean;
   onRefresh(): void;
   onOpenSettings(): void;
-  onAdd(): void;
-  onAddApiKey(connection: ProviderConnection): void;
+  onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
+  onCloseEditor(): void;
   onClearCredential(connection: ProviderConnection): void;
   onDelete(connection: ProviderConnection): void;
   onSetDefault(client: string, connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
-  addSlot?: React.ReactNode;
-  credentialSlot?: React.ReactNode;
-}
-
-function clientLabel(client: string): string {
-  const c = client.trim().toLowerCase();
-  if (c === "codex") return "Codex";
-  if (c === "claude") return "Claude";
-  return client;
+  onSaveCurated(
+    preset: ProviderPreset,
+    apiKey: string,
+  ): Promise<boolean> | boolean;
+  onSaveCustom(input: {
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<boolean> | boolean;
+  onSaveCredential(
+    connection: ProviderConnection,
+    apiKey: string,
+  ): Promise<boolean> | boolean;
 }
 
 export function ProvidersPresentation({
@@ -67,35 +82,32 @@ export function ProvidersPresentation({
   currentServerAvailable,
   durabilityWarning,
   requiresRefreshBeforeMutation,
-  mode,
+  editor,
   mutating,
   onRefresh,
   onOpenSettings,
-  onAdd,
-  onAddApiKey,
+  onOpenEditor,
+  onCloseEditor,
   onClearCredential,
   onDelete,
   onSetDefault,
   onDiscover,
-  addSlot,
-  credentialSlot,
+  onSaveCurated,
+  onSaveCustom,
+  onSaveCredential,
 }: ProvidersPresentationProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const connections = catalog?.connections ?? [];
   const defaultRows = futureDefaultRows(catalog);
-
-  if (mode === "add" && addSlot) {
-    return <>{addSlot}</>;
-  }
-  if (mode === "credential" && credentialSlot) {
-    return <>{credentialSlot}</>;
-  }
+  const showAddRow =
+    currentServerAvailable && !offline && !unavailable && Boolean(catalog);
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <ScrollView
         contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -140,14 +152,14 @@ export function ProvidersPresentation({
         ) : null}
 
         {durabilityWarning ? (
-          <View style={[styles.banner, styles.warnBanner]}>
-            <Text style={styles.bannerText}>{durabilityWarning}</Text>
+          <View style={[styles.notice, { borderLeftColor: colors.warning }]}>
+            <Text style={styles.noticeText}>{durabilityWarning}</Text>
           </View>
         ) : null}
 
         {requiresRefreshBeforeMutation ? (
-          <View style={[styles.banner, styles.lockBanner]}>
-            <Text style={styles.bannerText}>
+          <View style={[styles.notice, { borderLeftColor: colors.accent }]}>
+            <Text style={styles.noticeText}>
               Writes are locked until a successful refresh completes.
             </Text>
             <Pressable onPress={onRefresh} accessibilityRole="button">
@@ -162,123 +174,185 @@ export function ProvidersPresentation({
           </View>
         ) : null}
 
-        {catalog && connections.length > 0 ? (
-          <View
-            style={styles.defaultsSection}
-            accessibilityLabel="Future defaults"
-          >
-            <Text style={styles.defaultsTitle}>Defaults</Text>
-            <Text style={styles.stateBody}>
-              Choose which ready Provider new Codex and Claude Sessions use.
+        {catalog && defaultRows.length > 0 && connections.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Defaults
             </Text>
-            {defaultRows.map((row) => (
-              <View key={row.client} style={styles.defaultClientRow}>
-                <Text style={styles.defaultLabel}>{row.label}</Text>
-                <Text style={styles.meta}>
-                  {row.currentConnectionName
-                    ? `Current · ${row.currentConnectionName}`
-                    : "No future default"}
-                </Text>
-                {row.options.length === 0 ? (
-                  <Text style={styles.meta}>
-                    Add a ready {row.label} Provider to set a default.
-                  </Text>
-                ) : (
-                  <View style={styles.row}>
-                    {row.options.map((option) => {
-                      const connection = connections.find(
-                        (item) => item.id === option.connectionId,
-                      );
-                      if (!connection) return null;
-                      return (
-                        <AnimatedPressable
-                          key={`${row.client}-${option.connectionId}`}
-                          style={[
-                            styles.chip,
-                            option.selected && {
-                              backgroundColor: colors.accentSoft,
-                            },
-                          ]}
-                          onPress={() => onSetDefault(row.client, connection)}
-                          disabled={
-                            mutating ||
-                            requiresRefreshBeforeMutation ||
-                            option.selected
-                          }
-                          accessibilityRole="button"
-                          accessibilityState={{
-                            selected: option.selected,
-                            disabled: option.selected,
-                          }}
-                          accessibilityLabel={`${row.label} default ${option.connectionName}`}
-                        >
-                          <Text style={styles.actionText}>
-                            {option.connectionName}
-                          </Text>
-                        </AnimatedPressable>
-                      );
-                    })}
+            <View
+              style={styles.group}
+              accessibilityLabel="Future defaults"
+              accessibilityRole="radiogroup"
+            >
+              {defaultRows.map((row) => (
+                <View
+                  key={row.client}
+                  style={[
+                    styles.groupRow,
+                    row !== defaultRows[defaultRows.length - 1] &&
+                      styles.groupRowBorder,
+                  ]}
+                >
+                  <View style={styles.rowCopy}>
+                    <Text style={styles.rowTitle}>{row.label} Sessions</Text>
+                    <Text style={styles.rowSubtitle}>
+                      {row.currentConnectionName
+                        ? `Default · ${row.currentConnectionName}`
+                        : row.options.length > 0
+                          ? "No default yet"
+                          : "Add a ready Provider to set a default"}
+                    </Text>
                   </View>
-                )}
-              </View>
-            ))}
-          </View>
+                  {row.options.length > 0 ? (
+                    <View style={styles.chipRow}>
+                      {row.options.map((option) => {
+                        const connection = connections.find(
+                          (item) => item.id === option.connectionId,
+                        );
+                        if (!connection) return null;
+                        return (
+                          <AnimatedPressable
+                            key={`${row.client}-${option.connectionId}`}
+                            style={[
+                              styles.chip,
+                              option.selected && {
+                                backgroundColor: colors.accentSoft,
+                              },
+                            ]}
+                            onPress={() =>
+                              onSetDefault(row.client, connection)
+                            }
+                            disabled={
+                              mutating ||
+                              requiresRefreshBeforeMutation ||
+                              option.selected
+                            }
+                            accessibilityRole="radio"
+                            accessibilityState={{
+                              checked: option.selected,
+                              disabled:
+                                option.selected ||
+                                mutating ||
+                                requiresRefreshBeforeMutation,
+                            }}
+                            accessibilityLabel={`${row.label} default ${option.connectionName}`}
+                          >
+                            <Text
+                              style={[
+                                styles.chipText,
+                                option.selected && {
+                                  color: colors.accentStrong,
+                                },
+                              ]}
+                            >
+                              {option.connectionName}
+                            </Text>
+                          </AnimatedPressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </>
         ) : null}
 
-        {catalog && connections.length === 0 && !loading ? (
-          <View style={styles.stateBlock}>
-            <Text style={styles.stateTitle}>No Providers yet</Text>
-            <Text style={styles.stateBody}>
-              Add a curated Provider such as DeepSeek, or a Custom Gateway.
+        {catalog ? (
+          <>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Providers
             </Text>
-          </View>
+            <View style={styles.group}>
+              {connections.length === 0 && !loading ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyTitle}>No Providers yet</Text>
+                  <Text style={styles.emptyHint}>
+                    Add a Provider to connect Codex and Claude Sessions, or a
+                    Custom Gateway for your own endpoint.
+                  </Text>
+                </View>
+              ) : (
+                connections.map((connection, index) => {
+                  const defaultClients = defaultClientsForConnection(
+                    catalog,
+                    connection.id,
+                  );
+                  return (
+                    <ProviderConnectionRow
+                      key={connection.id}
+                      connection={connection}
+                      isLast={index === connections.length - 1}
+                      defaultLabel={
+                        connection.advanced
+                          ? connection.base_url ?? "Custom Gateway"
+                          : defaultClients.length > 0
+                            ? `Default for ${defaultClients
+                                .map(providerClientLabel)
+                                .join(" and ")} Sessions`
+                            : "Not a default"
+                      }
+                      mutating={mutating}
+                      requiresRefreshBeforeMutation={requiresRefreshBeforeMutation}
+                      onAddApiKey={onOpenEditor}
+                      onClearCredential={onClearCredential}
+                      onDelete={onDelete}
+                      onDiscover={onDiscover}
+                    />
+                  );
+                })
+              )}
+              {showAddRow ? (
+                <AnimatedPressable
+                  style={styles.addRow}
+                  preset="press"
+                  scale={0.99}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add Provider"
+                  accessibilityHint="Add a Provider or Custom Gateway with an API key"
+                  onPress={() => onOpenEditor({ kind: "add" })}
+                >
+                  <View style={styles.addIcon}>
+                    <Ionicons
+                      name="add"
+                      size={20}
+                      color={colors.textOnAccent}
+                    />
+                  </View>
+                  <View style={styles.addCopy}>
+                    <Text style={styles.addTitle}>Add Provider</Text>
+                    <Text style={styles.addSubtitle}>
+                      Supplier and API key in one step
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={18}
+                    color={colors.textTertiary}
+                  />
+                </AnimatedPressable>
+              ) : null}
+            </View>
+          </>
         ) : null}
-
-        {connections.map((connection) => {
-          const defaults = defaultClientsForConnection(catalog!, connection.id);
-          const clients = connection.clients ?? [];
-          const defaultLabel =
-            defaults.length > 0
-              ? `Default · ${defaults.map(clientLabel).join(", ")}`
-              : "Not a future default";
-          return (
-            <ProviderConnectionCard
-              key={connection.id}
-              connection={connection}
-              clients={clients}
-              defaultLabel={defaultLabel}
-              mutating={mutating}
-              requiresRefreshBeforeMutation={requiresRefreshBeforeMutation}
-              onAddApiKey={onAddApiKey}
-              onClearCredential={onClearCredential}
-              onDelete={onDelete}
-              onDiscover={onDiscover}
-            />
-          );
-        })}
       </ScrollView>
 
-      {currentServerAvailable && !offline && !unavailable ? (
-        <View style={styles.footer}>
-          <AnimatedPressable
-            style={styles.primaryBtn}
-            onPress={onAdd}
-            disabled={mutating || requiresRefreshBeforeMutation}
-            accessibilityRole="button"
-            accessibilityLabel="Add Provider"
-          >
-            <Ionicons name="add" size={18} color="#fff" />
-            <Text style={styles.primaryText}>Add Provider</Text>
-          </AnimatedPressable>
-        </View>
-      ) : null}
+      <ProviderEditorSheet
+        editor={editor}
+        presets={catalog?.presets ?? []}
+        mutating={mutating}
+        onClose={onCloseEditor}
+        onSaveCurated={onSaveCurated}
+        onSaveCustom={onSaveCustom}
+        onSaveCredential={onSaveCredential}
+      />
     </SafeAreaView>
   );
 }
 
-function ProviderConnectionCard({
+function ProviderConnectionRow({
   connection,
-  clients,
+  isLast,
   defaultLabel,
   mutating,
   requiresRefreshBeforeMutation,
@@ -288,126 +362,149 @@ function ProviderConnectionCard({
   onDiscover,
 }: {
   connection: ProviderConnection;
-  clients: string[];
+  isLast: boolean;
   defaultLabel: string;
   mutating: boolean;
   requiresRefreshBeforeMutation?: boolean;
-  onAddApiKey(connection: ProviderConnection): void;
+  onAddApiKey(
+    editor: NonNullable<ProvidersEditorState>,
+  ): void;
   onClearCredential(connection: ProviderConnection): void;
   onDelete(connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const [manageOpen, setManageOpen] = React.useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const ready = connection.credential_ready;
+  const writeLocked = mutating || requiresRefreshBeforeMutation;
 
   return (
     <View
-      style={styles.card}
+      style={[
+        styles.groupRow,
+        !isLast && styles.groupRowBorder,
+        styles.providerRow,
+      ]}
       accessibilityLabel={`Provider ${connection.name}`}
     >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{connection.name}</Text>
+      <AnimatedPressable
+        style={styles.providerHeader}
+        preset="press"
+        scale={0.99}
+        accessibilityRole="button"
+        accessibilityLabel={`${connection.name}, ${
+          ready ? "Ready" : "API key needed"
+        }`}
+        accessibilityHint={
+          expanded ? "Hide Provider actions" : "Show Provider actions"
+        }
+        accessibilityState={{ expanded }}
+        onPress={() => setExpanded((open) => !open)}
+      >
+        <View style={styles.rowCopy}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {connection.name}
+          </Text>
+          <Text style={styles.rowSubtitle} numberOfLines={1}>
+            {defaultLabel}
+          </Text>
+        </View>
         <View
           style={[
-            styles.readyPill,
+            styles.statusPill,
             {
-              backgroundColor: connection.credential_ready
-                ? colors.successSoft
-                : colors.warningSoft,
+              backgroundColor: ready ? colors.successSoft : colors.warningSoft,
             },
           ]}
         >
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: ready ? colors.success : colors.warning },
+            ]}
+          />
           <Text
             style={[
-              styles.readyText,
-              {
-                color: connection.credential_ready
-                  ? colors.success
-                  : colors.warning,
-              },
+              styles.statusText,
+              { color: ready ? colors.success : colors.warning },
             ]}
           >
-            {connection.credential_ready ? "Ready" : "API key needed"}
+            {ready ? "Ready" : "API key needed"}
           </Text>
         </View>
-      </View>
-      {clients.length > 0 ? (
-        <Text style={styles.meta}>
-          Clients: {clients.map(clientLabel).join(", ")}
-        </Text>
-      ) : null}
-      <Text style={styles.meta}>{defaultLabel}</Text>
-
-      {!connection.credential_ready ? (
-        <AnimatedPressable
-          style={styles.primaryInline}
-          onPress={() => onAddApiKey(connection)}
-          disabled={mutating || requiresRefreshBeforeMutation}
-          accessibilityRole="button"
-          accessibilityLabel="Add API key"
-        >
-          <Text style={styles.primaryInlineText}>Add API key</Text>
-        </AnimatedPressable>
-      ) : null}
-
-      <AnimatedPressable
-        style={styles.manageToggle}
-        onPress={() => setManageOpen((open) => !open)}
-        accessibilityRole="button"
-        accessibilityLabel={manageOpen ? "Hide manage options" : "Manage"}
-      >
-        <Text style={styles.actionText}>
-          {manageOpen ? "Hide manage" : "Manage"}
-        </Text>
         <Ionicons
-          name={manageOpen ? "chevron-up" : "chevron-down"}
+          name={expanded ? "chevron-up" : "chevron-down"}
           size={16}
-          color={colors.textSecondary}
+          color={colors.textTertiary}
         />
       </AnimatedPressable>
 
-      {manageOpen ? (
-        <View style={styles.actions}>
-          {connection.credential_ready ? (
+      {expanded ? (
+        <View style={styles.providerActions}>
+          {!ready ? (
+            <AnimatedPressable
+              style={[styles.actionBtn, styles.actionBtnPrimary]}
+              onPress={() => onAddApiKey({ kind: "credential", connection })}
+              disabled={writeLocked}
+              accessibilityRole="button"
+              accessibilityLabel="Add API key"
+            >
+              <Text style={[styles.actionBtnText, styles.actionBtnPrimaryText]}>
+                Add API key
+              </Text>
+            </AnimatedPressable>
+          ) : (
             <>
               <AnimatedPressable
-                style={styles.actionBtn}
-                onPress={() => onAddApiKey(connection)}
-                disabled={mutating || requiresRefreshBeforeMutation}
+                style={[styles.actionBtn, styles.actionBtnPrimary]}
+                onPress={() =>
+                  onAddApiKey({ kind: "credential", connection })
+                }
+                disabled={writeLocked}
                 accessibilityRole="button"
                 accessibilityLabel="Replace API key"
               >
-                <Text style={styles.actionText}>Replace key</Text>
-              </AnimatedPressable>
-              <AnimatedPressable
-                style={styles.actionBtn}
-                onPress={() => onClearCredential(connection)}
-                disabled={mutating || requiresRefreshBeforeMutation}
-                accessibilityRole="button"
-                accessibilityLabel="Clear API key"
-              >
-                <Text style={styles.actionText}>Clear key</Text>
+                <Text
+                  style={[styles.actionBtnText, styles.actionBtnPrimaryText]}
+                >
+                  Replace key
+                </Text>
               </AnimatedPressable>
               <AnimatedPressable
                 style={styles.actionBtn}
                 onPress={() => onDiscover(connection)}
-                disabled={mutating || requiresRefreshBeforeMutation}
+                disabled={writeLocked}
                 accessibilityRole="button"
                 accessibilityLabel="Refresh models"
               >
-                <Text style={styles.actionText}>Refresh models</Text>
+                <Text style={styles.actionBtnText}>Refresh models</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={[styles.actionBtn, styles.actionBtnDanger]}
+                onPress={() => onClearCredential(connection)}
+                disabled={writeLocked}
+                accessibilityRole="button"
+                accessibilityLabel="Clear API key"
+              >
+                <Text
+                  style={[styles.actionBtnText, styles.actionBtnDangerText]}
+                >
+                  Clear key
+                </Text>
               </AnimatedPressable>
             </>
-          ) : null}
+          )}
           <AnimatedPressable
-            style={[styles.actionBtn, styles.dangerBtn]}
+            style={[styles.actionBtn, styles.actionBtnDanger]}
             onPress={() => onDelete(connection)}
-            disabled={mutating || requiresRefreshBeforeMutation}
+            disabled={writeLocked}
             accessibilityRole="button"
             accessibilityLabel="Delete provider"
           >
-            <Text style={[styles.actionText, styles.dangerText]}>Delete</Text>
+            <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>
+              Delete
+            </Text>
           </AnimatedPressable>
         </View>
       ) : null}
@@ -415,424 +512,589 @@ function ProviderConnectionCard({
   );
 }
 
-export interface ProviderAddFormProps {
+interface ProviderEditorSheetProps {
+  editor: ProvidersEditorState;
   presets: ProviderPreset[];
   mutating: boolean;
-  onCancel(): void;
-  onSaveCurated(input: {
-    preset: ProviderPreset;
-    apiKey: string;
-  }): Promise<void> | void;
+  onClose(): void;
+  onSaveCurated(
+    preset: ProviderPreset,
+    apiKey: string,
+  ): Promise<boolean> | boolean;
   onSaveCustom(input: {
     name: string;
-    client: string;
     baseUrl: string;
     apiKey: string;
-    modelId?: string;
-  }): Promise<void> | void;
+  }): Promise<boolean> | boolean;
+  onSaveCredential(
+    connection: ProviderConnection,
+    apiKey: string,
+  ): Promise<boolean> | boolean;
 }
 
-export function ProviderAddForm({
+function ProviderEditorSheet({
+  editor,
   presets,
   mutating,
-  onCancel,
+  onClose,
   onSaveCurated,
   onSaveCustom,
-}: ProviderAddFormProps) {
+  onSaveCredential,
+}: ProviderEditorSheetProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const curated = presets.filter((p) => p.advanced !== true);
-  const custom = presets.find((p) => p.advanced === true || p.id === "custom");
-  const [step, setStep] = React.useState<"pick" | "curated" | "custom">("pick");
-  const [preset, setPreset] = React.useState<ProviderPreset | null>(null);
-  const [apiKey, setApiKey] = React.useState("");
-  const [name, setName] = React.useState("");
-  const [client, setClient] = React.useState("codex");
-  const [baseUrl, setBaseUrl] = React.useState("");
-  const [modelId, setModelId] = React.useState("");
+  const insets = useSafeAreaInsets();
+  const curated = presets.filter((preset) => preset.advanced !== true);
+  const custom = presets.find(
+    (preset) => preset.advanced === true || preset.id === "custom",
+  );
+  const [presetId, setPresetId] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
 
-  const clearKey = () => setApiKey("");
+  const editorKey = editor
+    ? editor.kind === "credential"
+      ? `credential:${editor.connection.id}`
+      : "add"
+    : null;
+
+  useEffect(() => {
+    setPresetId(null);
+    setApiKey("");
+    setName("");
+    setBaseUrl("");
+  }, [editorKey]);
+
+  const connection =
+    editor?.kind === "credential" ? editor.connection : null;
+  const isCustom = presetId != null && presetId === custom?.id;
+  const selectedPreset = curated.find((preset) => preset.id === presetId);
+  const canSave = providerEditorCanSave({
+    mutating,
+    apiKey,
+    credentialMode: connection != null,
+    presetSelected: selectedPreset != null,
+    customSelected: isCustom,
+    name,
+    baseUrl,
+  });
+  const title = connection
+    ? connection.credential_ready
+      ? "Replace API key"
+      : "Add API key"
+    : "Add Provider";
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    const key = apiKey;
+    setApiKey("");
+    if (connection) {
+      await onSaveCredential(connection, key);
+      return;
+    }
+    if (selectedPreset) {
+      await onSaveCurated(selectedPreset, key);
+      return;
+    }
+    if (isCustom) {
+      await onSaveCustom({ name: name.trim(), baseUrl: baseUrl.trim(), apiKey: key });
+    }
+  };
 
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.formHeader}>
-          <Text style={styles.stateTitle} accessibilityRole="header">
-            {step === "pick"
-              ? "Add Provider"
-              : step === "curated"
-                ? preset?.label ?? "Provider"
-                : "Custom Gateway"}
+    <RisingSheet
+      visible={editor !== null}
+      onClose={onClose}
+      align="bottom"
+      avoidKeyboard
+      cardStyle={[
+        styles.editorCard,
+        { paddingBottom: Math.max(insets.bottom, 16) },
+      ]}
+    >
+      <ScrollView
+        contentContainerStyle={styles.editorContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.editorHeader}>
+          <Text style={styles.editorTitle} accessibilityRole="header">
+            {title}
           </Text>
-          <Pressable onPress={onCancel} accessibilityRole="button" accessibilityLabel="Cancel">
-            <Text style={styles.link}>Cancel</Text>
+          <Pressable
+            accessibilityLabel="Close"
+            accessibilityRole="button"
+            hitSlop={8}
+            style={styles.editorClose}
+            onPress={onClose}
+          >
+            <Ionicons name="close" size={22} color={colors.textSecondary} />
           </Pressable>
         </View>
 
-        {step === "pick" ? (
-          <View style={styles.stack}>
-            {curated.map((item) => (
-              <AnimatedPressable
-                key={item.id}
-                style={styles.card}
-                onPress={() => {
-                  setPreset(item);
-                  setStep("curated");
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${item.label}`}
-              >
-                <Text style={styles.cardTitle}>{item.label}</Text>
-                <Text style={styles.meta}>
-                  {(item.clients ?? []).map(clientLabel).join(", ") || "Codex, Claude"}
-                </Text>
-              </AnimatedPressable>
-            ))}
-            {custom ? (
-              <AnimatedPressable
-                style={styles.card}
-                onPress={() => setStep("custom")}
-                accessibilityRole="button"
-                accessibilityLabel="Add Custom Gateway"
-              >
-                <Text style={styles.cardTitle}>Custom Gateway</Text>
-                <Text style={styles.meta}>Advanced · name, client, base URL, key</Text>
-              </AnimatedPressable>
-            ) : null}
-          </View>
-        ) : null}
-
-        {step === "curated" && preset ? (
-          <View style={styles.stack}>
-            <Text style={styles.label}>API Key</Text>
-            <TextInput
-              style={styles.input}
-              value={apiKey}
-              onChangeText={setApiKey}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="Paste API key"
-              placeholderTextColor={colors.textTertiary}
-              editable={!mutating}
-              accessibilityLabel="API Key"
-            />
-            <AnimatedPressable
-              style={styles.primaryBtn}
-              disabled={mutating || !apiKey.trim()}
-              onPress={async () => {
-                const key = apiKey;
-                clearKey();
-                await onSaveCurated({ preset, apiKey: key });
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Save"
+        {connection ? (
+          <Text style={styles.editorProviderName}>{connection.name}</Text>
+        ) : (
+          <>
+            <Text style={styles.fieldLabel}>Provider</Text>
+            <View
+              style={styles.supplierGroup}
+              accessibilityRole="radiogroup"
+              accessibilityLabel="Choose a Provider"
             >
-              <Text style={styles.primaryText}>{mutating ? "Saving…" : "Save"}</Text>
-            </AnimatedPressable>
-          </View>
-        ) : null}
+              {curated.map((preset, index) => {
+                const selected = preset.id === presetId;
+                return (
+                  <AnimatedPressable
+                    key={preset.id}
+                    style={[
+                      styles.supplierRow,
+                      index < curated.length - 1 && styles.groupRowBorder,
+                      selected && styles.supplierRowSelected,
+                    ]}
+                    preset="press"
+                    scale={0.99}
+                    accessibilityRole="radio"
+                    accessibilityLabel={`${preset.label} Provider`}
+                    accessibilityState={{ checked: selected }}
+                    disabled={mutating}
+                    onPress={() => setPresetId(preset.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.supplierLabel,
+                        selected && styles.supplierLabelSelected,
+                      ]}
+                    >
+                      {preset.label}
+                    </Text>
+                    <Ionicons
+                      name={selected ? "radio-button-on" : "radio-button-off"}
+                      size={20}
+                      color={
+                        selected ? colors.accentStrong : colors.textTertiary
+                      }
+                    />
+                  </AnimatedPressable>
+                );
+              })}
+              {custom ? (
+                <AnimatedPressable
+                  style={[
+                    styles.supplierRow,
+                    styles.groupRowBorder,
+                    presetId === custom.id && styles.supplierRowSelected,
+                  ]}
+                  preset="press"
+                  scale={0.99}
+                  accessibilityRole="radio"
+                  accessibilityLabel="Custom Gateway Provider"
+                  accessibilityState={{
+                    checked: presetId === custom.id,
+                  }}
+                  disabled={mutating}
+                  onPress={() => setPresetId(custom.id)}
+                >
+                  <View style={styles.rowCopy}>
+                    <Text
+                      style={[
+                        styles.supplierLabel,
+                        presetId === custom.id && styles.supplierLabelSelected,
+                      ]}
+                    >
+                      Custom Gateway
+                    </Text>
+                    <Text style={styles.supplierCaption}>
+                      Advanced · your own endpoint
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name={
+                      presetId === custom.id
+                        ? "radio-button-on"
+                        : "radio-button-off"
+                    }
+                    size={20}
+                    color={
+                      presetId === custom.id
+                        ? colors.accentStrong
+                        : colors.textTertiary
+                    }
+                  />
+                </AnimatedPressable>
+              ) : null}
+            </View>
+          </>
+        )}
 
-        {step === "custom" ? (
-          <View style={styles.stack}>
-            <Text style={styles.label}>Display name</Text>
-            <TextInput
-              style={styles.input}
+        {isCustom && !connection ? (
+          <>
+            <Text style={styles.fieldLabel}>Display name</Text>
+            <MobileSingleLineInput
               value={name}
               onChangeText={setName}
+              editable={!mutating}
               placeholder="My gateway"
               placeholderTextColor={colors.textTertiary}
-              editable={!mutating}
+              accessibilityLabel="Display name"
+              autoCapitalize="words"
+              autoCorrect={false}
+              containerStyle={styles.field}
             />
-            <Text style={styles.label}>Client</Text>
-            <View style={styles.row}>
-              {(["codex", "claude"] as const).map((c) => (
-                <AnimatedPressable
-                  key={c}
-                  style={[
-                    styles.chip,
-                    client === c && { backgroundColor: colors.accentSoft },
-                  ]}
-                  onPress={() => setClient(c)}
-                  disabled={mutating}
-                >
-                  <Text style={styles.actionText}>{clientLabel(c)}</Text>
-                </AnimatedPressable>
-              ))}
-            </View>
-            <Text style={styles.label}>Base URL</Text>
-            <TextInput
-              style={styles.input}
+            <Text style={styles.fieldLabel}>Base URL</Text>
+            <MobileSingleLineInput
               value={baseUrl}
               onChangeText={setBaseUrl}
-              autoCapitalize="none"
-              autoCorrect={false}
+              editable={!mutating}
               placeholder="https://…"
               placeholderTextColor={colors.textTertiary}
-              editable={!mutating}
-            />
-            <Text style={styles.label}>API Key</Text>
-            <TextInput
-              style={styles.input}
-              value={apiKey}
-              onChangeText={setApiKey}
-              secureTextEntry
+              accessibilityLabel="Base URL"
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="Paste API key"
-              placeholderTextColor={colors.textTertiary}
-              editable={!mutating}
-              accessibilityLabel="API Key"
+              autoComplete="off"
+              textContentType="URL"
+              keyboardType="url"
+              containerStyle={styles.field}
             />
-            <Text style={styles.label}>Manual model ID (optional)</Text>
-            <TextInput
-              style={styles.input}
-              value={modelId}
-              onChangeText={setModelId}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="model-id"
-              placeholderTextColor={colors.textTertiary}
-              editable={!mutating}
-            />
-            <AnimatedPressable
-              style={styles.primaryBtn}
-              disabled={
-                mutating ||
-                !name.trim() ||
-                !baseUrl.trim() ||
-                !apiKey.trim()
-              }
-              onPress={async () => {
-                const key = apiKey;
-                clearKey();
-                await onSaveCustom({
-                  name: name.trim(),
-                  client,
-                  baseUrl: baseUrl.trim(),
-                  apiKey: key,
-                  modelId: modelId.trim() || undefined,
-                });
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Save"
-            >
-              <Text style={styles.primaryText}>{mutating ? "Saving…" : "Save"}</Text>
-            </AnimatedPressable>
-          </View>
+          </>
         ) : null}
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
 
-export interface ProviderCredentialFormProps {
-  connection: ProviderConnection;
-  mutating: boolean;
-  onCancel(): void;
-  onSave(apiKey: string): Promise<void> | void;
-}
-
-export function ProviderCredentialForm({
-  connection,
-  mutating,
-  onCancel,
-  onSave,
-}: ProviderCredentialFormProps) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  const [apiKey, setApiKey] = React.useState("");
-
-  return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.formHeader}>
-          <Text style={styles.stateTitle} accessibilityRole="header">
-            {connection.credential_ready ? "Replace API key" : "Add API key"}
-          </Text>
-          <Pressable onPress={onCancel} accessibilityRole="button">
-            <Text style={styles.link}>Cancel</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.meta}>{connection.name}</Text>
-        <Text style={styles.label}>API Key</Text>
-        <TextInput
-          style={styles.input}
+        <Text style={styles.fieldLabel}>API Key</Text>
+        <MobileSingleLineInput
           value={apiKey}
           onChangeText={setApiKey}
+          editable={!mutating}
+          placeholder="Paste API key"
+          placeholderTextColor={colors.textTertiary}
+          accessibilityLabel="API Key"
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="Paste API key"
-          placeholderTextColor={colors.textTertiary}
-          editable={!mutating}
-          accessibilityLabel="API Key"
+          autoComplete="off"
+          textContentType="none"
+          containerStyle={styles.field}
         />
+
         <AnimatedPressable
-          style={styles.primaryBtn}
-          disabled={mutating || !apiKey.trim()}
-          onPress={async () => {
-            const key = apiKey;
-            setApiKey("");
-            await onSave(key);
-          }}
+          style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}
+          preset="press"
+          scale={0.98}
+          disabled={!canSave}
           accessibilityRole="button"
           accessibilityLabel="Save"
+          accessibilityState={{ disabled: !canSave, busy: mutating }}
+          onPress={() => void handleSave()}
         >
-          <Text style={styles.primaryText}>{mutating ? "Saving…" : "Save"}</Text>
+          <Text style={styles.saveBtnText}>
+            {mutating ? "Saving…" : "Save"}
+          </Text>
         </AnimatedPressable>
       </ScrollView>
-    </SafeAreaView>
+    </RisingSheet>
   );
 }
 
 function createStyles(colors: ReturnType<typeof useAppColors>) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: colors.bgPrimary },
-    content: { padding: 16, paddingBottom: 120, gap: 12 },
+    content: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 32, gap: 8 },
     center: { paddingVertical: 48, alignItems: "center" },
     stateBlock: {
-      padding: 16,
-      borderRadius: Radii.lg,
+      padding: 14,
+      borderRadius: Radii.xs,
       backgroundColor: colors.bgSurface,
-      gap: 8,
+      gap: 6,
     },
     stateTitle: {
+      ...UiTextMetrics,
       ...TypeScale.title,
       color: colors.textPrimary,
     },
     stateBody: {
+      ...UiTextMetrics,
       ...TypeScale.body,
       color: colors.textSecondary,
     },
     link: {
+      ...UiTextMetrics,
       ...TypeScale.body,
       color: colors.accent,
       fontWeight: "600",
     },
-    banner: {
+    notice: {
       padding: 12,
-      borderRadius: Radii.md,
+      borderRadius: Radii.xs,
+      borderLeftWidth: 3,
+      backgroundColor: colors.bgSurface,
       gap: 6,
     },
-    warnBanner: { backgroundColor: colors.warningSoft },
-    lockBanner: { backgroundColor: colors.accentSoft },
-    bannerText: { ...TypeScale.caption, color: colors.textPrimary },
-    card: {
-      padding: 14,
-      borderRadius: Radii.lg,
-      backgroundColor: colors.bgSurface,
-      gap: 8,
-    },
-    cardHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 8,
-    },
-    cardTitle: { ...TypeScale.title, color: colors.textPrimary, flex: 1 },
-    readyPill: {
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderRadius: Radii.sm,
-    },
-    readyText: { ...TypeScale.caption, fontWeight: "600" },
-    meta: { ...TypeScale.caption, color: colors.textSecondary },
-    actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
-    actionBtn: {
-      paddingHorizontal: 10,
-      paddingVertical: 8,
-      borderRadius: Radii.sm,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    actionText: {
+    noticeText: {
+      ...UiTextMetrics,
       ...TypeScale.caption,
       color: colors.textPrimary,
-      fontWeight: "600",
     },
-    dangerBtn: { backgroundColor: colors.dangerSoft },
-    dangerText: { color: colors.dangerText },
-    footer: {
-      position: "absolute",
-      left: 16,
-      right: 16,
-      bottom: 24,
-    },
-    primaryBtn: {
-      backgroundColor: colors.accent,
-      borderRadius: Radii.lg,
-      paddingVertical: 14,
-      paddingHorizontal: 16,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 8,
-    },
-    primaryText: {
-      ...TypeScale.body,
-      color: colors.textOnAccent,
-      fontWeight: "700",
-    },
-    formHeader: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 8,
-    },
-    stack: { gap: 12 },
-    label: {
-      ...TypeScale.caption,
+    sectionLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
       color: colors.textSecondary,
-      fontWeight: "600",
+      marginTop: 16,
+      marginBottom: 8,
+      marginHorizontal: 4,
     },
-    input: {
-      borderRadius: Radii.md,
-      backgroundColor: colors.inputBackground,
-      paddingHorizontal: 12,
-      paddingVertical: 12,
-      color: colors.textPrimary,
+    group: {
+      overflow: "hidden",
+      borderRadius: Radii.xs,
+      backgroundColor: colors.bgSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    groupRow: {
+      backgroundColor: colors.bgSurface,
+    },
+    groupRowBorder: {
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    rowCopy: { flex: 1, minWidth: 0 },
+    rowTitle: {
+      ...UiTextMetrics,
       ...TypeScale.body,
+      color: colors.textPrimary,
     },
-    row: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+    rowSubtitle: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
+    chipRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+      marginTop: 8,
+    },
     chip: {
       paddingHorizontal: 12,
-      paddingVertical: 8,
-      borderRadius: Radii.sm,
+      paddingVertical: 7,
+      borderRadius: Radii.pill,
       backgroundColor: colors.surfaceSubtle,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
     },
-    primaryInline: {
-      alignSelf: "flex-start",
-      backgroundColor: colors.accent,
-      borderRadius: Radii.sm,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-    },
-    primaryInlineText: {
+    chipText: {
+      ...UiTextMetrics,
       ...TypeScale.caption,
-      color: colors.textOnAccent,
-      fontWeight: "700",
+      color: colors.textPrimary,
+      fontWeight: "600",
     },
-    defaultsSection: {
-      padding: 14,
-      borderRadius: Radii.lg,
-      backgroundColor: colors.bgSurface,
+    providerRow: {
+      paddingHorizontal: 14,
+    },
+    providerHeader: {
+      minHeight: 64,
+      flexDirection: "row",
+      alignItems: "center",
       gap: 10,
+      paddingVertical: 10,
     },
-    defaultsTitle: {
+    statusPill: {
+      minHeight: 26,
+      paddingHorizontal: 9,
+      borderRadius: 13,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+    },
+    statusDot: { width: 6, height: 6, borderRadius: 3 },
+    statusText: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+    },
+    providerActions: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+      paddingVertical: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
+    actionBtn: {
+      minHeight: 44,
+      minWidth: 92,
+      flexGrow: 1,
+      paddingHorizontal: 14,
+      borderRadius: Radii.xs,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surfacePressed,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    actionBtnPrimary: {
+      backgroundColor: colors.accentSoft,
+      borderColor: colors.accent,
+    },
+    actionBtnText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textPrimary,
+    },
+    actionBtnPrimaryText: {
+      color: colors.accentStrong,
+    },
+    actionBtnDanger: {
+      backgroundColor: colors.dangerSoft,
+      borderColor: colors.dangerText,
+    },
+    actionBtnDangerText: {
+      color: colors.dangerText,
+    },
+    emptyCard: {
+      paddingHorizontal: 16,
+      paddingVertical: 20,
+      gap: 4,
+      backgroundColor: colors.bgSurface,
+    },
+    emptyTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      color: colors.textPrimary,
+    },
+    emptyHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+    },
+    addRow: {
+      minHeight: 60,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      backgroundColor: colors.bgSurface,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
+    addIcon: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accent,
+    },
+    addCopy: { flex: 1, minWidth: 0 },
+    addTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      color: colors.textPrimary,
+    },
+    addSubtitle: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 1,
+    },
+    editorCard: {
+      backgroundColor: colors.bgSurface,
+      borderTopLeftRadius: Radii.sm,
+      borderTopRightRadius: Radii.sm,
+      overflow: "hidden",
+      maxHeight: 560,
+    },
+    editorContent: { paddingHorizontal: 16, paddingTop: 8, gap: 8 },
+    editorHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 4,
+    },
+    editorTitle: {
+      ...UiTextMetrics,
       ...TypeScale.title,
       color: colors.textPrimary,
     },
-    defaultClientRow: { gap: 6 },
-    defaultLabel: {
-      ...TypeScale.caption,
-      color: colors.textSecondary,
-      fontWeight: "600",
+    editorClose: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surfaceSubtle,
     },
-    manageToggle: {
+    editorProviderName: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    fieldLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textSecondary,
+      marginTop: 8,
+      marginBottom: 2,
+      marginHorizontal: 2,
+    },
+    field: {
+      borderRadius: Radii.xs,
+      backgroundColor: colors.inputBackground,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+    },
+    supplierGroup: {
+      overflow: "hidden",
+      borderRadius: Radii.xs,
+      backgroundColor: colors.inputBackground,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+    },
+    supplierRow: {
+      minHeight: 52,
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 4,
+      gap: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      backgroundColor: colors.bgSurface,
+    },
+    supplierRowSelected: {
+      backgroundColor: colors.surfaceActive,
+    },
+    supplierLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      flex: 1,
+      color: colors.textPrimary,
+    },
+    supplierLabelSelected: {
+      color: colors.accentStrong,
+      fontWeight: "500",
+    },
+    supplierCaption: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 1,
+    },
+    saveBtn: {
+      minHeight: 50,
+      marginTop: 12,
+      borderRadius: Radii.xs,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accent,
+    },
+    saveBtnDisabled: {
+      opacity: 0.45,
+    },
+    saveBtnText: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textOnAccent,
+      fontWeight: "700",
     },
   });
 }

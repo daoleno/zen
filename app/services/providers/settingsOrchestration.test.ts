@@ -81,16 +81,24 @@ describe("Settings orchestration", () => {
     expect(input.model_id).toBeUndefined();
   });
 
-  test("custom gateway remains the advanced create path", () => {
+  test("custom gateway keeps defaults internal and never sends client/model fields", () => {
     const input = customGatewayCreateInput({
       name: "Local",
-      client: "codex",
       baseUrl: "https://gateway.example/v1",
-      manualModelId: "my-model",
     });
     expect(input.advanced).toBe(true);
     expect(input.base_url).toContain("https://");
-    expect(input.model_id).toBe("my-model");
+    expect(input.client).toBeUndefined();
+    expect(input.model_id).toBeUndefined();
+  });
+
+  test("custom gateway still rejects non-HTTP base URLs", () => {
+    expect(() =>
+      customGatewayCreateInput({
+        name: "Bad",
+        baseUrl: "file:///tmp/provider",
+      }),
+    ).toThrow(/HTTP or HTTPS/i);
   });
 
   test("create → credential → discovery ordering refuses discovery through refresh lock", () => {

@@ -10,6 +10,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "stats",
   "calendar",
   "profile",
+  "providers",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];

@@ -76,8 +76,19 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState("stats")).toBe("stats");
     expect(resolveScreenshotDemoState("calendar")).toBe("calendar");
     expect(resolveScreenshotDemoState("profile")).toBe("profile");
+    expect(resolveScreenshotDemoState("providers")).toBe("providers");
     expect(resolveScreenshotDemoState("unknown")).toBe("chat");
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
+  });
+
+  test("providers demo renders the real Providers surface on a fixture catalog", () => {
+    expect(demoRouteSource).toContain('case "providers":');
+    expect(demoRouteSource).toContain("ProvidersDemo");
+    expect(demoRouteSource).toContain("SCREENSHOT_PROVIDERS_FIXTURE");
+    expect(demoRouteSource).toContain(
+      'from "../components/providers/ProvidersPresentation"',
+    );
+    expect(demoRouteSource).toContain('onOpenEditor={NOOP}');
   });
 
   test("profile state opts into the Interface device performance harness", () => {

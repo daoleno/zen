@@ -178,30 +178,26 @@ describe("Provider DTO parse", () => {
 });
 
 describe("Provider Settings and Plus presentation policy", () => {
-  test("curated create sends only preset_id while Custom Gateway validates advanced fields", () => {
+  test("curated create sends only preset_id while Custom Gateway hides client and model", () => {
     const snapshot = providerSnapshot();
     expect(curatedConnectionInput(snapshot.presets[0]!)).toEqual({
       preset_id: "deepseek",
     });
-    expect(
-      advancedConnectionInput({
-        name: "Internal",
-        client: "claude",
-        baseUrl: "https://gateway.example/v1",
-        manualModelId: "claude-private",
-      }),
-    ).toEqual({
+    const gateway = advancedConnectionInput({
+      name: "Internal",
+      baseUrl: "https://gateway.example/v1",
+    });
+    expect(gateway).toEqual({
       name: "Internal",
       preset_id: "custom",
-      client: "claude",
       base_url: "https://gateway.example/v1",
-      model_id: "claude-private",
       advanced: true,
     });
+    expect(gateway.client).toBeUndefined();
+    expect(gateway.model_id).toBeUndefined();
     expect(() =>
       advancedConnectionInput({
         name: "Bad",
-        client: "codex",
         baseUrl: "file:///tmp/provider",
       }),
     ).toThrow(/HTTP or HTTPS/i);
