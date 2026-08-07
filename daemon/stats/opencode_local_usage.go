@@ -142,7 +142,10 @@ func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 
 		agg := ensureDateAgg(byDate, date)
 
-		// Per-model aggregation.
+		// Per-model aggregation: the exact observed cost travels as the
+		// recorded component with its own token bucket, so price estimates
+		// cover exactly the tokens of unrecorded sources when a model is
+		// shared.
 		model := agg.models[modelID]
 		model.totalTokens += int64(input + output + reasoning + cacheRead + cacheWrite)
 		model.inputTokens += int64(input)
@@ -151,8 +154,15 @@ func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 		model.cacheRead += int64(cacheRead)
 		model.cacheCreate += int64(cacheWrite)
 		model.sessions++
-		model.cost += cost
-		model.costRecorded = true
+		if model.recorded == nil {
+			model.recorded = &modelRecordedCost{}
+		}
+		model.recorded.cost += cost
+		model.recorded.input += int64(input)
+		model.recorded.output += int64(output)
+		model.recorded.reasoning += int64(reasoning)
+		model.recorded.cacheRead += int64(cacheRead)
+		model.recorded.cacheCreate += int64(cacheWrite)
 		if !costOK {
 			model.costUnknown = true
 		}

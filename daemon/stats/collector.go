@@ -339,6 +339,21 @@ type dailyEntry struct {
 	sessions int
 }
 
+// modelRecordedCost is the exact observed cost component of a model entry
+// (OpenCode): the dollar value and the token bucket it was observed on. The
+// bucket lets price estimates cover exactly the remaining unrecorded tokens
+// when a model is used by both recorded and unrecorded sources, so recorded
+// exact cost and existing collectors' price-based estimates never replace
+// each other and both flow into the aggregate.
+type modelRecordedCost struct {
+	cost        float64
+	input       int64
+	output      int64
+	reasoning   int64
+	cacheRead   int64
+	cacheCreate int64
+}
+
 type modelAggEntry struct {
 	totalTokens           int64
 	inputTokens           int64
@@ -346,12 +361,11 @@ type modelAggEntry struct {
 	reasoning             int64
 	cacheRead             int64
 	cacheCreate           int64
-	cost                  float64 // observed cost when costRecorded
-	costRecorded          bool    // true when the source records exact cost
 	costUnknown           bool
 	totalTokensUnknown    bool
 	tokenBreakdownUnknown bool
 	sessions              int
+	recorded              *modelRecordedCost // nil until an exact-cost source contributes
 }
 
 // collectClaudeSessionStats scans session JSONL files and groups model/tool/skill/project
@@ -1277,16 +1291,35 @@ func buildDailySessions(claudeByDate map[string]*dateAgg, codexDaily map[string]
 	return dailyMap
 }
 
+// modelCostFor computes a model entry's cost: the exact recorded cost plus
+// the price-based estimate for the remaining unrecorded token bucket (when a
+// recorded component exists, its tokens are excluded so the estimate covers
+// exactly the other sources' tokens). known reports whether every component
+// is priceable: when nothing needs estimation it is true, otherwise it is the
+// pricing-table outcome. This is the single source of truth used by both
+// ModelStat and DayCell so the two always agree.
+func modelCostFor(modelID string, m modelAggEntry) (cost float64, known bool) {
+	estInput, estOutput, estReasoning, estCacheRead, estCacheCreate := m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate
+	if m.recorded != nil {
+		estInput = max64(0, estInput-m.recorded.input)
+		estOutput = max64(0, estOutput-m.recorded.output)
+		estReasoning = max64(0, estReasoning-m.recorded.reasoning)
+		estCacheRead = max64(0, estCacheRead-m.recorded.cacheRead)
+		estCacheCreate = max64(0, estCacheCreate-m.recorded.cacheCreate)
+		cost = m.recorded.cost
+	}
+	if estInput+estOutput+estReasoning+estCacheRead+estCacheCreate == 0 {
+		return cost, true
+	}
+	estimate, known := computeKnownCost(modelID, estInput, estOutput, estReasoning, estCacheRead, estCacheCreate)
+	return cost + estimate, known
+}
+
 func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 	var result []ModelStat
 	for modelID, m := range modelAgg {
-		cost := m.cost
-		costKnown := !m.costUnknown
-		if !m.costRecorded {
-			var known bool
-			cost, known = computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
-			costKnown = known && !m.costUnknown
-		}
+		cost, known := modelCostFor(modelID, m)
+		costKnown := known && !m.costUnknown
 		result = append(result, ModelStat{
 			Name:                displayName(modelID),
 			TotalTokens:         m.totalTokens,
@@ -1446,11 +1479,7 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dc.CacheRead += m.cacheRead
 			dc.CacheCreate += m.cacheCreate
 			dc.Sessions += m.sessions
-			cost := m.cost
-			known := m.costRecorded
-			if !m.costRecorded {
-				cost, known = computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
-			}
+			cost, known := modelCostFor(modelID, m)
 			dc.Cost += cost
 			if !known || m.costUnknown {
 				dc.CostKnown = false
@@ -1780,8 +1809,19 @@ func mergeModelAgg(dst, src map[string]modelAggEntry) {
 		current.reasoning += item.reasoning
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
-		current.cost += item.cost
-		current.costRecorded = current.costRecorded || item.costRecorded
+		if item.recorded != nil {
+			if current.recorded == nil {
+				recorded := *item.recorded
+				current.recorded = &recorded
+			} else {
+				current.recorded.cost += item.recorded.cost
+				current.recorded.input += item.recorded.input
+				current.recorded.output += item.recorded.output
+				current.recorded.reasoning += item.recorded.reasoning
+				current.recorded.cacheRead += item.recorded.cacheRead
+				current.recorded.cacheCreate += item.recorded.cacheCreate
+			}
+		}
 		current.costUnknown = current.costUnknown || item.costUnknown
 		current.totalTokensUnknown = current.totalTokensUnknown || item.totalTokensUnknown
 		current.tokenBreakdownUnknown = current.tokenBreakdownUnknown || item.tokenBreakdownUnknown

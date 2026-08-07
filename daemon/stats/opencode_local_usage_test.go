@@ -114,18 +114,18 @@ func TestCollectOpenCodeStatsAggregatesObservedFacts(t *testing.T) {
 		deepseek.cacheRead != 1300 || deepseek.cacheCreate != 10 {
 		t.Fatalf("deepseek tokens = %#v", deepseek)
 	}
-	if deepseek.cost != 0.003 || !deepseek.costRecorded || deepseek.costUnknown {
+	if deepseek.recorded == nil || deepseek.recorded.cost != 0.003 || deepseek.costUnknown {
 		t.Fatalf("deepseek cost = %#v", deepseek)
 	}
 	if kimi := day2Agg.models["kimi-k2.5-free"]; kimi.sessions != 1 || kimi.inputTokens != 300 ||
-		kimi.cost != 0 || !kimi.costRecorded || kimi.costUnknown {
+		kimi.recorded == nil || kimi.recorded.cost != 0 || kimi.costUnknown {
 		t.Fatalf("kimi = %#v", kimi)
 	}
 	if _, ok := day2Agg.models["hy3-preview-free"]; ok {
 		t.Fatal("zero-usage assistant row must not create a model")
 	}
 	glm := day2Agg.models["glm-4.7-free"]
-	if glm.sessions != 1 || glm.inputTokens != 600 || !glm.costRecorded || !glm.costUnknown || glm.cost != 0 {
+	if glm.sessions != 1 || glm.inputTokens != 600 || glm.recorded == nil || glm.recorded.cost != 0 || !glm.costUnknown {
 		t.Fatalf("missing-cost model must stay cost unknown: %#v", glm)
 	}
 
@@ -232,7 +232,7 @@ func TestCollectOpenCodeStatsMissingFieldsAndBadRows(t *testing.T) {
 	if modelA.sessions != 2 || modelA.inputTokens != 150 || modelA.outputTokens != 30 || modelA.cacheRead != 30 || modelA.cacheCreate != 0 {
 		t.Fatalf("model-a = %#v", modelA)
 	}
-	if !modelA.costRecorded || modelA.cost != 0.0001 || !modelA.costUnknown {
+	if modelA.recorded == nil || modelA.recorded.cost != 0.0001 || !modelA.costUnknown {
 		t.Fatalf("model-a cost must come only from the row that has it and stay partly unknown: %#v", modelA)
 	}
 	if _, ok := agg.models["model-b"]; ok {
