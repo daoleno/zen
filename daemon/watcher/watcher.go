@@ -496,11 +496,20 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	classifier.ApplyProgress(agent, progress, now)
 	if hasCurrentTurn && !progressSettledTurn &&
 		(progressState == classifier.StateDone || progressState == classifier.StateFailed) {
-		// Terminal progress is useful metadata, but it cannot settle a newer
-		// accepted turn until provider-native running has correlated that turn.
+		// Terminal progress cannot settle a live accepted turn until
+		// provider-native running has correlated that turn. Drop the entire
+		// stale terminal-attempt projection so Session List retains no failed
+		// attention, phase, task class, event kind, or lease.
 		agent.State = classifier.StateRunning
 		agent.Attention = "none"
 		agent.NeedsAttention = false
+		agent.Phase = ""
+		agent.TaskClass = ""
+		agent.EventKind = ""
+		agent.DetailsJSON = ""
+		agent.LastProgressAt = nil
+		agent.ExpectedNextCheckAt = nil
+		agent.LeaseSeconds = 0
 	}
 	if progressSettledTurn {
 		w.delegatedTurns[id] = currentTurn
@@ -866,17 +875,8 @@ func (w *Watcher) poll() {
 		} else if r.hasTurn {
 			w.delegatedTurns[r.id] = r.turn
 			switch r.turn.Status {
-			case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle:
-				if newState == classifier.StateUnknown || newState == classifier.StateDone {
-					newState = classifier.StateRunning
-					summary = strings.TrimSpace(r.turn.Summary)
-					if summary == "" {
-						summary = "Delegated turn running"
-					}
-				}
-			case delegatedTurnAmbiguous:
-				newState = classifier.StateRunning
-				summary = "Delegated handoff outcome is ambiguous; observing provider activity"
+			case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle, delegatedTurnAmbiguous:
+				newState, summary = applyLiveTurnProjection(agent, r.turn, newState, summary)
 			case delegatedTurnDone:
 				newState = classifier.StateDone
 				if turnSummary := strings.TrimSpace(r.turn.Summary); turnSummary != "" {
@@ -967,6 +967,49 @@ func (w *Watcher) compactAgentOrderLocked() {
 		}
 	}
 	w.agentOrder = next
+}
+
+// applyLiveTurnProjection projects a live nonterminal delegated turn above any
+// stale terminal attempt state (a sticky failed/done projection left by an
+// ambiguous handoff attempt or a failed progress report). While the turn is
+// active, the turn is the authoritative Session lifecycle: Session List must
+// show running, and the retained failed-attempt metadata (attention, phase,
+// task class, event kind, needs-attention, lease) must not survive. Terminal
+// turn statuses are never promoted; they remain the only way back to done.
+func applyLiveTurnProjection(
+	agent *classifier.Agent,
+	turn delegatedTurnRecord,
+	state classifier.AgentState,
+	summary string,
+) (classifier.AgentState, string) {
+	if delegatedTurnTerminal(turn.Status) {
+		return state, summary
+	}
+	switch turn.Status {
+	case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle:
+		if state == classifier.StateUnknown || state == classifier.StateDone || state == classifier.StateFailed {
+			state = classifier.StateRunning
+			summary = strings.TrimSpace(summary)
+			if summary == "" {
+				summary = "Delegated turn running"
+			}
+		}
+	case delegatedTurnAmbiguous:
+		state = classifier.StateRunning
+		summary = "Delegated handoff outcome is ambiguous; observing provider activity"
+	}
+	if agent != nil && agent.Attention == "failed" {
+		agent.Attention = "none"
+		agent.NeedsAttention = false
+		agent.Phase = ""
+		agent.TaskClass = ""
+		agent.EventKind = ""
+		agent.DetailsJSON = ""
+		agent.LastProgressAt = nil
+		agent.ExpectedNextCheckAt = nil
+		agent.LeaseSeconds = 0
+	}
+	return state, summary
 }
 
 func changedPaneLines(previous, next string) []string {

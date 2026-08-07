@@ -955,6 +955,95 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	}
 }
 
+func TestControlAppAmbiguousSpawnFailureProjectsNonterminalAttempt(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.sendErr = &watcher.InputSubmissionError{
+		Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
+		Cause:  fmt.Errorf("provider admitted input bytes that did not match the submitted UTF-8 payload"),
+	}
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: newControlBrainStore(t),
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "Ambiguous",
+		Cwd:    "/repo/zen",
+		Prompt: "must not be replayed",
+	})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+		t.Fatalf("response = %#v", resp)
+	}
+	agent := fw.agents["brain-agent-ambiguous:@1"]
+	if agent == nil {
+		t.Fatal("ambiguous spawn created no agent")
+	}
+	if agent.State != classifier.StateRunning {
+		t.Fatalf("ambiguous spawn terminalized the Session: %#v", agent)
+	}
+	if agent.Attention != "none" || agent.NeedsAttention || agent.EventKind != "" || agent.TaskClass != "" || agent.Phase != "" {
+		t.Fatalf("ambiguous spawn retained failed-attempt attention: %#v", agent)
+	}
+	if !strings.Contains(agent.Summary, "will not be replayed") {
+		t.Fatalf("ambiguous spawn summary = %q", agent.Summary)
+	}
+	if len(fw.sent) != 1 {
+		t.Fatalf("ambiguous spawn submitted the prompt %d times, want exactly once", len(fw.sent))
+	}
+	items, err := app.brainStore.ListWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status == brain.WorkDone || items[0].Status == brain.WorkCancelled {
+		t.Fatalf("Work after ambiguous spawn = %#v", items)
+	}
+	if !strings.Contains(items[0].NextAction, "Confirm whether the delegated Session received the prompt") {
+		t.Fatalf("Work next action = %q", items[0].NextAction)
+	}
+}
+
+func TestControlAppDefinitelyNotSubmittedSpawnFailureStillProjectsFailure(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.sendErr = &watcher.InputSubmissionError{
+		Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
+		Cause:  fmt.Errorf("target provider could not be proven"),
+	}
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: newControlBrainStore(t),
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "NotSubmitted",
+		Cwd:    "/repo/zen",
+		Prompt: "cannot be delivered",
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+		t.Fatalf("response = %#v", resp)
+	}
+	agent := fw.agents["brain-agent-notsubmitted:@1"]
+	if agent == nil || agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
+		t.Fatalf("definitely-not-submitted spawn must still project failure: %#v", agent)
+	}
+	items, err := app.brainStore.ListWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != brain.WorkNeedsInput ||
+		!strings.Contains(items[0].NextAction, "Resolve the delegated Session launch failure") {
+		t.Fatalf("Work after not-submitted spawn = %#v", items)
+	}
+}
+
 func TestControlAppAgentSendRejectsExternalSessionWithoutForce(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-user-owned:@1"] = &classifier.Agent{

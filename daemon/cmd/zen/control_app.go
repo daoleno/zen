@@ -568,6 +568,9 @@ func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error) {
 	}
 	status := brain.WorkNeedsInput
 	next := "Resolve the delegated Session launch failure."
+	if watcher.InputOutcomeFromError(spawnErr) == watcher.InputAmbiguous {
+		next = "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
+	}
 	wait := strings.TrimSpace(spawnErr.Error())
 	_, _ = a.brainStore.UpdateWork(item.ID, brain.WorkUpdate{
 		Status:     &status,
@@ -736,7 +739,7 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initia
 	}
 	if err != nil {
 		if initial {
-			a.recordSubmissionFailure(agentID, "Initial delegated prompt was not submitted: "+err.Error())
+			a.recordSubmissionFailure(agentID, err.Error(), watcher.InputOutcomeFromError(err))
 		}
 		return err
 	}
@@ -773,8 +776,21 @@ func (a *controlApp) recordAgentHandoffAccepted(agentID, turnID string, handoffS
 	_, _ = a.watcher.RecordAgentInputDispatched(agentID, turnID, handoffStartedAt, phase, summary)
 }
 
-func (a *controlApp) recordSubmissionFailure(agentID, summary string) {
+// recordSubmissionFailure projects a failed initial handoff. An ambiguous
+// outcome must fail closed against replay but must not falsely terminalize a
+// still-live provider Session: it is recorded as a nonterminal attempt fact
+// (running, no attention) so the authoritative turn can later settle and emit
+// the real completion Event.
+func (a *controlApp) recordSubmissionFailure(agentID, summary string, outcome watcher.InputOutcome) {
 	if a == nil || a.watcher == nil {
+		return
+	}
+	if outcome == watcher.InputAmbiguous {
+		_, _ = a.watcher.UpdateAgentProgress(agentID, classifier.AgentProgress{
+			Status:    "running",
+			Attention: "none",
+			Summary:   summary,
+		})
 		return
 	}
 	_, _ = a.watcher.UpdateAgentProgress(agentID, classifier.AgentProgress{

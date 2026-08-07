@@ -575,7 +575,11 @@ func (b *openCodeConversationBuilder) consumeMessage(message openCodeMessageRow,
 // settleFromAssistantMessage uses OpenCode's authoritative message finish /
 // time.completed markers. step-finish parts remain the primary in-flight
 // signal; message finish covers completed turns where part projection alone
-// would leave Activity running.
+// would leave Activity running. A finish that means the assistant yielded to
+// a tool or is otherwise mid-turn must not settle the Activity: the first
+// assistant message echo finishes with tool-calls while the provider is only
+// starting real work, and treating it as completion pinned live Sessions to
+// done.
 func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCodeMessageRow, timestamp string) {
 	var meta struct {
 		Finish string `json:"finish"`
@@ -587,6 +591,9 @@ func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCod
 		return
 	}
 	finish := strings.ToLower(strings.TrimSpace(meta.Finish))
+	if openCodeFinishContinuesTurn(finish) {
+		return
+	}
 	if finish == "" && meta.Time.Completed <= 0 {
 		return
 	}
@@ -608,6 +615,19 @@ func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCod
 	}
 	b.openSteps = 0
 	b.activityLifecycle.settle("", status, settleAt)
+}
+
+// openCodeFinishContinuesTurn reports whether an OpenCode message finish means
+// the assistant yielded to a tool or is otherwise mid-turn. Such messages must
+// never settle the turn Activity; only a terminal finish (or a finish-less
+// message with a completed timestamp and no running tools) may.
+func openCodeFinishContinuesTurn(finish string) bool {
+	switch finish {
+	case "tool-calls", "unknown", "running", "pending":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *openCodeConversationBuilder) hasRunningTools() bool {

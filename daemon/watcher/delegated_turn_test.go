@@ -679,3 +679,87 @@ func TestAmbiguousHandoffWithoutEvidenceFailsOnceAtBoundedDeadline(t *testing.T)
 		t.Fatalf("ambiguous timeout duplicated after restart: before=%+v after=%+v", settled, turn)
 	}
 }
+
+func TestApplyLiveTurnProjectionPromotesStaleFailedAttemptAndClearsMetadata(t *testing.T) {
+	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	agent := &classifier.Agent{
+		State:          classifier.StateFailed,
+		Summary:        "Initial delegated prompt was not submitted",
+		Phase:          "starting",
+		Attention:      "failed",
+		TaskClass:      "lasting_design",
+		EventKind:      "risk",
+		NeedsAttention: true,
+	}
+	agent.LastProgressAt = &now
+	agent.LeaseSeconds = 0
+	turn := delegatedTurnRecord{
+		SchemaVersion: delegatedTurnSchema,
+		ID:            "live-turn",
+		Status:        delegatedTurnAmbiguous,
+		AcceptedAt:    now.Add(-time.Second),
+	}
+
+	state, summary := applyLiveTurnProjection(agent, turn, classifier.StateFailed, agent.Summary)
+	if state != classifier.StateRunning ||
+		summary != "Delegated handoff outcome is ambiguous; observing provider activity" {
+		t.Fatalf("ambiguous live turn projection = (%s, %q)", state, summary)
+	}
+	if agent.Attention != "none" || agent.NeedsAttention || agent.Phase != "" ||
+		agent.TaskClass != "" || agent.EventKind != "" || agent.DetailsJSON != "" ||
+		agent.LastProgressAt != nil || agent.ExpectedNextCheckAt != nil || agent.LeaseSeconds != 0 {
+		t.Fatalf("live turn retained stale failed-attempt metadata: %+v", agent)
+	}
+
+	// Provider-native running correlates the turn; the projection must keep
+	// running and must not re-introduce cleared metadata.
+	turn.Status = delegatedTurnRunning
+	state, summary = applyLiveTurnProjection(agent, turn, classifier.StateUnknown, "")
+	if state != classifier.StateRunning || summary != "Delegated turn running" {
+		t.Fatalf("running turn projection = (%s, %q)", state, summary)
+	}
+	if agent.Attention != "none" || agent.Phase != "" {
+		t.Fatalf("running turn re-introduced stale metadata: %+v", agent)
+	}
+
+	// A fresh live progress phase survives the projection untouched.
+	agent.Phase = "working"
+	agent.Attention = "none"
+	state, summary = applyLiveTurnProjection(agent, turn, classifier.StateRunning, "agent progress")
+	if state != classifier.StateRunning || summary != "agent progress" || agent.Phase != "working" {
+		t.Fatalf("live agent progress was clobbered: (%s, %q) agent=%+v", state, summary, agent)
+	}
+}
+
+func TestApplyLiveTurnProjectionNeverPromotesTerminalTurn(t *testing.T) {
+	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	settledAt := now.Add(-time.Second)
+	turn := delegatedTurnRecord{
+		SchemaVersion: delegatedTurnSchema,
+		ID:            "settled-turn",
+		Status:        delegatedTurnDone,
+		AcceptedAt:    now.Add(-2 * time.Second),
+		SettledAt:     &settledAt,
+		Summary:       "Delegated turn completed",
+	}
+	agent := &classifier.Agent{
+		State:          classifier.StateDone,
+		Summary:        "Delegated turn completed",
+		Attention:      "failed",
+		NeedsAttention: true,
+	}
+	state, summary := applyLiveTurnProjection(agent, turn, classifier.StateDone, turn.Summary)
+	if state != classifier.StateDone || summary != "Delegated turn completed" {
+		t.Fatalf("terminal turn was promoted: (%s, %q)", state, summary)
+	}
+	if agent.Attention != "failed" || !agent.NeedsAttention {
+		t.Fatalf("terminal turn cleared unrelated metadata: %+v", agent)
+	}
+
+	failed := turn
+	failed.Status = delegatedTurnFailed
+	state, summary = applyLiveTurnProjection(agent, failed, classifier.StateFailed, "Delegated provider process or pane is no longer live")
+	if state != classifier.StateFailed {
+		t.Fatalf("failed terminal turn was promoted: (%s, %q)", state, summary)
+	}
+}
