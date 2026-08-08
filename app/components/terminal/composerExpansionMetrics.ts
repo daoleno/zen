@@ -64,19 +64,33 @@ export const COMPOSER_SPRING_CONFIG = {
   overshootClamping: true,
 } as const;
 
+/**
+ * Clamp inside the UI Runtime. Keep this declaration before every exported
+ * worklet that captures it: the Worklets transform initializes worklet
+ * closures in source order, so a later declaration would be captured as
+ * `undefined` in the generated bundle.
+ */
+function clampProgress(progress: number): number {
+  "worklet";
+  return Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+}
+
 /** The expansion band (0 compact, ACTION_BAND_HEIGHT expanded). */
 export function composerActionBandHeight(progress: number): number {
+  "worklet";
   return clampProgress(progress) * COMPOSER_ACTION_BAND_HEIGHT;
 }
 
 /** Capsule corner radius for a given progress. */
 export function composerExpansionRadius(progress: number): number {
+  "worklet";
   const p = clampProgress(progress);
   return COMPOSER_RADIUS_COMPACT + (COMPOSER_RADIUS_EXPANDED - COMPOSER_RADIUS_COMPACT) * p;
 }
 
 /** Bottom anchor of the action buttons inside the capsule. */
 export function composerActionButtonBottomInset(progress: number): number {
+  "worklet";
   return COMPOSER_ACTION_BAND_VERTICAL_PADDING;
 }
 
@@ -89,6 +103,7 @@ export function composerInputHorizontalPadding(progress: number): {
   left: number;
   right: number;
 } {
+  "worklet";
   const p = clampProgress(progress);
   return {
     left:
@@ -111,6 +126,7 @@ export function composerModelChipReveal(progress: number): {
   opacity: number;
   translateY: number;
 } {
+  "worklet";
   const p = clampProgress(progress);
   const [start, end] = COMPOSER_MODEL_CHIP_REVEAL_RANGE;
   const local = Math.max(0, Math.min(1, (p - start) / (end - start)));
@@ -133,8 +149,4 @@ export function composerMotionDisabled(
   reducedMotion: boolean | null | undefined,
 ): boolean {
   return reducedMotion === true;
-}
-
-function clampProgress(progress: number): number {
-  return Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
 }

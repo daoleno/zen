@@ -7,6 +7,7 @@ const source = (relativePath: string) =>
 
 describe("InterfaceComposerExpandingDock", () => {
   const dock = source("InterfaceComposerExpandingDock.tsx");
+  const metrics = source("composerExpansionMetrics.ts");
 
   test("owns one Reanimated progress derived from Composer focus", () => {
     expect(dock.match(/useSharedValue\(/g)).toHaveLength(1);
@@ -22,6 +23,25 @@ describe("InterfaceComposerExpandingDock", () => {
     expect(dock).toContain("composerExpansionRadius(progress.value)");
     expect(dock).toContain("composerInputHorizontalPadding(progress.value)");
     expect(dock).toContain("composerModelChipReveal(progress.value)");
+  });
+
+  test("keeps every UI-runtime metric in the Reanimated worklet graph", () => {
+    expect(metrics).toContain(
+      'export function composerActionBandHeight(progress: number): number {\n  "worklet";',
+    );
+    expect(metrics).toContain(
+      'export function composerExpansionRadius(progress: number): number {\n  "worklet";',
+    );
+    expect(metrics).toContain(
+      '} {\n  "worklet";\n  const p = clampProgress(progress);',
+    );
+    expect(metrics.match(/\n  "worklet";\n  const p = clampProgress\(progress\);/g)).toHaveLength(3);
+    expect(metrics).toContain(
+      'function clampProgress(progress: number): number {\n  "worklet";',
+    );
+    expect(metrics.indexOf("function clampProgress")).toBeLessThan(
+      metrics.indexOf("export function composerActionBandHeight"),
+    );
   });
 
   test("keeps one trailing Send/Stop slot with stable labels", () => {
