@@ -25,7 +25,6 @@ import type {
 import {
   defaultClientsForConnection,
   futureDefaultRows,
-  providerClientLabel,
 } from "../../services/providers";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
@@ -77,6 +76,11 @@ export interface ProvidersPresentationProps {
     connection: ProviderConnection,
     apiKey: string,
   ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
+  /**
+   * Demo/screenshot affordance only: focus the API key field when the editor
+   * opens so the keyboard state can be captured deterministically.
+   */
+  apiKeyAutoFocus?: boolean;
 }
 
 export function ProvidersPresentation({
@@ -102,12 +106,22 @@ export function ProvidersPresentation({
   onSaveCurated,
   onSaveCustom,
   onSaveCredential,
+  apiKeyAutoFocus,
 }: ProvidersPresentationProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const connections = catalog?.connections ?? [];
+  const presets = catalog?.presets ?? [];
   const defaultRows = futureDefaultRows(catalog);
-  const showAddRow =
+  const connectedPresetIds = new Set(
+    connections
+      .map((connection) => connection.preset_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const curatedPresets = presets.filter(
+    (preset) => preset.advanced !== true && !connectedPresetIds.has(preset.id),
+  );
+  const canMutate =
     currentServerAvailable && !offline && !unavailable && Boolean(catalog);
 
   return (
@@ -267,79 +281,80 @@ export function ProvidersPresentation({
 
         {catalog ? (
           <>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Providers
-            </Text>
-            <View style={styles.group}>
-              {connections.length === 0 && !loading ? (
+            {connections.length > 0 ? (
+              <>
+                <Text style={styles.sectionLabel} accessibilityRole="header">
+                  Providers
+                </Text>
+                <View style={styles.group}>
+                  {connections.map((connection, index) => {
+                    const defaultClients = defaultClientsForConnection(
+                      catalog,
+                      connection.id,
+                    );
+                    return (
+                      <ProviderConnectionRow
+                        key={connection.id}
+                        connection={connection}
+                        isLast={index === connections.length - 1}
+                        defaultLabel={
+                          connection.advanced
+                            ? connection.base_url ?? "Custom endpoint"
+                            : defaultClients.length > 0
+                              ? "Default"
+                              : "Not a default"
+                        }
+                        mutating={mutating}
+                        requiresRefreshBeforeMutation={requiresRefreshBeforeMutation}
+                        onAddApiKey={onOpenEditor}
+                        onClearCredential={onClearCredential}
+                        onDelete={onDelete}
+                        onDiscover={onDiscover}
+                      />
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+
+            {canMutate ? (
+              <>
+                <Text style={styles.sectionLabel} accessibilityRole="header">
+                  Connect a service
+                </Text>
+                <View style={styles.group}>
+                  {curatedPresets.map((preset) => (
+                    <PresetConnectRow
+                      key={preset.id}
+                      preset={preset}
+                      isLast={false}
+                      disabled={mutating || requiresRefreshBeforeMutation}
+                      onConnect={() =>
+                        onOpenEditor({ kind: "preset", presetId: preset.id })
+                      }
+                    />
+                  ))}
+                  <CustomEndpointRow
+                    isLast
+                    disabled={mutating || requiresRefreshBeforeMutation}
+                    onPress={() => onOpenEditor({ kind: "custom" })}
+                  />
+                </View>
+              </>
+            ) : null}
+
+            {connections.length === 0 && presets.length === 0 ? (
+              <View style={styles.group}>
                 <View style={styles.emptyCard}>
-                  <Text style={styles.emptyTitle}>No Providers yet</Text>
+                  <Text style={styles.emptyTitle}>
+                    No services connected yet
+                  </Text>
                   <Text style={styles.emptyHint}>
-                    Add a Provider to connect Codex and Claude Sessions, or a
-                    Custom Gateway for your own endpoint.
+                    Connect a service below, or use a custom endpoint.
                   </Text>
                 </View>
-              ) : (
-                connections.map((connection, index) => {
-                  const defaultClients = defaultClientsForConnection(
-                    catalog,
-                    connection.id,
-                  );
-                  return (
-                    <ProviderConnectionRow
-                      key={connection.id}
-                      connection={connection}
-                      isLast={index === connections.length - 1}
-                      defaultLabel={
-                        connection.advanced
-                          ? connection.base_url ?? "Custom Gateway"
-                          : defaultClients.length > 0
-                            ? `Default for ${defaultClients
-                                .map(providerClientLabel)
-                                .join(" and ")} Sessions`
-                            : "Not a default"
-                      }
-                      mutating={mutating}
-                      requiresRefreshBeforeMutation={requiresRefreshBeforeMutation}
-                      onAddApiKey={onOpenEditor}
-                      onClearCredential={onClearCredential}
-                      onDelete={onDelete}
-                      onDiscover={onDiscover}
-                    />
-                  );
-                })
-              )}
-              {showAddRow ? (
-                <AnimatedPressable
-                  style={styles.addRow}
-                  preset="press"
-                  scale={0.99}
-                  accessibilityRole="button"
-                  accessibilityLabel="Add Provider"
-                  accessibilityHint="Add a Provider or Custom Gateway with an API key"
-                  onPress={() => onOpenEditor({ kind: "add" })}
-                >
-                  <View style={styles.addIcon}>
-                    <Ionicons
-                      name="add"
-                      size={20}
-                      color={colors.textOnAccent}
-                    />
-                  </View>
-                  <View style={styles.addCopy}>
-                    <Text style={styles.addTitle}>Add Provider</Text>
-                    <Text style={styles.addSubtitle}>
-                      Supplier and API key in one step
-                    </Text>
-                  </View>
-                  <Ionicons
-                    name="chevron-forward"
-                    size={18}
-                    color={colors.textTertiary}
-                  />
-                </AnimatedPressable>
-              ) : null}
-            </View>
+              </View>
+            ) : null}
           </>
         ) : null}
       </ScrollView>
@@ -348,12 +363,101 @@ export function ProvidersPresentation({
         editor={editor}
         presets={catalog?.presets ?? []}
         mutating={mutating}
+        apiKeyAutoFocus={apiKeyAutoFocus}
         onClose={onCloseEditor}
         onSaveCurated={onSaveCurated}
         onSaveCustom={onSaveCustom}
         onSaveCredential={onSaveCredential}
       />
     </SafeAreaView>
+  );
+}
+
+function PresetConnectRow({
+  preset,
+  isLast,
+  disabled,
+  onConnect,
+}: {
+  preset: ProviderPreset;
+  isLast: boolean;
+  disabled?: boolean;
+  onConnect(): void;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  return (
+    <AnimatedPressable
+      style={[
+        styles.groupRow,
+        !isLast && styles.groupRowBorder,
+        styles.presetRow,
+      ]}
+      preset="press"
+      scale={0.99}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={`Connect ${preset.label}`}
+      accessibilityHint={`Connect ${preset.label} with an API key`}
+      accessibilityState={{ disabled }}
+      onPress={onConnect}
+    >
+      <View style={styles.rowCopy}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {preset.label}
+        </Text>
+      </View>
+      <View style={styles.connectPill}>
+        <Text style={styles.connectPillText}>Connect</Text>
+      </View>
+    </AnimatedPressable>
+  );
+}
+
+function CustomEndpointRow({
+  isLast,
+  disabled,
+  onPress,
+}: {
+  isLast: boolean;
+  disabled?: boolean;
+  onPress(): void;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  return (
+    <AnimatedPressable
+      style={[
+        styles.groupRow,
+        styles.customRow,
+        !isLast && styles.groupRowBorder,
+      ]}
+      preset="press"
+      scale={0.99}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel="Use custom endpoint"
+      accessibilityHint="Set up a service with a display name, endpoint URL, and API key"
+      accessibilityState={{ disabled }}
+      onPress={onPress}
+    >
+      <Ionicons
+        name="add-circle-outline"
+        size={20}
+        color={colors.textSecondary}
+      />
+      <View style={styles.rowCopy}>
+        <Text style={styles.customTitle}>Use custom endpoint</Text>
+        <Text style={styles.customSubtitle}>
+          Display name, endpoint URL, and API key
+        </Text>
+      </View>
+      <Ionicons
+        name="chevron-forward"
+        size={18}
+        color={colors.textTertiary}
+      />
+    </AnimatedPressable>
   );
 }
 
@@ -401,7 +505,7 @@ function ProviderConnectionRow({
         scale={0.99}
         accessibilityRole="button"
         accessibilityLabel={`${connection.name}, ${
-          ready ? "Ready" : "API key needed"
+          ready ? "Connected" : "Needs API key"
         }`}
         accessibilityHint={
           expanded ? "Hide Provider actions" : "Show Provider actions"
@@ -437,7 +541,7 @@ function ProviderConnectionRow({
               { color: ready ? colors.success : colors.warning },
             ]}
           >
-            {ready ? "Ready" : "API key needed"}
+            {ready ? "Connected" : "Needs API key"}
           </Text>
         </View>
         <Ionicons
@@ -523,6 +627,7 @@ interface ProviderEditorSheetProps {
   editor: ProvidersEditorState;
   presets: ProviderPreset[];
   mutating: boolean;
+  apiKeyAutoFocus?: boolean;
   onClose(): void;
   onSaveCurated(
     preset: ProviderPreset,
@@ -543,6 +648,7 @@ function ProviderEditorSheet({
   editor,
   presets,
   mutating,
+  apiKeyAutoFocus,
   onClose,
   onSaveCurated,
   onSaveCustom,
@@ -551,11 +657,6 @@ function ProviderEditorSheet({
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const curated = presets.filter((preset) => preset.advanced !== true);
-  const custom = presets.find(
-    (preset) => preset.advanced === true || preset.id === "custom",
-  );
-  const [presetId, setPresetId] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -567,7 +668,6 @@ function ProviderEditorSheet({
     const previous = prevSessionKeyRef.current;
     prevSessionKeyRef.current = sessionKey;
     if (providerEditorShouldResetFields(previous, sessionKey)) {
-      setPresetId(null);
       setApiKey("");
       setName("");
       setBaseUrl("");
@@ -575,7 +675,6 @@ function ProviderEditorSheet({
   }, [sessionKey]);
 
   const resetFields = () => {
-    setPresetId(null);
     setApiKey("");
     setName("");
     setBaseUrl("");
@@ -588,14 +687,17 @@ function ProviderEditorSheet({
 
   const connection =
     editor?.kind === "credential" ? editor.connection : null;
-  const isCustom = presetId != null && presetId === custom?.id;
-  const selectedPreset = curated.find((preset) => preset.id === presetId);
+  const presetTarget =
+    editor?.kind === "preset"
+      ? (presets.find((preset) => preset.id === editor.presetId) ?? null)
+      : null;
+  const customMode = editor?.kind === "custom";
   const canSave = providerEditorCanSave({
     mutating,
     apiKey,
     credentialMode: connection != null,
-    presetSelected: selectedPreset != null,
-    customSelected: isCustom,
+    presetMode: presetTarget != null && presetTarget.advanced !== true,
+    customMode,
     name,
     baseUrl,
   });
@@ -605,15 +707,19 @@ function ProviderEditorSheet({
       : editor?.kind === "credential" && editor.retry
         ? "Retry API key"
         : "Add API key"
-    : "Add Provider";
+    : presetTarget
+      ? `Connect ${presetTarget.label}`
+      : customMode
+        ? "Custom endpoint"
+        : "Connect";
 
   const handleSave = async () => {
     if (!canSave) return;
     const outcome = connection
       ? await onSaveCredential(connection, apiKey)
-      : selectedPreset
-        ? await onSaveCurated(selectedPreset, apiKey)
-        : isCustom
+      : presetTarget
+        ? await onSaveCurated(presetTarget, apiKey)
+        : customMode
           ? await onSaveCustom({
               name: name.trim(),
               baseUrl: baseUrl.trim(),
@@ -665,100 +771,9 @@ function ProviderEditorSheet({
               </Text>
             ) : null}
           </>
-        ) : (
-          <>
-            <Text style={styles.fieldLabel}>Provider</Text>
-            <View
-              style={styles.supplierGroup}
-              accessibilityRole="radiogroup"
-              accessibilityLabel="Choose a Provider"
-            >
-              {curated.map((preset, index) => {
-                const selected = preset.id === presetId;
-                return (
-                  <AnimatedPressable
-                    key={preset.id}
-                    style={[
-                      styles.supplierRow,
-                      index < curated.length - 1 && styles.groupRowBorder,
-                      selected && styles.supplierRowSelected,
-                    ]}
-                    preset="press"
-                    scale={0.99}
-                    accessibilityRole="radio"
-                    accessibilityLabel={`${preset.label} Provider`}
-                    accessibilityState={{ checked: selected }}
-                    disabled={mutating}
-                    onPress={() => setPresetId(preset.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.supplierLabel,
-                        selected && styles.supplierLabelSelected,
-                      ]}
-                    >
-                      {preset.label}
-                    </Text>
-                    <Ionicons
-                      name={selected ? "radio-button-on" : "radio-button-off"}
-                      size={20}
-                      color={
-                        selected ? colors.accentStrong : colors.textTertiary
-                      }
-                    />
-                  </AnimatedPressable>
-                );
-              })}
-              {custom ? (
-                <AnimatedPressable
-                  style={[
-                    styles.supplierRow,
-                    styles.groupRowBorder,
-                    presetId === custom.id && styles.supplierRowSelected,
-                  ]}
-                  preset="press"
-                  scale={0.99}
-                  accessibilityRole="radio"
-                  accessibilityLabel="Custom Gateway Provider"
-                  accessibilityState={{
-                    checked: presetId === custom.id,
-                  }}
-                  disabled={mutating}
-                  onPress={() => setPresetId(custom.id)}
-                >
-                  <View style={styles.rowCopy}>
-                    <Text
-                      style={[
-                        styles.supplierLabel,
-                        presetId === custom.id && styles.supplierLabelSelected,
-                      ]}
-                    >
-                      Custom Gateway
-                    </Text>
-                    <Text style={styles.supplierCaption}>
-                      Advanced · your own endpoint
-                    </Text>
-                  </View>
-                  <Ionicons
-                    name={
-                      presetId === custom.id
-                        ? "radio-button-on"
-                        : "radio-button-off"
-                    }
-                    size={20}
-                    color={
-                      presetId === custom.id
-                        ? colors.accentStrong
-                        : colors.textTertiary
-                    }
-                  />
-                </AnimatedPressable>
-              ) : null}
-            </View>
-          </>
-        )}
+        ) : null}
 
-        {isCustom && !connection ? (
+        {customMode && !connection ? (
           <>
             <Text style={styles.fieldLabel}>Display name</Text>
             <MobileSingleLineInput
@@ -772,14 +787,14 @@ function ProviderEditorSheet({
               autoCorrect={false}
               containerStyle={styles.field}
             />
-            <Text style={styles.fieldLabel}>Base URL</Text>
+            <Text style={styles.fieldLabel}>Endpoint URL</Text>
             <MobileSingleLineInput
               value={baseUrl}
               onChangeText={setBaseUrl}
               editable={!mutating}
               placeholder="https://…"
               placeholderTextColor={colors.textTertiary}
-              accessibilityLabel="Base URL"
+              accessibilityLabel="Endpoint URL"
               autoCapitalize="none"
               autoCorrect={false}
               autoComplete="off"
@@ -795,6 +810,7 @@ function ProviderEditorSheet({
           value={apiKey}
           onChangeText={setApiKey}
           editable={!mutating}
+          autoFocus={apiKeyAutoFocus && !mutating}
           placeholder="Paste API key"
           placeholderTextColor={colors.textTertiary}
           accessibilityLabel="API Key"
@@ -812,12 +828,18 @@ function ProviderEditorSheet({
           scale={0.98}
           disabled={!canSave}
           accessibilityRole="button"
-          accessibilityLabel="Save"
+          accessibilityLabel={connection ? "Save" : "Connect"}
           accessibilityState={{ disabled: !canSave, busy: mutating }}
           onPress={() => void handleSave()}
         >
           <Text style={styles.saveBtnText}>
-            {mutating ? "Saving…" : "Save"}
+            {mutating
+              ? connection
+                ? "Saving…"
+                : "Connecting…"
+              : connection
+                ? "Save"
+                : "Connect"}
           </Text>
         </AnimatedPressable>
       </ScrollView>
@@ -996,32 +1018,45 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       ...TypeScale.caption,
       color: colors.textTertiary,
     },
-    addRow: {
+    presetRow: {
+      minHeight: 56,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    connectPill: {
+      minHeight: 32,
+      paddingHorizontal: 16,
+      borderRadius: Radii.pill,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accentSoft,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.accent,
+    },
+    connectPillText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.accentStrong,
+      fontWeight: "600",
+    },
+    customRow: {
       minHeight: 60,
       flexDirection: "row",
       alignItems: "center",
       gap: 12,
       paddingHorizontal: 14,
       paddingVertical: 8,
-      backgroundColor: colors.bgSurface,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.borderSubtle,
+      backgroundColor: colors.surfaceSubtle,
     },
-    addIcon: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.accent,
-    },
-    addCopy: { flex: 1, minWidth: 0 },
-    addTitle: {
+    customTitle: {
       ...UiTextMetrics,
       ...TypeScale.compact,
-      color: colors.textPrimary,
+      color: colors.textSecondary,
     },
-    addSubtitle: {
+    customSubtitle: {
       ...UiTextMetrics,
       ...TypeScale.caption,
       color: colors.textTertiary,
@@ -1079,41 +1114,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.inputBackground,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
-    },
-    supplierGroup: {
-      overflow: "hidden",
-      borderRadius: Radii.xs,
-      backgroundColor: colors.inputBackground,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderSubtle,
-    },
-    supplierRow: {
-      minHeight: 52,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      backgroundColor: colors.bgSurface,
-    },
-    supplierRowSelected: {
-      backgroundColor: colors.surfaceActive,
-    },
-    supplierLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      flex: 1,
-      color: colors.textPrimary,
-    },
-    supplierLabelSelected: {
-      color: colors.accentStrong,
-      fontWeight: "500",
-    },
-    supplierCaption: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-      marginTop: 1,
     },
     saveBtn: {
       minHeight: 50,

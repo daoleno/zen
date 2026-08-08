@@ -49,7 +49,6 @@ import { buildChatChrome } from "../theme";
 import {
   SCREENSHOT_BRAIN_EVENTS,
   SCREENSHOT_CHAT_EVENTS,
-  SCREENSHOT_PROVIDERS_FIXTURE,
   SCREENSHOT_SESSION_AGENTS,
   SCREENSHOT_STATS_FIXTURE,
   screenshotChatPendingUserMessages,
@@ -57,6 +56,7 @@ import {
 import {
   resolveScreenshotChatPendingFixture,
   resolveScreenshotDemoState,
+  resolveScreenshotProvidersDemo,
   screenshotDemoEnabled,
   screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
@@ -634,22 +634,24 @@ function StatsDemo() {
 
 function ProvidersDemo() {
   const params = useLocalSearchParams<{
+    fixture?: string | string[];
     editor?: string | string[];
+    keyboard?: string | string[];
   }>();
-  const editorOpen =
-    (Array.isArray(params.editor) ? params.editor[0] : params.editor) === "1";
+  const demo = useMemo(() => resolveScreenshotProvidersDemo(params), [params]);
   return (
     <SafeAreaView style={styles.flex} edges={["top"]}>
       <ProvidersPresentation
-        catalog={SCREENSHOT_PROVIDERS_FIXTURE}
+        catalog={demo.catalog}
         loading={false}
         refreshing={false}
         error={null}
         offline={false}
         unavailable={false}
         currentServerAvailable
-        editor={editorOpen ? { kind: "add" } : null}
+        editor={demo.editor}
         mutating={false}
+        apiKeyAutoFocus={demo.apiKeyAutoFocus}
         onRefresh={NOOP}
         onOpenSettings={NOOP}
         onOpenEditor={NOOP}

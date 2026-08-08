@@ -787,7 +787,7 @@ export default function SettingsScreen() {
               <View style={styles.aboutCopy}>
                 <Text style={styles.aboutTitle}>Providers</Text>
                 <Text style={styles.aboutDescription}>
-                  Connections and models for Codex and Claude Code
+                  Connect services and choose models
                 </Text>
               </View>
               <Ionicons

@@ -29,6 +29,26 @@ describe("single-line input geometry invariant", () => {
     }
   });
 
+  test("Android large-font (1.3) and iOS accessibility metrics stay vertically centered", () => {
+    const androidLargeFont = mobileSingleLineScaledLineHeight(1.3);
+    expect(androidLargeFont).toBeCloseTo(29.9, 1);
+    expect(androidLargeFont).toBeLessThanOrEqual(
+      MOBILE_SINGLE_LINE_INPUT_LAYOUT.controlHeight,
+    );
+    expect(mobileSingleLineScaledLineHeight(1.15)).toBe(23 * 1.15);
+    expect(mobileSingleLineScaledLineHeight(1)).toBe(23);
+    expect(mobileSingleLinePlaceholderFitsControl(1.3)).toBe(true);
+    expect(mobileSingleLinePlaceholderFitsControl(1.5)).toBe(true);
+  });
+
+  test("placeholder text lane fits minimum widths at the bounded maximum scale", () => {
+    const lane = mobileSingleLineTextLaneWidth(320, true, true);
+    expect(lane).toBe(320 - 44 - 14 - 44);
+    expect(lane).toBeGreaterThanOrEqual(
+      MOBILE_SINGLE_LINE_INPUT_LAYOUT.minimumTextLaneWidth,
+    );
+  });
+
   test("bounded scaling caps the multiplier at the layout maximum", () => {
     expect(mobileSingleLineScaledLineHeight(3)).toBe(
       MOBILE_SINGLE_LINE_INPUT_LAYOUT.lineHeight *

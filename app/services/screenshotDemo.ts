@@ -1,7 +1,11 @@
 import {
   SCREENSHOT_CHAT_PENDING_FIXTURES,
+  SCREENSHOT_PROVIDERS_EMPTY_FIXTURE,
+  SCREENSHOT_PROVIDERS_FIXTURE,
   type ScreenshotChatPendingFixture,
 } from "./screenshotDemoFixtures";
+import type { ProvidersEditorState } from "../components/providers/providersPresentationModel";
+import type { ProvidersSnapshot } from "./providers/types";
 
 export const SCREENSHOT_DEMO_STATES = [
   "chat",
@@ -77,4 +81,56 @@ export function resolveScreenshotChatPendingFixture(
   )
     ? (candidate as ScreenshotChatPendingFixture)
     : "none";
+}
+
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * Providers demo state: `fixture=empty` shows the empty surface, otherwise the
+ * connected fixture renders. `editor=custom` binds the custom endpoint form,
+ * `editor=retry` rebinds the Anthropic connection for a failed-save retry, and
+ * any other value is treated as a curated preset id. `keyboard=1` autofocuses
+ * the API key field to capture the keyboard state.
+ */
+export function resolveScreenshotProvidersDemo(input: {
+  fixture?: string | string[] | undefined;
+  editor?: string | string[] | undefined;
+  keyboard?: string | string[] | undefined;
+}): {
+  catalog: ProvidersSnapshot;
+  editor: ProvidersEditorState;
+  apiKeyAutoFocus: boolean;
+} {
+  const fixtureParam = firstParam(input.fixture);
+  const catalog =
+    fixtureParam === "empty"
+      ? SCREENSHOT_PROVIDERS_EMPTY_FIXTURE
+      : SCREENSHOT_PROVIDERS_FIXTURE;
+  return {
+    catalog,
+    editor: resolveScreenshotProvidersEditor(firstParam(input.editor), catalog),
+    apiKeyAutoFocus: firstParam(input.keyboard) === "1",
+  };
+}
+
+export function resolveScreenshotProvidersEditor(
+  value: string | undefined,
+  catalog: ProvidersSnapshot,
+): ProvidersEditorState {
+  if (value === "custom") return { kind: "custom" };
+  if (value === "retry" || value === "needs-key") {
+    const connection =
+      catalog.connections.find(
+        (candidate) => candidate.preset_id === "anthropic",
+      ) ?? catalog.connections[0];
+    if (!connection) return null;
+    return { kind: "credential", connection, retry: value === "retry" };
+  }
+  const preset = catalog.presets.find(
+    (candidate) =>
+      candidate.id === value && candidate.advanced !== true,
+  );
+  return preset ? { kind: "preset", presetId: preset.id } : null;
 }

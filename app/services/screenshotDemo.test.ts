@@ -6,6 +6,7 @@ import { buildZenTimeline } from "../components/terminal/InterfaceTimelineModel"
 import {
   resolveScreenshotChatPendingFixture,
   resolveScreenshotDemoState,
+  resolveScreenshotProvidersDemo,
   screenshotDemoEnabled,
   screenshotDemoRouteOptedIn,
   shouldUseScreenshotDemoRuntime,
@@ -81,14 +82,53 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
   });
 
-  test("providers demo renders the real Providers surface on a fixture catalog", () => {
+  test("providers demo renders the real Providers surface on fixture catalogs", () => {
     expect(demoRouteSource).toContain('case "providers":');
     expect(demoRouteSource).toContain("ProvidersDemo");
-    expect(demoRouteSource).toContain("SCREENSHOT_PROVIDERS_FIXTURE");
+    expect(demoRouteSource).toContain("resolveScreenshotProvidersDemo");
     expect(demoRouteSource).toContain(
       'from "../components/providers/ProvidersPresentation"',
     );
-    expect(demoRouteSource).toContain('onOpenEditor={NOOP}');
+    expect(demoRouteSource).toContain("apiKeyAutoFocus={demo.apiKeyAutoFocus}");
+    expect(demoRouteSource).not.toContain('kind: "add"');
+  });
+
+  test("providers demo resolver binds deterministic editor states", () => {
+    const empty = resolveScreenshotProvidersDemo({
+      fixture: "empty",
+    });
+    expect(empty.catalog.connections).toEqual([]);
+    expect(empty.catalog.presets.length).toBeGreaterThan(0);
+    expect(empty.editor).toBeNull();
+    expect(empty.apiKeyAutoFocus).toBe(false);
+
+    const connected = resolveScreenshotProvidersDemo({});
+    expect(connected.catalog.connections.length).toBeGreaterThan(0);
+    expect(connected.editor).toBeNull();
+
+    const direct = resolveScreenshotProvidersDemo({ editor: "openai" });
+    expect(direct.editor).toEqual({ kind: "preset", presetId: "openai" });
+
+    const custom = resolveScreenshotProvidersDemo({ editor: "custom" });
+    expect(custom.editor).toEqual({ kind: "custom" });
+
+    const retry = resolveScreenshotProvidersDemo({ editor: "retry" });
+    expect(retry.editor).toMatchObject({ kind: "credential", retry: true });
+
+    const needsKey = resolveScreenshotProvidersDemo({ editor: "needs-key" });
+    expect(needsKey.editor).toMatchObject({ kind: "credential" });
+    expect(needsKey.editor).not.toMatchObject({ retry: true });
+
+    const keyboard = resolveScreenshotProvidersDemo({ keyboard: "1" });
+    expect(keyboard.apiKeyAutoFocus).toBe(true);
+
+    expect(
+      resolveScreenshotProvidersDemo({ editor: "openai", fixture: "empty" })
+        .editor,
+    ).toEqual({ kind: "preset", presetId: "openai" });
+    expect(
+      resolveScreenshotProvidersDemo({ editor: "does-not-exist" }).editor,
+    ).toBeNull();
   });
 
   test("profile state opts into the Interface device performance harness", () => {

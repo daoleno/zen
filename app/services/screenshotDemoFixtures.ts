@@ -466,3 +466,15 @@ export const SCREENSHOT_PROVIDERS_FIXTURE: ProvidersSnapshot = {
     ],
   },
 };
+
+/**
+ * Empty Providers surface: no connections, no models, curated presets still
+ * offered by the daemon so the direct-connect rows remain visible.
+ */
+export const SCREENSHOT_PROVIDERS_EMPTY_FIXTURE: ProvidersSnapshot = {
+  revision: 1,
+  connections: [],
+  defaults: {},
+  presets: SCREENSHOT_PROVIDERS_FIXTURE.presets,
+  models: {},
+};

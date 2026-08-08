@@ -17,6 +17,10 @@ const screenSource = readFileSync(
   join(import.meta.dir, "../../app/model-profiles.tsx"),
   "utf8",
 );
+const settingsSource = readFileSync(
+  join(import.meta.dir, "../../app/settings.tsx"),
+  "utf8",
+);
 
 function connection(id = "conn-a") {
   return {
@@ -34,17 +38,17 @@ describe("Providers editor save policy", () => {
     mutating: false,
     apiKey: "sk-live",
     credentialMode: false,
-    presetSelected: false,
-    customSelected: false,
+    presetMode: false,
+    customMode: false,
     name: "",
     baseUrl: "",
   };
 
-  test("curated save needs a chosen supplier and an API key", () => {
+  test("preset-bound save needs only an API key", () => {
     expect(providerEditorCanSave(base)).toBe(false);
-    expect(providerEditorCanSave({ ...base, presetSelected: true })).toBe(true);
+    expect(providerEditorCanSave({ ...base, presetMode: true })).toBe(true);
     expect(
-      providerEditorCanSave({ ...base, presetSelected: true, apiKey: "   " }),
+      providerEditorCanSave({ ...base, presetMode: true, apiKey: "   " }),
     ).toBe(false);
   });
 
@@ -59,14 +63,12 @@ describe("Providers editor save policy", () => {
     ).toBe(false);
   });
 
-  test("custom gateway needs display name, base URL, and API key", () => {
-    expect(providerEditorCanSave({ ...base, customSelected: true })).toBe(
-      false,
-    );
+  test("custom endpoint needs display name, endpoint URL, and API key", () => {
+    expect(providerEditorCanSave({ ...base, customMode: true })).toBe(false);
     expect(
       providerEditorCanSave({
         ...base,
-        customSelected: true,
+        customMode: true,
         name: "My gateway",
         baseUrl: "https://gateway.example/v1",
       }),
@@ -74,7 +76,7 @@ describe("Providers editor save policy", () => {
     expect(
       providerEditorCanSave({
         ...base,
-        customSelected: true,
+        customMode: true,
         name: "My gateway",
         baseUrl: "https://gateway.example/v1",
         apiKey: "",
@@ -87,17 +89,25 @@ describe("Providers editor save policy", () => {
       providerEditorCanSave({
         ...base,
         mutating: true,
-        presetSelected: true,
+        presetMode: true,
       }),
     ).toBe(false);
   });
 });
 
 describe("editor save-outcome state machine", () => {
-  test("failed create keeps the add overlay open and bound to nothing new", () => {
-    const before: ProvidersEditorState = { kind: "add" };
+  test("failed create keeps the preset-bound editor open on the same target", () => {
+    const before: ProvidersEditorState = { kind: "preset", presetId: "openai" };
     const after = providerEditorAfterSave(before, { status: "create_failed" });
-    expect(after).toEqual({ kind: "add" });
+    expect(after).toEqual({ kind: "preset", presetId: "openai" });
+  });
+
+  test("failed create keeps the custom endpoint editor open", () => {
+    const after = providerEditorAfterSave(
+      { kind: "custom" },
+      { status: "create_failed" },
+    );
+    expect(after).toEqual({ kind: "custom" });
   });
 
   test("failed credential on a direct replace stays on the same connection in retry mode", () => {
@@ -117,10 +127,23 @@ describe("editor save-outcome state machine", () => {
     });
   });
 
-  test("partial create success binds the overlay to the created connection for credential retry", () => {
+  test("partial create success rebinds the preset editor to the created connection for credential retry", () => {
     const created = connection("conn-created");
     const after = providerEditorAfterSave(
-      { kind: "add" },
+      { kind: "preset", presetId: "openai" },
+      { status: "credential_failed", connection: created },
+    );
+    expect(after).toEqual({
+      kind: "credential",
+      connection: created,
+      retry: true,
+    });
+  });
+
+  test("partial custom create success rebinds to the created connection for credential retry", () => {
+    const created = connection("conn-custom");
+    const after = providerEditorAfterSave(
+      { kind: "custom" },
       { status: "credential_failed", connection: created },
     );
     expect(after).toEqual({
@@ -155,13 +178,29 @@ describe("editor save-outcome state machine", () => {
 
 describe("editor field reset policy", () => {
   test("a fresh open resets the form", () => {
-    expect(providerEditorShouldResetFields("", "add")).toBe(true);
+    expect(providerEditorShouldResetFields("", "preset:openai")).toBe(true);
+    expect(providerEditorShouldResetFields("", "custom")).toBe(true);
     expect(providerEditorShouldResetFields("", "credential:conn-a")).toBe(true);
   });
 
-  test("add → credential retry preserves every entered field", () => {
+  test("preset → credential retry preserves every entered field", () => {
     expect(
-      providerEditorShouldResetFields("add", "credential:conn-created"),
+      providerEditorShouldResetFields("preset:openai", "credential:conn-created"),
+    ).toBe(false);
+  });
+
+  test("custom → credential retry preserves every entered field", () => {
+    expect(
+      providerEditorShouldResetFields("custom", "credential:conn-created"),
+    ).toBe(false);
+  });
+
+  test("switching between preset targets resets", () => {
+    expect(
+      providerEditorShouldResetFields("preset:openai", "preset:deepseek"),
+    ).toBe(true);
+    expect(
+      providerEditorShouldResetFields("preset:openai", "preset:openai"),
     ).toBe(false);
   });
 
@@ -175,7 +214,8 @@ describe("editor field reset policy", () => {
   });
 
   test("closing never resets through the effect; the close handler owns clearing", () => {
-    expect(providerEditorShouldResetFields("add", "")).toBe(false);
+    expect(providerEditorShouldResetFields("preset:openai", "")).toBe(false);
+    expect(providerEditorShouldResetFields("custom", "")).toBe(false);
     expect(providerEditorShouldResetFields("credential:conn-a", "")).toBe(
       false,
     );
@@ -209,7 +249,7 @@ describe("Providers presentation source contract", () => {
     expect(presentationSource).not.toMatch(/height:\s*48/);
     const fieldStyle = presentationSource.slice(
       presentationSource.indexOf("field: {"),
-      presentationSource.indexOf("supplierGroup:"),
+      presentationSource.indexOf("saveBtn: {"),
     );
     expect(fieldStyle).not.toMatch(/paddingVertical/);
     expect(fieldStyle).not.toMatch(/lineHeight/);
@@ -217,19 +257,45 @@ describe("Providers presentation source contract", () => {
     expect(presentationSource).toContain('containerStyle={styles.field}');
   });
 
-  test("Add and Replace key live in one overlay editor, not full-page steps", () => {
-    expect(presentationSource).toContain(
-      'from "../ui/RisingSheet"',
-    );
-    expect(presentationSource).toContain("ProviderEditorSheet");
-    expect(presentationSource).not.toContain("ProviderAddForm");
-    expect(presentationSource).not.toContain("ProviderCredentialForm");
-    expect(presentationSource).toContain("Supplier and API key in one step");
-    expect(presentationSource).toContain("avoidKeyboard");
+  test("the generic Add Provider picker step is gone", () => {
+    expect(presentationSource).not.toContain("Add Provider");
+    expect(presentationSource).not.toContain("Choose a Provider");
+    expect(presentationSource).not.toMatch(/kind: "add"/);
+    expect(screenSource).not.toMatch(/kind: "add"/);
   });
 
-  test("keeps provider-internal concepts out of user-facing copy", () => {
+  test("every curated preset row opens the editor already bound to that preset", () => {
+    expect(presentationSource).toContain(
+      'onOpenEditor({ kind: "preset", presetId: preset.id })',
+    );
+    expect(presentationSource).toMatch(/Connect \$\{preset\.label\}/);
+    expect(presentationSource).toContain("Connect a service");
+  });
+
+  test("custom endpoint setup is secondary and exposes only name, endpoint, key", () => {
+    expect(
+      presentationSource.indexOf("Connect a service"),
+    ).toBeGreaterThanOrEqual(0);
+    expect(presentationSource.indexOf("Use custom endpoint")).toBeGreaterThan(
+      presentationSource.indexOf("Connect a service"),
+    );
+    expect(presentationSource).toContain('onOpenEditor({ kind: "custom" })');
+    expect(presentationSource).toContain("Display name");
+    expect(presentationSource).toContain("Endpoint URL");
+    expect(presentationSource).not.toContain("Base URL");
+    expect(presentationSource).not.toContain("Custom Gateway");
+  });
+
+  test("connected rows use user-facing Connected / Needs API key copy", () => {
+    expect(presentationSource).toContain('"Connected"');
+    expect(presentationSource).toContain('"Needs API key"');
+    expect(presentationSource).not.toContain('"Ready"');
+    expect(presentationSource).not.toContain("API key needed");
+  });
+
+  test("keeps provider-internal and client-compatibility copy out of preset and connected rows", () => {
     for (const banned of [
+      "Default for ",
       "Manual model",
       "manual_model",
       "model_id",
@@ -238,11 +304,33 @@ describe("Providers presentation source contract", () => {
       "Auth mode",
       "protocol",
       "envelope",
+      "Clients:",
+      "Client:",
     ]) {
       expect(presentationSource).not.toContain(banned);
     }
-    expect(presentationSource).not.toContain("Client:");
-    expect(presentationSource).not.toContain("Clients:");
+    expect(presentationSource).not.toMatch(/preset\.clients/);
+    expect(presentationSource).not.toMatch(/connection\.clients/);
+  });
+
+  test("Settings entry copy is exactly Providers / Connect services and choose models", () => {
+    expect(settingsSource).toContain("Providers");
+    expect(settingsSource).toContain("Connect services and choose models");
+    expect(settingsSource).not.toContain(
+      "Connections and models for Codex and Claude Code",
+    );
+  });
+
+  test("editor stays one overlay bound to its target with a Connect action", () => {
+    expect(presentationSource).toContain('from "../ui/RisingSheet"');
+    expect(presentationSource).toContain("ProviderEditorSheet");
+    expect(presentationSource).not.toContain("ProviderAddForm");
+    expect(presentationSource).not.toContain("ProviderCredentialForm");
+    expect(presentationSource).toContain("avoidKeyboard");
+    expect(presentationSource).toContain(
+      'accessibilityLabel={connection ? "Save" : "Connect"}',
+    );
+    expect(presentationSource).toContain('? "Save"\n                : "Connect"');
   });
 
   test("screen wires the editor state without list/add/credential page modes", () => {
@@ -278,5 +366,11 @@ describe("Providers presentation source contract", () => {
     expect(screenSource).toContain('return { status: "create_failed" as const }');
     expect(screenSource).toContain('{ status: "credential_failed", connection }');
     expect(screenSource).not.toMatch(/saveCredential[\s\S]{0,120}closeEditor\(\)/);
+  });
+
+  test("the API key input is the shared vertically-centered control with bounded scaling", () => {
+    expect(presentationSource).toContain("secureTextEntry");
+    expect(presentationSource).toContain("placeholder=\"Paste API key\"");
+    expect(presentationSource).toContain("apiKeyAutoFocus");
   });
 });
