@@ -35,16 +35,82 @@ interface StructuredChatContentFadeProps {
 }
 
 /**
- * Masks timeline pixels only. The mask is transparent below the Composer, so
- * the continuous page canvas shows through without drawing a scrim or band.
+ * Fades timeline pixels below the floating Composer without changing timeline
+ * geometry. Android deliberately uses a sibling overlay instead of wrapping
+ * the live FlatList in a software MaskedView: software masking rasterizes the
+ * complete timeline after every streaming descendant update and can expose a
+ * cleared black backing surface. Zen's chat canvas is a single flat color, so
+ * covering the same pixels is visually equivalent and keeps the list on its
+ * ordinary native composition layer. iOS retains its native alpha mask and
+ * Web retains the CSS mask.
  */
-export function StructuredChatContentFade({
+export function StructuredChatContentFade(
+  props: StructuredChatContentFadeProps,
+) {
+  if (Platform.OS === "android") {
+    return <AndroidStructuredChatContentFade {...props} />;
+  }
+  if (Platform.OS === "web") {
+    return <WebStructuredChatContentFade {...props} />;
+  }
+  return <IosStructuredChatContentFade {...props} />;
+}
+
+function AndroidStructuredChatContentFade({
   canvasColor,
   composerHeight,
   overlayTranslateY,
   children,
 }: StructuredChatContentFadeProps) {
-  const nativeMask = structuredChatNativeMaskColors(canvasColor);
+  const colors = structuredChatNativeMaskColors(canvasColor);
+  const opaqueCoverStyle = useAnimatedStyle(() => {
+    const geometry = structuredChatContentFadeGeometry(
+      composerHeight.value,
+      overlayTranslateY.value,
+    );
+    return { height: geometry.transparentBottomInset };
+  });
+  const fadeOverlayStyle = useAnimatedStyle(() => {
+    const geometry = structuredChatContentFadeGeometry(
+      composerHeight.value,
+      overlayTranslateY.value,
+    );
+    return {
+      bottom: geometry.transparentBottomInset,
+      height: geometry.fadeHeight,
+    };
+  });
+
+  return (
+    <View style={styles.container}>
+      {children}
+      <AnimatedLinearGradient
+        pointerEvents="none"
+        colors={[colors.hidden, colors.visible]}
+        locations={[0, 1]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={[styles.fadeMask, fadeOverlayStyle]}
+      />
+      <Reanimated.View
+        pointerEvents="none"
+        style={[
+          styles.opaqueCover,
+          opaqueCoverStyle,
+          { backgroundColor: canvasColor },
+        ]}
+      />
+    </View>
+  );
+}
+
+function IosStructuredChatContentFade({
+  canvasColor,
+  composerHeight,
+  overlayTranslateY,
+  children,
+}: StructuredChatContentFadeProps) {
+  const colors = structuredChatNativeMaskColors(canvasColor);
   const opaqueMaskStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
@@ -62,6 +128,40 @@ export function StructuredChatContentFade({
       height: geometry.fadeHeight,
     };
   });
+
+  return (
+    <MaskedView
+      style={styles.container}
+      maskElement={
+        <View pointerEvents="none" style={styles.maskCanvas}>
+          <Reanimated.View
+            style={[
+              styles.opaqueMask,
+              opaqueMaskStyle,
+              { backgroundColor: colors.visible },
+            ]}
+          />
+          <AnimatedLinearGradient
+            pointerEvents="none"
+            colors={[colors.visible, colors.hidden]}
+            locations={[0, 1]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={[styles.fadeMask, fadeMaskStyle]}
+          />
+        </View>
+      }
+    >
+      {children}
+    </MaskedView>
+  );
+}
+
+function WebStructuredChatContentFade({
+  composerHeight,
+  overlayTranslateY,
+  children,
+}: StructuredChatContentFadeProps) {
   const webMaskStyle = useAnimatedStyle<WebMaskStyle>(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
@@ -87,40 +187,10 @@ export function StructuredChatContentFade({
     };
   });
 
-  if (Platform.OS === "web") {
-    return (
-      <Reanimated.View style={[styles.container, webMaskStyle]}>
-        {children}
-      </Reanimated.View>
-    );
-  }
-
   return (
-    <MaskedView
-      androidRenderingMode="software"
-      style={styles.container}
-      maskElement={
-        <View pointerEvents="none" style={styles.maskCanvas}>
-          <Reanimated.View
-            style={[
-              styles.opaqueMask,
-              opaqueMaskStyle,
-              { backgroundColor: nativeMask.visible },
-            ]}
-          />
-          <AnimatedLinearGradient
-            pointerEvents="none"
-            colors={[nativeMask.visible, nativeMask.hidden]}
-            locations={[0, 1]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={[styles.fadeMask, fadeMaskStyle]}
-          />
-        </View>
-      }
-    >
+    <Reanimated.View style={[styles.container, webMaskStyle]}>
       {children}
-    </MaskedView>
+    </Reanimated.View>
   );
 }
 
@@ -141,6 +211,12 @@ const styles = StyleSheet.create({
   fadeMask: {
     position: "absolute",
     right: 0,
+    left: 0,
+  },
+  opaqueCover: {
+    position: "absolute",
+    right: 0,
+    bottom: 0,
     left: 0,
   },
 });

@@ -89,7 +89,7 @@ describe("structured chat keyboard overlay", () => {
     expect(work).toContain("KeyboardAvoidingView");
   });
 
-  test("masks timeline alpha without painting a Composer-side background fade", () => {
+  test("routes platform content fades without changing timeline geometry", () => {
     const frame = source("InterfaceChatKeyboardFrame.tsx");
     const contentFade = source("StructuredChatContentFade.tsx");
     const topFade = frame.indexOf("styles.topFade");
@@ -102,18 +102,24 @@ describe("structured chat keyboard overlay", () => {
     expect(frame).toContain("<StructuredChatContentFade");
     expect(frame).toContain("composerHeight={composerHeight}");
     expect(frame).toContain("overlayTranslateY={overlayTranslateY}");
+    expect(contentFade).toContain("function AndroidStructuredChatContentFade");
+    expect(contentFade).toContain("function IosStructuredChatContentFade");
+    expect(contentFade).toContain("function WebStructuredChatContentFade");
     expect(contentFade).toContain("<MaskedView");
     expect(contentFade).toContain("maskElement={");
-    expect(contentFade).toContain('androidRenderingMode="software"');
+    expect(contentFade).not.toContain('androidRenderingMode="software"');
+    expect(contentFade).toContain("<AndroidStructuredChatContentFade");
+    expect(contentFade).toContain("colors={[colors.hidden, colors.visible]}");
+    expect(contentFade).toContain("styles.opaqueCover");
     expect(contentFade).toContain('pointerEvents="none"');
     expect(contentFade).toContain("maskImage");
     expect(contentFade).toContain("structuredChatContentFadeGeometry(");
     expect(contentFade).toContain(
       "structuredChatNativeMaskColors(canvasColor)",
     );
-    expect(contentFade).toContain("backgroundColor: nativeMask.visible");
+    expect(contentFade).toContain("backgroundColor: colors.visible");
     expect(contentFade).toContain(
-      "colors={[nativeMask.visible, nativeMask.hidden]}",
+      "colors={[colors.visible, colors.hidden]}",
     );
     expect(contentFade).not.toContain("TerminalThemeChrome");
     expect(contentFade).not.toContain("appBackground");
