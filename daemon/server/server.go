@@ -1058,8 +1058,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			targetID = raw.AgentID
 		}
 		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
-			Cols: raw.Cols,
-			Rows: raw.Rows,
+			Cols:   raw.Cols,
+			Rows:   raw.Rows,
+			Socket: s.watcher.SocketPathFor(targetID),
 		}, func(v any) {
 			s.sendJSON(conn, v)
 		})

@@ -131,6 +131,24 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
+	// Daemon tmux isolation (Slice 3): Zen-owned Brain and delegated Sessions
+	// live on one daemon-namespaced tmux server, never the user's default
+	// server. The socket is stable across daemon restarts so sessions
+	// survive; the host scratch is the TMUX_TMPDIR for hidden host panes.
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		// The socket path must stay well under sockaddr_un (~108 bytes), so
+		// only a short digest of the durable daemon identity namespaces it.
+		daemonID := strings.TrimSpace(authManager.DaemonID())
+		if len(daemonID) > 24 {
+			daemonID = daemonID[:24]
+		}
+		daemonSocketPath := filepath.Join(home, ".zen", "run", "tmux", "zen-"+daemonID+".sock")
+		daemonScratchDir := filepath.Join(home, ".zen", "run", "tmux-scratch", daemonID)
+		if mkdirErr := os.MkdirAll(filepath.Dir(daemonSocketPath), 0o700); mkdirErr == nil {
+			_ = os.MkdirAll(daemonScratchDir, 0o700)
+			w.SetDaemonSocket(daemonSocketPath, daemonScratchDir)
+		}
+	}
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	w.SetProviderActivityProbe(newWorkProviderActivityProbe())
 	sc := stats.NewCollector()

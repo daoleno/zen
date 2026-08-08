@@ -540,3 +540,48 @@ func drainTmuxEvents(events <-chan Event, quiet time.Duration) {
 		}
 	}
 }
+
+// TestTmuxBackendViewSessionLivesOnTargetSocket covers Slice 3: the linked
+// view session for a Zen-owned Session is created on the target's own server
+// (link-window is server-local), so the user's default tmux server is never
+// involved and an unscoped default-server kill cannot affect the view or the
+// source Session.
+func TestTmuxBackendViewSessionLivesOnTargetSocket(t *testing.T) {
+	requireTmux(t)
+	tmuxTmpDir := isolateTmuxServer(t)
+	daemonSocket := filepath.Join(tmuxTmpDir, "zen-daemon.sock")
+	if err := exec.Command("tmux", "-S", daemonSocket, "new-session", "-d", "-s", "delegated", "sleep 300").Run(); err != nil {
+		t.Fatalf("create daemon-server source session: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", daemonSocket, "kill-server").Run() })
+
+	windowID := tmuxTestOutput(t, "-S", daemonSocket, "display-message", "-p", "-t", "delegated", "#{window_id}")
+	opened, err := (&TmuxBackend{}).Open("delegated:"+windowID, OpenOptions{Cols: 44, Rows: 18, Socket: daemonSocket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone := opened.(*tmuxSession)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = phone.Close()
+		}
+	})
+	if err := phone.Start(ctx); err != nil {
+		t.Fatalf("start phone tmux client: %v", err)
+	}
+	helper := phone.linkedSession
+	if helper == "" {
+		t.Fatal("linked view session missing")
+	}
+	// The view session must live on the daemon server...
+	onDaemon := exec.Command("tmux", "-S", daemonSocket, "has-session", "-t", helper).Run() == nil
+	// ...and must NOT exist on the user default server (no ownership mixing).
+	onDefault := exec.Command("tmux", "has-session", "-t", helper).Run() == nil
+	if !onDaemon || onDefault {
+		t.Fatalf("view session placement: onDaemon=%v onDefault=%v", onDaemon, onDefault)
+	}
+	_ = closed
+}

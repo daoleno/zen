@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,11 +140,24 @@ type sessionInputIO interface {
 	paneContent(target string) (string, error)
 }
 
-type realSessionInputIO struct{}
+// realSessionInputIO executes tmux on the target's own server: Zen-owned
+// sessions live on the daemon-namespaced socket, user/manual sessions on the
+// user's default server. socketFor resolves the per-target server; nil keeps
+// the user default (test doubles).
+type realSessionInputIO struct {
+	socketFor func(sessionID string) string
+}
 
-func (realSessionInputIO) pane(sessionID string) sessionInputPane {
-	out, err := exec.Command(
-		"tmux",
+func (io realSessionInputIO) socket(sessionID string) string {
+	if io.socketFor != nil {
+		return io.socketFor(sessionID)
+	}
+	return ""
+}
+
+func (io realSessionInputIO) pane(sessionID string) sessionInputPane {
+	out, err := tmuxCommand(
+		io.socket(sessionID),
 		"display-message",
 		"-p",
 		"-t",
@@ -189,7 +201,7 @@ func sessionInputPaneGeneration(paneID string) string {
 }
 
 func (realSessionInputIO) loadBuffer(buffer, payload string) error {
-	command := exec.Command("tmux", "load-buffer", "-b", buffer, "-")
+	command := tmuxCommand("", "load-buffer", "-b", buffer, "-")
 	command.Stdin = strings.NewReader(payload)
 	if out, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("load payload into tmux buffer: %w%s", err, commandOutputSuffix(out))
@@ -198,11 +210,11 @@ func (realSessionInputIO) loadBuffer(buffer, payload string) error {
 }
 
 func (realSessionInputIO) deleteBuffer(buffer string) {
-	_ = exec.Command("tmux", "delete-buffer", "-b", buffer).Run()
+	_ = tmuxCommand("", "delete-buffer", "-b", buffer).Run()
 }
 
 func (realSessionInputIO) runQueue(args []string) (bool, error) {
-	command := exec.Command("tmux", args...)
+	command := tmuxCommand("", args...)
 	if err := command.Start(); err != nil {
 		return false, err
 	}
@@ -212,15 +224,15 @@ func (realSessionInputIO) runQueue(args []string) (bool, error) {
 	return true, nil
 }
 
-func (realSessionInputIO) receiptLedger(target string) (sessionInputReceiptLedger, error) {
-	value, err := tmuxWindowUserOption(target, sessionInputReceiptOption)
+func (io realSessionInputIO) receiptLedger(target string) (sessionInputReceiptLedger, error) {
+	value, err := tmuxWindowUserOption(io.socket(target), target, sessionInputReceiptOption)
 	if err != nil {
 		return sessionInputReceiptLedger{}, err
 	}
 	return decodeSessionInputReceiptLedger(value)
 }
 
-func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error {
+func (io realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error {
 	if err := validateSessionInputReceiptLedger(ledger); err != nil {
 		return err
 	}
@@ -228,8 +240,8 @@ func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputR
 	if err != nil {
 		return fmt.Errorf("encode Session input receipt ledger: %w", err)
 	}
-	out, err := exec.Command(
-		"tmux",
+	out, err := tmuxCommand(
+		io.socket(target),
 		"set-option",
 		"-w",
 		"-t",
@@ -243,8 +255,8 @@ func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputR
 	return nil
 }
 
-func (realSessionInputIO) paneContent(target string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-200").Output()
+func (io realSessionInputIO) paneContent(target string) (string, error) {
+	out, err := tmuxCommand(io.socket(target), "capture-pane", "-t", target, "-p", "-S", "-200").Output()
 	if err != nil {
 		return "", fmt.Errorf("capture post-dispatch pane baseline: %w", err)
 	}

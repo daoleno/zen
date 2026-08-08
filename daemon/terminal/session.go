@@ -31,6 +31,11 @@ type Event struct {
 type OpenOptions struct {
 	Cols int
 	Rows int
+	// Socket is the tmux server for the target: the daemon-namespaced server
+	// for Zen-owned Brain/delegated Sessions, or "" (the user's default
+	// server) for manual Terminal Sessions. The linked view session is
+	// created on the same server so link-window stays server-local.
+	Socket string
 }
 
 // Size reports the current terminal dimensions.

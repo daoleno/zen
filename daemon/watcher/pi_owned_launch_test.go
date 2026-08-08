@@ -646,7 +646,7 @@ func TestMarkCreatedSessionPersistsOnlyValidPiBinding(t *testing.T) {
 			if err := os.Remove(logPath); err != nil && !os.IsNotExist(err) {
 				t.Fatal(err)
 			}
-			if err := markCreatedSession("main:@9", CreateSessionOptions{Command: tc.command}); err != nil {
+			if err := markCreatedSession("", "main:@9", CreateSessionOptions{Command: tc.command}); err != nil {
 				t.Fatal(err)
 			}
 			found := false
@@ -694,7 +694,7 @@ func TestListTmuxWindowsParsesPiSessionBinding(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	windows, err := listTmuxWindows()
+	windows, err := listTmuxWindowsOn("")
 	if err != nil {
 		t.Fatal(err)
 	}
