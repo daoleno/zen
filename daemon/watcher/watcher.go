@@ -237,7 +237,7 @@ type Watcher struct {
 	pollGeneration        int64
 	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
 	turnLedger            TurnLedger
-	pollSources           *PollSources // test-only seam (SetPollSources); production is nil
+	pollSources           *PollSources            // test-only seam (SetPollSources); production is nil
 	ledgerTurns           map[string]TurnSnapshot // projection cache of the canonical ledger, never a truth owner
 	appliedFactIDs        map[string]string       // session -> last applied provider FactID (skip identical applies)
 	ledgerTurnReadAt      map[string]time.Time    // TTL for authoritative ledger re-reads
@@ -256,18 +256,18 @@ type Watcher struct {
 // New creates a Watcher that polls tmux windows at the given interval.
 func New(pollInterval time.Duration) *Watcher {
 	return &Watcher{
-		pollInterval:   pollInterval,
-		agents:         make(map[string]*classifier.Agent),
-		prevContent:    make(map[string]string),
-		hidden:         make(map[string]bool),
-		delegated:      make(map[string]bool),
-		agentEpoch:     make(map[string]int64),
-		ledgerTurns:    make(map[string]TurnSnapshot),
-		appliedFactIDs: make(map[string]string),
+		pollInterval:     pollInterval,
+		agents:           make(map[string]*classifier.Agent),
+		prevContent:      make(map[string]string),
+		hidden:           make(map[string]bool),
+		delegated:        make(map[string]bool),
+		agentEpoch:       make(map[string]int64),
+		ledgerTurns:      make(map[string]TurnSnapshot),
+		appliedFactIDs:   make(map[string]string),
 		ledgerTurnReadAt: make(map[string]time.Time),
-		events:         make(chan SessionEvent, 100),
-		resources:      noopDelegatedResourceManager{},
-		sessionInput:   defaultSessionInputOwner,
+		events:           make(chan SessionEvent, 100),
+		resources:        noopDelegatedResourceManager{},
+		sessionInput:     defaultSessionInputOwner,
 	}
 }
 
@@ -594,11 +594,12 @@ func controlFactFromProgress(id, turnID string, progress classifier.AgentProgres
 		progressEventID = uuid.NewString()
 	}
 	base := TurnFact{
-		SessionID: id,
-		TurnID:    turnID,
-		Class:     EvidenceControl,
-		At:        now,
-		Summary:   strings.TrimSpace(progress.Summary),
+		SessionID:    id,
+		TurnID:       turnID,
+		Class:        EvidenceControl,
+		At:           now,
+		Summary:      strings.TrimSpace(progress.Summary),
+		LeaseSeconds: progress.LeaseSeconds,
 	}
 	progressState := classifier.ProgressState(progress)
 	switch progressState {

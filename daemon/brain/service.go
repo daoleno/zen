@@ -61,10 +61,7 @@ type Service struct {
 	dispatchMu      sync.Mutex
 	foregroundInput bool
 
-	reconcileMu                sync.Mutex
-	authoritativeInventorySeen bool
-	delegatedInventory         map[string]struct{}
-	unmanagedInventory         map[string]struct{}
+	reconcileMu sync.Mutex
 
 	routeMu sync.Mutex
 	routes  SessionRouteLifecycle
@@ -494,22 +491,6 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if !agent.Delegated || agent.Hidden || strings.TrimSpace(agent.ID) == "" {
 		return false, nil
 	}
-	if event.Type == "agent_removed" {
-		s.reconcileMu.Lock()
-		if s.unmanagedInventory == nil {
-			s.unmanagedInventory = make(map[string]struct{})
-		}
-		s.unmanagedInventory[agent.ID] = struct{}{}
-		delete(s.delegatedInventory, agent.ID)
-		s.reconcileMu.Unlock()
-	}
-	item, found, err := s.store.WorkByOwnerSession(agent.ID)
-	if err != nil {
-		return false, err
-	}
-	if !found {
-		return false, nil
-	}
 	if _, hasTurn, turnErr := s.store.Turn(agent.ID); turnErr != nil {
 		return false, turnErr
 	} else if hasTurn {
@@ -519,164 +500,11 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		// ownership stays attached until Brain resolves session.uncertain.
 		return s.DispatchPendingEvent()
 	}
-	if event.Type == "agent_removed" {
-		terminal, err := s.removalFollowsTerminalSession(item.ID, agent.ID)
-		if err != nil {
-			return false, err
-		}
-		if terminal {
-			_, _, _, err := s.store.ReconcileMissingWorkOwner(item.ID, agent.ID)
-			if err != nil {
-				return false, err
-			}
-			return false, nil
-		}
-	}
-
-	kind, actionable, update, ok := sessionEventProjection(event)
-	if !ok {
-		return false, nil
-	}
-	if terminalKind, terminal, latest, err := s.sessionTurnTerminalKind(item.ID, event); err != nil {
-		return false, err
-	} else if terminal {
-		if !latest || item.Status == WorkDone || item.Status == WorkCancelled {
-			return false, nil
-		}
-		terminalUpdate := terminalSessionWorkUpdate(terminalKind)
-		if workUpdateChanges(item, terminalUpdate) {
-			if _, err := s.store.UpdateWork(item.ID, terminalUpdate); err != nil {
-				return false, err
-			}
-		}
-		return false, nil
-	}
-	if actionable && calendarOwnsTerminalResult(item, event) {
-		actionable = false
-	}
-	if workUpdateChanges(item, update) {
-		item, err = s.store.UpdateWork(item.ID, update)
-		if err != nil {
-			return false, err
-		}
-	}
-	dedupeKey, err := s.sessionEventDedupeKey(item.ID, event, kind)
-	if err != nil {
-		return false, err
-	}
-	recorded, created, err := s.store.AppendWorkEvent(WorkEvent{
-		WorkID:     item.ID,
-		Kind:       kind,
-		DedupeKey:  dedupeKey,
-		PayloadRef: "session:" + agent.ID,
-		SourceName: strings.TrimSpace(agent.Name),
-		Summary:    strings.TrimSpace(agent.Summary),
-		Actionable: actionable,
-	})
-	if err != nil {
-		return false, err
-	}
-	if created && isProjectedWorkResultEvent(recorded.Kind) {
-		_, _, _ = s.store.MaterializeWorkCard(item, recorded)
-	}
-	if !created || !actionable {
-		return false, nil
-	}
-	return s.DispatchPendingEvent()
-}
-
-func (s *Service) removalFollowsTerminalSession(workID, sessionID string) (bool, error) {
-	events, err := s.store.ListWorkEvents(workID)
-	if err != nil {
-		return false, err
-	}
-	payloadRef := "session:" + strings.TrimSpace(sessionID)
-	lastLifecycleKind := ""
-	for _, event := range events {
-		if event.PayloadRef == payloadRef && isSessionLifecycleKind(event.Kind) {
-			lastLifecycleKind = event.Kind
-		}
-	}
-	return lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed", nil
-}
-
-func calendarOwnsTerminalResult(item Work, event watcher.SessionEvent) bool {
-	if !strings.HasPrefix(strings.TrimSpace(item.ContextRef), "calendar:") ||
-		event.Agent == nil ||
-		(event.Type != "agent_state_change" && event.Type != "agent_removed") {
-		return false
-	}
-	state := classifier.AgentState(firstNonEmpty(event.NewState, string(event.Agent.State)))
-	return state == classifier.StateDone ||
-		state == classifier.StateFailed ||
-		state == classifier.StateRemoved
-}
-
-func sessionEventProjection(event watcher.SessionEvent) (string, bool, WorkUpdate, bool) {
-	agent := event.Agent
-	if agent == nil {
-		return "", false, WorkUpdate{}, false
-	}
-	sessionWait := "Session " + agent.ID
-	switch event.Type {
-	case "agent_metadata_change":
-		if !agent.NeedsAttention {
-			return "session.progress", false, WorkUpdate{}, true
-		}
-		switch strings.TrimSpace(agent.Attention) {
-		case "user_input", "blocked":
-			status := WorkNeedsInput
-			next := "Resolve the delegated Session request."
-			return "session.needs_input", true, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &sessionWait,
-			}, true
-		case "failed":
-			status := WorkWaiting
-			next := "Inspect the delegated Session failure."
-			return "session.failed", true, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &sessionWait,
-			}, true
-		default:
-			return "session.progress", false, WorkUpdate{}, true
-		}
-	case "agent_state_change", "agent_removed":
-		state := firstNonEmpty(event.NewState, string(agent.State))
-		switch classifier.AgentState(state) {
-		case classifier.StateRunning:
-			status := WorkRunning
-			next := "Wait for the delegated Session."
-			return "session.running", false, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &sessionWait,
-			}, true
-		case classifier.StateUnknown:
-			status := WorkWaiting
-			next := "Wait for a durable Session lifecycle fact."
-			return "session.waiting", false, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &sessionWait,
-			}, true
-		case classifier.StateBlocked:
-			status := WorkNeedsInput
-			next := "Resolve the delegated Session blocker."
-			return "session.needs_input", true, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &sessionWait,
-			}, true
-		case classifier.StateDone:
-			return "session.done", true, terminalSessionWorkUpdate("session.done"), true
-		case classifier.StateFailed, classifier.StateRemoved:
-			return "session.failed", true, terminalSessionWorkUpdate("session.failed"), true
-		}
-	}
-	return "", false, WorkUpdate{}, false
+	// No canonical current TurnID: no delegated lifecycle event exists. The
+	// legacy raw-state projection (sessionEventProjection), occurrence
+	// counting, and terminal-kind string scanning are deleted; a markerless
+	// accepted input is unrepresentable.
+	return false, nil
 }
 
 func terminalSessionWorkUpdate(kind string) WorkUpdate {
@@ -691,106 +519,6 @@ func terminalSessionWorkUpdate(kind string) WorkUpdate {
 		NextAction: &next,
 		WaitFor:    &empty,
 	}
-}
-
-func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEvent, kind string) (string, error) {
-	agent := event.Agent
-	if turnID := strings.TrimSpace(event.TurnID); turnID != "" {
-		return sessionTurnEventDedupeKey(event.AgentID, turnID, kind), nil
-	}
-	if agent == nil {
-		return "session:" + strings.TrimSpace(event.AgentID) + ":" + kind + ":1", nil
-	}
-	events, err := s.store.ListWorkEvents(workID)
-	if err != nil {
-		return "", err
-	}
-	occurrence := 1
-	lastLifecycleKind := ""
-	lastDedupeKey := ""
-	payloadRef := "session:" + agent.ID
-	for _, current := range events {
-		if current.PayloadRef != payloadRef || !isSessionLifecycleKind(current.Kind) {
-			continue
-		}
-		lastLifecycleKind = current.Kind
-		lastDedupeKey = current.DedupeKey
-		if current.Kind == kind {
-			occurrence++
-		}
-	}
-	if lastLifecycleKind == kind && lastDedupeKey != "" {
-		return lastDedupeKey, nil
-	}
-	return fmt.Sprintf("session:%s:%s:%d", agent.ID, kind, occurrence), nil
-}
-
-// sessionTurnTerminalKind makes a terminal Session fact immutable before any
-// later fact for that accepted turn can mutate Work. A distinct accepted turn
-// ID remains a new lifecycle boundary and prevents the older terminal turn
-// from repairing over that newer projection.
-func (s *Service) sessionTurnTerminalKind(
-	workID string,
-	event watcher.SessionEvent,
-) (string, bool, bool, error) {
-	if event.Agent == nil {
-		return "", false, false, nil
-	}
-	events, err := s.store.ListWorkEvents(workID)
-	if err != nil {
-		return "", false, false, err
-	}
-	sessionID := strings.TrimSpace(firstNonEmpty(event.AgentID, event.Agent.ID))
-	payloadRef := "session:" + strings.TrimSpace(event.Agent.ID)
-	turnID := strings.TrimSpace(event.TurnID)
-	turnDoneKey := ""
-	turnFailedKey := ""
-	turnKeyPrefix := ""
-	if turnID != "" {
-		turnDoneKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.done")
-		turnFailedKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.failed")
-		turnKeyPrefix = strings.TrimSuffix(turnDoneKey, "session.done")
-	}
-	lastLifecycleKind := ""
-	terminalKind := ""
-	terminalIndex := -1
-	for index, current := range events {
-		if current.PayloadRef != payloadRef {
-			continue
-		}
-		if isSessionLifecycleKind(current.Kind) {
-			lastLifecycleKind = current.Kind
-		}
-		if turnID == "" {
-			continue
-		}
-		switch current.DedupeKey {
-		case turnDoneKey:
-			terminalKind = "session.done"
-			terminalIndex = index
-		case turnFailedKey:
-			terminalKind = "session.failed"
-			terminalIndex = index
-		}
-	}
-	if terminalIndex >= 0 {
-		latest := true
-		for _, current := range events[terminalIndex+1:] {
-			if current.PayloadRef != payloadRef ||
-				strings.HasPrefix(current.DedupeKey, turnKeyPrefix) {
-				continue
-			}
-			if isSessionLifecycleKind(current.Kind) || current.Kind == "session.progress" {
-				latest = false
-				break
-			}
-		}
-		return terminalKind, true, latest, nil
-	}
-	if turnID == "" && (lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed") {
-		return lastLifecycleKind, true, true, nil
-	}
-	return "", false, false, nil
 }
 
 func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
@@ -810,6 +538,27 @@ func isSessionLifecycleKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// isTurnScopedSessionDedupeKey reports whether a delegated lifecycle dedupe
+// key carries the canonical TurnID shape
+// (session:<sessionID>:turn:<turnID>:<kind>). Occurrence-counting and
+// bare-session keys are unrepresentable for lifecycle events.
+func isTurnScopedSessionDedupeKey(dedupeKey string) bool {
+	dedupeKey = strings.TrimSpace(dedupeKey)
+	if !strings.HasPrefix(dedupeKey, "session:") {
+		return false
+	}
+	rest := strings.TrimPrefix(dedupeKey, "session:")
+	turnMarker := strings.Index(rest, ":turn:")
+	if turnMarker <= 0 {
+		return false
+	}
+	after := rest[turnMarker+len(":turn:"):]
+	return strings.TrimSpace(rest[:turnMarker]) != "" &&
+		strings.TrimSpace(after) != "" &&
+		!strings.HasPrefix(after, ":") &&
+		!strings.Contains(after, ":turn:")
 }
 
 func workUpdateChanges(item Work, update WorkUpdate) bool {
@@ -1266,24 +1015,10 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 	}
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
-	firstAuthoritativeInventory := !s.authoritativeInventorySeen
 	byID := make(map[string]*classifier.Agent, len(agents))
-	if s.delegatedInventory == nil {
-		s.delegatedInventory = make(map[string]struct{})
-	}
-	if s.unmanagedInventory == nil {
-		s.unmanagedInventory = make(map[string]struct{})
-	}
 	for _, agent := range agents {
 		if agent != nil {
 			byID[agent.ID] = agent
-			if agent.Delegated && !agent.Hidden {
-				s.delegatedInventory[agent.ID] = struct{}{}
-				delete(s.unmanagedInventory, agent.ID)
-			} else {
-				s.unmanagedInventory[agent.ID] = struct{}{}
-				delete(s.delegatedInventory, agent.ID)
-			}
 		}
 	}
 	items, err := s.store.ListWork()
@@ -1291,7 +1026,6 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		log.Printf("brain Work reconciliation list failed: %v", err)
 		return
 	}
-	s.authoritativeInventorySeen = true
 	now := s.nowUTC()
 	for _, item := range items {
 		if item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.OwnerSessionID) == "" {
@@ -1303,157 +1037,69 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			log.Printf("brain Session canonical turn read failed for %s: %v", item.OwnerSessionID, turnErr)
 			continue
 		}
-		if hasTurn {
-			// Canonical-turn path: the ledger owns Work + Events. Immutable
-			// terminal turns (Done/Failed) are final; Unknown is still probed
-			// for a later bound Provider terminal. Only the lease-expiry
-			// stale wake and the restart-absent recovery are re-derived here.
-			if watcher.TurnImmutable(turn.Status) {
-				continue
-			}
-			if agent == nil {
-				// A canonical Session absent from a successful inventory
-				// (daemon was down, or the window vanished): end-of-identity
-				// recovery. Without a readable bound Provider terminal this
-				// resolves Unknown + one actionable session.uncertain
-				// (deduped once per turn) so Brain reconciles; the reducer
-				// never fabricates Failed from disappearance.
-				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-					SessionID:   item.OwnerSessionID,
-					TurnID:      turn.TurnID,
-					Class:       watcher.EvidenceLiveness,
-					Kind:        "uncertain",
-					ProcessDead: true,
-					SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
-					At:          now,
-					Summary:     "Delegated Session is absent after restart; outcome is unknown",
-				})
-				continue
-			}
-			if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
-				continue
-			}
-			leaseActive := agent != nil && agent.ExpectedNextCheckAt != nil &&
-				!now.After(agent.ExpectedNextCheckAt.UTC())
-			if agent != nil && !agent.PaneAlive && agent.ProcessID <= 0 && !leaseActive {
-				continue
-			}
-			if agent == nil || agent.ExpectedNextCheckAt == nil || agent.LastProgressAt == nil {
-				continue
-			}
-			if now.Before(agent.ExpectedNextCheckAt.UTC()) {
-				continue
-			}
-			// Lease expired with a live nonterminal turn: one actionable
-			// session.stale per turn (dedupe session:<sid>:turn:<tid>:stale)
-			// wakes Brain; the reducer never terminalizes from a clock.
-			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-				SessionID: item.OwnerSessionID,
-				TurnID:    turn.TurnID,
-				Class:     watcher.EvidenceControl,
-				Kind:      "stale",
-				SourceID:  "lease:expiry:" + turn.TurnID,
-				At:        now,
-				Summary:   "Delegated Session progress lease expired",
-			})
+		if !hasTurn {
+			// No canonical current TurnID: the ledger owns no lifecycle for
+			// this Work. Heartbeat reconciliation cannot fabricate terminal
+			// or stale state from pane/process/classifier state, so nothing
+			// is routed and no Work text is rewritten from raw state.
+			continue
+		}
+		// Canonical-turn path: the ledger owns Work + Events. Immutable
+		// terminal turns (Done/Failed) are final; Unknown is still probed
+		// for a later bound Provider terminal. Only the lease-expiry stale
+		// wake and the restart-absent recovery are re-derived here, both
+		// from the current ledger record.
+		if watcher.TurnImmutable(turn.Status) {
 			continue
 		}
 		if agent == nil {
-			_, knownDelegated := s.delegatedInventory[item.OwnerSessionID]
-			if _, knownUnmanaged := s.unmanagedInventory[item.OwnerSessionID]; knownUnmanaged {
-				continue
-			}
-			if !firstAuthoritativeInventory && !knownDelegated {
-				continue
-			}
-			s.reconcileAbsentDelegatedSession(item)
-			continue
-		}
-		if !agent.Delegated || agent.Hidden {
-			continue
-		}
-		if agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateRemoved {
-			_, _ = s.RouteSessionEvent(watcher.SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  agent.ID,
-				Agent:    agent,
-				OldState: string(agent.State),
-				NewState: string(agent.State),
+			// A canonical Session absent from a successful inventory
+			// (daemon was down, or the window vanished): end-of-identity
+			// recovery. Without a readable bound Provider terminal this
+			// resolves Unknown + one actionable session.uncertain
+			// (deduped once per turn) so Brain reconciles; the reducer
+			// never fabricates Failed from disappearance.
+			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+				SessionID:   item.OwnerSessionID,
+				TurnID:      turn.TurnID,
+				Class:       watcher.EvidenceLiveness,
+				Kind:        "uncertain",
+				ProcessDead: true,
+				SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
+				At:          now,
+				Summary:     "Delegated Session is absent after restart; outcome is unknown",
 			})
-			continue
-		}
-		if terminal, err := s.sessionProjectionIsTerminal(item.ID, agent.ID); err != nil {
-			log.Printf("brain Session terminal projection check failed for %s: %v", agent.ID, err)
-			continue
-		} else if terminal {
 			continue
 		}
 		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 			continue
 		}
-		leaseActive := agent.ExpectedNextCheckAt != nil &&
-			!now.After(agent.ExpectedNextCheckAt.UTC())
-		if !agent.PaneAlive && agent.ProcessID <= 0 && !leaseActive {
-			s.reconcileAbsentDelegatedSession(item)
+		// session.stale reads the current turn's OWN expected-next-check
+		// time only: the agent's lease fields are a cross-turn projection
+		// and cannot stale a newer turn (the false-stale incident). A dead
+		// pane is owned by watcher liveness (end-of-identity Unknown),
+		// never by the clock.
+		if now.Before(turn.LeaseDeadline.UTC()) {
 			continue
 		}
-		if agent.ExpectedNextCheckAt == nil || agent.LastProgressAt == nil {
+		if !agent.PaneAlive && agent.ProcessID <= 0 {
 			continue
 		}
-		if now.Before(agent.ExpectedNextCheckAt.UTC()) {
-			status := WorkWaiting
-			wait := "Session " + agent.ID
-			next := "Wait for the delegated Session lease."
-			update := WorkUpdate{Status: &status, WaitFor: &wait, NextAction: &next}
-			if workUpdateChanges(item, update) {
-				_, _ = s.store.UpdateWork(item.ID, update)
-			}
-			continue
-		}
-		status := WorkWaiting
-		wait := "Session " + agent.ID + " is live; progress lease overdue."
-		next := "Wait for authoritative delegated Session state."
-		update := WorkUpdate{Status: &status, WaitFor: &wait, NextAction: &next}
-		if workUpdateChanges(item, update) {
-			_, _ = s.store.UpdateWork(item.ID, update)
-		}
+		// Lease expired with a live nonterminal turn: one actionable
+		// session.stale per turn (dedupe session:<sid>:turn:<tid>:stale)
+		// wakes Brain; the reducer never terminalizes from a clock and
+		// ignores stale facts for non-current turns.
+		_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+			SessionID: item.OwnerSessionID,
+			TurnID:    turn.TurnID,
+			Class:     watcher.EvidenceControl,
+			Kind:      "stale",
+			SourceID:  "lease:expiry:" + turn.TurnID,
+			At:        now,
+			Summary:   "Delegated Session progress lease expired",
+		})
 	}
 	_, _ = s.DispatchPendingEvent()
-}
-
-func (s *Service) sessionProjectionIsTerminal(workID, sessionID string) (bool, error) {
-	events, err := s.store.ListWorkEvents(workID)
-	if err != nil {
-		return false, err
-	}
-	payloadRef := "session:" + strings.TrimSpace(sessionID)
-	terminal := false
-	for _, event := range events {
-		if event.PayloadRef != payloadRef {
-			continue
-		}
-		switch event.Kind {
-		case "session.running", "session.progress":
-			terminal = false
-		case "session.done", "session.failed":
-			terminal = true
-		}
-	}
-	return terminal, nil
-}
-
-func (s *Service) reconcileAbsentDelegatedSession(item Work) {
-	workItem, event, created, err := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
-	if err != nil {
-		log.Printf("brain absent Session reconciliation failed for %s: %v", item.OwnerSessionID, err)
-		return
-	}
-	if created && isProjectedWorkResultEvent(event.Kind) {
-		_, _, _ = s.store.MaterializeWorkCard(workItem, event)
-	}
-	if created {
-		_, _ = s.DispatchPendingEvent()
-	}
 }
 
 func (s *Service) SubscribeWork() (int, <-chan WorkChange) {

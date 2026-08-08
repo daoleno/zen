@@ -89,7 +89,7 @@ func TestOrchestrationSchemaV2DropsDeliveryCeremonyDeterministically(t *testing.
 			ID:                    "event-v1",
 			WorkID:                "work-v1",
 			Kind:                  "session.done",
-			DedupeKey:             "session:legacy:done",
+			DedupeKey:             "session:legacy:turn:v1:session.done",
 			Actionable:            true,
 			CreatedAt:             fixed,
 			ClaimedAt:             &fixed,
@@ -215,7 +215,7 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 			_, wasCreated, appendErr := store.AppendWorkEvent(WorkEvent{
 				WorkID:     item.ID,
 				Kind:       "session.done",
-				DedupeKey:  "session:worker:@1:done:42",
+				DedupeKey:  "session:worker:@1:turn:42:session.done",
 				Actionable: true,
 			})
 			if appendErr != nil {
@@ -284,7 +284,7 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	event, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: item.ID, Kind: "session.done", DedupeKey: "session:worker:@1:done", Actionable: true,
+		WorkID: item.ID, Kind: "session.done", DedupeKey: "session:worker:@1:turn:one:session.done", Actionable: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if _, _, err := store.AppendWorkEvent(WorkEvent{
 			WorkID:     item.ID,
 			Kind:       "session.stale",
-			DedupeKey:  "session:terminal:" + string(status),
+			DedupeKey:  "session:terminal:" + string(status) + ":turn:one:session.stale",
 			Actionable: true,
 		}); err != nil {
 			t.Fatal(err)
@@ -367,7 +367,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	terminalEvent, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     terminal.ID,
 		Kind:       "session.stale",
-		DedupeKey:  "session:claimed-then-terminal",
+		DedupeKey:  "session:claimed:turn:one:session.stale",
 		Actionable: true,
 	})
 	if err != nil {
@@ -405,7 +405,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	activeEvent, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     active.ID,
 		Kind:       "session.done",
-		DedupeKey:  "session:later-active",
+		DedupeKey:  "session:later:turn:one:session.done",
 		Actionable: true,
 	})
 	if err != nil {
@@ -444,7 +444,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		event, _, err := store.AppendWorkEvent(WorkEvent{
 			WorkID:     item.ID,
 			Kind:       "calendar.result",
-			DedupeKey:  fmt.Sprintf("terminal-boundary:%s", offset),
+			DedupeKey:  fmt.Sprintf("session:boundary:turn:%s:session.done", offset),
 			Actionable: true,
 		})
 		if err != nil {
@@ -472,7 +472,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	readEvent, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: readWork.ID, Kind: "session.done", DedupeKey: "read-result", Actionable: true,
+		WorkID: readWork.ID, Kind: "session.done", DedupeKey: "session:read:turn:one:session.done", Actionable: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -509,7 +509,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	if _, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: unclaimedReadWork.ID, Kind: "session.done", DedupeKey: "read-before-claim", Actionable: true,
+		WorkID: unclaimedReadWork.ID, Kind: "session.done", DedupeKey: "session:read-before:turn:one:session.done", Actionable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
 	if _, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     second.ID,
 		Kind:       "session.done",
-		DedupeKey:  "session:c:done",
+		DedupeKey:  "session:c:turn:one:session.done",
 		Actionable: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -754,7 +754,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	if _, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.progress",
-		DedupeKey:  "progress:1",
+		DedupeKey:  "session:progress:turn:one:session.progress",
 		Actionable: false,
 	}); err != nil {
 		t.Fatal(err)
@@ -769,7 +769,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	actionable, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "done:1",
+		DedupeKey:  "session:worker:@1:turn:one:session.done",
 		PayloadRef: "session:worker:@1",
 		SourceName: "Worker One",
 		Summary:    "Completed the delegated change.",
@@ -921,7 +921,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 	event, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "accepted:persist-failure",
+		DedupeKey:  "session:accepted:turn:one:session.done",
 		SourceName: "Worker",
 		Summary:    "Provider accepted the direct Event.",
 		Actionable: true,
@@ -1000,7 +1000,7 @@ func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *tes
 			event, _, err := store.AppendWorkEvent(WorkEvent{
 				WorkID:     item.ID,
 				Kind:       "session.done",
-				DedupeKey:  provider + ":definite-pre-mutation",
+				DedupeKey:  "session:" + provider + ":turn:one:session.done",
 				Actionable: true,
 			})
 			if err != nil {
@@ -1069,7 +1069,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 			event, _, err := store.AppendWorkEvent(WorkEvent{
 				WorkID:     item.ID,
 				Kind:       "session.done",
-				DedupeKey:  provider + ":ambiguous",
+				DedupeKey:  "session:" + provider + ":turn:one:session.done",
 				Actionable: true,
 			})
 			if err != nil {
@@ -1145,7 +1145,7 @@ func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
 	event, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "absent-receipt",
+		DedupeKey:  "session:absent:turn:one:session.done",
 		Actionable: true,
 	})
 	if err != nil {
@@ -1205,7 +1205,7 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 	if _, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "done:user-precedence",
+		DedupeKey:  "session:user:turn:one:session.done",
 		Actionable: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -1281,12 +1281,36 @@ func TestConversationOnlyUserSteeringDoesNotCreateOrPauseWork(t *testing.T) {
 }
 
 func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
-	for _, state := range []classifier.AgentState{
-		classifier.StateDone,
-		classifier.StateFailed,
-		classifier.StateBlocked,
+	// Canonical contract: one actionable wake per (session, turn, kind) from
+	// the single reducer; replayed identical facts are no-ops.
+	for _, test := range []struct {
+		name string
+		kind string
+		fact func(store *Store, sessionID, turnID string, admission watcher.TurnAdmission)
+	}{
+		{
+			name: "done",
+			kind: "session.done",
+			fact: func(store *Store, sessionID, turnID string, admission watcher.TurnAdmission) {
+				applyProviderTerminal(t, store, sessionID, turnID, "done", admission)
+			},
+		},
+		{
+			name: "failed",
+			kind: "session.failed",
+			fact: func(store *Store, sessionID, turnID string, admission watcher.TurnAdmission) {
+				applyProviderTerminal(t, store, sessionID, turnID, "failed", admission)
+			},
+		},
+		{
+			name: "blocked",
+			kind: "session.needs_input",
+			fact: func(store *Store, sessionID, turnID string, admission watcher.TurnAdmission) {
+				applyControlAttention(t, store, sessionID, turnID)
+			},
+		},
 	} {
-		t.Run(string(state), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			store, err := NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -1296,10 +1320,6 @@ func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
 			if err := store.SetHostSession(hostID, "codex"); err != nil {
 				t.Fatal(err)
 			}
-			fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
-				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-			}}
-			service := NewService(store, fw, nil)
 			if _, err := store.CreateWork(Work{
 				Title:            "Delegated change",
 				Objective:        "Handle one terminal transition.",
@@ -1309,48 +1329,35 @@ func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			agent := &classifier.Agent{
-				ID:        sessionID,
-				Name:      "Worker",
-				Summary:   "Captured at the terminal transition.",
-				State:     state,
-				Delegated: true,
-				UpdatedAt: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
+			now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+			store.now = func() time.Time { return now }
+			turnID := sessionID + ":turn:1"
+			if err := store.AdmitTurn(watcher.AdmittedTurn{
+				SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
+			}); err != nil {
+				t.Fatal(err)
 			}
-			event := watcher.SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  sessionID,
-				OldState: string(classifier.StateRunning),
-				NewState: string(state),
-				Agent:    agent,
-			}
-			first, err := service.RouteSessionEvent(event)
-			if err != nil || !first {
-				t.Fatalf("first transition woke=%v err=%v", first, err)
-			}
-			restartedProjection := event
-			restartedAgent := *agent
-			restartedAgent.UpdatedAt = agent.UpdatedAt.Add(time.Hour)
-			restartedProjection.Agent = &restartedAgent
-			restartedProjection.OldState = ""
-			second, err := service.RouteSessionEvent(restartedProjection)
-			if err != nil || second {
-				t.Fatalf("duplicate transition woke=%v err=%v", second, err)
-			}
+			admission := providerAdmission("stream", "msg-1", 1, "sha", now)
+			applyReceiptAdmission(t, store, sessionID, turnID, admission)
+			test.fact(store, sessionID, turnID, admission)
+			// Re-apply the identical fact: deterministic FactID no-op.
+			test.fact(store, sessionID, turnID, admission)
+
 			events, err := store.ListWorkEvents("")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 1 || len(fw.sentCalls) != 1 ||
-				events[0].SourceName != "Worker" ||
-				events[0].Summary != "Captured at the terminal transition." {
-				t.Fatalf("events=%#v sends=%#v", events, fw.sentCalls)
+			if len(events) != 1 || events[0].Kind != test.kind {
+				t.Fatalf("events=%#v want exactly one %s", events, test.kind)
 			}
 		})
 	}
 }
 
 func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
+	// Canonical contract: a blocked attention fact wakes exactly once per
+	// (session, turn, kind); repeated identical facts dedupe; a later bound
+	// terminal for the same turn is its own kind and still wakes once.
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1360,78 +1367,229 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
+	item, err := store.CreateWork(Work{
+		Title:            "Lifecycle episodes",
+		Objective:        "Dedupe repeated facts without suppressing a later blocker.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admission := providerAdmission("stream", "msg-1", 1, "sha", now)
+	applyReceiptAdmission(t, store, sessionID, turnID, admission)
+
+	// First blocker wakes exactly once; repeated attention facts dedupe.
+	applyControlAttention(t, store, sessionID, turnID)
+	applyControlAttention(t, store, sessionID, turnID)
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionable := []WorkEvent{}
+	for _, event := range events {
+		if event.Kind == "session.needs_input" {
+			actionable = append(actionable, event)
+		}
+	}
+	if len(actionable) != 1 {
+		t.Fatalf("attention wakes = %d, want exactly one per turn: %#v", len(actionable), events)
+	}
+	// The same turn's bound terminal is a distinct kind and wakes once.
+	applyProviderTerminal(t, store, sessionID, turnID, "done", admission)
+	events, err = store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, event := range events {
+		if event.Kind == "session.done" && event.Actionable {
+			done++
+		}
+	}
+	if done != 1 {
+		t.Fatalf("done wakes = %d, want exactly one: %#v", done, events)
+	}
+}
+
+func applyReceiptAdmission(t *testing.T, store *Store, sessionID, turnID string, admission watcher.TurnAdmission) {
+	t.Helper()
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceReceipt,
+		Kind:       "admission",
+		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload",
+		Admission:  admission,
+		ActivityID: "activity-1",
+		At:         admission.At.Add(time.Second),
+	}); err != nil || !changed {
+		t.Fatalf("receipt admission apply = (%v, %v)", changed, err)
+	}
+}
+
+func applyControlAttention(t *testing.T, store *Store, sessionID, turnID string) {
+	t.Helper()
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "attention",
+		SourceID:     "control\x00attention-" + turnID,
+		LeaseSeconds: 300,
+		Summary:      "Resolve the delegated Session request.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func applyProviderTerminal(t *testing.T, store *Store, sessionID, turnID, kind string, admission watcher.TurnAdmission) {
+	t.Helper()
+	_, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       kind,
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00msg-1\x001",
+		Cursor:     1,
+		Admission:  admission,
+		ActivityID: "activity-1",
+		StartedAt:  admission.At.Add(2 * time.Second),
+		SettledAt:  admission.At.Add(30 * time.Second),
+		Summary:    "Delegated provider " + kind + " the turn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconcileStaleUsesPerTurnLeaseNotAgentLease(t *testing.T) {
+	// Slice 1 contract: session.stale is a property of the CURRENT turn's own
+	// lease. A newly admitted turn mints a fresh lease; the agent's shared
+	// lease fields (possibly expired from an older turn) can never stale it.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	hostID := "brain-agent-brain-hidden:@1"
+	sessionID := "brain-agent-worker:@2"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
 	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
+	store.now = func() time.Time { return now }
 	service := NewService(store, fw, nil)
+	service.now = func() time.Time { return now }
 	if _, err := store.CreateWork(Work{
-		Title:            "Lifecycle episodes",
-		Objective:        "Dedupe repeated facts without suppressing a later blocker.",
+		Title:            "Leased work",
+		Objective:        "Wait for the current turn's own lease.",
 		Status:           WorkRunning,
 		OwnerSessionID:   sessionID,
 		CompletionPolicy: CompletionBounded,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	at := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	route := func(oldState, newState classifier.AgentState, updated time.Time) bool {
-		t.Helper()
-		woke, routeErr := service.RouteSessionEvent(watcher.SessionEvent{
-			Type:     "agent_state_change",
-			AgentID:  sessionID,
-			OldState: string(oldState),
-			NewState: string(newState),
-			Agent: &classifier.Agent{
-				ID:        sessionID,
-				State:     newState,
-				Delegated: true,
-				UpdatedAt: updated,
-			},
-		})
-		if routeErr != nil {
-			t.Fatal(routeErr)
-		}
-		return woke
+	acceptedAt := now.Add(-time.Minute)
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !route(classifier.StateRunning, classifier.StateBlocked, at) {
-		t.Fatal("first blocker did not wake")
+
+	// The agent's shared lease is long expired (inherited from an older
+	// turn), but the current turn's own deadline is fresh: no stale.
+	expired := now.Add(-time.Hour)
+	agent := &classifier.Agent{
+		ID:                  sessionID,
+		State:               classifier.StateRunning,
+		Delegated:           true,
+		PaneAlive:           true,
+		ProcessID:           4242,
+		LastProgressAt:      &expired,
+		ExpectedNextCheckAt: &expired,
+		UpdatedAt:           expired,
 	}
-	if route(classifier.StateBlocked, classifier.StateRunning, at.Add(time.Minute)) {
-		t.Fatal("running progress unexpectedly woke")
-	}
-	if !route(classifier.StateRunning, classifier.StateBlocked, at.Add(2*time.Minute)) {
-		t.Fatal("new blocker episode was over-deduplicated")
-	}
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
 	events, err := store.ListWorkEvents("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || len(fw.sentCalls) != 2 {
-		t.Fatalf("events=%#v sends=%#v", events, fw.sentCalls)
+	if len(events) != 0 || len(fw.sentCalls) != 0 {
+		t.Fatalf("fresh per-turn lease was staled by the old agent lease: events=%#v sends=%#v", events, fw.sentCalls)
 	}
-	actionable := []WorkEvent{}
+
+	// The current turn's own deadline passes: exactly one actionable stale,
+	// deduped across repeated reconciles.
+	staleAt := now.Add(turnLeaseGrace).Add(time.Second)
+	store.now = func() time.Time { return staleAt }
+	service.now = func() time.Time { return staleAt }
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+	events, err = store.ListWorkEvents("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := 0
 	for _, event := range events {
-		if event.Actionable {
-			actionable = append(actionable, event)
+		if event.Kind == "session.stale" {
+			stale++
 		}
 	}
-	if len(actionable) != 2 || actionable[0].ConsumedAt == nil || actionable[1].ConsumedAt == nil {
-		t.Fatalf("turn-keyed Events were not each consumed exactly: %#v", actionable)
+	if stale != 1 || len(fw.sentCalls) != 1 {
+		t.Fatalf("per-turn lease expiry stale=%d sends=%#v events=%#v", stale, fw.sentCalls, events)
 	}
-	firstInput := decodeDirectWorkEventInput(t, fw.sentCalls[0].text)
-	secondInput := decodeDirectWorkEventInput(t, fw.sentCalls[1].text)
-	if firstInput.EventID != actionable[0].ID || secondInput.EventID != actionable[1].ID ||
-		firstInput.EventID == secondInput.EventID {
-		t.Fatalf("turn deliveries=(%#v, %#v), Events=%#v", firstInput, secondInput, actionable)
+
+	// A control heartbeat renews the current turn's lease; a later reconcile
+	// adds nothing.
+	renewAt := now.Add(turnLeaseGrace).Add(2 * time.Second)
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "running",
+		SourceID: "control\x00heartbeat-1", LeaseSeconds: 300,
+		At: renewAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	laterAt := now.Add(turnLeaseGrace).Add(3 * time.Second)
+	store.now = func() time.Time { return laterAt }
+	service.now = func() time.Time { return laterAt }
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+	events, err = store.ListWorkEvents("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale = 0
+	for _, event := range events {
+		if event.Kind == "session.stale" {
+			stale++
+		}
+	}
+	if stale != 1 {
+		t.Fatalf("renewed lease re-staled the turn: %#v", events)
 	}
 }
 
-func TestDelegatedSessionReconciliationKeepsLiveOverdueSessionNonActionable(t *testing.T) {
+func TestReconcileDeadOrAbsentTurnOwnedSessions(t *testing.T) {
+	// Canonical path: an absent session resolves exactly one actionable
+	// session.uncertain; a dead-pane session is owned by watcher liveness and
+	// is never staled from the clock.
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 9, 13, 0, 0, 0, time.UTC)
 	hostID := "brain-agent-brain-hidden:@1"
 	sessionID := "brain-agent-worker:@2"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -1442,151 +1600,85 @@ func TestDelegatedSessionReconciliationKeepsLiveOverdueSessionNonActionable(t *t
 	}}
 	service := NewService(store, fw, nil)
 	service.now = func() time.Time { return now }
-	if _, err := store.CreateWork(Work{
-		Title:            "Leased work",
-		Objective:        "Wait for a healthy lease.",
+	item, err := store.CreateWork(Work{
+		Title:            "Authoritative liveness",
+		Objective:        "Wake only from the canonical ledger record.",
 		Status:           WorkRunning,
 		OwnerSessionID:   sessionID,
 		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := now.Add(-2 * time.Hour)
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+		ProcessIdentity: "proc-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	progressAt := now.Add(-time.Minute)
-	nextCheck := now.Add(time.Minute)
-	agent := &classifier.Agent{
-		ID:                  sessionID,
-		State:               classifier.StateRunning,
-		Delegated:           true,
-		PaneAlive:           true,
-		ProcessID:           4242,
-		LastProgressAt:      &progressAt,
-		ExpectedNextCheckAt: &nextCheck,
-		UpdatedAt:           progressAt,
+	// Expire the turn's own lease so any unguarded path would stale.
+	service.now = func() time.Time { return now }
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "running",
+		SourceID: "control\x00heartbeat-1", LeaseSeconds: 1,
+		At: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
-	events, err := store.ListWorkEvents("")
+	// Dead process and pane: reconcile must not stale (watcher liveness owns
+	// end-of-identity); no event, no wake.
+	dead := &classifier.Agent{
+		ID: sessionID, State: classifier.StateRunning, Delegated: true,
+		PaneAlive: false, ProcessID: 0,
+	}
+	service.ReconcileDelegatedSessions([]*classifier.Agent{dead})
+	service.ReconcileDelegatedSessions([]*classifier.Agent{dead})
+	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 0 || len(fw.sentCalls) != 0 {
-		t.Fatalf("healthy lease polled Brain: events=%#v sends=%#v", events, fw.sentCalls)
+		t.Fatalf("dead-pane reconcile woke: events=%#v sends=%#v", events, fw.sentCalls)
 	}
 
-	expired := now.Add(-time.Second)
-	agent.ExpectedNextCheckAt = &expired
-	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
-	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
-	events, err = store.ListWorkEvents("")
+	// Absent after a successful inventory: exactly one actionable
+	// session.uncertain, deduped across repeated reconciles.
+	service.ReconcileDelegatedSessions(nil)
+	service.ReconcileDelegatedSessions(nil)
+	events, err = store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 0 || len(fw.sentCalls) != 0 {
-		t.Fatalf("healthy overdue Session became actionable: events=%#v sends=%#v", events, fw.sentCalls)
+	uncertain := 0
+	for _, event := range events {
+		if event.Kind == "session.uncertain" {
+			uncertain++
+		}
 	}
-	items, err := store.ListWork()
+	if uncertain != 1 || len(fw.sentCalls) != 1 {
+		t.Fatalf("absent reconcile uncertain=%d sends=%#v events=%#v", uncertain, fw.sentCalls, events)
+	}
+	got, err := store.Work(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 ||
-		!strings.Contains(items[0].WaitFor, "is live; progress lease overdue") ||
-		items[0].NextAction != "Wait for authoritative delegated Session state." {
-		t.Fatalf("healthy overdue Work = %#v", items)
-	}
-}
-
-func TestDelegatedSessionReconciliationStalesObservedMissingOrDeadExactlyOnce(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		reconcile func(*Service, *classifier.Agent)
-	}{
-		{
-			name: "missing after healthy inventory",
-			reconcile: func(service *Service, _ *classifier.Agent) {
-				service.ReconcileDelegatedSessions(nil)
-				service.ReconcileDelegatedSessions(nil)
-			},
-		},
-		{
-			name: "dead process and pane",
-			reconcile: func(service *Service, agent *classifier.Agent) {
-				expired := time.Date(2026, 8, 3, 9, 59, 0, 0, time.UTC)
-				dead := *agent
-				dead.State = classifier.StateUnknown
-				dead.PaneAlive = false
-				dead.ProcessID = 0
-				dead.ExpectedNextCheckAt = &expired
-				service.ReconcileDelegatedSessions([]*classifier.Agent{&dead})
-				service.ReconcileDelegatedSessions([]*classifier.Agent{&dead})
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store, err := NewStore(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-			hostID := "brain-agent-brain-hidden:@1"
-			sessionID := "brain-agent-worker:@2"
-			if err := store.SetHostSession(hostID, "codex"); err != nil {
-				t.Fatal(err)
-			}
-			fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
-				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-			}}
-			service := NewService(store, fw, nil)
-			service.now = func() time.Time { return now }
-			item, err := store.CreateWork(Work{
-				Title:            "Authoritative liveness",
-				Objective:        "Wake only when the delegated Session is absent or dead.",
-				Status:           WorkRunning,
-				OwnerSessionID:   sessionID,
-				CompletionPolicy: CompletionBounded,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			progressAt := now.Add(-time.Minute)
-			nextCheck := now.Add(time.Minute)
-			agent := &classifier.Agent{
-				ID:                  sessionID,
-				State:               classifier.StateRunning,
-				Delegated:           true,
-				PaneAlive:           true,
-				ProcessID:           4242,
-				LastProgressAt:      &progressAt,
-				ExpectedNextCheckAt: &nextCheck,
-				UpdatedAt:           progressAt,
-			}
-			service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
-			test.reconcile(service, agent)
-
-			got, err := store.Work(item.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			events, err := store.ListWorkEvents(item.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.OwnerSessionID != "" ||
-				got.Status != WorkWaiting ||
-				len(events) != 1 ||
-				events[0].Kind != "session.stale" ||
-				!events[0].Actionable ||
-				len(fw.sentCalls) != 1 {
-				t.Fatalf("reconciled Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
-			}
-		})
+	if got.Status != WorkNeedsInput || got.OwnerSessionID != sessionID {
+		t.Fatalf("absent reconcile Work=%#v", got)
 	}
 }
 
 func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t *testing.T) {
+	// A bound provider failed terminal wakes exactly once; later removal and
+	// reconcile cycles add no stale and never reopen the immutable turn.
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 9, 14, 0, 0, 0, time.UTC)
 	hostID := "brain-agent-brain-hidden:@1"
 	sessionID := "brain-agent-removed:@2"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -1596,6 +1688,7 @@ func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(store, fw, nil)
+	service.now = func() time.Time { return now }
 	item, err := store.CreateWork(Work{
 		Title:            "Removed delegated Session",
 		Objective:        "Preserve the authoritative terminal failure.",
@@ -1606,44 +1699,46 @@ func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	live := &classifier.Agent{
-		ID:        sessionID,
-		State:     classifier.StateRunning,
-		Delegated: true,
-		PaneAlive: true,
-		ProcessID: 4242,
+	acceptedAt := now.Add(-time.Hour)
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	service.ReconcileDelegatedSessions([]*classifier.Agent{live})
-	removed := *live
-	removed.State = classifier.StateRemoved
-	removed.PaneAlive = false
-	removed.ProcessID = 0
-	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_removed",
-		AgentID:  sessionID,
-		Agent:    &removed,
-		OldState: string(classifier.StateRunning),
-		NewState: string(classifier.StateRemoved),
-	}); err != nil || !woke {
-		t.Fatalf("removed terminal woke=%v err=%v", woke, err)
-	}
-	service.ReconcileDelegatedSessions(nil)
-	service.ReconcileDelegatedSessions(nil)
+	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
+	applyReceiptAdmission(t, store, sessionID, turnID, admission)
+	applyProviderTerminal(t, store, sessionID, turnID, "failed", admission)
 
+	service.ReconcileDelegatedSessions(nil)
+	service.ReconcileDelegatedSessions(nil)
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != "session.failed" || len(fw.sentCalls) != 1 {
-		t.Fatalf("removed terminal Events=%#v sends=%#v", events, fw.sentCalls)
+	failed := 0
+	stale := 0
+	for _, event := range events {
+		if event.Kind == "session.failed" {
+			failed++
+		}
+		if event.Kind == "session.stale" {
+			stale++
+		}
+	}
+	if failed != 1 || stale != 0 || len(fw.sentCalls) != 1 {
+		t.Fatalf("removed terminal failed=%d stale=%d Events=%#v sends=%#v", failed, stale, events, fw.sentCalls)
 	}
 }
 
 func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T) {
+	// A bound provider done terminal is immutable: removal and reconcile
+	// cycles never produce a failure or stale row.
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
 	hostID := "brain-agent-brain-hidden:@1"
 	sessionID := "brain-agent-completed:@2"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -1653,6 +1748,7 @@ func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T)
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(store, fw, nil)
+	service.now = func() time.Time { return now }
 	item, err := store.CreateWork(Work{
 		Title:            "Completed delegated Session",
 		Objective:        "Keep cleanup distinct from execution failure.",
@@ -1663,43 +1759,46 @@ func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := &classifier.Agent{
-		ID:        sessionID,
-		State:     classifier.StateDone,
-		Delegated: true,
-		Summary:   "Accepted result",
+	acceptedAt := now.Add(-time.Hour)
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  sessionID,
-		Agent:    done,
-		OldState: string(classifier.StateRunning),
-		NewState: string(classifier.StateDone),
-	}); err != nil || !woke {
-		t.Fatalf("done terminal woke=%v err=%v", woke, err)
-	}
+	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
+	applyReceiptAdmission(t, store, sessionID, turnID, admission)
+	applyProviderTerminal(t, store, sessionID, turnID, "done", admission)
 
-	removed := *done
-	removed.State = classifier.StateRemoved
-	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_removed",
-		AgentID:  sessionID,
-		Agent:    &removed,
-		NewState: string(classifier.StateRemoved),
-	}); err != nil || woke {
-		t.Fatalf("completed cleanup woke=%v err=%v", woke, err)
-	}
-
+	service.ReconcileDelegatedSessions(nil)
+	service.ReconcileDelegatedSessions(nil)
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != "session.done" || len(fw.sentCalls) != 1 {
-		t.Fatalf("completed cleanup Events=%#v sends=%#v", events, fw.sentCalls)
+	done := 0
+	failed := 0
+	stale := 0
+	for _, event := range events {
+		switch event.Kind {
+		case "session.done":
+			done++
+		case "session.failed":
+			failed++
+		case "session.stale":
+			stale++
+		}
+	}
+	if done != 1 || failed != 0 || stale != 0 || len(fw.sentCalls) != 1 {
+		t.Fatalf("completed cleanup done=%d failed=%d stale=%d Events=%#v sends=%#v", done, failed, stale, events, fw.sentCalls)
 	}
 }
 
 func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) {
+	// A canonical terminal turn is immutable and its terminal Event was
+	// derived at fact-apply time: restart reconcile never appends stale and
+	// never detaches or rewrites the terminal Work (the owner binding is
+	// durable).
 	for _, test := range []struct {
 		kind       string
 		nextAction string
@@ -1721,23 +1820,29 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 			item, err := store.CreateWork(Work{
 				Title:            "Terminal delegated Session",
 				Objective:        "Keep terminal lifecycle monotonic after cleanup.",
-				Status:           WorkWaiting,
+				Status:           WorkRunning,
 				OwnerSessionID:   ownerID,
 				CompletionPolicy: CompletionBounded,
-				NextAction:       test.nextAction,
+				NextAction:       "Wait for the delegated Session.",
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, created, err := store.AppendWorkEvent(WorkEvent{
-				WorkID:     item.ID,
-				Kind:       test.kind,
-				DedupeKey:  "session:" + ownerID + ":turn:one:" + test.kind,
-				PayloadRef: "session:" + ownerID,
-				Actionable: true,
-			}); err != nil || !created {
-				t.Fatalf("append terminal Event created=%v err=%v", created, err)
+			now := time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC)
+			store.now = func() time.Time { return now }
+			turnID := ownerID + ":turn:1"
+			if err := store.AdmitTurn(watcher.AdmittedTurn{
+				SessionID: ownerID, TurnID: turnID, AcceptedAt: now,
+			}); err != nil {
+				t.Fatal(err)
 			}
+			admission := providerAdmission("stream", "msg-1", 1, "sha", now)
+			applyReceiptAdmission(t, store, ownerID, turnID, admission)
+			terminalKind := "done"
+			if test.kind == "session.failed" {
+				terminalKind = "failed"
+			}
+			applyProviderTerminal(t, store, ownerID, turnID, terminalKind, admission)
 
 			reopened, err := NewStore(root)
 			if err != nil {
@@ -1746,6 +1851,7 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 			service := NewService(reopened, &fakeWatcher{sessions: map[string]*classifier.Agent{
 				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 			}}, nil)
+			service.now = func() time.Time { return now.Add(time.Hour) }
 			service.ReconcileDelegatedSessions(nil)
 			service.ReconcileDelegatedSessions(nil)
 
@@ -1768,7 +1874,7 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 				}
 			}
 			if terminal != 1 || stale != 0 ||
-				got.OwnerSessionID != "" ||
+				got.OwnerSessionID != ownerID ||
 				got.Status != WorkWaiting ||
 				got.NextAction != test.nextAction {
 				t.Fatalf("reconciled Work=%#v Events=%#v", got, events)
@@ -1778,12 +1884,16 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 }
 
 func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing.T) {
+	// Slice 1 contract: a Work-owning delegated Session with NO canonical turn
+	// produces no lifecycle event at all — raw absence is not routed, and the
+	// old session:...:missing stale is deleted. The canonical restart-absent
+	// wake lives in the ledger path (TestReconcileDeadOrAbsentTurnOwnedSessions).
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 9, 17, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	hostID := "brain-agent-brain-hidden:@1"
 	ownerID := "brain-agent-missing:@2"
@@ -1792,7 +1902,7 @@ func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing
 	}
 	item, err := store.CreateWork(Work{
 		Title:            "Missing owner",
-		Objective:        "Surface a Session missing after restart.",
+		Objective:        "No canonical turn means no lifecycle event.",
 		Status:           WorkRunning,
 		OwnerSessionID:   ownerID,
 		CompletionPolicy: CompletionBounded,
@@ -1816,25 +1926,9 @@ func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OwnerSessionID != "" || got.Status != WorkWaiting ||
-		len(events) != 1 || events[0].Kind != "session.stale" || !events[0].Actionable ||
-		len(fw.sentCalls) != 1 {
-		t.Fatalf("first reconciliation Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
-	}
-
-	reopened, err := NewStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted := NewService(reopened, fw, nil)
-	restarted.now = func() time.Time { return now.Add(time.Minute) }
-	restarted.ReconcileDelegatedSessions(nil)
-	events, err = reopened.ListWorkEvents(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || len(fw.sentCalls) != 1 {
-		t.Fatalf("restart duplicated missing-owner result: Events=%#v sends=%#v", events, fw.sentCalls)
+	if got.OwnerSessionID != ownerID || got.Status != WorkRunning ||
+		len(events) != 0 || len(fw.sentCalls) != 0 {
+		t.Fatalf("markerless missing-owner reconcile Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
 	}
 }
 
@@ -2006,9 +2100,10 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 		items[0].OwnerSessionID != "brain-agent-calendar:@2" {
 		t.Fatalf("Calendar Work = %#v", items)
 	}
-	if len(events) != 3 || events[0].Kind != "calendar.launched" ||
-		events[1].Kind != "session.done" || events[1].Actionable ||
-		events[2].Kind != "calendar.result" || events[2].PayloadRef != result.ID {
+	// The raw Calendar Session result is not routed (no canonical turn): only
+	// the idempotent Calendar projection rows exist.
+	if len(events) != 2 || events[0].Kind != "calendar.launched" ||
+		events[1].Kind != "calendar.result" || events[1].PayloadRef != result.ID {
 		t.Fatalf("Calendar Events = %#v", events)
 	}
 	if terminal.Item.SourceThreadID != sourceThreadID ||

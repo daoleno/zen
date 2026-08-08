@@ -125,7 +125,7 @@ func TestTurnAmbiguousAdmissionNeverFailedAndAdoptsProviderActivity(t *testing.T
 	// Poll adoption: provider activity started inside the admission window
 	// binds the turn; the admission tuple is recorded for later binding.
 	activity := watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "running",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -147,7 +147,7 @@ func TestTurnAmbiguousAdmissionNeverFailedAndAdoptsProviderActivity(t *testing.T
 	// The bound terminal settles the turn and flips the hint row actionable
 	// in place: exactly one actionable wake for (session, turn, failed).
 	terminal := watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "failed",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -704,7 +704,7 @@ func TestTurnOneProviderRecordDerivesDistinctKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Cursor:     1,
 		Admission:  admission,
@@ -796,5 +796,110 @@ func TestTurnLedgerValidationEnforcesUniqueness(t *testing.T) {
 	store.mu.Unlock()
 	if err == nil || !strings.Contains(err.Error(), "duplicate session_id/turn_id") {
 		t.Fatalf("duplicate turn persisted: %v", err)
+	}
+}
+
+// TestTurnStaleRequiresOwnLeaseDeadline covers the exact false-stale
+// incident: session.stale is a property of the CURRENT turn's own
+// expected-next-check time. A stale fact applied before that deadline (a
+// freshly admitted turn, or a turn with a live per-turn lease) is ignored —
+// an old turn's expired agent lease can never stale a newer turn.
+func TestTurnStaleRequiresOwnLeaseDeadline(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	// ledgerTestStore admits at 2026-08-07 10:00:00 UTC; the per-turn lease
+	// is minted from that acceptance.
+	acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	now := acceptedAt.Add(2 * time.Minute) // well inside the admission grace
+	store.now = func() time.Time { return now }
+	stale := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "stale",
+		SourceID: "lease:expiry:" + turnID,
+		At:       now,
+	}
+	snapshot, changed, err := store.ApplyTurnFact(stale)
+	if err != nil || changed || snapshot.Status != watcher.TurnAdmitted {
+		t.Fatalf("pre-deadline stale was applied: (%+v, %v, %v)", snapshot, changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	if workItem.Status != WorkRunning {
+		t.Fatalf("pre-deadline stale mutated Work: %v", workItem)
+	}
+
+	// A control heartbeat extends the turn's own lease monotonically; stale
+	// stays ignored until the extended deadline passes (the lease deadline is
+	// the later of the admission grace and the last heartbeat + lease).
+	renewAt := acceptedAt.Add(3 * time.Minute)
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "running",
+		SourceID: "control\x00heartbeat-1", LeaseSeconds: 900,
+		At: renewAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return renewAt.Add(4 * time.Minute) }
+	if _, changed, err := store.ApplyTurnFact(stale); err != nil || changed {
+		t.Fatalf("stale applied inside renewed lease: changed=%v err=%v", changed, err)
+	}
+	store.now = func() time.Time { return renewAt.Add(16*time.Minute + time.Second) }
+	if _, changed, err := store.ApplyTurnFact(stale); err != nil || !changed {
+		t.Fatalf("stale not applied after renewed lease expired: changed=%v err=%v", changed, err)
+	}
+	workItem, _, _ = store.WorkByOwnerSession(sessionID)
+	if workItem.Status != WorkNeedsInput {
+		t.Fatalf("Work after expired per-turn lease = %v", workItem)
+	}
+}
+
+// TestTurnStaleForNonCurrentTurnIsIgnored covers the cross-turn inheritance
+// guard: a stale fact targeting an older ledger row is unrepresentable once a
+// newer turn is current, so a new turn can never be woken stale by its
+// predecessor's expired lease replay.
+func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	acceptedAt := time.Date(2026, 8, 9, 21, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return acceptedAt }
+	// Old turn's own lease expires and stales once.
+	oldStaleAt := acceptedAt.Add(turnLeaseGrace).Add(time.Second)
+	store.now = func() time.Time { return oldStaleAt }
+	oldStale := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "stale",
+		SourceID: "lease:expiry:" + turnID,
+		At:       oldStaleAt,
+	}
+	if _, changed, err := store.ApplyTurnFact(oldStale); err != nil || !changed {
+		t.Fatalf("old turn stale apply = changed:%v err:%v", changed, err)
+	}
+	// A newer turn is admitted; the old turn's stale fact re-applied (e.g.
+	// restart reconciliation replay) must be ignored, not re-applied to the
+	// old row and never affect the new turn.
+	now := oldStaleAt.Add(time.Minute)
+	store.now = func() time.Time { return now }
+	newTurnID := sessionID + ":turn:2"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replayed := oldStale
+	replayed.At = now
+	if _, changed, err := store.ApplyTurnFact(replayed); err != nil || changed {
+		t.Fatalf("old-turn stale re-applied after newer turn: changed=%v err=%v", changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	events, err := store.ListWorkEvents(workItem.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleRows := 0
+	for _, event := range events {
+		if strings.HasSuffix(event.DedupeKey, ":session.stale") {
+			staleRows++
+		}
+	}
+	if staleRows != 1 {
+		t.Fatalf("session.stale rows = %d, want exactly one (the old turn's own wake)", staleRows)
 	}
 }

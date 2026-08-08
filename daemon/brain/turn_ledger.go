@@ -15,35 +15,40 @@ import (
 // lifecycle transition for an accepted delegated turn: Work status and outbox
 // events are derived from it by the one reducer, never inferred independently.
 type TurnRecord struct {
-	SessionID       string               `json:"session_id"`
-	TurnID          string               `json:"turn_id"`
-	WorkID          string               `json:"work_id"`
-	Status          watcher.TurnStatus   `json:"status"`
-	Receipt         string               `json:"receipt,omitempty"`
-	PaneGeneration  string               `json:"pane_generation,omitempty"`
-	ProcessIdentity string               `json:"process_identity,omitempty"`
-	PayloadSHA256   string               `json:"payload_sha256,omitempty"`
+	SessionID       string                `json:"session_id"`
+	TurnID          string                `json:"turn_id"`
+	WorkID          string                `json:"work_id"`
+	Status          watcher.TurnStatus    `json:"status"`
+	Receipt         string                `json:"receipt,omitempty"`
+	PaneGeneration  string                `json:"pane_generation,omitempty"`
+	ProcessIdentity string                `json:"process_identity,omitempty"`
+	PayloadSHA256   string                `json:"payload_sha256,omitempty"`
 	Admission       watcher.TurnAdmission `json:"admission,omitempty"`
-	ActivityID      string               `json:"activity_id,omitempty"`
-	Attention       string               `json:"attention,omitempty"`
-	AcceptedAt      time.Time            `json:"accepted_at,omitempty"`
-	SettledAt       *time.Time           `json:"settled_at,omitempty"`
-	Summary         string               `json:"summary,omitempty"`
-	Facts           []TurnFactRecord     `json:"facts"`
-	Hints           []watcher.TurnHint   `json:"hints,omitempty"`
-	UpdatedAt       time.Time            `json:"updated_at"`
+	ActivityID      string                `json:"activity_id,omitempty"`
+	Attention       string                `json:"attention,omitempty"`
+	AcceptedAt      time.Time             `json:"accepted_at,omitempty"`
+	SettledAt       *time.Time            `json:"settled_at,omitempty"`
+	Summary         string                `json:"summary,omitempty"`
+	Facts           []TurnFactRecord      `json:"facts"`
+	Hints           []watcher.TurnHint    `json:"hints,omitempty"`
+	// LeaseDeadline is the turn's own expected-next-check time (per-turn
+	// liveness): minted fresh at admission, extended only by this turn's
+	// Control lease facts, and the sole basis for session.stale. An old turn's
+	// expired lease can never make a newer turn stale.
+	LeaseDeadline time.Time `json:"lease_deadline,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // TurnFactRecord is one durable applied observation on a turn. FactID is the
 // deterministic frozen identity (watcher.TurnFactID), so replayed and
 // reordered facts dedupe identically across restart.
 type TurnFactRecord struct {
-	FactID  string               `json:"fact_id"`
-	Kind    string               `json:"kind"`
+	FactID  string                `json:"fact_id"`
+	Kind    string                `json:"kind"`
 	Class   watcher.EvidenceClass `json:"evidence_class"`
-	Bound   bool                 `json:"bound,omitempty"`
-	At      time.Time            `json:"at,omitempty"`
-	Summary string               `json:"summary,omitempty"`
+	Bound   bool                  `json:"bound,omitempty"`
+	At      time.Time             `json:"at,omitempty"`
+	Summary string                `json:"summary,omitempty"`
 }
 
 // TurnLedgerImport is one legacy tmux marker materialized by the one-shot
@@ -168,10 +173,17 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 		Hints:           append([]watcher.TurnHint(nil), t.Hints...),
 		PaneGeneration:  t.PaneGeneration,
 		ProcessIdentity: t.ProcessIdentity,
+		LeaseDeadline:   t.LeaseDeadline,
 		UpdatedAt:       t.UpdatedAt,
 	}
 	return snapshot
 }
+
+// turnLeaseGrace is the fresh per-turn liveness minted at admission: the
+// turn's own expected-next-check deadline before its first progress lease
+// arrives. It is per-turn, so a newly admitted turn can never inherit an old
+// turn's expired lease (the false-stale incident).
+const turnLeaseGrace = 10 * time.Minute
 
 // AdmitTurn durably records the Admitted turn before any provider mutation can
 // begin (C.2 invariant 2): a markerless accepted input is unrepresentable.
@@ -223,6 +235,7 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 		PayloadSHA256:   strings.TrimSpace(admitted.PayloadSHA256),
 		AcceptedAt:      admitted.AcceptedAt.UTC(),
 		Facts:           []TurnFactRecord{},
+		LeaseDeadline:   admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
 		UpdatedAt:       now,
 	})
 	return s.persistOrchestrationLocked(database)
@@ -265,21 +278,22 @@ func currentTurnForSession(database orchestrationDatabase, sessionID string) (Tu
 
 // turnMutation is the pure decision of the single reducer for one fact.
 type turnMutation struct {
-	status              watcher.TurnStatus
-	attention           string
-	settledAt           *time.Time
-	summary             string
-	recordAdmission     bool
-	admission           watcher.TurnAdmission
-	activityID          string
-	eventKind           string
-	eventActionable     bool
-	eventSummary        string
-	hint                *watcher.TurnHint
-	dropHintKind        string
-	workUpdate          WorkUpdate
-	recordFact          bool
-	changed             bool
+	status          watcher.TurnStatus
+	attention       string
+	settledAt       *time.Time
+	summary         string
+	leaseDeadline   time.Time
+	recordAdmission bool
+	admission       watcher.TurnAdmission
+	activityID      string
+	eventKind       string
+	eventActionable bool
+	eventSummary    string
+	hint            *watcher.TurnHint
+	dropHintKind    string
+	workUpdate      WorkUpdate
+	recordFact      bool
+	changed         bool
 }
 
 // reduceTurnFact is the canonical transition table (worklog C.2.3). It never
@@ -460,7 +474,14 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			// Receipt or a bound Provider admission/activity proves the input
 			// began) and never terminalizes. Every heartbeat is a distinct
 			// durable fact (its progress_event_id is part of the FactID), so
-			// later identical heartbeats still renew the lease record.
+			// later identical heartbeats still renew the lease record. The
+			// caller-declared lease extends the turn's own per-turn deadline;
+			// it is monotone (never shrinks), mirroring ApplyProgress.
+			if fact.LeaseSeconds > 0 {
+				if deadline := fact.At.Add(time.Duration(fact.LeaseSeconds) * time.Second); deadline.After(turn.LeaseDeadline) {
+					mutation.leaseDeadline = deadline
+				}
+			}
 			switch status {
 			case watcher.TurnAccepted:
 				status = watcher.TurnRunning
@@ -488,6 +509,11 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				mutation.recordFact = true
 			}
 		case "attention":
+			if fact.LeaseSeconds > 0 {
+				if deadline := fact.At.Add(time.Duration(fact.LeaseSeconds) * time.Second); deadline.After(turn.LeaseDeadline) {
+					mutation.leaseDeadline = deadline
+				}
+			}
 			if status != watcher.TurnBlocked {
 				status = watcher.TurnBlocked
 				attention = "user_input"
@@ -510,7 +536,15 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			mutation.changed = true
 		case "stale":
 			// Lease expiry: no canonical change; one actionable session.stale
-			// per turn wakes Brain.
+			// per turn wakes Brain. The current turn must have exceeded its own
+			// expected-next-check time (minted at admission, extended only by
+			// this turn's Control lease facts): a freshly admitted turn or a
+			// turn with a live per-turn lease is never stale, so an old turn's
+			// expired lease cannot make a newer turn stale. Current-turn
+			// identity is enforced by ApplyTurnFact before the reducer runs.
+			if now.Before(turn.LeaseDeadline) {
+				return mutation, nil
+			}
 			applyEvent("session.stale", true, "Delegated Session lease expired; inspect the Session")
 			mutation.changed = true
 		}
@@ -572,7 +606,9 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 
 	// Canonical row mutation: status/attention/settlement/admission/activity
 	// move only when the transition changed them. Hint-only facts never move
-	// canonical values and never change Work status.
+	// canonical values and never change Work status. The per-turn lease
+	// deadline only ever extends (monotone), so renewals always count as a
+	// row change.
 	rowChanged := status != turn.Status ||
 		attention != turn.Attention ||
 		!sameTime(settledAt, turn.SettledAt) ||
@@ -580,7 +616,8 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		(!admission.Empty() && (turn.Admission.Empty() ||
 			admission.Cursor != turn.Admission.Cursor ||
 			admission.ID != turn.Admission.ID)) ||
-		(activityID != "" && activityID != turn.ActivityID)
+		(activityID != "" && activityID != turn.ActivityID) ||
+		(!mutation.leaseDeadline.IsZero() && mutation.leaseDeadline.After(turn.LeaseDeadline))
 	if rowChanged {
 		mutation.status = status
 		mutation.attention = attention
@@ -735,6 +772,14 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		// different turn.
 		return watcher.TurnSnapshot{}, false, nil
 	}
+	if fact.Class == watcher.EvidenceControl && fact.Kind == "stale" {
+		// session.stale is a property of the CURRENT turn's own lease: a stale
+		// fact for any older turn record is unrepresentable, so a new turn
+		// can never be woken stale by its predecessor's expired lease.
+		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
+			return watcher.TurnSnapshot{}, false, nil
+		}
+	}
 	turn := database.BrainTurns[turnIndex]
 	for _, recorded := range turn.Facts {
 		if recorded.FactID == factID {
@@ -764,6 +809,9 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		turn.Attention = mutation.attention
 		turn.SettledAt = mutation.settledAt
 		turn.Summary = mutation.summary
+	}
+	if !mutation.leaseDeadline.IsZero() {
+		turn.LeaseDeadline = mutation.leaseDeadline.UTC()
 	}
 	if mutation.dropHintKind != "" {
 		kept := turn.Hints[:0]
@@ -981,6 +1029,10 @@ func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 		if candidate.AcceptedAt.IsZero() {
 			record.AcceptedAt = now
 		}
+		// Per-turn liveness backfill: imported rows get a fresh lease minted
+		// from acceptance so the migration cannot resurrect an old turn's
+		// expired lease as an immediate stale.
+		record.LeaseDeadline = record.AcceptedAt.Add(turnLeaseGrace).UTC()
 		if candidate.Hint != nil {
 			record.Hints = []watcher.TurnHint{*candidate.Hint}
 		}

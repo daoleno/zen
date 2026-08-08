@@ -43,13 +43,13 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHost(t *testing.T) {
 	}
 	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
 		ID: "645a5a2a-reject", WorkID: item.ID, Kind: "session.done",
-		DedupeKey: "reject", Actionable: false, Summary: "REJECT",
+		DedupeKey: "session:reject:turn:one:session.failed", Actionable: false, Summary: "REJECT",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
 		ID: "1a6ddd99-accept", WorkID: item.ID, Kind: "session.done",
-		DedupeKey: "accept", Actionable: false, Summary: "ACCEPT",
+		DedupeKey: "session:accept:turn:one:session.done", Actionable: false, Summary: "ACCEPT",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHost(t *testing.T) {
 	}
 	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
 		ID: "current-needs", WorkID: needs.ID, Kind: "session.needs_input",
-		DedupeKey: "need", Actionable: false, Summary: "go vet ./...",
+		DedupeKey: "session:need:turn:one:session.needs_input", Actionable: false, Summary: "go vet ./...",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestBrainCardOnlyNewThreadIsValid(t *testing.T) {
 	}
 	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
 		ID: "card-1", WorkID: item.ID, Kind: "session.needs_input",
-		DedupeKey: "n", Actionable: false, Summary: "card only",
+		DedupeKey: "session:n:turn:one:session.needs_input", Actionable: false, Summary: "card only",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestBrainWorkEventStaysOnFrozenThreadAcrossScopedReads(t *testing.T) {
 	}
 	if _, _, err := service.AppendWorkEvent(brain.WorkEvent{
 		ID: "stay-a", WorkID: item.ID, Kind: "session.done",
-		DedupeKey: "stay", Actionable: false, Summary: "belongs to A",
+		DedupeKey: "session:stay:turn:one:session.done", Actionable: false, Summary: "belongs to A",
 	}); err != nil {
 		t.Fatal(err)
 	}

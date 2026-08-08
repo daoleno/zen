@@ -2,7 +2,6 @@ package brain
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,7 +216,13 @@ func (s *Store) ensureOrchestrationDatabase() error {
 		return err
 	}
 	bound := bindUnresolvedSourceThreadIDs(&database, threadID)
-	if migrated || bound {
+	// Per-turn liveness backfill: rows persisted before the per-turn lease
+	// existed have a zero deadline. They get a fresh lease minted from their
+	// acceptance so an upgrade can never resurrect an old turn's expired
+	// lease as an immediate session.stale. Deterministic and idempotent: a
+	// deadline already set is never rewritten.
+	leaseBackfilled := backfillTurnLeaseDeadlines(&database)
+	if migrated || bound || leaseBackfilled {
 		return s.persistOrchestrationLocked(database)
 	}
 	if err := validateOrchestrationDatabase(database); err != nil {
@@ -412,6 +417,27 @@ func bindUnresolvedSourceThreadIDs(database *orchestrationDatabase, currentThrea
 			continue
 		}
 		database.BrainWork[index].SourceThreadID = currentThreadID
+		changed = true
+	}
+	return changed
+}
+
+// backfillTurnLeaseDeadlines mints a fresh per-turn lease for ledger rows
+// persisted before the per-turn lease existed (zero deadline). The deadline is
+// accepted_at + turnLeaseGrace, matching AdmitTurn; rows without a usable
+// acceptance time are left untouched (the reconcile loop simply never stales
+// them from the clock). Deterministic and idempotent.
+func backfillTurnLeaseDeadlines(database *orchestrationDatabase) bool {
+	if database == nil {
+		return false
+	}
+	changed := false
+	for index := range database.BrainTurns {
+		turn := &database.BrainTurns[index]
+		if !turn.LeaseDeadline.IsZero() || turn.AcceptedAt.IsZero() {
+			continue
+		}
+		turn.LeaseDeadline = turn.AcceptedAt.Add(turnLeaseGrace).UTC()
 		changed = true
 	}
 	return changed
@@ -974,6 +1000,13 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 	if err := validateWorkEvent(event); err != nil {
 		return WorkEvent{}, false, err
 	}
+	if isSessionLifecycleKind(event.Kind) && !isTurnScopedSessionDedupeKey(event.DedupeKey) {
+		// A delegated lifecycle Event is unrepresentable without the
+		// canonical current TurnID: the dedupe key must be turn-scoped
+		// (session:<sid>:turn:<tid>:<kind>). Raw-state routing and
+		// occurrence-counting keys are deleted.
+		return WorkEvent{}, false, fmt.Errorf("delegated lifecycle event %q requires a canonical turn-scoped dedupe key", event.Kind)
+	}
 
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
@@ -1178,89 +1211,6 @@ func workEventIndex(events []WorkEvent, eventID string) int {
 		}
 	}
 	return -1
-}
-
-// ReconcileMissingWorkOwner atomically detaches the expected missing owner,
-// makes the Work non-running, and records the single actionable stale fact.
-func (s *Store) ReconcileMissingWorkOwner(workID, ownerSessionID string) (Work, WorkEvent, bool, error) {
-	workID = strings.TrimSpace(workID)
-	ownerSessionID = strings.TrimSpace(ownerSessionID)
-	s.mu.Lock()
-	database, err := s.loadOrchestrationLocked()
-	var item Work
-	var event WorkEvent
-	created := false
-	if err == nil {
-		index := workIndex(database.BrainWork, workID)
-		if index < 0 {
-			err = ErrWorkNotFound
-		} else {
-			item = database.BrainWork[index]
-			if item.Status == WorkDone || item.Status == WorkCancelled || item.OwnerSessionID != ownerSessionID || ownerSessionID == "" {
-				s.mu.Unlock()
-				return item, WorkEvent{}, false, nil
-			}
-			payloadRef := "session:" + ownerSessionID
-			lastLifecycleKind := ""
-			for _, current := range database.BrainWorkEvents {
-				if current.WorkID == item.ID &&
-					current.PayloadRef == payloadRef &&
-					isSessionLifecycleKind(current.Kind) {
-					lastLifecycleKind = current.Kind
-				}
-			}
-			if lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed" {
-				now := s.nowUTC()
-				item.OwnerSessionID = ""
-				item.WaitFor = ""
-				item.UpdatedAt = now
-				database.BrainWork[index] = item
-				if err = s.persistOrchestrationLocked(database); err != nil {
-					s.mu.Unlock()
-					return Work{}, WorkEvent{}, false, err
-				}
-				s.mu.Unlock()
-				s.broadcastWorkChange(item.ID)
-				return item, WorkEvent{}, false, nil
-			}
-			now := s.nowUTC()
-			item.Status = WorkWaiting
-			item.OwnerSessionID = ""
-			item.NextAction = "Reconcile the missing delegated Session."
-			item.WaitFor = ""
-			item.UpdatedAt = now
-			database.BrainWork[index] = item
-
-			dedupeKey := "session:" + ownerSessionID + ":missing"
-			for _, current := range database.BrainWorkEvents {
-				if current.WorkID == item.ID && current.DedupeKey == dedupeKey {
-					event = current
-					break
-				}
-			}
-			if event.ID == "" {
-				digest := sha256.Sum256([]byte(item.ID + "\x00" + dedupeKey))
-				event = WorkEvent{
-					ID:         fmt.Sprintf("missing-%x", digest[:12]),
-					WorkID:     item.ID,
-					Kind:       "session.stale",
-					DedupeKey:  dedupeKey,
-					PayloadRef: "session:" + ownerSessionID,
-					Actionable: true,
-					CreatedAt:  now,
-				}
-				database.BrainWorkEvents = append(database.BrainWorkEvents, event)
-				created = true
-			}
-			err = s.persistOrchestrationLocked(database)
-		}
-	}
-	s.mu.Unlock()
-	if err != nil {
-		return Work{}, WorkEvent{}, false, err
-	}
-	s.broadcastWorkChange(item.ID)
-	return item, event, created, nil
 }
 
 func (s *Store) ActiveWork() ([]ActiveWork, error) {

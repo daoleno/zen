@@ -62,7 +62,7 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 		"DeliveryHostSessionID",
 		"ConsumeClaimedWorkEvent",
 		"AttachWorkOwner",
-		"ReconcileMissingWorkOwner",
+		"isTurnScopedSessionDedupeKey",
 	} {
 		if !strings.Contains(string(brainSource), required) {
 			t.Fatalf("Brain store is missing bounded correction primitive %q", required)
