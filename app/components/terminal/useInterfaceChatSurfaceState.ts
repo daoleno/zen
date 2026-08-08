@@ -83,6 +83,8 @@ interface UseInterfaceChatSurfaceStateInput {
     draft: string;
     setDraft: (value: string) => void;
   }) => ReactNode;
+  composerModelControl?: import("../../services/providers/sessionModelHelpers").ComposerModelControlPresentation | null;
+  onComposerModelControlPress?: () => void;
   onSwitchToTerminal?: () => void;
   onConsumeInitialComposerFocus?: () => void;
 }
@@ -141,6 +143,8 @@ export function useInterfaceChatSurfaceState({
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
+  composerModelControl,
+  onComposerModelControlPress,
   onSwitchToTerminal,
   onConsumeInitialComposerFocus,
 }: UseInterfaceChatSurfaceStateInput): InterfaceChatSurfaceState {
@@ -270,6 +274,10 @@ export function useInterfaceChatSurfaceState({
   const dismissActionMenu = useCallback(() => {
     setActionMenuPinned(false);
   }, []);
+  const handleModelControlPress = useCallback(() => {
+    composerInput.blur();
+    onComposerModelControlPress?.();
+  }, [composerInput.blur, onComposerModelControlPress]);
   const openSkillsSheet = useCallback(() => {
     setActionMenuPinned(false);
     setSkillsSheetVisible(true);
@@ -478,6 +486,7 @@ export function useInterfaceChatSurfaceState({
     placeholder,
     keyboardVerticalOffset,
     composerLayout,
+    modelControl: composerModelControl,
   });
   const terminalActionPrompt = useMemo(() => {
     // Live pane fact only: require a full agent_session_list for this WebSocket
@@ -617,6 +626,7 @@ export function useInterfaceChatSurfaceState({
     setDraft: setObservedDraft,
     onToggleActionMenu: toggleActionMenu,
     onDismissActionMenu: dismissActionMenu,
+    onModelControlPress: handleModelControlPress,
     onTerminalActionKey: sendTerminalActionKey,
     onKeyboardLifecycleInvalidate: handleKeyboardLifecycleInvalidate,
     showUnavailableAction,

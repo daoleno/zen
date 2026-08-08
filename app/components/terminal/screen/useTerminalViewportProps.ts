@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
 import type { TerminalSurfaceHandle } from "../TerminalSurface";
 import type { TerminalViewportProps } from "../TerminalViewport";
 import type {
@@ -36,6 +37,8 @@ interface UseTerminalViewportPropsInput {
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
   onAccessoryLayout(event: LayoutChangeEvent): void;
   onConsumeInitialComposerFocus(): void;
+  composerModelControl?: ComposerModelControlPresentation | null;
+  onComposerModelControlPress?: () => void;
   skillsHandoffToken?: string;
 }
 
@@ -64,6 +67,8 @@ export function useTerminalViewportProps({
   sessionActions,
   onAccessoryLayout,
   onConsumeInitialComposerFocus,
+  composerModelControl,
+  onComposerModelControlPress,
   skillsHandoffToken,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
@@ -112,6 +117,8 @@ export function useTerminalViewportProps({
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
       onConsumeInitialComposerFocus,
+      composerModelControl,
+      onComposerModelControlPress,
       skillsHandoffToken,
     }),
     [
@@ -138,6 +145,8 @@ export function useTerminalViewportProps({
       terminalRef,
       theme,
       showInterfaceChat,
+      composerModelControl,
+      onComposerModelControlPress,
       skillsHandoffToken,
       viewportModel.accessoryVisible,
       viewportModel.canRenderTerminal,

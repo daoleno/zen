@@ -11,6 +11,7 @@ import type {
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ActiveAttachmentUpload } from "../../services/uploads";
+import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import {
   InterfaceComposerAttachmentRail,
   type InterfaceComposerAttachment,
@@ -51,6 +52,7 @@ interface InterfaceChatComposerProps {
   attachments: InterfaceComposerAttachment[];
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
+  modelControl?: ComposerModelControlPresentation | null;
   onSelectCommand(command: CodexSlashCommand): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
@@ -62,6 +64,7 @@ interface InterfaceChatComposerProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
+  onModelControlPress?(): void;
 }
 
 export function InterfaceChatComposer({
@@ -96,6 +99,7 @@ export function InterfaceChatComposer({
   attachments,
   chrome,
   theme,
+  modelControl,
   onSelectCommand,
   onToggleActionMenu,
   onDismissActionMenu,
@@ -107,6 +111,7 @@ export function InterfaceChatComposer({
   onInputBlur,
   onSendPress,
   onStopPress,
+  onModelControlPress,
 }: InterfaceChatComposerProps) {
   return (
     <InterfaceChatComposerFrame
@@ -180,8 +185,10 @@ export function InterfaceChatComposer({
         composerLayout={composerLayout}
         chrome={chrome}
         theme={theme}
+        modelControl={modelControl}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}
+        onModelControlPress={onModelControlPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
         onSendPress={onSendPress}

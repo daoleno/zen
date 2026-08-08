@@ -15,6 +15,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "calendar",
   "profile",
   "providers",
+  "composer",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];

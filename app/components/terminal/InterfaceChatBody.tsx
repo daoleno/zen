@@ -121,6 +121,7 @@ export interface InterfaceChatBodyProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
+  onModelControlPress?(): void;
   onRetryPendingUserMessage(id: string): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   composerAccessory?: React.ReactNode;
@@ -201,6 +202,7 @@ export function InterfaceChatBody({
   onInputBlur,
   onSendPress,
   onStopPress,
+  onModelControlPress,
   onRetryPendingUserMessage,
   onTerminalActionKey,
   composerAccessory,
@@ -244,6 +246,7 @@ export function InterfaceChatBody({
         onInputBlur={onInputBlur}
         onSendPress={onSendPress}
         onStopPress={onStopPress}
+        onModelControlPress={onModelControlPress}
       />
     </>
   ) : undefined;

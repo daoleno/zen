@@ -101,6 +101,8 @@ export default function ScreenshotDemoRoute() {
       return <ProvidersDemo />;
     case "profile":
       return <InterfaceDevicePerformanceDemoGate />;
+    case "composer":
+      return <ComposerStatesDemo />;
     case "chat":
     default:
       return <ChatDemo />;
@@ -547,11 +549,258 @@ function BrainDemo() {
   );
 }
 
+/**
+ * Composer motion fixture: both capsule states at a representative narrow
+ * width (320), with and without the active-model control, draft, attachment,
+ * and a running Stop timer.
+ */
+function ComposerStatesDemo() {
+  const { theme: zenTheme } = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const { chrome, theme } = useMemo(
+    () => buildChatChrome(zenTheme),
+    [zenTheme],
+  );
+  const compactRef = useRef<TextInput>(null);
+  const draftRef = useRef<TextInput>(null);
+  const expandedRef = useRef<TextInput>(null);
+  const runningRef = useRef<TextInput>(null);
+  const [compactDraft, setCompactDraft] = useState("");
+  const [expandedDraft, setExpandedDraft] = useState("");
+  const [runningDraft, setRunningDraft] = useState("");
+  const [providerActivityStartedAt] = useState(() =>
+    new Date(Date.now() - 43_000).toISOString(),
+  );
+  const modelControl = {
+    label: "claude-sonnet-4-5",
+    accessibilityLabel: "Open model selection, claude-sonnet-4-5, Claude",
+  };
+  const narrowRow = (
+    label: string,
+    composer: React.ReactElement<typeof InterfaceChatComposer>,
+  ) => (
+    <View style={styles.composerStateColumn}>
+      <Text style={[styles.composerStateLabel, { color: chrome.textMuted }]}>
+        {label}
+      </Text>
+      <View style={styles.composerStateRow}>{composer}</View>
+    </View>
+  );
+  const runningAttachment = [
+    {
+      id: "demo-running-attachment",
+      name: "keyboard-geometry-notes.md",
+      path: "/demo/keyboard-geometry-notes.md",
+      mimeType: "text/markdown",
+    },
+  ];
+
+  return (
+    <SafeAreaView
+      style={[styles.flex, { backgroundColor: chrome.appBackground }]}
+      edges={["top", "bottom"]}
+    >
+      <ScrollView
+        contentContainerStyle={[
+          styles.composerDemoBody,
+          { paddingBottom: Math.max(insets.bottom, 16) },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {narrowRow(
+          "Compact · empty · no model control",
+          <InterfaceChatComposer
+            inputRef={compactRef}
+            draft={compactDraft}
+            placeholder="Message the agent"
+            editable
+            focused={false}
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={null}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={setCompactDraft}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+          />,
+        )}
+        {narrowRow(
+          "Compact · draft · no model control",
+          <InterfaceChatComposer
+            inputRef={draftRef}
+            draft="Queue a careful review of the keyboard overlay."
+            placeholder="Message the agent"
+            editable
+            focused={false}
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={null}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={NOOP}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+          />,
+        )}
+        {narrowRow(
+          "Expanded · focused · model control",
+          <InterfaceChatComposer
+            inputRef={expandedRef}
+            draft={expandedDraft}
+            placeholder="Message the agent"
+            editable
+            focused
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={modelControl}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={setExpandedDraft}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+          />,
+        )}
+        {narrowRow(
+          "Expanded · multiline · attachment · running Stop",
+          <InterfaceChatComposer
+            inputRef={runningRef}
+            draft="Queue a careful review of the keyboard overlay.\nPreserve the visible message anchor.\nVerify every narrow width."
+            placeholder="Message the agent"
+            editable
+            focused
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Queue message"
+            showStopButton
+            stopEnabled
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            providerActivityStartedAt={providerActivityStartedAt}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={runningAttachment}
+            chrome={chrome}
+            theme={theme}
+            modelControl={modelControl}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={setRunningDraft}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+          />,
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
 function SessionsDemo() {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
-  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
-  return (
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;  return (
     <PrimaryDrawerShell activePrimaryRoute="list" onSelectPrimaryRoute={NOOP}>
       <View
         style={[
@@ -716,4 +965,21 @@ const styles = StyleSheet.create({
   },
   statsTitle: { ...UiTextMetrics, ...TypeScale.body },
   statsSubtitle: { ...UiTextMetrics, ...TypeScale.micro, marginTop: 1 },
+  composerDemoBody: {
+    paddingTop: 16,
+    paddingHorizontal: 12,
+    gap: 18,
+  },
+  composerStateColumn: {
+    gap: 6,
+  },
+  composerStateLabel: {
+    ...UiTextMetrics,
+    ...TypeScale.micro,
+    marginLeft: 2,
+  },
+  composerStateRow: {
+    width: 320,
+    alignSelf: "center",
+  },
 });

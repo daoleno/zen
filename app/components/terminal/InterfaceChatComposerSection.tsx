@@ -35,6 +35,7 @@ interface InterfaceChatComposerSectionProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
+  onModelControlPress?(): void;
 }
 
 export function InterfaceChatComposerSection({
@@ -62,6 +63,7 @@ export function InterfaceChatComposerSection({
   onInputBlur,
   onSendPress,
   onStopPress,
+  onModelControlPress,
 }: InterfaceChatComposerSectionProps) {
   return (
     <InterfaceChatComposer
@@ -96,6 +98,7 @@ export function InterfaceChatComposerSection({
       attachments={attachments}
       chrome={chrome}
       theme={theme}
+      modelControl={presentation.modelControl}
       onSelectCommand={onSelectCommand}
       onToggleActionMenu={onToggleActionMenu}
       onDismissActionMenu={onDismissActionMenu}
@@ -107,6 +110,7 @@ export function InterfaceChatComposerSection({
       onInputBlur={onInputBlur}
       onSendPress={onSendPress}
       onStopPress={onStopPress}
+      onModelControlPress={onModelControlPress}
     />
   );
 }

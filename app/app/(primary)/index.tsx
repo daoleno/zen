@@ -18,6 +18,8 @@ import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
+import { SessionModelSheet } from "../../components/providers/SessionModelSheet";
+import { useSessionProviderSheet } from "../../components/terminal/screen/useSessionProviderSheet";
 import {
   brainProviderLabel,
   distinctExecutorAdapters,
@@ -144,6 +146,13 @@ export default function BrainScreen() {
   const showBrainLoading = shouldShowBrainLoadingState({
     hydrated: Boolean(activeBrain?.hydrated),
     hasHostAgent: Boolean(hostAgent?.id),
+  });
+  const brainModelSheet = useSessionProviderSheet({
+    serverId: activeServer?.id ?? "",
+    agentId: hostAgent?.id ?? "",
+    capabilities: hostAgent?.capabilities ?? null,
+    connectionConnected: connectionState === "connected",
+    eagerLoad: true,
   });
   const canUseStructuredBrainInterface = Boolean(
     ready && hostAdapter?.capabilities?.structured_events,
@@ -460,6 +469,8 @@ export default function BrainScreen() {
               emptyTitle={BRAIN_EMPTY_TITLE}
               emptyBody={BRAIN_EMPTY_BODY}
               renderComposerAccessory={renderBrainComposerAccessory}
+              composerModelControl={brainModelSheet.composerControl}
+              onComposerModelControlPress={() => brainModelSheet.open()}
             />
           ) : showBrainLoading ? (
             <BrainLoadingState
@@ -496,6 +507,29 @@ export default function BrainScreen() {
         visible={menuVisible}
         actions={menuActions}
         onClose={closeMenu}
+      />
+
+      <SessionModelSheet
+        visible={brainModelSheet.visible}
+        loading={brainModelSheet.loading}
+        activating={brainModelSheet.activating}
+        error={brainModelSheet.error}
+        durabilityWarning={brainModelSheet.durabilityWarning}
+        requiresRefreshBeforeMutation={brainModelSheet.requiresRefreshBeforeMutation}
+        managedReadOnly={brainModelSheet.managedReadOnly}
+        activationEnabled={brainModelSheet.activationEnabled}
+        selection={brainModelSheet.selection}
+        connections={brainModelSheet.connections}
+        modelsByConnection={brainModelSheet.modelsByConnection}
+        chrome={chrome}
+        onClose={brainModelSheet.close}
+        onRetry={brainModelSheet.retry}
+        onOpenProvidersSettings={() => {
+          router.push("/model-profiles");
+        }}
+        onActivate={(choice) => {
+          void brainModelSheet.activate(choice);
+        }}
       />
 
       <BrainWorkspaceViewer

@@ -61,6 +61,7 @@ interface UseInterfaceChatBodyPropsInput {
   setDraft(value: string): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
+  onModelControlPress?(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   onKeyboardLifecycleInvalidate(reason: "route" | "app"): void;
   showUnavailableAction?: boolean;
@@ -104,6 +105,7 @@ export function useInterfaceChatBodyProps({
   setDraft,
   onToggleActionMenu,
   onDismissActionMenu,
+  onModelControlPress,
   onTerminalActionKey,
   onKeyboardLifecycleInvalidate,
   showUnavailableAction,
@@ -197,6 +199,7 @@ export function useInterfaceChatBodyProps({
       onInputBlur: composerInput.handleBlur,
       onSendPress: handleSendPress,
       onStopPress: handleStopPress,
+      onModelControlPress,
       onRetryPendingUserMessage: controller.retryPendingUserMessage,
       onTerminalActionKey,
       composerAccessory,
@@ -247,6 +250,7 @@ export function useInterfaceChatBodyProps({
       onSwitchToTerminal,
       onToggleActionMenu,
       onDismissActionMenu,
+      onModelControlPress,
       onTerminalActionKey,
       onKeyboardLifecycleInvalidate,
       composerAccessory,

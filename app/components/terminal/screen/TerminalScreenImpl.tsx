@@ -167,6 +167,7 @@ export default function TerminalScreen() {
     agentId,
     capabilities: agent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
+    eagerLoad: true,
   });
 
   const openModel = useCallback(() => {
@@ -253,6 +254,8 @@ export default function TerminalScreen() {
         ? openModel
         : undefined,
       modelActionAvailable,
+      composerModelControl: routeSheet.composerControl,
+      onComposerModelControlPress: openModel,
       closeRouteSheet: routeSheet.close,
       retryRouteSheet: routeSheet.retry,
       activateSessionModel: (choice) => {

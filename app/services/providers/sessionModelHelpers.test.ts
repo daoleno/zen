@@ -5,6 +5,7 @@ import {
   buildActivateSessionProviderRequest,
   exactCurrentModelChoice,
   filterSessionModelChoices,
+  resolveComposerModelControl,
   resolveSessionModelSheetMode,
   sessionModelChoices,
 } from "./sessionModelHelpers";
@@ -151,5 +152,112 @@ describe("Plus Model helpers", () => {
         refreshRequired: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("Composer model control", () => {
+  const managedSwitch = {
+    structured_events: true,
+    model_profile_managed: true,
+    model_profile_active_switch: true,
+  };
+
+  test("ready only when the exact Session can activate now", () => {
+    const control = resolveComposerModelControl({
+      capabilities: managedSwitch,
+      connectionConnected: true,
+      selection,
+      refreshRequired: false,
+    });
+    expect(control).toEqual({
+      label: "deepseek-chat",
+      accessibilityLabel:
+        "Open model selection, deepseek-chat, DeepSeek",
+    });
+  });
+
+  test("prefers a human model label and falls back to the connection name", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: managedSwitch,
+        connectionConnected: true,
+        selection: { ...selection, model_id: "" },
+        refreshRequired: false,
+      })?.label,
+    ).toBe("DeepSeek");
+  });
+
+  test("omits when capability is unsupported", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: false,
+          model_profile_active_switch: false,
+        },
+        connectionConnected: true,
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("omits for managed read-only Sessions", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: true,
+          model_profile_active_switch: false,
+        },
+        connectionConnected: true,
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("omits when disconnected", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: managedSwitch,
+        connectionConnected: false,
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("omits without a loaded selection", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: managedSwitch,
+        connectionConnected: true,
+        selection: null,
+        refreshRequired: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("omits when the Session selection is not hot-switchable", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: managedSwitch,
+        connectionConnected: true,
+        selection: { ...selection, hot_switchable: false },
+        refreshRequired: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("omits when a refresh is required before mutation", () => {
+    expect(
+      resolveComposerModelControl({
+        capabilities: managedSwitch,
+        connectionConnected: true,
+        selection,
+        refreshRequired: true,
+      }),
+    ).toBeNull();
   });
 });

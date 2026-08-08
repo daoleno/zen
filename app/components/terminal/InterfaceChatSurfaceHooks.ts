@@ -41,9 +41,7 @@ type UseInterfaceComposerPresentationInput = Omit<
   "agentKind"
 > & {
   agentCommand?: string;
-};
-
-export function useInterfaceComposerPresentation({
+};export function useInterfaceComposerPresentation({
   draft,
   slashCommands,
   agentCommand,
@@ -59,6 +57,7 @@ export function useInterfaceComposerPresentation({
   keyboardVerticalOffset,
   composerBottomInset,
   composerLayout,
+  modelControl,
 }: UseInterfaceComposerPresentationInput) {
   const agentKind = agentKindFromCommand(agentCommand);
   return useMemo(
@@ -79,6 +78,7 @@ export function useInterfaceComposerPresentation({
         keyboardVerticalOffset,
         composerBottomInset,
         composerLayout,
+        modelControl,
       }),
     [
       attachmentCount,
@@ -89,6 +89,7 @@ export function useInterfaceComposerPresentation({
       connectionState,
       draft,
       interrupting,
+      modelControl,
       runningActivity,
       safeAreaBottom,
       slashCommands,

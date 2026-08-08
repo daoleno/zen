@@ -8,10 +8,12 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { InterfaceComposerInput } from "./InterfaceComposerInput";
 import { InterfaceComposerPanelFrame } from "./InterfaceComposerPanelFrame";
 import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerSendButton } from "./ComposerSendButton";
+import { InterfaceComposerExpandingDock } from "./InterfaceComposerExpandingDock";
 import {
   COMPOSER_ACTION_SLOT_WIDTH,
   COMPOSER_CHATGPT_DETACHED_ACTION_GAP,
@@ -36,11 +38,13 @@ interface InterfaceComposerPanelProps {
   actionMenuButtonEnabled: boolean;
   showActionMenuButton: boolean;
   actionMenuIcon: "add" | "happy-outline";
+  modelControl?: ComposerModelControlPresentation | null;
   composerLayout: "chatgpt" | "telegram" | "classic";
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
   onActionMenuPress(): void;
+  onModelControlPress?(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
@@ -66,11 +70,13 @@ export function InterfaceComposerPanel({
   actionMenuButtonEnabled,
   showActionMenuButton,
   actionMenuIcon,
+  modelControl,
   composerLayout,
   chrome,
   theme,
   onDraftChange,
   onActionMenuPress,
+  onModelControlPress,
   onInputFocus,
   onInputBlur,
   onSendPress,
@@ -136,12 +142,47 @@ export function InterfaceComposerPanel({
     );
   }
 
-  // telegram + classic: one continuous dock (plus | input | send)
+  if (composerLayout === "telegram") {
+    return (
+      <InterfaceComposerExpandingDock
+        inputRef={inputRef}
+        draft={draft}
+        placeholder={placeholder}
+        editable={editable}
+        focused={focused}
+        uploading={uploading}
+        sendEnabled={sendEnabled}
+        sending={sending}
+        sendLabel={sendLabel}
+        showStopButton={showStopButton}
+        stopEnabled={stopEnabled}
+        stopLabel={stopLabel}
+        stopLoading={stopLoading}
+        providerActivityStartedAt={providerActivityStartedAt}
+        actionMenuExpanded={actionMenuExpanded}
+        actionMenuButtonEnabled={actionMenuButtonEnabled}
+        showActionMenuButton={showActionMenuButton}
+        actionMenuIcon={actionMenuIcon}
+        modelControl={modelControl}
+        chrome={chrome}
+        theme={theme}
+        onDraftChange={onDraftChange}
+        onActionMenuPress={onActionMenuPress}
+        onModelControlPress={onModelControlPress}
+        onInputFocus={onInputFocus}
+        onInputBlur={onInputBlur}
+        onSendPress={onSendPress}
+        onStopPress={onStopPress}
+      />
+    );
+  }
+
+  // classic: one continuous dock (plus | input | send)
   return (
     <InterfaceComposerPanelFrame
       focused={focused}
       chrome={chrome}
-      layout={composerLayout === "telegram" ? "telegram" : "classic"}
+      layout="classic"
     >
       {showActionMenuButton ? (
         <ComposerIconButton

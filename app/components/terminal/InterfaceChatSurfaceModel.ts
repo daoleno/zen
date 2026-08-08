@@ -7,6 +7,7 @@ import type { AgentKind } from "../../services/agentPresentation";
 import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ProviderActivity } from "../../services/codexConversation";
+import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { filterSlashCommands } from "./CodexSlashCommands";
 import { resolveComposerSendAction } from "./composerSendAction";
 
@@ -31,6 +32,7 @@ export interface InterfaceComposerPresentation {
   bottomPadding: number;
   keyboardVerticalOffset: number;
   composerLayout: ChatLayout;
+  modelControl: ComposerModelControlPresentation | null;
 }
 
 export interface InterfaceComposerPresentationInput {
@@ -49,6 +51,7 @@ export interface InterfaceComposerPresentationInput {
   keyboardVerticalOffset?: number;
   composerBottomInset?: number;
   composerLayout?: ChatLayout;
+  modelControl?: ComposerModelControlPresentation | null;
 }
 
 export function buildInterfaceComposerPresentation({
@@ -67,6 +70,7 @@ export function buildInterfaceComposerPresentation({
   keyboardVerticalOffset,
   composerBottomInset,
   composerLayout = "telegram",
+  modelControl = null,
 }: InterfaceComposerPresentationInput): InterfaceComposerPresentation {
   const commandQuery = draft.trimStart();
   const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
@@ -125,5 +129,6 @@ export function buildInterfaceComposerPresentation({
     bottomPadding: composerBottomInset ?? Math.max(safeAreaBottom, 8),
     keyboardVerticalOffset: keyboardVerticalOffset ?? 0,
     composerLayout,
+    modelControl,
   };
 }

@@ -17,6 +17,7 @@ import type {
   ProviderModel,
   ProviderSessionSelection,
 } from "../../../services/providers";
+import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
@@ -98,6 +99,8 @@ interface UseTerminalScreenLayoutPropsInput {
   retryResourceSheet(): void;
   openModel?: () => void;
   modelActionAvailable?: boolean;
+  composerModelControl?: ComposerModelControlPresentation | null;
+  onComposerModelControlPress?: () => void;
   closeRouteSheet(): void;
   retryRouteSheet(): void;
   activateSessionModel(choice: SessionModelChoice): void;
@@ -177,6 +180,8 @@ export function useTerminalScreenLayoutProps({
   retryResourceSheet,
   openModel,
   modelActionAvailable = false,
+  composerModelControl,
+  onComposerModelControlPress,
   closeRouteSheet,
   retryRouteSheet,
   activateSessionModel,
@@ -248,6 +253,8 @@ export function useTerminalScreenLayoutProps({
     sessionActions,
     onAccessoryLayout: handleAccessoryLayout,
     onConsumeInitialComposerFocus,
+    composerModelControl,
+    onComposerModelControlPress,
     skillsHandoffToken,
   });
   const overlayProps = useTerminalScreenOverlayProps({

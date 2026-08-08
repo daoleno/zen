@@ -25,6 +25,45 @@ export type SessionModelSheetMode =
   | "capability_mismatch"
   | "missing_selection";
 
+/**
+ * Concise Composer chip presentation for the current Session selection. The
+ * chip exists only when this exact Session can safely activate another
+ * Provider Model right now; every other state omits the control entirely.
+ */
+export type ComposerModelControlPresentation = {
+  label: string;
+  accessibilityLabel: string;
+};
+
+export function resolveComposerModelControl(input: {
+  capabilities?: AgentSessionCapabilities | null;
+  connectionConnected: boolean;
+  selection: ProviderSessionSelection | null;
+  refreshRequired: boolean;
+}): ComposerModelControlPresentation | null {
+  if (!sessionAllowsModelProfileActivation(input.capabilities)) {
+    return null;
+  }
+  if (!input.connectionConnected) {
+    return null;
+  }
+  if (input.refreshRequired) {
+    return null;
+  }
+  const selection = input.selection;
+  if (!selection || selection.hot_switchable !== true) {
+    return null;
+  }
+  const label = selection.model_id.trim() || selection.connection_name.trim();
+  if (!label) {
+    return null;
+  }
+  return {
+    label,
+    accessibilityLabel: `Open model selection, ${label}, ${selection.connection_name}`,
+  };
+}
+
 export type ActivateSessionProviderRequest = {
   agentId: string;
   connectionId: string;

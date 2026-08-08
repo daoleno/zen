@@ -6,6 +6,7 @@ import type {
 } from "../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../store/agents";
+import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { InterfaceChatSurface } from "./InterfaceChatSurface";
 import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
 import { CHAT_HEADER_HEIGHT, CHAT_HEADER_OUTER_GAP } from "./chatChromeMetrics";
@@ -46,6 +47,8 @@ export interface TerminalViewportProps {
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
   onConsumeInitialComposerFocus(): void;
+  composerModelControl?: ComposerModelControlPresentation | null;
+  onComposerModelControlPress?: () => void;
   skillsHandoffToken?: string;
 }
 
@@ -83,6 +86,8 @@ function TerminalViewportImpl({
   onRetryConnection,
   onAccessoryLayout,
   onConsumeInitialComposerFocus,
+  composerModelControl,
+  onComposerModelControlPress,
   skillsHandoffToken,
 }: TerminalViewportProps) {
   const interfaceChatAgentInfo = React.useMemo<
@@ -179,6 +184,8 @@ function TerminalViewportImpl({
                 topChromeInset={CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2}
                 onSwitchToTerminal={onSwitchToTerminal}
                 onConsumeInitialComposerFocus={onConsumeInitialComposerFocus}
+                composerModelControl={composerModelControl}
+                onComposerModelControlPress={onComposerModelControlPress}
               />
             </View>
           ) : null}

@@ -7,6 +7,7 @@ import type {
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 import type { ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { InterfaceChatBody } from "./InterfaceChatBody";
 import { useInterfaceChatSurfaceState } from "./useInterfaceChatSurfaceState";
 import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
@@ -43,6 +44,8 @@ interface InterfaceChatSurfaceProps {
     draft: string;
     setDraft: (value: string) => void;
   }) => React.ReactNode;
+  composerModelControl?: ComposerModelControlPresentation | null;
+  onComposerModelControlPress?: () => void;
   onSwitchToTerminal?: () => void;
   onConsumeInitialComposerFocus?: () => void;
 }
@@ -73,6 +76,8 @@ function InterfaceChatSurfaceImpl({
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
+  composerModelControl,
+  onComposerModelControlPress,
   onSwitchToTerminal,
   onConsumeInitialComposerFocus,
 }: InterfaceChatSurfaceProps) {
@@ -101,6 +106,8 @@ function InterfaceChatSurfaceImpl({
     composerAccessory,
     onDraftChange,
     renderComposerAccessory,
+    composerModelControl,
+    onComposerModelControlPress,
     onSwitchToTerminal,
     onConsumeInitialComposerFocus,
   });

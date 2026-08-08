@@ -20,6 +20,10 @@ import {
   sessionSupportsModelProfileAction,
   type AgentSessionCapabilities,
 } from "../../../services/providers/sessionCapabilities";
+import {
+  resolveComposerModelControl,
+  type ComposerModelControlPresentation,
+} from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 
@@ -30,6 +34,13 @@ interface UseSessionProviderSheetInput {
   agentId: string;
   capabilities?: AgentSessionCapabilities | null;
   connectionConnected: boolean;
+  /**
+   * Load the Session selection once while the sheet stays closed so the
+   * Composer model control can show a label without opening the sheet.
+   * The sheet re-fetches on open; the projection survives close so the
+   * Composer control does not flicker away.
+   */
+  eagerLoad?: boolean;
 }
 
 export type SessionProviderSheetMode =
@@ -44,6 +55,7 @@ export function useSessionProviderSheet({
   agentId,
   capabilities,
   connectionConnected,
+  eagerLoad = false,
 }: UseSessionProviderSheetInput) {
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -61,6 +73,9 @@ export function useSessionProviderSheet({
   );
   const [catalog, setCatalog] = useState<ProvidersSnapshot | null>(null);
   const ownerRef = useRef(new ProviderRequestOwner());
+  const fetchedEpochRef = useRef<{ serverId: string; agentId: string } | null>(
+    null,
+  );
   const managed = sessionSupportsModelProfileAction(capabilities);
   const readOnlyManaged = sessionIsManagedReadOnlyProfile(capabilities);
   const activationCapable = sessionAllowsModelProfileActivation(capabilities);
@@ -73,6 +88,7 @@ export function useSessionProviderSheet({
 
   const clearProjection = useCallback(() => {
     ownerRef.current.invalidateAll();
+    fetchedEpochRef.current = null;
     setSelection(null);
     setCatalog(null);
     setError(null);
@@ -84,100 +100,136 @@ export function useSessionProviderSheet({
   }, []);
 
   const close = useCallback(() => {
+    // Keep the loaded projection so the Composer model control stays stable
+    // across sheet open/close. Rebinding a different server/agent clears it.
     setVisible(false);
-    clearProjection();
-  }, [clearProjection]);
+  }, []);
 
   const open = useCallback(() => {
     setVisible(true);
   }, []);
 
-  const load = useCallback(async () => {
-    if (!visible || !serverId || !agentId) return;
-    if (!connectionConnected) {
-      setLoading(false);
-      setSelection(null);
-      setSheetMode("error");
-      setError(offlineProviderError());
-      return;
-    }
-    if (!managed) {
-      setLoading(false);
-      setSelection(null);
-      setSheetMode("error");
-      setError("This Session does not support Model switching.");
-      return;
-    }
-    ownerRef.current.rebind(serverId, agentId);
-    const admission = ownerRef.current.admitSessionLoad();
-    if (!admission.ok) return;
-    const token = admission.token;
-    setLoading(true);
-    setError(null);
-    try {
-      const nextSelection = await wsClient.getSessionProvider(serverId, agentId);
-      if (!ownerRef.current.acceptSession(token)) return;
-      syncActivationLockUi();
-
-      const hot = nextSelection.hot_switchable === true;
-      if (activationCapable && !hot) {
-        setSelection(nextSelection);
-        setCatalog(null);
-        setSheetMode("capability_mismatch");
-        setError(
-          "Managed Model capability disagrees with Session selection. Refresh before relying on this Session.",
-        );
+  const fetchProjection = useCallback(
+    async (mode: "sheet" | "eager") => {
+      if (!serverId || !agentId) return;
+      if (!connectionConnected) {
+        if (mode === "sheet") {
+          setLoading(false);
+          setSelection(null);
+          setSheetMode("error");
+          setError(offlineProviderError());
+        }
         return;
       }
-
-      setSelection(nextSelection);
-      setSheetMode(readOnlyManaged ? "managed_readonly" : "active_switch");
-
+      if (!managed) {
+        if (mode === "sheet") {
+          setLoading(false);
+          setSelection(null);
+          setSheetMode("error");
+          setError("This Session does not support Model switching.");
+        }
+        return;
+      }
+      ownerRef.current.rebind(serverId, agentId);
+      const admission = ownerRef.current.admitSessionLoad();
+      if (!admission.ok) return;
+      const token = admission.token;
+      if (mode === "sheet") setLoading(true);
+      setError(null);
       try {
-        const nextCatalog = await wsClient.listProviders(serverId);
-        if (!ownerRef.current.isCurrent(token)) return;
-        setCatalog(nextCatalog);
-      } catch (catalogError) {
-        if (!ownerRef.current.isCurrent(token)) return;
-        setCatalog(null);
-        setError(
-          catalogError instanceof ProviderError
-            ? catalogError
-            : "Could not load Providers for model selection.",
+        const nextSelection = await wsClient.getSessionProvider(
+          serverId,
+          agentId,
         );
+        if (!ownerRef.current.acceptSession(token)) return;
+        fetchedEpochRef.current = { serverId, agentId };
+        syncActivationLockUi();
+
+        const hot = nextSelection.hot_switchable === true;
+        if (activationCapable && !hot) {
+          setSelection(nextSelection);
+          setCatalog(null);
+          setSheetMode("capability_mismatch");
+          setError(
+            "Managed Model capability disagrees with Session selection. Refresh before relying on this Session.",
+          );
+          return;
+        }
+
+        setSelection(nextSelection);
+        setSheetMode(readOnlyManaged ? "managed_readonly" : "active_switch");
+
+        try {
+          const nextCatalog = await wsClient.listProviders(serverId);
+          if (!ownerRef.current.isCurrent(token)) return;
+          setCatalog(nextCatalog);
+        } catch (catalogError) {
+          if (!ownerRef.current.isCurrent(token)) return;
+          setCatalog(null);
+          setError(
+            catalogError instanceof ProviderError
+              ? catalogError
+              : "Could not load Providers for model selection.",
+          );
+        }
+      } catch (loadError) {
+        if (!ownerRef.current.isCurrent(token)) return;
+        if (mode === "sheet") {
+          setSelection(null);
+          setCatalog(null);
+          setSheetMode("error");
+          setError(
+            loadError instanceof ProviderError
+              ? loadError
+              : loadError instanceof Error
+                ? loadError.message
+                : "Failed to load session provider.",
+          );
+        }
+      } finally {
+        if (mode === "sheet" && ownerRef.current.isCurrent(token)) {
+          setLoading(false);
+        }
       }
-    } catch (loadError) {
-      if (!ownerRef.current.isCurrent(token)) return;
-      setSelection(null);
-      setCatalog(null);
-      setSheetMode("error");
-      setError(
-        loadError instanceof ProviderError
-          ? loadError
-          : loadError instanceof Error
-            ? loadError.message
-            : "Failed to load session provider.",
-      );
-    } finally {
-      if (ownerRef.current.isCurrent(token)) {
-        setLoading(false);
-      }
-    }
-  }, [
-    activationCapable,
-    agentId,
-    connectionConnected,
-    managed,
-    readOnlyManaged,
-    serverId,
-    syncActivationLockUi,
-    visible,
-  ]);
+    },
+    [
+      activationCapable,
+      agentId,
+      connectionConnected,
+      managed,
+      readOnlyManaged,
+      serverId,
+      syncActivationLockUi,
+    ],
+  );
+
+  const load = useCallback(() => {
+    void fetchProjection("sheet");
+  }, [fetchProjection]);
 
   useEffect(() => {
     if (!visible) return;
     void load();
   }, [load, visible]);
+
+  useEffect(() => {
+    if (!eagerLoad) return;
+    if (visible) return;
+    if (!managed || !serverId || !agentId || !connectionConnected) return;
+    const fetched = fetchedEpochRef.current;
+    if (fetched && fetched.serverId === serverId && fetched.agentId === agentId) {
+      return;
+    }
+    void fetchProjection("eager");
+  }, [
+    agentId,
+    connectionConnected,
+    eagerLoad,
+    fetchProjection,
+    managed,
+    serverId,
+    visible,
+  ]);
 
   useEffect(() => {
     const rebound = ownerRef.current.rebind(serverId, agentId);
@@ -248,6 +300,7 @@ export function useSessionProviderSheet({
             refreshRequired: classification === "applied_uncertain",
           });
           setSelection(result.selection);
+          fetchedEpochRef.current = { serverId, agentId };
           setDurabilityWarning(
             classification === "applied_uncertain"
               ? durabilityWarningMessage(result.persistence)
@@ -256,7 +309,6 @@ export function useSessionProviderSheet({
           syncActivationLockUi();
           if (classification === "applied_durable") {
             setVisible(false);
-            clearProjection();
           }
           return;
         }
@@ -315,6 +367,14 @@ export function useSessionProviderSheet({
     }
   }
 
+  const composerControl: ComposerModelControlPresentation | null =
+    resolveComposerModelControl({
+      capabilities,
+      connectionConnected,
+      selection,
+      refreshRequired: requiresRefreshBeforeMutation,
+    });
+
   return {
     visible,
     open,
@@ -334,5 +394,6 @@ export function useSessionProviderSheet({
     managedReadOnly: readOnlyManaged,
     activationEnabled: activationCapable && sheetMode === "active_switch",
     managed,
+    composerControl,
   };
 }

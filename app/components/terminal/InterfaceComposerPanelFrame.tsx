@@ -9,10 +9,15 @@ import { COMPOSER_PANEL_METRICS } from "./composerActionSlot";
 interface InterfaceComposerPanelFrameProps {
   focused: boolean;
   chrome: TerminalThemeChrome;
-  layout?: "chatgpt" | "telegram" | "classic";
+  layout?: "chatgpt" | "classic";
   children: React.ReactNode;
 }
 
+/**
+ * Static capsule frames for legacy layouts. The shared mobile Composer
+ * (telegram) uses InterfaceComposerExpandingDock, which owns the animated
+ * capsule geometry.
+ */
 export function InterfaceComposerPanelFrame({
   focused: _focused,
   chrome,
@@ -20,25 +25,19 @@ export function InterfaceComposerPanelFrame({
   children,
 }: InterfaceComposerPanelFrameProps) {
   const ambient = isAmbientChatChrome(chrome);
-  const telegram = layout === "telegram";
   const chatgpt = layout === "chatgpt";
-  const floating = telegram || chatgpt;
+  const floating = chatgpt;
 
   return (
     <View
       collapsable={false}
       style={[
-        chatgpt
-          ? styles.panelChatGpt
-          : telegram
-            ? styles.panelTelegram
-            : styles.panel,
-        ambient && !telegram && !chatgpt ? styles.panelAmbient : null,
+        chatgpt ? styles.panelChatGpt : styles.panel,
+        ambient && !chatgpt ? styles.panelAmbient : null,
         {
-          backgroundColor:
-            chatgpt || telegram || !ambient
-              ? chrome.composerInput
-              : chrome.surfaceActive,
+          backgroundColor: chatgpt || !ambient
+            ? chrome.composerInput
+            : chrome.surfaceActive,
           borderColor: chrome.border,
           ...(floating ? shadow("card", chrome.shadowColor) : null),
         },
@@ -52,7 +51,7 @@ export function InterfaceComposerPanelFrame({
 const styles = StyleSheet.create({
   panel: {
     minHeight: 48,
-    borderRadius: 24,
+    borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: COMPOSER_PANEL_METRICS.classic.left,
     paddingRight: COMPOSER_PANEL_METRICS.classic.right,
@@ -64,17 +63,6 @@ const styles = StyleSheet.create({
   panelAmbient: {
     paddingLeft: COMPOSER_PANEL_METRICS.ambient.left,
     paddingRight: COMPOSER_PANEL_METRICS.ambient.right,
-  },
-  panelTelegram: {
-    minHeight: 48,
-    borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: COMPOSER_PANEL_METRICS.telegram.left,
-    paddingRight: COMPOSER_PANEL_METRICS.telegram.right,
-    paddingVertical: 5,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: COMPOSER_PANEL_METRICS.telegram.gap,
   },
   panelChatGpt: {
     flex: 1,
