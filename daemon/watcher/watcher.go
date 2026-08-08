@@ -2,6 +2,8 @@ package watcher
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -867,6 +869,16 @@ func (w *Watcher) poll() {
 			}
 			w.agents[win.target] = agent
 			w.agentOrder = append(w.agentOrder, win.target)
+			// Rediscovered window: restore the durable Pi ownership binding
+			// (@zen_agent_pi_session) recorded at session create. After a
+			// daemon restart the provider process may rewrite its argv
+			// (node-based Pi), so the tmux option is the only recoverable
+			// record of an owned --session path; mergeAgentCommandOwnership
+			// then preserves it exactly as it would for a never-restarted
+			// daemon, and a provider switch still clears it.
+			if flag, path, ok := DecodePiSessionBinding(win.piSessionBinding); ok {
+				agent.Command = "pi " + flag + " " + shellQuoteForLaunch(path)
+			}
 		}
 		previousMetadata := agentMetadataSnapshotFor(agent)
 		if nextName := formatAgentName(win.name, win.target); nextName != "" {
@@ -1614,6 +1626,7 @@ type tmuxWindow struct {
 	name             string // window name (e.g. "claude", "node")
 	cwd              string // active pane cwd
 	command          string // active pane command
+	piSessionBinding string // durable Pi ownership binding (@zen_agent_pi_session)
 	panePID          int
 	hidden           bool
 	delegated        bool
@@ -1623,7 +1636,7 @@ type tmuxWindow struct {
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_delegated_turn}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_delegated_turn}\t#{@zen_agent_pi_session}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w: %s", err, strings.TrimSpace(string(out)))
@@ -1634,7 +1647,7 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 9)
+		parts := strings.SplitN(line, "\t", 10)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -1673,9 +1686,14 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if len(parts) >= 9 {
 			delegatedTurnRaw = strings.TrimSpace(parts[8])
 		}
+		piSessionBinding := ""
+		if len(parts) >= 10 {
+			piSessionBinding = strings.TrimSpace(parts[9])
+		}
 		windows = append(windows, tmuxWindow{
 			target: target, name: name, cwd: cwd, command: command,
-			panePID: panePID, hidden: hidden, delegated: delegated,
+			piSessionBinding: piSessionBinding,
+			panePID:          panePID, hidden: hidden, delegated: delegated,
 			resourceUnit: resourceUnit, delegatedTurnRaw: delegatedTurnRaw,
 		})
 	}
@@ -3273,6 +3291,21 @@ func markCreatedSession(target string, opts CreateSessionOptions) error {
 	if err := setTmuxWindowUserOption(target, "zen_agent_created", "1"); err != nil {
 		return err
 	}
+	// Durable Pi ownership binding only: the raw launch command is never
+	// persisted (it may contain secrets or delimiter-breaking characters).
+	// Only a validated Pi launch with an absolute owned --session/
+	// --session-dir writes an option, encoded delimiter-safe; non-Pi commands
+	// and Pi commands without an owned binding write nothing. The binding
+	// outlives the daemon in the tmux server, because node-based Pi rewrites
+	// its own argv and window re-discovery after a daemon restart cannot
+	// recover the owned path from the process table.
+	if commandExecutableBase(opts.Command) == "pi" {
+		if flag, path := piOwnedLaunchFlag(opts.Command); flag != "" {
+			if err := setTmuxWindowUserOption(target, "zen_agent_pi_session", EncodePiSessionBinding(flag, path)); err != nil {
+				return err
+			}
+		}
+	}
 	if opts.Hidden {
 		if err := setTmuxWindowUserOption(target, "zen_agent_hidden", "1"); err != nil {
 			return err
@@ -3916,6 +3949,66 @@ func piOwnedLaunchFlag(command string) (string, string) {
 // token in splitZenLaunchFields (the escape's first quote closes the span), so
 // they fail closed exactly like the work parser, which decodes them
 // differently but never binds a wrong transcript.
+
+// piSessionBindingWire is the versioned durable shape stored under the
+// @zen_agent_pi_session tmux window option. Only a validated Pi ownership
+// binding (flag + absolute path) is ever written; the raw launch command is
+// never persisted.
+type piSessionBindingWire struct {
+	Version int    `json:"v"`
+	Flag    string `json:"flag"`
+	Path    string `json:"path"`
+}
+
+// EncodePiSessionBinding encodes a validated Pi ownership binding into the
+// delimiter-safe durable option value. base64url keeps the value a single
+// token (no tabs, newlines, or quotes), so the tab-separated list-windows
+// projection can never be corrupted by a path. Invalid flags or non-absolute
+// paths return "".
+func EncodePiSessionBinding(flag, path string) string {
+	flag = strings.TrimSpace(flag)
+	if flag != "--session" && flag != "--session-dir" {
+		return ""
+	}
+	if path == "" || !filepath.IsAbs(path) {
+		return ""
+	}
+	data, err := json.Marshal(piSessionBindingWire{Version: 1, Flag: flag, Path: path})
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+// DecodePiSessionBinding decodes and validates a @zen_agent_pi_session option
+// value. Any malformed, wrong-version, or non-absolute value fails closed
+// (ok=false), so a corrupted option can never bind a transcript.
+func DecodePiSessionBinding(value string) (flag, path string, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", false
+	}
+	data, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return "", "", false
+	}
+	var wire piSessionBindingWire
+	if json.Unmarshal(data, &wire) != nil {
+		return "", "", false
+	}
+	if wire.Version != 1 {
+		return "", "", false
+	}
+	flag = strings.TrimSpace(wire.Flag)
+	if flag != "--session" && flag != "--session-dir" {
+		return "", "", false
+	}
+	if wire.Path == "" || !filepath.IsAbs(wire.Path) {
+		return "", "", false
+	}
+	return flag, wire.Path, true
+}
+
 func unquoteLaunchValue(value string) string {
 	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
 		return value[1 : len(value)-1]

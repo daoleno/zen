@@ -1594,6 +1594,25 @@ func (s *Server) publishCodexConversationSubscription(
 	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
 	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
 
+	// Never-erase guard: an unavailable empty load (transcript miss, malformed
+	// partial write, mtime flap) must never replace an authoritative non-empty
+	// history — neither as a snapshot (empty identity is treated as a new
+	// conversation) nor as a delete-everything delta. Hold the last-known-good
+	// serving state instead; the next poll either restores the same source via
+	// delta or binds a genuinely new conversation via snapshot. This is a
+	// monotonicity invariant, not a retry heuristic: nothing is re-sent and no
+	// timer is involved.
+	if (*previous) != nil &&
+		(*previous).conversation.Available &&
+		len((*previous).conversation.Events) > 0 &&
+		!conversation.Available &&
+		len(conversation.Events) == 0 {
+		if identity := codexConversationIdentity(conversation); identity == "" ||
+			identity == codexConversationIdentity((*previous).conversation) {
+			return
+		}
+	}
+
 	// Memoized fingerprints/deltas are only sound when the provider reader
 	// proves an authoritative nonzero content version AND the conversation is
 	// not a Brain-thread overlay (which appends independently of the provider

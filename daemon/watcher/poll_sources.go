@@ -9,6 +9,7 @@ type PollWindow struct {
 	Name             string
 	Cwd              string
 	Command          string
+	PiSessionBinding string
 	PanePID          int
 	Hidden           bool
 	Delegated        bool
@@ -62,7 +63,7 @@ func (w *Watcher) SetPollSources(sources PollSources) func() {
 			for _, win := range windows {
 				out = append(out, tmuxWindow{
 					target: win.Target, name: win.Name, cwd: win.Cwd,
-					command: win.Command, panePID: win.PanePID,
+					command: win.Command, piSessionBinding: win.PiSessionBinding, panePID: win.PanePID,
 					hidden: win.Hidden, delegated: win.Delegated,
 					resourceUnit: win.ResourceUnit, delegatedTurnRaw: win.DelegatedTurnRaw,
 				})
