@@ -669,10 +669,10 @@ function StatsRangeScene({
       ? 'No activity today'
       : `No ${RANGE_OPTIONS.find(opt => opt.key === range)?.label.toLowerCase()} activity`;
   const emptySubtext = !hasAnyStats
-    ? 'Connect to a server with Claude Code or Codex history to start collecting data.'
+    ? 'Connect to a server with Claude Code, Codex, Grok, Cursor Agent, OpenCode, or Pi history to start collecting data.'
     : latestDay
-      ? `Latest activity: ${shortDate(latestDay.date)}. Stats read Claude Code and Codex history from the daemon host.`
-      : 'Stats read Claude Code and Codex history from the daemon host.';
+      ? `Latest activity: ${shortDate(latestDay.date)}. Stats read Claude Code, Codex, Grok, Cursor Agent, OpenCode, and Pi history from the daemon host.`
+      : 'Stats read Claude Code, Codex, Grok, Cursor Agent, OpenCode, and Pi history from the daemon host.';
 
   return (
     <View

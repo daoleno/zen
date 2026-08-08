@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-// Collector scans local Claude Code, Codex CLI, Grok, Cursor Agent, and
-// OpenCode data files and builds aggregated stats. All reads are read-only —
+// Collector scans local Claude Code, Codex CLI, Grok, Cursor Agent, OpenCode,
+// and Pi data files and builds aggregated stats. All reads are read-only —
 // it never modifies source files.
 type Collector struct {
 	mu                       sync.RWMutex
@@ -271,6 +271,7 @@ func (c *Collector) refresh() {
 	mergeDateAgg(agentByDate, c.collectGrokStats(home))
 	mergeDateAgg(agentByDate, c.collectCursorAgentStats(home))
 	mergeDateAgg(agentByDate, c.collectOpenCodeStats(home))
+	mergeDateAgg(agentByDate, c.collectPiStats(home))
 
 	// Collect Codex CLI data.
 	codexDaily, codexModelsByDate, codexProjectsByDate := c.collectCodexStats(home)
