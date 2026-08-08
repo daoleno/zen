@@ -166,7 +166,7 @@ func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 	agent := classifier.Agent{
 		Cwd:       "/repo",
 		Command:   "pi",
-		StartedAt: time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC),
+		StartedAt: time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC),
 	}
 	// Owned --session wins and needs no shared directory.
 	owned := filepath.Join(dir, "owned.jsonl")
@@ -209,7 +209,7 @@ func TestPiSharedDirAmbiguousWindowRefuses(t *testing.T) {
 	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	started := time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC)
 	writePiFixture(t, filepath.Join(sessionsDir, "a.jsonl"), "/repo", "a-user")
 	writePiFixture(t, filepath.Join(sessionsDir, "b.jsonl"), "/repo", "b-user")
 	agent := classifier.Agent{Cwd: "/repo", Command: "pi", StartedAt: started}

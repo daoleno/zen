@@ -103,10 +103,27 @@ func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, no
 	}
 	if pinned := strings.TrimSpace(r.piPinnedSessionPath); pinned != "" {
 		candidate, ok, err := readPiOwnedSessionCandidate(pinned, agent.Cwd, now)
-		if err == nil && ok {
+		if err == nil && ok && piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
 			return candidate, true, nil
 		}
 		r.piPinnedSessionPath = ""
+	}
+	// Owned-directory auto-bind: the durable binding can be unavailable even
+	// though the Zen-owned transcript exists and is fresh — sessions created
+	// before the durable @zen_agent_pi_session option existed, argv-rewritten
+	// node-based Pi, and daemon-restart re-discovery all lose the launch
+	// command. The authoritative owned JSONL is then the only recoverable
+	// record; without this scan the Interface projects an empty
+	// transcript_not_found timeline while the Terminal keeps rendering the
+	// very same conversation. Selection is fail-closed and identical to the
+	// shared-directory rules: a unique startedAt-window match wins, otherwise
+	// the freshest unambiguous candidate binds, and wrong-cwd, stale, or
+	// ambiguous candidates never bind.
+	if candidate, ok, err := findPiOwnedCWDTranscript(agent, now); err != nil || ok {
+		if ok {
+			r.piPinnedSessionPath = candidate.Path
+		}
+		return candidate, ok, err
 	}
 	candidate, ok, err := findPiSharedCWDTranscript(agent, now)
 	if err != nil || !ok {
@@ -114,6 +131,72 @@ func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, no
 	}
 	r.piPinnedSessionPath = candidate.Path
 	return candidate, true, nil
+}
+
+// piTranscriptBelongsToInstance reports whether a Pi transcript may be
+// pinned or participate in owned/shared auto-bind selection for the current
+// agent instance. With a known nonzero startedAt, a transcript belongs to
+// the instance only when its header CreatedAt lies in the startedAt window
+// (this process created it) or its mtime is not earlier than startedAt
+// (resume continuity: this process has been writing it). A frozen
+// pre-restart transcript — CreatedAt outside the window and mtime before
+// the restart — never participates, so the owned scan cannot re-pin it and
+// shadow the new shared transcript of a restarted bare Pi. With zero
+// startedAt there is no instance signal: existing freshest behavior is
+// retained.
+func piTranscriptBelongsToInstance(candidate piTranscriptCandidate, startedAt time.Time) bool {
+	if startedAt.IsZero() {
+		return true
+	}
+	if len(piWindowCandidates([]piTranscriptCandidate{candidate}, startedAt)) > 0 {
+		return true
+	}
+	return !candidate.Updated.IsZero() && !candidate.Updated.Before(startedAt)
+}
+
+// findPiOwnedCWDTranscript auto-binds the Zen-owned per-CWD Pi session
+// directory (~/.zen/provider-sessions/pi) for windows whose durable owned
+// binding is unavailable. A unique StartedAt window match wins; otherwise the
+// freshest unambiguous transcript binds. Wrong-cwd and stale transcripts
+// never bind; equal-window or equal-updated candidates refuse as ambiguous
+// rather than guessing.
+func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
+	if strings.TrimSpace(agent.Cwd) == "" {
+		return piTranscriptCandidate{}, false, nil
+	}
+	root, err := piOwnedSessionRoot("")
+	if err != nil {
+		return piTranscriptCandidate{}, false, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return piTranscriptCandidate{}, false, nil
+		}
+		return piTranscriptCandidate{}, false, err
+	}
+	var candidates []piTranscriptCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return piTranscriptCandidate{}, false, nil
+	}
+	if len(piWindowCandidates(candidates, agent.StartedAt)) > 0 {
+		if matched, ok := matchPiTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+			return matched, true, nil
+		}
+		return piTranscriptCandidate{}, false, nil
+	}
+	return freshestPiTranscript(candidates)
 }
 
 // findPiSharedCWDTranscript binds Pi's shared per-CWD session directory
@@ -143,7 +226,7 @@ func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscr
 		}
 		path := filepath.Join(dir, entry.Name())
 		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
-		if err != nil || !ok {
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -165,7 +248,11 @@ func piWindowCandidates(candidates []piTranscriptCandidate, startedAt time.Time)
 		return nil
 	}
 	startedAt = startedAt.UTC()
-	minCreatedAt := startedAt.Add(-5 * time.Second)
+	// Header CreatedAt may not precede the process start: this instance
+	// writes its own header only after it begins (positive flush latency).
+	// The negative margin was dropped because a frozen pre-restart
+	// transcript within it would be re-admitted after a sub-second restart.
+	minCreatedAt := startedAt
 	maxCreatedAt := startedAt.Add(2 * time.Minute)
 	out := make([]piTranscriptCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -320,10 +407,11 @@ func findPiExclusiveSessionDir(dir string, agent classifier.Agent, now time.Time
 			continue
 		}
 		if !agent.StartedAt.IsZero() {
-			minCreated := agent.StartedAt.UTC().Add(-5 * time.Second)
-			maxCreated := agent.StartedAt.UTC().Add(2 * time.Minute)
 			created := candidate.CreatedAt.UTC()
-			if created.IsZero() || created.Before(minCreated) || created.After(maxCreated) {
+			// Header CreatedAt may not precede the process start: the
+			// transcript of this instance is written after the process
+			// begins (positive flush latency only).
+			if created.IsZero() || created.Before(agent.StartedAt.UTC()) || created.After(agent.StartedAt.UTC().Add(2*time.Minute)) {
 				continue
 			}
 		}

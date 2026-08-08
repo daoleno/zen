@@ -327,6 +327,32 @@ function applyCodexConversationSnapshot(
     payload.conversation,
     accepted.sameConversation,
   );
+  // Never-erase guard (mirror of the daemon subscription guard): a fresh
+  // generation snapshot that reports an unavailable empty load (transcript
+  // miss after daemon restart, cursor loss, binding recovery race) must never
+  // replace an already-populated timeline when the conversation identity is
+  // unchanged or unknown. The stream still advances on the accepted base so
+  // the next delta resumes the held history; only an available snapshot, a
+  // genuinely different conversation identity, or an authoritative delta with
+  // explicit deletes can change what is rendered.
+  if (
+    accepted.sameConversation &&
+    state.conversation &&
+    state.conversation.events.length > 0 &&
+    !conversation.available &&
+    conversation.events.length === 0
+  ) {
+    return {
+      ...state,
+      awaitingSnapshot: false,
+      loading: false,
+      error: null,
+      streamCursor: {
+        ...accepted.cursor,
+        conversationId: state.streamCursor.conversationId,
+      },
+    };
+  }
   // Revisit/reconnect with identical history: reuse the previously cleaned
   // conversation and projection instead of re-running the full cleaning and
   // projection over every past event. Keyed by a full content fingerprint, so

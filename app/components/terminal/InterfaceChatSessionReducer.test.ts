@@ -1078,3 +1078,149 @@ describe("authoritative delta deletes", () => {
     ).toBe(true);
   });
 });
+
+describe("fresh-generation unavailable snapshots never erase a populated timeline", () => {
+  function populatedState() {
+    return {
+      ...state([]),
+      conversation: {
+        available: true,
+        session_id: "thread-a",
+        source: "pi_session_jsonl",
+        events: [
+          { id: "provider-1", seq: 1, kind: "user_message" as const, body: "history" },
+          { id: "provider-2", seq: 2, kind: "assistant_message" as const, body: "settled" },
+        ],
+      },
+      streamCursor: {
+        requestId: "stream-a",
+        conversationId: "thread-a",
+        revision: 5,
+        generation: 1,
+      },
+    };
+  }
+
+  test("cursor loss on reconnect cannot replace history with an unavailable empty load", () => {
+    const reconnected = interfaceChatThreadReducer(populatedState(), {
+      type: "stream_start",
+      generation: 2,
+    });
+    const accepted = interfaceChatThreadReducer(reconnected, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "",
+        revision: 1,
+        conversation: {
+          available: false,
+          reason: "transcript_not_found",
+          events: [],
+        },
+      },
+    });
+    // The populated timeline survives the cursor loss; the stream still
+    // advances on the same conversation identity.
+    expect(accepted.conversation?.events.map((event) => event.id)).toEqual([
+      "provider-1",
+      "provider-2",
+    ]);
+    expect(accepted.loading).toBe(false);
+    expect(accepted.awaitingSnapshot).toBe(false);
+    expect(accepted.streamCursor).toEqual({
+      requestId: "stream-b",
+      conversationId: "thread-a",
+      revision: 1,
+      generation: 2,
+    });
+  });
+
+  test("the held timeline resumes with the delta on the accepted base", () => {
+    const reconnected = interfaceChatThreadReducer(populatedState(), {
+      type: "stream_start",
+      generation: 2,
+    });
+    const held = interfaceChatThreadReducer(reconnected, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "",
+        revision: 1,
+        conversation: {
+          available: false,
+          reason: "transcript_not_found",
+          events: [],
+        },
+      },
+    });
+    const resumed = interfaceChatThreadReducer(held, {
+      type: "delta",
+      generation: 2,
+      delta: {
+        request_id: "stream-b",
+        conversation_id: "thread-a",
+        base_revision: 1,
+        revision: 2,
+        upserts: [
+          { id: "provider-1", seq: 1, kind: "user_message", body: "history" },
+          { id: "provider-2", seq: 2, kind: "assistant_message", body: "settled" },
+          { id: "provider-3", seq: 3, kind: "assistant_message", body: "new activity" },
+        ],
+        deletes: [],
+      },
+    });
+    expect(resumed.conversation?.events.map((event) => event.id)).toEqual([
+      "provider-1",
+      "provider-2",
+      "provider-3",
+    ]);
+  });
+
+  test("a genuinely different conversation still replaces wholesale", () => {
+    const reconnected = interfaceChatThreadReducer(populatedState(), {
+      type: "stream_start",
+      generation: 2,
+    });
+    const replaced = interfaceChatThreadReducer(reconnected, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "thread-b",
+        revision: 1,
+        conversation: {
+          available: false,
+          reason: "transcript_not_found",
+          events: [],
+        },
+      },
+    });
+    expect(replaced.conversation?.events).toEqual([]);
+    expect(replaced.conversation?.available).toBe(false);
+  });
+
+  test("an explicitly available empty snapshot is authoritative and clears", () => {
+    const reconnected = interfaceChatThreadReducer(populatedState(), {
+      type: "stream_start",
+      generation: 2,
+    });
+    const cleared = interfaceChatThreadReducer(reconnected, {
+      type: "snapshot",
+      generation: 2,
+      payload: {
+        request_id: "stream-b",
+        conversation_id: "thread-a",
+        revision: 1,
+        conversation: {
+          available: true,
+          session_id: "thread-a",
+          events: [],
+        },
+      },
+    });
+    expect(cleared.conversation?.events).toEqual([]);
+    expect(cleared.conversation?.available).toBe(true);
+  });
+});

@@ -977,6 +977,13 @@ func (w *Watcher) poll() {
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
 		detectedCommand, detectedStartedAt, detectedPID := detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		// Sub-second provider start evidence: ps lstart is whole-second
+		// precision, so instance-ownership arms would compare against a
+		// rounded start. The platform's precise derivation (Linux
+		// /proc/<pid>/stat starttime, boot-relative clock ticks) refines the
+		// detected provider start when it is consistent with the observation;
+		// the guarded fallback keeps the observed value everywhere else.
+		detectedStartedAt = refineProcessStartedAt(detectedStartedAt, detectedPID)
 		agent.Command = mergeAgentCommandOwnership(agent.Command, detectedCommand)
 		agent.StartedAt = detectedStartedAt
 		agent.ProcessID = detectedPID
@@ -4442,6 +4449,30 @@ func agentCommandName(command string) string {
 		return normalizeCommand(command)
 	}
 	return normalizeCommand(fields[0])
+}
+
+// refineProcessStartedAt replaces an observed second-granularity process
+// start with the platform's sub-second evidence for the same PID when that
+// evidence is consistent with the observation. ps lstart truncates to whole
+// seconds, so the true start of the same process lies in [observed,
+// observed+1s). The guard accepts the wider [observed, observed+2s) as
+// fail-safe tolerance for observation scheduling; any value outside it
+// (foreign or recycled pid, fake test observation, stale snapshot) keeps the
+// observed value. The function never fabricates or widens precision: without
+// evidence, or with contradictory evidence, the observed value is returned
+// unchanged.
+func refineProcessStartedAt(observed time.Time, pid int) time.Time {
+	if observed.IsZero() {
+		return observed
+	}
+	precise, ok := processStartTimeFromProc(pid)
+	if !ok {
+		return observed
+	}
+	if precise.Before(observed) || !precise.Before(observed.Add(2*time.Second)) {
+		return observed
+	}
+	return precise
 }
 
 func firstNonZeroTime(values ...time.Time) time.Time {

@@ -149,6 +149,17 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 		r.openCodeLastChangedIDs = nil
 		r.piPinnedSessionPath = ""
 	}
+	// The auto-bound Pi transcript pin belongs to a concrete process
+	// instance: an in-pane Pi restart changes startedAt and/or the detected
+	// provider process id (the watcher's startedAt comes from second-
+	// granularity ps lstart, so a same-second restart can share startedAt).
+	// Invalidate the pin on either instance signal so the next scan can bind
+	// the new conversation through the new startedAt window. A transient
+	// process-table wobble only causes a bounded rescan that re-pins the
+	// same transcript with no wire change.
+	if !r.bound || !r.binding.startedAt.Equal(next.startedAt) || r.binding.processID != next.processID {
+		r.piPinnedSessionPath = ""
+	}
 	r.bound = true
 	r.binding = next
 	r.resetSource()

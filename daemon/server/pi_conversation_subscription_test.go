@@ -289,15 +289,160 @@ func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
 	}
 }
 
+// TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript reproduces the
+// real pre-durable-binding scenario at the server boundary: the window was
+// created before the @zen_agent_pi_session option existed (or the option was
+// lost), the node-based Pi rewrites its argv to bare "pi", and a daemon
+// restart re-discovers the window with no recoverable launch binding. The
+// subscription must auto-bind the exact Zen-owned transcript for the cwd via
+// the startedAt window and snapshot messages plus reasoning and tool calls
+// with stable event IDs — never an empty transcript_not_found Interface
+// while the authoritative JSONL exists and is fresh.
+func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The owned transcript lives in the Zen-owned sessions directory under
+	// this HOME, exactly like a real pre-fix launch would have placed it.
+	ownedDir := filepath.Join(home, ".zen", "provider-sessions", "pi")
+	if err := os.MkdirAll(ownedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owned := filepath.Join(ownedDir, "cold-replay.jsonl")
+	// Header CreatedAt flushed after the process start (the watcher below
+	// reports startedAt 2026-08-07T10:00:02Z).
+	writePiServerFixtureAt(t, owned, cwd, time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC))
+
+	tmuxPath := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' 'zero-view:@1'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Run 1: the daemon creates the session with the injected owned launch
+	// command; markCreatedSession writes no durable binding in this shape.
+	w1 := watcher.New(time.Second)
+	launchCommand := "pi --session " + owned
+	agentID, err := w1.CreateSession("", watcher.CreateSessionOptions{
+		Detached: true,
+		Cwd:      cwd,
+		Command:  launchCommand,
+		Name:     "Pi live task",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 2: daemon restart. The fresh watcher has no launch record and the
+	// window carries NO durable binding (pre-fix shape); the pane command is
+	// the argv-rewritten bare "pi". The pane process start time must still
+	// fall inside the owned transcript's created-at window.
+	w2 := watcher.New(10 * time.Millisecond)
+	restore := w2.SetPollSources(watcher.PollSources{
+		ListWindows: func() ([]watcher.PollWindow, error) {
+			return []watcher.PollWindow{{
+				Target:  agentID,
+				Name:    "pi",
+				Cwd:     cwd,
+				Command: "pi",
+				PanePID: 500,
+			}}, nil
+		},
+		CapturePane: func(target string) (string, bool, int) {
+			return "pi v0.73.1\nworking\n", true, -1
+		},
+		SnapshotProcesses: func() map[int]watcher.PollProcess {
+			return map[int]watcher.PollProcess{
+				500: {PID: 500, PPID: 1, PGID: 500, TPGID: 500, StartedAt: time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC), Comm: "pi", Args: "pi"},
+			}
+		},
+	})
+	defer restore()
+	restartCtx, cancelRestart := context.WithCancel(context.Background())
+	defer cancelRestart()
+	go func() {
+		for {
+			select {
+			case <-restartCtx.Done():
+				return
+			case <-w2.Events():
+			}
+		}
+	}()
+	go func() { _ = w2.Run(restartCtx) }()
+	agent := waitForWatcherAgent(t, w2, agentID)
+	if agent.Command != "pi" {
+		t.Fatalf("pre-fix window command = %q, want bare pi", agent.Command)
+	}
+	if agent.StartedAt.UTC() != time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC) {
+		t.Fatalf("startedAt not recovered from process table: %v", agent.StartedAt)
+	}
+
+	srv := &Server{watcher: w2}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type:      "codex_conversation_subscribe",
+		RequestID: "subscription-pi-cold-replay",
+		TargetID:  agentID,
+	}
+	writeConversationSubscriptionRequest(t, conn, request)
+
+	var snapshot struct {
+		Type         string                 `json:"type"`
+		Conversation work.CodexConversation `json:"conversation"`
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Type != "codex_conversation_snapshot" {
+		t.Fatalf("first response = %#v", snapshot)
+	}
+	if !snapshot.Conversation.Available || snapshot.Conversation.Reason != "" {
+		t.Fatalf("cold replay must auto-bind the owned transcript, got %+v", snapshot.Conversation)
+	}
+	if snapshot.Conversation.SessionID != "sess-server-live" || snapshot.Conversation.Path != owned {
+		t.Fatalf("cold replay rebound wrong transcript: %+v", snapshot.Conversation)
+	}
+	if len(snapshot.Conversation.Events) == 0 {
+		t.Fatal("cold replay produced an empty Interface history")
+	}
+	var kinds []string
+	for _, event := range snapshot.Conversation.Events {
+		kinds = append(kinds, event.Kind)
+	}
+	wantKinds := []string{"user_message", "reasoning", "assistant_message", "tool_call", "assistant_message"}
+	if strings.Join(kinds, ",") != strings.Join(wantKinds, ",") {
+		t.Fatalf("cold replay kinds = %v, want %v", kinds, wantKinds)
+	}
+	if snapshot.Conversation.Events[0].ID != "u1" {
+		t.Fatalf("first event id = %q, want stable u1", snapshot.Conversation.Events[0].ID)
+	}
+}
+
 // writePiServerFixture writes a realistic version-3 Pi session with user text,
 // reasoning, assistant text, one tool call with result, and a final stop.
 func writePiServerFixture(t *testing.T, path, cwd string) {
+	t.Helper()
+	writePiServerFixtureAt(t, path, cwd, time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC))
+}
+
+// writePiServerFixtureAt is writePiServerFixture with an explicit session
+// header CreatedAt so fixtures model a header flushed at/after the process
+// start (never before it).
+func writePiServerFixtureAt(t *testing.T, path, cwd string, created time.Time) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	content := strings.Join([]string{
-		`{"type":"session","version":3,"id":"sess-server-live","timestamp":"2026-08-07T10:00:00.000Z","cwd":"` + cwd + `"}`,
+		`{"type":"session","version":3,"id":"sess-server-live","timestamp":"` + created.UTC().Format(time.RFC3339Nano) + `","cwd":"` + cwd + `"}`,
 		`{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"user","content":"server user text"}}`,
 		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"server reasoning"},{"type":"text","text":"server text"},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}}`,
 		`{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-07T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"server tool output"}],"isError":false}}`,
