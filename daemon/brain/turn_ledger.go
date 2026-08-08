@@ -3,6 +3,7 @@ package brain
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,6 +32,10 @@ type TurnRecord struct {
 	Summary         string                `json:"summary,omitempty"`
 	Facts           []TurnFactRecord      `json:"facts"`
 	Hints           []watcher.TurnHint    `json:"hints,omitempty"`
+	// TranscriptBinding is the provider-native transcript identity recorded
+	// at admission (Pi owned session flag/path), restored on rediscovery;
+	// the equivalent tmux option is only an advisory cache.
+	TranscriptBinding watcher.TranscriptBinding `json:"transcript_binding,omitempty"`
 	// LeaseDeadline is the turn's own expected-next-check time (per-turn
 	// liveness): minted fresh at admission, extended only by this turn's
 	// Control lease facts, and the sole basis for session.stale. An old turn's
@@ -155,26 +160,34 @@ func validateTurnRecord(turn TurnRecord) error {
 			return fmt.Errorf("absent-class facts cannot be applied")
 		}
 	}
+	if !turn.TranscriptBinding.Empty() {
+		if strings.TrimSpace(turn.TranscriptBinding.Provider) != "pi" ||
+			(turn.TranscriptBinding.PiFlag != "--session" && turn.TranscriptBinding.PiFlag != "--session-dir") ||
+			!filepath.IsAbs(turn.TranscriptBinding.PiPath) {
+			return fmt.Errorf("invalid transcript binding")
+		}
+	}
 	return nil
 }
 
 func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 	snapshot := watcher.TurnSnapshot{
-		SessionID:       t.SessionID,
-		TurnID:          t.TurnID,
-		Status:          t.Status,
-		AcceptedAt:      t.AcceptedAt,
-		SettledAt:       t.SettledAt,
-		Summary:         t.Summary,
-		Attention:       t.Attention,
-		ActivityID:      t.ActivityID,
-		Admission:       t.Admission,
-		HasAdmission:    !t.Admission.Empty(),
-		Hints:           append([]watcher.TurnHint(nil), t.Hints...),
-		PaneGeneration:  t.PaneGeneration,
-		ProcessIdentity: t.ProcessIdentity,
-		LeaseDeadline:   t.LeaseDeadline,
-		UpdatedAt:       t.UpdatedAt,
+		SessionID:         t.SessionID,
+		TurnID:            t.TurnID,
+		Status:            t.Status,
+		AcceptedAt:        t.AcceptedAt,
+		SettledAt:         t.SettledAt,
+		Summary:           t.Summary,
+		Attention:         t.Attention,
+		ActivityID:        t.ActivityID,
+		Admission:         t.Admission,
+		HasAdmission:      !t.Admission.Empty(),
+		Hints:             append([]watcher.TurnHint(nil), t.Hints...),
+		PaneGeneration:    t.PaneGeneration,
+		ProcessIdentity:   t.ProcessIdentity,
+		TranscriptBinding: t.TranscriptBinding,
+		LeaseDeadline:     t.LeaseDeadline,
+		UpdatedAt:         t.UpdatedAt,
 	}
 	return snapshot
 }
@@ -225,20 +238,56 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 		}
 	}
 	database.BrainTurns = append(database.BrainTurns, TurnRecord{
-		SessionID:       admitted.SessionID,
-		TurnID:          admitted.TurnID,
-		WorkID:          workID,
-		Status:          watcher.TurnAdmitted,
-		Receipt:         strings.TrimSpace(admitted.Receipt),
-		PaneGeneration:  strings.TrimSpace(admitted.PaneGeneration),
-		ProcessIdentity: strings.TrimSpace(admitted.ProcessIdentity),
-		PayloadSHA256:   strings.TrimSpace(admitted.PayloadSHA256),
-		AcceptedAt:      admitted.AcceptedAt.UTC(),
-		Facts:           []TurnFactRecord{},
-		LeaseDeadline:   admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
-		UpdatedAt:       now,
+		SessionID:         admitted.SessionID,
+		TurnID:            admitted.TurnID,
+		WorkID:            workID,
+		Status:            watcher.TurnAdmitted,
+		Receipt:           strings.TrimSpace(admitted.Receipt),
+		PaneGeneration:    strings.TrimSpace(admitted.PaneGeneration),
+		ProcessIdentity:   strings.TrimSpace(admitted.ProcessIdentity),
+		PayloadSHA256:     strings.TrimSpace(admitted.PayloadSHA256),
+		AcceptedAt:        admitted.AcceptedAt.UTC(),
+		Facts:             []TurnFactRecord{},
+		TranscriptBinding: admitted.TranscriptBinding,
+		LeaseDeadline:     admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
+		UpdatedAt:         now,
 	})
 	return s.persistOrchestrationLocked(database)
+}
+
+// BackfillTurnTranscriptBinding idempotently records the provider-native
+// transcript binding on the current turn when it is still empty (turns
+// admitted before the binding existed, or rediscovered sessions whose tmux
+// option holds the binding). It never overwrites an existing binding; the
+// tmux option is only an advisory cache for sessions without a ledger record.
+func (s *Store) BackfillTurnTranscriptBinding(sessionID string, binding watcher.TranscriptBinding) (bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if s == nil || sessionID == "" || binding.Empty() {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return false, err
+	}
+	turn, found := currentTurnForSession(database, sessionID)
+	if !found || !turn.TranscriptBinding.Empty() {
+		return false, nil
+	}
+	turn.TranscriptBinding = binding
+	turn.UpdatedAt = s.nowUTC()
+	for index := range database.BrainTurns {
+		if database.BrainTurns[index].SessionID == turn.SessionID && database.BrainTurns[index].TurnID == turn.TurnID {
+			database.BrainTurns[index] = turn
+			break
+		}
+	}
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return false, err
+	}
+	s.broadcastWorkChange(turn.WorkID)
+	return true, nil
 }
 
 // Turn returns the canonical snapshot for the current turn of the session.
@@ -357,6 +406,27 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	switch fact.Class {
 	case watcher.EvidenceProvider:
 		switch fact.Kind {
+		case "uncertain":
+			// Bounded provider-evidence loss (transcript unlocatable or
+			// unreadable for the current turn): end-of-evidence resolves
+			// Unknown + one actionable session.uncertain — never silent
+			// Admitted and never fabricated done/failed. A later readable
+			// bound Provider terminal upgrades canonical status and derived
+			// Work (C.2.4). Current-turn identity is enforced by
+			// ApplyTurnFact before the reducer runs.
+			if status != watcher.TurnUnknown {
+				status = watcher.TurnUnknown
+				attention = ""
+				summary = "Delegated Session provider evidence is unavailable; outcome is unknown"
+			}
+			if fact.SettledAt.IsZero() {
+				settledAt = &now
+			} else {
+				settled := fact.SettledAt.UTC()
+				settledAt = &settled
+			}
+			mutation.changed = true
+			applyEvent("session.uncertain", true, summary)
 		case "admission":
 			// The admission tuple must prove this input began inside the
 			// turn's admission window; stale pre-window admissions never
@@ -776,6 +846,13 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		// session.stale is a property of the CURRENT turn's own lease: a stale
 		// fact for any older turn record is unrepresentable, so a new turn
 		// can never be woken stale by its predecessor's expired lease.
+		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
+			return watcher.TurnSnapshot{}, false, nil
+		}
+	}
+	if fact.Class == watcher.EvidenceProvider && fact.Kind == "uncertain" {
+		// Provider-evidence loss is a property of the CURRENT turn: a loss
+		// fact for an older turn record cannot wake a newer turn.
 		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
 			return watcher.TurnSnapshot{}, false, nil
 		}

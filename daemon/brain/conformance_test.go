@@ -108,7 +108,7 @@ func TestAdapterConformanceSharedHarness(t *testing.T) {
 
 			// (b) activity status stream with start.
 			running := watcher.TurnFact{
-				SessionID:  sessionID, TurnID: turnID,
+				SessionID: sessionID, TurnID: turnID,
 				Class:      watcher.EvidenceProvider,
 				Kind:       "running",
 				SourceID:   fixture.sourceID,
@@ -189,7 +189,7 @@ func TestAdapterConformanceFailedTerminalMapsExactlyOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			failed := watcher.TurnFact{
-				SessionID:  sessionID, TurnID: turnID,
+				SessionID: sessionID, TurnID: turnID,
 				Class:      watcher.EvidenceProvider,
 				Kind:       "failed",
 				SourceID:   fixture.sourceID,
@@ -253,7 +253,7 @@ func TestAdapterConformanceReusedSessionNewTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			done := watcher.TurnFact{
-				SessionID:  sessionID, TurnID: turnID,
+				SessionID: sessionID, TurnID: turnID,
 				Class:      watcher.EvidenceProvider,
 				Kind:       "done",
 				SourceID:   fixture.sourceID,
@@ -310,6 +310,85 @@ func TestAdapterConformanceReusedSessionNewTurn(t *testing.T) {
 			current, _, _ := store.Turn(sessionID)
 			if current.TurnID != turn2 || current.Status != watcher.TurnAccepted {
 				t.Fatalf("reused session current turn = %+v", current)
+			}
+		})
+	}
+}
+
+// TestAdapterConformanceEvidenceLossUpgrade drives every executor fixture
+// through the Slice 2 channel-health contract: a bounded provider-evidence
+// loss (transcript unlocatable/unreadable) resolves exactly one canonical
+// session.uncertain per turn — never silent Admitted, never fabricated
+// done/failed — and a later readable bound terminal upgrades Unknown
+// monotonically with exactly one wake per kind.
+func TestAdapterConformanceEvidenceLossUpgrade(t *testing.T) {
+	for _, fixture := range executorConformanceFixtures() {
+		t.Run(fixture.provider, func(t *testing.T) {
+			store, sessionID, turnID := ledgerTestStore(t)
+			acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+			store.now = func() time.Time { return acceptedAt }
+			fixture.admission.At = acceptedAt.Add(2 * time.Second)
+			if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: sessionID, TurnID: turnID,
+				Class:     watcher.EvidenceReceipt,
+				Kind:      "admission",
+				SourceID:  "receipt\x00" + turnID + "\x00accepted\x00payload",
+				Admission: fixture.admission,
+				At:        acceptedAt.Add(2 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			loss := watcher.TurnFact{
+				SessionID: sessionID, TurnID: turnID,
+				Class:    watcher.EvidenceProvider,
+				Kind:     "uncertain",
+				SourceID: "provider-loss\x00" + turnID,
+				At:       acceptedAt.Add(time.Minute),
+			}
+			snapshot, changed, err := store.ApplyTurnFact(loss)
+			if err != nil || !changed || snapshot.Status != watcher.TurnUnknown {
+				t.Fatalf("adapter evidence loss = (%+v, %v, %v), want Unknown", snapshot, changed, err)
+			}
+			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			uncertainRow, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain")
+			if !found || !uncertainRow.Actionable {
+				t.Fatalf("adapter uncertain row = %+v found=%v", uncertainRow, found)
+			}
+			// The loss fact is exactly once per turn.
+			if _, changed, err := store.ApplyTurnFact(loss); err != nil || changed {
+				t.Fatalf("adapter evidence-loss replay changed state: %v err=%v", changed, err)
+			}
+
+			// Late recovery: the adapter's bound terminal upgrades Unknown.
+			done := watcher.TurnFact{
+				SessionID: sessionID, TurnID: turnID,
+				Class:      watcher.EvidenceProvider,
+				Kind:       "done",
+				SourceID:   fixture.sourceID,
+				Cursor:     fixture.admission.Cursor,
+				Admission:  fixture.admission,
+				ActivityID: fixture.activityID,
+				StartedAt:  acceptedAt.Add(2 * time.Second),
+				SettledAt:  acceptedAt.Add(9 * time.Second),
+				At:         acceptedAt.Add(2 * time.Minute),
+			}
+			snapshot, changed, err = store.ApplyTurnFact(done)
+			if err != nil || !changed || snapshot.Status != watcher.TurnDone {
+				t.Fatalf("adapter late bound terminal = (%+v, %v, %v), want Done", snapshot, changed, err)
+			}
+			events, _ := store.ListWorkEvents(workItem.ID)
+			uncertain := 0
+			doneActionable := 0
+			for _, event := range events {
+				if event.Kind == "session.uncertain" && event.Actionable {
+					uncertain++
+				}
+				if event.Kind == "session.done" && event.Actionable {
+					doneActionable++
+				}
+			}
+			if uncertain != 1 || doneActionable != 1 {
+				t.Fatalf("adapter wakes uncertain=%d done=%d, want exactly one each: %#v", uncertain, doneActionable, events)
 			}
 		})
 	}

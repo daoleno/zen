@@ -903,3 +903,115 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 		t.Fatalf("session.stale rows = %d, want exactly one (the old turn's own wake)", staleRows)
 	}
 }
+
+// TestTurnProviderEvidenceLossResolvesUnknownOnce covers Slice 2: a bounded
+// provider-evidence loss (transcript unlocatable/unreadable) resolves exactly
+// one canonical session.uncertain, never silent Admitted and never fabricated
+// done/failed; replay is a no-op; a loss fact for a non-current turn is
+// unrepresentable.
+func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	at := time.Date(2026, 8, 9, 22, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return at }
+	admission := admittedAcceptedTurn(t, store, sessionID, turnID, at)
+
+	loss := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:    watcher.EvidenceProvider,
+		Kind:     "uncertain",
+		SourceID: "provider-loss\x00" + turnID,
+		At:       at.Add(time.Minute),
+	}
+	snapshot, changed, err := store.ApplyTurnFact(loss)
+	if err != nil || !changed || snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("evidence loss = (%+v, %v, %v), want Unknown", snapshot, changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	if workItem.Status != WorkNeedsInput || !strings.Contains(workItem.NextAction, "received the prompt") {
+		t.Fatalf("Work after evidence loss = %v", workItem)
+	}
+	if _, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain"); !found {
+		t.Fatal("session.uncertain row missing")
+	}
+	// Replay is a deterministic no-op; Unknown never re-fires.
+	if _, changed, err := store.ApplyTurnFact(loss); err != nil || changed {
+		t.Fatalf("evidence-loss replay changed state: %v err=%v", changed, err)
+	}
+
+	// A loss fact for an older turn record after a newer turn is current is
+	// ignored entirely (current-turn gate).
+	newTurnID := sessionID + ":turn:2"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: at.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	staleLoss := loss
+	staleLoss.At = at.Add(3 * time.Minute)
+	if _, changed, err := store.ApplyTurnFact(staleLoss); err != nil || changed {
+		t.Fatalf("old-turn loss fact applied after newer turn: changed=%v err=%v", changed, err)
+	}
+	// Sanity: the old turn was already Unknown; the reducer never
+	// re-terminalizes from a non-current loss.
+	_ = admission
+}
+
+// TestTurnProviderEvidenceLossUpgradesMonotonically covers Slice 2 late
+// recovery: after bounded evidence loss resolves Unknown, a later readable
+// bound Provider terminal upgrades canonical status and derived Work exactly
+// once per kind; the uncertain row is retained as audit history (C.2.4).
+func TestTurnProviderEvidenceLossUpgradesMonotonically(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	at := time.Date(2026, 8, 9, 23, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return at }
+	admission := admittedAcceptedTurn(t, store, sessionID, turnID, at)
+
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:    watcher.EvidenceProvider,
+		Kind:     "uncertain",
+		SourceID: "provider-loss\x00" + turnID,
+		At:       at.Add(time.Minute),
+	}); err != nil || !changed {
+		t.Fatalf("evidence loss apply = (%v, %v)", changed, err)
+	}
+
+	// The transcript recovers and the authoritative bound terminal arrives.
+	snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       "done",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00msg-1\x001",
+		Cursor:     1,
+		Admission:  admission,
+		ActivityID: "activity-1",
+		StartedAt:  at.Add(2 * time.Second),
+		SettledAt:  at.Add(30 * time.Second),
+		Summary:    "Delegated provider completed the turn",
+	})
+	if err != nil || !changed || snapshot.Status != watcher.TurnDone {
+		t.Fatalf("late bound terminal = (%+v, %v, %v), want Done", snapshot, changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	events, err := store.ListWorkEvents(workItem.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncertain := 0
+	done := 0
+	for _, event := range events {
+		if event.Kind == "session.uncertain" && event.Actionable {
+			uncertain++
+		}
+		if event.Kind == "session.done" && event.Actionable {
+			done++
+		}
+	}
+	if uncertain != 1 || done != 1 {
+		t.Fatalf("upgrade wakes uncertain=%d done=%d, want exactly one each: %#v", uncertain, done, events)
+	}
+	if workItem.Status != WorkWaiting || workItem.NextAction != "Review the delegated Session result." {
+		t.Fatalf("Work after upgrade = %v", workItem)
+	}
+}

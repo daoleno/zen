@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/watcher"
 )
 
 func TestWorkProviderActivityProbeCursorAdmissionPreservesExactBytesAndCursor(t *testing.T) {
@@ -110,4 +111,67 @@ func cursorAdmissionFixtureRow(payload string) map[string]any {
 			}},
 		},
 	}
+}
+
+// TestProbeStateClassifiesChannelHealth covers Slice 2: the probe must
+// distinguish "read successfully, no new fact" from "transcript
+// unlocatable/unreadable" so a bounded loss can surface one canonical
+// session.uncertain instead of a silent Admitted turn.
+func TestProbeStateClassifiesChannelHealth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := filepath.Join(home, "repo", "zen")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("unlocatable pi owned session", func(t *testing.T) {
+		missing := filepath.Join(home, "missing-pi-session.jsonl")
+		agent := classifier.Agent{
+			ID:        "pi-loss:@1",
+			Command:   fmt.Sprintf("pi --session %q", missing),
+			Cwd:       cwd,
+			StartedAt: time.Now().UTC().Add(-time.Minute),
+			PaneAlive: true,
+		}
+		probe := newWorkProviderActivityProbe()
+		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		if observation.ProbeState != watcher.ProbeStateUnlocatable {
+			t.Fatalf("missing owned Pi session state = %q, want unlocatable", observation.ProbeState)
+		}
+	})
+
+	t.Run("unreadable malformed pi owned session", func(t *testing.T) {
+		malformed := filepath.Join(home, "malformed-pi-session.jsonl")
+		if err := os.WriteFile(malformed, []byte("{not-json\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		agent := classifier.Agent{
+			ID:        "pi-malformed:@1",
+			Command:   fmt.Sprintf("pi --session %q", malformed),
+			Cwd:       cwd,
+			StartedAt: time.Now().UTC().Add(-time.Minute),
+			PaneAlive: true,
+		}
+		probe := newWorkProviderActivityProbe()
+		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		if observation.ProbeState != watcher.ProbeStateUnreadable {
+			t.Fatalf("malformed Pi session state = %q, want unreadable", observation.ProbeState)
+		}
+	})
+
+	t.Run("not structured agent is healthy no-fact", func(t *testing.T) {
+		agent := classifier.Agent{
+			ID:        "custom:@1",
+			Command:   "my-custom-tool",
+			Cwd:       cwd,
+			StartedAt: time.Now().UTC().Add(-time.Minute),
+			PaneAlive: true,
+		}
+		probe := newWorkProviderActivityProbe()
+		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		if observation.ProbeState.Loss() {
+			t.Fatalf("non-structured provider classified as loss: %+v", observation)
+		}
+	})
 }

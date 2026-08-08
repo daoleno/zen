@@ -41,11 +41,12 @@ type InputResult struct {
 // any provider mutation can begin, so a markerless accepted input is
 // unrepresentable (C.2 invariant 2).
 type delegatedTurnDraft struct {
-	ID              string
-	AcceptedAt      time.Time
-	ProcessIdentity string
-	PaneGeneration  string
-	Receipt         string
+	ID                string
+	AcceptedAt        time.Time
+	ProcessIdentity   string
+	PaneGeneration    string
+	Receipt           string
+	TranscriptBinding TranscriptBinding
 }
 
 // delegatedAdmissionEvidence is the provider-native admission tuple observed
@@ -540,13 +541,14 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn ledger is unavailable"))
 			}
 			admitErr := owner.ledger.(TurnLedgerAdmitter).AdmitTurn(AdmittedTurn{
-				SessionID:       sessionID,
-				TurnID:          turn.ID,
-				Receipt:         firstNonEmptyString(turn.Receipt, result.Receipt),
-				AcceptedAt:      turn.AcceptedAt,
-				ProcessIdentity: turn.ProcessIdentity,
-				PaneGeneration:  firstNonEmptyString(turn.PaneGeneration, current.generation),
-				PayloadSHA256:   payloadDigest,
+				SessionID:         sessionID,
+				TurnID:            turn.ID,
+				Receipt:           firstNonEmptyString(turn.Receipt, result.Receipt),
+				AcceptedAt:        turn.AcceptedAt,
+				ProcessIdentity:   turn.ProcessIdentity,
+				PaneGeneration:    firstNonEmptyString(turn.PaneGeneration, current.generation),
+				PayloadSHA256:     payloadDigest,
+				TranscriptBinding: turn.TranscriptBinding,
 			})
 			if admitErr != nil {
 				if result.Receipt != "" {
@@ -671,11 +673,11 @@ func (owner *sessionInputOwner) submitWithTurn(
 				receipt = turn.ID
 			}
 			_, _, applyErr := owner.ledger.ApplyTurnFact(TurnFact{
-				SessionID:  sessionID,
-				TurnID:     turn.ID,
-				Class:      EvidenceReceipt,
-				Kind:       "admission",
-				SourceID:   "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
+				SessionID: sessionID,
+				TurnID:    turn.ID,
+				Class:     EvidenceReceipt,
+				Kind:      "admission",
+				SourceID:  "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
 				Admission: TurnAdmission{
 					Stream: strings.TrimSpace(admission.Stream),
 					ID:     strings.TrimSpace(admission.ID),

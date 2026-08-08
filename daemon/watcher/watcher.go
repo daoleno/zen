@@ -241,6 +241,7 @@ type Watcher struct {
 	ledgerTurns           map[string]TurnSnapshot // projection cache of the canonical ledger, never a truth owner
 	appliedFactIDs        map[string]string       // session -> last applied provider FactID (skip identical applies)
 	ledgerTurnReadAt      map[string]time.Time    // TTL for authoritative ledger re-reads
+	probeLossSince        map[string]time.Time    // session -> first consecutive provider-evidence loss poll
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
@@ -265,6 +266,7 @@ func New(pollInterval time.Duration) *Watcher {
 		ledgerTurns:      make(map[string]TurnSnapshot),
 		appliedFactIDs:   make(map[string]string),
 		ledgerTurnReadAt: make(map[string]time.Time),
+		probeLossSince:   make(map[string]time.Time),
 		events:           make(chan SessionEvent, 100),
 		resources:        noopDelegatedResourceManager{},
 		sessionInput:     defaultSessionInputOwner,
@@ -1006,6 +1008,11 @@ func (w *Watcher) poll() {
 
 		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
 		previousTurn, hadPreviousTurn := w.ledgerTurns[r.id]
+		if r.hasTurn && r.turnErr == nil {
+			// Ledger-recorded transcript binding is the truth for provider
+			// evidence recovery; the tmux option is only an advisory cache.
+			w.restoreTurnTranscriptBindingLocked(agent, r.turn)
+		}
 		if r.turnErr != nil {
 			// Ledger read failure is transient; keep the last projection
 			// instead of fabricating a terminal state.
@@ -1098,6 +1105,7 @@ func (w *Watcher) poll() {
 			delete(w.ledgerTurns, id)
 			delete(w.appliedFactIDs, id)
 			delete(w.ledgerTurnReadAt, id)
+			delete(w.probeLossSince, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -1123,6 +1131,42 @@ func (w *Watcher) compactAgentOrderLocked() {
 		}
 	}
 	w.agentOrder = next
+}
+
+// restoreTurnTranscriptBindingLocked restores the ledger-recorded provider
+// transcript binding onto the Session command (Pi owned --session/--session-dir
+// path) and backfills a missing binding from the advisory tmux option / launch
+// command, idempotently. The ledger is the durable truth; the tmux option is
+// only an advisory cache for sessions without a ledger record.
+func (w *Watcher) restoreTurnTranscriptBindingLocked(agent *classifier.Agent, turn TurnSnapshot) {
+	if agent == nil || strings.TrimSpace(agent.ID) == "" {
+		return
+	}
+	binding := turn.TranscriptBinding
+	if binding.Empty() {
+		// Backfill: the current launch command carries a Pi owned binding the
+		// ledger lacks (turns admitted before the binding existed, or a
+		// tmux-option recovery). Idempotent: the store only persists when the
+		// binding is missing.
+		if flag, path := piOwnedLaunchFlag(agent.Command); flag != "" && path != "" && w.turnLedger != nil {
+			if backfiller, ok := w.turnLedger.(interface {
+				BackfillTurnTranscriptBinding(string, TranscriptBinding) (bool, error)
+			}); ok {
+				_, _ = backfiller.BackfillTurnTranscriptBinding(agent.ID, TranscriptBinding{
+					Provider: "pi", PiFlag: flag, PiPath: path,
+				})
+			}
+		}
+		return
+	}
+	if strings.TrimSpace(binding.Provider) != "pi" ||
+		commandExecutableBase(agent.Command) != "pi" {
+		return
+	}
+	owned := commandExecutableBase(agent.Command) + " " + binding.PiFlag + " " + shellQuoteForLaunch(binding.PiPath)
+	if strings.TrimSpace(agent.Command) != owned {
+		agent.Command = owned
+	}
 }
 
 // projectDelegatedTurn projects the canonical ledger turn onto the Session
@@ -1225,6 +1269,14 @@ func (w *Watcher) ledgerTurnFor(sessionID string, now time.Time) (TurnSnapshot, 
 	return turn, hasTurn, nil
 }
 
+// providerEvidenceLossWindow bounds a consecutive provider-evidence loss
+// (transcript unlocatable/unreadable) before the watcher emits exactly one
+// canonical session.uncertain for the current turn. It is deliberately
+// generous so a healthy provider's pre-first-flush window (Pi session files
+// appear at first write; OpenCode session rows commit with the first message)
+// never fabricates uncertainty, while a genuinely lost source stays bounded.
+const providerEvidenceLossWindow = 90 * time.Second
+
 // applyPollFacts applies one poll's provider + liveness observations through
 // the single canonical reducer and returns the latest snapshot. It runs for
 // every mutable ledger-tracked turn regardless of whether a Provider probe
@@ -1260,6 +1312,31 @@ func (w *Watcher) applyPollFacts(
 			facts = append(facts, *fact)
 		}
 	}
+	// Bounded provider-evidence loss (transcript unlocatable/unreadable): a
+	// successful read with no new fact is never a loss; only a provably lost
+	// source drives the canonical session.uncertain, exactly once per turn
+	// (deterministic FactID). A healthy recovery before the window resets the
+	// streak. The reducer ignores the fact for non-current turns and upgrades
+	// Unknown monotonically when a bound terminal becomes readable (C.2.4).
+	w.mu.Lock()
+	if provider.ProbeState.Loss() {
+		if since, ok := w.probeLossSince[id]; !ok || since.IsZero() {
+			w.probeLossSince[id] = now
+		} else if now.Sub(since) >= providerEvidenceLossWindow {
+			facts = append(facts, TurnFact{
+				SessionID: id,
+				TurnID:    turn.TurnID,
+				Class:     EvidenceProvider,
+				Kind:      "uncertain",
+				SourceID:  "provider-loss\x00" + turn.TurnID,
+				At:        now,
+				Summary:   "Delegated Session provider evidence is unreadable; outcome is unknown",
+			})
+		}
+	} else {
+		delete(w.probeLossSince, id)
+	}
+	w.mu.Unlock()
 	if !alive {
 		if deadStatus >= 0 {
 			// A dead pane with a readable exit status still cannot attribute
@@ -2007,9 +2084,10 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 		identity.Command,
 		payload,
 		delegatedTurnDraft{
-			ID:              strings.TrimSpace(turnID),
-			AcceptedAt:      acceptedAt.UTC(),
-			ProcessIdentity: delegatedTurnIdentity(identity),
+			ID:                strings.TrimSpace(turnID),
+			AcceptedAt:        acceptedAt.UTC(),
+			ProcessIdentity:   delegatedTurnIdentity(identity),
+			TranscriptBinding: transcriptBindingForCommand(identity.Command),
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
@@ -2054,15 +2132,28 @@ func (w *Watcher) SubmitDelegatedInput(
 		identity.Command,
 		payload,
 		delegatedTurnDraft{
-			ID:              strings.TrimSpace(turnID),
-			AcceptedAt:      acceptedAt.UTC(),
-			ProcessIdentity: delegatedTurnIdentity(identity),
+			ID:                strings.TrimSpace(turnID),
+			AcceptedAt:        acceptedAt.UTC(),
+			ProcessIdentity:   delegatedTurnIdentity(identity),
+			TranscriptBinding: transcriptBindingForCommand(identity.Command),
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
 			identity.Command,
 		),
 	)
+}
+
+// transcriptBindingForCommand records the provider-native transcript identity
+// known at admission. Only a Zen-owned Pi launch carries an admission-time
+// binding (the owned --session/--session-dir path); other providers discover
+// their transcript identity from live evidence and bind via provider facts.
+func transcriptBindingForCommand(command string) TranscriptBinding {
+	flag, path := piOwnedLaunchFlag(command)
+	if flag == "" || path == "" {
+		return TranscriptBinding{}
+	}
+	return TranscriptBinding{Provider: "pi", PiFlag: flag, PiPath: path}
 }
 
 func (w *Watcher) delegatedInputConfirmer(

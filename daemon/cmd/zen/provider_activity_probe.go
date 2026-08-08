@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -50,14 +52,40 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 	defer reader.mu.Unlock()
 	conversation, err := reader.reader.Load(agent, provider, now)
 	if err != nil {
+		// Channel health: a failed read is a bounded evidence loss — the
+		// transcript is provably unlocatable (missing file) or unreadable
+		// (stat/open/parse/sqlite failure). "Read successfully, no new
+		// fact" is never a loss.
 		return watcher.ProviderActivityObservation{
 			Structured:      true,
 			FallbackAllowed: true,
+			ProbeState:      probeStateForConversation(work.CodexConversation{}, err),
+		}
+	}
+	if !conversation.Available {
+		// The reader succeeded but the source is not available: distinguish
+		// the declared non-structured shapes (healthy no-fact) from a
+		// provably unlocatable/unreadable transcript. The Pi reader fails
+		// closed on a malformed header at the exact owned --session path; the
+		// file existing proves the source is unreadable, not unlocatable.
+		state := probeStateForConversation(conversation, nil)
+		if state == watcher.ProbeStateUnlocatable && provider == work.AgentProviderPi {
+			if ownedPath := work.PiOwnedSessionPath(agent.Command); ownedPath != "" {
+				if info, statErr := os.Stat(ownedPath); statErr == nil && !info.IsDir() {
+					state = watcher.ProbeStateUnreadable
+				}
+			}
+		}
+		return watcher.ProviderActivityObservation{
+			Structured:      true,
+			FallbackAllowed: true,
+			ProbeState:      state,
 		}
 	}
 	observation := watcher.ProviderActivityObservation{
 		Structured:      true,
 		FallbackAllowed: true,
+		ProbeState:      watcher.ProbeStateOK,
 	}
 	if conversation.Activity != nil {
 		observation.ID = strings.TrimSpace(conversation.Activity.ID)
@@ -86,6 +114,28 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 		break
 	}
 	return observation
+}
+
+// probeStateForConversation classifies the provider-channel health of one
+// read: a successful read with no new fact is ProbeStateOK; a provably lost
+// source is unlocatable (missing) or unreadable (present but unreadable/
+// malformed). Only loss states may drive the bounded session.uncertain.
+func probeStateForConversation(conversation work.CodexConversation, err error) watcher.ProviderProbeState {
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return watcher.ProbeStateUnlocatable
+		}
+		return watcher.ProbeStateUnreadable
+	}
+	switch strings.TrimSpace(conversation.Reason) {
+	case "", "not_structured_agent", "missing_cwd":
+		return watcher.ProbeStateOK
+	case "transcript_malformed":
+		return watcher.ProbeStateUnreadable
+	default:
+		// transcript_not_found, session_not_found, db_unavailable, ...
+		return watcher.ProbeStateUnlocatable
+	}
 }
 
 func (p *workProviderActivityProbe) ForgetProviderActivity(agentID string) {
