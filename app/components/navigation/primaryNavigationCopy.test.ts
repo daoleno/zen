@@ -80,6 +80,7 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('{ section: "skills", label: "Skills"');
     expect(skillsSource).toContain("SurfaceTabs");
     expect(skillsSource.match(/accessibilityRole="tablist"/g)).toHaveLength(1);
+    expect(skillsSource).toContain("accessibilityLabel={tab.label}");
     expect(skillsSource).not.toContain("ModeSwitch");
     expect(skillsSource).not.toContain("PluginsModeSwitch");
   });
@@ -128,8 +129,34 @@ describe("navigation and Skills copy density", () => {
     expect(rowBlock).toBeDefined();
     expect(rowBlock).toContain("AgentKindIcon");
     expect(rowBlock).toContain("ellipsis-horizontal");
+    expect(rowBlock?.match(/<Pressable/g)).toHaveLength(1);
+    expect(rowBlock).toContain("ItemActionIndicator");
+    expect(rowBlock).not.toContain("ItemIconAction");
     expect(rowBlock).not.toContain('label="Update"');
     expect(rowBlock).not.toContain("trash-outline");
+  });
+
+  test("tabs, sheet choices, and decorative icons have one explicit accessibility owner", () => {
+    const tabsBlock = skillsSource.match(
+      /function SurfaceTabs\([\s\S]*?function CompactToolbar\(/,
+    )?.[0];
+    const sheetOptionBlock = skillsSource.match(
+      /function SheetOption\([\s\S]*?function SheetAction\(/,
+    )?.[0];
+    const indicatorBlock = skillsSource.match(
+      /function ItemActionIndicator\([\s\S]*?function InstalledCheck\(/,
+    )?.[0];
+    expect(tabsBlock).toContain("accessibilityLabel={tab.label}");
+    expect(tabsBlock).toContain("accessible={false}");
+    expect(sheetOptionBlock).toContain(
+      'accessibilityLabel={[label, detail].filter(Boolean).join(", ")}',
+    );
+    expect(sheetOptionBlock).toContain(
+      'importantForAccessibility="no-hide-descendants"',
+    );
+    expect(indicatorBlock).toContain("accessible={false}");
+    expect(indicatorBlock).not.toContain("Pressable");
+    expect(skillsSource).not.toContain("FallbackPlugin");
   });
 
   test("primary lists have no repeated ownership pills or placeholder grid icons", () => {

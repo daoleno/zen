@@ -19,16 +19,12 @@ import {
   useAppColors,
 } from "../../constants/tokens";
 import type { AgentKind } from "../../services/agentPresentation";
-import type {
-  CacheFallbackPlugin,
-  PluginSectionView,
-} from "../../services/pluginsScreenModel";
+import type { PluginSectionView } from "../../services/pluginsScreenModel";
 import {
   PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER,
   PLUGINS_SKILLS_TOUCH_TARGET,
   compactSkillTargets,
   filterAvailablePlugins,
-  filterFallbackPlugins,
   filterInstalledPlugins,
   filterInstalledSkills,
   installedPluginMetadata,
@@ -53,7 +49,10 @@ import type {
   SkillsLeaderboards,
   SkillsRequestState,
 } from "../../services/skillsManagement";
-import { skillAgentLabel } from "../../services/skillsManagement";
+import {
+  skillAgentLabel,
+  skillsRequestData,
+} from "../../services/skillsManagement";
 import {
   skillsEmptyLeaderboardCopy,
   skillsLeaderboardLabel,
@@ -79,8 +78,6 @@ export interface SkillsPresentationProps {
   installedSkills: InstalledSkill[];
   pluginsState: SkillsRequestState<PluginInventory>;
   pluginSection: PluginSectionView;
-  pluginsFallback: boolean;
-  fallbackPlugins: CacheFallbackPlugin[];
   catalogState: SkillsRequestState<SkillsLeaderboards>;
   leaderboard?: SkillsLeaderboard;
   searchState: SkillsRequestState<SkillsCatalogResult>;
@@ -93,7 +90,6 @@ export interface SkillsPresentationProps {
   preparingMutation: string;
   creatingTerminal: boolean;
   currentServerAvailable: boolean;
-  serverBindingKey: string;
   onSelectSection(section: SkillsSurfaceSection): void;
   onSelectMode(mode: SkillsMode): void;
   onSelectPluginsMode(mode: PluginsMode): void;
@@ -122,7 +118,6 @@ type SurfaceSheet =
   | { kind: "skills-update" }
   | { kind: "skill-details"; skill: InstalledSkill }
   | { kind: "plugin-details"; plugin: InstalledPluginRow }
-  | { kind: "fallback-plugin-details"; plugin: CacheFallbackPlugin }
   | null;
 
 export function SkillsPresentation(props: SkillsPresentationProps) {
@@ -136,8 +131,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     installedSkills,
     pluginsState,
     pluginSection,
-    pluginsFallback,
-    fallbackPlugins,
     catalogState,
     leaderboard,
     searchState,
@@ -150,7 +143,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     preparingMutation,
     creatingTerminal,
     currentServerAvailable,
-    serverBindingKey,
     onSelectSection,
     onSelectMode,
     onSelectPluginsMode,
@@ -181,7 +173,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
   useEffect(() => {
     setLocalQuery("");
     setSheet(null);
-  }, [activeMode, section, selectedAgent, serverBindingKey]);
+  }, [activeMode, section, selectedAgent]);
 
   const refresh = () => {
     if (section === "plugins") {
@@ -253,8 +245,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             query={localQuery}
             state={pluginsState}
             view={pluginSection}
-            fallback={pluginsFallback}
-            fallbackPlugins={fallbackPlugins}
             currentServerAvailable={currentServerAvailable}
             refreshing={refreshing}
             preparingMutation={preparingMutation}
@@ -263,9 +253,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             onInstall={onInstallPlugin}
             onInspectPlugin={(plugin) =>
               setSheet({ kind: "plugin-details", plugin })
-            }
-            onInspectFallback={(plugin) =>
-              setSheet({ kind: "fallback-plugin-details", plugin })
             }
           />
         ) : mode === "installed" ? (
@@ -397,6 +384,7 @@ function SurfaceTabs({
           <Pressable
             key={tab.section}
             accessibilityRole="tab"
+            accessibilityLabel={tab.label}
             accessibilityState={{ selected }}
             onPress={() => onSelect(tab.section)}
             style={({ pressed }) => [
@@ -405,6 +393,7 @@ function SurfaceTabs({
             ]}
           >
             <Ionicons
+              accessible={false}
               name={tab.icon}
               size={18}
               color={selected ? colors.accent : colors.textTertiary}
@@ -511,7 +500,12 @@ function CompactToolbar({
         {refreshing ? (
           <ActivityIndicator size="small" color={colors.accent} />
         ) : (
-          <Ionicons name="refresh" size={20} color={colors.textSecondary} />
+          <Ionicons
+            accessible={false}
+            name="refresh"
+            size={20}
+            color={colors.textSecondary}
+          />
         )}
       </Pressable>
     </View>
@@ -545,18 +539,29 @@ function ToolButton({
         },
       ]}
     >
-      {agent ? (
-        <AgentKindIcon kind={managedAgentKind(agent)} size={18} variant="compact" />
-      ) : icon ? (
-        <Ionicons name={icon} size={18} color={colors.textSecondary} />
-      ) : null}
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
+        {agent ? (
+          <AgentKindIcon kind={managedAgentKind(agent)} size={18} variant="compact" />
+        ) : icon ? (
+          <Ionicons name={icon} size={18} color={colors.textSecondary} />
+        ) : null}
+      </View>
       <Text
         maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
         style={[styles.toolButtonText, { color: colors.textSecondary }]}
       >
         {label}
       </Text>
-      <Ionicons name="chevron-down" size={14} color={colors.textTertiary} />
+      <Ionicons
+        accessible={false}
+        name="chevron-down"
+        size={14}
+        color={colors.textTertiary}
+      />
     </AnimatedPressable>
   );
 }
@@ -588,7 +593,12 @@ function SurfaceSearch({
       onPress={onClear}
       style={styles.searchClearButton}
     >
-      <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+      <Ionicons
+        accessible={false}
+        name="close-circle"
+        size={20}
+        color={colors.textTertiary}
+      />
     </Pressable>
   ) : null;
   return (
@@ -603,7 +613,14 @@ function SurfaceSearch({
       autoCorrect={false}
       returnKeyType="search"
       onSubmitEditing={onSubmit}
-      leading={<Ionicons name="search" size={18} color={colors.textTertiary} />}
+      leading={
+        <Ionicons
+          accessible={false}
+          name="search"
+          size={18}
+          color={colors.textTertiary}
+        />
+      }
       trailing={trailing}
       containerStyle={[
         styles.searchBox,
@@ -622,8 +639,6 @@ function PluginsSection({
   query,
   state,
   view,
-  fallback,
-  fallbackPlugins,
   currentServerAvailable,
   refreshing,
   preparingMutation,
@@ -631,14 +646,11 @@ function PluginsSection({
   onRetry,
   onInstall,
   onInspectPlugin,
-  onInspectFallback,
 }: {
   mode: PluginsMode;
   query: string;
   state: SkillsRequestState<PluginInventory>;
   view: PluginSectionView;
-  fallback: boolean;
-  fallbackPlugins: CacheFallbackPlugin[];
   currentServerAvailable: boolean;
   refreshing: boolean;
   preparingMutation: string;
@@ -646,27 +658,7 @@ function PluginsSection({
   onRetry(): void;
   onInstall(plugin: AvailablePlugin): void;
   onInspectPlugin(plugin: InstalledPluginRow): void;
-  onInspectFallback(plugin: CacheFallbackPlugin): void;
 }) {
-  if (fallback && mode === "installed") {
-    return (
-      <FallbackPluginsList
-        query={query}
-        plugins={fallbackPlugins}
-        refreshing={refreshing}
-        onRefresh={onRetry}
-        onInspect={onInspectFallback}
-      />
-    );
-  }
-  if (fallback) {
-    return (
-      <FallbackPluginCatalogState
-        refreshing={refreshing}
-        onRefresh={onRetry}
-      />
-    );
-  }
   if (mode === "installed") {
     return (
       <InstalledPluginsList
@@ -697,34 +689,6 @@ function PluginsSection({
   );
 }
 
-function FallbackPluginCatalogState({
-  refreshing,
-  onRefresh,
-}: {
-  refreshing: boolean;
-  onRefresh(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <FlatList
-      style={styles.list}
-      data={[] as string[]}
-      keyExtractor={(value) => value}
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(refreshing, onRefresh, colors.accent)}
-      ListHeaderComponent={
-        <RequestState
-          title="Plugin catalog unavailable"
-          detail="This server can show cached plugins but does not expose discovery or lifecycle actions."
-          action="Retry"
-          onAction={onRefresh}
-        />
-      }
-      renderItem={() => null}
-    />
-  );
-}
-
 function InstalledPluginsList({
   query,
   state,
@@ -749,7 +713,7 @@ function InstalledPluginsList({
     () => filterInstalledPlugins(rows, query),
     [query, rows],
   );
-  const hasData = state.status === "ready" || state.status === "empty";
+  const hasData = skillsRequestData(state) !== undefined;
   return (
     <FlatList
       style={styles.list}
@@ -802,7 +766,12 @@ function InstalledPluginItem({
         pressed ? { backgroundColor: colors.surfacePressed } : null,
       ]}
     >
-      <View style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}>
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+      >
         <AgentKindIcon kind={pluginHostKind(plugin.host)} size={22} variant="compact" />
       </View>
       <View style={styles.itemCopy}>
@@ -821,10 +790,8 @@ function InstalledPluginItem({
           {installedPluginMetadata(plugin)}
         </Text>
       </View>
-      <ItemIconAction
-        label={ownership.manageable ? `${plugin.name} actions` : `About ${plugin.name}`}
+      <ItemActionIndicator
         icon={ownership.manageable ? "ellipsis-horizontal" : "information-circle-outline"}
-        onPress={onInspect}
       />
     </Pressable>
   );
@@ -858,7 +825,7 @@ function DiscoverPluginsList({
     () => filterAvailablePlugins(entries, query),
     [entries, query],
   );
-  const hasData = state.status === "ready" || state.status === "empty";
+  const hasData = skillsRequestData(state) !== undefined;
   return (
     <FlatList
       style={styles.list}
@@ -902,92 +869,10 @@ function DiscoverPluginsList({
                 onPress={() => onInstall(item)}
               />
             ) : (
-              <InstalledCheck name={item.name} />
+              <InstalledCheck />
             )
           }
         />
-      )}
-    />
-  );
-}
-
-function FallbackPluginsList({
-  query,
-  plugins,
-  refreshing,
-  onRefresh,
-  onInspect,
-}: {
-  query: string;
-  plugins: CacheFallbackPlugin[];
-  refreshing: boolean;
-  onRefresh(): void;
-  onInspect(plugin: CacheFallbackPlugin): void;
-}) {
-  const colors = useAppColors();
-  const visiblePlugins = useMemo(
-    () => filterFallbackPlugins(plugins, query),
-    [plugins, query],
-  );
-  return (
-    <FlatList
-      style={styles.list}
-      data={visiblePlugins}
-      keyExtractor={(plugin) => plugin.id}
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(refreshing, onRefresh, colors.accent)}
-      ItemSeparatorComponent={() => <Separator />}
-      ListHeaderComponent={
-        <ListStateHeader
-          empty={plugins.length === 0}
-          emptyTitle="No plugins installed"
-          noMatches={plugins.length > 0 && visiblePlugins.length === 0}
-        />
-      }
-      renderItem={({ item }) => (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${item.name}, ${item.skillCount} Skills`}
-          accessibilityHint="Show plugin ownership"
-          onPress={() => onInspect(item)}
-          style={({ pressed }) => [
-            styles.itemRow,
-            pressed ? { backgroundColor: colors.surfacePressed } : null,
-          ]}
-        >
-          <View style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}>
-            {fallbackHostKind(item) ? (
-              <AgentKindIcon kind={fallbackHostKind(item)!} size={22} variant="compact" />
-            ) : (
-              <Ionicons
-                name="extension-puzzle-outline"
-                size={22}
-                color={colors.textSecondary}
-              />
-            )}
-          </View>
-          <View style={styles.itemCopy}>
-            <Text
-              numberOfLines={2}
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[styles.itemName, { color: colors.textPrimary }]}
-            >
-              {item.name}
-            </Text>
-            <Text
-              numberOfLines={2}
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[styles.itemMetadata, { color: colors.textTertiary }]}
-            >
-              {item.skillCount} {item.skillCount === 1 ? "Skill" : "Skills"}
-            </Text>
-          </View>
-          <ItemIconAction
-            label={`About ${item.name}`}
-            icon="information-circle-outline"
-            onPress={() => onInspect(item)}
-          />
-        </Pressable>
       )}
     />
   );
@@ -1023,7 +908,7 @@ function InstalledSkillsList({
     () => filterInstalledSkills(skills, query),
     [query, skills],
   );
-  const hasInventory = state.status === "ready" || state.status === "empty";
+  const hasInventory = skillsRequestData(state) !== undefined;
   return (
     <FlatList
       style={styles.list}
@@ -1087,7 +972,12 @@ function InstalledSkillItem({
           pressed ? { backgroundColor: colors.surfacePressed } : null,
         ]}
       >
-        <View style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}>
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+        >
           <Ionicons name="sparkles-outline" size={21} color={colors.textSecondary} />
         </View>
         <View style={styles.itemCopy}>
@@ -1161,6 +1051,7 @@ function DiscoverSkillsList({
 }) {
   const colors = useAppColors();
   const showingSearch = Boolean(submittedQuery);
+  const hasCatalog = skillsRequestData(catalogState) !== undefined;
   const data: Array<CatalogSkill | RankedCatalogSkill> = showingSearch
     ? (searchResult?.skills ?? [])
     : (leaderboard?.skills ?? []);
@@ -1188,13 +1079,12 @@ function DiscoverSkillsList({
           />
         ) : (
           <ListStateHeader
-            loading={catalogState.status === "loading"}
+            loading={catalogState.status === "loading" && !hasCatalog}
             loadingTitle="Loading skills.sh rankings…"
             error={catalogState.status === "error" ? catalogState.error : undefined}
             errorTitle="Rankings unavailable"
             empty={
-              (catalogState.status === "ready" || catalogState.status === "empty") &&
-              leaderboard?.skills.length === 0
+              hasCatalog && leaderboard?.skills.length === 0
             }
             emptyTitle={skillsEmptyLeaderboardCopy(view).title}
             currentServerAvailable={currentServerAvailable}
@@ -1270,7 +1160,12 @@ function CatalogRow({
           {prefix}
         </Text>
       ) : null}
-      <View style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}>
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+      >
         {icon}
       </View>
       <View style={styles.itemCopy}>
@@ -1433,9 +1328,6 @@ function SurfaceSheet({
           />
         ) : null}
 
-        {sheet?.kind === "fallback-plugin-details" ? (
-          <FallbackPluginDetailSheet plugin={sheet.plugin} />
-        ) : null}
       </ScrollView>
       <Pressable
         accessibilityRole="button"
@@ -1517,26 +1409,6 @@ function PluginDetailSheet({
   );
 }
 
-function FallbackPluginDetailSheet({
-  plugin,
-}: {
-  plugin: CacheFallbackPlugin;
-}) {
-  return (
-    <>
-      <SheetTitle>{plugin.name}</SheetTitle>
-      <SheetMetadata>
-        {plugin.skillCount} {plugin.skillCount === 1 ? "Skill" : "Skills"}
-      </SheetMetadata>
-      <SheetSection title="Discovered from client cache">
-        This older server can show the plugin but does not expose a supported
-        lifecycle contract to Zen.
-      </SheetSection>
-      <SheetSkillList skills={plugin.skills.map((skill) => skill.name)} />
-    </>
-  );
-}
-
 function SheetTitle({ children }: { children: React.ReactNode }) {
   const colors = useAppColors();
   return (
@@ -1614,7 +1486,12 @@ function SheetSkillList({ skills }: { skills: string[] }) {
           key={skill}
           style={[styles.sheetSkillRow, { borderTopColor: colors.borderSubtle }]}
         >
-          <Ionicons name="sparkles-outline" size={17} color={colors.textTertiary} />
+          <Ionicons
+            accessible={false}
+            name="sparkles-outline"
+            size={17}
+            color={colors.textTertiary}
+          />
           <Text
             maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
             style={[styles.sheetSkillName, { color: colors.textSecondary }]}
@@ -1650,6 +1527,7 @@ function SheetOption({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={[label, detail].filter(Boolean).join(", ")}
       accessibilityState={{ selected, disabled: disabled || busy }}
       disabled={disabled || busy}
       onPress={onPress}
@@ -1660,7 +1538,12 @@ function SheetOption({
         disabled ? styles.disabled : null,
       ]}
     >
-      <View style={styles.sheetOptionIcon}>
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.sheetOptionIcon}
+      >
         {busy ? (
           <ActivityIndicator size="small" color={colors.accent} />
         ) : agent ? (
@@ -1685,11 +1568,17 @@ function SheetOption({
           </Text>
         ) : null}
       </View>
-      {selected ? (
-        <Ionicons name="checkmark" size={20} color={colors.accent} />
-      ) : (
-        <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
-      )}
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
+        {selected ? (
+          <Ionicons name="checkmark" size={20} color={colors.accent} />
+        ) : (
+          <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -1727,6 +1616,7 @@ function SheetAction({
         <ActivityIndicator size="small" color={colors.accent} />
       ) : (
         <Ionicons
+          accessible={false}
           name={icon}
           size={19}
           color={destructive ? colors.dangerText : colors.textSecondary}
@@ -1902,16 +1792,49 @@ function ItemIconAction({
         pressed ? { backgroundColor: colors.surfacePressed } : null,
       ]}
     >
-      <Ionicons name={icon} size={20} color={colors.textTertiary} />
+      <Ionicons
+        accessible={false}
+        name={icon}
+        size={20}
+        color={colors.textTertiary}
+      />
     </Pressable>
   );
 }
 
-function InstalledCheck({ name }: { name: string }) {
+function ItemActionIndicator({
+  icon,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+}) {
   const colors = useAppColors();
   return (
-    <View accessibilityLabel={`${name} installed`} style={styles.itemIconAction}>
-      <Ionicons name="checkmark" size={20} color={colors.success} />
+    <View
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={styles.itemIconAction}
+    >
+      <Ionicons name={icon} size={20} color={colors.textTertiary} />
+    </View>
+  );
+}
+
+function InstalledCheck() {
+  const colors = useAppColors();
+  return (
+    <View
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={styles.itemIconAction}
+    >
+      <Ionicons
+        accessible={false}
+        name="checkmark"
+        size={20}
+        color={colors.success}
+      />
     </View>
   );
 }
@@ -1963,15 +1886,6 @@ function managedAgentKind(agent: ManagedSkillAgent): AgentKind {
 
 function pluginHostKind(host: "claude" | "codex"): AgentKind {
   return host === "claude" ? "claude" : "codex";
-}
-
-function fallbackHostKind(plugin: CacheFallbackPlugin): AgentKind | null {
-  if (plugin.hosts.includes("codex")) return "codex";
-  if (plugin.hosts.includes("claude-code")) return "claude";
-  if (plugin.hosts.includes("cursor")) return "cursor";
-  if (plugin.hosts.includes("opencode")) return "opencode";
-  if (plugin.hosts.includes("pi")) return "pi";
-  return null;
 }
 
 function formatInstalls(value: number): string {

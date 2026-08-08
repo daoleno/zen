@@ -10,6 +10,7 @@ import {
   normalizeSkillsInventory,
   normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
+  skillsRequestData,
   type SkillsMutationCommand,
 } from "./skillsManagement";
 
@@ -372,14 +373,16 @@ describe("Skills management wire boundary", () => {
     expect(inventory.skills[0]?.capability.canRemove).toBe(false);
   });
 
-  test("loading generations clear old data and stale completion or failure cannot replace current state", () => {
+  test("refresh retains successful data while generations complete and fail closed", () => {
     let state = createSkillsRequestState<string[]>();
     state = beginSkillsRequest(state);
-    state = completeSkillsRequest(state, 1, ["old"], false);
-    expect(state).toEqual({ status: "ready", generation: 1, data: ["old"] });
+    const rows = ["old"];
+    state = completeSkillsRequest(state, 1, rows, false);
+    expect(skillsRequestData(state)).toBe(rows);
 
     state = beginSkillsRequest(state);
-    expect(state).toEqual({ status: "loading", generation: 2 });
+    expect(state).toEqual({ status: "loading", generation: 2, data: rows });
+    expect(skillsRequestData(state)).toBe(rows);
     const current = state;
     expect(completeSkillsRequest(state, 1, ["stale"], false)).toBe(current);
     expect(failSkillsRequest(state, 1, "stale failure")).toBe(current);
@@ -388,9 +391,40 @@ describe("Skills management wire boundary", () => {
     expect(state).toEqual({
       status: "error",
       generation: 2,
+      data: rows,
       error: "current failure",
     });
-    expect("data" in state).toBe(false);
+    expect(skillsRequestData(state)).toBe(rows);
+
+    state = beginSkillsRequest(state, 3);
+    state = completeSkillsRequest(state, 3, ["new"], false);
+    expect(state).toEqual({ status: "ready", generation: 3, data: ["new"] });
+  });
+
+  test("a new search or capability failure can explicitly drop stale data", () => {
+    const rows = ["old"];
+    const ready = completeSkillsRequest(
+      beginSkillsRequest(createSkillsRequestState<string[]>()),
+      1,
+      rows,
+      false,
+    );
+    const search = beginSkillsRequest(ready, 2, false);
+    expect(search).toEqual({ status: "loading", generation: 2 });
+    expect(skillsRequestData(search)).toBeUndefined();
+
+    const refresh = beginSkillsRequest(ready, 2);
+    const capabilityFailure = failSkillsRequest(
+      refresh,
+      2,
+      "Update the Zen daemon.",
+      false,
+    );
+    expect(capabilityFailure).toEqual({
+      status: "error",
+      generation: 2,
+      error: "Update the Zen daemon.",
+    });
   });
 });
 

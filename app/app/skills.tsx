@@ -13,10 +13,12 @@ import {
   type PluginsMode,
 } from "../components/skills/SkillsPresentation";
 import {
+  beginSkillsRequest,
   buildSkillsMutationConfirmation,
   completeSkillsRequest,
   createSkillsRequestState,
   failSkillsRequest,
+  skillsRequestData,
   type CatalogSkill,
   type InstalledSkill,
   type ManagedSkillAgent,
@@ -48,7 +50,6 @@ import {
 import {
   evaluatePluginMutation,
   pluginSectionView,
-  projectPlugins,
   type PluginSectionView,
 } from "../services/pluginsScreenModel";
 import {
@@ -115,7 +116,6 @@ export default function SkillsScreen() {
   const [pluginsState, setPluginsState] = useState<
     SkillsRequestState<PluginInventory>
   >(createSkillsRequestState);
-  const [pluginsFallback, setPluginsFallback] = useState(false);
   const [discover, setDiscover] = useState(createSkillsDiscoverState);
   const [catalogState, setCatalogState] = useState<
     SkillsRequestState<SkillsLeaderboards>
@@ -177,34 +177,42 @@ export default function SkillsScreen() {
     setBoundServerId(currentServerId);
     setInventoryState(createSkillsRequestState());
     setPluginsState(createSkillsRequestState());
-    setPluginsFallback(false);
     setCatalogState(createSkillsRequestState());
     setSearchState(createSkillsRequestState());
-    setDiscover((current) => ({ ...current, submittedQuery: "" }));
+    setDiscover((current) => ({
+      ...current,
+      query: "",
+      submittedQuery: "",
+    }));
     setPreparingMutation("");
   }, [cancelActiveSearch, currentServerId]);
 
   const refreshInventory = useCallback(async () => {
     const token = requestOwnerRef.current.issue("inventory");
+    setInventoryState((current) =>
+      beginSkillsRequest(current, token.generation),
+    );
     if (!token.serverId || !currentServer) {
-      setInventoryState({
-        status: "error",
-        generation: token.generation,
-        error: "Choose a current server in Settings to view installed Skills.",
-      });
+      setInventoryState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
+          "Choose a current server in Settings to view installed Skills.",
+        ),
+      );
       return;
     }
     if (!currentConnected) {
-      setInventoryState({
-        status: "error",
-        generation: token.generation,
-        error:
+      setInventoryState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
           "The current server is offline. Connect it in Settings and retry.",
-      });
+        ),
+      );
       return;
     }
 
-    setInventoryState({ status: "loading", generation: token.generation });
     try {
       const response = await wsClient.getSkillsInventory(token.serverId, {
         cwd: projectCwd || undefined,
@@ -255,27 +263,30 @@ export default function SkillsScreen() {
 
   const loadPlugins = useCallback(async () => {
     const token = requestOwnerRef.current.issue("plugins");
+    setPluginsState((current) =>
+      beginSkillsRequest(current, token.generation),
+    );
     if (!token.serverId || !currentServer) {
-      setPluginsFallback(false);
-      setPluginsState({
-        status: "error",
-        generation: token.generation,
-        error: "Choose a current server in Settings to view Plugins.",
-      });
+      setPluginsState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
+          "Choose a current server in Settings to view Plugins.",
+        ),
+      );
       return;
     }
     if (!currentConnected) {
-      setPluginsFallback(false);
-      setPluginsState({
-        status: "error",
-        generation: token.generation,
-        error:
+      setPluginsState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
           "The current server is offline. Connect it in Settings and retry.",
-      });
+        ),
+      );
       return;
     }
 
-    setPluginsState({ status: "loading", generation: token.generation });
     try {
       const response = await wsClient.getPluginsInventory(token.serverId, {
         generation: token.generation,
@@ -287,7 +298,6 @@ export default function SkillsScreen() {
       ) {
         return;
       }
-      setPluginsFallback(false);
       setPluginsState((current) =>
         completeSkillsRequest(
           current,
@@ -304,11 +314,14 @@ export default function SkillsScreen() {
         error instanceof DaemonRequestError &&
         error.code === "unknown_message_type"
       ) {
-        // The current daemon predates the plugin inventory wire. Fall back to
-        // the read-only cache projection from the Skills inventory; every
-        // lifecycle action is unavailable in this mode.
-        setPluginsFallback(true);
-        setPluginsState(createSkillsRequestState<PluginInventory>());
+        setPluginsState((current) =>
+          failSkillsRequest(
+            current,
+            token.generation,
+            "Update the Zen daemon to manage Plugins.",
+            false,
+          ),
+        );
         return;
       }
       setPluginsState((current) =>
@@ -341,25 +354,30 @@ export default function SkillsScreen() {
 
   const loadLeaderboards = useCallback(async () => {
     const token = requestOwnerRef.current.issue("catalog");
+    setCatalogState((current) =>
+      beginSkillsRequest(current, token.generation),
+    );
     if (!token.serverId || !currentServer) {
-      setCatalogState({
-        status: "error",
-        generation: token.generation,
-        error: "Choose a current server in Settings to browse Skills.",
-      });
+      setCatalogState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
+          "Choose a current server in Settings to browse Skills.",
+        ),
+      );
       return;
     }
     if (!currentConnected) {
-      setCatalogState({
-        status: "error",
-        generation: token.generation,
-        error:
+      setCatalogState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
           "The current server is offline. Connect it in Settings and retry.",
-      });
+        ),
+      );
       return;
     }
 
-    setCatalogState({ status: "loading", generation: token.generation });
     try {
       const response = await wsClient.getSkillsLeaderboards(token.serverId, {
         generation: token.generation,
@@ -421,25 +439,30 @@ export default function SkillsScreen() {
         return;
       }
       const token = requestOwnerRef.current.issue("search");
+      setSearchState((current) =>
+        beginSkillsRequest(current, token.generation, false),
+      );
       if (!token.serverId || !currentServer) {
-        setSearchState({
-          status: "error",
-          generation: token.generation,
-          error: "Choose a current server in Settings before searching.",
-        });
+        setSearchState((current) =>
+          failSkillsRequest(
+            current,
+            token.generation,
+            "Choose a current server in Settings before searching.",
+          ),
+        );
         return;
       }
       if (!currentConnected) {
-        setSearchState({
-          status: "error",
-          generation: token.generation,
-          error:
+        setSearchState((current) =>
+          failSkillsRequest(
+            current,
+            token.generation,
             "The current server is offline. Connect it in Settings and retry.",
-        });
+          ),
+        );
         return;
       }
 
-      setSearchState({ status: "loading", generation: token.generation });
       activeSearchRef.current = {
         serverId: token.serverId,
         generation: token.generation,
@@ -945,34 +968,28 @@ export default function SkillsScreen() {
   const visibleSearchState = presentationIsCurrent
     ? searchState
     : createSkillsRequestState<SkillsCatalogResult>();
-  const inventory =
-    visibleInventoryState.status === "ready" ||
-    visibleInventoryState.status === "empty"
-      ? visibleInventoryState.data
-      : undefined;
-  const search =
-    visibleSearchState.status === "ready" ||
-    visibleSearchState.status === "empty"
-      ? visibleSearchState.data
-      : undefined;
-  const leaderboards =
-    visibleCatalogState.status === "ready" ||
-    visibleCatalogState.status === "empty"
-      ? visibleCatalogState.data
-      : undefined;
+  const visibleDiscover = presentationIsCurrent
+    ? discover
+    : createSkillsDiscoverState();
+  const inventory = skillsRequestData(visibleInventoryState);
+  const search = skillsRequestData(visibleSearchState);
+  const leaderboards = skillsRequestData(visibleCatalogState);
   const leaderboard = leaderboards
-    ? leaderboardForView(leaderboards, discover.view)
+    ? leaderboardForView(leaderboards, visibleDiscover.view)
     : undefined;
-  const projection = skillsSectionProjection(inventory, selectedAgent);
-  const agentCounts = skillsSectionAgentCounts(inventory);
-  const pluginsInventory =
-    visiblePluginsState.status === "ready" ||
-    visiblePluginsState.status === "empty"
-      ? visiblePluginsState.data
-      : undefined;
-  const pluginSection: PluginSectionView =
-    pluginSectionView(pluginsInventory);
-  const fallbackPlugins = projectPlugins(inventory);
+  const projection = useMemo(
+    () => skillsSectionProjection(inventory, selectedAgent),
+    [inventory, selectedAgent],
+  );
+  const agentCounts = useMemo(
+    () => skillsSectionAgentCounts(inventory),
+    [inventory],
+  );
+  const pluginsInventory = skillsRequestData(visiblePluginsState);
+  const pluginSection: PluginSectionView = useMemo(
+    () => pluginSectionView(pluginsInventory),
+    [pluginsInventory],
+  );
   const mutationOperations = inventory?.mutationOperations ?? [
     ...LEGACY_MUTATION_CAPABILITIES,
   ];
@@ -980,6 +997,7 @@ export default function SkillsScreen() {
 
   return (
     <SkillsPresentation
+      key={currentServerId ?? "none"}
       section={surface.section}
       mode={mode}
       pluginsMode={pluginsMode}
@@ -989,21 +1007,18 @@ export default function SkillsScreen() {
       installedSkills={projection.skills}
       pluginsState={visiblePluginsState}
       pluginSection={pluginSection}
-      pluginsFallback={presentationIsCurrent && pluginsFallback}
-      fallbackPlugins={fallbackPlugins}
       catalogState={visibleCatalogState}
       leaderboard={leaderboard}
       searchState={visibleSearchState}
       searchResult={search}
-      query={discover.query}
-      submittedQuery={discover.submittedQuery}
-      leaderboardView={discover.view}
+      query={visibleDiscover.query}
+      submittedQuery={visibleDiscover.submittedQuery}
+      leaderboardView={visibleDiscover.view}
       mutationOperations={mutationOperations}
       hasProjectCwd={hasProjectCwd}
       preparingMutation={preparingMutation}
       creatingTerminal={creatingTerminal}
       currentServerAvailable={Boolean(currentServer)}
-      serverBindingKey={currentServerId ?? ""}
       onSelectSection={selectSection}
       onSelectMode={setMode}
       onSelectPluginsMode={setPluginsMode}
@@ -1045,20 +1060,17 @@ export default function SkillsScreen() {
 function mutationCapabilities(
   state: SkillsRequestState<SkillsInventory>,
 ): readonly ("install" | "remove" | "update")[] {
-  if (state.status === "ready" || state.status === "empty") {
-    return state.data.mutationOperations;
-  }
-  return LEGACY_MUTATION_CAPABILITIES;
+  return (
+    skillsRequestData(state)?.mutationOperations ?? LEGACY_MUTATION_CAPABILITIES
+  );
 }
 
 function pluginInstalledIds(
   state: SkillsRequestState<PluginInventory>,
 ): Set<string> {
   const ids = new Set<string>();
-  if (state.status === "ready" || state.status === "empty") {
-    for (const row of state.data.installed) {
-      ids.add(row.id);
-    }
+  for (const row of skillsRequestData(state)?.installed ?? []) {
+    ids.add(row.id);
   }
   return ids;
 }

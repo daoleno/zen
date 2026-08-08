@@ -6,7 +6,6 @@ import {
   createPluginExpansionState,
   evaluatePluginMutation,
   pluginSectionView,
-  projectPlugins,
   reducePluginExpansion,
 } from "./pluginsScreenModel";
 import {
@@ -16,71 +15,6 @@ import {
   type InstalledPluginRow,
   type PluginInventory,
 } from "./pluginsManagement";
-import type { InstalledSkill, SkillsInventory } from "./skillsManagement";
-
-function pluginSkill(
-  id: string,
-  name: string,
-  plugin: string,
-  agents: string[],
-  provenance = "Codex plugin",
-): InstalledSkill {
-  return {
-    id,
-    name,
-    canonicalPath: `/home/test/.codex/plugins/cache/vendor/${plugin}/1.0.0/skills/${name}`,
-    sourcePath: `/home/test/.codex/plugins/cache/vendor/${plugin}/1.0.0/skills/${name}`,
-    scope: "plugin",
-    agents: agents as InstalledSkill["agents"],
-    bindings: [
-      {
-        sourcePath: `/home/test/.codex/plugins/cache/vendor/${plugin}/1.0.0/skills/${name}`,
-        scope: "plugin",
-        agents: agents as InstalledSkill["agents"],
-      },
-    ],
-    manager: "plugin",
-    provenance,
-    plugin,
-    capability: {
-      canRemove: false,
-      removalPlans: [],
-      reason: "Plugin-owned Skills must be managed by their plugin owner.",
-    },
-  };
-}
-
-function cliSkill(id: string, name: string): InstalledSkill {
-  return {
-    id,
-    name,
-    canonicalPath: `/home/test/.agents/skills/${name}`,
-    sourcePath: `/home/test/.agents/skills/${name}`,
-    scope: "global",
-    agents: ["codex"],
-    bindings: [
-      {
-        sourcePath: `/home/test/.agents/skills/${name}`,
-        scope: "global",
-        agents: ["codex"],
-      },
-    ],
-    manager: "skills-cli",
-    provenance: "official skills-cli lock",
-    source: "acme/skills",
-    capability: { canRemove: true, removalPlans: [] },
-  };
-}
-
-function inventory(skills: InstalledSkill[]): SkillsInventory {
-  return {
-    generatedAt: "2026-08-08T00:00:00Z",
-    skills,
-    agents: [],
-    warnings: [],
-    mutationOperations: ["install", "remove", "update"],
-  };
-}
 
 function installedRow(
   id: string,
@@ -155,7 +89,6 @@ describe("Plugins section view", () => {
         installedRow("plug-a@market-a"),
       ]),
     );
-    expect(view.source).toBe("authoritative");
     expect(view.catalogReady).toBe(true);
     expect(view.installed.map((row) => row.id)).toEqual([
       "plug-a@market-a",
@@ -182,59 +115,6 @@ describe("Plugins section view", () => {
     expect(view.installed).toEqual([]);
     expect(view.explore).toEqual([]);
     expect(view.catalogReady).toBe(false);
-  });
-});
-
-describe("Cache fallback projection (older daemons only)", () => {
-  test("groups plugin-owned Skills by plugin with deterministic ordering", () => {
-    const plugins = projectPlugins(
-      inventory([
-        pluginSkill("000000000000000000000001", "zebra-skill", "beta-plugin", ["codex"]),
-        pluginSkill("000000000000000000000002", "alpha-skill", "alpha-plugin", ["claude-code"]),
-        pluginSkill("000000000000000000000003", "beta-skill", "beta-plugin", ["codex", "claude-code"]),
-      ]),
-    );
-
-    expect(plugins.map((plugin) => plugin.name)).toEqual([
-      "alpha-plugin",
-      "beta-plugin",
-    ]);
-    const [alpha, beta] = plugins;
-    expect(alpha).toMatchObject({ id: "plugin:alpha-plugin", skillCount: 1 });
-    expect(alpha.skills.map((skill) => skill.name)).toEqual(["alpha-skill"]);
-    expect(alpha.hosts).toEqual(["claude-code"]);
-    expect(beta).toMatchObject({ id: "plugin:beta-plugin", skillCount: 2 });
-    expect(beta.skills.map((skill) => skill.name)).toEqual([
-      "beta-skill",
-      "zebra-skill",
-    ]);
-    expect(beta.hosts).toEqual(["claude-code", "codex"]);
-  });
-
-  test("excludes non-plugin Skills and empty inventories truthfully", () => {
-    expect(projectPlugins(undefined)).toEqual([]);
-    expect(
-      projectPlugins(
-        inventory([
-          cliSkill("000000000000000000000011", "cli-skill"),
-          pluginSkill("000000000000000000000012", "hosted", "plug", ["codex"]),
-        ]),
-      ).map((plugin) => plugin.name),
-    ).toEqual(["plug"]);
-  });
-
-  test("falls back to daemon provenance when a plugin name is unusable", () => {
-    const plugins = projectPlugins(
-      inventory([
-        {
-          ...pluginSkill("000000000000000000000021", "hosted", "", ["codex"]),
-          plugin: undefined,
-        },
-      ]),
-    );
-    expect(plugins).toHaveLength(1);
-    expect(plugins[0]?.name).toBe("Codex plugin");
-    expect(plugins[0]?.id).toBe("plugin:codex plugin");
   });
 });
 

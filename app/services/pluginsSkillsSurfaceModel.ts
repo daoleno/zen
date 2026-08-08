@@ -1,7 +1,4 @@
 import type {
-  CacheFallbackPlugin,
-} from "./pluginsScreenModel";
-import type {
   AvailablePlugin,
   InstalledPluginRow,
 } from "./pluginsManagement";
@@ -105,16 +102,6 @@ export function filterAvailablePlugins(
     plugin.marketplaceName,
     plugin.description,
     plugin.sourceRef,
-  ]);
-}
-
-export function filterFallbackPlugins(
-  plugins: CacheFallbackPlugin[],
-  query: string,
-): CacheFallbackPlugin[] {
-  return filterByQuery(plugins, query, (plugin) => [
-    plugin.name,
-    ...plugin.skills.map((skill) => skill.name),
   ]);
 }
 

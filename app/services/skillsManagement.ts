@@ -121,12 +121,12 @@ export type SkillsRequestState<T> =
   | {
       status: "loading";
       generation: number;
-      data?: undefined;
+      data?: T;
       error?: undefined;
     }
   | { status: "ready"; generation: number; data: T; error?: undefined }
   | { status: "empty"; generation: number; data: T; error?: undefined }
-  | { status: "error"; generation: number; data?: undefined; error: string };
+  | { status: "error"; generation: number; data?: T; error: string };
 
 const AGENTS = new Set<SkillAgent>(["codex", "claude-code", "cursor", "opencode", "pi", "grok"]);
 const MANAGED_AGENTS = new Set<ManagedSkillAgent>([
@@ -355,8 +355,22 @@ export function createSkillsRequestState<T>(): SkillsRequestState<T> {
 
 export function beginSkillsRequest<T>(
   current: SkillsRequestState<T>,
+  generation = current.generation + 1,
+  preserveData = true,
 ): SkillsRequestState<T> {
-  return { status: "loading", generation: current.generation + 1 };
+  if (generation <= current.generation) {
+    return current;
+  }
+  const data = preserveData ? skillsRequestData(current) : undefined;
+  return data === undefined
+    ? { status: "loading", generation }
+    : { status: "loading", generation, data };
+}
+
+export function skillsRequestData<T>(
+  state: SkillsRequestState<T>,
+): T | undefined {
+  return state.data;
 }
 
 export function completeSkillsRequest<T>(
@@ -377,15 +391,16 @@ export function failSkillsRequest<T>(
   current: SkillsRequestState<T>,
   generation: number,
   error: string,
+  preserveData = true,
 ): SkillsRequestState<T> {
   if (current.generation !== generation || current.status !== "loading") {
     return current;
   }
-  return {
-    status: "error",
-    generation,
-    error: error.trim() || "Request failed.",
-  };
+  const data = preserveData ? skillsRequestData(current) : undefined;
+  const message = error.trim() || "Request failed.";
+  return data === undefined
+    ? { status: "error", generation, error: message }
+    : { status: "error", generation, data, error: message };
 }
 
 export function buildSkillsMutationConfirmation(

@@ -2310,10 +2310,8 @@ export class MultiServerWebSocketClient {
             ),
           );
         };
-        // Daemons that predate the plugin inventory wire answer unknown
-        // request types on the generic error channel with
-        // code "unknown_message_type"; the caller treats that as the
-        // authoritative capability gap and falls back to the read-only view.
+        // Unknown request types arrive on the generic error channel; preserve
+        // their code so the caller can expose the daemon capability error.
         const handleGenericError = handleError;
         const timer = setTimeout(() => {
           cleanup();

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { CacheFallbackPlugin } from "./pluginsScreenModel";
 import {
   PLUGINS_SKILLS_CONTROL_GAP,
   PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER,
@@ -10,7 +9,6 @@ import {
   compactToolbarContentWidth,
   filterAvailablePlugins,
   filterCatalogSkills,
-  filterFallbackPlugins,
   filterInstalledPlugins,
   filterInstalledSkills,
   installedPluginMetadata,
@@ -181,20 +179,7 @@ describe("Plugins & Skills V3 search and filtering", () => {
     ]);
   });
 
-  test("cache fallback and catalog Skills stay searchable without new daemon state", () => {
-    const fallback: CacheFallbackPlugin[] = [
-      {
-        id: "plugin:alpha",
-        name: "alpha",
-        hosts: ["codex"],
-        skillCount: 1,
-        skills: [
-          { name: "nested-tool", scope: "plugin", canonicalPath: "/nested" },
-        ],
-      },
-    ];
-    expect(filterFallbackPlugins(fallback, "nested")).toEqual(fallback);
-
+  test("catalog Skills stay searchable without new daemon state", () => {
     const catalog: CatalogSkill[] = [
       {
         id: "acme/skills/react-native",

@@ -7,14 +7,81 @@ const presentationSource = readFileSync(
   join(import.meta.dir, "../components/skills/SkillsPresentation.tsx"),
   "utf8",
 );
+const pluginModelSource = readFileSync(
+  join(import.meta.dir, "pluginsScreenModel.ts"),
+  "utf8",
+);
+const surfaceModelSource = readFileSync(
+  join(import.meta.dir, "pluginsSkillsSurfaceModel.ts"),
+  "utf8",
+);
 
 describe("Plugins & Skills V3 action wiring", () => {
   test("all inventory and discovery flows stay bound to the current server", () => {
     expect(screenSource).toContain("useCurrentServer");
     expect(screenSource).toContain("requestOwnerRef.current.rebind(currentServerId)");
     expect(screenSource).toContain("presentationIsCurrent");
-    expect(screenSource).toContain('serverBindingKey={currentServerId ?? ""}');
-    expect(presentationSource).toContain("serverBindingKey");
+    expect(screenSource).toContain('key={currentServerId ?? "none"}');
+    expect(screenSource).toContain("const visibleDiscover = presentationIsCurrent");
+    expect(screenSource).toContain('query: ""');
+    expect(screenSource).toContain('submittedQuery: ""');
+    expect(presentationSource).not.toContain("serverBindingKey");
+  });
+
+  test("inventory, Plugins, and leaderboards refresh through one data-retaining request state", () => {
+    expect(screenSource.match(/beginSkillsRequest\(current, token\.generation\)/g)).toHaveLength(3);
+    expect(screenSource).toContain(
+      "beginSkillsRequest(current, token.generation, false)",
+    );
+    expect(screenSource).toContain("skillsRequestData(visibleInventoryState)");
+    expect(screenSource).toContain("skillsRequestData(visiblePluginsState)");
+    expect(screenSource).toContain("skillsRequestData(visibleCatalogState)");
+    expect(screenSource).toContain("useMemo(\n    () => pluginSectionView");
+    expect(presentationSource).toContain(
+      "skillsRequestData(state) !== undefined",
+    );
+  });
+
+  test("refresh and retained-data errors keep each FlatList and its rows mounted", () => {
+    const installedPlugins = presentationSource.match(
+      /function InstalledPluginsList\([\s\S]*?function InstalledPluginItem\(/,
+    )?.[0];
+    const installedSkills = presentationSource.match(
+      /function InstalledSkillsList\([\s\S]*?function InstalledSkillItem\(/,
+    )?.[0];
+    const discoverSkills = presentationSource.match(
+      /function DiscoverSkillsList\([\s\S]*?function CatalogRow\(/,
+    )?.[0];
+    expect(installedPlugins).toContain("data={visibleRows}");
+    expect(installedPlugins).toContain(
+      'loading={state.status === "loading" && !hasData}',
+    );
+    expect(installedPlugins).toContain(
+      'error={state.status === "error" ? state.error : undefined}',
+    );
+    expect(installedSkills).toContain("data={visibleSkills}");
+    expect(installedSkills).toContain(
+      'loading={state.status === "loading" && !hasInventory}',
+    );
+    expect(discoverSkills).toContain("data={data}");
+    expect(discoverSkills).toContain(
+      'loading={catalogState.status === "loading" && !hasCatalog}',
+    );
+    expect(discoverSkills).toContain(
+      'error={catalogState.status === "error" ? catalogState.error : undefined}',
+    );
+  });
+
+  test("an older daemon is a concise Plugin capability error, never a cache projection", () => {
+    expect(screenSource).toContain('error.code === "unknown_message_type"');
+    expect(screenSource).toContain("Update the Zen daemon to manage Plugins.");
+    expect(screenSource).not.toContain("projectPlugins");
+    expect(screenSource).not.toContain("pluginsFallback");
+    expect(presentationSource).not.toContain("FallbackPlugin");
+    expect(presentationSource).not.toContain("fallbackPlugins");
+    expect(pluginModelSource).not.toContain("CacheFallbackPlugin");
+    expect(pluginModelSource).not.toContain("projectPlugins");
+    expect(surfaceModelSource).not.toContain("filterFallbackPlugins");
   });
 
   test("Plugins install, update, and uninstall prepare real daemon commands", () => {
@@ -57,6 +124,9 @@ describe("Plugins & Skills V3 action wiring", () => {
     expect(pluginRow).toBeDefined();
     expect(pluginRow).toContain("ownership.manageable");
     expect(pluginRow).toContain("information-circle-outline");
+    expect(pluginRow?.match(/<Pressable/g)).toHaveLength(1);
+    expect(pluginRow).toContain("ItemActionIndicator");
+    expect(pluginRow).not.toContain("ItemIconAction");
     expect(pluginRow).not.toContain("onUpdatePlugin");
     expect(pluginRow).not.toContain("onUninstallPlugin");
     expect(skillRow).toBeDefined();
