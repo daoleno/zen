@@ -72,6 +72,25 @@ func writePiSession(t *testing.T, home, encodedDir, fileName string, lines ...st
 	return path
 }
 
+func writePiOwnedSession(t *testing.T, home, fileName string, lines ...string) string {
+	t.Helper()
+	dir := filepath.Join(home, ".zen", "provider-sessions", "pi")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir Zen-owned Pi session dir: %v", err)
+	}
+	path := filepath.Join(dir, fileName)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write Zen-owned Pi session: %v", err)
+	}
+	return path
+}
+
+// piOwnedAssistantMetadataLine mirrors Pi 0.84.1's installed durable message
+// shape while intentionally carrying no prompt or response content.
+func piOwnedAssistantMetadataLine(id, ts, provider, model, usage string) string {
+	return fmt.Sprintf(`{"type":"message","id":%q,"parentId":null,"timestamp":%q,"message":{"role":"assistant","content":[],"api":"openai-completions","provider":%q,"model":%q,"timestamp":%q,"usage":%s,"stopReason":"stop","rawStopReason":"stop","responseId":"fixture-response"}}`, id, ts, provider, model, ts, usage)
+}
+
 func piModelByName(t *testing.T, models []ModelStat, name string) ModelStat {
 	t.Helper()
 	for _, m := range models {
@@ -97,6 +116,56 @@ func piProjectByName(t *testing.T, projects []ProjectStat, name string) ProjectS
 func piClose(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // ── Acceptance: DeepSeek usage flows into StatsResponse ────
+
+func TestPiZenOwnedDeepSeekUsageFlowsIntoEveryCurrentRange(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Zen binds --session directly to this flat root. Deliberately do not
+	// create ~/.pi/agent/sessions: the owned ledger must be collected even
+	// when Pi's shared per-CWD history does not exist.
+	// A live/partial sibling fails soft and cannot suppress the valid ledger.
+	writePiOwnedSession(t, home, "00000000-0000-4000-8000-000000000002.jsonl",
+		`{"type":"session","version":3`,
+	)
+
+	var resp *StatsResponse
+	for attempt := 0; attempt < 2 && resp == nil; attempt++ {
+		utcDate := time.Now().UTC().Format("2006-01-02")
+		ts := time.Now().UTC().Format(time.RFC3339Nano)
+		writePiOwnedSession(t, home, "00000000-0000-4000-8000-000000000001.jsonl",
+			piHeader("/home/user/workspace/zen", ts),
+			piOwnedAssistantMetadataLine("a1", ts, "opencode-go", "deepseek-v4-flash", piUsageJSON(100, 50, 200, 0, piReasoning(25), 0.0004)),
+			piOwnedAssistantMetadataLine("a2", ts, "opencode-go", "deepseek-v4-flash", piUsageJSON(200, 100, 400, 0, piReasoning(50), 0.0008)),
+		)
+
+		c := NewCollector()
+		c.refresh()
+		c.refresh() // rereading the durable ledgers remains idempotent
+		if time.Now().UTC().Format("2006-01-02") == utcDate {
+			resp = c.Stats()
+		}
+	}
+	if resp == nil {
+		t.Fatal("UTC date changed during both Stats refresh attempts")
+	}
+
+	for _, rangeName := range []string{"day", "week", "all"} {
+		rangeData := resp.Ranges[rangeName]
+		if rangeData == nil {
+			t.Fatalf("missing %q range", rangeName)
+		}
+		model := piModelByName(t, rangeData.Models, "deepseek-v4-flash")
+		if model.TotalTokens != 1050 || model.InputTokens != 300 || model.OutputTokens != 150 ||
+			model.ReasoningTokens != 75 || model.CacheRead != 600 || model.CacheCreate != 0 {
+			t.Fatalf("%s DeepSeek tokens = %+v, want installed owned-session metadata totals", rangeName, model)
+		}
+		if !piClose(model.Cost, 0.0012) || !model.CostKnown || model.Sessions != 1 {
+			t.Fatalf("%s DeepSeek cost/session = %+v, want exact 0.0012 observed cost and one session", rangeName, model)
+		}
+	}
+}
 
 func TestPiDeepSeekUsageFlowsIntoStatsResponse(t *testing.T) {
 	setTestLocalLocation(t, time.UTC)

@@ -9,8 +9,10 @@ import (
 )
 
 // Pi model usage is collected entirely from Pi's durable local session
-// ledger (~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl). Pi
-// records the authoritative per-turn Usage on assistant messages (input,
+// ledgers: Pi's shared per-CWD history
+// (~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl) and Zen's
+// explicitly bound session files (~/.zen/provider-sessions/pi/<uuid>.jsonl).
+// Pi records the authoritative per-turn Usage on assistant messages (input,
 // output, cache-read, cache-write, totalTokens, an optional reasoning
 // subset of output, and the exact observed cost when the provider is
 // priced), plus optional Usage on compaction and branch_summary entries
@@ -106,29 +108,36 @@ func (c *Collector) collectPiStats(home string) map[string]*dateAgg {
 
 	sessionsRoot := filepath.Join(home, ".pi", "agent", "sessions")
 	projectDirs, err := os.ReadDir(sessionsRoot)
-	if err != nil {
-		return byDate
-	}
-
-	for _, projectDir := range projectDirs {
-		if !projectDir.IsDir() {
-			continue
-		}
-		dirPath := filepath.Join(sessionsRoot, projectDir.Name())
-		files, err := os.ReadDir(dirPath)
-		if err != nil {
-			continue
-		}
-		fallbackProject := decodePiProjectDir(projectDir.Name())
-		for _, file := range files {
-			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+	if err == nil {
+		for _, projectDir := range projectDirs {
+			if !projectDir.IsDir() {
 				continue
 			}
-			scanPiSessionFile(filepath.Join(dirPath, file.Name()), fallbackProject, byDate)
+			dirPath := filepath.Join(sessionsRoot, projectDir.Name())
+			scanPiSessionDir(dirPath, decodePiProjectDir(projectDir.Name()), byDate)
 		}
 	}
 
+	// Zen launches Pi with an absolute --session path so each Session has one
+	// stable transcript owner. Those files are deliberately outside Pi's
+	// shared per-CWD history and use the same durable JSONL schema.
+	ownedSessionsRoot := filepath.Join(home, ".zen", "provider-sessions", "pi")
+	scanPiSessionDir(ownedSessionsRoot, "", byDate)
+
 	return byDate
+}
+
+func scanPiSessionDir(dirPath, fallbackProject string, byDate map[string]*dateAgg) {
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		return
+	}
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+			continue
+		}
+		scanPiSessionFile(filepath.Join(dirPath, file.Name()), fallbackProject, byDate)
+	}
 }
 
 // scanPiSessionFile reads one Pi session JSONL ledger. Every distinct entry

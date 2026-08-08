@@ -5,6 +5,7 @@ import {
   mergeStatsPayloads,
   type StatsPayload,
 } from './statsPayloadMerge';
+import { INITIAL_STATS_RANGE } from './statsTabs';
 
 // Clearly synthetic representative OpenCode model rows for the daemon-payload
 // merge contract. Model names cover the OpenCode feature surface; every value
@@ -117,5 +118,41 @@ describe('OpenCode local usage contract (daemon payload to App visibility)', () 
     const payload = wirePayload({ all: rangeWith(OPENCODE_MODEL_FIXTURE) });
     const merged = mergeStatsPayloads([payload, { ...payload }, { ...payload }]);
     expect(merged.ranges.all.models).toHaveLength(OPENCODE_MODEL_FIXTURE.length);
+  });
+});
+
+describe('Pi owned-session usage contract (daemon payload to App visibility)', () => {
+  test('DeepSeek survives the default-week merge within a five-model list', () => {
+    const model = (name, totalTokens) => ({
+      name,
+      totalTokens,
+      totalTokensKnown: true,
+      inputTokens: totalTokens,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheRead: 0,
+      cacheCreate: 0,
+      tokenBreakdownKnown: true,
+      cost: 0,
+      costKnown: true,
+      sessions: 1,
+    });
+    // Fictional values only; the shape mirrors the daemon row derived from
+    // Pi's Zen-owned flat JSONL root without carrying any user content.
+    const piDeepSeek = model('deepseek-v4-flash', 4_000_000);
+    const daemonWeekModels = [
+      model('fixture-model-a', 8_000_000),
+      model('fixture-model-b', 7_000_000),
+      model('fixture-model-c', 6_000_000),
+      model('fixture-model-d', 5_000_000),
+      piDeepSeek,
+    ];
+
+    const merged = mergeStatsPayloads([
+      wirePayload({ week: rangeWith(daemonWeekModels) }),
+    ]);
+    expect(INITIAL_STATS_RANGE).toBe('week');
+    expect(merged.ranges.week.models).toHaveLength(5);
+    expect(merged.ranges.week.models).toContainEqual(piDeepSeek);
   });
 });
