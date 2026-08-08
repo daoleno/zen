@@ -690,6 +690,11 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 // mutates the turn, derives the Work update, and appends or upgrades the
 // outbox event (non-actionable → actionable in-place flip for corrections).
 // A replayed or reordered fact is a no-op; terminal turns are immutable.
+//
+// Terminal Work (done/cancelled) is a terminal scheduler decision: a later
+// fact may advance the turn row and is retained as non-actionable outbox
+// audit, but it never moves Work status/next_action/wait_for and never
+// creates or flips an actionable wake (C.2.9).
 func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool, error) {
 	if s == nil {
 		return watcher.TurnSnapshot{}, false, fmt.Errorf("brain store is not configured")
@@ -794,14 +799,19 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	turn.UpdatedAt = now
 
 	// Derive the Work update (status only on final-grade facts; hints only
-	// adjust next-action text).
+	// adjust next-action text). WorkDone/WorkCancelled are terminal scheduler
+	// decisions: no later fact may move the Work's status, next action, or
+	// wait condition (C.2.9), so hints and derived updates are suppressed for
+	// terminal Work while the turn row keeps the fact as audit.
 	workIndex := workIndex(database.BrainWork, turn.WorkID)
 	var workItem Work
 	workChanged := false
+	terminalWork := false
 	if workIndex >= 0 {
 		workItem = database.BrainWork[workIndex]
+		terminalWork = workItem.Status == WorkDone || workItem.Status == WorkCancelled
 	}
-	if mutation.hint != nil && workIndex >= 0 {
+	if !terminalWork && mutation.hint != nil && workIndex >= 0 {
 		note := "Delegated Session reported " +
 			strings.TrimPrefix(mutation.hint.Kind, "session.") +
 			"; awaiting provider confirmation"
@@ -812,7 +822,7 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 			workChanged = true
 		}
 	}
-	if mutation.workUpdate.Status != nil || mutation.workUpdate.NextAction != nil {
+	if !terminalWork && (mutation.workUpdate.Status != nil || mutation.workUpdate.NextAction != nil) {
 		update := mutation.workUpdate
 		if workIndex >= 0 && workUpdateChanges(workItem, update) {
 			applyWorkUpdate(&workItem, update)
@@ -823,11 +833,14 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	}
 
 	// Outbox event: exactly one row per (work, dedupe key); corrections flip
-	// the existing non-actionable row actionable in place.
+	// the existing non-actionable row actionable in place. Terminal Work keeps
+	// the late row as non-actionable audit only: it is never claimed and never
+	// flips, so no second wake is possible (C.2.9).
 	eventCreated := false
 	eventID := ""
 	workID := turn.WorkID
 	if mutation.eventKind != "" {
+		actionable := mutation.eventActionable && !terminalWork
 		dedupeKey := sessionTurnEventDedupeKey(turn.SessionID, turn.TurnID, mutation.eventKind)
 		eventIndex := -1
 		for index := range database.BrainWorkEvents {
@@ -846,7 +859,7 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 				PayloadRef: "session:" + turn.SessionID,
 				SourceName: turn.SessionID,
 				Summary:    mutation.eventSummary,
-				Actionable: mutation.eventActionable,
+				Actionable: actionable,
 				CreatedAt:  now,
 			}
 			if err := validateWorkEvent(event); err != nil {
@@ -855,7 +868,7 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 			eventID = event.ID
 			eventCreated = true
-		} else if mutation.eventActionable &&
+		} else if actionable &&
 			!database.BrainWorkEvents[eventIndex].Actionable {
 			// In-place correction flip: the same row becomes actionable; the
 			// row count never changes, so no second wake is possible.
