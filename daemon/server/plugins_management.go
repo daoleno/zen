@@ -109,7 +109,7 @@ func (s *Server) handlePluginCommand(conn *websocket.Conn, raw clientMessage) {
 		Scope:     raw.Scope,
 	}
 	go func() {
-		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{}, request)
+		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{}, request, s.pluginCatalogCLI)
 		if err != nil {
 			s.sendPluginsError(conn, "plugin_command_error", raw, "command_rejected", err.Error())
 			return

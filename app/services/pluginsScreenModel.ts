@@ -5,7 +5,6 @@ import type {
   PluginInventory,
   PluginMutationOperation,
 } from "./pluginsManagement";
-import { pluginHostLabel } from "./pluginsManagement";
 
 /**
  * Plugins surface model.
@@ -44,6 +43,8 @@ export const PLUGIN_INSTALL_UNSUPPORTED_REASON =
   "The plugin catalog is unavailable on this server.";
 export const PLUGIN_HOST_UNSUPPORTED_REASON =
   "This plugin's hosting client is not manageable from Zen.";
+export const PLUGIN_CACHE_READONLY_REASON =
+  "This plugin is only visible through its cache and cannot be managed.";
 
 /** Progressive disclosure keeps the plugin list calm while bounded. */
 export const MAX_EXPANDED_PLUGINS = 24;
@@ -146,10 +147,6 @@ export function projectPlugins(
   return plugins.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function cacheFallbackHostLabel(host: string): string {
-  return host === "claude-code" ? "Claude Code" : pluginHostLabel(host as never) || host;
-}
-
 export function createPluginExpansionState(): PluginExpansionState {
   return { expanded: [] };
 }
@@ -207,19 +204,28 @@ export function evaluatePluginMutation(
     case "update":
     case "uninstall": {
       const row = intent.row;
-      if (!row.mutable) {
+      // The owning client's catalog is the only lifecycle authority: a cache
+      // path must never authorize update/uninstall, and codex-hosted rows
+      // have no stable lifecycle adapter in this release.
+      if (row.source !== "catalog") {
         return {
           supported: false,
           reason:
             row.host === "codex"
               ? PLUGIN_HOST_UNSUPPORTED_REASON
-              : "This plugin cannot be managed from Zen.",
+              : PLUGIN_CACHE_READONLY_REASON,
         };
       }
       if (row.host !== "claude") {
         return {
           supported: false,
           reason: PLUGIN_HOST_UNSUPPORTED_REASON,
+        };
+      }
+      if (!row.mutable) {
+        return {
+          supported: false,
+          reason: "This plugin cannot be managed from Zen.",
         };
       }
       return {

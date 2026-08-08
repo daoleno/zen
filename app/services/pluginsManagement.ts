@@ -1,5 +1,3 @@
-import type { SkillAgent } from "./skillsManagement";
-
 /**
  * Plugins wire boundary. Plugin lifecycle is owned by the hosting client (the
  * Claude Code plugin manager in this release); the daemon relays the owning
@@ -401,10 +399,6 @@ function isExactOfficialPluginCommand(
 
 export function pluginHostLabel(host: PluginHost): string {
   return host === "claude" ? "Claude Code" : "Codex";
-}
-
-export function pluginHostAgent(host: PluginHost): SkillAgent {
-  return host === "claude" ? "claude-code" : "codex";
 }
 
 function record(value: unknown): Record<string, unknown> {

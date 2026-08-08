@@ -28,7 +28,7 @@ const (
 	maxPluginHostedSkills   = 128
 	maxPluginDescription    = 400
 	maxPluginIDLength       = 141
-	defaultPluginCLITimeout = 20 * time.Second
+	defaultPluginCLITimeout = 6 * time.Second
 )
 
 type PluginHost string
@@ -291,8 +291,7 @@ func DiscoverPluginInventory(options InventoryOptions, cli PluginCLI) (PluginInv
 	}
 
 	catalog := readClaudeCatalog(normalized.Context, cli)
-	installed, warnings := walkPluginCaches(normalized)
-	enrichClaudeRows(installed, catalog)
+	installed, warnings := resolvePluginLifecycle(normalized, catalog)
 
 	now := time.Now
 	if normalized.Now != nil {
@@ -335,30 +334,77 @@ func readClaudeCatalog(ctx context.Context, cli PluginCLI) PluginCatalogState {
 	return state
 }
 
-// enrichClaudeRows applies the owning client's installed truth (version,
-// enabled) to Claude cache rows. Cache dirs are disk truth for existence;
-// the catalog is authoritative for lifecycle state.
-func enrichClaudeRows(installed []InstalledPluginRow, catalog PluginCatalogState) {
-	if catalog.Status != "ready" {
-		return
-	}
-	byID := make(map[string]CatalogInstalledPlugin, len(catalog.Installed))
+// resolvePluginLifecycle builds the Installed view from cache rows plus the
+// owning client's catalog truth. The catalog is the only lifecycle authority:
+// a Claude row is manageable (source "catalog", mutable) exactly when the
+// ready catalog lists it as installed. Cache rows enrich names, versions, and
+// hosted Skills only; without catalog membership they are explicitly
+// read-only cache rows. Catalog-installed entries appear even when no cache
+// directory exists.
+func resolvePluginLifecycle(options InventoryOptions, catalog PluginCatalogState) ([]InstalledPluginRow, []string) {
+	rows, warnings := walkPluginCaches(options)
+	catalogInstalled := make(map[string]CatalogInstalledPlugin, len(catalog.Installed))
 	for _, entry := range catalog.Installed {
-		byID[entry.ID] = entry
+		catalogInstalled[entry.ID] = entry
 	}
-	for index := range installed {
-		row := &installed[index]
-		if row.Host != PluginHostClaude {
-			continue
-		}
-		if entry, ok := byID[row.ID]; ok {
-			row.Enabled = entry.Enabled
-			if entry.Version != "" && entry.Version != "unknown" {
-				row.Version = entry.Version
+	catalogReady := catalog.Status == "ready"
+
+	byID := make(map[string]*InstalledPluginRow, len(rows)+len(catalogInstalled))
+	for index := range rows {
+		row := &rows[index]
+		if row.Host == PluginHostClaude && catalogReady {
+			if entry, ok := catalogInstalled[row.ID]; ok {
+				row.Source = "catalog"
+				row.Mutable = true
+				row.Enabled = entry.Enabled
+				if entry.Version != "" && entry.Version != "unknown" {
+					row.Version = entry.Version
+				}
 			}
-			row.Source = "catalog"
+		}
+		byID[row.ID] = row
+	}
+
+	// Catalog-installed membership proves installed even without a cache dir.
+	if catalogReady {
+		for _, entry := range catalog.Installed {
+			if _, exists := byID[entry.ID]; exists {
+				continue
+			}
+			name, marketplace, ok := splitPluginID(entry.ID)
+			if !ok {
+				continue
+			}
+			byID[entry.ID] = &InstalledPluginRow{
+				ID:          entry.ID,
+				Name:        name,
+				Marketplace: marketplace,
+				Version:     entry.Version,
+				Scope:       "user",
+				Enabled:     entry.Enabled,
+				Host:        PluginHostClaude,
+				Mutable:     true,
+				Source:      "catalog",
+				SkillCount:  0,
+				Skills:      []PluginHostedSkill{},
+			}
 		}
 	}
+
+	final := make([]InstalledPluginRow, 0, len(byID))
+	for _, row := range byID {
+		final = append(final, *row)
+	}
+	sort.Slice(final, func(i, j int) bool { return final[i].ID < final[j].ID })
+	return final, warnings
+}
+
+func splitPluginID(id string) (name, marketplace string, ok bool) {
+	parts := strings.Split(id, "@")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // walkPluginCaches lists installed plugins from the client plugin caches with
@@ -423,7 +469,7 @@ func walkPluginCaches(options InventoryOptions) ([]InstalledPluginRow, []string)
 						Version:     version,
 						Scope:       "user",
 						Host:        host,
-						Mutable:     host == PluginHostClaude,
+						Mutable:     false,
 						Source:      "cache",
 						Skills:      []PluginHostedSkill{},
 					}
@@ -508,24 +554,44 @@ func collectHostedSkills(row *InstalledPluginRow, versionRoot string) {
 	}
 }
 
-// BuildPluginMutationCommand validates a plugin lifecycle request against
-// authoritative state and returns the exact reviewed command for the owning
-// client's plugin manager. No command is ever executed by the daemon and no
-// shell interpolation exists: every token is a validated literal.
-func BuildPluginMutationCommand(options InventoryOptions, request PluginMutationRequest) (PluginMutationCommand, error) {
+// BuildPluginMutationCommand re-reads the owning client's bounded catalog at
+// command preparation and validates the request against it. The catalog is
+// the only lifecycle authority: install requires an exact ready-catalog
+// available/installable identity; update/uninstall require exact
+// catalog-installed membership. Unavailable, absent, malformed, timed-out,
+// or unsupported states are rejected. No command is ever executed by the
+// daemon and no shell interpolation exists: every token is a validated
+// literal.
+func BuildPluginMutationCommand(options InventoryOptions, request PluginMutationRequest, cli PluginCLI) (PluginMutationCommand, error) {
 	if err := ValidatePluginScope(request.Scope); err != nil {
 		return PluginMutationCommand{}, err
 	}
 	if err := ValidatePluginID(request.PluginID); err != nil {
 		return PluginMutationCommand{}, err
 	}
+	if options.Context == nil {
+		options.Context = context.Background()
+	}
+	catalog := readClaudeCatalog(options.Context, cli)
+	if catalog.Status != "ready" {
+		return PluginMutationCommand{}, fmt.Errorf("the plugin catalog is unavailable: %s", catalog.Message)
+	}
 
 	switch request.Operation {
 	case PluginOperationInstall:
-		// Install targets the owning client's catalog. The App only renders
-		// install for ready-catalog entries; the daemon re-validates the
-		// identity literal and scope. The client plugin manager resolves the
-		// identity against its own marketplaces at execution time.
+		var entry *AvailablePlugin
+		for index := range catalog.Available {
+			if catalog.Available[index].PluginID == request.PluginID {
+				entry = &catalog.Available[index]
+				break
+			}
+		}
+		if entry == nil {
+			return PluginMutationCommand{}, errors.New("the plugin identity is not present in the owning client's catalog")
+		}
+		if !entry.Installable {
+			return PluginMutationCommand{}, errors.New("the plugin is already installed on this server")
+		}
 		return PluginMutationCommand{
 			Operation: request.Operation,
 			Command:   "claude plugin install " + request.PluginID + " --scope user",
@@ -534,26 +600,15 @@ func BuildPluginMutationCommand(options InventoryOptions, request PluginMutation
 			Host:      PluginHostClaude,
 		}, nil
 	case PluginOperationUpdate, PluginOperationUninstall:
-		normalized, err := normalizeInventoryOptions(options)
-		if err != nil {
-			return PluginMutationCommand{}, err
-		}
-		rows, _ := walkPluginCaches(normalized)
-		var installed *InstalledPluginRow
-		for index := range rows {
-			if rows[index].ID == request.PluginID {
-				installed = &rows[index]
+		var installed *CatalogInstalledPlugin
+		for index := range catalog.Installed {
+			if catalog.Installed[index].ID == request.PluginID {
+				installed = &catalog.Installed[index]
 				break
 			}
 		}
 		if installed == nil {
-			return PluginMutationCommand{}, errors.New("installed plugin is not present on this server")
-		}
-		if installed.Host != PluginHostClaude {
-			return PluginMutationCommand{}, errors.New("this plugin is hosted by an unsupported client")
-		}
-		if !installed.Mutable {
-			return PluginMutationCommand{}, errors.New("this plugin cannot be managed by Zen")
+			return PluginMutationCommand{}, errors.New("the plugin is not present in the owning client's installed catalog")
 		}
 		verb := "update"
 		flags := ""

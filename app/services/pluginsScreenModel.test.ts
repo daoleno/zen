@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAX_EXPANDED_PLUGINS,
+  PLUGIN_CACHE_READONLY_REASON,
   PLUGIN_HOST_UNSUPPORTED_REASON,
   createPluginExpansionState,
   evaluatePluginMutation,
@@ -327,6 +328,22 @@ describe("Plugin mutation gate", () => {
       expect(evaluatePluginMutation({ kind, row: codex })).toEqual({
         supported: false,
         reason: PLUGIN_HOST_UNSUPPORTED_REASON,
+      });
+    }
+  });
+
+  test("cache-derived rows are read-only even when a cache marks them mutable", () => {
+    // The daemon never emits a mutable cache row; the gate must still fail
+    // closed so a cache path can never authorize lifecycle actions.
+    const cacheRow = {
+      ...installedRow("plug-a@market-a"),
+      source: "cache" as const,
+      mutable: true,
+    };
+    for (const kind of ["update", "uninstall"] as const) {
+      expect(evaluatePluginMutation({ kind, row: cacheRow })).toEqual({
+        supported: false,
+        reason: PLUGIN_CACHE_READONLY_REASON,
       });
     }
   });

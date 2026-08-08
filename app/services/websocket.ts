@@ -49,6 +49,7 @@ import {
   type PluginMutationCommand,
   type PluginMutationOperation,
 } from "./pluginsManagement";
+import { PLUGINS_INVENTORY_TIMEOUT_MS, PLUGIN_COMMAND_TIMEOUT_MS } from "./pluginsDeadlines";
 import {
   dispatchStructuredCommand,
   sendWebSocketMessageNow,
@@ -2317,7 +2318,7 @@ export class MultiServerWebSocketClient {
         const timer = setTimeout(() => {
           cleanup();
           reject(daemonRequestError("Timed out while loading Plugins.", "timeout"));
-        }, 10000);
+        }, PLUGINS_INVENTORY_TIMEOUT_MS);
         this.on("plugins_inventory", handleInventory);
         this.on("plugins_inventory_error", handleError);
         this.on("error", handleGenericError);
@@ -2386,7 +2387,7 @@ export class MultiServerWebSocketClient {
       const timer = setTimeout(() => {
         cleanup();
         reject(daemonRequestError("Timed out while validating the plugin command.", "timeout"));
-      }, 15000);
+      }, PLUGIN_COMMAND_TIMEOUT_MS);
       this.on("plugin_command", handleCommand);
       this.on("plugin_command_error", handleError);
       this.sendRequestNow(

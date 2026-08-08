@@ -90,7 +90,7 @@ describe("navigation and Skills copy density", () => {
     // whole scopes, not single Skills).
     expect(skillsSource).toContain('label="Update global"');
     expect(skillsSource).toContain('label="Update project"');
-    expect(skillsSource).toContain('label="Update"');
+    expect(skillsSource).toContain('{ text: "Update", onPress: onUpdate }');
     const installedRowBlock = skillsSource.match(
       /function InstalledSkillRow\([\s\S]*?function DiscoverSkillsList\(/,
     )?.[0];
@@ -105,5 +105,32 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain("catalogState.error");
     expect(skillsSource).toContain("searchState.error");
     expect(skillsSource).toContain("installedSkillCaption");
+  });
+
+  test("the Agent selector never compresses official labels", () => {
+    const selectorBlock = skillsSource.match(
+      /function AgentSelector\([\s\S]*?function ModeSwitch\(/,
+    )?.[0];
+    expect(selectorBlock).toBeDefined();
+    expect(selectorBlock).toContain("ScrollView");
+    expect(selectorBlock).toContain("showsHorizontalScrollIndicator={false}");
+    expect(selectorBlock).not.toContain("numberOfLines={1}");
+    expect(selectorBlock).not.toContain("flex: 1,");
+  });
+
+  test("one Plugin row gets one contextual action control only", () => {
+    const rowBlock = skillsSource.match(
+      /function InstalledPluginRow\([\s\S]*?function ExplorePluginsList\(/,
+    )?.[0];
+    expect(rowBlock).toBeDefined();
+    expect(rowBlock).toContain("ellipsis-horizontal");
+    expect(rowBlock).not.toContain('label="Update"');
+    expect(rowBlock).not.toContain("trash-outline");
+  });
+
+  test("Plugin badges state catalog proof and cache-only rows explicitly", () => {
+    expect(skillsSource).toContain('label={pluginStatusLabel(row)}');
+    expect(skillsSource).toContain('"Read-only"');
+    expect(skillsSource).toContain('row.source === "catalog"');
   });
 });

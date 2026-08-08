@@ -1,9 +1,11 @@
 import React from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -333,10 +335,12 @@ function AgentSelector({
 }) {
   const colors = useAppColors();
   return (
-    <View
+    <ScrollView
       accessibilityRole="tablist"
       accessibilityLabel="Managed Agent"
-      style={styles.agentRow}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.agentRow}
     >
       {MANAGED_SKILL_AGENTS.map((agent) => {
         const selected = agent === selectedAgent;
@@ -367,7 +371,6 @@ function AgentSelector({
             />
             <View style={styles.agentCopy}>
               <Text
-                numberOfLines={1}
                 maxFontSizeMultiplier={1.35}
                 style={[
                   styles.agentName,
@@ -398,7 +401,7 @@ function AgentSelector({
           </Pressable>
         );
       })}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -639,10 +642,7 @@ function InstalledPluginsList({
             />
           ) : null}
           {hasData && rows.length === 0 ? (
-            <RequestState
-              title="No plugins installed"
-              detail="Explore the plugin catalog to install one."
-            />
+            <RequestState title="No plugins installed" />
           ) : null}
         </View>
       }
@@ -676,7 +676,18 @@ function InstalledPluginRow({
   onUninstall(): void;
 }) {
   const colors = useAppColors();
-  const manageable = row.mutable && row.host === "claude";
+  const manageable = row.mutable && row.host === "claude" && row.source === "catalog";
+  const openActions = () => {
+    Alert.alert(row.name, undefined, [
+      { text: "Update", onPress: onUpdate },
+      {
+        text: "Uninstall",
+        style: "destructive",
+        onPress: onUninstall,
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  };
   return (
     <View style={styles.pluginCard}>
       <Pressable
@@ -719,26 +730,30 @@ function InstalledPluginRow({
             </Text>
           </View>
         </View>
-        <StatusBadge
-          label={manageable ? "Installed" : pluginUnmanagedLabel(row)}
-          tone={manageable ? "installed" : "unmanaged"}
-        />
+        <StatusBadge label={pluginStatusLabel(row)} tone={pluginStatusTone(row)} />
         {manageable ? (
-          <SmallAction
-            label="Update"
-            accessibilityLabel={`Update ${row.name}`}
-            busy={preparingMutation === `plugin:update:${row.id}`}
-            onPress={onUpdate}
-          />
-        ) : null}
-        {manageable ? (
-          <IconAction
-            icon="trash-outline"
-            accessibilityLabel={`Uninstall ${row.name}`}
-            destructive
-            busy={preparingMutation === `plugin:uninstall:${row.id}`}
-            onPress={onUninstall}
-          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${row.name} actions`}
+            accessibilityState={{ busy: preparingMutation !== "" }}
+            disabled={preparingMutation !== ""}
+            hitSlop={8}
+            onPress={openActions}
+            style={({ pressed }) => [
+              styles.iconAction,
+              {
+                backgroundColor: pressed
+                  ? colors.surfacePressed
+                  : colors.surfaceSubtle,
+              },
+            ]}
+          >
+            <Ionicons
+              name="ellipsis-horizontal"
+              size={18}
+              color={colors.textSecondary}
+            />
+          </Pressable>
         ) : null}
         <Ionicons
           name="chevron-down"
@@ -782,6 +797,19 @@ function InstalledPluginRow({
       ) : null}
     </View>
   );
+}
+
+function pluginStatusLabel(row: InstalledPluginRow): string {
+  if (row.host === "codex") {
+    return "Read-only";
+  }
+  return row.source === "catalog" ? "Installed" : "Read-only";
+}
+
+function pluginStatusTone(row: InstalledPluginRow): StatusTone {
+  return row.source === "catalog" && row.host === "claude"
+    ? "installed"
+    : "unmanaged";
 }
 
 function ExplorePluginsList({
@@ -978,7 +1006,7 @@ function FallbackPluginRow({
             {plugin.skillCount} {plugin.skillCount === 1 ? "Skill" : "Skills"}
           </Text>
         </View>
-        <StatusBadge label="Installed" tone="installed" />
+        <StatusBadge label="Read-only" tone="unmanaged" />
         <Ionicons
           name="chevron-down"
           size={16}
@@ -1499,13 +1527,6 @@ function installedSkillBadge(
   }
 }
 
-function pluginUnmanagedLabel(row: InstalledPluginRow): string {
-  if (row.host === "codex") {
-    return "Codex managed";
-  }
-  return "Unmanaged";
-}
-
 /**
  * One compact judgment-critical caption per row: remove impact when a removal
  * affects other Agents, otherwise the installed source provenance.
@@ -1612,48 +1633,6 @@ function SmallAction({
   );
 }
 
-function IconAction({
-  icon,
-  accessibilityLabel,
-  busy,
-  destructive,
-  onPress,
-}: {
-  icon: "trash-outline";
-  accessibilityLabel: string;
-  busy?: boolean;
-  destructive?: boolean;
-  onPress(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <AnimatedPressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={[
-        styles.iconAction,
-        {
-          backgroundColor: destructive
-            ? colors.dangerSoft
-            : colors.surfaceSubtle,
-        },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator size="small" color={colors.accent} />
-      ) : (
-        <Ionicons
-          name={icon}
-          size={18}
-          color={destructive ? colors.dangerText : colors.textSecondary}
-        />
-      )}
-    </AnimatedPressable>
-  );
-}
 
 function ToolbarAction({
   label,
@@ -1777,14 +1756,15 @@ const styles = StyleSheet.create({
   agentRow: {
     flexDirection: "row",
     gap: 8,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
   },
   agentChip: {
-    flex: 1,
-    minWidth: 0,
+    minWidth: 108,
     minHeight: 56,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: Radii.sm,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
