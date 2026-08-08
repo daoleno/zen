@@ -2115,3 +2115,83 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 		t.Fatalf("Calendar result turns = %#v", fw.sentCalls)
 	}
 }
+
+// TestBackfillTurnLeaseDeadlinesMintsFreshUpgradeGrace covers the upgrade
+// backfill P1: legacy ledger rows (zero LeaseDeadline) get one fresh grace
+// from the upgrade/load time, never from their old AcceptedAt, so a live
+// pre-upgrade turn cannot load already-expired and emit an immediate false
+// session.stale. Already-backfilled rows and rows without AcceptedAt are
+// untouched; the pass is idempotent.
+func TestBackfillTurnLeaseDeadlinesMintsFreshUpgradeGrace(t *testing.T) {
+	upgradeAt := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	keptDeadline := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	database := orchestrationDatabase{BrainTurns: []TurnRecord{
+		{SessionID: "s1", TurnID: "t1", AcceptedAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)},
+		{SessionID: "s2", TurnID: "t2", AcceptedAt: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC), LeaseDeadline: keptDeadline},
+		{SessionID: "s3", TurnID: "t3"},
+	}}
+	if !backfillTurnLeaseDeadlines(&database, upgradeAt) {
+		t.Fatal("legacy row was not backfilled")
+	}
+	if got := database.BrainTurns[0].LeaseDeadline; !got.Equal(upgradeAt.Add(turnLeaseGrace)) {
+		t.Fatalf("backfilled deadline = %v, want upgradeAt+grace %v", got, upgradeAt.Add(turnLeaseGrace))
+	}
+	if got := database.BrainTurns[1].LeaseDeadline; !got.Equal(keptDeadline) {
+		t.Fatalf("existing deadline was rewritten to %v", got)
+	}
+	if !database.BrainTurns[2].LeaseDeadline.IsZero() {
+		t.Fatal("row without AcceptedAt was backfilled")
+	}
+	if backfillTurnLeaseDeadlines(&database, upgradeAt.Add(time.Hour)) {
+		t.Fatal("second backfill pass reported changes")
+	}
+}
+
+// TestLegacyUnscopedLifecycleRowsNeverSchedulerEligible covers upgrade
+// safety: actionable delegated lifecycle rows persisted before the canonical
+// TurnID gate (occurrence-counted or bare-session dedupe keys) remain durable
+// audit rows but are never scheduler-eligible; only the reducer's turn-scoped
+// rows can wake Brain, and non-lifecycle rows keep their eligibility.
+func TestLegacyUnscopedLifecycleRowsNeverSchedulerEligible(t *testing.T) {
+	base := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	database := orchestrationDatabase{
+		BrainWork: []Work{{ID: "work-1", Status: WorkWaiting}},
+	}
+	legacy := WorkEvent{
+		WorkID:     "work-1",
+		Kind:       "session.done",
+		DedupeKey:  "session:agent-1:session.done:1",
+		Actionable: true,
+		CreatedAt:  base,
+	}
+	if workEventSchedulerEligible(database, legacy) {
+		t.Fatal("legacy unscoped lifecycle row became scheduler-eligible")
+	}
+	scoped := legacy
+	scoped.DedupeKey = "session:agent-1:turn:turn-1:session.done"
+	if !workEventSchedulerEligible(database, scoped) {
+		t.Fatal("turn-scoped lifecycle row is not scheduler-eligible")
+	}
+	// The canonical ledger shape embeds the Session ID inside the TurnID
+	// (turnID = sessionID+":turn:N"); the key still contains exactly one
+	// scope marker and must stay eligible.
+	embedded := legacy
+	embedded.DedupeKey = "session:brain-agent-worker:@2:turn:brain-agent-worker:@2:turn:1:session.stale"
+	if !workEventSchedulerEligible(database, embedded) {
+		t.Fatal("embedded-turnID lifecycle row is not scheduler-eligible")
+	}
+	// A user-authorized replay of a held lifecycle delivery is the one
+	// explicit second wake and stays eligible despite its non-turn-scoped key.
+	replay := legacy
+	replay.DedupeKey = "delivery:event-1:replay:nonce"
+	replay.ReplayOf = "event-1"
+	if !workEventSchedulerEligible(database, replay) {
+		t.Fatal("authorized replay lost scheduler eligibility")
+	}
+	plain := legacy
+	plain.Kind = "provider.changed"
+	plain.DedupeKey = "provider:agent-1:changed"
+	if !workEventSchedulerEligible(database, plain) {
+		t.Fatal("non-lifecycle row lost scheduler eligibility")
+	}
+}

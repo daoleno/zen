@@ -104,6 +104,24 @@ func isSetupUserError(err error) bool {
 		errors.Is(err, setup.ErrIncomplete)
 }
 
+// daemonTmuxPaths returns the daemon-namespaced tmux socket and scratch
+// directory for a daemon identity. The socket path must stay well under
+// sockaddr_un (~108 bytes), so only a short digest of the durable daemon
+// identity namespaces it. An empty identity fails closed: a socket without a
+// unique daemon namespace could collide with another daemon's server and
+// mix ownership.
+func daemonTmuxPaths(home, daemonID string) (socketPath, scratchDir string, err error) {
+	daemonID = strings.TrimSpace(daemonID)
+	if daemonID == "" {
+		return "", "", fmt.Errorf("empty daemon identity")
+	}
+	if len(daemonID) > 24 {
+		daemonID = daemonID[:24]
+	}
+	return filepath.Join(home, ".zen", "run", "tmux", "zen-"+daemonID+".sock"),
+		filepath.Join(home, ".zen", "run", "tmux-scratch", daemonID), nil
+}
+
 func runDaemon(args []string, stderr io.Writer) error {
 	cfg, err := parseDaemonConfig(args, stderr)
 	if err != nil {
@@ -133,22 +151,25 @@ func runDaemon(args []string, stderr io.Writer) error {
 	w.ConfigureDelegatedResources(authManager.DaemonID())
 	// Daemon tmux isolation (Slice 3): Zen-owned Brain and delegated Sessions
 	// live on one daemon-namespaced tmux server, never the user's default
-	// server. The socket is stable across daemon restarts so sessions
-	// survive; the host scratch is the TMUX_TMPDIR for hidden host panes.
-	if home, homeErr := os.UserHomeDir(); homeErr == nil {
-		// The socket path must stay well under sockaddr_un (~108 bytes), so
-		// only a short digest of the durable daemon identity namespaces it.
-		daemonID := strings.TrimSpace(authManager.DaemonID())
-		if len(daemonID) > 24 {
-			daemonID = daemonID[:24]
-		}
-		daemonSocketPath := filepath.Join(home, ".zen", "run", "tmux", "zen-"+daemonID+".sock")
-		daemonScratchDir := filepath.Join(home, ".zen", "run", "tmux-scratch", daemonID)
-		if mkdirErr := os.MkdirAll(filepath.Dir(daemonSocketPath), 0o700); mkdirErr == nil {
-			_ = os.MkdirAll(daemonScratchDir, 0o700)
-			w.SetDaemonSocket(daemonSocketPath, daemonScratchDir)
-		}
+	// server. This setup fails closed: an unresolvable home, an empty daemon
+	// identity, or an uncreatable directory aborts startup instead of
+	// silently routing Zen-owned Sessions to the user's default server,
+	// which would reopen the confirmed cross-session blast radius.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home for daemon tmux isolation: %w", err)
 	}
+	daemonSocketPath, daemonScratchDir, err := daemonTmuxPaths(home, authManager.DaemonID())
+	if err != nil {
+		return fmt.Errorf("daemon tmux isolation: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(daemonSocketPath), 0o700); err != nil {
+		return fmt.Errorf("create daemon tmux socket directory: %w", err)
+	}
+	if err := os.MkdirAll(daemonScratchDir, 0o700); err != nil {
+		return fmt.Errorf("create daemon tmux scratch directory: %w", err)
+	}
+	w.SetDaemonSocket(daemonSocketPath, daemonScratchDir)
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	w.SetProviderActivityProbe(newWorkProviderActivityProbe())
 	sc := stats.NewCollector()
@@ -883,6 +904,23 @@ func parseAgentSpawnArgs(args []string, stderr io.Writer) (cliConfig, control.Re
 	return cfg, req, nil
 }
 
+// tmuxClientSocket returns the tmux server socket of the caller's own pane
+// from the TMUX client variable, or "" for the user's default server when
+// the caller is not inside tmux. The first TMUX field is always the server
+// socket path, so pane identity hints resolve the pane's own server —
+// including the daemon-namespaced server for delegated panes — never a
+// different server's pane.
+func tmuxClientSocket() string {
+	value := strings.TrimSpace(os.Getenv("TMUX"))
+	if value == "" {
+		return ""
+	}
+	if socket, _, ok := strings.Cut(value, ","); ok {
+		return strings.TrimSpace(socket)
+	}
+	return value
+}
+
 func currentAgentID() string {
 	if agentID := strings.TrimSpace(os.Getenv("ZEN_AGENT_ID")); agentID != "" {
 		return agentID
@@ -891,7 +929,11 @@ func currentAgentID() string {
 	if pane == "" {
 		return ""
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", pane, "#{session_name}:#{window_id}").Output()
+	args := []string{"display-message", "-p", "-t", pane, "#{session_name}:#{window_id}"}
+	if socket := tmuxClientSocket(); socket != "" {
+		args = append([]string{"-S", socket}, args...)
+	}
+	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return ""
 	}

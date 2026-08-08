@@ -109,7 +109,7 @@ func TestProbeSessionResolvesZenOwnedServerFirst(t *testing.T) {
 	// The recorded socket wins once the target is inventoried: a target
 	// tagged on the daemon socket is never probed on the user server.
 	w.mu.Lock()
-	w.targetSockets["brain-host"] = daemonSocket
+	w.targetSockets["brain-host"] = targetSocket{known: true, socket: daemonSocket}
 	w.mu.Unlock()
 	if presence, err := w.ProbeSession("brain-host"); err != nil || presence != SessionPresencePresent {
 		t.Fatalf("recorded-socket probe = %v err=%v, want present", presence, err)
@@ -137,7 +137,7 @@ func TestDelegatedSessionOnDaemonServerSurvivesUserDefaultServerKill(t *testing.
 	w := New(time.Second)
 	w.SetDaemonSocket(daemonSocket, filepath.Join(root, "scratch"))
 	w.mu.Lock()
-	w.targetSockets["delegated"] = daemonSocket
+	w.targetSockets["delegated"] = targetSocket{known: true, socket: daemonSocket}
 	w.mu.Unlock()
 
 	// An unscoped kill-server on the user's default server targets the

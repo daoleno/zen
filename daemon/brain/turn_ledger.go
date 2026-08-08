@@ -363,13 +363,15 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		// Globally final and immutable: nothing can mutate a terminal turn.
 		return mutation, nil
 	case watcher.TurnUnknown:
-		// Unknown is final for scheduling until a later turn-bound Provider
-		// terminal upgrades it (C.2.4). Only a bound Provider done/failed
-		// fact may move canonical status; every other fact — running,
-		// attention, control, liveness, pane — is ignored.
+		// Unknown is final for scheduling until a later authoritative Provider
+		// terminal upgrades it (C.2.4). A terminal may use the recorded tuple
+		// or ActivityID, OR it may safely adopt a previously unbound terminal
+		// whose non-empty tuple/ActivityID and StartedAt prove it belongs to
+		// this turn's admission window. Running, attention, control, liveness,
+		// pane, stale, blind and replay-only facts remain ignored.
 		if fact.Class != watcher.EvidenceProvider ||
 			(fact.Kind != "done" && fact.Kind != "failed") ||
-			!providerFactBinds(turn, fact) {
+			(!providerFactBinds(turn, fact) && !providerUnknownAdopts(turn, fact)) {
 			return mutation, nil
 		}
 	}
@@ -386,7 +388,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	// no recorded tuple adopts the provider's newest observation that started
 	// inside its admission window (C.6 poll-time adoption).
 	binding := providerFactBinds(turn, fact)
-	adopts := !binding && providerFactAdopts(turn, fact)
+	adopts := !binding && (providerFactAdopts(turn, fact) || providerUnknownAdopts(turn, fact))
 
 	applyEvent := func(kind string, actionable bool, eventSummary string) {
 		mutation.eventKind = kind
@@ -763,6 +765,25 @@ func providerFactAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 	return !fact.Admission.Empty() || strings.TrimSpace(fact.ActivityID) != ""
 }
 
+// providerUnknownAdopts is the one-way Unknown recovery gate. Evidence loss
+// may occur before a receipt/admission tuple or ActivityID is recorded. A
+// later Provider terminal can still resolve the turn, but only when it carries
+// a non-empty tuple or ActivityID and its StartedAt is within this turn's
+// admission window. Running, attention, stale, liveness, blind and replay
+// facts cannot adopt Unknown.
+func providerUnknownAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
+	if fact.Class != watcher.EvidenceProvider ||
+		(fact.Kind != "done" && fact.Kind != "failed") ||
+		turn.Status != watcher.TurnUnknown ||
+		!turn.Admission.Empty() || strings.TrimSpace(turn.ActivityID) != "" {
+		return false
+	}
+	if fact.StartedAt.IsZero() || fact.StartedAt.Before(turn.AcceptedAt) {
+		return false
+	}
+	return !fact.Admission.Empty() || strings.TrimSpace(fact.ActivityID) != ""
+}
+
 func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) WorkUpdate {
 	running := WorkRunning
 	needsInput := WorkNeedsInput
@@ -842,10 +863,11 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		// different turn.
 		return watcher.TurnSnapshot{}, false, nil
 	}
-	if fact.Class == watcher.EvidenceControl && fact.Kind == "stale" {
-		// session.stale is a property of the CURRENT turn's own lease: a stale
-		// fact for any older turn record is unrepresentable, so a new turn
-		// can never be woken stale by its predecessor's expired lease.
+	if fact.Class == watcher.EvidenceControl {
+		// All Control facts come from the current Session progress channel.
+		// The watcher may hold a two-second projection cache across Session
+		// reuse; reject any cached fact that targets a superseded turn before
+		// it can renew or mutate the old row.
 		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
 			return watcher.TurnSnapshot{}, false, nil
 		}
@@ -1106,10 +1128,10 @@ func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
 		if candidate.AcceptedAt.IsZero() {
 			record.AcceptedAt = now
 		}
-		// Per-turn liveness backfill: imported rows get a fresh lease minted
-		// from acceptance so the migration cannot resurrect an old turn's
-		// expired lease as an immediate stale.
-		record.LeaseDeadline = record.AcceptedAt.Add(turnLeaseGrace).UTC()
+		// Per-turn liveness backfill: imported rows get one fresh upgrade
+		// grace from migration time, never from their old AcceptedAt. This
+		// prevents a live pre-upgrade turn from staling on the first tick.
+		record.LeaseDeadline = now.Add(turnLeaseGrace).UTC()
 		if candidate.Hint != nil {
 			record.Hints = []watcher.TurnHint{*candidate.Hint}
 		}

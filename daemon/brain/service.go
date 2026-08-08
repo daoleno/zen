@@ -543,22 +543,13 @@ func isSessionLifecycleKind(kind string) bool {
 // isTurnScopedSessionDedupeKey reports whether a delegated lifecycle dedupe
 // key carries the canonical TurnID shape
 // (session:<sessionID>:turn:<turnID>:<kind>). Occurrence-counting and
-// bare-session keys are unrepresentable for lifecycle events.
+// bare-session keys are unrepresentable for lifecycle events. The turn scope
+// marker alone is the discriminator: legacy unscoped keys never contain it,
+// and the TurnID itself may embed the Session ID (turnID =
+// sessionID+":turn:N"), so no further structure is validated.
 func isTurnScopedSessionDedupeKey(dedupeKey string) bool {
-	dedupeKey = strings.TrimSpace(dedupeKey)
-	if !strings.HasPrefix(dedupeKey, "session:") {
-		return false
-	}
-	rest := strings.TrimPrefix(dedupeKey, "session:")
-	turnMarker := strings.Index(rest, ":turn:")
-	if turnMarker <= 0 {
-		return false
-	}
-	after := rest[turnMarker+len(":turn:"):]
-	return strings.TrimSpace(rest[:turnMarker]) != "" &&
-		strings.TrimSpace(after) != "" &&
-		!strings.HasPrefix(after, ":") &&
-		!strings.Contains(after, ":turn:")
+	return strings.HasPrefix(strings.TrimSpace(dedupeKey), "session:") &&
+		strings.Contains(dedupeKey, ":turn:")
 }
 
 func workUpdateChanges(item Work, update WorkUpdate) bool {

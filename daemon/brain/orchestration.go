@@ -221,7 +221,7 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	// acceptance so an upgrade can never resurrect an old turn's expired
 	// lease as an immediate session.stale. Deterministic and idempotent: a
 	// deadline already set is never rewritten.
-	leaseBackfilled := backfillTurnLeaseDeadlines(&database)
+	leaseBackfilled := backfillTurnLeaseDeadlines(&database, s.nowUTC())
 	if migrated || bound || leaseBackfilled {
 		return s.persistOrchestrationLocked(database)
 	}
@@ -422,22 +422,26 @@ func bindUnresolvedSourceThreadIDs(database *orchestrationDatabase, currentThrea
 	return changed
 }
 
-// backfillTurnLeaseDeadlines mints a fresh per-turn lease for ledger rows
-// persisted before the per-turn lease existed (zero deadline). The deadline is
-// accepted_at + turnLeaseGrace, matching AdmitTurn; rows without a usable
-// acceptance time are left untouched (the reconcile loop simply never stales
-// them from the clock). Deterministic and idempotent.
-func backfillTurnLeaseDeadlines(database *orchestrationDatabase) bool {
+// backfillTurnLeaseDeadlines mints one fresh upgrade grace from the current
+// load/upgrade time for ledger rows persisted before per-turn leases existed.
+// It must not derive from an old AcceptedAt: live pre-upgrade turns would
+// otherwise load already expired and emit an immediate false session.stale.
+// A non-zero deadline is never rewritten, making reload idempotent.
+func backfillTurnLeaseDeadlines(database *orchestrationDatabase, upgradeAt time.Time) bool {
 	if database == nil {
 		return false
 	}
 	changed := false
+	upgradeAt = upgradeAt.UTC()
+	if upgradeAt.IsZero() {
+		upgradeAt = time.Now().UTC()
+	}
 	for index := range database.BrainTurns {
 		turn := &database.BrainTurns[index]
 		if !turn.LeaseDeadline.IsZero() || turn.AcceptedAt.IsZero() {
 			continue
 		}
-		turn.LeaseDeadline = turn.AcceptedAt.Add(turnLeaseGrace).UTC()
+		turn.LeaseDeadline = upgradeAt.Add(turnLeaseGrace).UTC()
 		changed = true
 	}
 	return changed
@@ -1100,6 +1104,16 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 }
 
 func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
+	// Upgrade safety: legacy actionable delegated lifecycle rows may have
+	// unscoped/occurrence-counted keys from before the canonical TurnID gate.
+	// They remain durable audit rows but are never eligible for a scheduler
+	// claim after upgrade; only the reducer's turn-scoped rows can wake Brain.
+	// A user-authorized replay of a held delivery is the one explicit second
+	// wake (C.2.6.3) and stays eligible.
+	if isSessionLifecycleKind(event.Kind) && strings.TrimSpace(event.ReplayOf) == "" &&
+		!isTurnScopedSessionDedupeKey(event.DedupeKey) {
+		return false
+	}
 	if !event.Actionable || event.ConsumedAt != nil || event.DiscardedAt != nil ||
 		event.Resolution != "" {
 		// Resolved rows (mark_delivered, discard, replay) leave the held set

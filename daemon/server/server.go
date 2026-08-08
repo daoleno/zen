@@ -2980,6 +2980,17 @@ func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
 	if ev.Type == "agent_removed" {
 		return
 	}
+	// Push notifications are an actionable lifecycle projection, not a raw
+	// classifier surface. Markerless delegated Sessions (empty TurnID) and
+	// stale event projections from a superseded turn must never notify done,
+	// failed, or blocked. The canonical Turn Ledger is the only owner.
+	if s.brain == nil || strings.TrimSpace(ev.TurnID) == "" {
+		return
+	}
+	current, found, err := s.brain.Turn(ev.AgentID)
+	if err != nil || !found || current.TurnID != strings.TrimSpace(ev.TurnID) {
+		return
+	}
 	if ev.Type != "agent_state_change" || ev.OldState == ev.NewState {
 		return
 	}

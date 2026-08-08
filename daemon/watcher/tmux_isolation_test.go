@@ -18,10 +18,16 @@ func TestWatcherSocketResolution(t *testing.T) {
 	scratch := "/home/user/.zen/run/tmux-scratch/daemon-1"
 	w.SetDaemonSocket(daemonSocket, scratch)
 
-	t.Run("freshly created sessions land on the daemon socket", func(t *testing.T) {
-		w.registerCreatedSession("brain-agent-delegated:@1", "/repo", CreateSessionOptions{
+	t.Run("freshly created sessions land on the socket actually used", func(t *testing.T) {
+		w.registerCreatedSession(daemonSocket, "brain-agent-delegated:@1", "/repo", CreateSessionOptions{
 			Name: "delegated", Delegated: true, ProgressEnv: true,
 		}, time.Now().UTC())
+		w.registerCreatedSession("", "user-join:@5", "/repo", CreateSessionOptions{
+			Name: "user join", ProgressEnv: true,
+		}, time.Now().UTC())
+		if got := w.SocketPathFor("user-join:@5"); got != "" {
+			t.Fatalf("user-server join target socket = %q, want user default", got)
+		}
 		if got := w.SocketPathFor("brain-agent-delegated:@1"); got != daemonSocket {
 			t.Fatalf("delegated target socket = %q, want %q", got, daemonSocket)
 		}

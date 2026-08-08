@@ -527,6 +527,98 @@ func TestTurnBoundProviderTerminalUpgradesUnknown(t *testing.T) {
 	}
 }
 
+// TestTurnUnknownAdoptsAuthoritativeUnboundProviderTerminal covers the
+// one-way Unknown recovery gate: a turn that lost Provider evidence before
+// any admission tuple or ActivityID was recorded can still adopt an
+// authoritative Provider terminal whose non-empty tuple/ActivityID started
+// inside the turn's admission window. A terminal that started before the
+// turn's acceptance, and every non-terminal fact, cannot adopt Unknown.
+func TestTurnUnknownAdoptsAuthoritativeUnboundProviderTerminal(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:       watcher.EvidenceLiveness,
+		Kind:        "uncertain",
+		ProcessDead: true,
+		SourceID:    "liveness\x00process-dead",
+		SettledAt:   acceptedAt.Add(20 * time.Second),
+		At:          acceptedAt.Add(21 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, _, _ := store.Turn(sessionID); snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("liveness = %+v, want Unknown", snapshot)
+	}
+
+	// A terminal whose provider identity started before the turn's
+	// acceptance belongs to a previous turn and cannot adopt Unknown.
+	preWindow := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-0\x001",
+		Admission:  providerAdmission("stream", "msg-0", 1, "sha", acceptedAt.Add(-2*time.Second)),
+		ActivityID: "activity-0",
+		StartedAt:  acceptedAt.Add(-1 * time.Second),
+		SettledAt:  acceptedAt.Add(9 * time.Second),
+		At:         acceptedAt.Add(40 * time.Second),
+	}
+	snapshot, changed, err := store.ApplyTurnFact(preWindow)
+	if err != nil || changed || snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("pre-window terminal adopted Unknown: (%+v, %v, %v)", snapshot, changed, err)
+	}
+
+	// A running fact is never terminal and cannot adopt Unknown either.
+	running := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "running",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
+		Admission:  providerAdmission("stream", "msg-1", 1, "sha", acceptedAt.Add(2*time.Second)),
+		ActivityID: "activity-1",
+		StartedAt:  acceptedAt.Add(3 * time.Second),
+		At:         acceptedAt.Add(30 * time.Second),
+	}
+	snapshot, changed, err = store.ApplyTurnFact(running)
+	if err != nil || changed || snapshot.Status != watcher.TurnUnknown {
+		t.Fatalf("running fact adopted Unknown: (%+v, %v, %v)", snapshot, changed, err)
+	}
+
+	// The authoritative terminal inside the admission window adopts Unknown
+	// one-way and wakes exactly one actionable session.done.
+	snapshot, changed, err = store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
+		Admission:  providerAdmission("stream", "msg-1", 1, "sha", acceptedAt.Add(2*time.Second)),
+		ActivityID: "activity-1",
+		StartedAt:  acceptedAt.Add(3 * time.Second),
+		SettledAt:  acceptedAt.Add(9 * time.Second),
+		At:         acceptedAt.Add(40 * time.Second),
+	})
+	if err != nil || !changed || snapshot.Status != watcher.TurnDone {
+		t.Fatalf("post-Unknown adoption = (%+v, %v, %v), want Done", snapshot, changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	if workItem.Status != WorkWaiting {
+		t.Fatalf("Work after Unknown adoption = %v", workItem)
+	}
+	events, _ := store.ListWorkEvents(workItem.ID)
+	uncertainKept := false
+	doneActionable := 0
+	for _, event := range events {
+		switch {
+		case strings.HasSuffix(event.DedupeKey, ":session.uncertain"):
+			uncertainKept = true
+		case strings.HasSuffix(event.DedupeKey, ":session.done") && event.Actionable:
+			doneActionable++
+		}
+	}
+	if !uncertainKept || doneActionable != 1 {
+		t.Fatalf("post-Unknown audit rows: uncertainKept=%v doneActionable=%d events=%#v",
+			uncertainKept, doneActionable, events)
+	}
+}
+
 // TestTurnControlAttentionBlocksAndClears covers C.2.3: needs_input comes only
 // from Control attention or bound provider facts; pane Blocked never wakes a
 // turn-tracked session (Pi incident).
@@ -901,6 +993,23 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	}
 	if staleRows != 1 {
 		t.Fatalf("session.stale rows = %d, want exactly one (the old turn's own wake)", staleRows)
+	}
+
+	// The superseded-turn gate covers every Control fact, not just stale: a
+	// cached progress heartbeat (Control running) targeting the old row must
+	// be rejected before it can renew or mutate the superseded turn.
+	cached := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "running",
+		SourceID: "control\x00cached-heartbeat", LeaseSeconds: 900,
+		At: now,
+	}
+	if _, changed, err := store.ApplyTurnFact(cached); err != nil || changed {
+		t.Fatalf("old-turn control fact re-applied after newer turn: changed=%v err=%v", changed, err)
+	}
+	// The new turn's own lease is untouched by the rejected replay.
+	if current, found, _ := store.Turn(sessionID); !found || current.TurnID != newTurnID || current.Status != watcher.TurnAdmitted {
+		t.Fatalf("current turn after rejected replay = %+v found=%v", current, found)
 	}
 }
 
