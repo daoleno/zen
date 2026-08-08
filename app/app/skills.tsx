@@ -39,19 +39,16 @@ import {
   SkillsAutomaticInventoryOwner,
   createSkillsDiscoverState,
   reduceSkillsDiscover,
-  skillsAgentCounts,
   skillsInstallTargets,
   skillsRemovalPlanForAgent,
+  skillsSectionAgentCounts,
   skillsSectionProjection,
   type SkillsLeaderboardView,
 } from "../services/skillsScreenModel";
 import {
-  createPluginExpansionState,
   evaluatePluginMutation,
   pluginSectionView,
   projectPlugins,
-  reducePluginExpansion,
-  type PluginExpansionState,
   type PluginSectionView,
 } from "../services/pluginsScreenModel";
 import {
@@ -106,9 +103,6 @@ export default function SkillsScreen() {
   const automaticPluginsOwnerRef = useRef(new SkillsAutomaticInventoryOwner());
 
   const [surface, setSurface] = useState(createSkillsSurfaceState);
-  const [pluginExpansion, setPluginExpansion] = useState(
-    createPluginExpansionState,
-  );
   const [mode, setMode] = useState<SkillsMode>("installed");
   const [pluginsMode, setPluginsMode] = useState<PluginsMode>("installed");
   const [selectedAgent, setSelectedAgent] =
@@ -187,7 +181,6 @@ export default function SkillsScreen() {
     setCatalogState(createSkillsRequestState());
     setSearchState(createSkillsRequestState());
     setDiscover((current) => ({ ...current, submittedQuery: "" }));
-    setPluginExpansion(createPluginExpansionState());
     setPreparingMutation("");
   }, [cancelActiveSearch, currentServerId]);
 
@@ -557,12 +550,6 @@ export default function SkillsScreen() {
   const selectSection = useCallback((section: SkillsSurfaceSection) => {
     setSurface((current) =>
       reduceSkillsSurface(current, { type: "select_section", section }),
-    );
-  }, []);
-
-  const togglePlugin = useCallback((pluginId: string) => {
-    setPluginExpansion((current) =>
-      reducePluginExpansion(current, { type: "toggle", pluginId }),
     );
   }, []);
 
@@ -977,7 +964,7 @@ export default function SkillsScreen() {
     ? leaderboardForView(leaderboards, discover.view)
     : undefined;
   const projection = skillsSectionProjection(inventory, selectedAgent);
-  const agentCounts = skillsAgentCounts(inventory);
+  const agentCounts = skillsSectionAgentCounts(inventory);
   const pluginsInventory =
     visiblePluginsState.status === "ready" ||
     visiblePluginsState.status === "empty"
@@ -1004,8 +991,6 @@ export default function SkillsScreen() {
       pluginSection={pluginSection}
       pluginsFallback={presentationIsCurrent && pluginsFallback}
       fallbackPlugins={fallbackPlugins}
-      pluginExpansion={pluginExpansion}
-      inventoryWarnings={inventory?.warnings ?? []}
       catalogState={visibleCatalogState}
       leaderboard={leaderboard}
       searchState={visibleSearchState}
@@ -1018,11 +1003,11 @@ export default function SkillsScreen() {
       preparingMutation={preparingMutation}
       creatingTerminal={creatingTerminal}
       currentServerAvailable={Boolean(currentServer)}
+      serverBindingKey={currentServerId ?? ""}
       onSelectSection={selectSection}
       onSelectMode={setMode}
       onSelectPluginsMode={setPluginsMode}
       onSelectAgent={selectAgent}
-      onTogglePlugin={togglePlugin}
       onOpenSettings={() => router.push("/settings")}
       onRefreshInventory={() => void refreshInventory()}
       onRetryPlugins={() => void loadPlugins()}

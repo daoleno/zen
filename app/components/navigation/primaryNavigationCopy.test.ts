@@ -65,82 +65,93 @@ describe("navigation and Skills copy density", () => {
     expect(settingsSource).toContain('? "Use"');
   });
 
-  test("Skills chrome does not restate selected Agent or invent host-snapshot headers", () => {
+  test("Skills chrome stays compact and does not restate implementation inventory", () => {
     expect(skillsSource).not.toContain("installed for");
     expect(skillsSource).not.toContain("Install targets");
     expect(skillsSource).not.toContain("Host snapshot");
     expect(skillsSource).toContain("AgentKindIcon");
-    expect(skillsSource).toContain("shared with");
+    expect(skillsSource).toContain("CompactToolbar");
+    expect(skillsSource).toContain("SurfaceSearch");
   });
 
-  test("Plugins and Skills are separate first-level tabs with compact status", () => {
-    expect(skillsSource).toContain('{ section: "plugins", label: "Plugins"');
+  test("Plugins and Skills have one first-level tablist and no second segmented navigator", () => {
+    expect(skillsSource).toContain('section: "plugins"');
+    expect(skillsSource).toContain('label: "Plugins"');
     expect(skillsSource).toContain('{ section: "skills", label: "Skills"');
     expect(skillsSource).toContain("SurfaceTabs");
-    expect(skillsSource).toContain("StatusBadge");
-    expect(skillsSource).toContain('tone="installed"');
+    expect(skillsSource.match(/accessibilityRole="tablist"/g)).toHaveLength(1);
+    expect(skillsSource).not.toContain("ModeSwitch");
+    expect(skillsSource).not.toContain("PluginsModeSwitch");
   });
 
-  test("Skills v2 removes explanatory prose and fake per-row updates", () => {
+  test("Installed and Discover are compact tool choices with real lifecycle actions", () => {
     expect(skillsSource).not.toContain("Enter at least 2 characters");
     expect(skillsSource).not.toContain("View only");
     expect(skillsSource).not.toContain("Switch to Discover");
-    // Update is a real action: collection-level Skills update and per-plugin
-    // lifecycle. A per-row Skill Update must never exist (the CLI updates
-    // whole scopes, not single Skills).
-    expect(skillsSource).toContain('label="Update global"');
-    expect(skillsSource).toContain('label="Update project"');
-    expect(skillsSource).toContain('{ text: "Update", onPress: onUpdate }');
+    expect(skillsSource).toContain('label="Installed"');
+    expect(skillsSource).toContain('label="Discover"');
+    expect(skillsSource).toContain('label="Global Skills"');
+    expect(skillsSource).toContain('label="Project Skills"');
+    expect(skillsSource).toContain('label="Update"');
+    expect(skillsSource).toContain('label="Uninstall"');
     const installedRowBlock = skillsSource.match(
-      /function InstalledSkillRow\([\s\S]*?function DiscoverSkillsList\(/,
+      /function InstalledSkillItem\([\s\S]*?function DiscoverSkillsList\(/,
     )?.[0];
     expect(installedRowBlock).not.toContain("Update");
     expect(installedRowBlock).toContain('label="Remove"');
   });
 
-  test("Skills retains judgment-critical provenance, remove impact, and error reasons", () => {
-    expect(skillsSource).toContain("installedSkillProvenance");
-    expect(skillsSource).toContain("affectedAgents");
+  test("ownership is progressive while loading, empty, and error reasons stay inline", () => {
+    expect(skillsSource).toContain("installedSkillOwnership");
+    expect(skillsSource).toContain("installedPluginOwnership");
+    expect(skillsSource).toContain('kind: "skill-details"');
+    expect(skillsSource).toContain('kind: "plugin-details"');
     expect(skillsSource).toContain("state.error");
     expect(skillsSource).toContain("catalogState.error");
     expect(skillsSource).toContain("searchState.error");
-    expect(skillsSource).toContain("installedSkillCaption");
+    expect(skillsSource).toContain('emptyTitle="No plugins installed"');
+    expect(skillsSource).toContain('loadingTitle="Loading installed Skills…"');
   });
 
-  test("the Agent selector never compresses official labels", () => {
-    const selectorBlock = skillsSource.match(
-      /function AgentSelector\([\s\S]*?function ModeSwitch\(/,
-    )?.[0];
-    expect(selectorBlock).toBeDefined();
-    expect(selectorBlock).toContain("ScrollView");
-    expect(selectorBlock).toContain("showsHorizontalScrollIndicator={false}");
-    expect(selectorBlock).not.toContain("numberOfLines={1}");
-    expect(selectorBlock).not.toContain("flex: 1,");
+  test("the target carousel is replaced by one official-icon target control and sheet", () => {
+    expect(skillsSource).not.toContain("AgentSelector");
+    expect(skillsSource).not.toMatch(/\shorizontal(?:\s|=)/);
+    expect(skillsSource).toContain("compactSkillTargets(agentCounts)");
+    expect(skillsSource).toContain('accessibilityLabel={`Target ${skillAgentLabel(selectedAgent)}`}');
+    expect(skillsSource).toContain("managedAgentKind(agent)");
   });
 
-  test("one Plugin row gets one contextual action control only", () => {
+  test("one Plugin row gets one contextual trailing action and a client icon", () => {
     const rowBlock = skillsSource.match(
-      /function InstalledPluginRow\([\s\S]*?function ExplorePluginsList\(/,
+      /function InstalledPluginItem\([\s\S]*?function DiscoverPluginsList\(/,
     )?.[0];
     expect(rowBlock).toBeDefined();
+    expect(rowBlock).toContain("AgentKindIcon");
     expect(rowBlock).toContain("ellipsis-horizontal");
     expect(rowBlock).not.toContain('label="Update"');
     expect(rowBlock).not.toContain("trash-outline");
   });
 
-  test("Plugin badges state catalog proof and cache-only rows explicitly", () => {
-    expect(skillsSource).toContain('label={pluginStatusLabel(row)}');
-    expect(skillsSource).toContain('"Read-only"');
-    expect(skillsSource).toContain('row.source === "catalog"');
+  test("primary lists have no repeated ownership pills or placeholder grid icons", () => {
+    expect(skillsSource).not.toContain("StatusBadge");
+    expect(skillsSource).not.toContain('"Read-only"');
+    expect(skillsSource).not.toContain('"Unmanaged"');
+    expect(skillsSource).not.toContain('name="apps"');
+    expect(skillsSource).not.toContain('name="grid"');
   });
 
-  test("every tappable control meets the 44pt minimum touch height", () => {
-    for (const key of ["toolbarAction", "modeButton", "leaderboardTab"]) {
+  test("narrow and large-type layout wraps with 44pt controls and two-line metadata", () => {
+    expect(skillsSource).toContain('flexWrap: "wrap"');
+    expect(skillsSource).toContain("PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER");
+    expect(skillsSource).toContain("numberOfLines={2}");
+    for (const key of ["surfaceTab", "toolButton", "iconButton", "smallAction"]) {
       const block = skillsSource.match(
         new RegExp(`${key}: \\{[\\s\\S]*?\\},`),
       )?.[0];
       expect(block, `${key} style block`).toBeDefined();
-      expect(block, `${key} minHeight`).toContain("minHeight: 44");
+      expect(block, `${key} touch target`).toContain(
+        "PLUGINS_SKILLS_TOUCH_TARGET",
+      );
     }
   });
 });

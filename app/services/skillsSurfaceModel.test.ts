@@ -6,7 +6,10 @@ import {
   projectUpdateAvailable,
   reduceSkillsSurface,
 } from "./skillsSurfaceModel";
-import { skillsSectionProjection } from "./skillsScreenModel";
+import {
+  skillsSectionAgentCounts,
+  skillsSectionProjection,
+} from "./skillsScreenModel";
 import type {
   CatalogSkill,
   InstalledSkill,
@@ -128,6 +131,15 @@ describe("Plugins & Skills first-level sections", () => {
       "cli-skill",
       "builtin-skill",
     ]);
+    expect(
+      skillsSectionAgentCounts(
+        inventory([
+          installedSkill("000000000000000000000001", "cli-skill", "skills-cli", true),
+          installedSkill("000000000000000000000002", "builtin-skill", "builtin"),
+          pluginSkill("000000000000000000000003", "hosted-skill"),
+        ]),
+      ).codex,
+    ).toBe(2);
   });
 });
 
