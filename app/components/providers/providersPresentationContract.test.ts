@@ -142,6 +142,14 @@ describe("client-first Providers surface contract", () => {
     expect(presentationSource).toContain("onUseDirect(client)");
   });
 
+  test("uses the official Codex and Claude marks", () => {
+    expect(presentationSource).toContain(
+      'import { Claude, Codex } from "@lobehub/icons-rn"',
+    );
+    expect(presentationSource).toContain("<Codex.Color size={22} />");
+    expect(presentationSource).toContain("<Claude.Color size={22} />");
+  });
+
   test("does not expose upstream vendor presets", () => {
     for (const vendor of ["OpenAI", "OpenRouter", "Anthropic", "DeepSeek"]) {
       expect(presentationSource).not.toContain(`>${vendor}<`);
@@ -158,6 +166,8 @@ describe("client-first Providers surface contract", () => {
     const saveIndex = screenSource.indexOf("wsClient.setProviderCredential");
     expect(testIndex).toBeGreaterThan(0);
     expect(saveIndex).toBeGreaterThan(0);
+    expect(presentationSource).toContain("latencyMs");
+    expect(presentationSource).toContain("ms");
   });
 
   test("new connections carry the selected client and no display-name field", () => {

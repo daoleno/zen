@@ -212,12 +212,20 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("resolve provider discovery path: %w", err)
 	}
+	credentialsPath, err := work.DefaultProviderCredentialsPath()
+	if err != nil {
+		return fmt.Errorf("resolve provider credentials path: %w", err)
+	}
+	credentialStore, err := modelprofiles.NewFileCredentialStore(credentialsPath)
+	if err != nil {
+		return fmt.Errorf("initialize provider credentials: %w", err)
+	}
 	profileOwner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath:  profilesPath,
 		RoutesPath:    routesPath,
 		ListenerPath:  listenerPath,
 		DiscoveryPath: discoveryPath,
-		Credentials:   modelprofiles.NewKeyringCredentialStore(),
+		Credentials:   credentialStore,
 	})
 	if err != nil {
 		return fmt.Errorf("start model profiles owner: %w", err)

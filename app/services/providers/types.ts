@@ -55,7 +55,7 @@ export type ProviderConnectionInput = {
   id?: string;
   name?: string;
   preset_id: string;
-  client?: ProviderClient | string;
+  client: ProviderClient | string;
   base_url?: string;
   model_id?: string;
   advanced?: boolean;
@@ -96,6 +96,7 @@ export type ProviderCredentialResult = {
 export type ProviderConnectionTestResult = {
   client: ProviderClient;
   modelCount: number;
+  latencyMs: number;
 };
 
 export type TestProviderConnectionInput = {

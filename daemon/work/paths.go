@@ -54,6 +54,15 @@ func DefaultProviderDiscoveryPath() (string, error) {
 	return filepath.Join(home, ".zen", "provider-discovery.json"), nil
 }
 
+// DefaultProviderCredentialsPath returns ~/.zen/provider-credentials.json.
+func DefaultProviderCredentialsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".zen", "provider-credentials.json"), nil
+}
+
 // DefaultRouteBindingsPath returns ~/.zen/route-bindings.json.
 // Stage 2B Session lifecycle owns Save/Load against this path; Stage 2A only
 // defines the codec and RouteTable.Restore contract.

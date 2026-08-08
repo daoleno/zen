@@ -105,13 +105,13 @@ type Server struct {
 	runtimeClosing               bool
 	terminalCleanup              terminalCleanupOwner
 
-	workSubID              int
-	workSub                <-chan work.Event
-	calendarSubID          int
-	calendarSub            <-chan calendar.Event
-	brainWorkSubID         int
-	brainWorkSub           <-chan brain.WorkChange
-	brainMigrationComplete bool
+	workSubID                   int
+	workSub                     <-chan work.Event
+	calendarSubID               int
+	calendarSub                 <-chan calendar.Event
+	brainWorkSubID              int
+	brainWorkSub                <-chan brain.WorkChange
+	brainMigrationComplete      bool
 	turnLedgerMigrationComplete bool
 
 	clients           map[*websocket.Conn]*authenticatedClient
@@ -139,9 +139,8 @@ type codexConversationSubscription struct {
 }
 
 type authenticatedClient struct {
-	deviceID        string
-	secureTransport bool // TLS or loopback — required for secret writes
-	revoked         atomic.Bool
+	deviceID string
+	revoked  atomic.Bool
 }
 
 type terminalCleanupState uint8
@@ -407,8 +406,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := &authenticatedClient{
-		deviceID:        device.ID,
-		secureTransport: isSecureCredentialTransport(r),
+		deviceID: device.ID,
 	}
 	if !s.bindAuthenticatedClient(conn, owner) {
 		_ = conn.Close()

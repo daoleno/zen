@@ -115,7 +115,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
 
-		conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +133,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		select {
 		case <-entered:
 		case <-time.After(2 * time.Second):
-			t.Fatal("set did not enter keyring")
+			t.Fatal("set did not enter credential store")
 		}
 
 		delErr := make(chan error, 1)
@@ -172,7 +172,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
 
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "RaceDel", PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "RaceDel", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +193,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		select {
 		case <-entered:
 		case <-time.After(2 * time.Second):
-			t.Fatal("delete did not enter keyring")
+			t.Fatal("delete did not enter credential store")
 		}
 
 		setErr := make(chan error, 1)
@@ -228,7 +228,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		owner := startTestOwner(t, func(string) (string, bool) { return "", false })
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "ClearDel", PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "ClearDel", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -250,7 +250,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		select {
 		case <-entered:
 		case <-time.After(2 * time.Second):
-			t.Fatal("clear did not enter keyring delete")
+			t.Fatal("clear did not enter credential store delete")
 		}
 
 		delErr := make(chan error, 1)
@@ -268,7 +268,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		if err := <-clearErr; err != nil {
 			t.Fatalf("clear: %v", err)
 		}
-		// Delete's keyring Delete may also hit the same barrier channels (already closed).
+		// Delete's credential-store call may also hit the same barrier channels (already closed).
 		// Disarm before delete proceeds further — release already closed; delete may be waiting on Owner.mu.
 		store.disarm()
 		if err := <-delErr; err != nil {
@@ -284,7 +284,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		owner := startTestOwner(t, func(string) (string, bool) { return "", false })
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DelClear", PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DelClear", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -333,7 +333,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		owner := startTestOwner(t, func(string) (string, bool) { return "", false })
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "StoreSwap", PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "StoreSwap", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}

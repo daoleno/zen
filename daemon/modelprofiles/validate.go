@@ -3,6 +3,7 @@ package modelprofiles
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -203,8 +204,8 @@ func ValidateCredentialEnv(name string) error {
 	return nil
 }
 
-// ValidateUpstreamBaseURL enforces HTTPS remotes or loopback HTTP for upstream
-// gateways, rejecting userinfo, query strings, fragments, and malformed URLs.
+// ValidateUpstreamBaseURL accepts explicitly configured HTTP(S) gateways while
+// rejecting malformed URLs and infrastructure metadata targets.
 func ValidateUpstreamBaseURL(raw string) error {
 	return validateHTTPBaseURL(raw, true)
 }
@@ -219,7 +220,7 @@ func ValidateLoopbackRouteURL(raw string) error {
 	return validateHTTPBaseURL(raw, false)
 }
 
-func validateHTTPBaseURL(raw string, allowRemoteHTTPS bool) error {
+func validateHTTPBaseURL(raw string, allowRemote bool) error {
 	raw = normalizeSpace(raw)
 	if raw == "" {
 		return fmt.Errorf("%w: base_url is required", ErrInvalid)
@@ -245,11 +246,14 @@ func validateHTTPBaseURL(raw string, allowRemoteHTTPS bool) error {
 	}
 	loopback := isLoopbackHost(parsed.Hostname())
 	if !loopback {
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("%w: non-loopback base_url must use https", ErrInvalid)
-		}
-		if !allowRemoteHTTPS {
+		if !allowRemote {
 			return fmt.Errorf("%w: zen route url must be loopback-only", ErrInvalid)
+		}
+		if ip, err := netip.ParseAddr(parsed.Hostname()); err == nil {
+			ip = ip.Unmap()
+			if !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || isMetadataIP(ip) {
+				return fmt.Errorf("%w: base_url address is not a model endpoint", ErrUpstreamSSRF)
+			}
 		}
 	}
 	return nil

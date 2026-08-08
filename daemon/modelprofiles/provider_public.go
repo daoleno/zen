@@ -63,14 +63,13 @@ type ProviderCatalogProjection struct {
 }
 
 // ProviderConnectionInput is the public mutation shape for create/update.
-// Curated create accepts {preset_id} with optional {id,name}; name defaults to
-// the preset label. Advanced/Custom may set base_url, client, and model_id.
+// Every create is scoped to one client. Advanced/Custom may set base_url and
+// model_id; protocol and auth details remain internal.
 type ProviderConnectionInput struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	PresetID string `json:"preset_id"`
-	Client   string `json:"client,omitempty"`
-	Executor string `json:"-"`
+	Client   string `json:"client"`
 	BaseURL  string `json:"base_url,omitempty"`
 	ModelID  string `json:"model_id,omitempty"`
 	Advanced bool   `json:"advanced,omitempty"`
@@ -110,6 +109,7 @@ type ProviderConnectionTestInput struct {
 type ProviderConnectionTestResult struct {
 	Client     string `json:"client"`
 	ModelCount int    `json:"model_count"`
+	LatencyMS  int64  `json:"latency_ms"`
 }
 
 const (

@@ -296,12 +296,6 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	probe := profile
 	if isAccountConnection(profile) {
 		client := executorFromClient(profile.Client)
-		if client == "" {
-			client = ExecutorCodex
-			if spec, ok := lookupPreset(presetID); ok && len(spec.Public.Clients) > 0 {
-				client = executorFromClient(spec.Public.Clients[0])
-			}
-		}
 		compiled, cErr := CompileConnectionTarget(profile, client, "")
 		if cErr != nil {
 			out.Entries = projectModelEntries(trusted, manual, nil, nil, false)

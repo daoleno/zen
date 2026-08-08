@@ -809,13 +809,13 @@ describe("Provider public WebSocket boundary", () => {
     const upsertPending = client.upsertProviderConnection(server.id, {
       operation: "create",
       revision: 3,
-      connection: { preset_id: "deepseek" },
+      connection: { preset_id: "deepseek", client: "codex" },
     });
     const upsert = JSON.parse(socket.sent.at(-1)!);
     expect(upsert).toEqual({
       type: "upsert_provider_connection",
       request_id: upsert.request_id,
-      provider_connection: { preset_id: "deepseek" },
+      provider_connection: { preset_id: "deepseek", client: "codex" },
       revision: 3,
       operation: "create",
     });
@@ -1001,9 +1001,10 @@ describe("Provider public WebSocket boundary", () => {
       request_id: outbound.request_id,
       client: "codex",
       model_count: 4,
+      latency_ms: 87,
     });
     const result = await pending;
-    expect(result).toEqual({ client: "codex", modelCount: 4 });
+    expect(result).toEqual({ client: "codex", modelCount: 4, latencyMs: 87 });
     expect(JSON.stringify(result)).not.toMatch(/credential|api.?key|secret/i);
     expect(registeredHandlerCount(client)).toBe(0);
     client.disconnectAll();

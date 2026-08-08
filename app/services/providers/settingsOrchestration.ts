@@ -79,8 +79,8 @@ export function resolveCreatedConnection(input: {
   );
 }
 
-export function curatedCreateInput(preset: ProviderPreset) {
-  const input = curatedConnectionInput(preset);
+export function curatedCreateInput(preset: ProviderPreset, client: string) {
+  const input = curatedConnectionInput(preset, client);
   if (input.model_id || (input as { protocol?: string }).protocol) {
     throw invalidProviderReply(
       "Curated Provider create must not include model or protocol fields.",

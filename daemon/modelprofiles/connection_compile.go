@@ -44,7 +44,7 @@ func executorFromClient(client string) string {
 }
 
 // CompileConnectionTarget builds an ephemeral internal Profile for one client
-// from a durable connection (account or legacy executor-scoped). modelOverride
+// from a durable account connection or internal executor profile. modelOverride
 // is session-only and never written back to the catalog.
 func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride string) (Profile, error) {
 	conn = normalizeProfile(conn)
@@ -69,7 +69,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 		}
 		return out, nil
 	}
-	if scoped := clientFromExecutor(conn.Client); scoped != "" && scoped != clientFromExecutor(client) {
+	if scoped := clientFromExecutor(conn.Client); scoped != clientFromExecutor(client) {
 		return Profile{}, fmt.Errorf("%w: connection is scoped to %s", ErrBindingExecutorMismatch, scoped)
 	}
 
@@ -127,7 +127,7 @@ func validateAccountConnection(profile Profile) error {
 		return fmt.Errorf("%w: account connections must not store executor/protocol/client_model", ErrInvalid)
 	}
 	client := clientFromExecutor(profile.Client)
-	if client != "" && client != ClientCodex && client != ClientClaude {
+	if client != ClientCodex && client != ClientClaude {
 		return fmt.Errorf("%w: account connection client must be codex or claude", ErrInvalid)
 	}
 	providerID := normalizeID(profile.ProviderID)

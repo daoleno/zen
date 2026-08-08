@@ -108,11 +108,9 @@ func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnecti
 	presetID := inferPresetID(profile)
 	advanced := normalizeID(presetID) == ProviderPresetCustom || accountLooksAdvanced(profile, presetID)
 	clients := []string{}
-	if scoped := clientFromExecutor(profile.Client); scoped != "" {
-		clients = []string{scoped}
-	} else if spec, ok := lookupPreset(presetID); ok {
-		clients = append(clients, spec.Public.Clients...)
-	} else if !isAccountConnection(profile) {
+	if isAccountConnection(profile) {
+		clients = []string{clientFromExecutor(profile.Client)}
+	} else {
 		clients = []string{clientFromExecutor(profile.ExecutorID)}
 	}
 	conn := ProviderConnection{
@@ -145,7 +143,7 @@ func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, revision in
 
 // DeleteProviderConnection removes a connection after non-orphaning credential
 // cleanup. Under Owner.mu: preflight revision/existence/defaults/in-use (no
-// mutation) → delete keyring entry → commit catalog delete. Credential-delete
+// mutation) → delete private credential entry → commit catalog delete. Credential-delete
 // failure leaves catalog/revision/defaults/key unchanged (not-applied). Catalog
 // persistence failure after successful key deletion leaves the connection
 // present but credential-not-ready (or env-ready). Dir-sync warnings remain
@@ -156,7 +154,7 @@ func (o *Owner) DeleteProviderConnection(id string, revision int64) (ProviderCat
 	}
 	id = normalizeID(id)
 
-	// Hold Owner.mu for the entire preflight → keyring → catalog commit so
+	// Hold Owner.mu for the entire preflight → credential → catalog commit so
 	// PrepareLaunch/Activate cannot bind the connection mid-delete. Project
 	// only after unlock (ProjectCatalog also takes Owner.mu).
 	o.mu.Lock()
@@ -224,7 +222,7 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 	return o.ProjectProviders()
 }
 
-// SetCredentialStore installs the OS/keyring (or test fake) secret vault.
+// SetCredentialStore installs Zen's private credential store (or a test fake).
 // Serialized with Set/Clear/Delete under Owner.mu so the store pointer cannot
 // race a mid-flight credential mutation.
 func (o *Owner) SetCredentialStore(store CredentialStore) {
@@ -241,7 +239,7 @@ func (o *Owner) SetCredentialStore(store CredentialStore) {
 
 // SetProviderCredential writes a secret to the credential store for a
 // connection. Public replies expose readiness only — never the secret.
-// Connection validation and keyring Set run under Owner.mu with
+// Connection validation and credential persistence run under Owner.mu with
 // DeleteProviderConnection / SetCredentialStore so a concurrent delete cannot
 // leave an orphan key for a removed connection.
 func (o *Owner) SetProviderCredential(connectionID, secret string) (ProviderCredentialResult, error) {
@@ -277,7 +275,7 @@ func (o *Owner) SetProviderCredential(connectionID, secret string) (ProviderCred
 	}, nil
 }
 
-// ClearProviderCredential removes the keyring secret for a connection.
+// ClearProviderCredential removes the private secret for a connection.
 // Serialized under Owner.mu with DeleteProviderConnection / SetCredentialStore.
 func (o *Owner) ClearProviderCredential(connectionID string) (ProviderCredentialResult, error) {
 	if o == nil || !o.started || o.store == nil {

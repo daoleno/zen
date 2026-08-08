@@ -1,12 +1,13 @@
 package modelprofiles
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/zalando/go-keyring"
 )
 
 // CredentialStore is the daemon secret vault for Provider API keys.
@@ -20,9 +21,7 @@ type CredentialStore interface {
 	Delete(ref string) error
 }
 
-const keyringServiceName = "zen.daemon.provider"
-
-// CredentialRefFor returns the opaque keyring user key for a connection.
+// CredentialRefFor returns the opaque credential key for a connection.
 // It is secret-free and safe to persist on routes/bindings.
 func CredentialRefFor(connectionID string) string {
 	id := normalizeID(connectionID)
@@ -32,39 +31,58 @@ func CredentialRefFor(connectionID string) string {
 	return "provider:" + id
 }
 
-// KeyringCredentialStore stores secrets in the OS credential manager via
-// github.com/zalando/go-keyring (macOS Keychain, Linux Secret Service, Windows
-// Credential Manager).
-type KeyringCredentialStore struct {
-	service string
+const credentialFileSchemaVersion = 1
+
+type credentialFile struct {
+	SchemaVersion int               `json:"schema_version"`
+	Secrets       map[string]string `json:"secrets"`
 }
 
-// NewKeyringCredentialStore constructs the production OS-backed store.
-func NewKeyringCredentialStore() *KeyringCredentialStore {
-	return &KeyringCredentialStore{service: keyringServiceName}
+// FileCredentialStore is the production secret store for the headless Zen
+// daemon. The parent directory is private and every committed file is 0600, so
+// Provider credentials do not depend on a desktop Secret Service being active.
+type FileCredentialStore struct {
+	mu      sync.Mutex
+	path    string
+	secrets map[string]string
 }
 
-func (s *KeyringCredentialStore) serviceName() string {
-	if s == nil || strings.TrimSpace(s.service) == "" {
-		return keyringServiceName
+func NewFileCredentialStore(path string) (*FileCredentialStore, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("%w: credential file path is required", ErrInvalid)
 	}
-	return s.service
+	store := &FileCredentialStore{path: path, secrets: map[string]string{}}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: read credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	var doc credentialFile
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("%w: decode credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	if doc.SchemaVersion != credentialFileSchemaVersion || doc.Secrets == nil {
+		return nil, fmt.Errorf("%w: unsupported credential file", ErrCredentialStoreFailed)
+	}
+	for ref, secret := range doc.Secrets {
+		ref = normalizeSpace(ref)
+		secret = strings.TrimSpace(secret)
+		if ref != "" && secret != "" {
+			store.secrets[ref] = secret
+		}
+	}
+	return store, nil
 }
 
-func (s *KeyringCredentialStore) Available() bool {
-	if s == nil {
-		return false
-	}
-	// Probe with a throwaway Get; NotFound means the backend answered.
-	_, err := keyring.Get(s.serviceName(), "__zen_probe__")
-	if err == nil || errors.Is(err, keyring.ErrNotFound) {
-		return true
-	}
-	return false
+func (s *FileCredentialStore) Available() bool {
+	return s != nil && strings.TrimSpace(s.path) != ""
 }
 
-func (s *KeyringCredentialStore) Set(ref, secret string) error {
-	if s == nil {
+func (s *FileCredentialStore) Set(ref, secret string) error {
+	if !s.Available() {
 		return ErrCredentialStoreUnavailable
 	}
 	ref = normalizeSpace(ref)
@@ -72,47 +90,108 @@ func (s *KeyringCredentialStore) Set(ref, secret string) error {
 	if ref == "" || secret == "" {
 		return fmt.Errorf("%w: credential ref and secret are required", ErrInvalid)
 	}
-	if err := keyring.Set(s.serviceName(), ref, secret); err != nil {
-		return fmt.Errorf("%w: %v", ErrCredentialStoreUnavailable, err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.secrets[ref]
+	s.secrets[ref] = secret
+	if err := s.saveLocked(); err != nil {
+		if existed {
+			s.secrets[ref] = previous
+		} else {
+			delete(s.secrets, ref)
+		}
+		return err
 	}
 	return nil
 }
 
-func (s *KeyringCredentialStore) Get(ref string) (string, bool, error) {
-	if s == nil {
+func (s *FileCredentialStore) Get(ref string) (string, bool, error) {
+	if !s.Available() {
 		return "", false, ErrCredentialStoreUnavailable
 	}
 	ref = normalizeSpace(ref)
 	if ref == "" {
 		return "", false, nil
 	}
-	val, err := keyring.Get(s.serviceName(), ref)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("%w: %v", ErrCredentialStoreUnavailable, err)
-	}
-	val = strings.TrimSpace(val)
-	if val == "" {
-		return "", false, nil
-	}
-	return val, true, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	secret, ok := s.secrets[ref]
+	return secret, ok && secret != "", nil
 }
 
-func (s *KeyringCredentialStore) Delete(ref string) error {
-	if s == nil {
+func (s *FileCredentialStore) Delete(ref string) error {
+	if !s.Available() {
 		return ErrCredentialStoreUnavailable
 	}
 	ref = normalizeSpace(ref)
 	if ref == "" {
 		return nil
 	}
-	err := keyring.Delete(s.serviceName(), ref)
-	if err == nil || errors.Is(err, keyring.ErrNotFound) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.secrets[ref]
+	if !existed {
 		return nil
 	}
-	return fmt.Errorf("%w: %v", ErrCredentialStoreFailed, err)
+	delete(s.secrets, ref)
+	if err := s.saveLocked(); err != nil {
+		s.secrets[ref] = previous
+		return err
+	}
+	return nil
+}
+
+func (s *FileCredentialStore) saveLocked() error {
+	raw, err := json.MarshalIndent(credentialFile{
+		SchemaVersion: credentialFileSchemaVersion,
+		Secrets:       s.secrets,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("%w: encode credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("%w: create credential directory: %v", ErrCredentialStoreFailed, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".provider-credentials-*.tmp")
+	if err != nil {
+		return fmt.Errorf("%w: create credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("%w: secure credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("%w: write credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("%w: sync credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("%w: close credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("%w: commit credential file: %v", ErrCredentialStoreFailed, err)
+	}
+	removeTemp = false
+	// After Rename the new credential set is authoritative. Directory sync is
+	// best-effort because the CredentialStore contract has no applied-with-
+	// warning state; returning an error here would make memory disagree with the
+	// file that callers will read on restart.
+	if parent, openErr := os.Open(dir); openErr == nil {
+		_ = parent.Sync()
+		_ = parent.Close()
+	}
+	return nil
 }
 
 // MemoryCredentialStore is a test fake. It never persists to disk.
@@ -229,8 +308,9 @@ func (m *MemoryCredentialStore) SnapshotRefs() []string {
 	return out
 }
 
-// resolveProviderSecret returns the secret for a connection: keyring ref first,
-// then host-env fallback named by CredentialEnv. Never logs the value.
+// resolveProviderSecret returns the secret for a connection: Zen's private
+// credential file first, then the host-env fallback named by CredentialEnv.
+// It never logs the value.
 func resolveProviderSecret(ref, envName string, store CredentialStore, lookup func(string) (string, bool)) (string, error) {
 	ref = normalizeSpace(ref)
 	if store != nil && ref != "" {

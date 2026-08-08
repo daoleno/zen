@@ -153,7 +153,7 @@ func captureInboundAuth(h http.Header) capturedInboundAuth {
 }
 
 // applyUpstreamAuth injects upstream credentials per AuthMode. Env values and
-// keyring secrets are never returned to callers beyond the request header mutation.
+// stored secrets are never returned to callers beyond the request header mutation.
 func applyUpstreamAuth(dst http.Header, binding RouteBinding, inbound capturedInboundAuth, lookup func(string) (string, bool), store CredentialStore) error {
 	mode := normalizeID(binding.AuthMode)
 	if mode == "" {

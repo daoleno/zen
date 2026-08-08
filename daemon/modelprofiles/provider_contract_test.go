@@ -11,7 +11,7 @@ import (
 )
 
 func TestCompileProviderConnectionCuratedOmitsModel(t *testing.T) {
-	in := ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek}
+	in := ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek, Client: ClientCodex}
 	profile, err := CompileProviderConnection(in)
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestCompileProviderConnectionCuratedOmitsModel(t *testing.T) {
 		t.Fatalf("curated public advanced fields: %#v", pub)
 	}
 	_, err = CompileProviderConnection(ProviderConnectionInput{
-		Name: "DS", PresetID: ProviderPresetDeepSeek, ModelID: "deepseek-v4-flash",
+		Name: "DS", PresetID: ProviderPresetDeepSeek, Client: ClientCodex, ModelID: "deepseek-v4-flash",
 	})
 	if err == nil {
 		t.Fatal("curated must reject connection-level model_id")
@@ -41,7 +41,7 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
 	creds := NewMemoryCredentialStore()
 	owner.creds = creds
-	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DS", PresetID: ProviderPresetDeepSeek})
+	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DS", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 
 	// Deterministic persistence failure leaves both fields and revision unchanged.
 	failOwner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
-	conn2, err := CompileProviderConnection(ProviderConnectionInput{Name: "DS2", PresetID: ProviderPresetDeepSeek})
+	conn2, err := CompileProviderConnection(ProviderConnectionInput{Name: "DS2", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +100,14 @@ func TestCredentialStoreMatrix(t *testing.T) {
 	owner.creds = store
 	owner.router.creds = store
 
-	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek})
+	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.UpsertProfile(conn, 0, true); err != nil {
 		t.Fatal(err)
 	}
-	connB, err := CompileProviderConnection(ProviderConnectionInput{Name: "B", PresetID: ProviderPresetDeepSeek})
+	connB, err := CompileProviderConnection(ProviderConnectionInput{Name: "B", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestDeleteProviderConnectionNonOrphaning(t *testing.T) {
 	}
 	seed := func(t *testing.T, owner *Owner, store *MemoryCredentialStore, name string) Profile {
 		t.Helper()
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: name, PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: name, PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestDeleteProviderConnectionNonOrphaning(t *testing.T) {
 		}
 	})
 
-	t.Run("keyring_delete_failure_catalog_untouched", func(t *testing.T) {
+	t.Run("credential_delete_failure_catalog_untouched", func(t *testing.T) {
 		owner, store := newOwner(t)
 		conn := seed(t, owner, store, "kfail")
 		rev := owner.Catalog().Revision
@@ -315,7 +315,7 @@ func TestDeleteProviderConnectionNonOrphaning(t *testing.T) {
 
 	t.Run("not_found_key", func(t *testing.T) {
 		owner, store := newOwner(t)
-		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "nokey", PresetID: ProviderPresetDeepSeek})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "nokey", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}

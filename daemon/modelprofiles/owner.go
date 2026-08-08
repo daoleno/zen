@@ -25,7 +25,6 @@ const (
 	CodeCredentialNotReady         = "model_profile_credential_not_ready"
 	CodeCredentialStoreUnavailable = "credential_store_unavailable"
 	CodeCredentialStoreFailed      = "credential_store_failed"
-	CodeSecureTransportRequired    = "secure_transport_required"
 	CodeBindingNotFound            = "route_binding_not_found"
 	CodeBindingConflict            = "route_binding_conflict"
 	CodeBindingBusy                = "route_binding_busy"
@@ -44,7 +43,7 @@ type OwnerConfig struct {
 	ListenerPath  string
 	DiscoveryPath string // secret-free TTL/LKG model id cache
 	Lookup        func(string) (string, bool)
-	Credentials   CredentialStore // OS keyring (or test fake); optional
+	Credentials   CredentialStore // Zen private store (or test fake); optional
 	Verifier      ProfileContractVerifier
 	ListenNetwork string // default "tcp"
 	// PreferAddr overrides ListenerFile for tests when the listener is started
@@ -1298,8 +1297,6 @@ func ControlErrorCode(err error) string {
 		return CodeCredentialStoreUnavailable
 	case errors.Is(err, ErrCredentialStoreFailed):
 		return CodeCredentialStoreFailed
-	case errors.Is(err, ErrSecureTransportRequired):
-		return CodeSecureTransportRequired
 	case errors.Is(err, ErrBindingNotFound):
 		return CodeBindingNotFound
 	case errors.Is(err, ErrBindingConflict):

@@ -9,7 +9,7 @@ import (
 
 // TestProviderConnection validates credentials and protocol compatibility by
 // issuing a bounded, SSRF-safe model-list request. It does not create a
-// connection, touch the keyring, mutate discovery cache, or alter defaults.
+// connection, touch the credential store, mutate discovery cache, or alter defaults.
 func (o *Owner) TestProviderConnection(in ProviderConnectionTestInput) (ProviderConnectionTestResult, error) {
 	out := ProviderConnectionTestResult{}
 	if o == nil || !o.started {
@@ -50,10 +50,12 @@ func (o *Owner) TestProviderConnection(in ProviderConnectionTestInput) (Provider
 		}
 		return "", false
 	}
+	startedAt := time.Now()
 	ids, err := fetchUpstreamModelIDs(ctx, NewSafeHTTPClient(15*time.Second), profile, nil, lookup)
+	latencyMS := time.Since(startedAt).Milliseconds()
 	secret = ""
 	if err != nil {
 		return out, err
 	}
-	return ProviderConnectionTestResult{Client: client, ModelCount: len(ids)}, nil
+	return ProviderConnectionTestResult{Client: client, ModelCount: len(ids), LatencyMS: latencyMS}, nil
 }

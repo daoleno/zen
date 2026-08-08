@@ -106,7 +106,6 @@ var (
 	ErrCredentialNotReady         = errors.New("credential environment variable is not ready")
 	ErrCredentialStoreUnavailable = errors.New("credential store unavailable")
 	ErrCredentialStoreFailed      = errors.New("credential store operation failed")
-	ErrSecureTransportRequired    = errors.New("secure transport required for credential writes")
 	ErrDiscoveryCacheInvalid      = errors.New("provider discovery cache invalid")
 	ErrDiscoveryPersistFailed     = errors.New("provider discovery cache persist failed")
 	ErrInternalNotWire            = errors.New("modelprofiles: internal type cannot be JSON-marshaled; use ToWire")
@@ -147,15 +146,14 @@ const (
 )
 
 // Profile is durable catalog upstream metadata (secret-free values only).
-// Account-scoped Provider connections (Scope=account) omit executor/protocol/
-// client_model/auth_mode; those are compiled per client at launch/activate.
+// Account-scoped Provider connections (Scope=account) belong to exactly one
+// product client and omit executor/protocol/client_model/auth_mode; those are
+// compiled for that client at launch/activate.
 type Profile struct {
 	ID    string `toml:"id" json:"id"`
 	Name  string `toml:"name" json:"name"`
 	Scope string `toml:"scope,omitempty" json:"scope,omitempty"`
-	// Client scopes an account connection to one product client. Empty remains
-	// valid only for legacy shared connections created before Settings became
-	// client-first.
+	// Client scopes an account connection to exactly one product client.
 	Client        string `toml:"client,omitempty" json:"client,omitempty"`
 	ExecutorID    string `toml:"executor_id,omitempty" json:"executor_id,omitempty"`
 	ProviderID    string `toml:"provider_id" json:"provider_id"`
@@ -244,7 +242,7 @@ type RouteBinding struct {
 	UpstreamEnvelope   CapabilityEnvelope
 	AuthMode           string
 	CredentialEnv      string
-	// CredentialRef is an opaque keyring reference (never a secret).
+	// CredentialRef is an opaque private-store reference (never a secret).
 	CredentialRef   string
 	CredentialReady bool
 	Generation      int64

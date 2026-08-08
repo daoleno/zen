@@ -326,9 +326,10 @@ func assertJSONKeysPresent(t *testing.T, raw []byte, keys ...string) {
 	}
 }
 
-func TestCompileDeepSeekAccountConnectionMultiClient(t *testing.T) {
+func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 	conn, err := CompileProviderConnection(ProviderConnectionInput{
 		PresetID: ProviderPresetDeepSeek,
+		Client:   ClientCodex,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +347,16 @@ func TestCompileDeepSeekAccountConnectionMultiClient(t *testing.T) {
 	if codex.Protocol != ProtocolOpenAIResponses || codex.BaseURL != "https://api.deepseek.com" {
 		t.Fatalf("codex=%#v", codex)
 	}
-	claude, err := CompileConnectionTarget(conn, ClientClaude, "deepseek-v4-flash")
+	if _, err := CompileConnectionTarget(conn, ClientClaude, "deepseek-v4-flash"); !errors.Is(err, ErrBindingExecutorMismatch) {
+		t.Fatalf("cross-client compile err=%v", err)
+	}
+	claudeConn, err := CompileProviderConnection(ProviderConnectionInput{
+		Name: "DeepSeek Claude", PresetID: ProviderPresetDeepSeek, Client: ClientClaude,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude, err := CompileConnectionTarget(claudeConn, ClientClaude, "deepseek-v4-flash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,14 +370,14 @@ func TestCompileDeepSeekAccountConnectionMultiClient(t *testing.T) {
 			t.Fatalf("public leaked %q: %s", banned, raw)
 		}
 	}
-	if len(pub.Clients) != 2 {
+	if len(pub.Clients) != 1 || pub.Clients[0] != ClientCodex {
 		t.Fatalf("clients=%v", pub.Clients)
 	}
 }
 
 func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
-	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek})
+	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,9 +406,18 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 		t.Fatalf("default mutated: %q", owner.store.DefaultModelID(ClientCodex))
 	}
 
-	// Claude Anthropic target accepts deepseek-v4-pro per that target's contract
-	// (trusted model; Codex Responses restriction does not apply).
-	_, err = owner.SetProviderDefault(ClientClaude, conn.ID, "deepseek-v4-pro", rev)
+	claudeConn, err := CompileProviderConnection(ProviderConnectionInput{
+		Name: "DeepSeek Claude", PresetID: ProviderPresetDeepSeek, Client: ClientClaude,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.UpsertProfile(claudeConn, rev, true); err != nil {
+		t.Fatal(err)
+	}
+	rev = owner.Catalog().Revision
+	// Claude Anthropic target accepts deepseek-v4-pro per that target's contract.
+	_, err = owner.SetProviderDefault(ClientClaude, claudeConn.ID, "deepseek-v4-pro", rev)
 	if err != nil {
 		t.Fatalf("claude pro: %v", err)
 	}

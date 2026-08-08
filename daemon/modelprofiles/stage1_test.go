@@ -232,8 +232,8 @@ func TestSSRFHostDrivenAllowLoopback(t *testing.T) {
 	if _, err := resolveSafeHost(ctx, "localhost"); err != nil {
 		t.Fatalf("localhost: %v", err)
 	}
-	if _, err := resolveSafeHost(ctx, "10.0.0.1"); !errors.Is(err, ErrUpstreamSSRF) {
-		t.Fatalf("private literal err=%v", err)
+	if _, err := resolveSafeHost(ctx, "10.0.0.1"); err != nil {
+		t.Fatalf("private literal: %v", err)
 	}
 	if _, err := resolveSafeHost(ctx, "169.254.169.254"); !errors.Is(err, ErrUpstreamSSRF) {
 		t.Fatalf("metadata err=%v", err)
@@ -248,8 +248,8 @@ func TestSSRFHostDrivenAllowLoopback(t *testing.T) {
 	fakePriv := func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("10.1.2.3")}, nil
 	}
-	if _, err := resolveSafeHostLookup(ctx, "evil.example", fakePriv); !errors.Is(err, ErrUpstreamSSRF) {
-		t.Fatalf("dns->private err=%v", err)
+	if _, err := resolveSafeHostLookup(ctx, "internal.example", fakePriv); err != nil {
+		t.Fatalf("dns->private: %v", err)
 	}
 	if hostExplicitlyAllowsLoopback("evil.example") {
 		t.Fatal("remote name must not allow loopback")

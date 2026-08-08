@@ -3,7 +3,6 @@ package server
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -18,25 +17,6 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/gorilla/websocket"
 )
-
-// setClientsSecureTransportForTest flips the admission flag on every connected
-// client. Test-only helper kept out of production sources.
-func (s *Server) setClientsSecureTransportForTest(secure bool) int {
-	if s == nil {
-		return 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, owner := range s.clients {
-		if owner == nil {
-			continue
-		}
-		owner.secureTransport = secure
-		n++
-	}
-	return n
-}
 
 type recordingCredStore struct {
 	mu      sync.Mutex
@@ -98,7 +78,7 @@ func (r *recordingCredStore) setCounts() (sets, deletes int) {
 	return r.sets, r.deletes
 }
 
-func TestProviderCredentialWebSocketSecureTransportAndWire(t *testing.T) {
+func TestProviderCredentialWebSocketAuthenticatedHTTPAndWire(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	authManager, err := auth.NewManager(t.TempDir())
 	if err != nil {
@@ -160,7 +140,10 @@ func TestProviderCredentialWebSocketSecureTransportAndWire(t *testing.T) {
 	secret := "sk-live-secret-never-echo"
 	if err := conn.WriteJSON(map[string]any{
 		"type": "upsert_provider_connection", "request_id": "create-1", "operation": "create",
-		"revision": 0, "provider_connection": map[string]any{"preset_id": modelprofiles.ProviderPresetDeepSeek},
+		"revision": 0, "provider_connection": map[string]any{
+			"preset_id": modelprofiles.ProviderPresetDeepSeek,
+			"client":    modelprofiles.ClientCodex,
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +209,7 @@ func TestProviderCredentialWebSocketSecureTransportAndWire(t *testing.T) {
 		"type": "upsert_provider_connection", "request_id": "create-2", "operation": "create",
 		"revision": listed["revision"], "provider_connection": map[string]any{
 			"preset_id": modelprofiles.ProviderPresetDeepSeek, "name": "DeepSeek B",
+			"client": modelprofiles.ClientCodex,
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -256,7 +240,7 @@ func TestProviderCredentialWebSocketSecureTransportAndWire(t *testing.T) {
 		t.Fatalf("readiness isolation: A=%v B=%v", readyA, readyB)
 	}
 	if _, ok, _ := creds.Get(modelprofiles.CredentialRefFor(connB)); ok {
-		t.Fatal("keyring must isolate across connections")
+		t.Fatal("credential store must isolate across connections")
 	}
 
 	creds.mu.Lock()
@@ -313,111 +297,4 @@ func TestProviderCredentialWebSocketSecureTransportAndWire(t *testing.T) {
 		t.Fatal("secret leaked in clear reply")
 	}
 
-	setsBefore, delsBefore := creds.setCounts()
-	if n := srv.setClientsSecureTransportForTest(false); n < 1 {
-		t.Fatalf("expected connected client to flip secureTransport, got %d", n)
-	}
-	if err := conn.WriteJSON(map[string]any{
-		"type": "set_provider_credential", "request_id": "insecure",
-		"connection_id": connectionID, "credential": secret,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	insecure, insecureRaw := readJSON()
-	if insecure["type"] != "error" || insecure["code"] != modelprofiles.CodeSecureTransportRequired {
-		t.Fatalf("insecure=%#v", insecure)
-	}
-	if strings.Contains(string(insecureRaw), secret) {
-		t.Fatal("secret leaked in insecure error")
-	}
-	setsAfter, delsAfter := creds.setCounts()
-	if setsAfter != setsBefore || delsAfter != delsBefore {
-		t.Fatal("insecure rejection must not call store")
-	}
-}
-
-func TestProviderCredentialWebSocketTLSAdmission(t *testing.T) {
-	authManager, err := auth.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	pairing, _ := authManager.IssuePairingToken(time.Minute)
-	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
-	deviceID := "device-cred-tls"
-	if _, err := authManager.EnrollDevice(pairing.Value, authManager.DaemonID(), authManager.PublicKeyHex(), deviceID, "phone", hex.EncodeToString(publicKey)); err != nil {
-		t.Fatal(err)
-	}
-	owner := startProfileOwner(t)
-	creds := modelprofiles.NewMemoryCredentialStore()
-	owner.SetCredentialStore(creds)
-	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
-	srv.SetModelProfiles(owner)
-
-	tlsServer := httptest.NewTLSServer(http.HandlerFunc(srv.handleWS))
-	t.Cleanup(tlsServer.Close)
-	header := http.Header{}
-	header.Set("Authorization", calendarAuthHeader(privateKey, authManager.DaemonID(), deviceID, "zen-connect"))
-	dialer := *websocket.DefaultDialer
-	dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	conn, _, err := dialer.Dial("wss"+strings.TrimPrefix(tlsServer.URL, "https"), header)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	readProviders := func() map[string]any {
-		t.Helper()
-		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		for {
-			_, raw, readErr := conn.ReadMessage()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			var payload map[string]any
-			if err := json.Unmarshal(raw, &payload); err != nil {
-				t.Fatal(err)
-			}
-			if payload["type"] == "providers" || payload["type"] == "provider_credential" || payload["type"] == "error" {
-				return payload
-			}
-		}
-	}
-
-	if err := conn.WriteJSON(map[string]any{
-		"type": "upsert_provider_connection", "request_id": "tls-create", "operation": "create",
-		"revision": 0, "provider_connection": map[string]any{"preset_id": modelprofiles.ProviderPresetDeepSeek},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	listed := readProviders()
-	if listed["type"] != "providers" {
-		t.Fatalf("listed=%#v", listed)
-	}
-	id := listed["connections"].([]any)[0].(map[string]any)["id"].(string)
-	if err := conn.WriteJSON(map[string]any{
-		"type": "set_provider_credential", "request_id": "tls-set",
-		"connection_id": id, "credential": "sk-tls",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	setResp := readProviders()
-	if setResp["type"] != "provider_credential" || setResp["credential_ready"] != true {
-		t.Fatalf("tls set=%#v", setResp)
-	}
-}
-
-func TestIsSecureCredentialTransport(t *testing.T) {
-	if !isSecureCredentialTransport(&http.Request{RemoteAddr: "127.0.0.1:9"}) {
-		t.Fatal("loopback")
-	}
-	if !isSecureCredentialTransport(&http.Request{RemoteAddr: "[::1]:9"}) {
-		t.Fatal("loopback v6")
-	}
-	if isSecureCredentialTransport(&http.Request{RemoteAddr: "203.0.113.9:9"}) {
-		t.Fatal("non-loopback insecure must reject")
-	}
-	tlsReq := &http.Request{RemoteAddr: "203.0.113.9:9", TLS: &tls.ConnectionState{}}
-	if !isSecureCredentialTransport(tlsReq) {
-		t.Fatal("TLS must admit non-loopback")
-	}
 }

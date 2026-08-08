@@ -8,7 +8,6 @@ export const PROVIDER_ERROR_CODES = {
   credentialNotReady: "model_profile_credential_not_ready",
   credentialStoreUnavailable: "credential_store_unavailable",
   credentialStoreFailed: "credential_store_failed",
-  secureTransportRequired: "secure_transport_required",
   bindingNotFound: "route_binding_not_found",
   bindingConflict: "route_binding_conflict",
   bindingBusy: "route_binding_busy",
@@ -25,7 +24,6 @@ export type ProviderErrorKind =
   | "busy"
   | "incompatible"
   | "credential"
-  | "secure_transport"
   | "not_found"
   | "invalid"
   | "offline"
@@ -70,8 +68,6 @@ export function classifyProviderErrorCode(
     case PROVIDER_ERROR_CODES.credentialStoreUnavailable:
     case PROVIDER_ERROR_CODES.credentialStoreFailed:
       return { kind: "credential", refreshable: true };
-    case PROVIDER_ERROR_CODES.secureTransportRequired:
-      return { kind: "secure_transport", refreshable: false };
     case PROVIDER_ERROR_CODES.notFound:
     case PROVIDER_ERROR_CODES.bindingNotFound:
       return { kind: "not_found", refreshable: true };
@@ -100,8 +96,6 @@ export function defaultProviderErrorMessage(kind: ProviderErrorKind): string {
       return "That Provider or Model is not compatible with this Session.";
     case "credential":
       return "The Provider API key could not be updated. You can retry from Providers.";
-    case "secure_transport":
-      return "API keys can only be changed over a secure connection.";
     case "not_found":
       return "The Provider or Session Model selection was not found.";
     case "invalid":
@@ -215,11 +209,9 @@ export function presentProviderError(error: unknown): {
         ? "Refresh required"
         : error.kind === "credential"
           ? "API key not ready"
-          : error.kind === "secure_transport"
-            ? "Secure connection required"
-            : error.kind === "offline"
-              ? "Offline"
-              : "Providers";
+          : error.kind === "offline"
+            ? "Offline"
+            : "Providers";
     return {
       title,
       message: error.message,

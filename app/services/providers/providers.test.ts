@@ -137,6 +137,12 @@ describe("Provider DTO parse", () => {
     ).toThrow(/credential/i);
   });
 
+  test("rejects old shared connections without one client owner", () => {
+    const raw = providerSnapshot();
+    raw.connections[0] = { ...raw.connections[0]!, clients: ["codex", "claude"] };
+    expect(parseProvidersSnapshot(raw)).toBeNull();
+  });
+
   test("parses session selection and credential result without secrets", () => {
     const selection = parseProviderSessionSelection({
       session_id: "tmux:@1",
@@ -180,19 +186,30 @@ describe("Provider DTO parse", () => {
   test("parses a secret-free connection test result", () => {
     expect(
       parseProviderConnectionTestResult(
-        { client: "codex", model_count: 7 },
+        { client: "codex", model_count: 7, latency_ms: 123 },
         "codex",
       ),
-    ).toEqual({ client: "codex", modelCount: 7 });
+    ).toEqual({ client: "codex", modelCount: 7, latencyMs: 123 });
     expect(
       parseProviderConnectionTestResult(
-        { client: "claude", model_count: 7 },
+        { client: "claude", model_count: 7, latency_ms: 123 },
+        "codex",
+      ),
+    ).toBeNull();
+    expect(
+      parseProviderConnectionTestResult(
+        { client: "codex", model_count: 7 },
         "codex",
       ),
     ).toBeNull();
     expect(() =>
       parseProviderConnectionTestResult(
-        { client: "codex", model_count: 7, credential: "sk-leak" },
+        {
+          client: "codex",
+          model_count: 7,
+          latency_ms: 123,
+          credential: "sk-leak",
+        },
         "codex",
       ),
     ).toThrow(/credential/i);
@@ -202,8 +219,9 @@ describe("Provider DTO parse", () => {
 describe("Provider Settings and Plus presentation policy", () => {
   test("custom endpoints are explicitly scoped to one client", () => {
     const snapshot = providerSnapshot();
-    expect(curatedConnectionInput(snapshot.presets[0]!)).toEqual({
+    expect(curatedConnectionInput(snapshot.presets[0]!, "codex")).toEqual({
       preset_id: "deepseek",
+      client: "codex",
     });
     const gateway = advancedConnectionInput({
       name: "Internal",

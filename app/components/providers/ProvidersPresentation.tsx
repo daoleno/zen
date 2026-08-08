@@ -9,6 +9,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { Claude, Codex } from "@lobehub/icons-rn";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Radii,
@@ -258,11 +259,11 @@ function ClientConnectionCard({
     <View style={styles.clientSection}>
       <View style={styles.clientHeader}>
         <View style={styles.clientIcon}>
-          <Ionicons
-            name={client === "codex" ? "terminal-outline" : "sparkles-outline"}
-            size={18}
-            color={colors.textPrimary}
-          />
+          {client === "codex" ? (
+            <Codex.Color size={22} />
+          ) : (
+            <Claude.Color size={22} />
+          )}
         </View>
         <View style={styles.rowCopy}>
           <Text style={styles.clientTitle}>{label}</Text>
@@ -508,7 +509,7 @@ interface ProviderEditorSheetProps {
 type TestState =
   | { kind: "idle" }
   | { kind: "testing" }
-  | { kind: "success"; modelCount: number }
+  | { kind: "success"; modelCount: number; latencyMs: number }
   | { kind: "error"; message: string };
 
 function ProviderEditorSheet({
@@ -596,7 +597,11 @@ function ProviderEditorSheet({
         baseUrl: endpoint.trim(),
         apiKey,
       });
-      setTestState({ kind: "success", modelCount: result.modelCount });
+      setTestState({
+        kind: "success",
+        modelCount: result.modelCount,
+        latencyMs: result.latencyMs,
+      });
     } catch (error) {
       setTestState({
         kind: "error",
@@ -733,7 +738,10 @@ function ProviderEditorSheet({
           <View style={styles.testResult}>
             <Ionicons name="checkmark-circle" size={17} color={colors.success} />
             <Text style={[styles.testResultText, { color: colors.success }]}>
-              Connected{testState.modelCount > 0 ? ` · ${testState.modelCount} models found` : ""}
+              Connected · {testState.latencyMs} ms
+              {testState.modelCount > 0
+                ? ` · ${testState.modelCount} models found`
+                : ""}
             </Text>
           </View>
         ) : null}

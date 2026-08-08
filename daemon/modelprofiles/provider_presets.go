@@ -138,7 +138,6 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 	in.ID = normalizeID(in.ID)
 	in.Name = normalizeSpace(in.Name)
 	in.Client = normalizeID(in.Client)
-	in.Executor = normalizeID(in.Executor) // legacy alias → client
 	in.PresetID = normalizeID(in.PresetID)
 	in.ModelID = normalizeSpace(in.ModelID)
 	in.BaseURL = normalizeSpace(in.BaseURL)
@@ -157,17 +156,12 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 		return Profile{}, fmt.Errorf("%w: name is required", ErrInvalid)
 	}
 
-	// Custom/Advanced may require a client hint to pick protocol defaults for
-	// the durable base URL shape; curated multi-client presets do not.
-	hint := executorFromClient(firstNonEmpty(in.Client, in.Executor))
-	if normalizeID(in.PresetID) == ProviderPresetCustom || in.Advanced {
-		if hint == "" {
-			hint = ExecutorCodex
-		}
-		if !presetSupportsClient(spec, hint) {
-			return Profile{}, fmt.Errorf("%w: preset %q does not support client %s", ErrInvalid, in.PresetID, hint)
-		}
-	} else if hint != "" && !presetSupportsClient(spec, hint) {
+	client := clientFromExecutor(in.Client)
+	if client != ClientCodex && client != ClientClaude {
+		return Profile{}, fmt.Errorf("%w: client must be codex or claude", ErrInvalid)
+	}
+	hint := executorFromClient(client)
+	if !presetSupportsClient(spec, hint) {
 		return Profile{}, fmt.Errorf("%w: preset %q does not support client %s", ErrInvalid, in.PresetID, hint)
 	}
 
@@ -225,7 +219,7 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 		ID:            id,
 		Name:          in.Name,
 		Scope:         ConnectionScopeAccount,
-		Client:        clientFromExecutor(hint),
+		Client:        client,
 		ProviderID:    providerID,
 		ProviderLabel: label,
 		Model:         modelID,

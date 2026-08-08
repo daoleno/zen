@@ -83,7 +83,13 @@ export function parseProviderConnection(
   const id = asString(record.id);
   const name = asString(record.name);
   const clients = parseClients(record.clients);
-  if (!id || !name || !clients || typeof record.credential_ready !== "boolean") {
+  if (
+    !id ||
+    !name ||
+    !clients ||
+    clients.length !== 1 ||
+    typeof record.credential_ready !== "boolean"
+  ) {
     return null;
   }
   const advanced = record.advanced === true;
@@ -293,16 +299,20 @@ export function parseProviderConnectionTestResult(
   assertSecretFree(record);
   const client = normalizeProviderClient(asString(record.client));
   const modelCount = record.model_count;
+  const latencyMs = record.latency_ms;
   if (
     !isSupportedProviderClient(client) ||
     client !== normalizeProviderClient(expectedClient) ||
     typeof modelCount !== "number" ||
     !Number.isInteger(modelCount) ||
-    modelCount < 0
+    modelCount < 0 ||
+    typeof latencyMs !== "number" ||
+    !Number.isInteger(latencyMs) ||
+    latencyMs < 0
   ) {
     return null;
   }
-  return { client, modelCount };
+  return { client, modelCount, latencyMs };
 }
 
 export const parseProviderCatalogProjection = parseProvidersSnapshot;

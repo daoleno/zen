@@ -76,8 +76,8 @@ describe("Settings orchestration", () => {
       clients: ["codex", "claude"],
       advanced: false,
     };
-    const input = curatedCreateInput(preset);
-    expect(input).toEqual({ preset_id: "deepseek" });
+    const input = curatedCreateInput(preset, "codex");
+    expect(input).toEqual({ preset_id: "deepseek", client: "codex" });
     expect(input.model_id).toBeUndefined();
   });
 
@@ -100,6 +100,15 @@ describe("Settings orchestration", () => {
         baseUrl: "file:///tmp/provider",
       }),
     ).toThrow(/HTTP or HTTPS/i);
+  });
+
+  test("custom gateway accepts an explicit private HTTP endpoint", () => {
+    expect(
+      customGatewayCreateInput({
+        client: "codex",
+        baseUrl: "http://192.168.1.20:8080/v1",
+      }).base_url,
+    ).toBe("http://192.168.1.20:8080/v1");
   });
 
   test("create → credential → discovery ordering refuses discovery through refresh lock", () => {

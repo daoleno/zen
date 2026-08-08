@@ -12,10 +12,9 @@ import (
 )
 
 // NewSafeHTTPClient builds an upstream client that never uses ambient HTTP
-// proxy environment variables, never follows redirects, and dials through an
-// SSRF-aware resolver. Loopback dials are allowed only when the request host is
-// an explicit literal 127.0.0.1, ::1, or localhost — never when a remote name
-// resolves to loopback/private/link-local.
+// proxy environment variables, never follows redirects, and dials through a
+// resolver that permits explicit public/private model endpoints while blocking
+// metadata, link-local, multicast, and implicit DNS-to-loopback targets.
 func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -117,8 +116,8 @@ func resolveSafeHostLookup(ctx context.Context, host string, lookup ipLookupFunc
 	return filterResolvedAddresses(host, addrs, allowLoopback)
 }
 
-// filterResolvedAddresses rejects DNS answers that land on loopback/private/
-// link-local/metadata unless the original host explicitly allowed loopback.
+// filterResolvedAddresses accepts public/private endpoint addresses. Loopback
+// still requires an explicit loopback host, and metadata/link-local stay blocked.
 func filterResolvedAddresses(host string, addrs []netip.Addr, allowLoopback bool) ([]netip.Addr, error) {
 	_ = host
 	out := make([]netip.Addr, 0, len(addrs))
@@ -142,7 +141,7 @@ func isDialableUpstreamIP(ip netip.Addr, allowLoopback bool) bool {
 	if ip.IsLoopback() {
 		return allowLoopback
 	}
-	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return false
 	}
 	if isMetadataIP(ip) {

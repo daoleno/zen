@@ -3,8 +3,6 @@ package server
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"strings"
 
 	"github.com/daoleno/zen/daemon/modelprofiles"
@@ -184,11 +182,6 @@ func (s *Server) handleDiscoverProviderModels(conn *websocket.Conn, raw clientMe
 }
 
 func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMessage) {
-	if !s.credentialWriteAllowed(conn) {
-		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeSecureTransportRequired,
-			"secure transport required for credential tests")
-		return
-	}
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -216,6 +209,7 @@ func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMe
 		"request_id":  raw.RequestID,
 		"client":      result.Client,
 		"model_count": result.ModelCount,
+		"latency_ms":  result.LatencyMS,
 	})
 }
 
@@ -298,11 +292,6 @@ func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientM
 }
 
 func (s *Server) handleSetProviderCredential(conn *websocket.Conn, raw clientMessage) {
-	if !s.credentialWriteAllowed(conn) {
-		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeSecureTransportRequired,
-			"secure transport required for credential writes")
-		return
-	}
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -335,11 +324,6 @@ func (s *Server) handleSetProviderCredential(conn *websocket.Conn, raw clientMes
 }
 
 func (s *Server) handleClearProviderCredential(conn *websocket.Conn, raw clientMessage) {
-	if !s.credentialWriteAllowed(conn) {
-		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeSecureTransportRequired,
-			"secure transport required for credential writes")
-		return
-	}
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -365,31 +349,6 @@ func (s *Server) handleClearProviderCredential(conn *websocket.Conn, raw clientM
 		"persistence_outcome": res.PersistenceOutcome,
 		"persistence_durable": res.PersistenceDurable,
 	})
-}
-
-func (s *Server) credentialWriteAllowed(conn *websocket.Conn) bool {
-	if s == nil || conn == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	owner, ok := s.clients[conn]
-	return ok && owner != nil && owner.secureTransport
-}
-
-func isSecureCredentialTransport(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	if r.TLS != nil {
-		return true
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) sendProvidersMutation(conn *websocket.Conn, requestID string, proj modelprofiles.ProviderCatalogProjection, err error) {

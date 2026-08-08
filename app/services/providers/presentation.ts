@@ -146,17 +146,24 @@ export function futureDefaultRows(
 
 export function curatedConnectionInput(
   preset: ProviderPreset,
+  client: string,
 ): ProviderConnectionInput {
   if (preset.advanced) {
     throw invalidProviderReply("Advanced Providers require Gateway details.");
   }
-  return { preset_id: preset.id };
+  const normalizedClient = normalizeProviderClient(client);
+  if (
+    !isSupportedProviderClient(normalizedClient) ||
+    !preset.clients.includes(normalizedClient)
+  ) {
+    throw invalidProviderReply("Choose a supported client.");
+  }
+  return { preset_id: preset.id, client: normalizedClient };
 }
 
 /**
- * Advanced/Custom create input. Zen derives Codex/Claude adapter
- * compatibility internally, so the App never sends a client or a manual model
- * id — only the gateway identity the user actually configured.
+ * Advanced/Custom create input. The App sends the selected product client and
+ * gateway identity; Zen derives protocol/auth compatibility internally.
  */
 export function advancedConnectionInput(input: {
   existingId?: string;
@@ -177,7 +184,7 @@ export function advancedConnectionInput(input: {
   try {
     parsed = new URL(baseUrl);
   } catch {
-    throw invalidProviderReply("Enter a valid HTTPS base URL.");
+    throw invalidProviderReply("Enter a valid HTTP or HTTPS base URL.");
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw invalidProviderReply("Base URL must use HTTP or HTTPS.");
@@ -198,7 +205,7 @@ export function providerConnectionNameFromURL(baseUrl: string): string {
   try {
     parsed = new URL(normalized);
   } catch {
-    throw invalidProviderReply("Enter a valid HTTPS base URL.");
+    throw invalidProviderReply("Enter a valid HTTP or HTTPS base URL.");
   }
   const path = parsed.pathname.replace(/\/$/, "");
   return `${parsed.host}${path === "/v1" ? "" : path}`;
@@ -259,20 +266,17 @@ export function sanitizeProviderConnectionInput(
   if (!presetId) {
     throw invalidProviderReply("Choose a Provider preset.");
   }
-  const out: ProviderConnectionInput = { preset_id: presetId };
   const id = normalizeProviderId(input.id);
   const name = normalizeProviderId(input.name);
   const client = normalizeProviderClient(input.client);
   const baseUrl = normalizeProviderId(input.base_url);
   const modelId = normalizeProviderId(input.model_id);
+  if (!isSupportedProviderClient(client)) {
+    throw invalidProviderReply("Choose Codex or Claude Code.");
+  }
+  const out: ProviderConnectionInput = { preset_id: presetId, client };
   if (id) out.id = id;
   if (name) out.name = name;
-  if (client) {
-    if (!isSupportedProviderClient(client)) {
-      throw invalidProviderReply("Choose Codex or Claude.");
-    }
-    out.client = client;
-  }
   if (baseUrl) out.base_url = baseUrl;
   if (modelId) out.model_id = modelId;
   if (input.advanced === true) out.advanced = true;

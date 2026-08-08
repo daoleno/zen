@@ -14,7 +14,7 @@ import (
 
 func TestCompileProviderConnectionPresetsHideInternalFields(t *testing.T) {
 	in := ProviderConnectionInput{
-		Name: "OpenAI", PresetID: ProviderPresetOpenAI,
+		Name: "OpenAI", PresetID: ProviderPresetOpenAI, Client: ClientCodex,
 	}
 	profile, err := CompileProviderConnection(in)
 	if err != nil {
@@ -43,9 +43,18 @@ func TestCompileProviderConnectionPresetsHideInternalFields(t *testing.T) {
 	}
 }
 
+func TestCompileProviderConnectionRequiresOneExplicitClient(t *testing.T) {
+	_, err := CompileProviderConnection(ProviderConnectionInput{
+		Name: "Unscoped", PresetID: ProviderPresetDeepSeek,
+	})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "client") {
+		t.Fatalf("missing client error=%v", err)
+	}
+}
+
 func TestCompileProviderConnectionRejectsUntrustedModelUnlessAdvanced(t *testing.T) {
 	_, err := CompileProviderConnection(ProviderConnectionInput{
-		Name: "OR", PresetID: ProviderPresetOpenRouter, ModelID: "invented/model",
+		Name: "OR", PresetID: ProviderPresetOpenRouter, Client: ClientCodex, ModelID: "invented/model",
 	})
 	if err == nil {
 		t.Fatal("expected curated model_id rejection")
@@ -210,6 +219,12 @@ func TestValidateUpstreamBaseURLBlocksSSRF(t *testing.T) {
 	if err := ValidateUpstreamBaseURL("https://api.openai.com/v1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateUpstreamBaseURL("http://models.internal:8080/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUpstreamBaseURL("http://10.20.30.40:8080/v1"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDiscoveryCacheSurvivesRestart(t *testing.T) {
@@ -225,6 +240,7 @@ func TestDiscoveryCacheSurvivesRestart(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
 	profile := Profile{
 		ID: "c1", Name: "C1", Scope: ConnectionScopeAccount,
+		Client:     ClientCodex,
 		ProviderID: "openai", ProviderLabel: "OpenAI",
 		Model: "gpt-5", BaseURL: srv.URL + "/v1",
 		AuthMode: AuthModeNone, CredentialEnv: "OPENAI_API_KEY",
@@ -335,7 +351,7 @@ func TestProviderConnectionProbeIsTransientAndUsesClientAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Client != tt.client || result.ModelCount != 2 {
+			if result.Client != tt.client || result.ModelCount != 2 || result.LatencyMS < 0 {
 				t.Fatalf("result=%#v", result)
 			}
 			after := owner.Catalog()

@@ -965,7 +965,11 @@ function ProvidersDemo() {
         onUseDirect={NOOP}
         onSetDefault={NOOP}
         onDiscover={NOOP}
-        onTestConnection={async () => ({ client: "codex", modelCount: 3 })}
+        onTestConnection={async () => ({
+          client: "codex",
+          modelCount: 3,
+          latencyMs: 128,
+        })}
         onSaveCustom={() => ({ status: "saved" })}
         onSaveCredential={() => ({ status: "saved" })}
       />
