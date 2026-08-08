@@ -18,15 +18,15 @@ import { ComposerSendButton } from "./ComposerSendButton";
 import { COMPOSER_ACTION_SLOT_WIDTH } from "./composerActionSlot";
 import {
   COMPOSER_ACTION_BAND_VERTICAL_PADDING,
-  COMPOSER_MODEL_CHIP_HEIGHT,
-  COMPOSER_MODEL_CHIP_LEFT_INSET,
-  COMPOSER_MODEL_CHIP_RIGHT_INSET,
+  COMPOSER_MODEL_CONTROL_HEIGHT,
+  COMPOSER_MODEL_CONTROL_LEFT_INSET,
+  COMPOSER_MODEL_CONTROL_RIGHT_INSET,
   COMPOSER_SPRING_CONFIG,
   composerActionBandHeight,
   composerExpansionRadius,
   composerExpansionTarget,
   composerInputHorizontalPadding,
-  composerModelChipReveal,
+  composerModelControlReveal,
   composerMotionDisabled,
 } from "./composerExpansionMetrics";
 import { InterfaceComposerInput } from "./InterfaceComposerInput";
@@ -125,7 +125,7 @@ export function InterfaceComposerExpandingDock({
     return { paddingLeft: padding.left, paddingRight: padding.right };
   });
   const chipRevealStyle = useAnimatedStyle(() => {
-    const reveal = composerModelChipReveal(progress.value);
+    const reveal = composerModelControlReveal(progress.value);
     return {
       opacity: reveal.opacity,
       transform: [{ translateY: reveal.translateY }],
@@ -181,7 +181,7 @@ export function InterfaceComposerExpandingDock({
           accessibilityElementsHidden={!focused}
           importantForAccessibility={focused ? "auto" : "no-hide-descendants"}
           pointerEvents={focused ? "auto" : "none"}
-          style={[styles.modelChipSlot, chipRevealStyle]}
+          style={[styles.modelControlSlot, chipRevealStyle]}
         >
           <ComposerModelChip
             label={modelControl.label}
@@ -233,14 +233,14 @@ const styles = StyleSheet.create({
   band: {
     height: 0,
   },
-  modelChipSlot: {
+  modelControlSlot: {
     position: "absolute",
-    left: COMPOSER_MODEL_CHIP_LEFT_INSET,
-    right: COMPOSER_MODEL_CHIP_RIGHT_INSET,
+    left: COMPOSER_MODEL_CONTROL_LEFT_INSET,
+    right: COMPOSER_MODEL_CONTROL_RIGHT_INSET,
     bottom: COMPOSER_ACTION_BAND_VERTICAL_PADDING,
-    height: COMPOSER_MODEL_CHIP_HEIGHT,
+    height: COMPOSER_MODEL_CONTROL_HEIGHT,
     justifyContent: "center",
-    alignItems: "flex-start",
+    alignItems: "flex-end",
   },
   actionSlotLeft: {
     position: "absolute",

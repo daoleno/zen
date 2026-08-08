@@ -12,9 +12,8 @@ import type { StoredInterfaceRenderMode } from "../../../services/storage";
 import type { PresentedAgent } from "../../../services/agentPresentation";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
-  ProviderConnection,
   ProviderError,
-  ProviderModel,
+  ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../../services/providers";
 import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
@@ -66,15 +65,8 @@ interface UseTerminalScreenLayoutPropsInput {
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
-  routeSheetDurabilityWarning?: string | null;
-  routeSheetRequiresRefresh?: boolean;
-  routeSheetNonRouted?: boolean;
-  routeSheetDirectClient?: "codex" | "claude" | null;
-  routeSheetManagedReadOnly?: boolean;
-  routeSheetActivationEnabled?: boolean;
   routeSheetSelection?: ProviderSessionSelection | null;
-  routeSheetConnections: ProviderConnection[];
-  routeSheetModelsByConnection: Record<string, ProviderModel[]>;
+  routeSheetChoices: ProviderModelChoice[];
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   screenFocused: boolean;
@@ -105,7 +97,6 @@ interface UseTerminalScreenLayoutPropsInput {
   closeRouteSheet(): void;
   retryRouteSheet(): void;
   activateSessionModel(choice: SessionModelChoice): void;
-  openProvidersSettings(): void;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
 }
 
@@ -148,15 +139,8 @@ export function useTerminalScreenLayoutProps({
   routeSheetLoading,
   routeSheetActivating,
   routeSheetError,
-  routeSheetDurabilityWarning,
-  routeSheetRequiresRefresh,
-  routeSheetNonRouted,
-  routeSheetDirectClient,
-  routeSheetManagedReadOnly,
-  routeSheetActivationEnabled,
   routeSheetSelection,
-  routeSheetConnections,
-  routeSheetModelsByConnection,
+  routeSheetChoices,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   screenFocused,
@@ -187,7 +171,6 @@ export function useTerminalScreenLayoutProps({
   closeRouteSheet,
   retryRouteSheet,
   activateSessionModel,
-  openProvidersSettings,
   sessionActions,
 }: UseTerminalScreenLayoutPropsInput) {
   const handleToggleInterfaceRenderMode = useCallback(() => {
@@ -268,15 +251,8 @@ export function useTerminalScreenLayoutProps({
     routeSheetLoading,
     routeSheetActivating,
     routeSheetError,
-    routeSheetDurabilityWarning,
-    routeSheetRequiresRefresh,
-    routeSheetNonRouted,
-    routeSheetDirectClient,
-    routeSheetManagedReadOnly,
-    routeSheetActivationEnabled,
     routeSheetSelection,
-    routeSheetConnections,
-    routeSheetModelsByConnection,
+    routeSheetChoices,
     createDurabilityWarning,
     onDismissCreateDurabilityWarning,
     creatingSession,
@@ -304,7 +280,6 @@ export function useTerminalScreenLayoutProps({
     onOpenModel: modelActionAvailable
       ? openModel
       : undefined,
-    onOpenProvidersSettings: openProvidersSettings,
     setNewTerminalVisible,
     setRenameVisible,
     setRenameDraft,

@@ -1,5 +1,4 @@
 import React, { useCallback } from "react";
-import { useRouter } from "expo-router";
 import { useAgents } from "../../../store/agents";
 import { useBrain } from "../../../store/brain";
 import { useWork } from "../../../store/work";
@@ -15,10 +14,7 @@ import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 import { useSessionResourceSheet } from "./useSessionResourceSheet";
-import {
-  sessionSupportsModelProfileAction,
-  useSessionProviderSheet,
-} from "./useSessionProviderSheet";
+import { useSessionProviderSheet } from "./useSessionProviderSheet";
 
 export default function TerminalScreen() {
   const { state } = useAgents();
@@ -161,16 +157,11 @@ export default function TerminalScreen() {
     connectionConnected: connectionState === "connected",
   });
 
-  const router = useRouter();
   const routeSheet = useSessionProviderSheet({
     serverId,
     agentId,
     capabilities: agent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
-    client:
-      presentedAgent.kind === "codex" || presentedAgent.kind === "claude"
-        ? presentedAgent.kind
-        : null,
     eagerLoad: true,
   });
 
@@ -179,9 +170,9 @@ export default function TerminalScreen() {
     routeSheet.open();
   }, [closeMenu, routeSheet]);
 
-  const modelActionAvailable = sessionSupportsModelProfileAction(
-    agent?.capabilities ?? null,
-  );
+  // The popover Model action exists only when this exact Session can switch
+  // models right now — the same truth as the Composer control.
+  const modelActionAvailable = routeSheet.composerControl != null;
 
   const { overlayProps, topBarProps, viewportProps } =
     useTerminalScreenLayoutProps({
@@ -223,15 +214,8 @@ export default function TerminalScreen() {
       routeSheetLoading: routeSheet.loading,
       routeSheetActivating: routeSheet.activating,
       routeSheetError: routeSheet.error,
-      routeSheetDurabilityWarning: routeSheet.durabilityWarning,
-      routeSheetRequiresRefresh: routeSheet.requiresRefreshBeforeMutation,
-      routeSheetNonRouted: routeSheet.direct,
-      routeSheetDirectClient: routeSheet.direct ? routeSheet.client : null,
-      routeSheetManagedReadOnly: routeSheet.managedReadOnly,
-      routeSheetActivationEnabled: routeSheet.activationEnabled,
       routeSheetSelection: routeSheet.selection,
-      routeSheetConnections: routeSheet.connections,
-      routeSheetModelsByConnection: routeSheet.modelsByConnection,
+      routeSheetChoices: routeSheet.choices,
       createDurabilityWarning,
       onDismissCreateDurabilityWarning: dismissCreateDurabilityWarning,
       screenFocused,
@@ -265,9 +249,6 @@ export default function TerminalScreen() {
       retryRouteSheet: routeSheet.retry,
       activateSessionModel: (choice) => {
         void routeSheet.activate(choice);
-      },
-      openProvidersSettings: () => {
-        router.push("/model-profiles");
       },
       sessionActions,
     });

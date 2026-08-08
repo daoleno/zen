@@ -15,8 +15,6 @@ import type { BrainAgentRef } from "../../../store/brain";
 import type { WorkItem } from "../../../store/work";
 import {
   sessionAllowsModelProfileActivation,
-  sessionIsManagedReadOnlyProfile,
-  sessionSupportsModelProfileAction,
 } from "../../../services/providers/sessionCapabilities";
 import { findLinkedWork } from "./TerminalScreenModel";
 import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
@@ -297,18 +295,22 @@ export function resolveTerminalRouteAgent({
   };
 }
 
-/** Model menu visibility derived from resolved route agent capabilities. */
+/**
+ * Model menu visibility follows the same truth as the Composer control: the
+ * action exists only when this Session's capability advertises the
+ * daemon-acknowledged live switch. Managed read-only and unmanaged Sessions
+ * keep the action hidden — never a dead control.
+ */
 export function routeAgentProviderModelActionState(
   capabilities: AgentCapabilities | null | undefined,
 ): {
   actionVisible: boolean;
   activationEnabled: boolean;
-  managedReadOnly: boolean;
 } {
+  const activeSwitch = sessionAllowsModelProfileActivation(capabilities);
   return {
-    actionVisible: sessionSupportsModelProfileAction(capabilities),
-    activationEnabled: sessionAllowsModelProfileActivation(capabilities),
-    managedReadOnly: sessionIsManagedReadOnlyProfile(capabilities),
+    actionVisible: activeSwitch,
+    activationEnabled: activeSwitch,
   };
 }
 

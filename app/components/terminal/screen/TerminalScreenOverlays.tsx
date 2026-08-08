@@ -7,9 +7,8 @@ import type {
 import { TypeScale } from "../../../constants/tokens";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
-  ProviderConnection,
   ProviderError,
-  ProviderModel,
+  ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../../services/providers";
 import {
@@ -36,15 +35,8 @@ export interface TerminalScreenOverlaysProps {
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
-  routeSheetDurabilityWarning?: string | null;
-  routeSheetRequiresRefresh?: boolean;
-  routeSheetNonRouted?: boolean;
-  routeSheetDirectClient?: "codex" | "claude" | null;
-  routeSheetManagedReadOnly?: boolean;
-  routeSheetActivationEnabled?: boolean;
   routeSheetSelection?: ProviderSessionSelection | null;
-  routeSheetConnections: ProviderConnection[];
-  routeSheetModelsByConnection: Record<string, ProviderModel[]>;
+  routeSheetChoices: ProviderModelChoice[];
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -69,7 +61,6 @@ export interface TerminalScreenOverlaysProps {
   onRetryRouteSheet(): void;
   onActivateSessionModel(choice: SessionModelChoice): void;
   onOpenModel?(): void;
-  onOpenProvidersSettings(): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
   onRename(): void;
@@ -92,15 +83,8 @@ export function TerminalScreenOverlays({
   routeSheetLoading,
   routeSheetActivating,
   routeSheetError,
-  routeSheetDurabilityWarning,
-  routeSheetRequiresRefresh,
-  routeSheetNonRouted,
-  routeSheetDirectClient,
-  routeSheetManagedReadOnly,
-  routeSheetActivationEnabled,
   routeSheetSelection,
-  routeSheetConnections,
-  routeSheetModelsByConnection,
+  routeSheetChoices,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -125,7 +109,6 @@ export function TerminalScreenOverlays({
   onRetryRouteSheet,
   onActivateSessionModel,
   onOpenModel,
-  onOpenProvidersSettings,
   onNewTerminal,
   onCloseMenu,
   onRename,
@@ -180,19 +163,11 @@ export function TerminalScreenOverlays({
         loading={routeSheetLoading}
         activating={routeSheetActivating}
         error={routeSheetError}
-        durabilityWarning={routeSheetDurabilityWarning}
-        requiresRefreshBeforeMutation={routeSheetRequiresRefresh}
-        managedReadOnly={routeSheetManagedReadOnly}
-        activationEnabled={routeSheetActivationEnabled}
-        nonRouted={routeSheetNonRouted}
-        directClient={routeSheetDirectClient}
         selection={routeSheetSelection}
-        connections={routeSheetConnections}
-        modelsByConnection={routeSheetModelsByConnection}
+        choices={routeSheetChoices}
         chrome={chrome}
         onClose={onCloseRouteSheet}
         onRetry={onRetryRouteSheet}
-        onOpenProvidersSettings={onOpenProvidersSettings}
         onActivate={onActivateSessionModel}
       />
 

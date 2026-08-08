@@ -3,12 +3,9 @@ import {
   activationAllowed,
   assertActivationPayloadHasNoGeneration,
   buildActivateSessionProviderRequest,
-  exactCurrentModelChoice,
-  filterSessionModelChoices,
   resolveComposerModelControl,
-  resolveDirectComposerModelControl,
   resolveSessionModelSheetMode,
-  sessionModelChoices,
+  sessionModelPickerChoices,
 } from "./sessionModelHelpers";
 import type {
   ProviderSessionSelection,
@@ -57,204 +54,57 @@ const snapshot: ProvidersSnapshot = {
   models: {
     c1: [
       { id: "deepseek-chat", available: true, source: "bundled" },
+      { id: "deepseek-reasoner", available: true, source: "bundled" },
       { id: "gone", available: false, source: "lkg" },
     ],
     c3: [{ id: "gpt-x", available: true, source: "bundled" }],
   },
 };
 
-describe("Plus Model helpers", () => {
-  test("filters by Session client and unavailable models", () => {
-    const choices = filterSessionModelChoices(
-      sessionModelChoices(snapshot, selection),
-    );
-    expect(choices.map((c) => `${c.connection.id}:${c.model.id}`)).toEqual([
-      "c1:deepseek-chat",
-      "c3:gpt-x",
+describe("Session model picker inventory", () => {
+  test("offers only the bound connection's available models", () => {
+    const choices = sessionModelPickerChoices(snapshot, selection);
+    expect(choices.map((c) => c.model.id)).toEqual([
+      "deepseek-chat",
+      "deepseek-reasoner",
     ]);
-    expect(choices.find((c) => c.connection.id === "c3")?.disabled).toBe(true);
+    // Other connections and unavailable models never appear.
+    expect(choices.some((c) => c.connection.id === "c2")).toBe(false);
+    expect(choices.some((c) => c.connection.id === "c3")).toBe(false);
+    expect(choices.some((c) => c.model.id === "gone")).toBe(false);
   });
 
-  test("exact current selection is marked current", () => {
-    const current = exactCurrentModelChoice(
-      filterSessionModelChoices(sessionModelChoices(snapshot, selection)),
-    );
-    expect(current?.connection.id).toBe("c1");
-    expect(current?.model.id).toBe("deepseek-chat");
+  test("marks the current selection with the checked flag", () => {
+    const choices = sessionModelPickerChoices(snapshot, selection);
+    const current = choices.find((c) => c.model.id === "deepseek-chat");
     expect(current?.current).toBe(true);
-  });
-
-  test("activation request omits generation", () => {
-    const request = buildActivateSessionProviderRequest({
-      agentId: "tmux:@1",
-      connectionId: "c1",
-      modelId: "deepseek-reasoner",
-    });
-    expect(request).toEqual({
-      agentId: "tmux:@1",
-      connectionId: "c1",
-      modelId: "deepseek-reasoner",
-    });
-    assertActivationPayloadHasNoGeneration({
-      type: "activate_session_provider",
-      ...request,
-    });
-    expect(() =>
-      assertActivationPayloadHasNoGeneration({
-        type: "activate_session_provider",
-        ...request,
-        generation: 9,
-      }),
-    ).toThrow(/generation/);
-  });
-
-  test("managed read-only and missing capability modes", () => {
     expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: false,
-          model_profile_active_switch: false,
-        },
-        selection,
-      }),
-    ).toBe("hidden");
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: true,
-          model_profile_active_switch: false,
-        },
-        selection,
-      }),
-    ).toBe("managed_readonly");
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: true,
-          model_profile_active_switch: true,
-        },
-        selection: { ...selection, hot_switchable: false },
-      }),
-    ).toBe("capability_mismatch");
-  });
-
-  test("stale refresh-before-retry blocks activation", () => {
-    const choice = filterSessionModelChoices(
-      sessionModelChoices(snapshot, selection),
-    ).find((item) => item.connection.id === "c3");
-    expect(choice).toBeTruthy();
-    expect(
-      activationAllowed({
-        mode: "active_switch",
-        choice: choice!,
-        refreshRequired: true,
-      }),
+      choices.find((c) => c.model.id === "deepseek-reasoner")?.current,
     ).toBe(false);
   });
-});
 
-describe("Direct official-login Sessions", () => {
-  const unmanaged = {
-    structured_events: true,
-    model_profile_managed: false,
-    model_profile_active_switch: false,
-  };
-
-  test("Codex/Claude unbound Sessions get a truthful Direct label", () => {
+  test("empty catalog or missing bound connection yields no inventory", () => {
+    expect(sessionModelPickerChoices(null, selection)).toEqual([]);
     expect(
-      resolveDirectComposerModelControl({
-        client: "codex",
-        capabilities: unmanaged,
+      sessionModelPickerChoices(snapshot, {
+        ...selection,
+        connection_id: "missing",
       }),
-    ).toEqual({
-      label: "Codex · Direct",
-      accessibilityLabel:
-        "Codex direct official login. Model switching is not available in this Session. Opens session details.",
-    });
-    expect(
-      resolveDirectComposerModelControl({
-        client: "claude",
-        capabilities: unmanaged,
-      })?.label,
-    ).toBe("Claude · Direct");
+    ).toEqual([]);
+    expect(sessionModelPickerChoices(snapshot, null)).toEqual([]);
   });
 
-  test("never guesses a model id for the direct label", () => {
-    const control = resolveDirectComposerModelControl({
-      client: "codex",
-      capabilities: unmanaged,
-    });
-    expect(control?.label).not.toMatch(/gpt|claude-\d|deepseek|model/i);
-  });
-
-  test("managed Sessions never receive the Direct label", () => {
+  test("bound connection with no discovered models yields no inventory", () => {
     expect(
-      resolveDirectComposerModelControl({
-        client: "codex",
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: true,
-          model_profile_active_switch: true,
-        },
-      }),
-    ).toBeNull();
-  });
-
-  test("unsupported or unknown clients stay hidden", () => {
-    expect(
-      resolveDirectComposerModelControl({ client: null, capabilities: unmanaged }),
-    ).toBeNull();
-    expect(
-      resolveDirectComposerModelControl({
-        client: "pi",
-        capabilities: unmanaged,
-      } as never),
-    ).toBeNull();
-  });
-
-  test("sheet mode is direct only for unbound Codex/Claude clients", () => {
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: unmanaged,
-        selection: null,
-        client: "codex",
-      }),
-    ).toBe("direct");
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: unmanaged,
-        selection: null,
-        client: "claude",
-      }),
-    ).toBe("direct");
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: unmanaged,
-        selection: null,
-        client: null,
-      }),
-    ).toBe("hidden");
-  });
-
-  test("managed Sessions ignore the client hint", () => {
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: true,
-          model_profile_active_switch: true,
-        },
+      sessionModelPickerChoices(
+        { ...snapshot, models: {} },
         selection,
-        client: "codex",
-      }),
-    ).toBe("active_switch");
+      ),
+    ).toEqual([]);
   });
 });
 
-describe("Composer model control", () => {
+describe("Composer model control truth", () => {
   const managedSwitch = {
     structured_events: true,
     model_profile_managed: true,
@@ -270,8 +120,7 @@ describe("Composer model control", () => {
     });
     expect(control).toEqual({
       label: "deepseek-chat",
-      accessibilityLabel:
-        "Open model selection, deepseek-chat, DeepSeek",
+      accessibilityLabel: "Open model selection, deepseek-chat, DeepSeek",
     });
   });
 
@@ -358,5 +207,144 @@ describe("Composer model control", () => {
         refreshRequired: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("Sheet mode: hidden unless the acknowledged live-switch Session", () => {
+  const managedSwitch = {
+    structured_events: true,
+    model_profile_managed: true,
+    model_profile_active_switch: true,
+  };
+
+  test("switchable only for managed + active switch + hot selection", () => {
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: managedSwitch,
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBe("switchable");
+  });
+
+  test("hidden for every unsupported or stale state", () => {
+    // Unmanaged (direct official login, OpenCode, Pi, shell) stay hidden.
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: false,
+          model_profile_active_switch: false,
+        },
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBe("hidden");
+    // Managed read-only.
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: true,
+          model_profile_active_switch: false,
+        },
+        selection,
+        refreshRequired: false,
+      }),
+    ).toBe("hidden");
+    // Missing selection.
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: managedSwitch,
+        selection: null,
+        refreshRequired: false,
+      }),
+    ).toBe("hidden");
+    // Not hot-switchable.
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: managedSwitch,
+        selection: { ...selection, hot_switchable: false },
+        refreshRequired: false,
+      }),
+    ).toBe("hidden");
+    // Refresh required.
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: managedSwitch,
+        selection,
+        refreshRequired: true,
+      }),
+    ).toBe("hidden");
+  });
+});
+
+describe("Activation contract", () => {
+  test("activation request omits generation", () => {
+    const request = buildActivateSessionProviderRequest({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-reasoner",
+    });
+    expect(request).toEqual({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-reasoner",
+    });
+    assertActivationPayloadHasNoGeneration({
+      type: "activate_session_provider",
+      ...request,
+    });
+    expect(() =>
+      assertActivationPayloadHasNoGeneration({
+        type: "activate_session_provider",
+        ...request,
+        generation: 9,
+      }),
+    ).toThrow(/generation/);
+  });
+
+  test("stale refresh-before-retry blocks activation", () => {
+    const choice = sessionModelPickerChoices(snapshot, selection).find(
+      (item) => item.model.id === "deepseek-reasoner",
+    );
+    expect(choice).toBeTruthy();
+    expect(
+      activationAllowed({
+        mode: "switchable",
+        choice: choice!,
+        refreshRequired: true,
+      }),
+    ).toBe(false);
+    expect(
+      activationAllowed({
+        mode: "switchable",
+        choice: choice!,
+        refreshRequired: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("current and hidden-mode choices can never activate", () => {
+    const current = sessionModelPickerChoices(snapshot, selection).find(
+      (item) => item.model.id === "deepseek-chat",
+    )!;
+    const other = sessionModelPickerChoices(snapshot, selection).find(
+      (item) => item.model.id === "deepseek-reasoner",
+    )!;
+    expect(
+      activationAllowed({
+        mode: "switchable",
+        choice: current,
+        refreshRequired: false,
+      }),
+    ).toBe(false);
+    expect(
+      activationAllowed({
+        mode: "hidden",
+        choice: other,
+        refreshRequired: false,
+      }),
+    ).toBe(false);
   });
 });

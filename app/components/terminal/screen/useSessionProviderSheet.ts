@@ -3,30 +3,25 @@ import {
   ProviderError,
   ProviderRequestOwner,
   classifyMutationPersistence,
-  connectionsForClient,
-  connectionsForSession,
   durabilityWarningMessage,
-  isDirectSessionClient,
   offlineProviderError,
   providerMutationRequiresRefresh,
   buildActivateSessionProviderRequest,
-  type ProviderConnection,
   type ProviderError as ProviderErrorType,
-  type ProviderModel,
+  type ProviderModelChoice,
   type ProviderSessionSelection,
   type ProvidersSnapshot,
 } from "../../../services/providers";
 import {
   sessionAllowsModelProfileActivation,
-  sessionIsManagedReadOnlyProfile,
   sessionSupportsModelProfileAction,
   type AgentSessionCapabilities,
 } from "../../../services/providers/sessionCapabilities";
 import {
   resolveComposerModelControl,
-  resolveDirectComposerModelControl,
+  resolveSessionModelSheetMode,
+  sessionModelPickerChoices,
   type ComposerModelControlPresentation,
-  type DirectSessionClient,
 } from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
@@ -39,12 +34,6 @@ interface UseSessionProviderSheetInput {
   capabilities?: AgentSessionCapabilities | null;
   connectionConnected: boolean;
   /**
-   * Codex/Claude Sessions the daemon does not manage (official-direct, no
-   * route binding) still get a truthful read-only Composer control and a
-   * direct sheet state. Other clients stay fully hidden.
-   */
-  client?: DirectSessionClient | null;
-  /**
    * Load the Session selection once while the sheet stays closed so the
    * Composer model control can show a label without opening the sheet.
    * The sheet re-fetches on open; the projection survives close so the
@@ -55,27 +44,28 @@ interface UseSessionProviderSheetInput {
 
 export type SessionProviderSheetMode =
   | "idle"
-  | "direct"
-  | "managed_readonly"
-  | "active_switch"
-  | "capability_mismatch"
+  | "hidden"
+  | "switchable"
   | "error";
 
+/**
+ * v2 Composer model picker state: one quiet control, one minimal picker, one
+ * acknowledged live-switch path. Sessions without a daemon-acknowledged
+ * hot-switch capability (direct official logins, OpenCode, Pi, managed
+ * read-only, mismatch) keep the whole surface hidden — a dead Settings
+ * explanation is never rendered.
+ */
 export function useSessionProviderSheet({
   serverId,
   agentId,
   capabilities,
   connectionConnected,
-  client = null,
   eagerLoad = false,
 }: UseSessionProviderSheetInput) {
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState<ProviderErrorType | string | null>(null);
-  const [durabilityWarning, setDurabilityWarning] = useState<string | null>(
-    null,
-  );
   const [requiresRefreshBeforeMutation, setRequiresRefreshBeforeMutation] =
     useState(false);
   const [sheetMode, setSheetMode] =
@@ -89,9 +79,7 @@ export function useSessionProviderSheet({
     null,
   );
   const managed = sessionSupportsModelProfileAction(capabilities);
-  const readOnlyManaged = sessionIsManagedReadOnlyProfile(capabilities);
   const activationCapable = sessionAllowsModelProfileActivation(capabilities);
-  const direct = !managed && isDirectSessionClient(client);
 
   const syncActivationLockUi = useCallback(() => {
     setRequiresRefreshBeforeMutation(
@@ -105,7 +93,6 @@ export function useSessionProviderSheet({
     setSelection(null);
     setCatalog(null);
     setError(null);
-    setDurabilityWarning(null);
     setRequiresRefreshBeforeMutation(false);
     setSheetMode("idle");
     setLoading(false);
@@ -118,9 +105,27 @@ export function useSessionProviderSheet({
     setVisible(false);
   }, []);
 
+  /**
+   * The sheet opens only for the acknowledged live-switch Session. Every
+   * other capability state keeps the surface hidden; open() is a no-op so a
+   * stale entry point can never show a dead picker.
+   */
   const open = useCallback(() => {
+    if (
+      !managed ||
+      !activationCapable ||
+      requiresRefreshBeforeMutation ||
+      !selection?.hot_switchable
+    ) {
+      return;
+    }
     setVisible(true);
-  }, []);
+  }, [
+    activationCapable,
+    managed,
+    requiresRefreshBeforeMutation,
+    selection?.hot_switchable,
+  ]);
 
   const fetchProjection = useCallback(
     async (mode: "sheet" | "eager") => {
@@ -135,55 +140,13 @@ export function useSessionProviderSheet({
         return;
       }
       if (!managed) {
-        if (!direct) {
-          if (mode === "sheet") {
-            setLoading(false);
-            setSelection(null);
-            setSheetMode("error");
-            setError("This Session does not support Model switching.");
-          }
-          return;
-        }
+        // Unsupported Session (direct official login, OpenCode, Pi, shell):
+        // no inventory, no switch contract. Never fabricate a model surface.
         if (mode === "sheet") {
-          // Direct official-login Session: no route binding exists, so there
-          // is no Session selection to load. Show the configured Provider
-          // catalog read-only and let the sheet explain what is possible.
-          ownerRef.current.rebind(serverId, agentId);
-          const admission = ownerRef.current.admitCatalogLoad();
-          if (!admission.ok) {
-            setLoading(false);
-            setSelection(null);
-            setSheetMode("error");
-            setError(admission.reason);
-            return;
-          }
-          const token = admission.token;
-          setLoading(true);
-          setError(null);
+          setLoading(false);
           setSelection(null);
-          setSheetMode("direct");
-          try {
-            const nextCatalog = await wsClient.listProviders(serverId);
-            if (!ownerRef.current.isCurrent(token)) return;
-            if (
-              !ownerRef.current.acceptCatalog(token, nextCatalog.revision)
-            ) {
-              return;
-            }
-            setCatalog(nextCatalog);
-          } catch (catalogError) {
-            if (!ownerRef.current.isCurrent(token)) return;
-            setCatalog(null);
-            setError(
-              catalogError instanceof ProviderError
-                ? catalogError
-                : "Could not load Providers for this direct Session.",
-            );
-          } finally {
-            if (ownerRef.current.isCurrent(token)) {
-              setLoading(false);
-            }
-          }
+          setSheetMode("error");
+          setError("This Session does not support Model switching.");
         }
         return;
       }
@@ -206,15 +169,14 @@ export function useSessionProviderSheet({
         if (activationCapable && !hot) {
           setSelection(nextSelection);
           setCatalog(null);
-          setSheetMode("capability_mismatch");
-          setError(
-            "Managed Model capability disagrees with Session selection. Refresh before relying on this Session.",
-          );
+          setSheetMode("hidden");
           return;
         }
 
         setSelection(nextSelection);
-        setSheetMode(readOnlyManaged ? "managed_readonly" : "active_switch");
+        setSheetMode(
+          activationCapable ? "switchable" : "hidden",
+        );
 
         try {
           const nextCatalog = await wsClient.listProviders(serverId);
@@ -226,7 +188,7 @@ export function useSessionProviderSheet({
           setError(
             catalogError instanceof ProviderError
               ? catalogError
-              : "Could not load Providers for model selection.",
+              : "Could not load models for this Session.",
           );
         }
       } catch (loadError) {
@@ -253,9 +215,7 @@ export function useSessionProviderSheet({
       activationCapable,
       agentId,
       connectionConnected,
-      direct,
       managed,
-      readOnlyManaged,
       serverId,
       syncActivationLockUi,
     ],
@@ -291,7 +251,7 @@ export function useSessionProviderSheet({
 
   useEffect(() => {
     // Clear on every identity rebind, even while the sheet stays closed: the
-    // Composer chip must never project the previous Session's model onto a
+    // Composer control must never project the previous Session's model onto a
     // different server/agent epoch.
     const rebound = ownerRef.current.rebind(serverId, agentId);
     if (rebound) {
@@ -302,25 +262,18 @@ export function useSessionProviderSheet({
 
   const activate = useCallback(
     async (choice: SessionModelChoice) => {
-      if (!serverId || !agentId || !activationCapable || readOnlyManaged) {
+      if (!serverId || !agentId || !activationCapable) {
         return;
       }
       if (!selection?.hot_switchable || !catalog) {
         setError("Refresh the current Model before activating.");
         return;
       }
-      const connection = connectionsForSession(catalog, selection).find(
-        (item) => item.id === choice.connectionId,
-      );
       const model = (catalog.models[choice.connectionId] ?? []).find(
         (item) => item.id === choice.modelId && item.available,
       );
-      if (!connection || !connection.credential_ready || !model) {
-        setError(
-          connection?.credential_ready === false
-            ? "Add this Provider API key in Settings before switching."
-            : "That Provider Model is not available for this Session.",
-        );
+      if (!model) {
+        setError("That model is not available for this Session.");
         return;
       }
       if (ownerRef.current.activationRequiresRefresh()) {
@@ -350,7 +303,7 @@ export function useSessionProviderSheet({
         if (classification === "ambiguous") {
           ownerRef.current.settleActivation(token, { refreshRequired: true });
           syncActivationLockUi();
-          setError("Activation settled ambiguously. Refresh and try again.");
+          setError("Switching was not acknowledged. Refresh and try again.");
           return;
         }
         if (
@@ -362,20 +315,21 @@ export function useSessionProviderSheet({
           });
           setSelection(result.selection);
           fetchedEpochRef.current = { serverId, agentId };
-          setDurabilityWarning(
-            classification === "applied_uncertain"
-              ? durabilityWarningMessage(result.persistence)
-              : null,
-          );
           syncActivationLockUi();
           if (classification === "applied_durable") {
+            // Acknowledgement received: same Session now runs the new model.
             setVisible(false);
+          } else {
+            setError(
+              durabilityWarningMessage(result.persistence) ??
+                "Switched, but the change is not yet saved durably.",
+            );
           }
           return;
         }
         ownerRef.current.settleActivation(token, { refreshRequired: true });
         syncActivationLockUi();
-        setError("Activation was not applied.");
+        setError("Model switch was not applied.");
       } catch (activateError) {
         if (!ownerRef.current.isCurrent(token)) return;
         const typed =
@@ -385,7 +339,7 @@ export function useSessionProviderSheet({
                 "unknown",
                 activateError instanceof Error
                   ? activateError.message
-                  : "Activation failed",
+                  : "Model switch failed",
                 "unknown",
                 true,
               );
@@ -397,6 +351,7 @@ export function useSessionProviderSheet({
                 typed.kind === "conflict",
         });
         syncActivationLockUi();
+        // Retain the prior selection on failure; the picker keeps showing it.
         setError(typed);
       } finally {
         if (ownerRef.current.isCurrent(token)) {
@@ -409,34 +364,24 @@ export function useSessionProviderSheet({
       agentId,
       catalog,
       clearProjection,
-      readOnlyManaged,
       selection,
       serverId,
       syncActivationLockUi,
     ],
   );
 
-  const filteredConnections: ProviderConnection[] = direct
-    ? catalog
-      ? connectionsForClient(catalog, client ?? "")
-      : []
-    : connectionsForSession(catalog, selection);
+  const choices: ProviderModelChoice[] = sessionModelPickerChoices(
+    catalog,
+    selection,
+  );
 
-  const modelsByConnection: Record<string, ProviderModel[]> = {};
-  if (catalog) {
-    for (const connection of filteredConnections) {
-      modelsByConnection[connection.id] = catalog.models[connection.id] ?? [];
-    }
-  }
-
-  const composerControl: ComposerModelControlPresentation | null = managed
-    ? resolveComposerModelControl({
-        capabilities,
-        connectionConnected,
-        selection,
-        refreshRequired: requiresRefreshBeforeMutation,
-      })
-    : resolveDirectComposerModelControl({ client, capabilities });
+  const composerControl: ComposerModelControlPresentation | null =
+    resolveComposerModelControl({
+      capabilities,
+      connectionConnected,
+      selection,
+      refreshRequired: requiresRefreshBeforeMutation,
+    });
 
   return {
     visible,
@@ -448,17 +393,14 @@ export function useSessionProviderSheet({
     loading,
     activating,
     error,
-    durabilityWarning,
     requiresRefreshBeforeMutation,
-    sheetMode,
+    sheetMode: resolveSessionModelSheetMode({
+      capabilities,
+      selection,
+      refreshRequired: requiresRefreshBeforeMutation,
+    }),
     selection,
-    connections: filteredConnections,
-    modelsByConnection,
-    managedReadOnly: readOnlyManaged,
-    activationEnabled: activationCapable && sheetMode === "active_switch",
-    managed,
-    direct,
-    client,
+    choices,
     composerControl,
   };
 }

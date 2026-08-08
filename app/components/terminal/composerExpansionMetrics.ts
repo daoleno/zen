@@ -4,8 +4,8 @@
  * One progress value (0 compact, 1 focused/expanded) owns every coordinated
  * motion: capsule height (via the action band), corner radius, input-region
  * horizontal padding, button translation (buttons are bottom-anchored so the
- * growing band carries them), and the model-control reveal. Reduced Motion
- * resolves the same targets immediately.
+ * growing band carries them), and the quiet model-control reveal. Reduced
+ * Motion resolves the same targets immediately.
  */
 
 export const COMPOSER_INPUT_MIN_HEIGHT = 44;
@@ -31,17 +31,16 @@ export const COMPOSER_EXPANDED_CAPSULE_BASE_HEIGHT =
 export const COMPOSER_RADIUS_COMPACT = 24;
 export const COMPOSER_RADIUS_EXPANDED = 18;
 
-export const COMPOSER_MODEL_CHIP_LEFT_INSET =
+export const COMPOSER_MODEL_CONTROL_LEFT_INSET =
   COMPOSER_ACTION_BUTTON_SIZE + COMPOSER_ACTION_BAND_VERTICAL_PADDING + 8;
-export const COMPOSER_MODEL_CHIP_RIGHT_INSET = 82;
+export const COMPOSER_MODEL_CONTROL_RIGHT_INSET = 82;
 
 /**
- * The model chip fills the action band's 44 pt slot so the accessible touch
- * target is never smaller than the trailing Send/Stop slot.
+ * The quiet model control fills the action band's 44 pt slot so the
+ * accessible touch target is never smaller than the trailing Send/Stop slot.
  */
-export const COMPOSER_MODEL_CHIP_HEIGHT = 44;
-export const COMPOSER_MODEL_CHIP_RADIUS = 22;
-export const COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT = 18;
+export const COMPOSER_MODEL_CONTROL_HEIGHT = 44;
+export const COMPOSER_MODEL_CONTROL_LABEL_LINE_HEIGHT = 18;
 
 /**
  * Composer text never renders beyond 2x the system font scale; the geometry
@@ -49,11 +48,11 @@ export const COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT = 18;
  */
 export const COMPOSER_MAX_FONT_SCALE = 2;
 
-/** True when a label line at the given scale fits the chip without clipping. */
-export function composerModelChipLabelFits(scale: number): boolean {
+/** True when a label line at the given scale fits the control without clipping. */
+export function composerModelControlLabelFits(scale: number): boolean {
   return (
-    COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT * Math.max(1, scale) <=
-    COMPOSER_MODEL_CHIP_HEIGHT
+    COMPOSER_MODEL_CONTROL_LABEL_LINE_HEIGHT * Math.max(1, scale) <=
+    COMPOSER_MODEL_CONTROL_HEIGHT
   );
 }
 
@@ -119,16 +118,16 @@ export function composerInputHorizontalPadding(progress: number): {
   };
 }
 
-export const COMPOSER_MODEL_CHIP_REVEAL_RANGE = [0.25, 0.85] as const;
+export const COMPOSER_MODEL_CONTROL_REVEAL_RANGE = [0.25, 0.85] as const;
 
-/** Chip opacity and rise for a given progress. */
-export function composerModelChipReveal(progress: number): {
+/** Control opacity and rise for a given progress. */
+export function composerModelControlReveal(progress: number): {
   opacity: number;
   translateY: number;
 } {
   "worklet";
   const p = clampProgress(progress);
-  const [start, end] = COMPOSER_MODEL_CHIP_REVEAL_RANGE;
+  const [start, end] = COMPOSER_MODEL_CONTROL_REVEAL_RANGE;
   const local = Math.max(0, Math.min(1, (p - start) / (end - start)));
   return {
     opacity: local,

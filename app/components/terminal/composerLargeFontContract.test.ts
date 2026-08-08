@@ -18,15 +18,13 @@ describe("Composer large-font contract", () => {
     );
   });
 
-  test("the chip renders one truncated line and keeps the full label accessible", () => {
+  test("the quiet control renders one truncated line and keeps the full label accessible", () => {
     const chip = source("ComposerModelChip.tsx");
 
-    expect(chip).toContain('numberOfLines={1}');
+    expect(chip).toContain("numberOfLines={1}");
     expect(chip).toContain('ellipsizeMode="tail"');
     expect(chip).toContain("accessibilityLabel={accessibilityLabel}");
-    expect(chip).toContain(
-      "height: COMPOSER_MODEL_CHIP_HEIGHT,",
-    );
+    expect(chip).toContain("height: COMPOSER_MODEL_CONTROL_HEIGHT");
   });
 
   test("text containers never clip vertically at the font cap", () => {
@@ -36,13 +34,11 @@ describe("Composer large-font contract", () => {
     expect(input).not.toMatch(/inputWrap: \{[\s\S]*?overflow/);
     expect(input).not.toMatch(/placeholderOverlay: \{[\s\S]*?overflow/);
     expect(chip).not.toContain('overflow: "hidden"');
-    expect(chip).toContain(
-      "COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT",
-    );
+    expect(chip).toContain("COMPOSER_MODEL_CONTROL_LABEL_LINE_HEIGHT");
   });
 
-  test("the dock slot matches the chip height exactly", () => {
+  test("the dock slot matches the control height exactly", () => {
     const dock = source("InterfaceComposerExpandingDock.tsx");
-    expect(dock).toContain("height: COMPOSER_MODEL_CHIP_HEIGHT,");
+    expect(dock).toContain("height: COMPOSER_MODEL_CONTROL_HEIGHT,");
   });
 });

@@ -108,12 +108,11 @@ describe("Brain host_agent Provider Model capabilities", () => {
     const state = routeAgentProviderModelActionState(agent?.capabilities);
     expect(state.actionVisible).toBe(true);
     expect(state.activationEnabled).toBe(true);
-    expect(state.managedReadOnly).toBe(false);
     expect(sessionSupportsModelProfileAction(agent?.capabilities)).toBe(true);
     expect(sessionAllowsModelProfileActivation(agent?.capabilities)).toBe(true);
   });
 
-  test("managed-native host is visible read-only", () => {
+  test("managed-native host stays hidden (no acknowledged live switch)", () => {
     const agent = resolveTerminalRouteAgent({
       storedAgent: undefined,
       routeSessionHint: {},
@@ -128,9 +127,8 @@ describe("Brain host_agent Provider Model capabilities", () => {
       brainHostServerId: SERVER_ID,
     });
     const state = routeAgentProviderModelActionState(agent?.capabilities);
-    expect(state.actionVisible).toBe(true);
+    expect(state.actionVisible).toBe(false);
     expect(state.activationEnabled).toBe(false);
-    expect(state.managedReadOnly).toBe(true);
     expect(sessionIsManagedReadOnlyProfile(agent?.capabilities)).toBe(true);
   });
 
@@ -148,7 +146,6 @@ describe("Brain host_agent Provider Model capabilities", () => {
     expect(routeAgentProviderModelActionState(missing?.capabilities)).toEqual({
       actionVisible: false,
       activationEnabled: false,
-      managedReadOnly: false,
     });
 
     const falseCaps = resolveTerminalRouteAgent({

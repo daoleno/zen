@@ -65,7 +65,7 @@ import { ProvidersPresentation } from "../components/providers/ProvidersPresenta
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
   resolveComposerModelControl,
-  resolveDirectComposerModelControl,
+  sessionModelPickerChoices,
 } from "../services/providers/sessionModelHelpers";
 import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
@@ -93,6 +93,10 @@ export default function ScreenshotDemoRoute() {
   }, [available, router]);
 
   if (!available) return null;
+
+  console.log(
+    `[demo] state=${state} demo=${JSON.stringify(params.demo)}`,
+  );
 
   switch (state) {
     case "sessions":
@@ -575,7 +579,6 @@ function ComposerStatesDemo() {
   const expandedRef = useRef<TextInput>(null);
   const runningRef = useRef<TextInput>(null);
   const longLabelRef = useRef<TextInput>(null);
-  const directRef = useRef<TextInput>(null);
   const routedRef = useRef<TextInput>(null);
   const [compactDraft, setCompactDraft] = useState("");
   const [expandedDraft, setExpandedDraft] = useState("");
@@ -592,23 +595,14 @@ function ComposerStatesDemo() {
     accessibilityLabel:
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
   };
-  const [demoSheet, setDemoSheet] = useState<null | "direct" | "routed">(
-    null,
-  );
-  const directModelControl = resolveDirectComposerModelControl({
-    client: "codex",
-    capabilities: {
-      structured_events: true,
-      model_profile_managed: false,
-      model_profile_active_switch: false,
-    },
-  });
+  const [demoSheet, setDemoSheet] = useState<null | "routed">(null);
+  const [demoModelId, setDemoModelId] = useState("deepseek-chat");
   const demoSelection = {
     session_id: "tmux:@demo",
     client: "codex" as const,
     connection_id: "c1",
     connection_name: "DeepSeek",
-    model_id: "deepseek-chat",
+    model_id: demoModelId,
     credential_ready: true,
     hot_switchable: true,
   };
@@ -651,6 +645,7 @@ function ComposerStatesDemo() {
       c2: [{ id: "claude-sonnet-4-5", available: true, source: "bundled" }],
     },
   };
+  const demoChoices = sessionModelPickerChoices(demoCatalog, demoSelection);
   const narrowRow = (
     label: string,
     composer: React.ReactElement<typeof InterfaceChatComposer>,
@@ -915,53 +910,6 @@ function ComposerStatesDemo() {
           />,
         )}
         {narrowRow(
-          "Expanded · direct Codex session (official login)",
-          <InterfaceChatComposer
-            inputRef={directRef}
-            draft=""
-            placeholder="Message the agent"
-            editable
-            focused
-            canAttach
-            uploading={false}
-            activeUpload={null}
-            sendEnabled={false}
-            sending={false}
-            sendLabel="Send message"
-            showStopButton={false}
-            stopEnabled={false}
-            stopLabel="Stop current turn"
-            stopLoading={false}
-            bottomPadding={8}
-            showActionMenuButton
-            actionMenuIcon="add"
-            composerLayout="telegram"
-            showAttachmentRail
-            showCommandMenu={false}
-            showCommandList={false}
-            showComposerActions={false}
-            composerActionButtonEnabled
-            commandQuery=""
-            commands={[]}
-            attachments={[]}
-            chrome={chrome}
-            theme={theme}
-            modelControl={directModelControl}
-            onSelectCommand={NOOP}
-            onToggleActionMenu={NOOP}
-            onDismissActionMenu={NOOP}
-            onRemoveAttachment={NOOP}
-            onDraftChange={NOOP}
-            onUploadPress={NOOP}
-            onCancelUpload={NOOP}
-            onInputFocus={NOOP}
-            onInputBlur={NOOP}
-            onSendPress={NOOP}
-            onStopPress={NOOP}
-            onModelControlPress={() => setDemoSheet("direct")}
-          />,
-        )}
-        {narrowRow(
           "Expanded · routed Provider session · switchable",
           <InterfaceChatComposer
             inputRef={routedRef}
@@ -1015,26 +963,17 @@ function ComposerStatesDemo() {
         loading={false}
         activating={false}
         error={null}
-        durabilityWarning={null}
-        requiresRefreshBeforeMutation={false}
-        managedReadOnly={false}
-        activationEnabled={demoSheet === "routed"}
-        nonRouted={demoSheet === "direct"}
-        directClient={demoSheet === "direct" ? "codex" : null}
-        selection={demoSheet === "routed" ? demoSelection : null}
-        connections={
-          demoSheet === "direct"
-            ? demoCatalog.connections.filter((item) =>
-                item.clients.includes("codex"),
-              )
-            : demoCatalog.connections
-        }
-        modelsByConnection={demoCatalog.models}
+        selection={demoSelection}
+        choices={demoChoices}
         chrome={chrome}
         onClose={() => setDemoSheet(null)}
         onRetry={NOOP}
-        onOpenProvidersSettings={NOOP}
-        onActivate={NOOP}
+        onActivate={(choice) => {
+          // Fixture-only same-Session switch: update the current model label
+          // and close; no daemon, no Provider mutation.
+          setDemoModelId(choice.modelId);
+          setDemoSheet(null);
+        }}
       />
     </SafeAreaView>
   );

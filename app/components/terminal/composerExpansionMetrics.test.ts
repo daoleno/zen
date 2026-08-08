@@ -4,11 +4,11 @@ import {
   COMPOSER_COMPACT_CAPSULE_HEIGHT,
   COMPOSER_EXPANDED_CAPSULE_BASE_HEIGHT,
   COMPOSER_MAX_FONT_SCALE,
-  COMPOSER_MODEL_CHIP_HEIGHT,
-  COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT,
-  COMPOSER_MODEL_CHIP_LEFT_INSET,
-  COMPOSER_MODEL_CHIP_RADIUS,
-  COMPOSER_MODEL_CHIP_REVEAL_RANGE,
+  COMPOSER_MODEL_CONTROL_HEIGHT,
+  COMPOSER_MODEL_CONTROL_LABEL_LINE_HEIGHT,
+  COMPOSER_MODEL_CONTROL_LEFT_INSET,
+  COMPOSER_MODEL_CONTROL_REVEAL_RANGE,
+  COMPOSER_MODEL_CONTROL_RIGHT_INSET,
   COMPOSER_RADIUS_COMPACT,
   COMPOSER_RADIUS_EXPANDED,
   composerActionBandHeight,
@@ -16,8 +16,8 @@ import {
   composerExpansionRadius,
   composerExpansionTarget,
   composerInputHorizontalPadding,
-  composerModelChipLabelFits,
-  composerModelChipReveal,
+  composerModelControlLabelFits,
+  composerModelControlReveal,
   composerMotionDisabled,
 } from "./composerExpansionMetrics";
 
@@ -63,39 +63,42 @@ describe("composer expansion metrics", () => {
   });
 
   test("model control reveal is monotonic and hidden in the compact state", () => {
-    expect(composerModelChipReveal(0)).toEqual({
+    expect(composerModelControlReveal(0)).toEqual({
       opacity: 0,
       translateY: 10,
     });
-    expect(composerModelChipReveal(1)).toEqual({ opacity: 1, translateY: 0 });
-    const low = composerModelChipReveal(COMPOSER_MODEL_CHIP_REVEAL_RANGE[0]);
-    const high = composerModelChipReveal(COMPOSER_MODEL_CHIP_REVEAL_RANGE[1]);
+    expect(composerModelControlReveal(1)).toEqual({ opacity: 1, translateY: 0 });
+    const low = composerModelControlReveal(COMPOSER_MODEL_CONTROL_REVEAL_RANGE[0]);
+    const high = composerModelControlReveal(COMPOSER_MODEL_CONTROL_REVEAL_RANGE[1]);
     expect(low.opacity).toBe(0);
     expect(high.opacity).toBe(1);
-    const mid = composerModelChipReveal(0.55);
+    const mid = composerModelControlReveal(0.55);
     expect(mid.opacity).toBeGreaterThan(0);
     expect(mid.opacity).toBeLessThan(1);
   });
 
-  test("chip sits between the Plus and Send/Stop slots", () => {
-    expect(COMPOSER_MODEL_CHIP_LEFT_INSET).toBeGreaterThan(44);
-    expect(COMPOSER_MODEL_CHIP_LEFT_INSET).toBeLessThan(74);
+  test("control slot starts beyond the Plus slot and ends before Send/Stop", () => {
+    expect(COMPOSER_MODEL_CONTROL_LEFT_INSET).toBeGreaterThan(44);
+    expect(COMPOSER_MODEL_CONTROL_LEFT_INSET).toBeLessThan(74);
+    // The slot must clear the 68 pt Send/Stop slot so the quiet control hugs
+    // the trailing action immediately.
+    expect(COMPOSER_MODEL_CONTROL_RIGHT_INSET).toBeGreaterThan(70);
+    expect(COMPOSER_MODEL_CONTROL_RIGHT_INSET).toBeLessThan(90);
   });
 
-  test("chip fills the 44 pt action slot for a full-size touch target", () => {
-    expect(COMPOSER_MODEL_CHIP_HEIGHT).toBe(44);
-    expect(COMPOSER_MODEL_CHIP_RADIUS).toBe(22);
-    expect(COMPOSER_MODEL_CHIP_HEIGHT).toBe(COMPOSER_ACTION_BAND_HEIGHT - 12);
+  test("control fills the 44 pt action slot for a full-size touch target", () => {
+    expect(COMPOSER_MODEL_CONTROL_HEIGHT).toBe(44);
+    expect(COMPOSER_MODEL_CONTROL_HEIGHT).toBe(COMPOSER_ACTION_BAND_HEIGHT - 12);
   });
 
-  test("large-font contract: label fits the chip up to the font cap", () => {
-    expect(composerModelChipLabelFits(1)).toBe(true);
-    expect(composerModelChipLabelFits(1.5)).toBe(true);
-    expect(composerModelChipLabelFits(COMPOSER_MAX_FONT_SCALE)).toBe(true);
-    expect(composerModelChipLabelFits(3)).toBe(false);
+  test("large-font contract: label fits the control up to the font cap", () => {
+    expect(composerModelControlLabelFits(1)).toBe(true);
+    expect(composerModelControlLabelFits(1.5)).toBe(true);
+    expect(composerModelControlLabelFits(COMPOSER_MAX_FONT_SCALE)).toBe(true);
+    expect(composerModelControlLabelFits(3)).toBe(false);
     expect(
-      COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT * COMPOSER_MAX_FONT_SCALE,
-    ).toBeLessThanOrEqual(COMPOSER_MODEL_CHIP_HEIGHT);
+      COMPOSER_MODEL_CONTROL_LABEL_LINE_HEIGHT * COMPOSER_MAX_FONT_SCALE,
+    ).toBeLessThanOrEqual(COMPOSER_MODEL_CONTROL_HEIGHT);
   });
 
   test("expansion target is driven by focus only", () => {

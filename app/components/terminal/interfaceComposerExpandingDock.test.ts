@@ -38,7 +38,7 @@ describe("InterfaceComposerExpandingDock", () => {
     expect(dock).toContain("composerActionBandHeight(progress.value)");
     expect(dock).toContain("composerExpansionRadius(progress.value)");
     expect(dock).toContain("composerInputHorizontalPadding(progress.value)");
-    expect(dock).toContain("composerModelChipReveal(progress.value)");
+    expect(dock).toContain("composerModelControlReveal(progress.value)");
   });
 
   test("keeps every UI-runtime metric in the Reanimated worklet graph", () => {
@@ -82,9 +82,12 @@ describe("InterfaceComposerExpandingDock", () => {
     expect(dock).toContain("actionSlotLeft");
   });
 
-  test("reveals the model chip only when a host supplies a control", () => {
+  test("model control slot hugs the Send/Stop slot and stays right-anchored", () => {
     expect(dock).toContain("modelControl && onModelControlPress ? (");
     expect(dock).toContain("<ComposerModelChip");
+    expect(dock).toContain("left: COMPOSER_MODEL_CONTROL_LEFT_INSET,");
+    expect(dock).toContain("right: COMPOSER_MODEL_CONTROL_RIGHT_INSET,");
+    expect(dock).toContain("alignItems: \"flex-end\"");
     expect(dock).toContain('pointerEvents={focused ? "auto" : "none"}');
     expect(dock).toContain("accessibilityElementsHidden={!focused}");
     expect(dock).toContain("importantForAccessibility");
