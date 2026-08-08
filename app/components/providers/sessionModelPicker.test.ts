@@ -80,6 +80,23 @@ describe("useSessionProviderSheet v2 wiring", () => {
     expect(hook).toContain("This Session does not support Model switching.");
   });
 
+  test("a refetch that loses hot-switchability closes the open sheet", () => {
+    // The sheet may be open when a refetch discovers the binding is no
+    // longer hot-switchable: it must close instead of presenting an empty
+    // fabricated "No models discovered" inventory, and the fresh non-hot
+    // selection keeps the Composer control hidden.
+    expect(hook).toContain(
+      "refetchFoundBindingNotSwitchable({",
+    );
+    expect(hook).toContain("activationCapable,");
+    expect(hook).toContain("hotSwitchable: hot,");
+    expect(hook).toContain('if (mode === "sheet") {');
+    expect(hook).toContain("setVisible(false);");
+    expect(hook).toContain("setSelection(nextSelection);");
+    expect(hook).toContain("setCatalog(null);");
+    expect(hook).not.toContain('setSheetMode("hidden")');
+  });
+
   test("picker inventory comes from the bound connection only", () => {
     expect(hook).toContain(
       "const choices: ProviderModelChoice[] = sessionModelPickerChoices(",
@@ -98,7 +115,6 @@ describe("useSessionProviderSheet v2 wiring", () => {
     );
     expect(hook).toContain("setError(typed);");
   });
-
   test("success closes only after the daemon acknowledgement", () => {
     expect(hook).toContain("classification === \"applied_durable\"");
     expect(hook).toContain("setVisible(false);");

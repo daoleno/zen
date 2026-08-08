@@ -23,11 +23,6 @@ import type {
   ProvidersSnapshot,
 } from "./types";
 
-export type SessionModelSheetMode =
-  | "hidden"
-  | "switchable"
-  | "error";
-
 /**
  * Concise Composer control presentation for the current Session selection.
  * The control exists only when this exact Session can safely activate another
@@ -68,24 +63,15 @@ export function resolveComposerModelControl(input: {
 }
 
 /**
- * The picker sheet opens only for the acknowledged live-switch Session; any
- * other capability state keeps the model surface hidden entirely.
+ * Refetch admission for an open sheet: a Session whose binding no longer
+ * admits live switching must close the sheet and hide the control instead of
+ * presenting an empty fabricated inventory.
  */
-export function resolveSessionModelSheetMode(input: {
-  capabilities?: AgentSessionCapabilities | null;
-  selection: ProviderSessionSelection | null;
-  refreshRequired: boolean;
-}): SessionModelSheetMode {
-  if (!sessionAllowsModelProfileActivation(input.capabilities)) {
-    return "hidden";
-  }
-  if (input.refreshRequired) {
-    return "hidden";
-  }
-  if (!input.selection || input.selection.hot_switchable !== true) {
-    return "hidden";
-  }
-  return "switchable";
+export function refetchFoundBindingNotSwitchable(input: {
+  activationCapable: boolean;
+  hotSwitchable: boolean;
+}): boolean {
+  return input.activationCapable && !input.hotSwitchable;
 }
 
 /**
@@ -120,17 +106,6 @@ export type ActivateSessionProviderRequest = {
   modelId: string;
 };
 
-export function activationAllowed(input: {
-  mode: SessionModelSheetMode;
-  choice: ProviderModelChoice;
-  refreshRequired: boolean;
-}): boolean {
-  if (input.mode !== "switchable") return false;
-  if (input.refreshRequired) return false;
-  if (input.choice.disabled || input.choice.current) return false;
-  return true;
-}
-
 /**
  * Build the activate_session_provider request. Intentionally omits generation
  * and any Profile-era fields.
@@ -147,12 +122,4 @@ export function buildActivateSessionProviderRequest(input: {
     throw new Error("agent_id, connection_id, and model_id are required.");
   }
   return { agentId, connectionId, modelId };
-}
-
-export function assertActivationPayloadHasNoGeneration(
-  payload: Record<string, unknown>,
-): void {
-  if (Object.prototype.hasOwnProperty.call(payload, "generation")) {
-    throw new Error("activate_session_provider must not send generation.");
-  }
 }

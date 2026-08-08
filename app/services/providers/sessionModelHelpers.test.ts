@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
-  activationAllowed,
-  assertActivationPayloadHasNoGeneration,
   buildActivateSessionProviderRequest,
+  refetchFoundBindingNotSwitchable,
   resolveComposerModelControl,
-  resolveSessionModelSheetMode,
   sessionModelPickerChoices,
 } from "./sessionModelHelpers";
 import type {
@@ -210,77 +208,33 @@ describe("Composer model control truth", () => {
   });
 });
 
-describe("Sheet mode: hidden unless the acknowledged live-switch Session", () => {
-  const managedSwitch = {
-    structured_events: true,
-    model_profile_managed: true,
-    model_profile_active_switch: true,
-  };
-
-  test("switchable only for managed + active switch + hot selection", () => {
+describe("Refetch transition: binding lost live switching", () => {
+  test("detects the acknowledged-switch Session losing hot-switchability", () => {
     expect(
-      resolveSessionModelSheetMode({
-        capabilities: managedSwitch,
-        selection,
-        refreshRequired: false,
+      refetchFoundBindingNotSwitchable({
+        activationCapable: true,
+        hotSwitchable: true,
       }),
-    ).toBe("switchable");
-  });
-
-  test("hidden for every unsupported or stale state", () => {
-    // Unmanaged (direct official login, OpenCode, Pi, shell) stay hidden.
+    ).toBe(false);
     expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: false,
-          model_profile_active_switch: false,
-        },
-        selection,
-        refreshRequired: false,
+      refetchFoundBindingNotSwitchable({
+        activationCapable: true,
+        hotSwitchable: false,
       }),
-    ).toBe("hidden");
-    // Managed read-only.
+    ).toBe(true);
+    // A Session that never admitted activation is not a "lost" transition;
+    // the picker was already hidden for it.
     expect(
-      resolveSessionModelSheetMode({
-        capabilities: {
-          structured_events: true,
-          model_profile_managed: true,
-          model_profile_active_switch: false,
-        },
-        selection,
-        refreshRequired: false,
+      refetchFoundBindingNotSwitchable({
+        activationCapable: false,
+        hotSwitchable: false,
       }),
-    ).toBe("hidden");
-    // Missing selection.
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: managedSwitch,
-        selection: null,
-        refreshRequired: false,
-      }),
-    ).toBe("hidden");
-    // Not hot-switchable.
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: managedSwitch,
-        selection: { ...selection, hot_switchable: false },
-        refreshRequired: false,
-      }),
-    ).toBe("hidden");
-    // Refresh required.
-    expect(
-      resolveSessionModelSheetMode({
-        capabilities: managedSwitch,
-        selection,
-        refreshRequired: true,
-      }),
-    ).toBe("hidden");
+    ).toBe(false);
   });
 });
 
 describe("Activation contract", () => {
-  test("activation request omits generation", () => {
+  test("activation request is minimal and contains no generation", () => {
     const request = buildActivateSessionProviderRequest({
       agentId: "tmux:@1",
       connectionId: "c1",
@@ -291,60 +245,10 @@ describe("Activation contract", () => {
       connectionId: "c1",
       modelId: "deepseek-reasoner",
     });
-    assertActivationPayloadHasNoGeneration({
-      type: "activate_session_provider",
-      ...request,
-    });
-    expect(() =>
-      assertActivationPayloadHasNoGeneration({
-        type: "activate_session_provider",
-        ...request,
-        generation: 9,
-      }),
-    ).toThrow(/generation/);
-  });
-
-  test("stale refresh-before-retry blocks activation", () => {
-    const choice = sessionModelPickerChoices(snapshot, selection).find(
-      (item) => item.model.id === "deepseek-reasoner",
-    );
-    expect(choice).toBeTruthy();
-    expect(
-      activationAllowed({
-        mode: "switchable",
-        choice: choice!,
-        refreshRequired: true,
-      }),
-    ).toBe(false);
-    expect(
-      activationAllowed({
-        mode: "switchable",
-        choice: choice!,
-        refreshRequired: false,
-      }),
-    ).toBe(true);
-  });
-
-  test("current and hidden-mode choices can never activate", () => {
-    const current = sessionModelPickerChoices(snapshot, selection).find(
-      (item) => item.model.id === "deepseek-chat",
-    )!;
-    const other = sessionModelPickerChoices(snapshot, selection).find(
-      (item) => item.model.id === "deepseek-reasoner",
-    )!;
-    expect(
-      activationAllowed({
-        mode: "switchable",
-        choice: current,
-        refreshRequired: false,
-      }),
-    ).toBe(false);
-    expect(
-      activationAllowed({
-        mode: "hidden",
-        choice: other,
-        refreshRequired: false,
-      }),
-    ).toBe(false);
+    expect(Object.keys(request)).toEqual([
+      "agentId",
+      "connectionId",
+      "modelId",
+    ]);
   });
 });

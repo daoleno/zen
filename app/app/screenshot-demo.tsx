@@ -94,10 +94,6 @@ export default function ScreenshotDemoRoute() {
 
   if (!available) return null;
 
-  console.log(
-    `[demo] state=${state} demo=${JSON.stringify(params.demo)}`,
-  );
-
   switch (state) {
     case "sessions":
       return <SessionsDemo />;

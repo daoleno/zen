@@ -19,7 +19,7 @@ import {
 } from "../../../services/providers/sessionCapabilities";
 import {
   resolveComposerModelControl,
-  resolveSessionModelSheetMode,
+  refetchFoundBindingNotSwitchable,
   sessionModelPickerChoices,
   type ComposerModelControlPresentation,
 } from "../../../services/providers/sessionModelHelpers";
@@ -42,12 +42,6 @@ interface UseSessionProviderSheetInput {
   eagerLoad?: boolean;
 }
 
-export type SessionProviderSheetMode =
-  | "idle"
-  | "hidden"
-  | "switchable"
-  | "error";
-
 /**
  * v2 Composer model picker state: one quiet control, one minimal picker, one
  * acknowledged live-switch path. Sessions without a daemon-acknowledged
@@ -68,8 +62,6 @@ export function useSessionProviderSheet({
   const [error, setError] = useState<ProviderErrorType | string | null>(null);
   const [requiresRefreshBeforeMutation, setRequiresRefreshBeforeMutation] =
     useState(false);
-  const [sheetMode, setSheetMode] =
-    useState<SessionProviderSheetMode>("idle");
   const [selection, setSelection] = useState<ProviderSessionSelection | null>(
     null,
   );
@@ -94,7 +86,6 @@ export function useSessionProviderSheet({
     setCatalog(null);
     setError(null);
     setRequiresRefreshBeforeMutation(false);
-    setSheetMode("idle");
     setLoading(false);
     setActivating(false);
   }, []);
@@ -134,7 +125,6 @@ export function useSessionProviderSheet({
         if (mode === "sheet") {
           setLoading(false);
           setSelection(null);
-          setSheetMode("error");
           setError(offlineProviderError());
         }
         return;
@@ -145,7 +135,6 @@ export function useSessionProviderSheet({
         if (mode === "sheet") {
           setLoading(false);
           setSelection(null);
-          setSheetMode("error");
           setError("This Session does not support Model switching.");
         }
         return;
@@ -166,17 +155,25 @@ export function useSessionProviderSheet({
         syncActivationLockUi();
 
         const hot = nextSelection.hot_switchable === true;
-        if (activationCapable && !hot) {
+        if (
+          refetchFoundBindingNotSwitchable({
+            activationCapable,
+            hotSwitchable: hot,
+          })
+        ) {
+          // The binding no longer admits live switching. Close the sheet when
+          // a refetch discovers this while it is open and keep the Composer
+          // control hidden (the fresh selection is not hot-switchable); never
+          // render an empty fabricated "No models discovered" inventory.
+          if (mode === "sheet") {
+            setVisible(false);
+          }
           setSelection(nextSelection);
           setCatalog(null);
-          setSheetMode("hidden");
           return;
         }
 
         setSelection(nextSelection);
-        setSheetMode(
-          activationCapable ? "switchable" : "hidden",
-        );
 
         try {
           const nextCatalog = await wsClient.listProviders(serverId);
@@ -196,7 +193,6 @@ export function useSessionProviderSheet({
         if (mode === "sheet") {
           setSelection(null);
           setCatalog(null);
-          setSheetMode("error");
           setError(
             loadError instanceof ProviderError
               ? loadError
@@ -394,11 +390,6 @@ export function useSessionProviderSheet({
     activating,
     error,
     requiresRefreshBeforeMutation,
-    sheetMode: resolveSessionModelSheetMode({
-      capabilities,
-      selection,
-      refreshRequired: requiresRefreshBeforeMutation,
-    }),
     selection,
     choices,
     composerControl,
