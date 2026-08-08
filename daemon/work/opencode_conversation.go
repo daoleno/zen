@@ -1323,12 +1323,17 @@ func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCod
 	if openCodeFinishContinuesTurn(finish) {
 		return
 	}
-	if finish == "" && meta.Time.Completed <= 0 {
+	// A finish-less message and OpenCode's "unknown" terminal step share the
+	// same requirement: both are unclassified by the finish lexicon alone, so
+	// they settle only on OpenCode's authoritative time.completed boundary
+	// with no tool call still in flight. Production OpenCode writes finish
+	// "unknown" + time.completed on the last message of completed turns;
+	// mid-write message rows carry neither.
+	unclassified := finish == "" || finish == "unknown"
+	if unclassified && meta.Time.Completed <= 0 {
 		return
 	}
-	// Message finish is authoritative for the turn. Refuse only while a tool
-	// call is still marked running without a terminal finish reason.
-	if finish == "" && b.hasRunningTools() {
+	if unclassified && b.hasRunningTools() {
 		return
 	}
 	status := ProviderActivityCompleted
@@ -1348,11 +1353,13 @@ func (b *openCodeConversationBuilder) settleFromAssistantMessage(message openCod
 
 // openCodeFinishContinuesTurn reports whether an OpenCode message finish means
 // the assistant yielded to a tool or is otherwise mid-turn. Such messages must
-// never settle the turn Activity; only a terminal finish (or a finish-less
-// message with a completed timestamp and no running tools) may.
+// never settle the turn Activity. "unknown" is deliberately not listed here:
+// OpenCode writes it as the terminal finish of completed turns (alongside the
+// authoritative time.completed), and settleFromAssistantMessage still gates it
+// behind a completed timestamp and no running tools.
 func openCodeFinishContinuesTurn(finish string) bool {
 	switch finish {
-	case "tool-calls", "unknown", "running", "pending":
+	case "tool-calls", "running", "pending":
 		return true
 	default:
 		return false

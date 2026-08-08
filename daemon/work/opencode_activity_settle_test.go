@@ -89,14 +89,15 @@ func TestOpenCodeToolCallYieldThenTerminalFinishSettlesExactlyOnce(t *testing.T)
 
 func TestOpenCodeUnknownFinishKeepsTurnActivityRunning(t *testing.T) {
 	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	// OpenCode writes finish "unknown" on a terminal step only together with
+	// the authoritative time.completed marker (see
+	// TestOpenCodeUnknownFinishedTerminalMessageSettlesCompletedTurn). Without
+	// that boundary the row is still mid-write and must never settle.
 	dbPath := openCodeActivityFixtureDB(t, started, []openCodeMessageSeed{
 		{
 			ID: "msg_yield", SessionID: "ses_act",
 			CreatedMS: started.Add(time.Second).UnixMilli(),
-			Data: fmt.Sprintf(
-				`{"role":"assistant","finish":"unknown","time":{"created":1,"completed":%d}}`,
-				started.Add(2*time.Second).UnixMilli(),
-			),
+			Data:      `{"role":"assistant","finish":"unknown","time":{"created":1}}`,
 		},
 	}, false)
 	got, err := parseOpenCodeConversation(dbPath, "ses_act")
@@ -104,7 +105,7 @@ func TestOpenCodeUnknownFinishKeepsTurnActivityRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Activity == nil || got.Activity.Status != ProviderActivityRunning {
-		t.Fatalf("unknown finish must keep the turn running, never falsely complete: %+v", got.Activity)
+		t.Fatalf("unbounded unknown finish must keep the turn running, never falsely complete: %+v", got.Activity)
 	}
 }
 
