@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -26,7 +27,19 @@ type DelegatedSessionOwner interface {
 	KillSession(sessionID string) error
 	ProbeSession(target string) (watcher.SessionPresence, error)
 	SendInputWhenReady(sessionID, command, text string) error
+	// SendInputWhenReadyBudgeted bounds the initial handoff to the exact
+	// spawned provider input surface for one scheduled occurrence: readiness
+	// evidence must arrive within budget, definitely-not-submitted attempts
+	// may retry within it, and ambiguous admission or loss of the spawned
+	// identity fails closed without replay.
+	SendInputWhenReadyBudgeted(sessionID, command, text string, budget time.Duration) error
 }
+
+// DefaultScheduledInputReadyBudget is the provider-neutral total bound for the
+// initial delegated handoff of one scheduled occurrence. It covers adapter
+// cold starts (including OpenCode TUI/model loading) without unbounded waiting;
+// the per-attempt readiness window remains the adapter-specific one.
+const DefaultScheduledInputReadyBudget = 90 * time.Second
 
 // TmuxRunner adapts Watcher's owned tmux lifecycle to SessionRunner. Calendar
 // Work must use this path instead of opening raw tmux sessions, otherwise it
@@ -34,6 +47,11 @@ type DelegatedSessionOwner interface {
 // When Profiles is set, configured Codex/Claude launches resolve the executor
 // default (or ProfileID override) through the same Prepare/Create/Commit
 // compiler as control and Brain; Abort is route-aware.
+//
+// InputReadyBudget bounds the initial ready-and-submit handoff for the spawned
+// session. Zero keeps the legacy single-attempt behavior; Calendar sets
+// DefaultScheduledInputReadyBudget so a definitely-not-submitted readiness
+// timeout may retry within the same occurrence instead of failing it.
 //
 // Role remains the configured CLI executor identity (alias/wrapper name). The
 // Profile compiler hint is derived from Provider/command inference
@@ -47,6 +65,8 @@ type TmuxRunner struct {
 	Env       map[string]string
 	Profiles  ProfileLaunchOwner
 	ProfileID string
+	// InputReadyBudget bounds the initial handoff; zero = legacy single attempt.
+	InputReadyBudget time.Duration
 }
 
 // Spawn creates a detached tmux session and returns the watcher-compatible
@@ -128,10 +148,15 @@ func (r TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 }
 
 // SendWhenReady waits for a freshly spawned known agent UI before sending the
-// initial prompt.
+// initial prompt. With InputReadyBudget set, the bounded handoff retries safe
+// definitely-not-submitted readiness timeouts within the same occurrence and
+// fails closed on ambiguous admission or a lost spawned identity.
 func (r TmuxRunner) SendWhenReady(agentID, command, text string) error {
 	if r.Watcher == nil {
 		return fmt.Errorf("delegated watcher is required")
+	}
+	if r.InputReadyBudget > 0 {
+		return r.Watcher.SendInputWhenReadyBudgeted(agentID, command, text, r.InputReadyBudget)
 	}
 	return r.Watcher.SendInputWhenReady(agentID, command, text)
 }

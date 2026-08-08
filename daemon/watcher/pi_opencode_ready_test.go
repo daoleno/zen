@@ -46,6 +46,39 @@ draft still sitting here
 	if !isOpenCodeInputReady(ocPlain) {
 		t.Fatal("expected plain Build · ready pane")
 	}
+	// OpenCode 1.18.15 (captured live 2026-08-08): the idle footer dropped the
+	// semver; cwd stays left and "ctrl+p commands" stays right. The busy
+	// footer ("esc interrupt ... ctrl+p commands") must not pass because it
+	// does not start with a filesystem path.
+	ocIdleV11815 := `
+   ┃
+   ┃  Ask anything...
+   ┃
+   ┃  Build auto · DeepSeek V4 Flash (2x usage) OpenCode Go · max
+   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /home/daoleno/project  220.5K (22%) · $0.01  ctrl+p commands
+`
+	if !isOpenCodeInputReady(ocIdleV11815) {
+		t.Fatal("expected opencode 1.18.15 idle footer ready pane")
+	}
+	ocBusyV11815 := `
+   ┃
+   ┃  Ask anything... "Fix broken tests"
+   ┃  Build auto · GPT-5.3 Chat (latest) OpenAI
+   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   esc interrupt         109.7K (11%) · $0.01  ctrl+p commands
+`
+	if isOpenCodeInputReady(ocBusyV11815) {
+		t.Fatal("busy esc interrupt footer must not be ready")
+	}
+	ocFalseCtrlP := `
+   ┃  Ask anything...
+   ┃  Build · GPT-5.3
+   some tool output  ctrl+p commands
+`
+	if isOpenCodeInputReady(ocFalseCtrlP) {
+		t.Fatal("non-footer ctrl+p commands text must not satisfy OpenCode idle footer")
+	}
 	ocBlocked := ocReady + "\nSelect a model\n"
 	if isOpenCodeInputReady(ocBlocked) {
 		t.Fatal("model picker must not be ready")

@@ -53,13 +53,22 @@ var piVersionRe = regexp.MustCompile(`(?im)\bpi\s+v\d+\.\d+\.\d+\b`)
 var piEditorBorderRe = regexp.MustCompile(`(?m)^─{16,}$`)
 var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
 
-// OpenCode TUI ready (captured 1.18.13): empty composer placeholder, agent/model
-// line, and footer chrome with cwd/path left and semver right. Model overlays
-// are not ready. Do not treat arbitrary pane semver (tool output, deps) as
-// OpenCode's version footer.
+// OpenCode TUI ready: empty composer placeholder, agent/model line, and idle
+// footer chrome. Two footer shapes are accepted, both anchored to a filesystem
+// path at line start so arbitrary pane text cannot pass:
+//
+//   - 1.18.13 legacy: cwd/path left and semver right.
+//   - 1.18.15 current (captured live 2026-08-08): cwd/path left and
+//     "ctrl+p commands" right; the semver was dropped from the idle footer.
+//     The busy footer ("esc interrupt ... ctrl+p commands") does not start
+//     with a path, so it is never accepted as ready.
+//
+// Model overlays are not ready. Do not treat arbitrary pane semver (tool
+// output, deps) as OpenCode's version footer.
 var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything\.\.\.`)
 var openCodeAgentLineRe = regexp.MustCompile(`(?im)\b(Build|Plan|Ask)\b[^\n]*[·•]`)
 var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*(?:~/|/|\.{1,2}/|[A-Za-z]:\\)\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
+var openCodeIdleFooterRe = regexp.MustCompile(`(?m)^\s*(?:~/|/|\.{1,2}/|[A-Za-z]:\\)\S*(?:\s+\S+)*?\s{2,}ctrl\+p\s+commands\s*$`)
 var openCodeBlockedOverlayRe = regexp.MustCompile(`(?im)(connect provider|sign in|permission required|select a model|choose a model|trust this)`)
 
 type targetProcessIdentity struct {
@@ -132,7 +141,20 @@ func resolveTargetIdentityWhenReady(
 	target string,
 	commandHint string,
 ) (targetProcessIdentity, bool) {
-	timeout := inputReadyTimeout(strings.TrimSpace(commandHint))
+	return resolveTargetIdentityWhenReadyTimeout(
+		resolver,
+		target,
+		commandHint,
+		inputReadyTimeout(strings.TrimSpace(commandHint)),
+	)
+}
+
+func resolveTargetIdentityWhenReadyTimeout(
+	resolver func(string) (targetProcessIdentity, bool),
+	target string,
+	commandHint string,
+	timeout time.Duration,
+) (targetProcessIdentity, bool) {
 	deadline := time.Now().Add(timeout)
 	expectedExecutable := commandExecutableBase(strings.TrimSpace(commandHint))
 	var previous targetProcessIdentity
@@ -1831,11 +1853,63 @@ func (w *Watcher) InputReceiptResult(sessionID, receipt string) (InputResult, bo
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
 // text. Unknown executors are treated as ready immediately. Known Codex, Cursor,
-// Claude, and Grok UIs must reach an input prompt so Zen does not paste a task
-// into a startup screen before the composer can accept Enter-to-send.
+// Claude, Grok, Pi, and OpenCode UIs must reach an input prompt so Zen does not
+// paste a task into a startup screen before the composer can accept Enter-to-send.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
+	return w.sendInputWhenReadyAttempt(sessionID, command, text, inputReadyTimeout(command))
+}
+
+// inputReadyRetryInterval is the pause between bounded readiness attempts. The
+// attempts themselves poll the pane far more often; the pause only spaces out
+// full per-attempt timeouts.
+const inputReadyRetryInterval = 250 * time.Millisecond
+
+// SendInputWhenReadyBudgeted bounds the initial delegated handoff for one
+// scheduled occurrence. The exact spawned provider input surface must become
+// attributable and ready within budget; a definitely-not-submitted attempt
+// (ErrAgentInputNotReady) may retry within the same budget while the spawned
+// identity stays attributable. Ambiguous admission or loss of the spawned
+// identity (the session ended without notification) fails closed immediately
+// and is never replayed blindly. A non-positive budget keeps the legacy
+// single-attempt behavior.
+func (w *Watcher) SendInputWhenReadyBudgeted(sessionID, command, text string, budget time.Duration) error {
+	if budget <= 0 {
+		return w.SendInputWhenReady(sessionID, command, text)
+	}
+	deadline := w.admissionNowValue().Add(budget)
+	for {
+		timeout := inputReadyTimeout(command)
+		if remaining := deadline.Sub(w.admissionNowValue()); remaining < timeout {
+			timeout = remaining
+		}
+		err := w.sendInputWhenReadyAttempt(sessionID, command, text, timeout)
+		if err == nil || !errors.Is(err, ErrAgentInputNotReady) {
+			return err
+		}
+		if !w.admissionNowValue().Before(deadline) {
+			return err
+		}
+		w.admissionSleepValue(inputReadyRetryInterval)
+	}
+}
+
+// sendInputWhenReadyAttempt is one bounded ready-and-submit attempt against the
+// exact spawned target identity. Identity attribution is capped at the
+// adapter's per-attempt window so a session that ended without notification
+// fails fast instead of consuming the whole occurrence budget; the readiness
+// wait then uses the remainder. Only a readiness timeout returns
+// ErrAgentInputNotReady (retryable); an unprovable or replaced identity and any
+// ambiguous submission are terminal for the occurrence.
+func (w *Watcher) sendInputWhenReadyAttempt(
+	sessionID, command, text string,
+	timeout time.Duration,
+) error {
 	resolver := w.targetForSession
-	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	identityTimeout := timeout
+	if perAttempt := inputReadyTimeout(command); perAttempt < identityTimeout {
+		identityTimeout = perAttempt
+	}
+	identity, known := resolveTargetIdentityWhenReadyTimeout(resolver, sessionID, command, identityTimeout)
 	if !known {
 		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
@@ -1843,9 +1917,9 @@ func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
 	guard := func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}
-	if !waitForInputReadyGuarded(sessionID, command, inputReadyTimeout(command), guard) &&
+	if !waitForInputReadyGuarded(sessionID, command, timeout, guard) &&
 		needsInputReadinessWait(command, "") {
-		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", command))
+		return agentInputNotReady(command)
 	}
 	body, submit := splitSubmitInput(text)
 	if submit && body != "" {
@@ -1872,7 +1946,7 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 	if !waitForInputReadyGuarded(sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
-		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", identity.Command))
+		return agentInputNotReady(identity.Command)
 	}
 	_, err := w.sessionInputOwner().submit(sessionID, identity, resolver, identity.Command, payload, "")
 	return err
@@ -1894,7 +1968,7 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
-			definitelyNotSubmitted(turnID, fmt.Errorf("agent input not ready for %q", identity.Command))
+			agentInputNotReady(identity.Command)
 	}
 	return w.sessionInputOwner().submitDelegated(
 		sessionID,
@@ -2167,7 +2241,7 @@ func SendInputWhenReady(sessionID, command, text string) error {
 	}
 	command = identity.Command
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
-		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", command))
+		return agentInputNotReady(command)
 	}
 	body, submit := splitSubmitInput(text)
 	if submit && body != "" {
@@ -2228,7 +2302,7 @@ func waitForInputReadyGuarded(
 		if guard != nil && guard() != nil {
 			return false
 		}
-		content, alive, _ := capturePaneContent(sessionID)
+		content, alive, _ := capturePaneContentFunc(sessionID)
 		if !alive {
 			return false
 		}
@@ -2536,7 +2610,7 @@ func isOpenCodeInputReady(content string) bool {
 	}
 	return openCodeComposerPlaceholderRe.MatchString(content) &&
 		openCodeAgentLineRe.MatchString(content) &&
-		openCodeVersionFooterRe.MatchString(content)
+		(openCodeVersionFooterRe.MatchString(content) || openCodeIdleFooterRe.MatchString(content))
 }
 
 func looksLikeOpenCodePane(content string) bool {

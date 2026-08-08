@@ -17,6 +17,7 @@ type fakeRunner struct {
 	abortCalls     []string
 	spawnErr       error
 	sendReadyErr   error
+	sendReadyErrs  []error
 	abortErr       error
 	newID          string
 }
@@ -35,6 +36,11 @@ func (f *fakeRunner) Spawn(role, cwd, command string) (string, error) {
 func (f *fakeRunner) SendWhenReady(sessionID, command, text string) error {
 	f.sendReadyIDs = append(f.sendReadyIDs, sessionID)
 	f.sendReadyCalls = append(f.sendReadyCalls, sessionID+"|"+command+"|"+text)
+	if len(f.sendReadyErrs) > 0 {
+		err := f.sendReadyErrs[0]
+		f.sendReadyErrs = f.sendReadyErrs[1:]
+		return err
+	}
 	return f.sendReadyErr
 }
 
@@ -321,4 +327,53 @@ func TestLauncher_StartDedicatedReportsSpawnAndReadySendFailures(t *testing.T) {
 			t.Fatalf("aborts = %#v, want one attempt", run.abortCalls)
 		}
 	})
+}
+
+func TestLauncher_StartDedicatedExhaustedHandoffBudgetFailsOccurrenceOnce(t *testing.T) {
+	// The budgeted handoff retries safe definitely-not-submitted readiness
+	// timeouts inside the readiness/admission owner; once the occurrence budget
+	// is exhausted the SendWhenReady boundary reports the terminal
+	// definitely-not-submitted outcome. The Launcher must fail the occurrence
+	// and abort the fresh session exactly once, never re-spawn or replay.
+	run := &fakeRunner{
+		newID: "opencode-scheduled",
+		sendReadyErr: errors.New(
+			"Session input was definitely not submitted: agent input not ready for \"opencode\"",
+		),
+	}
+	execs := NewExecutorConfig("opencode", map[string]Executor{
+		"opencode": {Name: "opencode", Command: "opencode"},
+	})
+	_, err := NewLauncher(run, execs).StartDedicated(&Item{Path: "/tmp/scheduled.md"}, "/calendar")
+	if !errors.Is(err, ErrSpawnFailed) {
+		t.Fatalf("error = %v, want ErrSpawnFailed", err)
+	}
+	if run.spawnCalls != 1 || len(run.sendReadyCalls) != 1 {
+		t.Fatalf("spawn calls = %d, ready sends = %#v, want one launch attempt", run.spawnCalls, run.sendReadyCalls)
+	}
+	if len(run.abortCalls) != 1 || run.abortCalls[0] != "opencode-scheduled" {
+		t.Fatalf("aborts = %#v, want the fresh session aborted exactly once", run.abortCalls)
+	}
+}
+
+func TestLauncher_StartDedicatedAmbiguousHandoffAbortsOnceNeverReplays(t *testing.T) {
+	// An ambiguous/mutated-composer admission must never replay blindly: the
+	// occurrence fails and the fresh session is aborted exactly once.
+	run := &fakeRunner{
+		newID:        "opencode-scheduled",
+		sendReadyErr: errors.New("Session input outcome is unknown and will not be replayed: provider admission not observed"),
+	}
+	execs := NewExecutorConfig("opencode", map[string]Executor{
+		"opencode": {Name: "opencode", Command: "opencode"},
+	})
+	_, err := NewLauncher(run, execs).StartDedicated(&Item{Path: "/tmp/scheduled.md"}, "/calendar")
+	if !errors.Is(err, ErrSpawnFailed) {
+		t.Fatalf("error = %v, want ErrSpawnFailed", err)
+	}
+	if len(run.sendReadyCalls) != 1 {
+		t.Fatalf("ready sends = %#v, ambiguous admission must not be replayed", run.sendReadyCalls)
+	}
+	if len(run.abortCalls) != 1 || run.abortCalls[0] != "opencode-scheduled" {
+		t.Fatalf("aborts = %#v, want the fresh session aborted exactly once", run.abortCalls)
+	}
 }

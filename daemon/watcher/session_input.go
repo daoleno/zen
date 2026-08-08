@@ -947,6 +947,18 @@ func definitelyNotSubmitted(receipt string, cause error) error {
 	}
 }
 
+// ErrAgentInputNotReady is the retryable readiness outcome of an initial
+// handoff: the exact spawned target identity is still attributable, but the
+// provider input surface had not reached the adapter's ready evidence when the
+// bounded wait expired. The input was definitely not submitted, so a caller may
+// retry within the same occurrence. Any other definitely-not-submitted outcome
+// (unprovable identity, pane replacement) is terminal.
+var ErrAgentInputNotReady = errors.New("agent input not ready")
+
+func agentInputNotReady(command string) error {
+	return definitelyNotSubmitted("", fmt.Errorf("%w for %q", ErrAgentInputNotReady, command))
+}
+
 func ambiguousSubmission(receipt string, cause error) error {
 	return &InputSubmissionError{
 		Result: InputResult{Outcome: InputAmbiguous, Receipt: receipt},

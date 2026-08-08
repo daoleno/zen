@@ -29,18 +29,23 @@ type scheduledActionLaunchRunner struct {
 	spawnCommands  []string
 	sendReadyCalls []string
 	abortCalls     []string
+	sendReadyErr   error
+	newID          string
 }
 
 func (r *scheduledActionLaunchRunner) Spawn(role, cwd, command string) (string, error) {
 	r.spawnRoles = append(r.spawnRoles, role)
 	r.spawnCwds = append(r.spawnCwds, cwd)
 	r.spawnCommands = append(r.spawnCommands, command)
+	if r.newID != "" {
+		return r.newID, nil
+	}
 	return "claude-scheduled", nil
 }
 
 func (r *scheduledActionLaunchRunner) SendWhenReady(sessionID, command, text string) error {
 	r.sendReadyCalls = append(r.sendReadyCalls, sessionID+"|"+command+"|"+text)
-	return nil
+	return r.sendReadyErr
 }
 
 func (r *scheduledActionLaunchRunner) Abort(sessionID string) error {
@@ -507,6 +512,422 @@ func TestUnsupportedScheduledExecutorFailsOccurrenceBeforeAnyPromptCanRun(t *tes
 	if len(tmux.spawnCommands) != 0 || len(tmux.sendReadyCalls) != 0 || len(tmux.abortCalls) != 0 {
 		t.Fatalf("unsupported executor reached an approval-capable process: spawn=%#v send=%#v abort=%#v",
 			tmux.spawnCommands, tmux.sendReadyCalls, tmux.abortCalls)
+	}
+}
+
+func TestSchedulerHandoffTimeoutFailsOccurrenceOnceBoundedly(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	calendarStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now
+	item, err := calendarStore.Create(Item{
+		Title:             "Delayed readiness run",
+		Kind:              KindScheduledAction,
+		DueAt:             &due,
+		Timezone:          "UTC",
+		Recurrence:        RecurrenceDaily,
+		ActionInstruction: "Run the task",
+		SourceThreadID:    "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notReady := errors.New("Session input was definitely not submitted: agent input not ready for \"opencode\"")
+	tmux := &scheduledActionLaunchRunner{sendReadyErr: notReady}
+	launcher := work.NewLauncher(tmux, work.NewExecutorConfig("opencode", map[string]work.Executor{
+		"opencode": {Name: "opencode", Command: "opencode"},
+	}))
+	runner := &WorkRunner{
+		Store:    workStore,
+		Launcher: launcher,
+		Brain:    &scheduledActionThreadRegistry{known: true},
+	}
+	scheduler := NewScheduler(calendarStore, runner)
+	scheduler.now = func() time.Time { return now }
+
+	finished, err := scheduler.run(context.Background(), item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finished.Runs) != 1 || finished.Runs[0].Status != StatusFailed {
+		t.Fatalf("handoff timeout did not fail the occurrence: %#v", finished)
+	}
+	if finished.Runs[0].Result != "" ||
+		!strings.Contains(finished.Runs[0].FailureReason, `agent input not ready for "opencode"`) {
+		t.Fatalf("handoff timeout failure = %#v", finished.Runs[0])
+	}
+	if finished.Runs[0].WorkID != "" || finished.Runs[0].AgentSession != "" {
+		t.Fatalf("unsubmitted handoff was recorded as launched: %#v", finished.Runs[0])
+	}
+	if len(tmux.spawnCommands) != 1 || len(tmux.sendReadyCalls) != 1 || len(tmux.abortCalls) != 1 {
+		t.Fatalf("handoff lifecycle = spawn %#v send %#v abort %#v, want one of each",
+			tmux.spawnCommands, tmux.sendReadyCalls, tmux.abortCalls)
+	}
+	// The failed occurrence must not poison the series: the recurrence advances
+	// and the source thread stays frozen on the item.
+	if finished.Status != StatusScheduled || finished.NextAt.Equal(now) {
+		t.Fatalf("series did not continue after failed occurrence: %#v", finished)
+	}
+	if finished.SourceThreadID != "thread-1" {
+		t.Fatalf("source thread changed: %q", finished.SourceThreadID)
+	}
+	if failedResults := calendarStore.ScheduledResults("thread-1", 0); len(failedResults) != 1 ||
+		failedResults[0].Status != StatusFailed ||
+		!strings.Contains(failedResults[0].Body, `agent input not ready for "opencode"`) {
+		t.Fatalf("failed occurrence projection = %#v, want exactly one failed result", failedResults)
+	}
+	// The visible Work file was created exactly once for the occurrence.
+	workItems := workStore.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, linked := range workItems {
+		if linked.Frontmatter.Kind == "calendar_action" && strings.TrimSpace(linked.ID) == finished.Runs[0].ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("visible Work files for occurrence = %d, want exactly one", count)
+	}
+}
+
+func TestSchedulerHandoffAmbiguousFailsOccurrenceWithoutReplay(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	calendarStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now
+	item, err := calendarStore.Create(Item{
+		Title:             "Ambiguous handoff run",
+		Kind:              KindScheduledAction,
+		DueAt:             &due,
+		Timezone:          "UTC",
+		Recurrence:        RecurrenceDaily,
+		ActionInstruction: "Run the task",
+		SourceThreadID:    "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := errors.New("Session input outcome is unknown and will not be replayed: provider admission not observed")
+	tmux := &scheduledActionLaunchRunner{sendReadyErr: ambiguous}
+	launcher := work.NewLauncher(tmux, work.NewExecutorConfig("opencode", map[string]work.Executor{
+		"opencode": {Name: "opencode", Command: "opencode"},
+	}))
+	runner := &WorkRunner{
+		Store:    workStore,
+		Launcher: launcher,
+		Brain:    &scheduledActionThreadRegistry{known: true},
+	}
+	scheduler := NewScheduler(calendarStore, runner)
+	scheduler.now = func() time.Time { return now }
+
+	finished, err := scheduler.run(context.Background(), item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Runs[0].Status != StatusFailed ||
+		!strings.Contains(finished.Runs[0].FailureReason, "will not be replayed") {
+		t.Fatalf("ambiguous handoff failure = %#v", finished.Runs[0])
+	}
+	if len(tmux.sendReadyCalls) != 1 || len(tmux.abortCalls) != 1 {
+		t.Fatalf("ambiguous admission was replayed: send %#v abort %#v",
+			tmux.sendReadyCalls, tmux.abortCalls)
+	}
+	if failedResults := calendarStore.ScheduledResults("thread-1", 0); len(failedResults) != 1 ||
+		failedResults[0].Status != StatusFailed ||
+		!strings.Contains(failedResults[0].Body, "will not be replayed") {
+		t.Fatalf("ambiguous occurrence projection = %#v, want exactly one failed result", failedResults)
+	}
+}
+
+func TestSchedulerDelayedReadinessHandoffLaunchesOnceAndRoutsResult(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	calendarStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now.Add(-time.Minute)
+	item, err := calendarStore.Create(Item{
+		ID: "calendar-opencode-handoff", Title: "Delayed readiness run", Kind: KindScheduledAction,
+		DueAt: &due, Timezone: "UTC", Recurrence: RecurrenceDaily,
+		ActionInstruction: "Run the task", SourceThreadID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmux := &scheduledActionLaunchRunner{newID: "opencode-scheduled"}
+	launcher := work.NewLauncher(tmux, work.NewExecutorConfig("opencode", map[string]work.Executor{
+		"opencode": {Name: "opencode", Command: "opencode"},
+	}))
+	runner := &WorkRunner{
+		Store:    workStore,
+		Launcher: launcher,
+		Watcher: scheduledActionWatcher{agent: &classifier.Agent{
+			State:   classifier.StateRunning,
+			Summary: "OpenCode working on the scheduled briefing",
+		}},
+		Brain: &scheduledActionThreadRegistry{known: true},
+	}
+	scheduler := NewScheduler(calendarStore, runner)
+	scheduler.now = func() time.Time { return now }
+
+	launched, err := scheduler.run(context.Background(), item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launched.Runs[0].Status != StatusRunning || launched.Runs[0].WorkID != launched.Runs[0].ID ||
+		launched.Runs[0].AgentSession != "opencode-scheduled" {
+		t.Fatalf("handoff launch = %#v", launched.Runs[0])
+	}
+	if len(tmux.sendReadyCalls) != 1 || len(tmux.abortCalls) != 0 {
+		t.Fatalf("handoff lifecycle = send %#v abort %#v", tmux.sendReadyCalls, tmux.abortCalls)
+	}
+
+	// The agent completes the visible Work with a terminal deliverable; the
+	// scheduler routes the canonical result to the frozen source thread and
+	// advances the daily recurrence, exactly once.
+	deliverable := "First paragraph.\n\nSecond paragraph."
+	done := now.Add(5 * time.Minute)
+	linked, ok := workStore.GetByID(launched.Runs[0].WorkID)
+	if !ok {
+		t.Fatal("linked Work missing")
+	}
+	current := *linked
+	current.Frontmatter.Done = &done
+	current.Body = scheduledDeliverableBody(deliverable)
+	raw, err := work.SerializeItem(&current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current.Path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	scheduler.Tick(context.Background())
+	finished, err := calendarStore.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Runs[0].Status != StatusCompleted || finished.Runs[0].Result != deliverable {
+		t.Fatalf("terminal commit = %#v", finished.Runs[0])
+	}
+	results := calendarStore.ScheduledResults("thread-1", 0)
+	if len(results) != 1 || results[0].Body != "**Delayed readiness run completed**\n\n"+deliverable {
+		t.Fatalf("result routing = %#v", results)
+	}
+	if finished.NextAt.Equal(now) || finished.Status != StatusScheduled {
+		t.Fatalf("recurrence did not advance: %#v", finished)
+	}
+	if finished.SourceThreadID != "thread-1" {
+		t.Fatalf("source thread changed: %q", finished.SourceThreadID)
+	}
+
+	scheduler.Tick(context.Background())
+	repeated, err := calendarStore.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Revision != finished.Revision || len(calendarStore.ScheduledResults("thread-1", 0)) != 1 {
+		t.Fatalf("terminal reconciliation was not idempotent: %#v", repeated)
+	}
+}
+
+func TestSchedulerRestartDuringHandoffFailsClosedWithoutDuplicate(t *testing.T) {
+	// The daemon restarts while the bounded handoff is still in progress: the
+	// occurrence was claimed and the visible Work file was written, but the
+	// launch link was never recorded. Recovery must fail the occurrence
+	// deterministically without relaunching or creating a second Work file.
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	calendarStore, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now.Add(-time.Minute)
+	item, err := calendarStore.Create(Item{
+		ID: "calendar-restart-handoff", Title: "Restart handoff", Kind: KindScheduledAction,
+		DueAt: &due, Timezone: "UTC", Recurrence: RecurrenceDaily,
+		ActionInstruction: "Run", SourceThreadID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := calendarStore.Claim(item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Write(&work.Item{
+		Path: filepath.Join(workStore.Root, "calendar", item.ID+"-"+run.ID+".md"),
+		Body: scheduledDeliverableBody("draft"),
+		Frontmatter: work.Frontmatter{
+			ID: run.ID, Kind: "calendar_action", Created: now,
+			Extra: map[string]interface{}{"calendar_item_id": item.ID, "calendar_run_id": run.ID},
+		},
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Daemon restart: a fresh Store/Scheduler load the durable state with the
+	// handoff interrupted.
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.now = func() time.Time { return now }
+	workReopened, err := work.NewStore(workStore.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &WorkRunner{Store: workReopened, Watcher: scheduledActionWatcher{}}
+	scheduler := NewScheduler(reopened, runner)
+	scheduler.now = func() time.Time { return now }
+	scheduler.Tick(context.Background())
+
+	finished, err := reopened.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finished.Runs) != 1 || finished.Runs[0].Status != StatusFailed {
+		t.Fatalf("restart recovery = %#v, want exactly one failed occurrence", finished)
+	}
+	if finished.Runs[0].Result != "" || !strings.Contains(finished.Runs[0].FailureReason, "no longer observable after restart") {
+		t.Fatalf("restart failure = %#v", finished.Runs[0])
+	}
+	if failedResults := reopened.ScheduledResults("thread-1", 0); len(failedResults) != 1 ||
+		failedResults[0].Status != StatusFailed {
+		t.Fatalf("restart recovery projection = %#v, want exactly one failed result", failedResults)
+	}
+	workItems := workReopened.List()
+	count := 0
+	for _, linked := range workItems {
+		if strings.TrimSpace(linked.ID) == run.ID && linked.Frontmatter.Kind == "calendar_action" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("visible Work files after restart recovery = %d, want exactly one", count)
+	}
+	if finished.SourceThreadID != "thread-1" {
+		t.Fatalf("source thread changed: %q", finished.SourceThreadID)
+	}
+}
+
+func TestSchedulerAgentEndedWithoutNotificationFailsOccurrenceOnce(t *testing.T) {
+	// Regression reproduction: the spawned agent ended (process exited) without
+	// ever notifying completion — no done marker, no deliverable — yet Zen must
+	// not keep projecting the occurrence as running forever. The linked agent's
+	// terminal state fails the occurrence exactly once with the recorded
+	// lifetime, and the recurring series continues.
+	now := time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	calendarStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now.Add(-time.Minute)
+	item, err := calendarStore.Create(Item{
+		ID: "calendar-ended-no-notice", Title: "Ended without notice", Kind: KindScheduledAction,
+		DueAt: &due, Timezone: "UTC", Recurrence: RecurrenceDaily,
+		ActionInstruction: "Run", SourceThreadID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := calendarStore.Claim(item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launched, err := calendarStore.RecordLaunch(item.ID, run.ID, run.ID, "opencode-ended:@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Write(&work.Item{
+		Path: filepath.Join(workStore.Root, "calendar", item.ID+"-"+run.ID+".md"),
+		Body: scheduledDeliverableBody("draft only"),
+		Frontmatter: work.Frontmatter{
+			ID: run.ID, Kind: "calendar_action", Created: now,
+			Extra: map[string]interface{}{"calendar_item_id": item.ID, "calendar_run_id": run.ID},
+		},
+	}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &WorkRunner{
+		Store: workStore,
+		Watcher: scheduledActionWatcher{agent: &classifier.Agent{
+			State:   classifier.StateDone,
+			Summary: "Session ended without marking the scheduled Work done",
+		}},
+	}
+	scheduler := NewScheduler(calendarStore, runner)
+	scheduler.now = func() time.Time { return now }
+	scheduler.Tick(context.Background())
+
+	finished, err := calendarStore.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Runs[0].Status != StatusFailed || finished.Runs[0].Result != "" {
+		t.Fatalf("ended-without-notification occurrence = %#v", finished.Runs[0])
+	}
+	if !strings.Contains(finished.Runs[0].FailureReason, "completed before producing a valid terminal scheduled Work deliverable") {
+		t.Fatalf("ended-without-notification failure = %q", finished.Runs[0].FailureReason)
+	}
+	if finished.NextAt.Equal(now) || finished.Status != StatusScheduled {
+		t.Fatalf("series did not continue: %#v", finished)
+	}
+	if finished.SourceThreadID != "thread-1" {
+		t.Fatalf("source thread changed: %q", finished.SourceThreadID)
+	}
+	if failedResults := calendarStore.ScheduledResults("thread-1", 0); len(failedResults) != 1 ||
+		failedResults[0].Status != StatusFailed ||
+		!strings.Contains(failedResults[0].Body, "completed before producing a valid terminal scheduled Work deliverable") {
+		t.Fatalf("ended-without-notification projection = %#v, want exactly one failed result", failedResults)
+	}
+	if finished.Revision != launched.Revision+1 {
+		t.Fatalf("revision = %d, want exactly one terminal transition from %d", finished.Revision, launched.Revision)
+	}
+	scheduler.Tick(context.Background())
+	repeated, err := calendarStore.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Revision != finished.Revision {
+		t.Fatalf("repeated reconciliation changed terminal state: %d -> %d", finished.Revision, repeated.Revision)
 	}
 }
 

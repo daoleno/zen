@@ -10,6 +10,42 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
+func TestTmuxRunnerSendWhenReadyUsesBudgetedHandoffWhenConfigured(t *testing.T) {
+	fw := &fakeDelegatedWatcher{}
+	runner := TmuxRunner{Watcher: fw}
+
+	if err := runner.SendWhenReady("opencode:@1", "opencode", "task\n"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.budgetedCalls) != 0 || len(fw.sendReadyCalls) != 1 {
+		t.Fatalf("legacy handoff = budgeted %#v, legacy %#v", fw.budgetedCalls, fw.sendReadyCalls)
+	}
+
+	runner.InputReadyBudget = DefaultScheduledInputReadyBudget
+	if err := runner.SendWhenReady("opencode:@1", "opencode", "task\n"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.budgetedCalls) != 1 || fw.budgetedCalls[0] != "opencode:@1|opencode|task\n|1m30s" {
+		t.Fatalf("budgeted handoff = %#v, legacy %#v", fw.budgetedCalls, fw.sendReadyCalls)
+	}
+}
+
+func TestTmuxRunnerSendWhenReadyBoundedHandoffFailsClosedWithoutReplay(t *testing.T) {
+	fw := &fakeDelegatedWatcher{
+		budgetedErrs: []error{
+			errors.New("Session input outcome is unknown and will not be replayed: provider admission not observed"),
+		},
+	}
+	runner := TmuxRunner{Watcher: fw, InputReadyBudget: DefaultScheduledInputReadyBudget}
+	err := runner.SendWhenReady("opencode:@1", "opencode", "task\n")
+	if err == nil || !strings.Contains(err.Error(), "will not be replayed") {
+		t.Fatalf("error = %v, want fail-closed ambiguous admission", err)
+	}
+	if len(fw.budgetedCalls) != 1 {
+		t.Fatalf("ambiguous admission was retried: %#v", fw.budgetedCalls)
+	}
+}
+
 func TestTmuxRunnerRequiresOwnedWatcherLifecycle(t *testing.T) {
 	runner := TmuxRunner{}
 	if _, err := runner.Spawn("codex", "/repo", "codex"); err == nil || !strings.Contains(err.Error(), "delegated watcher is required") {
@@ -29,6 +65,8 @@ type fakeDelegatedWatcher struct {
 	nextID         string
 	sendReadyErr   error
 	sendReadyCalls []string
+	budgetedCalls  []string
+	budgetedErrs   []error
 }
 
 func (f *fakeDelegatedWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
@@ -64,6 +102,16 @@ func (f *fakeDelegatedWatcher) ProbeSession(target string) (watcher.SessionPrese
 
 func (f *fakeDelegatedWatcher) SendInputWhenReady(sessionID, command, text string) error {
 	f.sendReadyCalls = append(f.sendReadyCalls, sessionID+"|"+command+"|"+text)
+	return f.sendReadyErr
+}
+
+func (f *fakeDelegatedWatcher) SendInputWhenReadyBudgeted(sessionID, command, text string, budget time.Duration) error {
+	f.budgetedCalls = append(f.budgetedCalls, sessionID+"|"+command+"|"+text+"|"+budget.String())
+	if len(f.budgetedErrs) > 0 {
+		err := f.budgetedErrs[0]
+		f.budgetedErrs = f.budgetedErrs[1:]
+		return err
+	}
 	return f.sendReadyErr
 }
 

@@ -228,9 +228,10 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 	pusher := push.New()
 	launcher := work.NewLauncher(work.TmuxRunner{
-		Watcher:  w,
-		Env:      progressEnvForStateDir(authManager.StorageDir()),
-		Profiles: profileOwner,
+		Watcher:          w,
+		Env:              progressEnvForStateDir(authManager.StorageDir()),
+		Profiles:         profileOwner,
+		InputReadyBudget: work.DefaultScheduledInputReadyBudget,
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
 	srv.SetModelProfiles(profileOwner)
