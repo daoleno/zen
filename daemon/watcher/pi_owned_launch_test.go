@@ -53,6 +53,65 @@ func TestMergeAgentCommandOwnershipKeepsOnlyOwnedPiLaunch(t *testing.T) {
 			wantOwnedPath: owned,
 		},
 		{
+			// shellQuoteForLaunch output: a spaced path is single-quote wrapped
+			// exactly as EnsurePiSessionLaunchCommand emits it. The watcher must
+			// strip the quotes for ownership detection and re-emit them in the
+			// merged command so work.PiOwnedSessionPath recovers the same path.
+			name:          "quoted spaced owned path survives refresh",
+			previous:      `pi --session '/tmp/My Zen/owned file.jsonl'`,
+			detected:      "pi",
+			want:          `pi --session '/tmp/My Zen/owned file.jsonl'`,
+			wantOwnedPath: "/tmp/My Zen/owned file.jsonl",
+		},
+		{
+			name:          "quoted dollar metachar owned path survives refresh",
+			previous:      `pi --session '/tmp/co$t/owned file.jsonl'`,
+			detected:      "pi",
+			want:          `pi --session '/tmp/co$t/owned file.jsonl'`,
+			wantOwnedPath: "/tmp/co$t/owned file.jsonl",
+		},
+		{
+			name:          "quoted backtick metachar owned path survives refresh",
+			previous:      "pi --session '/tmp/back`tick/owned file.jsonl'",
+			detected:      "pi",
+			want:          "pi --session '/tmp/back`tick/owned file.jsonl'",
+			wantOwnedPath: "/tmp/back`tick/owned file.jsonl",
+		},
+		{
+			name:          "quoted double-quote metachar owned path survives refresh",
+			previous:      `pi --session '/tmp/qu"ote/owned file.jsonl'`,
+			detected:      "pi",
+			want:          `pi --session '/tmp/qu"ote/owned file.jsonl'`,
+			wantOwnedPath: "/tmp/qu\"ote/owned file.jsonl",
+		},
+		{
+			name:          "quoted backslash metachar owned path survives refresh",
+			previous:      `pi --session '/tmp/back\slash/owned file.jsonl'`,
+			detected:      "pi",
+			want:          `pi --session '/tmp/back\slash/owned file.jsonl'`,
+			wantOwnedPath: `/tmp/back\slash/owned file.jsonl`,
+		},
+		{
+			// shellQuoteForLaunch escapes an embedded single quote as '\'';
+			// splitZenLaunchFields cannot keep such a value in one wrapped token
+			// (the escape's first quote closes the span), so the watcher and the
+			// work parser both fail closed here: ownership is not claimed and the
+			// detected identity stays bare "pi" — never a wrong binding and never
+			// an unstable command.
+			name:          "quoted embedded apostrophe fails closed without ownership",
+			previous:      `pi --session '/tmp/a'\''b/owned file.jsonl'`,
+			detected:      "pi",
+			want:          "pi",
+			wantOwnedPath: "",
+		},
+		{
+			name:          "quoted equals-form owned session survives refresh",
+			previous:      `pi --session='/tmp/My Zen/owned file.jsonl'`,
+			detected:      "pi",
+			want:          `pi --session '/tmp/My Zen/owned file.jsonl'`,
+			wantOwnedPath: "/tmp/My Zen/owned file.jsonl",
+		},
+		{
 			name:          "unowned pi keeps detected identity",
 			previous:      "pi",
 			detected:      "pi",
@@ -194,6 +253,53 @@ func TestPollPreservesOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 	}
 	if piOwnedLaunchPath(agent.Command) != "" || strings.Contains(agent.Command, "pi --session") {
 		t.Fatalf("stale Pi ownership survived provider switch: %q", agent.Command)
+	}
+}
+
+// TestPollPreservesQuotedOwnedPiLaunchCommandAcrossRefresh reproduces the
+// reviewed P2 parser divergence: a Zen-owned --session path that requires
+// shell quoting (space and metacharacters, exactly as EnsurePiSessionLaunchCommand
+// emits via shellQuoteForLaunch) must keep the owned binding across polls
+// instead of degrading to bare "pi".
+func TestPollPreservesQuotedOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
+	spaced := filepath.Join(t.TempDir(), "My Zen", "owned file.jsonl")
+	quoted := shellQuoteForLaunch(spaced)
+	launchCommand := "env PATH=/x pi --session " + quoted
+	w := New(time.Second)
+	w.pollNow = fakePollClock([]time.Time{
+		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
+		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
+	})
+	w.registerCreatedSession("brain-agent-pi-quoted:@1", "/repo/zen", CreateSessionOptions{
+		Command:   launchCommand,
+		Name:      "Pi quoted task",
+		Delegated: true,
+	}, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC))
+	drainWatcherEvents(w)
+
+	restore := installFakePollSeams([]tmuxWindow{
+		{target: "brain-agent-pi-quoted:@1", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 448, delegated: true},
+	}, map[string]string{
+		"brain-agent-pi-quoted:@1": "pi v0.73.1\nworking\n",
+	}, map[int]processInfo{
+		448: {pid: 448, ppid: 1, pgid: 448, tpgid: 448, startedAt: time.Date(2026, 8, 7, 9, 0, 5, 0, time.UTC), comm: "pi", args: "pi"},
+	})
+	defer restore()
+
+	wantCommand := "pi --session " + quoted
+	for poll := 1; poll <= 2; poll++ {
+		w.poll()
+		drainWatcherEvents(w)
+		agent := agentByID(w.Agents(), "brain-agent-pi-quoted:@1")
+		if agent == nil {
+			t.Fatalf("poll %d: agent missing", poll)
+		}
+		if agent.Command != wantCommand {
+			t.Fatalf("poll %d: quoted owned launch command degraded: %q, want %q", poll, agent.Command, wantCommand)
+		}
+		if got := piOwnedLaunchPath(agent.Command); got != spaced {
+			t.Fatalf("poll %d: owned path = %q, want %q (command %q)", poll, got, spaced, agent.Command)
+		}
 	}
 }
 

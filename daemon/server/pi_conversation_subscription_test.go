@@ -206,6 +206,87 @@ func TestPiLiveSubscriptionAmbiguityFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPiLiveSubscriptionQuotedOwnedPathBinds covers the reviewed P2 at the
+// full launch-to-watcher-to-reader chain: a Zen-owned --session path that
+// requires shell quoting (space and metacharacters, matching
+// EnsurePiSessionLaunchCommand output) must bind the exact transcript through
+// watcher metadata and the server subscription.
+func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spaced := filepath.Join(t.TempDir(), "My Zen", "co$t file.jsonl")
+	if err := os.MkdirAll(filepath.Dir(spaced), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePiServerFixture(t, spaced, cwd)
+	// The launcher wraps values containing shell metacharacters in single
+	// quotes (work.shellQuoteForLaunch); the fixture path has no embedded
+	// apostrophe, so the simple wrap is byte-identical to its output.
+	quoted := "'" + spaced + "'"
+
+	tmuxPath := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' 'zero-view:@3'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	w := watcher.New(time.Second)
+	launchCommand := "pi --session " + quoted
+	agentID, err := w.CreateSession("", watcher.CreateSessionOptions{
+		Detached: true,
+		Cwd:      cwd,
+		Command:  launchCommand,
+		Name:     "Pi quoted live task",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := w.GetAgent(agentID)
+	if agent == nil {
+		t.Fatal("fake tmux session was not registered")
+	}
+	if agent.Command != launchCommand {
+		t.Fatalf("registered launch command = %q, want %q", agent.Command, launchCommand)
+	}
+
+	srv := &Server{watcher: w}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type:      "codex_conversation_subscribe",
+		RequestID: "subscription-pi-quoted",
+		TargetID:  agentID,
+	}
+	writeConversationSubscriptionRequest(t, conn, request)
+
+	var snapshot struct {
+		Type         string                 `json:"type"`
+		Conversation work.CodexConversation `json:"conversation"`
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Type != "codex_conversation_snapshot" {
+		t.Fatalf("first response = %#v", snapshot)
+	}
+	if !snapshot.Conversation.Available || snapshot.Conversation.SessionID != "sess-server-live" {
+		t.Fatalf("quoted owned transcript = %+v", snapshot.Conversation)
+	}
+	if snapshot.Conversation.Path != spaced {
+		t.Fatalf("quoted owned path = %q, want %q", snapshot.Conversation.Path, spaced)
+	}
+	if len(snapshot.Conversation.Events) == 0 || snapshot.Conversation.Events[0].Kind != "user_message" {
+		t.Fatalf("quoted owned events = %#v", snapshot.Conversation.Events)
+	}
+}
+
 // writePiServerFixture writes a realistic version-3 Pi session with user text,
 // reasoning, assistant text, one tool call with result, and a final stop.
 func writePiServerFixture(t *testing.T, path, cwd string) {

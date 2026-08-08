@@ -321,6 +321,70 @@ func TestPiLiveInterruptedTurnSettlesRunningTool(t *testing.T) {
 	}
 }
 
+// TestPiQuotedOwnedPathBindsAndRoundTrips covers the reviewed P2 parser
+// divergence at the reader boundary: a Zen-owned --session path that requires
+// shell quoting (space and metacharacters, exactly as EnsurePiSessionLaunchCommand
+// emits via shellQuoteForLaunch) must be recognized as owned by the work
+// parser, must bind the exact transcript, and must round-trip through the
+// watcher's canonical merged command form.
+func TestPiQuotedOwnedPathBindsAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	spaced := filepath.Join(dir, "My Zen", "co$t file.jsonl")
+	if err := os.MkdirAll(filepath.Dir(spaced), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	quoted := shellQuoteForLaunch(spaced)
+	if !strings.Contains(quoted, "'") {
+		t.Fatalf("metachar path was not shell-quoted: %q", quoted)
+	}
+
+	// EnsurePiSessionLaunchCommand keeps an already-owned quoted path as-is
+	// and PiOwnedSessionPath strips the quotes to the exact path.
+	launch, err := EnsurePiSessionLaunchCommand("pi --session " + quoted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch != "pi --session "+quoted {
+		t.Fatalf("ensure mutated quoted launch: %q", launch)
+	}
+	if got := PiOwnedSessionPath(launch); got != spaced {
+		t.Fatalf("PiOwnedSessionPath(%q) = %q, want %q", launch, got, spaced)
+	}
+
+	// The watcher's canonical merged command form (pi --session '<quoted>')
+	// must recover the same path through the work parser.
+	merged := "pi --session " + quoted
+	if got := PiOwnedSessionPath(merged); got != spaced {
+		t.Fatalf("PiOwnedSessionPath(merged %q) = %q, want %q", merged, got, spaced)
+	}
+
+	// The reader binds the exact owned transcript at the quoted path.
+	writePiLiveFixture(t, spaced, "/repo", "sess-quoted", []string{
+		piLiveUserLine("u1", "", "2026-08-07T10:00:01.000Z", "quoted path user text"),
+		piLiveAssistantLine("a1", "u1", "2026-08-07T10:00:02.000Z", "quoted path reply", "stop", `{"type":"text","text":"quoted path reply"}`),
+	})
+	agent := classifier.Agent{ID: "agent-quoted", Cwd: "/repo", Command: "pi --session " + quoted}
+	conversation, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conversation.Available || conversation.SessionID != "sess-quoted" {
+		t.Fatalf("quoted owned path binding = %+v", conversation)
+	}
+	if conversation.Path != spaced || !conversationContainsBody(conversation, "quoted path reply") {
+		t.Fatalf("quoted owned transcript = %+v", conversation)
+	}
+
+	// A fresh reader (reconnect/reload) binds the same transcript again.
+	again, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Available || again.SessionID != "sess-quoted" {
+		t.Fatalf("fresh reader quoted binding = %+v", again)
+	}
+}
+
 // piLiveUserLine builds a version-3 Pi user message line.
 func piLiveUserLine(id, parentID, timestamp, text string) string {
 	return `{"type":"message","id":"` + id + `","parentId":` + piLiveParent(parentID) +

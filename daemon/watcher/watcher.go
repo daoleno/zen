@@ -3841,7 +3841,7 @@ func mergeAgentCommandOwnership(previous, detected string) string {
 	if flag == "" {
 		return detected
 	}
-	return commandExecutableBase(detected) + " " + flag + " " + path
+	return commandExecutableBase(detected) + " " + flag + " " + shellQuoteForLaunch(path)
 }
 
 // piOwnedLaunchPath returns the absolute --session or --session-dir value
@@ -3898,12 +3898,44 @@ func piOwnedLaunchFlag(command string) (string, string) {
 			continue
 		}
 		value = strings.TrimSpace(value)
+		value = unquoteLaunchValue(value)
 		if value != "" && filepath.IsAbs(value) {
 			return flag, value
 		}
 		return "", ""
 	}
 	return "", ""
+}
+
+// unquoteLaunchValue removes one layer of Zen launcher quoting from a launch
+// token so the watcher and the work reader agree on the owned session path
+// value. Zen wraps values containing shell metacharacters in single quotes
+// with backslash-escaped apostrophes (work.shellQuoteForLaunch); a token whose
+// first and last characters are both the wrapping quote is returned without
+// them. Values with an embedded literal apostrophe cannot form one wrapped
+// token in splitZenLaunchFields (the escape's first quote closes the span), so
+// they fail closed exactly like the work parser, which decodes them
+// differently but never binds a wrong transcript.
+func unquoteLaunchValue(value string) string {
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1]
+	}
+	return value
+}
+
+// shellQuoteForLaunch mirrors work.shellQuoteForLaunch so the merged command
+// form is byte-identical to the injected launch command: values containing
+// shell metacharacters are wrapped in single quotes with backslash-escaped
+// apostrophes, clean values are unchanged.
+func shellQuoteForLaunch(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if !strings.ContainsAny(value, " \t\"'\\$`") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func processDescendsFrom(rootPID, processID int, processes map[int]processInfo) bool {
