@@ -1790,7 +1790,7 @@ const styles = StyleSheet.create({
   modeButton: {
     flex: 1,
     minWidth: 0,
-    minHeight: 40,
+    minHeight: 44,
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
@@ -1925,7 +1925,7 @@ const styles = StyleSheet.create({
   leaderboardTab: {
     flex: 1,
     minWidth: 0,
-    minHeight: 40,
+    minHeight: 44,
     paddingHorizontal: 6,
     alignItems: "center",
     justifyContent: "center",
@@ -1991,7 +1991,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   toolbarAction: {
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: 12,
     borderRadius: Radii.xs,
     alignItems: "center",

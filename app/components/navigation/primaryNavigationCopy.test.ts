@@ -133,4 +133,14 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('"Read-only"');
     expect(skillsSource).toContain('row.source === "catalog"');
   });
+
+  test("every tappable control meets the 44pt minimum touch height", () => {
+    for (const key of ["toolbarAction", "modeButton", "leaderboardTab"]) {
+      const block = skillsSource.match(
+        new RegExp(`${key}: \\{[\\s\\S]*?\\},`),
+      )?.[0];
+      expect(block, `${key} style block`).toBeDefined();
+      expect(block, `${key} minHeight`).toContain("minHeight: 44");
+    }
+  });
 });
