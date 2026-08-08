@@ -103,7 +103,7 @@ func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, no
 	}
 	if pinned := strings.TrimSpace(r.piPinnedSessionPath); pinned != "" {
 		candidate, ok, err := readPiOwnedSessionCandidate(pinned, agent.Cwd, now)
-		if err == nil && ok {
+		if err == nil && ok && piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
 			return candidate, true, nil
 		}
 		r.piPinnedSessionPath = ""
@@ -131,6 +131,27 @@ func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, no
 	}
 	r.piPinnedSessionPath = candidate.Path
 	return candidate, true, nil
+}
+
+// piTranscriptBelongsToInstance reports whether a Pi transcript may be
+// pinned or participate in owned/shared auto-bind selection for the current
+// agent instance. With a known nonzero startedAt, a transcript belongs to
+// the instance only when its header CreatedAt lies in the startedAt window
+// (this process created it) or its mtime is not earlier than startedAt
+// (resume continuity: this process has been writing it). A frozen
+// pre-restart transcript — CreatedAt outside the window and mtime before
+// the restart — never participates, so the owned scan cannot re-pin it and
+// shadow the new shared transcript of a restarted bare Pi. With zero
+// startedAt there is no instance signal: existing freshest behavior is
+// retained.
+func piTranscriptBelongsToInstance(candidate piTranscriptCandidate, startedAt time.Time) bool {
+	if startedAt.IsZero() {
+		return true
+	}
+	if len(piWindowCandidates([]piTranscriptCandidate{candidate}, startedAt)) > 0 {
+		return true
+	}
+	return !candidate.Updated.IsZero() && !candidate.Updated.Before(startedAt)
 }
 
 // findPiOwnedCWDTranscript auto-binds the Zen-owned per-CWD Pi session
@@ -161,7 +182,7 @@ func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscri
 		}
 		path := filepath.Join(root, entry.Name())
 		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
-		if err != nil || !ok {
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -205,7 +226,7 @@ func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscr
 		}
 		path := filepath.Join(dir, entry.Name())
 		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
-		if err != nil || !ok {
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
 			continue
 		}
 		candidates = append(candidates, candidate)
