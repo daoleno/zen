@@ -972,6 +972,42 @@ describe("Provider public WebSocket boundary", () => {
     expect(registeredHandlerCount(client)).toBe(0);
     client.disconnectAll();
   });
+
+  test("connection test sends a transient key and retains only secret-free facts", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+    const submittedKey = "sk-transient-test-only";
+
+    const pending = client.testProviderConnection(server.id, {
+      client: "codex",
+      baseUrl: "https://gateway.example/v1",
+      apiKey: submittedKey,
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "test_provider_connection",
+      provider_connection: {
+        preset_id: "custom",
+        client: "codex",
+        base_url: "https://gateway.example/v1",
+        advanced: true,
+      },
+      credential: submittedKey,
+    });
+
+    socket.receive({
+      type: "provider_connection_test",
+      request_id: outbound.request_id,
+      client: "codex",
+      model_count: 4,
+    });
+    const result = await pending;
+    expect(result).toEqual({ client: "codex", modelCount: 4 });
+    expect(JSON.stringify(result)).not.toMatch(/credential|api.?key|secret/i);
+    expect(registeredHandlerCount(client)).toBe(0);
+    client.disconnectAll();
+  });
 });
 
 describe("executor switch transport", () => {

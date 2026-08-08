@@ -4,11 +4,13 @@
  * endpoint form, or an existing connection's credential — so this stays free
  * of React Native imports to keep it unit-testable.
  */
-import type { ProviderConnection } from "../../services/providers/types";
+import type {
+  ProviderClient,
+  ProviderConnection,
+} from "../../services/providers/types";
 
 export type ProvidersEditorState =
-  | { kind: "preset"; presetId: string }
-  | { kind: "custom" }
+  | { kind: "custom"; client: ProviderClient }
   | { kind: "credential"; connection: ProviderConnection; retry?: boolean }
   | null;
 
@@ -52,10 +54,8 @@ export function providerEditorSessionKey(
 ): string {
   if (!editor) return "";
   switch (editor.kind) {
-    case "preset":
-      return `preset:${editor.presetId}`;
     case "custom":
-      return "custom";
+      return `custom:${editor.client}`;
     case "credential":
       return `credential:${editor.connection.id}`;
   }
@@ -79,8 +79,8 @@ export function providerEditorShouldResetFields(
     return previousSession !== nextSession;
   }
   if (
-    previousSession.startsWith("preset:") &&
-    nextSession.startsWith("preset:")
+    previousSession.startsWith("custom:") &&
+    nextSession.startsWith("custom:")
   ) {
     return previousSession !== nextSession;
   }
@@ -88,26 +88,19 @@ export function providerEditorShouldResetFields(
 }
 
 /**
- * Save eligibility for the bound editor: a curated preset needs only the API
- * key, the custom endpoint adds display name + endpoint URL, and a credential
- * replace needs only the key.
+ * Save eligibility for the bound editor: a client-scoped custom endpoint needs
+ * its Base URL and API key, while an existing connection only needs the
+ * replacement key.
  */
 export function providerEditorCanSave(input: {
   mutating: boolean;
   apiKey: string;
   credentialMode: boolean;
-  presetMode: boolean;
   customMode: boolean;
-  name: string;
   baseUrl: string;
 }): boolean {
   if (input.mutating) return false;
   if (input.apiKey.trim().length === 0) return false;
   if (input.credentialMode) return true;
-  if (input.presetMode) return true;
-  return (
-    input.customMode &&
-    input.name.trim().length > 0 &&
-    input.baseUrl.trim().length > 0
-  );
+  return input.customMode && input.baseUrl.trim().length > 0;
 }

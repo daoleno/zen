@@ -120,7 +120,10 @@ export function resolveScreenshotProvidersEditor(
   value: string | undefined,
   catalog: ProvidersSnapshot,
 ): ProvidersEditorState {
-  if (value === "custom") return { kind: "custom" };
+  if (value === "custom" || value === "codex") {
+    return { kind: "custom", client: "codex" };
+  }
+  if (value === "claude") return { kind: "custom", client: "claude" };
   if (value === "retry" || value === "needs-key") {
     const connection =
       catalog.connections.find(
@@ -129,9 +132,5 @@ export function resolveScreenshotProvidersEditor(
     if (!connection) return null;
     return { kind: "credential", connection, retry: value === "retry" };
   }
-  const preset = catalog.presets.find(
-    (candidate) =>
-      candidate.id === value && candidate.advanced !== true,
-  );
-  return preset ? { kind: "preset", presetId: preset.id } : null;
+  return null;
 }

@@ -161,13 +161,18 @@ export function curatedConnectionInput(
 export function advancedConnectionInput(input: {
   existingId?: string;
   name: string;
+  client: string;
   baseUrl: string;
   presetId?: string;
 }): ProviderConnectionInput {
   const name = normalizeProviderId(input.name);
   const baseUrl = normalizeProviderId(input.baseUrl);
+  const client = normalizeProviderClient(input.client);
   if (!name) throw invalidProviderReply("Display name is required.");
   if (!baseUrl) throw invalidProviderReply("Base URL is required.");
+  if (!isSupportedProviderClient(client)) {
+    throw invalidProviderReply("Choose Codex or Claude Code.");
+  }
   let parsed: URL;
   try {
     parsed = new URL(baseUrl);
@@ -181,9 +186,22 @@ export function advancedConnectionInput(input: {
     id: normalizeProviderId(input.existingId) || undefined,
     name,
     preset_id: normalizeProviderId(input.presetId) || "custom",
+    client,
     base_url: baseUrl,
     advanced: true,
   };
+}
+
+export function providerConnectionNameFromURL(baseUrl: string): string {
+  const normalized = normalizeProviderId(baseUrl);
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw invalidProviderReply("Enter a valid HTTPS base URL.");
+  }
+  const path = parsed.pathname.replace(/\/$/, "");
+  return `${parsed.host}${path === "/v1" ? "" : path}`;
 }
 
 /**

@@ -962,9 +962,10 @@ function ProvidersDemo() {
         onCloseEditor={NOOP}
         onClearCredential={NOOP}
         onDelete={NOOP}
+        onUseDirect={NOOP}
         onSetDefault={NOOP}
         onDiscover={NOOP}
-        onSaveCurated={() => ({ status: "saved" })}
+        onTestConnection={async () => ({ client: "codex", modelCount: 3 })}
         onSaveCustom={() => ({ status: "saved" })}
         onSaveCredential={() => ({ status: "saved" })}
       />

@@ -12,7 +12,6 @@ import {
   ProviderRequestOwner,
   assertNoCredentialRetention,
   classifyMutationPersistence,
-  curatedCreateInput,
   customGatewayCreateInput,
   durabilityWarningMessage,
   mayDiscoverAfterCredential,
@@ -24,6 +23,7 @@ import {
   resolveCreatedConnection,
   settleCredentialPersistence,
   type ProviderConnection,
+  type ProviderClient,
   type ProvidersMutationResult,
   type ProvidersSnapshot,
 } from "../services/providers";
@@ -362,6 +362,12 @@ export default function ProvidersScreen() {
       }
       syncWriteLockUi();
       await loadCatalog({ soft: true });
+      Alert.alert(
+        "Connection successful",
+        discovery.models.length > 0
+          ? `${discovery.models.length} models are available.`
+          : "The endpoint accepted the saved API key.",
+      );
     } catch (discoverError) {
       if (!ownerRef.current.isCurrent(token)) return;
       ownerRef.current.settleCatalogMutation(token, {
@@ -499,6 +505,16 @@ export default function ProvidersScreen() {
           },
         ]);
       }}
+
+      onUseDirect={(client: ProviderClient) => {
+        void runMutation(() =>
+          wsClient.setProviderDefault(currentServerId!, {
+            client,
+            connectionId: "",
+            revision,
+          }),
+        );
+      }}
       onSetDefault={(client, connection) => {
         void runMutation(() =>
           wsClient.setProviderDefault(currentServerId!, {
@@ -511,47 +527,24 @@ export default function ProvidersScreen() {
       onDiscover={(connection) => {
         void runDiscover(connection);
       }}
-      onSaveCurated={async (preset, apiKey) => {
-        const previous = catalogRef.current;
-        if (!previous) return { status: "create_failed" as const };
-        const created = await runMutation(() =>
-          wsClient.upsertProviderConnection(currentServerId!, {
-            revision,
-            operation: "create",
-            connection: curatedCreateInput(preset),
-          }),
-        );
-        if (!created) return { status: "create_failed" as const };
-        let connection: ProviderConnection;
-        try {
-          connection = resolveCreatedConnection({
-            previous,
-            next: created.snapshot,
-            presetId: preset.id,
-          });
-        } catch (identityError) {
-          ownerRef.current.requireCatalogRefresh();
-          syncWriteLockUi();
-          const presented = presentProviderError(identityError);
-          Alert.alert(presented.title, presented.message);
-          void loadCatalog({ soft: true });
-          return { status: "create_failed" as const };
+      onTestConnection={async ({ client, baseUrl, apiKey }) => {
+        if (!currentServerId || !currentConnected) {
+          throw offlineProviderError();
         }
-        const ok = await saveCredential(connection.id, apiKey);
-        const outcome: ProviderSaveOutcome = ok
-          ? { status: "saved" }
-          : { status: "credential_failed", connection };
-        applySaveOutcome(outcome);
-        return outcome;
+        return wsClient.testProviderConnection(currentServerId, {
+          client,
+          baseUrl,
+          apiKey,
+        });
       }}
-      onSaveCustom={async ({ name, baseUrl, apiKey }) => {
+      onSaveCustom={async ({ client, baseUrl, apiKey }) => {
         const previous = catalogRef.current;
         if (!previous) return { status: "create_failed" as const };
         const created = await runMutation(() =>
           wsClient.upsertProviderConnection(currentServerId!, {
             revision,
             operation: "create",
-            connection: customGatewayCreateInput({ name, baseUrl }),
+            connection: customGatewayCreateInput({ client, baseUrl }),
           }),
         );
         if (!created) return { status: "create_failed" as const };

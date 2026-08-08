@@ -93,6 +93,17 @@ export type ProviderCredentialResult = {
   persistence: import("./persistence").MutationPersistence;
 };
 
+export type ProviderConnectionTestResult = {
+  client: ProviderClient;
+  modelCount: number;
+};
+
+export type TestProviderConnectionInput = {
+  client: ProviderClient;
+  baseUrl: string;
+  apiKey: string;
+};
+
 export type ProvidersMutationResult = {
   snapshot: ProvidersSnapshot;
   catalog: ProvidersSnapshot;
@@ -151,7 +162,7 @@ export function providerClientLabel(client: string): string {
     case "codex":
       return "Codex";
     case "claude":
-      return "Claude";
+      return "Claude Code";
     default:
       return normalizeProviderId(client) || "Unknown";
   }

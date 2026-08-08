@@ -310,6 +310,21 @@ func TestOwnerRawCommandBypassesProfiles(t *testing.T) {
 	}
 }
 
+func TestOwnerOfficialLoginBypassesWhenClientHasNoProviderDefault(t *testing.T) {
+	owner := startTestOwner(t, readyLookup("x"))
+	profile := codexResponsesProfile("available-but-not-selected", "gpt-5", "org/up-1")
+	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := owner.PrepareLaunch(ExecutorCodex, "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Bypass || plan.Applied || plan.Command != "codex" || len(plan.Env) != 0 {
+		t.Fatalf("official-login launch must be untouched: %#v", plan)
+	}
+}
+
 func TestOwnerDefaultEditDoesNotMutateLiveSession(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	a := codexResponsesProfile("a", "gpt-5", "up-a")

@@ -81,21 +81,22 @@ describe("Settings orchestration", () => {
     expect(input.model_id).toBeUndefined();
   });
 
-  test("custom gateway keeps defaults internal and never sends client/model fields", () => {
+  test("custom gateway derives its label and persists the selected client", () => {
     const input = customGatewayCreateInput({
-      name: "Local",
+      client: "claude",
       baseUrl: "https://gateway.example/v1",
     });
     expect(input.advanced).toBe(true);
     expect(input.base_url).toContain("https://");
-    expect(input.client).toBeUndefined();
+    expect(input.client).toBe("claude");
+    expect(input.name).toBe("gateway.example");
     expect(input.model_id).toBeUndefined();
   });
 
   test("custom gateway still rejects non-HTTP base URLs", () => {
     expect(() =>
       customGatewayCreateInput({
-        name: "Bad",
+        client: "codex",
         baseUrl: "file:///tmp/provider",
       }),
     ).toThrow(/HTTP or HTTPS/i);

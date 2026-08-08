@@ -19,6 +19,7 @@ import {
   advancedConnectionInput,
   createdConnectionFromMutation,
   curatedConnectionInput,
+  providerConnectionNameFromURL,
 } from "./presentation";
 
 export type CredentialFollowUp =
@@ -89,10 +90,13 @@ export function curatedCreateInput(preset: ProviderPreset) {
 }
 
 export function customGatewayCreateInput(input: {
-  name: string;
+  client: string;
   baseUrl: string;
 }) {
-  return advancedConnectionInput(input);
+  return advancedConnectionInput({
+    ...input,
+    name: providerConnectionNameFromURL(input.baseUrl),
+  });
 }
 
 /** Scrub any accidental credential fields from durable projection objects. */

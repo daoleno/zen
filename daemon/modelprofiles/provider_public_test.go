@@ -80,6 +80,13 @@ func TestProjectModelEntriesTrustedAuthorizeAvailability(t *testing.T) {
 	}
 }
 
+func TestProjectModelEntriesCustomUsesDiscoveredCatalog(t *testing.T) {
+	entries := projectModelEntries(nil, "", []string{"deepseek-v4-flash", "deepseek-v4-pro"}, nil, true)
+	if len(entries) != 2 || !entries[0].Available || entries[0].Source != ModelSourceDiscovered {
+		t.Fatalf("custom entries=%#v", entries)
+	}
+}
+
 func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +292,12 @@ func TestUpsertCustomAccountConnectionViaOwner(t *testing.T) {
 	if len(proj.Connections) != 1 || proj.Connections[0].ManualModelID != "up-1" {
 		t.Fatalf("%#v", proj)
 	}
+	if got := proj.Connections[0].Clients; len(got) != 1 || got[0] != ClientCodex {
+		t.Fatalf("client scope=%#v", got)
+	}
+	if _, err := CompileConnectionTarget(owner.Catalog().Profiles[0], ClientClaude, "up-1"); !errors.Is(err, ErrBindingExecutorMismatch) {
+		t.Fatalf("cross-client compile err=%v", err)
+	}
 	// conflict revision
 	_, err = owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "other", Name: "X", Client: ClientCodex,
@@ -293,5 +306,68 @@ func TestUpsertCustomAccountConnectionViaOwner(t *testing.T) {
 	}, 99, true)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("want conflict got %v", err)
+	}
+}
+
+func TestProviderConnectionProbeIsTransientAndUsesClientAuth(t *testing.T) {
+	tests := []struct {
+		client     string
+		wantHeader string
+	}{
+		{client: ClientCodex, wantHeader: "Authorization"},
+		{client: ClientClaude, wantHeader: "x-api-key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.client, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get(tt.wantHeader); got == "" {
+					t.Fatalf("missing %s", tt.wantHeader)
+				}
+				_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`))
+			}))
+			t.Cleanup(server.Close)
+
+			owner := startTestOwner(t, func(string) (string, bool) { return "", false })
+			before := owner.Catalog()
+			result, err := owner.TestProviderConnection(ProviderConnectionTestInput{
+				Client: tt.client, BaseURL: server.URL, Credential: "transient-secret",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Client != tt.client || result.ModelCount != 2 {
+				t.Fatalf("result=%#v", result)
+			}
+			after := owner.Catalog()
+			if after.Revision != before.Revision || len(after.Profiles) != len(before.Profiles) {
+				t.Fatalf("probe mutated catalog: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestCustomDefaultUsesDiscoveredModelWithoutManualModelInput(t *testing.T) {
+	owner := startTestOwner(t, readyLookup("x"))
+	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID:       "codex-auto",
+		Name:     "gateway.example",
+		Client:   ClientCodex,
+		PresetID: ProviderPresetCustom,
+		BaseURL:  "https://gateway.example/v1",
+		Advanced: true,
+	}, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	owner.discovery = newModelDiscoveryCache()
+	owner.discovery.put("codex-auto", []string{"deepseek-v4-flash"}, nil)
+	owner.mu.Unlock()
+	projection, err = owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Defaults[ClientCodex].ModelID; got != "deepseek-v4-flash" {
+		t.Fatalf("default model=%q", got)
 	}
 }

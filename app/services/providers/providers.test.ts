@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   parseProviderCredentialResult,
+  parseProviderConnectionTestResult,
   parseProvidersSnapshot,
   parseProviderSessionSelection,
   connectionsForSession,
@@ -175,29 +176,53 @@ describe("Provider DTO parse", () => {
       ),
     ).toThrow(/credential/i);
   });
+
+  test("parses a secret-free connection test result", () => {
+    expect(
+      parseProviderConnectionTestResult(
+        { client: "codex", model_count: 7 },
+        "codex",
+      ),
+    ).toEqual({ client: "codex", modelCount: 7 });
+    expect(
+      parseProviderConnectionTestResult(
+        { client: "claude", model_count: 7 },
+        "codex",
+      ),
+    ).toBeNull();
+    expect(() =>
+      parseProviderConnectionTestResult(
+        { client: "codex", model_count: 7, credential: "sk-leak" },
+        "codex",
+      ),
+    ).toThrow(/credential/i);
+  });
 });
 
 describe("Provider Settings and Plus presentation policy", () => {
-  test("curated create sends only preset_id while Custom Gateway hides client and model", () => {
+  test("custom endpoints are explicitly scoped to one client", () => {
     const snapshot = providerSnapshot();
     expect(curatedConnectionInput(snapshot.presets[0]!)).toEqual({
       preset_id: "deepseek",
     });
     const gateway = advancedConnectionInput({
       name: "Internal",
+      client: "codex",
       baseUrl: "https://gateway.example/v1",
     });
     expect(gateway).toEqual({
       name: "Internal",
       preset_id: "custom",
+      client: "codex",
       base_url: "https://gateway.example/v1",
       advanced: true,
     });
-    expect(gateway.client).toBeUndefined();
+    expect(gateway.client).toBe("codex");
     expect(gateway.model_id).toBeUndefined();
     expect(() =>
       advancedConnectionInput({
         name: "Bad",
+        client: "codex",
         baseUrl: "file:///tmp/provider",
       }),
     ).toThrow(/HTTP or HTTPS/i);

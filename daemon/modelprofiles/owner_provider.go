@@ -108,7 +108,9 @@ func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnecti
 	presetID := inferPresetID(profile)
 	advanced := normalizeID(presetID) == ProviderPresetCustom || accountLooksAdvanced(profile, presetID)
 	clients := []string{}
-	if spec, ok := lookupPreset(presetID); ok {
+	if scoped := clientFromExecutor(profile.Client); scoped != "" {
+		clients = []string{scoped}
+	} else if spec, ok := lookupPreset(presetID); ok {
 		clients = append(clients, spec.Public.Clients...)
 	} else if !isAccountConnection(profile) {
 		clients = []string{clientFromExecutor(profile.ExecutorID)}
@@ -200,6 +202,15 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 		if modelID == "" {
 			if spec, ok := lookupPreset(inferPresetID(raw)); ok {
 				modelID = spec.DefaultModel[executorFromClient(client)]
+			}
+		}
+		if modelID == "" {
+			entries, _ := o.modelsForConnection(raw, false)
+			for _, entry := range entries {
+				if entry.Available {
+					modelID = entry.ID
+					break
+				}
 			}
 		}
 		if _, err := CompileConnectionTarget(raw, client, modelID); err != nil {

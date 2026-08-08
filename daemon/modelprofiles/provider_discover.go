@@ -295,9 +295,12 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 
 	probe := profile
 	if isAccountConnection(profile) {
-		client := ExecutorCodex
-		if spec, ok := lookupPreset(presetID); ok && len(spec.Public.Clients) > 0 {
-			client = executorFromClient(spec.Public.Clients[0])
+		client := executorFromClient(profile.Client)
+		if client == "" {
+			client = ExecutorCodex
+			if spec, ok := lookupPreset(presetID); ok && len(spec.Public.Clients) > 0 {
+				client = executorFromClient(spec.Public.Clients[0])
+			}
 		}
 		compiled, cErr := CompileConnectionTarget(profile, client, "")
 		if cErr != nil {
@@ -381,6 +384,19 @@ func projectModelEntries(trusted []string, manual string, discovered, lkg []stri
 			add(id, ModelSourceLKG, true)
 		default:
 			add(id, ModelSourceBundled, liveOK && live)
+		}
+	}
+	// Custom endpoints do not have a daemon-curated allowlist. Their live model
+	// catalog is the source of truth, so project every discovered/LKG id instead
+	// of silently returning an empty list.
+	if len(trusted) == 0 {
+		for _, id := range discovered {
+			add(id, ModelSourceDiscovered, true)
+		}
+		for _, id := range lkg {
+			if _, live := available[id]; !live {
+				add(id, ModelSourceLKG, true)
+			}
 		}
 	}
 	if manual != "" {

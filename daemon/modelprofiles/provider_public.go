@@ -98,6 +98,20 @@ type ProviderCredentialResult struct {
 	PersistenceWarning string `json:"persistence_warning,omitempty"`
 }
 
+// ProviderConnectionTestInput is a transient, write-free connectivity probe.
+// Credential is inbound-only and must never be projected or persisted.
+type ProviderConnectionTestInput struct {
+	Client     string `json:"client"`
+	BaseURL    string `json:"base_url"`
+	Credential string `json:"credential"`
+}
+
+// ProviderConnectionTestResult contains only secret-free probe facts.
+type ProviderConnectionTestResult struct {
+	Client     string `json:"client"`
+	ModelCount int    `json:"model_count"`
+}
+
 const (
 	ModelSourceBundled    = "bundled"
 	ModelSourceDiscovered = "discovered"

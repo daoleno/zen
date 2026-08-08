@@ -49,6 +49,9 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "discover_provider_models":
 		s.handleDiscoverProviderModels(conn, raw)
 		return true
+	case "test_provider_connection":
+		s.handleTestProviderConnection(conn, raw)
+		return true
 	case "get_session_provider":
 		s.handleGetSessionProvider(conn, raw)
 		return true
@@ -178,6 +181,42 @@ func (s *Server) handleDiscoverProviderModels(conn *websocket.Conn, raw clientMe
 		payload["discovery_warning"] = err.Error()
 	}
 	s.sendJSON(conn, payload)
+}
+
+func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMessage) {
+	if !s.credentialWriteAllowed(conn) {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeSecureTransportRequired,
+			"secure transport required for credential tests")
+		return
+	}
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	in, err := providerInputFromMessage(raw)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, err.Error())
+		return
+	}
+	secret := strings.TrimSpace(raw.Credential)
+	raw.Credential = ""
+	result, err := owner.TestProviderConnection(modelprofiles.ProviderConnectionTestInput{
+		Client:     in.Client,
+		BaseURL:    in.BaseURL,
+		Credential: secret,
+	})
+	secret = ""
+	if err != nil {
+		s.sendModelProfileError(conn, raw.RequestID, err)
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":        "provider_connection_test",
+		"request_id":  raw.RequestID,
+		"client":      result.Client,
+		"model_count": result.ModelCount,
+	})
 }
 
 func (s *Server) handleGetSessionProvider(conn *websocket.Conn, raw clientMessage) {

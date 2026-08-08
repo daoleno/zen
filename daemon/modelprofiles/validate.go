@@ -316,6 +316,7 @@ func normalizeProfile(profile Profile) Profile {
 	profile.ID = normalizeID(profile.ID)
 	profile.Name = normalizeSpace(profile.Name)
 	profile.Scope = normalizeID(profile.Scope)
+	profile.Client = clientFromExecutor(profile.Client)
 	profile.ExecutorID = normalizeID(profile.ExecutorID)
 	profile.ProviderID = normalizeID(profile.ProviderID)
 	profile.ProviderLabel = normalizeSpace(profile.ProviderLabel)

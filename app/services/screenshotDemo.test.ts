@@ -106,11 +106,11 @@ describe("screenshot demo isolation", () => {
     expect(connected.catalog.connections.length).toBeGreaterThan(0);
     expect(connected.editor).toBeNull();
 
-    const direct = resolveScreenshotProvidersDemo({ editor: "openai" });
-    expect(direct.editor).toEqual({ kind: "preset", presetId: "openai" });
+    const direct = resolveScreenshotProvidersDemo({ editor: "codex" });
+    expect(direct.editor).toEqual({ kind: "custom", client: "codex" });
 
     const custom = resolveScreenshotProvidersDemo({ editor: "custom" });
-    expect(custom.editor).toEqual({ kind: "custom" });
+    expect(custom.editor).toEqual({ kind: "custom", client: "codex" });
 
     const retry = resolveScreenshotProvidersDemo({ editor: "retry" });
     expect(retry.editor).toMatchObject({ kind: "credential", retry: true });
@@ -123,9 +123,9 @@ describe("screenshot demo isolation", () => {
     expect(keyboard.apiKeyAutoFocus).toBe(true);
 
     expect(
-      resolveScreenshotProvidersDemo({ editor: "openai", fixture: "empty" })
+      resolveScreenshotProvidersDemo({ editor: "codex", fixture: "empty" })
         .editor,
-    ).toEqual({ kind: "preset", presetId: "openai" });
+    ).toEqual({ kind: "custom", client: "codex" });
     expect(
       resolveScreenshotProvidersDemo({ editor: "does-not-exist" }).editor,
     ).toBeNull();

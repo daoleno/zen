@@ -4,6 +4,7 @@ import {
   normalizeProviderClient,
   normalizeProviderId,
   type ProviderConnection,
+  type ProviderConnectionTestResult,
   type ProviderCredentialResult,
   type ProviderDefault,
   type ProviderModel,
@@ -281,6 +282,27 @@ export function parseProviderCredentialResult(
     credential_ready: record.credential_ready,
     persistence: requireAppliedPersistence(record),
   };
+}
+
+export function parseProviderConnectionTestResult(
+  raw: unknown,
+  expectedClient: string,
+): ProviderConnectionTestResult | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+  assertSecretFree(record);
+  const client = normalizeProviderClient(asString(record.client));
+  const modelCount = record.model_count;
+  if (
+    !isSupportedProviderClient(client) ||
+    client !== normalizeProviderClient(expectedClient) ||
+    typeof modelCount !== "number" ||
+    !Number.isInteger(modelCount) ||
+    modelCount < 0
+  ) {
+    return null;
+  }
+  return { client, modelCount };
 }
 
 export const parseProviderCatalogProjection = parseProvidersSnapshot;

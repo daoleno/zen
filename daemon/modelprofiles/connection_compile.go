@@ -69,6 +69,9 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 		}
 		return out, nil
 	}
+	if scoped := clientFromExecutor(conn.Client); scoped != "" && scoped != clientFromExecutor(client) {
+		return Profile{}, fmt.Errorf("%w: connection is scoped to %s", ErrBindingExecutorMismatch, scoped)
+	}
 
 	presetID := inferPresetID(conn)
 	in := ProviderConnectionInput{
@@ -89,6 +92,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 	target.ID = conn.ID
 	target.Name = conn.Name
 	target.Scope = "" // ephemeral target is executor-scoped for routing
+	target.Client = ""
 	target.CredentialEnv = conn.CredentialEnv
 	return target, nil
 }
@@ -121,6 +125,10 @@ func validateAccountConnection(profile Profile) error {
 	}
 	if normalizeID(profile.ExecutorID) != "" || normalizeID(profile.Protocol) != "" || normalizeSpace(profile.ClientModel) != "" {
 		return fmt.Errorf("%w: account connections must not store executor/protocol/client_model", ErrInvalid)
+	}
+	client := clientFromExecutor(profile.Client)
+	if client != "" && client != ClientCodex && client != ClientClaude {
+		return fmt.Errorf("%w: account connection client must be codex or claude", ErrInvalid)
 	}
 	providerID := normalizeID(profile.ProviderID)
 	if providerID == "" || !providerIDRE.MatchString(providerID) {

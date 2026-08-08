@@ -150,9 +150,13 @@ const (
 // Account-scoped Provider connections (Scope=account) omit executor/protocol/
 // client_model/auth_mode; those are compiled per client at launch/activate.
 type Profile struct {
-	ID            string `toml:"id" json:"id"`
-	Name          string `toml:"name" json:"name"`
-	Scope         string `toml:"scope,omitempty" json:"scope,omitempty"`
+	ID    string `toml:"id" json:"id"`
+	Name  string `toml:"name" json:"name"`
+	Scope string `toml:"scope,omitempty" json:"scope,omitempty"`
+	// Client scopes an account connection to one product client. Empty remains
+	// valid only for legacy shared connections created before Settings became
+	// client-first.
+	Client        string `toml:"client,omitempty" json:"client,omitempty"`
 	ExecutorID    string `toml:"executor_id,omitempty" json:"executor_id,omitempty"`
 	ProviderID    string `toml:"provider_id" json:"provider_id"`
 	ProviderLabel string `toml:"provider_label" json:"provider_label"`

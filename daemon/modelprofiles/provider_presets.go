@@ -204,7 +204,11 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 
 	id := in.ID
 	if id == "" {
-		id = synthesizeConnectionID("conn", in.PresetID, in.Name)
+		owner := "conn"
+		if hint != "" {
+			owner += "-" + clientFromExecutor(hint)
+		}
+		id = synthesizeConnectionID(owner, in.PresetID, in.Name)
 	}
 	label := spec.Public.Label
 	providerID := spec.ProviderID
@@ -221,6 +225,7 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 		ID:            id,
 		Name:          in.Name,
 		Scope:         ConnectionScopeAccount,
+		Client:        clientFromExecutor(hint),
 		ProviderID:    providerID,
 		ProviderLabel: label,
 		Model:         modelID,
