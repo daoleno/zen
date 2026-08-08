@@ -29,6 +29,15 @@ const openCodeStartingContent = `   ┃
    esc interrupt         0.0% · $0.00  ctrl+p commands
 `
 
+// openCodeHomeIdleContent is the exact live capture from the real Calendar
+// occurrence d9ff47a4 (Session @71, 2026-08-08 12:48 Asia/Shanghai): the home
+// cwd renders as a bare "~" with the 1.18.15 semver at the right.
+const openCodeHomeIdleContent = `   ┃  Ask anything... "What is the tech stack of this project?"
+   ┃  Build auto · DeepSeek V4 Flash (2x usage) OpenCode Go · max
+   tab agents  ctrl+p commands
+  ~                                                                    1.18.15
+`
+
 // scriptedOpenCodeHandoff builds a Watcher whose pane content, target
 // identity, and input submission are all deterministic. Panes stay alive;
 // content is drawn from the scripted sequence per capture call.
@@ -186,6 +195,28 @@ func TestSendInputWhenReadyBudgetedSessionEndedWithoutNotificationFailsOnce(t *t
 	}
 	if len(io.submissions) != 0 || len(io.queues) != 0 {
 		t.Fatalf("ended-session handoff submitted: submissions=%#v queues=%d", io.submissions, len(io.queues))
+	}
+}
+
+func TestSendInputWhenReadyBudgetedExactHomeCaptureSubmitsOnce(t *testing.T) {
+	// Regression for the rejected real occurrence d9ff47a4: the exact @71
+	// live capture (home cwd "~" + anchored semver) must reach readiness and
+	// the bounded handoff must submit exactly once after the startup probes
+	// fail.
+	w, io, _, _ := scriptedOpenCodeHandoff(t, []string{
+		openCodeStartingContent,
+		openCodeStartingContent,
+		openCodeHomeIdleContent,
+	})
+	err := w.SendInputWhenReadyBudgeted("opencode-handoff:@1", "opencode", "Your work item: /tmp/scheduled.md\n", 3*time.Second)
+	if err != nil {
+		t.Fatalf("budgeted handoff = %v, want success on the exact @71 idle capture", err)
+	}
+	if len(io.submissions) != 1 || io.submissions[0] != "Your work item: /tmp/scheduled.md" {
+		t.Fatalf("submissions = %#v, want exactly one prompt", io.submissions)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("queues = %d, want exactly one submit queue", len(io.queues))
 	}
 }
 

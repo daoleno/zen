@@ -63,12 +63,20 @@ var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
 //     The busy footer ("esc interrupt ... ctrl+p commands") does not start
 //     with a path, so it is never accepted as ready.
 //
+// openCodeFooterPathPrefix admits the home-directory abbreviation "~" as well
+// as ~/, absolute, relative, and drive paths: the real Calendar cwd
+// /home/daoleno renders as a bare "~" in the 1.18.15 idle footer
+// (captured live 2026-08-08 occurrence d9ff47a4), e.g.
+//
+//	~                                                                    1.18.15
+//
 // Model overlays are not ready. Do not treat arbitrary pane semver (tool
 // output, deps) as OpenCode's version footer.
 var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything\.\.\.`)
 var openCodeAgentLineRe = regexp.MustCompile(`(?im)\b(Build|Plan|Ask)\b[^\n]*[·•]`)
-var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*(?:~/|/|\.{1,2}/|[A-Za-z]:\\)\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
-var openCodeIdleFooterRe = regexp.MustCompile(`(?m)^\s*(?:~/|/|\.{1,2}/|[A-Za-z]:\\)\S*(?:\s+\S+)*?\s{2,}ctrl\+p\s+commands\s*$`)
+var openCodeFooterPathPrefix = `(?:~|/|\.{1,2}/|[A-Za-z]:\\)`
+var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*` + openCodeFooterPathPrefix + `\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
+var openCodeIdleFooterRe = regexp.MustCompile(`(?m)^\s*` + openCodeFooterPathPrefix + `\S*(?:\s+\S+)*?\s{2,}ctrl\+p\s+commands\s*$`)
 var openCodeBlockedOverlayRe = regexp.MustCompile(`(?im)(connect provider|sign in|permission required|select a model|choose a model|trust this)`)
 
 type targetProcessIdentity struct {

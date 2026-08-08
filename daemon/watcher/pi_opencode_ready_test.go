@@ -61,6 +61,41 @@ draft still sitting here
 	if !isOpenCodeInputReady(ocIdleV11815) {
 		t.Fatal("expected opencode 1.18.15 idle footer ready pane")
 	}
+	// Exact live capture from real Calendar occurrence d9ff47a4 (Session @71,
+	// 2026-08-08): the home cwd /home/daoleno renders as a bare "~" and the
+	// 1.18.15 idle footer still carries the semver. This pane must be ready.
+	ocHomeV11815 := `
+   ┃  Ask anything... "What is the tech stack of this project?"
+   ┃  Build auto · DeepSeek V4 Flash (2x usage) OpenCode Go · max
+   tab agents  ctrl+p commands
+  ~                                                                    1.18.15
+`
+	if !isOpenCodeInputReady(ocHomeV11815) {
+		t.Fatal("expected opencode 1.18.15 home-cwd tilde footer ready pane")
+	}
+	// Same home-cwd "~" abbreviation on the path/usage/ctrl+p footer layout.
+	ocHomeCtrlPV11815 := `
+   ┃
+   ┃  Ask anything...
+   ┃
+   ┃  Build auto · DeepSeek V4 Flash (2x usage) OpenCode Go · max
+   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ~  220.5K (22%) · $0.01  ctrl+p commands
+`
+	if !isOpenCodeInputReady(ocHomeCtrlPV11815) {
+		t.Fatal("expected opencode 1.18.15 home-cwd tilde ctrl+p footer ready pane")
+	}
+	// A real draft replaces the "Ask anything..." placeholder; even with the
+	// exact tilde footer the pane must not be treated as ready.
+	ocDraftV11815 := `
+   ┃  What is the tech stack of this project?
+   ┃  Build auto · DeepSeek V4 Flash (2x usage) OpenCode Go · max
+   tab agents  ctrl+p commands
+  ~                                                                    1.18.15
+`
+	if isOpenCodeInputReady(ocDraftV11815) {
+		t.Fatal("draft composer without the Ask anything placeholder must not be ready")
+	}
 	ocBusyV11815 := `
    ┃
    ┃  Ask anything... "Fix broken tests"
@@ -91,6 +126,16 @@ draft still sitting here
 `
 	if isOpenCodeInputReady(ocFalseSemver) {
 		t.Fatal("arbitrary pane semver must not satisfy OpenCode footer")
+	}
+	// A tilde-prefixed transcript line must still anchor the semver: prose
+	// between the tilde and a later version is not a footer.
+	ocTildeTranscriptSemver := `
+   ┃  Ask anything...
+   ┃  Build · GPT-5.3
+   ~  npm installed 2.3.4
+`
+	if isOpenCodeInputReady(ocTildeTranscriptSemver) {
+		t.Fatal("tilde transcript line must not satisfy OpenCode footer")
 	}
 	ocToolOutput := `
    ┃  Ask anything...
