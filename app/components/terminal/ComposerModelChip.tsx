@@ -3,6 +3,12 @@ import React from "react";
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import {
+  COMPOSER_MAX_FONT_SCALE,
+  COMPOSER_MODEL_CHIP_HEIGHT,
+  COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT,
+  COMPOSER_MODEL_CHIP_RADIUS,
+} from "./composerExpansionMetrics";
 
 interface ComposerModelChipProps {
   label: string;
@@ -14,7 +20,9 @@ interface ComposerModelChipProps {
 /**
  * Concise active-model control for the expanded Composer action row. Only the
  * host may decide whether this renders; the chip itself never fabricates a
- * label or a mutation.
+ * label or a mutation. The touch target fills the 44 pt action slot; the
+ * full label stays available through accessibilityLabel while the visible
+ * text truncates at one line within the capped font scale.
  */
 export function ComposerModelChip({
   label,
@@ -29,7 +37,12 @@ export function ComposerModelChip({
       accessibilityHint="Opens the Session model selection"
       style={[
         styles.chip,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
+        {
+          height: COMPOSER_MODEL_CHIP_HEIGHT,
+          borderRadius: COMPOSER_MODEL_CHIP_RADIUS,
+          backgroundColor: chrome.surfaceMuted,
+          borderColor: chrome.border,
+        },
       ]}
       onPress={onPress}
       activeOpacity={0.7}
@@ -37,6 +50,8 @@ export function ComposerModelChip({
       <Ionicons name="sparkles-outline" size={14} color={chrome.accent} />
       <Text
         numberOfLines={1}
+        ellipsizeMode="tail"
+        maxFontSizeMultiplier={COMPOSER_MAX_FONT_SCALE}
         style={[styles.label, { color: chrome.textMuted }]}
       >
         {label}
@@ -48,9 +63,7 @@ export function ComposerModelChip({
 
 const styles = StyleSheet.create({
   chip: {
-    height: 36,
     maxWidth: "100%",
-    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     alignItems: "center",
@@ -60,7 +73,7 @@ const styles = StyleSheet.create({
   label: {
     fontFamily: Typography.chatFont,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT,
     flexShrink: 1,
   },
 });

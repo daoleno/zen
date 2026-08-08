@@ -552,7 +552,10 @@ function BrainDemo() {
 /**
  * Composer motion fixture: both capsule states at a representative narrow
  * width (320), with and without the active-model control, draft, attachment,
- * and a running Stop timer.
+ * running Stop timer, and a long model label proving deterministic
+ * one-line truncation (the full label stays in the chip accessibility label).
+ * Composer text is capped at COMPOSER_MAX_FONT_SCALE so the geometry never
+ * clips at large system font scales.
  */
 function ComposerStatesDemo() {
   const { theme: zenTheme } = useAppTheme();
@@ -565,6 +568,7 @@ function ComposerStatesDemo() {
   const draftRef = useRef<TextInput>(null);
   const expandedRef = useRef<TextInput>(null);
   const runningRef = useRef<TextInput>(null);
+  const longLabelRef = useRef<TextInput>(null);
   const [compactDraft, setCompactDraft] = useState("");
   const [expandedDraft, setExpandedDraft] = useState("");
   const [runningDraft, setRunningDraft] = useState("");
@@ -574,6 +578,11 @@ function ComposerStatesDemo() {
   const modelControl = {
     label: "claude-sonnet-4-5",
     accessibilityLabel: "Open model selection, claude-sonnet-4-5, Claude",
+  };
+  const longModelControl = {
+    label: "gpt-5.1-codex-max-longhaul-8k-context",
+    accessibilityLabel:
+      "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
   };
   const narrowRow = (
     label: string,
@@ -784,6 +793,52 @@ function ComposerStatesDemo() {
             onDismissActionMenu={NOOP}
             onRemoveAttachment={NOOP}
             onDraftChange={setRunningDraft}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+          />,
+        )}
+        {narrowRow(
+          "Expanded · long model label truncates · full label accessible",
+          <InterfaceChatComposer
+            inputRef={longLabelRef}
+            draft=""
+            placeholder="Message the agent"
+            editable
+            focused
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={longModelControl}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={NOOP}
             onUploadPress={NOOP}
             onCancelUpload={NOOP}
             onInputFocus={NOOP}

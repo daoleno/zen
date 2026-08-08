@@ -232,12 +232,15 @@ export function useSessionProviderSheet({
   ]);
 
   useEffect(() => {
+    // Clear on every identity rebind, even while the sheet stays closed: the
+    // Composer chip must never project the previous Session's model onto a
+    // different server/agent epoch.
     const rebound = ownerRef.current.rebind(serverId, agentId);
-    if (rebound && visible) {
+    if (rebound) {
       clearProjection();
       setVisible(false);
     }
-  }, [agentId, clearProjection, serverId, visible]);
+  }, [agentId, clearProjection, serverId]);
 
   const activate = useCallback(
     async (choice: SessionModelChoice) => {

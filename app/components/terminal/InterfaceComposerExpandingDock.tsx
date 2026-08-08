@@ -18,6 +18,7 @@ import { ComposerSendButton } from "./ComposerSendButton";
 import { COMPOSER_ACTION_SLOT_WIDTH } from "./composerActionSlot";
 import {
   COMPOSER_ACTION_BAND_VERTICAL_PADDING,
+  COMPOSER_MODEL_CHIP_HEIGHT,
   COMPOSER_MODEL_CHIP_LEFT_INSET,
   COMPOSER_MODEL_CHIP_RIGHT_INSET,
   COMPOSER_SPRING_CONFIG,
@@ -233,7 +234,7 @@ const styles = StyleSheet.create({
     left: COMPOSER_MODEL_CHIP_LEFT_INSET,
     right: COMPOSER_MODEL_CHIP_RIGHT_INSET,
     bottom: COMPOSER_ACTION_BAND_VERTICAL_PADDING,
-    height: 44,
+    height: COMPOSER_MODEL_CHIP_HEIGHT,
     justifyContent: "center",
     alignItems: "flex-start",
   },

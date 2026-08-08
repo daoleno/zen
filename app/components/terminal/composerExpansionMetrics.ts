@@ -35,6 +35,28 @@ export const COMPOSER_MODEL_CHIP_LEFT_INSET =
   COMPOSER_ACTION_BUTTON_SIZE + COMPOSER_ACTION_BAND_VERTICAL_PADDING + 8;
 export const COMPOSER_MODEL_CHIP_RIGHT_INSET = 82;
 
+/**
+ * The model chip fills the action band's 44 pt slot so the accessible touch
+ * target is never smaller than the trailing Send/Stop slot.
+ */
+export const COMPOSER_MODEL_CHIP_HEIGHT = 44;
+export const COMPOSER_MODEL_CHIP_RADIUS = 22;
+export const COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT = 18;
+
+/**
+ * Composer text never renders beyond 2x the system font scale; the geometry
+ * contract below guarantees no vertical clipping at that cap.
+ */
+export const COMPOSER_MAX_FONT_SCALE = 2;
+
+/** True when a label line at the given scale fits the chip without clipping. */
+export function composerModelChipLabelFits(scale: number): boolean {
+  return (
+    COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT * Math.max(1, scale) <=
+    COMPOSER_MODEL_CHIP_HEIGHT
+  );
+}
+
 export const COMPOSER_SPRING_CONFIG = {
   damping: 20,
   stiffness: 240,

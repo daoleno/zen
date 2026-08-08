@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { COMPOSER_MAX_FONT_SCALE } from "./composerExpansionMetrics";
 import {
   COMPOSER_SUBMIT_BEHAVIOR,
   composerReturnKeyType,
@@ -84,6 +85,7 @@ export function InterfaceComposerInput({
         autoComplete="off"
         spellCheck={false}
         keyboardType="default"
+        maxFontSizeMultiplier={COMPOSER_MAX_FONT_SCALE}
         disableFullscreenUI
         importantForAutofill="no"
         selectTextOnFocus={false}
@@ -100,6 +102,7 @@ export function InterfaceComposerInput({
         <View pointerEvents="none" style={styles.placeholderOverlay}>
           <Text
             numberOfLines={1}
+            maxFontSizeMultiplier={COMPOSER_MAX_FONT_SCALE}
             style={[styles.placeholderText, { color: chrome.textMuted }]}
           >
             {placeholder}

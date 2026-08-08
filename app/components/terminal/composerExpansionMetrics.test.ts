@@ -3,7 +3,11 @@ import {
   COMPOSER_ACTION_BAND_HEIGHT,
   COMPOSER_COMPACT_CAPSULE_HEIGHT,
   COMPOSER_EXPANDED_CAPSULE_BASE_HEIGHT,
+  COMPOSER_MAX_FONT_SCALE,
+  COMPOSER_MODEL_CHIP_HEIGHT,
+  COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT,
   COMPOSER_MODEL_CHIP_LEFT_INSET,
+  COMPOSER_MODEL_CHIP_RADIUS,
   COMPOSER_MODEL_CHIP_REVEAL_RANGE,
   COMPOSER_RADIUS_COMPACT,
   COMPOSER_RADIUS_EXPANDED,
@@ -12,6 +16,7 @@ import {
   composerExpansionRadius,
   composerExpansionTarget,
   composerInputHorizontalPadding,
+  composerModelChipLabelFits,
   composerModelChipReveal,
   composerMotionDisabled,
 } from "./composerExpansionMetrics";
@@ -75,6 +80,22 @@ describe("composer expansion metrics", () => {
   test("chip sits between the Plus and Send/Stop slots", () => {
     expect(COMPOSER_MODEL_CHIP_LEFT_INSET).toBeGreaterThan(44);
     expect(COMPOSER_MODEL_CHIP_LEFT_INSET).toBeLessThan(74);
+  });
+
+  test("chip fills the 44 pt action slot for a full-size touch target", () => {
+    expect(COMPOSER_MODEL_CHIP_HEIGHT).toBe(44);
+    expect(COMPOSER_MODEL_CHIP_RADIUS).toBe(22);
+    expect(COMPOSER_MODEL_CHIP_HEIGHT).toBe(COMPOSER_ACTION_BAND_HEIGHT - 12);
+  });
+
+  test("large-font contract: label fits the chip up to the font cap", () => {
+    expect(composerModelChipLabelFits(1)).toBe(true);
+    expect(composerModelChipLabelFits(1.5)).toBe(true);
+    expect(composerModelChipLabelFits(COMPOSER_MAX_FONT_SCALE)).toBe(true);
+    expect(composerModelChipLabelFits(3)).toBe(false);
+    expect(
+      COMPOSER_MODEL_CHIP_LABEL_LINE_HEIGHT * COMPOSER_MAX_FONT_SCALE,
+    ).toBeLessThanOrEqual(COMPOSER_MODEL_CHIP_HEIGHT);
   });
 
   test("expansion target is driven by focus only", () => {

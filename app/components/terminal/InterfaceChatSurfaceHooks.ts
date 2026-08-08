@@ -41,7 +41,9 @@ type UseInterfaceComposerPresentationInput = Omit<
   "agentKind"
 > & {
   agentCommand?: string;
-};export function useInterfaceComposerPresentation({
+};
+
+export function useInterfaceComposerPresentation({
   draft,
   slashCommands,
   agentCommand,
