@@ -802,6 +802,60 @@ func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
 	}
 }
 
+// TestPiOwnedDirAutoBindProcessIDOnlyFallbackKeepsOwnedResume covers the
+// supported precision-fallback geometry: a rounded startedAt and a
+// processID-only observation change must not churn a legitimate resumed
+// owned transcript to a newer shared candidate. The old owned file's header
+// predates the process, but its mtime is at/after startedAt, so the mtime arm
+// intentionally admits it as resume continuity; processID wobble must keep
+// that bind stable.
+func TestPiOwnedDirAutoBindProcessIDOnlyFallbackKeepsOwnedResume(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	startedAt := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	oldCreated := startedAt.Add(-30 * time.Second)
+	ownedDir := ownedPiFixtureDir(t, home)
+	oldPath := writeOwnedPiRecoveryFixtureNamed(t, ownedDir, cwd, oldCreated, "old-resume.jsonl")
+	if err := os.Chtimes(oldPath, startedAt, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := piSharedFixtureDir(t, home, cwd)
+	_ = writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, startedAt.Add(500*time.Millisecond), "new-shared.jsonl")
+
+	agent := classifier.Agent{
+		ID:        "fallback-resume-agent",
+		Name:      "fallback-resume",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: startedAt,
+		ProcessID: 1000,
+	}
+	reader := NewProviderConversationReader()
+	first, err := reader.Load(agent, AgentProviderPi, startedAt.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Available || first.Path != oldPath {
+		t.Fatalf("fallback resume must bind old owned transcript, got %+v", first)
+	}
+
+	// Same rounded startedAt, processID-only observation change: the old
+	// owned resume remains the authoritative eligible bind, not churn to the
+	// shared candidate.
+	agent.ProcessID = 2000
+	stable, err := reader.Load(agent, AgentProviderPi, startedAt.Add(11*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stable.Available || stable.Path != oldPath {
+		t.Fatalf("processID-only fallback wobble changed the owned resume bind: %+v", stable)
+	}
+}
+
 func appendOwnedPiLines(t *testing.T, path string, lines []string) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)

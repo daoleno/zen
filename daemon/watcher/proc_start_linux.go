@@ -70,28 +70,48 @@ func parseProcStatStartTicks(stat []byte) (int64, bool) {
 }
 
 // sysconfClockTicks returns the system clock tick rate (USER_HZ, typically
-// 100) via getconf CLK_TCK, cached after the first successful read. Zero
-// means the tick rate could not be proven; callers must then fall back to
-// the observed start evidence rather than guessing.
+// 100) via getconf CLK_TCK. A successful value is cached, but failures are
+// retryable after a short interval: a transient missing/unready getconf must
+// fail closed for the current poll without disabling precise evidence for the
+// rest of the daemon lifetime.
 func sysconfClockTicks() int64 {
-	ticksOnce.Do(func() {
-		out, err := exec.Command("getconf", "CLK_TCK").Output()
-		if err != nil {
-			return
-		}
-		value, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-		if err != nil || value <= 0 {
-			return
-		}
-		ticks = value
-	})
-	return ticks
+	now := time.Now()
+	ticksState.mu.Lock()
+	if ticksState.value > 0 {
+		value := ticksState.value
+		ticksState.mu.Unlock()
+		return value
+	}
+	if now.Before(ticksState.retryAfter) {
+		ticksState.mu.Unlock()
+		return 0
+	}
+	ticksState.retryAfter = now.Add(time.Second)
+	ticksState.mu.Unlock()
+
+	out, err := exec.Command("getconf", "CLK_TCK").Output()
+	if err != nil {
+		return 0
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil || value <= 0 {
+		return 0
+	}
+
+	ticksState.mu.Lock()
+	if ticksState.value == 0 {
+		ticksState.value = value
+	}
+	value = ticksState.value
+	ticksState.mu.Unlock()
+	return value
 }
 
-var (
-	ticksOnce sync.Once
-	ticks     int64
-)
+var ticksState struct {
+	mu         sync.Mutex
+	value      int64
+	retryAfter time.Time
+}
 
 // bootTimeSecondsFromProcStat reads btime (boot time in Unix seconds) from
 // /proc/stat.

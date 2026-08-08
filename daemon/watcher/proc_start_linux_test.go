@@ -3,7 +3,9 @@
 package watcher
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -102,5 +104,62 @@ func TestProcessStartTimeFromProcRealProcess(t *testing.T) {
 	// A contradictory observation (wrong pid's second window) is kept.
 	if got := refineProcessStartedAt(observed, pid); !got.Equal(observed) {
 		t.Fatalf("inconsistent observation must be kept, got %v", got)
+	}
+}
+
+// TestSysconfClockTicksRetriesAfterFailure proves a getconf CLK_TCK failure
+// fails closed for the current poll but is retried after a short interval
+// instead of disabling precise process-start evidence for the rest of the
+// daemon lifetime. A fake getconf shadows the real binary: phase 1 fails,
+// phase 2 succeeds after the retry interval, and phase 3 proves the success
+// is cached (getconf is then entirely absent from PATH, so any re-exec would
+// return an error).
+func TestSysconfClockTicksRetriesAfterFailure(t *testing.T) {
+	// Reset the shared cache so this test is order-independent, and leave it
+	// reset so a later test re-derives the real tick rate from the real
+	// getconf (PATH is restored by t.Setenv at test end).
+	ticksState.mu.Lock()
+	ticksState.value = 0
+	ticksState.retryAfter = time.Time{}
+	ticksState.mu.Unlock()
+	defer func() {
+		ticksState.mu.Lock()
+		ticksState.value = 0
+		ticksState.retryAfter = time.Time{}
+		ticksState.mu.Unlock()
+	}()
+
+	fakeDir := t.TempDir()
+	fake := filepath.Join(fakeDir, "getconf")
+	writeFakeGetconf := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Phase 1: getconf unavailable; the poll fails closed with no cached
+	// value and no crash.
+	writeFakeGetconf("exit 1")
+	if got := sysconfClockTicks(); got != 0 {
+		t.Fatalf("failed getconf must fail closed with 0, got %d", got)
+	}
+
+	// Phase 2: after the retry interval, a working getconf restores precise
+	// evidence and caches it.
+	ticksState.mu.Lock()
+	ticksState.retryAfter = time.Time{}
+	ticksState.mu.Unlock()
+	writeFakeGetconf("echo 100")
+	if got := sysconfClockTicks(); got != 100 {
+		t.Fatalf("retried getconf must cache 100, got %d", got)
+	}
+
+	// Phase 3: the success is cached. With getconf entirely absent from
+	// PATH, only the cached value can answer.
+	t.Setenv("PATH", fakeDir)
+	if got := sysconfClockTicks(); got != 100 {
+		t.Fatalf("cached CLK_TCK must survive without getconf, got %d", got)
 	}
 }

@@ -4245,10 +4245,12 @@ func agentCommandName(command string) string {
 // start with the platform's sub-second evidence for the same PID when that
 // evidence is consistent with the observation. ps lstart truncates to whole
 // seconds, so the true start of the same process lies in [observed,
-// observed+1s); any value outside that (foreign or recycled pid, fake test
-// observation, stale snapshot) keeps the observed value. The function never
-// fabricates or widens precision: without evidence, or with contradictory
-// evidence, the observed value is returned unchanged.
+// observed+1s). The guard accepts the wider [observed, observed+2s) as
+// fail-safe tolerance for observation scheduling; any value outside it
+// (foreign or recycled pid, fake test observation, stale snapshot) keeps the
+// observed value. The function never fabricates or widens precision: without
+// evidence, or with contradictory evidence, the observed value is returned
+// unchanged.
 func refineProcessStartedAt(observed time.Time, pid int) time.Time {
 	if observed.IsZero() {
 		return observed
