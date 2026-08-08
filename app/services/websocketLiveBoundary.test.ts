@@ -1144,6 +1144,7 @@ describe("Skills management transport", () => {
         skills: [],
         agents: [],
         warnings: [],
+        mutationOperations: ["install", "remove"],
       },
     });
     client.disconnectAll();

@@ -154,4 +154,39 @@ describe("Skills Terminal handoff", () => {
       command: installCommand,
     });
   });
+
+  test("plugin lifecycle commands share the exact-once handoff owner", () => {
+    const owner = new SkillsTerminalHandoffOwner();
+    const pluginCommand = {
+      operation: "uninstall",
+      command: "claude plugin uninstall plug-a@market-a --scope user --yes",
+      pluginId: "plug-a@market-a",
+      scope: "user",
+      host: "claude",
+    } as const;
+    const token = owner.issue("server-a:session-a", pluginCommand);
+    const sent: string[] = [];
+    const submission = submitSkillsTerminalHandoff(
+      owner,
+      "server-a:session-a",
+      token,
+      "pty-a",
+      (input) => sent.push(input),
+      () => undefined,
+    );
+    expect(submission?.command).toEqual(pluginCommand);
+    expect(sent).toEqual([`${pluginCommand.command}\r`]);
+    // A plugin command is claimed exactly once, like every Skills command.
+    expect(
+      submitSkillsTerminalHandoff(
+        owner,
+        "server-a:session-a",
+        token,
+        "pty-a",
+        (input) => sent.push(input),
+        () => undefined,
+      ),
+    ).toBeNull();
+    expect(sent).toHaveLength(1);
+  });
 });

@@ -43,6 +43,13 @@ import {
   type SkillsMutationCommand,
 } from "./skillsManagement";
 import {
+  normalizePluginsInventory,
+  normalizePluginMutationCommand,
+  type PluginInventory,
+  type PluginMutationCommand,
+  type PluginMutationOperation,
+} from "./pluginsManagement";
+import {
   dispatchStructuredCommand,
   sendWebSocketMessageNow,
   structuredActionMessage,
@@ -291,6 +298,23 @@ interface ConnectionMeta {
   daemonId: string;
   daemonPublicKey: string;
   server: StoredServer;
+}
+
+export class DaemonRequestError extends Error {
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "DaemonRequestError";
+    this.code = code;
+  }
+}
+
+export function daemonRequestError(
+  message: string,
+  code?: string,
+): DaemonRequestError {
+  return new DaemonRequestError(message, code);
 }
 
 class ServerSocket {
@@ -2133,11 +2157,11 @@ export class MultiServerWebSocketClient {
     options: {
       operation: SkillMutationOperation;
       cwd?: string;
-      skillId: string;
+      skillId?: string;
       source?: string;
       skillName?: string;
       scope: "project" | "global";
-      agents: ManagedSkillAgent[];
+      agents?: ManagedSkillAgent[];
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2154,18 +2178,47 @@ export class MultiServerWebSocketClient {
         cleanup();
         try {
           const command = normalizeSkillsMutationCommand(payload.command);
-          if (
-            command.operation !== options.operation ||
-            command.scope !== options.scope ||
-            (options.operation === "install" &&
-              (command.catalogId !== options.skillId ||
-                command.source !== options.source)) ||
-            (options.skillName != null &&
-              command.skillName !== options.skillName) ||
-            command.agents.length !== options.agents.length ||
-            command.agents.some(
-              (agent, index) => agent !== options.agents[index],
-            )
+          if (command.operation !== options.operation) {
+            throw new Error(
+              "Daemon returned a Skills command for a different request.",
+            );
+          }
+          if (command.scope !== options.scope) {
+            throw new Error(
+              "Daemon returned a Skills command for a different request.",
+            );
+          }
+          if (options.operation === "install") {
+            if (
+              command.catalogId !== options.skillId ||
+              command.source !== options.source ||
+              (options.skillName != null &&
+                command.skillName !== options.skillName) ||
+              command.agents.length !== (options.agents ?? []).length ||
+              command.agents.some(
+                (agent, index) => agent !== (options.agents ?? [])[index],
+              )
+            ) {
+              throw new Error(
+                "Daemon returned a Skills command for a different request.",
+              );
+            }
+          } else if (options.operation === "remove") {
+            if (
+              (options.skillName != null &&
+                command.skillName !== options.skillName) ||
+              command.agents.length !== (options.agents ?? []).length ||
+              command.agents.some(
+                (agent, index) => agent !== (options.agents ?? [])[index],
+              )
+            ) {
+              throw new Error(
+                "Daemon returned a Skills command for a different request.",
+              );
+            }
+          } else if (
+            options.operation === "update" &&
+            (command.agents.length !== 0 || command.skillName !== "")
           ) {
             throw new Error(
               "Daemon returned a Skills command for a different request.",
@@ -2201,6 +2254,149 @@ export class MultiServerWebSocketClient {
           skill_name: options.skillName,
           scope: options.scope,
           agents: options.agents,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getPluginsInventory(serverId: string, options: { generation: number }) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<{ generation: number; inventory: PluginInventory }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("plugins_inventory", handleInventory);
+          this.off("plugins_inventory_error", handleError);
+          this.off("error", handleGenericError);
+        };
+        const handleInventory = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          if (payload.generation !== options.generation) {
+            reject(
+              new Error("Daemon returned a stale Plugins inventory generation."),
+            );
+            return;
+          }
+          try {
+            resolve({
+              generation: options.generation,
+              inventory: normalizePluginsInventory(payload.inventory),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        };
+        const handleError = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          reject(
+            daemonRequestError(
+              payload.message || "Failed to load Plugins.",
+              payload.code,
+            ),
+          );
+        };
+        // Daemons that predate the plugin inventory wire answer unknown
+        // request types on the generic error channel with
+        // code "unknown_message_type"; the caller treats that as the
+        // authoritative capability gap and falls back to the read-only view.
+        const handleGenericError = handleError;
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(daemonRequestError("Timed out while loading Plugins.", "timeout"));
+        }, 10000);
+        this.on("plugins_inventory", handleInventory);
+        this.on("plugins_inventory_error", handleError);
+        this.on("error", handleGenericError);
+        this.sendRequestNow(
+          serverId,
+          {
+            type: "plugins_inventory",
+            request_id: requestId,
+            generation: options.generation,
+          },
+          cleanup,
+          reject,
+        );
+      },
+    );
+  }
+
+  buildPluginCommand(
+    serverId: string,
+    options: {
+      operation: PluginMutationOperation;
+      pluginId: string;
+      scope: "user";
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<PluginMutationCommand>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("plugin_command", handleCommand);
+        this.off("plugin_command_error", handleError);
+      };
+      const handleCommand = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const command = normalizePluginMutationCommand(payload.command);
+          if (
+            command.operation !== options.operation ||
+            command.pluginId !== options.pluginId ||
+            command.scope !== options.scope
+          ) {
+            throw new Error(
+              "Daemon returned a plugin command for a different request.",
+            );
+          }
+          resolve(command);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(
+          daemonRequestError(
+            payload.message || "Plugin command was rejected.",
+            payload.code,
+          ),
+        );
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(daemonRequestError("Timed out while validating the plugin command.", "timeout"));
+      }, 15000);
+      this.on("plugin_command", handleCommand);
+      this.on("plugin_command_error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "plugin_command",
+          request_id: requestId,
+          operation: options.operation,
+          plugin_id: options.pluginId,
+          scope: options.scope,
         },
         cleanup,
         reject,

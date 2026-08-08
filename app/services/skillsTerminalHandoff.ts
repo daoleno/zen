@@ -1,13 +1,19 @@
-import type { SkillsMutationCommand } from "./skillsManagement";
+import type { PluginMutationCommand } from "./pluginsManagement";
+
+/** Any reviewed one-shot Terminal command (Skills or plugin lifecycle). */
+export type TerminalHandoffCommand = {
+  operation: string;
+  command: string;
+};
 
 export interface SkillsHandoffFailure {
   kind: "not-submitted" | "not-confirmed";
-  command: SkillsMutationCommand;
+  command: TerminalHandoffCommand;
 }
 
 export interface SkillsTerminalSubmission {
   sessionId: string;
-  command: SkillsMutationCommand;
+  command: TerminalHandoffCommand;
 }
 
 export type SkillsTerminalSessionCreation =
@@ -43,11 +49,11 @@ export class SkillsTerminalHandoffOwner {
     sessionKey: string;
     token: string;
     input: string;
-    command: SkillsMutationCommand;
+    command: TerminalHandoffCommand;
   } | null = null;
   private sequence = 0;
 
-  issue(sessionKey: string, command: SkillsMutationCommand): string {
+  issue(sessionKey: string, command: TerminalHandoffCommand): string {
     if (!sessionKey || !command.command) {
       throw new Error("Cannot create an empty Terminal handoff.");
     }
@@ -67,7 +73,7 @@ export class SkillsTerminalHandoffOwner {
     token: string,
   ): {
     input: string;
-    command: SkillsMutationCommand;
+    command: TerminalHandoffCommand;
   } | null {
     const current = this.current;
     if (

@@ -3,7 +3,7 @@ export type ManagedSkillAgent = Exclude<SkillAgent, "grok">;
 export type SkillScope =
   "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
 export type SkillManager = "skills-cli" | "plugin" | "builtin" | "unknown";
-export type SkillMutationOperation = "install" | "remove";
+export type SkillMutationOperation = "install" | "remove" | "update";
 
 export interface SkillBinding {
   sourcePath: string;
@@ -59,6 +59,9 @@ export interface SkillsInventory {
   skills: InstalledSkill[];
   agents: SkillAgentSupport[];
   warnings: string[];
+  /** Authoritative mutation capability from the daemon; update appears only
+   * when this daemon truly serves the collection-level update operation. */
+  mutationOperations: SkillMutationOperation[];
 }
 
 export interface CatalogSkill {
@@ -147,7 +150,8 @@ const MANAGERS = new Set<SkillManager>([
   "builtin",
   "unknown",
 ]);
-const OPERATIONS = new Set<SkillMutationOperation>(["install", "remove"]);
+const OPERATIONS = new Set<SkillMutationOperation>(["install", "remove", "update"]);
+const LEGACY_MUTATION_OPERATIONS: SkillMutationOperation[] = ["install", "remove"];
 const SKILL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
@@ -205,7 +209,39 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
       .map((warning) => boundedString(warning, 240))
       .filter(Boolean)
       .slice(0, 12),
+    mutationOperations: normalizeMutationOperations(
+      inventory.mutation_operations,
+    ),
   };
+}
+
+/**
+ * The daemon's authoritative mutation capability list. An older daemon omits
+ * the field entirely (its documented historical wire only served install and
+ * remove); a present field must be a strict subset of known operations or the
+ * snapshot is rejected. The App gates every lifecycle affordance on this list.
+ */
+function normalizeMutationOperations(
+  value: unknown,
+): SkillMutationOperation[] {
+  if (value == null) {
+    return [...LEGACY_MUTATION_OPERATIONS];
+  }
+  if (!Array.isArray(value) || value.length < 1 || value.length > OPERATIONS.size) {
+    throw new Error("Daemon returned an invalid Skills mutation capability.");
+  }
+  const seen = new Set<SkillMutationOperation>();
+  for (const raw of value) {
+    if (
+      typeof raw !== "string" ||
+      !OPERATIONS.has(raw as SkillMutationOperation) ||
+      seen.has(raw as SkillMutationOperation)
+    ) {
+      throw new Error("Daemon returned an invalid Skills mutation capability.");
+    }
+    seen.add(raw as SkillMutationOperation);
+  }
+  return [...seen];
 }
 
 export function normalizeSkillsCatalogResult(
@@ -271,12 +307,15 @@ export function normalizeSkillsMutationCommand(
     typeof operation !== "string" ||
     !OPERATIONS.has(operation as SkillMutationOperation) ||
     (scope !== "project" && scope !== "global") ||
-    !isSkillName(skillName) ||
+    (operation !== "update" && !isSkillName(skillName)) ||
     !command
   ) {
     throw new Error("Daemon returned an invalid Skills command.");
   }
-  const agents = normalizeManagedAgents(raw.agents);
+  const agents =
+    operation === "update"
+      ? normalizeEmptyAgents(raw.agents)
+      : normalizeManagedAgents(raw.agents);
   const normalized: SkillsMutationCommand = {
     operation: operation as SkillMutationOperation,
     command,
@@ -292,6 +331,17 @@ export function normalizeSkillsMutationCommand(
     }
     normalized.catalogId = catalogId;
     normalized.source = source;
+  } else if (operation === "update") {
+    // The official CLI updates every installed Skill in one scope; the command
+    // carries no single-Skill identity and no Agent targets.
+    if (
+      skillName ||
+      raw.catalog_id != null ||
+      raw.source != null ||
+      agents.length !== 0
+    ) {
+      throw new Error("Daemon returned an invalid Skills update command.");
+    }
   }
   if (!isExactOfficialSkillsCommand(normalized)) {
     throw new Error("Daemon returned a non-official Skills command.");
@@ -345,6 +395,20 @@ export function buildSkillsMutationConfirmation(
   message: string;
   confirmLabel: string;
 } {
+  if (command.operation === "update") {
+    const scope = scopeLabel(command.scope);
+    return {
+      title: `Update ${scope} Skills?`,
+      message: [
+        `Scope: ${scope}`,
+        "Updates every installed Skill in this scope to its latest version.",
+        "",
+        "Command:",
+        command.command,
+      ].join("\n"),
+      confirmLabel: "Update",
+    };
+  }
   const verb = command.operation === "install" ? "Install" : "Remove";
   const agentLabel = command.operation === "install" ? "Target" : "Affected";
   const agentCardinality = command.agents.length === 1 ? "Agent" : "Agents";
@@ -790,6 +854,13 @@ function normalizeManagedAgents(value: unknown): ManagedSkillAgent[] {
   return [...seen];
 }
 
+function normalizeEmptyAgents(value: unknown): ManagedSkillAgent[] {
+  if (value == null || (Array.isArray(value) && value.length === 0)) {
+    return [];
+  }
+  throw new Error("Daemon returned invalid Skill update targets.");
+}
+
 function isExactOfficialSkillsCommand(value: SkillsMutationCommand): boolean {
   if (/[^A-Za-z0-9._:/ -]/.test(value.command)) {
     return false;
@@ -801,6 +872,18 @@ function isExactOfficialSkillsCommand(value: SkillsMutationCommand): boolean {
   let index = 0;
   if (tokens[index++] !== "npx" || tokens[index++] !== "skills") {
     return false;
+  }
+  if (value.operation === "update") {
+    // Collection-level update: no Skill identity, no Agent targets.
+    if (tokens[index++] !== "update") {
+      return false;
+    }
+    if (value.scope === "global") {
+      if (tokens[index++] !== "--global") return false;
+    } else if (tokens[index++] !== "--project") {
+      return false;
+    }
+    return tokens[index++] === "--yes" && index === tokens.length;
   }
   const expectedSubcommand =
     value.operation === "install" ? "add" : value.operation;

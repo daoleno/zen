@@ -51,6 +51,7 @@ function inventory(skills: InstalledSkill[]): SkillsInventory {
     skills,
     agents: [],
     warnings: [],
+    mutationOperations: ["install", "remove", "update"],
   };
 }
 

@@ -166,12 +166,13 @@ func DiscoverInventory(options InventoryOptions) (Inventory, error) {
 		now = normalized.Now
 	}
 	inventory := Inventory{
-		GeneratedAt: now().UTC(),
-		CWD:         normalized.CWD,
-		Skills:      installed,
-		Agents:      SupportedAgents(),
-		Warnings:    collector.warnings,
-		incomplete:  collector.incomplete,
+		GeneratedAt:        now().UTC(),
+		CWD:                normalized.CWD,
+		Skills:             installed,
+		Agents:             SupportedAgents(),
+		Warnings:           collector.warnings,
+		MutationOperations: SupportedMutationOperations(),
+		incomplete:         collector.incomplete,
 	}
 	return inventory, inventoryErr
 }

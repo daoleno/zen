@@ -71,7 +71,31 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).not.toContain("Host snapshot");
     expect(skillsSource).toContain("AgentKindIcon");
     expect(skillsSource).toContain("shared with");
-    expect(skillsSource).toContain("Enter at least 2 characters");
+  });
+
+  test("Plugins and Skills are separate first-level tabs with compact status", () => {
+    expect(skillsSource).toContain('{ section: "plugins", label: "Plugins"');
+    expect(skillsSource).toContain('{ section: "skills", label: "Skills"');
+    expect(skillsSource).toContain("SurfaceTabs");
+    expect(skillsSource).toContain("StatusBadge");
+    expect(skillsSource).toContain('tone="installed"');
+  });
+
+  test("Skills v2 removes explanatory prose and fake per-row updates", () => {
+    expect(skillsSource).not.toContain("Enter at least 2 characters");
+    expect(skillsSource).not.toContain("View only");
+    expect(skillsSource).not.toContain("Switch to Discover");
+    // Update is a real action: collection-level Skills update and per-plugin
+    // lifecycle. A per-row Skill Update must never exist (the CLI updates
+    // whole scopes, not single Skills).
+    expect(skillsSource).toContain('label="Update global"');
+    expect(skillsSource).toContain('label="Update project"');
+    expect(skillsSource).toContain('label="Update"');
+    const installedRowBlock = skillsSource.match(
+      /function InstalledSkillRow\([\s\S]*?function DiscoverSkillsList\(/,
+    )?.[0];
+    expect(installedRowBlock).not.toContain("Update");
+    expect(installedRowBlock).toContain('label="Remove"');
   });
 
   test("Skills retains judgment-critical provenance, remove impact, and error reasons", () => {
@@ -80,6 +104,6 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain("state.error");
     expect(skillsSource).toContain("catalogState.error");
     expect(skillsSource).toContain("searchState.error");
-    expect(skillsSource).toContain("View only");
+    expect(skillsSource).toContain("installedSkillCaption");
   });
 });

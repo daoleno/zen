@@ -25,9 +25,53 @@ func BuildMutationCommand(options InventoryOptions, request MutationRequest) (Mu
 		return buildInstallCommand(request)
 	case OperationRemove:
 		return buildInstalledCommand(options, request)
+	case OperationUpdate:
+		return buildUpdateCommand(options, request)
 	default:
 		return MutationCommand{}, fmt.Errorf("unsupported Skill operation %q", request.Operation)
 	}
+}
+
+// buildUpdateCommand models the official CLI's collection-level update: the
+// skills CLI updates all installed skills in one scope (project or global)
+// rather than a single Skill. Zen therefore exposes one scope-scoped Update
+// command, never a per-row Update. The command is exact and non-interactive:
+// `npx skills update --global --yes` / `npx skills update --project --yes`.
+func buildUpdateCommand(options InventoryOptions, request MutationRequest) (MutationCommand, error) {
+	cwd, err := ValidateCWD(request.CWD, request.Scope == ScopeProject)
+	if err != nil {
+		return MutationCommand{}, err
+	}
+	options.CWD = cwd
+	inventory, err := DiscoverInventory(options)
+	if err != nil {
+		return MutationCommand{}, err
+	}
+	if inventory.incomplete {
+		return MutationCommand{}, errors.New("installed Skills inventory is incomplete; update is disabled")
+	}
+	if !hasCLIManagedSkill(inventory, request.Scope) {
+		return MutationCommand{}, errors.New("no skills-cli managed Skill exists in the requested scope")
+	}
+	scopeFlag := "--global"
+	if request.Scope == ScopeProject {
+		scopeFlag = "--project"
+	}
+	return MutationCommand{
+		Operation: request.Operation,
+		Command:   "npx skills update " + scopeFlag + " --yes",
+		Scope:     request.Scope,
+		Agents:    []Agent{},
+	}, nil
+}
+
+func hasCLIManagedSkill(inventory Inventory, scope Scope) bool {
+	for _, skill := range inventory.Skills {
+		if skill.Manager == ManagerSkillsCLI && skill.Scope == scope {
+			return true
+		}
+	}
+	return false
 }
 
 func buildInstallCommand(request MutationRequest) (MutationCommand, error) {

@@ -114,16 +114,18 @@ type Server struct {
 	brainMigrationComplete      bool
 	turnLedgerMigrationComplete bool
 
-	clients           map[*websocket.Conn]*authenticatedClient
-	active            map[*websocket.Conn]string
-	writes            map[*websocket.Conn]*sync.Mutex
-	codexSubs         map[*websocket.Conn]map[string]codexConversationSubscription
-	skillsSearcher    *skillmgmt.Searcher
-	skillsCatalog     *skillmgmt.LeaderboardReader
-	skillsInventories map[*websocket.Conn]skillsInventoryRequest
-	skillsCatalogs    map[*websocket.Conn]skillsCatalogRequest
-	skillsSearches    map[*websocket.Conn]skillsSearchRequest
-	mu                sync.Mutex
+	clients            map[*websocket.Conn]*authenticatedClient
+	active             map[*websocket.Conn]string
+	writes             map[*websocket.Conn]*sync.Mutex
+	codexSubs          map[*websocket.Conn]map[string]codexConversationSubscription
+	skillsSearcher     *skillmgmt.Searcher
+	skillsCatalog      *skillmgmt.LeaderboardReader
+	skillsInventories  map[*websocket.Conn]skillsInventoryRequest
+	skillsCatalogs     map[*websocket.Conn]skillsCatalogRequest
+	skillsSearches     map[*websocket.Conn]skillsSearchRequest
+	pluginsInventories map[*websocket.Conn]pluginsInventoryRequest
+	pluginCatalogCLI   skillmgmt.PluginCLI
+	mu                 sync.Mutex
 }
 
 func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Scheduler) {
@@ -222,24 +224,26 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		uploadDir = filepath.Join(authManager.StorageDir(), "uploads")
 	}
 	srv := &Server{
-		auth:              authManager,
-		watcher:           w,
-		terminal:          terminal.NewManager(&terminal.TmuxBackend{}),
-		pusher:            pusher,
-		stats:             sc,
-		work:              workStore,
-		execs:             execs,
-		brain:             brainService,
-		uploadDir:         uploadDir,
-		clients:           make(map[*websocket.Conn]*authenticatedClient),
-		active:            make(map[*websocket.Conn]string),
-		writes:            make(map[*websocket.Conn]*sync.Mutex),
-		codexSubs:         make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		skillsSearcher:    skillmgmt.NewSearcher(),
-		skillsCatalog:     skillmgmt.NewLeaderboardReader(),
-		skillsInventories: make(map[*websocket.Conn]skillsInventoryRequest),
-		skillsCatalogs:    make(map[*websocket.Conn]skillsCatalogRequest),
-		skillsSearches:    make(map[*websocket.Conn]skillsSearchRequest),
+		auth:               authManager,
+		watcher:            w,
+		terminal:           terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:             pusher,
+		stats:              sc,
+		work:               workStore,
+		execs:              execs,
+		brain:              brainService,
+		uploadDir:          uploadDir,
+		clients:            make(map[*websocket.Conn]*authenticatedClient),
+		active:             make(map[*websocket.Conn]string),
+		writes:             make(map[*websocket.Conn]*sync.Mutex),
+		codexSubs:          make(map[*websocket.Conn]map[string]codexConversationSubscription),
+		skillsSearcher:     skillmgmt.NewSearcher(),
+		skillsCatalog:      skillmgmt.NewLeaderboardReader(),
+		skillsInventories:  make(map[*websocket.Conn]skillsInventoryRequest),
+		skillsCatalogs:     make(map[*websocket.Conn]skillsCatalogRequest),
+		skillsSearches:     make(map[*websocket.Conn]skillsSearchRequest),
+		pluginsInventories: make(map[*websocket.Conn]pluginsInventoryRequest),
+		pluginCatalogCLI:   skillmgmt.NewClaudePluginCLI(),
 	}
 	if brainService != nil {
 		srv.brainWorkSubID, srv.brainWorkSub = brainService.SubscribeWork()
@@ -305,6 +309,7 @@ type clientMessage struct {
 	SkillID              string                                 `json:"skill_id"`
 	Source               string                                 `json:"source"`
 	SkillName            string                                 `json:"skill_name"`
+	PluginID             string                                 `json:"plugin_id"`
 	ProfileID            string                                 `json:"profile_id"`
 	ConnectionID         string                                 `json:"connection_id"`
 	ModelID              string                                 `json:"model_id"`
@@ -566,6 +571,10 @@ func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
 	if inventory, ok := s.skillsInventories[conn]; ok {
 		inventory.cancel()
 		delete(s.skillsInventories, conn)
+	}
+	if plugins, ok := s.pluginsInventories[conn]; ok {
+		plugins.cancel()
+		delete(s.pluginsInventories, conn)
 	}
 	if catalog, ok := s.skillsCatalogs[conn]; ok {
 		catalog.cancel()
@@ -1011,6 +1020,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "skills_command":
 		s.handleSkillsCommand(conn, raw)
+
+	case "plugins_inventory":
+		s.handlePluginsInventory(conn, raw)
+
+	case "plugin_command":
+		s.handlePluginCommand(conn, raw)
 
 	case "codex_terminal_snapshot":
 		text, err := s.watcher.CapturePaneContent(raw.TargetID)

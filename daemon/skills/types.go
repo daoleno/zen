@@ -76,12 +76,20 @@ type InstalledSkill struct {
 }
 
 type Inventory struct {
-	GeneratedAt time.Time        `json:"generated_at"`
-	CWD         string           `json:"cwd,omitempty"`
-	Skills      []InstalledSkill `json:"skills"`
-	Agents      []AgentSupport   `json:"agents"`
-	Warnings    []string         `json:"warnings,omitempty"`
-	incomplete  bool
+	GeneratedAt        time.Time           `json:"generated_at"`
+	CWD                string              `json:"cwd,omitempty"`
+	Skills             []InstalledSkill    `json:"skills"`
+	Agents             []AgentSupport      `json:"agents"`
+	Warnings           []string            `json:"warnings,omitempty"`
+	MutationOperations []MutationOperation `json:"mutation_operations,omitempty"`
+	incomplete         bool
+}
+
+// SupportedMutationOperations is the authoritative mutation capability set
+// this daemon serves for standalone Skills. The App gates every lifecycle
+// affordance on this list; anything absent must never render an action.
+func SupportedMutationOperations() []MutationOperation {
+	return []MutationOperation{OperationInstall, OperationRemove, OperationUpdate}
 }
 
 type CatalogSkill struct {
@@ -135,6 +143,7 @@ type MutationOperation string
 const (
 	OperationInstall MutationOperation = "install"
 	OperationRemove  MutationOperation = "remove"
+	OperationUpdate  MutationOperation = "update"
 )
 
 type MutationRequest struct {
@@ -152,7 +161,7 @@ type MutationCommand struct {
 	Command   string            `json:"command"`
 	CatalogID string            `json:"catalog_id,omitempty"`
 	Source    string            `json:"source,omitempty"`
-	SkillName string            `json:"skill_name"`
+	SkillName string            `json:"skill_name,omitempty"`
 	Scope     Scope             `json:"scope"`
 	Agents    []Agent           `json:"agents"`
 }

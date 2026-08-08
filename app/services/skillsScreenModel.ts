@@ -128,6 +128,21 @@ export function skillsAgentProjection(
   return { agent, count: skills.length, skills };
 }
 
+/**
+ * Skills-section projection: plugin-owned Skills belong to the first-level
+ * Plugins section and never appear in the installed Skills list or its Agent
+ * counts. Every other installed Skill stays here with its own authoritative
+ * management state.
+ */
+export function skillsSectionProjection(
+  inventory: SkillsInventory | undefined,
+  agent: ManagedSkillAgent,
+): SkillsAgentProjection {
+  const projection = skillsAgentProjection(inventory, agent);
+  const skills = projection.skills.filter((skill) => skill.manager !== "plugin");
+  return { agent, count: skills.length, skills };
+}
+
 export function skillsInstallTargets(
   agent: ManagedSkillAgent,
 ): ManagedSkillAgent[] {

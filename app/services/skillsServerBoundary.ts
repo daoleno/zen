@@ -1,5 +1,11 @@
 export type SkillsRequestChannel =
-  "inventory" | "catalog" | "search" | "mutation" | "handoff";
+  | "inventory"
+  | "catalog"
+  | "search"
+  | "mutation"
+  | "handoff"
+  | "plugins"
+  | "plugin-mutation";
 
 export interface SkillsServerRequestToken {
   channel: SkillsRequestChannel;
@@ -13,6 +19,8 @@ const channels: SkillsRequestChannel[] = [
   "search",
   "mutation",
   "handoff",
+  "plugins",
+  "plugin-mutation",
 ];
 
 /**
@@ -28,6 +36,8 @@ export class SkillsServerRequestOwner {
     search: 0,
     mutation: 0,
     handoff: 0,
+    plugins: 0,
+    "plugin-mutation": 0,
   };
 
   rebind(serverId: string | null | undefined): boolean {

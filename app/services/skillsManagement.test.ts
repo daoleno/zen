@@ -485,4 +485,110 @@ describe("Skills mutation review", () => {
       confirmLabel: "Remove",
     });
   });
+
+  test("update is a collection-level command with no Skill identity", () => {
+    const global = normalizeSkillsMutationCommand({
+      operation: "update",
+      command: "npx skills update --global --yes",
+      scope: "global",
+      agents: [],
+    });
+    expect(global).toEqual({
+      operation: "update",
+      command: "npx skills update --global --yes",
+      skillName: "",
+      scope: "global",
+      agents: [],
+    });
+
+    const project = normalizeSkillsMutationCommand({
+      operation: "update",
+      command: "npx skills update --project --yes",
+      scope: "project",
+      agents: [],
+    });
+    expect(project.command).toBe("npx skills update --project --yes");
+
+    expect(() =>
+      normalizeSkillsMutationCommand({
+        operation: "update",
+        command: "npx skills update --global --yes",
+        scope: "global",
+        agents: ["codex"],
+      }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsMutationCommand({
+        operation: "update",
+        command: "npx skills update --global --yes",
+        scope: "global",
+        agents: [],
+        skill_name: "shared-skill",
+      }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsMutationCommand({
+        operation: "update",
+        command: "npx skills update shared-skill --global --yes",
+        scope: "global",
+        agents: [],
+      }),
+    ).toThrow("non-official");
+    expect(() =>
+      normalizeSkillsMutationCommand({
+        operation: "update",
+        command: "npx skills update --global",
+        scope: "global",
+        agents: [],
+      }),
+    ).toThrow();
+  });
+
+  test("update confirmation states the scope and the whole-scope effect", () => {
+    expect(
+      buildSkillsMutationConfirmation({
+        operation: "update",
+        command: "npx skills update --global --yes",
+        skillName: "",
+        scope: "global",
+        agents: [],
+      }),
+    ).toMatchObject({
+      title: "Update Global Skills?",
+      confirmLabel: "Update",
+    });
+  });
+
+  test("mutation operations capability is strict and legacy-safe", () => {
+    const legacy = normalizeSkillsInventory({
+      generated_at: "2026-08-08T00:00:00Z",
+      skills: [],
+      agents: [],
+    });
+    expect(legacy.mutationOperations).toEqual(["install", "remove"]);
+
+    const full = normalizeSkillsInventory({
+      generated_at: "2026-08-08T00:00:00Z",
+      skills: [],
+      agents: [],
+      mutation_operations: ["install", "remove", "update"],
+    });
+    expect(full.mutationOperations).toEqual(["install", "remove", "update"]);
+
+    for (const bad of [
+      [],
+      ["install", "install"],
+      ["delete"],
+      ["install", "remove", "update", "sync"],
+    ]) {
+      expect(() =>
+        normalizeSkillsInventory({
+          generated_at: "2026-08-08T00:00:00Z",
+          skills: [],
+          agents: [],
+          mutation_operations: bad,
+        }),
+      ).toThrow();
+    }
+  });
 });

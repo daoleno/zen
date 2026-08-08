@@ -39,6 +39,140 @@ func TestBuildInstallCommandUsesOnlyValidatedStructuredIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildMutationCommandRejectsUnsupportedOperations(t *testing.T) {
+	for _, operation := range []MutationOperation{"upgrade", "check", "plugin-install", "plugin-uninstall", ""} {
+		request := MutationRequest{
+			Operation: operation,
+			SkillID:   "acme/skills/good",
+			Source:    "acme/skills",
+			SkillName: "good",
+			Scope:     ScopeGlobal,
+			Agents:    []Agent{AgentCodex},
+		}
+		if got, buildErr := BuildMutationCommand(InventoryOptions{}, request); buildErr == nil || !strings.Contains(buildErr.Error(), "unsupported Skill operation") {
+			t.Fatalf("operation %q built %#v with error %v, want unsupported Skill operation", operation, got, buildErr)
+		}
+	}
+}
+
+func TestBuildUpdateCommandBuildsExactScopeLevelCommands(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	writeTestSkill(t, filepath.Join(home, ".agents", "skills", "global-skill"), "global-skill", "Global")
+	writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 3, map[string]lockEntry{
+		"global-skill": {
+			Source:       "acme/skills",
+			SourceType:   "github",
+			SourceURL:    "https://github.com/acme/skills",
+			SkillPath:    "skills/global-skill/SKILL.md",
+			ComputedHash: "abc",
+		},
+	})
+	writeTestSkill(t, filepath.Join(project, ".agents", "skills", "project-skill"), "project-skill", "Project")
+	writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
+		"project-skill": {
+			Source:       "acme/skills",
+			SourceType:   "github",
+			SourceURL:    "https://github.com/acme/skills",
+			SkillPath:    "skills/project-skill/SKILL.md",
+			ComputedHash: "def",
+		},
+	})
+
+	global, err := BuildMutationCommand(InventoryOptions{Home: home}, MutationRequest{
+		Operation: OperationUpdate,
+		Scope:     ScopeGlobal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Command != "npx skills update --global --yes" || len(global.Agents) != 0 || global.SkillName != "" {
+		t.Fatalf("global update = %#v", global)
+	}
+
+	projectUpdate, err := BuildMutationCommand(InventoryOptions{Home: home}, MutationRequest{
+		Operation: OperationUpdate,
+		CWD:       project,
+		Scope:     ScopeProject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectUpdate.Command != "npx skills update --project --yes" {
+		t.Fatalf("project update = %#v", projectUpdate)
+	}
+
+	if _, err := BuildMutationCommand(InventoryOptions{Home: home}, MutationRequest{
+		Operation: OperationUpdate,
+		Scope:     ScopeProject,
+	}); err == nil || !strings.Contains(err.Error(), "working directory") {
+		t.Fatalf("project update without CWD error = %v", err)
+	}
+}
+
+func TestBuildUpdateCommandFailsClosedWithoutCLIManagedSkills(t *testing.T) {
+	home := t.TempDir()
+	writeTestSkill(t, filepath.Join(home, ".codex", "skills", ".system", "builtin-skill"), "builtin-skill", "Builtin")
+	if _, err := BuildMutationCommand(InventoryOptions{Home: home}, MutationRequest{
+		Operation: OperationUpdate,
+		Scope:     ScopeGlobal,
+	}); err == nil || !strings.Contains(err.Error(), "no skills-cli managed Skill") {
+		t.Fatalf("update without CLI skills error = %v", err)
+	}
+}
+func TestBuildMutationCommandRejectsPluginScopeMutations(t *testing.T) {
+	for _, operation := range []MutationOperation{OperationInstall, OperationRemove, "update"} {
+		request := MutationRequest{
+			Operation: operation,
+			CWD:       "",
+			SkillID:   "acme/skills/good",
+			Source:    "acme/skills",
+			SkillName: "good",
+			Scope:     ScopePlugin,
+			Agents:    []Agent{AgentCodex},
+		}
+		if got, buildErr := BuildMutationCommand(InventoryOptions{}, request); buildErr == nil || !strings.Contains(buildErr.Error(), "unsupported managed Skill scope") {
+			t.Fatalf("plugin-scope %q built %#v with error %v, want unsupported managed Skill scope", operation, got, buildErr)
+		}
+	}
+}
+
+func TestBuildInstalledCommandRefusesPluginOwnedSkill(t *testing.T) {
+	home := t.TempDir()
+	directory := filepath.Join(home, ".codex", "plugins", "cache", "vendor", "sample-plugin", "1.0.0", "skills", "plugin-skill")
+	writeTestSkill(t, directory, "plugin-skill", "Plugin")
+
+	inventory, err := DiscoverInventory(InventoryOptions{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pluginSkill *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Manager == ManagerPlugin {
+			pluginSkill = &inventory.Skills[index]
+			break
+		}
+	}
+	if pluginSkill == nil {
+		t.Fatal("plugin-owned Skill not discovered")
+	}
+	if pluginSkill.Plugin != "sample-plugin" || pluginSkill.Scope != ScopePlugin {
+		t.Fatalf("plugin provenance = %q scope = %q", pluginSkill.Plugin, pluginSkill.Scope)
+	}
+	if pluginSkill.Capability.CanRemove {
+		t.Fatal("plugin-owned Skill must never be removable")
+	}
+
+	base := MutationRequest{Operation: OperationRemove, CWD: "", SkillID: pluginSkill.ID, Scope: ScopePlugin, Agents: []Agent{AgentCodex}}
+	if _, buildErr := BuildMutationCommand(InventoryOptions{Home: home}, base); buildErr == nil || !strings.Contains(buildErr.Error(), "unsupported managed Skill scope") {
+		t.Fatalf("plugin-scope remove error = %v, want unsupported managed Skill scope", buildErr)
+	}
+	base.Scope = ScopeGlobal
+	if _, buildErr := BuildMutationCommand(InventoryOptions{Home: home}, base); buildErr == nil || !strings.Contains(buildErr.Error(), "not present in the requested scope") {
+		t.Fatalf("global-scope remove error = %v, want installed Skill not present in the requested scope", buildErr)
+	}
+}
+
 func TestBuildRemoveRediscoversExactOfficialCLIProvenance(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join(home, "project")

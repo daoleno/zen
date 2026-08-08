@@ -10,6 +10,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import {
   SkillsPresentation,
   type SkillsMode,
+  type PluginsMode,
 } from "../components/skills/SkillsPresentation";
 import {
   buildSkillsMutationConfirmation,
@@ -28,15 +29,38 @@ import {
   type SkillsRequestState,
 } from "../services/skillsManagement";
 import {
+  buildPluginMutationConfirmation,
+  type AvailablePlugin,
+  type InstalledPluginRow,
+  type PluginInventory,
+  type PluginMutationCommand,
+} from "../services/pluginsManagement";
+import {
   SkillsAutomaticInventoryOwner,
   createSkillsDiscoverState,
   reduceSkillsDiscover,
   skillsAgentCounts,
-  skillsAgentProjection,
   skillsInstallTargets,
   skillsRemovalPlanForAgent,
+  skillsSectionProjection,
   type SkillsLeaderboardView,
 } from "../services/skillsScreenModel";
+import {
+  createPluginExpansionState,
+  evaluatePluginMutation,
+  pluginSectionView,
+  projectPlugins,
+  reducePluginExpansion,
+  type PluginExpansionState,
+  type PluginSectionView,
+} from "../services/pluginsScreenModel";
+import {
+  createSkillsSurfaceState,
+  evaluateSkillMutation,
+  projectUpdateAvailable,
+  reduceSkillsSurface,
+  type SkillsSurfaceSection,
+} from "../services/skillsSurfaceModel";
 import {
   SkillsServerRequestOwner,
   type SkillsServerRequestToken,
@@ -44,19 +68,26 @@ import {
 import {
   createOwnedSkillsTerminalSession,
   skillsTerminalHandoff,
+  type TerminalHandoffCommand,
 } from "../services/skillsTerminalHandoff";
 import { makeSessionKey } from "../services/sessionKeys";
 import { markAgentOpened } from "../services/storage";
-import { wsClient } from "../services/websocket";
+import {
+  DaemonRequestError,
+  wsClient,
+} from "../services/websocket";
 import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
 
-interface ReviewedSkillsCommand {
-  command: SkillsMutationCommand;
+interface ReviewedCommand {
+  command: TerminalHandoffCommand & { scope: "project" | "global" | "user" };
   cwd: string;
   serverId: string;
   token: SkillsServerRequestToken;
+  sessionLabel: string;
 }
+
+const LEGACY_MUTATION_CAPABILITIES = ["install", "remove"] as const;
 
 export default function SkillsScreen() {
   const router = useRouter();
@@ -72,8 +103,14 @@ export default function SkillsScreen() {
     new SkillsAutomaticInventoryOwner(),
   );
   const automaticCatalogOwnerRef = useRef(new SkillsAutomaticInventoryOwner());
+  const automaticPluginsOwnerRef = useRef(new SkillsAutomaticInventoryOwner());
 
+  const [surface, setSurface] = useState(createSkillsSurfaceState);
+  const [pluginExpansion, setPluginExpansion] = useState(
+    createPluginExpansionState,
+  );
   const [mode, setMode] = useState<SkillsMode>("installed");
+  const [pluginsMode, setPluginsMode] = useState<PluginsMode>("installed");
   const [selectedAgent, setSelectedAgent] =
     useState<ManagedSkillAgent>("codex");
   const [boundServerId, setBoundServerId] = useState(currentServerId);
@@ -81,6 +118,10 @@ export default function SkillsScreen() {
   const [inventoryState, setInventoryState] = useState<
     SkillsRequestState<SkillsInventory>
   >(createSkillsRequestState);
+  const [pluginsState, setPluginsState] = useState<
+    SkillsRequestState<PluginInventory>
+  >(createSkillsRequestState);
+  const [pluginsFallback, setPluginsFallback] = useState(false);
   const [discover, setDiscover] = useState(createSkillsDiscoverState);
   const [catalogState, setCatalogState] = useState<
     SkillsRequestState<SkillsLeaderboards>
@@ -141,9 +182,12 @@ export default function SkillsScreen() {
     cancelActiveSearch();
     setBoundServerId(currentServerId);
     setInventoryState(createSkillsRequestState());
+    setPluginsState(createSkillsRequestState());
+    setPluginsFallback(false);
     setCatalogState(createSkillsRequestState());
     setSearchState(createSkillsRequestState());
     setDiscover((current) => ({ ...current, submittedQuery: "" }));
+    setPluginExpansion(createPluginExpansionState());
     setPreparingMutation("");
   }, [cancelActiveSearch, currentServerId]);
 
@@ -215,6 +259,92 @@ export default function SkillsScreen() {
     }
     void refreshInventory();
   }, [currentServerId, focusGeneration, projectCwd, refreshInventory]);
+
+  const loadPlugins = useCallback(async () => {
+    const token = requestOwnerRef.current.issue("plugins");
+    if (!token.serverId || !currentServer) {
+      setPluginsFallback(false);
+      setPluginsState({
+        status: "error",
+        generation: token.generation,
+        error: "Choose a current server in Settings to view Plugins.",
+      });
+      return;
+    }
+    if (!currentConnected) {
+      setPluginsFallback(false);
+      setPluginsState({
+        status: "error",
+        generation: token.generation,
+        error:
+          "The current server is offline. Connect it in Settings and retry.",
+      });
+      return;
+    }
+
+    setPluginsState({ status: "loading", generation: token.generation });
+    try {
+      const response = await wsClient.getPluginsInventory(token.serverId, {
+        generation: token.generation,
+      });
+      if (
+        !focusedRef.current ||
+        response.generation !== token.generation ||
+        !requestOwnerRef.current.isCurrent(token)
+      ) {
+        return;
+      }
+      setPluginsFallback(false);
+      setPluginsState((current) =>
+        completeSkillsRequest(
+          current,
+          token.generation,
+          response.inventory,
+          response.inventory.installed.length === 0,
+        ),
+      );
+    } catch (error: unknown) {
+      if (!focusedRef.current || !requestOwnerRef.current.isCurrent(token)) {
+        return;
+      }
+      if (
+        error instanceof DaemonRequestError &&
+        error.code === "unknown_message_type"
+      ) {
+        // The current daemon predates the plugin inventory wire. Fall back to
+        // the read-only cache projection from the Skills inventory; every
+        // lifecycle action is unavailable in this mode.
+        setPluginsFallback(true);
+        setPluginsState(createSkillsRequestState<PluginInventory>());
+        return;
+      }
+      setPluginsState((current) =>
+        failSkillsRequest(
+          current,
+          token.generation,
+          error instanceof Error ? error.message : "Failed to load Plugins.",
+        ),
+      );
+    }
+  }, [currentConnected, currentServer]);
+
+  useEffect(() => {
+    if (
+      surface.section !== "plugins" ||
+      !automaticPluginsOwnerRef.current.shouldRefresh(
+        focusGeneration,
+        currentServerId,
+      )
+    ) {
+      return;
+    }
+    void loadPlugins();
+  }, [
+    currentServerId,
+    focusGeneration,
+    loadPlugins,
+    surface.section,
+  ]);
 
   const loadLeaderboards = useCallback(async () => {
     const token = requestOwnerRef.current.issue("catalog");
@@ -424,8 +554,20 @@ export default function SkillsScreen() {
     [selectedAgent],
   );
 
+  const selectSection = useCallback((section: SkillsSurfaceSection) => {
+    setSurface((current) =>
+      reduceSkillsSurface(current, { type: "select_section", section }),
+    );
+  }, []);
+
+  const togglePlugin = useCallback((pluginId: string) => {
+    setPluginExpansion((current) =>
+      reducePluginExpansion(current, { type: "toggle", pluginId }),
+    );
+  }, []);
+
   const handoffToTerminal = useCallback(
-    async (reviewed: ReviewedSkillsCommand) => {
+    async (reviewed: ReviewedCommand) => {
       if (
         creatingTerminalRef.current ||
         !requestOwnerRef.current.isCurrent(reviewed.token) ||
@@ -438,7 +580,10 @@ export default function SkillsScreen() {
         );
         return;
       }
-      if (reviewed.command.scope === "project" && !reviewed.cwd) {
+      if (
+        reviewed.command.scope === "project" &&
+        !reviewed.cwd
+      ) {
         Alert.alert(
           "Project unavailable",
           "Open a Session with a project directory on this server first.",
@@ -457,7 +602,7 @@ export default function SkillsScreen() {
           createSession: async (serverId) => {
             const created = await wsClient.createSession(serverId, {
               cwd: reviewed.cwd || undefined,
-              name: `Skills: ${reviewed.command.operation} ${reviewed.command.skillName}`,
+              name: reviewed.sessionLabel,
             });
             return created.agentId;
           },
@@ -474,7 +619,10 @@ export default function SkillsScreen() {
         }
         const agentId = creation.agentId;
         const sessionKey = makeSessionKey(reviewed.serverId, agentId);
-        const token = skillsTerminalHandoff.issue(sessionKey, reviewed.command);
+        const token = skillsTerminalHandoff.issue(
+          sessionKey,
+          reviewed.command,
+        );
         issuedGrant = { sessionKey, token };
         void markAgentOpened(sessionKey, Date.now());
         router.push({
@@ -482,7 +630,7 @@ export default function SkillsScreen() {
           params: {
             id: agentId,
             serverId: reviewed.serverId,
-            name: `Skills: ${reviewed.command.operation} ${reviewed.command.skillName}`,
+            name: reviewed.sessionLabel,
             cwd: reviewed.cwd,
             startedAt: String(startedAt),
             initialInterfaceRenderMode: "terminal",
@@ -511,14 +659,20 @@ export default function SkillsScreen() {
   );
 
   const confirmCommand = useCallback(
-    (reviewed: ReviewedSkillsCommand) => {
-      const confirmation = buildSkillsMutationConfirmation(reviewed.command);
+    (reviewed: ReviewedCommand, confirmation: {
+      title: string;
+      message: string;
+      confirmLabel: string;
+    }) => {
       Alert.alert(confirmation.title, confirmation.message, [
         { text: "Cancel", style: "cancel" },
         {
           text: confirmation.confirmLabel,
           style:
-            reviewed.command.operation === "remove" ? "destructive" : "default",
+            reviewed.command.operation === "remove" ||
+            reviewed.command.operation === "uninstall"
+              ? "destructive"
+              : "default",
           onPress: () => {
             void handoffToTerminal(reviewed);
           },
@@ -530,6 +684,14 @@ export default function SkillsScreen() {
 
   const prepareRemove = useCallback(
     async (skill: InstalledSkill) => {
+      const capabilities = mutationCapabilities(inventoryState);
+      const gate = evaluateSkillMutation(
+        { kind: "remove", skill, agent: selectedAgent },
+        capabilities,
+      );
+      if (!gate.supported) {
+        return;
+      }
       const plan = skillsRemovalPlanForAgent(skill, selectedAgent);
       if (!plan || !currentServerId || !currentConnected || preparingMutation) {
         return;
@@ -549,12 +711,16 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand({
-          command,
-          cwd: projectCwd,
-          serverId: currentServerId,
-          token,
-        });
+        confirmCommand(
+          {
+            command,
+            cwd: projectCwd,
+            serverId: currentServerId,
+            token,
+            sessionLabel: `Skills: remove ${command.skillName}`,
+          },
+          buildSkillsMutationConfirmation(command),
+        );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
           Alert.alert(
@@ -574,6 +740,7 @@ export default function SkillsScreen() {
       confirmCommand,
       currentConnected,
       currentServerId,
+      inventoryState,
       preparingMutation,
       projectCwd,
       selectedAgent,
@@ -582,7 +749,13 @@ export default function SkillsScreen() {
 
   const prepareInstall = useCallback(
     async (skill: CatalogSkill | RankedCatalogSkill) => {
+      const capabilities = mutationCapabilities(inventoryState);
+      const gate = evaluateSkillMutation(
+        { kind: "install", skill },
+        capabilities,
+      );
       if (
+        !gate.supported ||
         !skill.installable ||
         !currentServerId ||
         !currentConnected ||
@@ -606,12 +779,16 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand({
-          command,
-          cwd: "",
-          serverId: currentServerId,
-          token,
-        });
+        confirmCommand(
+          {
+            command,
+            cwd: "",
+            serverId: currentServerId,
+            token,
+            sessionLabel: `Skills: install ${command.skillName}`,
+          },
+          buildSkillsMutationConfirmation(command),
+        );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
           Alert.alert(
@@ -631,15 +808,150 @@ export default function SkillsScreen() {
       confirmCommand,
       currentConnected,
       currentServerId,
+      inventoryState,
       preparingMutation,
       selectedAgent,
     ],
+  );
+
+  const prepareSkillsUpdate = useCallback(
+    async (scope: "project" | "global") => {
+      const capabilities = mutationCapabilities(inventoryState);
+      const gate = evaluateSkillMutation({ kind: "update", scope }, capabilities);
+      if (
+        !gate.supported ||
+        !currentServerId ||
+        !currentConnected ||
+        preparingMutation
+      ) {
+        return;
+      }
+      if (scope === "project" && !projectUpdateAvailable(projectCwd)) {
+        Alert.alert(
+          "Project unavailable",
+          "Open a Session with a project directory on this server first.",
+        );
+        return;
+      }
+      const token = requestOwnerRef.current.issue("mutation");
+      const key = `update:${scope}`;
+      setPreparingMutation(key);
+      try {
+        const command = await wsClient.buildSkillsCommand(currentServerId, {
+          operation: "update",
+          cwd: scope === "project" ? projectCwd || undefined : undefined,
+          scope,
+        });
+        if (!requestOwnerRef.current.isCurrent(token)) {
+          return;
+        }
+        confirmCommand(
+          {
+            command,
+            cwd: scope === "project" ? projectCwd : "",
+            serverId: currentServerId,
+            token,
+            sessionLabel: `Skills: update ${scope}`,
+          },
+          buildSkillsMutationConfirmation(command),
+        );
+      } catch (error: unknown) {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          Alert.alert(
+            "Command rejected",
+            error instanceof Error
+              ? error.message
+              : "This update cannot be prepared safely.",
+          );
+        }
+      } finally {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setPreparingMutation("");
+        }
+      }
+    },
+    [
+      confirmCommand,
+      currentConnected,
+      currentServerId,
+      inventoryState,
+      preparingMutation,
+      projectCwd,
+    ],
+  );
+
+  const preparePluginMutation = useCallback(
+    async (
+      operation: "install" | "update" | "uninstall",
+      identity: { pluginId: string; name: string },
+      row?: InstalledPluginRow,
+      entry?: AvailablePlugin,
+    ) => {
+      if (!currentServerId || !currentConnected || preparingMutation) {
+        return;
+      }
+      const gate =
+        operation === "install" && entry
+          ? evaluatePluginMutation({
+              kind: "install",
+              entry,
+              installedIds: pluginInstalledIds(pluginsState),
+            })
+          : operation === "uninstall" && row
+            ? evaluatePluginMutation({ kind: "uninstall", row })
+            : row
+              ? evaluatePluginMutation({ kind: "update", row })
+              : null;
+      if (!gate?.supported) {
+        return;
+      }
+      const token = requestOwnerRef.current.issue("plugin-mutation");
+      const key = `plugin:${operation}:${identity.pluginId}`;
+      setPreparingMutation(key);
+      try {
+        const command = await wsClient.buildPluginCommand(currentServerId, {
+          operation,
+          pluginId: identity.pluginId,
+          scope: "user",
+        });
+        if (!requestOwnerRef.current.isCurrent(token)) {
+          return;
+        }
+        confirmCommand(
+          {
+            command,
+            cwd: "",
+            serverId: currentServerId,
+            token,
+            sessionLabel: `Plugins: ${operation} ${identity.name}`,
+          },
+          buildPluginMutationConfirmation(command),
+        );
+      } catch (error: unknown) {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          Alert.alert(
+            "Command rejected",
+            error instanceof Error
+              ? error.message
+              : "This plugin cannot be managed safely.",
+          );
+        }
+      } finally {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setPreparingMutation("");
+        }
+      }
+    },
+    [confirmCommand, currentConnected, currentServerId, pluginsState, preparingMutation],
   );
 
   const presentationIsCurrent = boundServerId === currentServerId;
   const visibleInventoryState = presentationIsCurrent
     ? inventoryState
     : createSkillsRequestState<SkillsInventory>();
+  const visiblePluginsState = presentationIsCurrent
+    ? pluginsState
+    : createSkillsRequestState<PluginInventory>();
   const visibleCatalogState = presentationIsCurrent
     ? catalogState
     : createSkillsRequestState<SkillsLeaderboards>();
@@ -664,16 +976,35 @@ export default function SkillsScreen() {
   const leaderboard = leaderboards
     ? leaderboardForView(leaderboards, discover.view)
     : undefined;
-  const projection = skillsAgentProjection(inventory, selectedAgent);
+  const projection = skillsSectionProjection(inventory, selectedAgent);
   const agentCounts = skillsAgentCounts(inventory);
+  const pluginsInventory =
+    visiblePluginsState.status === "ready" ||
+    visiblePluginsState.status === "empty"
+      ? visiblePluginsState.data
+      : undefined;
+  const pluginSection: PluginSectionView =
+    pluginSectionView(pluginsInventory);
+  const fallbackPlugins = projectPlugins(inventory);
+  const mutationOperations = inventory?.mutationOperations ?? [
+    ...LEGACY_MUTATION_CAPABILITIES,
+  ];
+  const hasProjectCwd = Boolean(projectCwd?.trim());
 
   return (
     <SkillsPresentation
+      section={surface.section}
       mode={mode}
+      pluginsMode={pluginsMode}
       selectedAgent={selectedAgent}
       agentCounts={agentCounts}
       inventoryState={visibleInventoryState}
       installedSkills={projection.skills}
+      pluginsState={visiblePluginsState}
+      pluginSection={pluginSection}
+      pluginsFallback={presentationIsCurrent && pluginsFallback}
+      fallbackPlugins={fallbackPlugins}
+      pluginExpansion={pluginExpansion}
       inventoryWarnings={inventory?.warnings ?? []}
       catalogState={visibleCatalogState}
       leaderboard={leaderboard}
@@ -682,14 +1013,39 @@ export default function SkillsScreen() {
       query={discover.query}
       submittedQuery={discover.submittedQuery}
       leaderboardView={discover.view}
+      mutationOperations={mutationOperations}
+      hasProjectCwd={hasProjectCwd}
       preparingMutation={preparingMutation}
       creatingTerminal={creatingTerminal}
       currentServerAvailable={Boolean(currentServer)}
+      onSelectSection={selectSection}
       onSelectMode={setMode}
+      onSelectPluginsMode={setPluginsMode}
       onSelectAgent={selectAgent}
+      onTogglePlugin={togglePlugin}
       onOpenSettings={() => router.push("/settings")}
       onRefreshInventory={() => void refreshInventory()}
+      onRetryPlugins={() => void loadPlugins()}
       onRemove={(skill) => void prepareRemove(skill)}
+      onUpdateSkills={(scope) => void prepareSkillsUpdate(scope)}
+      onInstallPlugin={(entry) =>
+        void preparePluginMutation("install", {
+          pluginId: entry.pluginId,
+          name: entry.name,
+        }, undefined, entry)
+      }
+      onUpdatePlugin={(row) =>
+        void preparePluginMutation("update", {
+          pluginId: row.id,
+          name: row.name,
+        }, row)
+      }
+      onUninstallPlugin={(row) =>
+        void preparePluginMutation("uninstall", {
+          pluginId: row.id,
+          name: row.name,
+        }, row)
+      }
       onChangeQuery={changeDiscoverQuery}
       onSubmitSearch={submitDiscoverSearch}
       onClearSearch={clearDiscoverSearch}
@@ -699,6 +1055,27 @@ export default function SkillsScreen() {
       onInstall={(skill) => void prepareInstall(skill)}
     />
   );
+}
+
+function mutationCapabilities(
+  state: SkillsRequestState<SkillsInventory>,
+): readonly ("install" | "remove" | "update")[] {
+  if (state.status === "ready" || state.status === "empty") {
+    return state.data.mutationOperations;
+  }
+  return LEGACY_MUTATION_CAPABILITIES;
+}
+
+function pluginInstalledIds(
+  state: SkillsRequestState<PluginInventory>,
+): Set<string> {
+  const ids = new Set<string>();
+  if (state.status === "ready" || state.status === "empty") {
+    for (const row of state.data.installed) {
+      ids.add(row.id);
+    }
+  }
+  return ids;
 }
 
 function leaderboardForView(
