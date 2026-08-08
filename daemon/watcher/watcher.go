@@ -878,7 +878,10 @@ func (w *Watcher) poll() {
 		}
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
-		agent.Command, agent.StartedAt, agent.ProcessID = detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		detectedCommand, detectedStartedAt, detectedPID := detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		agent.Command = mergeAgentCommandOwnership(agent.Command, detectedCommand)
+		agent.StartedAt = detectedStartedAt
+		agent.ProcessID = detectedPID
 		if w.hidden[win.target] {
 			agent.Hidden = true
 		}
@@ -3812,6 +3815,95 @@ func agentProviderFamily(command string) string {
 	default:
 		return ""
 	}
+}
+
+// mergeAgentCommandOwnership preserves Zen-owned Pi launch metadata across
+// polls. detectAgentProcess reports the provider identity observed in the
+// process table, but node-based Pi rewrites its own argv, so the injected
+// absolute --session path cannot be recovered from the process. The launch
+// command bound at session create is the only authoritative structured source;
+// the merge reconstructs the canonical `pi --session <path>` command while the
+// observed process is the same provider family. A provider switch clears stale
+// ownership, and commands without ownership keep the detected identity exactly
+// as before. The canonical form keeps every downstream consumer (App provider
+// classification, InferAgentProvider, input readiness) on the plain pi command
+// shape.
+func mergeAgentCommandOwnership(previous, detected string) string {
+	previous = strings.TrimSpace(previous)
+	detected = strings.TrimSpace(detected)
+	if detected == "" {
+		return detected
+	}
+	if commandExecutableBase(previous) != "pi" || commandExecutableBase(detected) != "pi" {
+		return detected
+	}
+	flag, path := piOwnedLaunchFlag(previous)
+	if flag == "" {
+		return detected
+	}
+	return commandExecutableBase(detected) + " " + flag + " " + path
+}
+
+// piOwnedLaunchPath returns the absolute --session or --session-dir value
+// declared by a Pi launch command, or "" when the command carries no
+// Zen-owned Pi session path. The env-assignment launch shape Zen emits is
+// understood; quoting is preserved by splitZenLaunchFields.
+func piOwnedLaunchPath(command string) string {
+	flag, path := piOwnedLaunchFlag(command)
+	if flag == "" {
+		return ""
+	}
+	return path
+}
+
+// piOwnedLaunchFlag returns the owned Pi session flag ("--session" or
+// "--session-dir") and its absolute value, or ("", "") when the command
+// carries no Zen-owned Pi session path.
+func piOwnedLaunchFlag(command string) (string, string) {
+	fields := splitZenLaunchFields(command)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	index := 0
+	if fields[0] == "env" {
+		index = 1
+		for index < len(fields) {
+			if fields[index] == "--" {
+				index++
+				break
+			}
+			if !looksLikeEnvAssignment(fields[index]) {
+				break
+			}
+			index++
+		}
+	}
+	for i := index; i < len(fields); i++ {
+		flag := ""
+		value := ""
+		switch {
+		case fields[i] == "--session" || fields[i] == "--session-dir":
+			if i+1 >= len(fields) || strings.HasPrefix(fields[i+1], "-") {
+				return "", ""
+			}
+			flag = fields[i]
+			value = fields[i+1]
+		case strings.HasPrefix(fields[i], "--session-dir="):
+			flag = "--session-dir"
+			value = strings.TrimPrefix(fields[i], "--session-dir=")
+		case strings.HasPrefix(fields[i], "--session="):
+			flag = "--session"
+			value = strings.TrimPrefix(fields[i], "--session=")
+		default:
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "" && filepath.IsAbs(value) {
+			return flag, value
+		}
+		return "", ""
+	}
+	return "", ""
 }
 
 func processDescendsFrom(rootPID, processID int, processes map[int]processInfo) bool {
