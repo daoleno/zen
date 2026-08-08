@@ -24,6 +24,13 @@ import {
   type TimelineScrollState,
 } from "./timelineScrollPolicy";
 import {
+  COMPOSER_STALE_HIDE_GRACE_MS,
+  INITIAL_COMPOSER_FOCUS_LIFECYCLE_STATE,
+  reduceComposerFocusLifecycle,
+  resolvePendingComposerFocusHide,
+  type ComposerFocusLifecycleState,
+} from "./composerFocusLifecycle";
+import {
   createTurnFocusState,
   reduceTurnFocus,
   turnFocusOwnsMomentum,
@@ -741,6 +748,55 @@ export function useRelativeTimeLabel(targetTimestamp?: string) {
 export function useInterfaceComposerInput({ enabled }: { enabled: boolean }) {
   const inputRef = useRef<TextInput>(null);
   const [focused, setFocused] = useState(false);
+  const focusLifecycleRef = useRef(INITIAL_COMPOSER_FOCUS_LIFECYCLE_STATE);
+  const hideRecheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const commitFocusLifecycle = useCallback(
+    (next: ComposerFocusLifecycleState) => {
+      const previous = focusLifecycleRef.current;
+      if (next === previous) return next;
+      focusLifecycleRef.current = next;
+      setFocused(next.inputFocused);
+      return next;
+    },
+    [],
+  );
+
+  const applyFocusLifecycle = useCallback(
+    (event: Parameters<typeof reduceComposerFocusLifecycle>[1]) => {
+      return commitFocusLifecycle(
+        reduceComposerFocusLifecycle(focusLifecycleRef.current, event),
+      );
+    },
+    [commitFocusLifecycle],
+  );
+
+  const cancelHideRecheck = useCallback(() => {
+    if (hideRecheckTimerRef.current !== null) {
+      clearTimeout(hideRecheckTimerRef.current);
+      hideRecheckTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHideRecheck = useCallback(() => {
+    cancelHideRecheck();
+    hideRecheckTimerRef.current = setTimeout(() => {
+      hideRecheckTimerRef.current = null;
+      const previous = focusLifecycleRef.current;
+      const next = resolvePendingComposerFocusHide(previous, {
+        now: Date.now(),
+        keyboardVisible: Keyboard.isVisible(),
+      });
+      if (next === previous) return;
+      focusLifecycleRef.current = next;
+      setFocused(next.inputFocused);
+      if (previous.inputFocused && next.inputFocused === false) {
+        inputRef.current?.blur();
+      }
+    }, COMPOSER_STALE_HIDE_GRACE_MS);
+  }, [cancelHideRecheck]);
 
   const clearNativeText = useCallback(() => {
     inputRef.current?.clear();
@@ -757,23 +813,48 @@ export function useInterfaceComposerInput({ enabled }: { enabled: boolean }) {
   const blur = useCallback(() => {
     inputRef.current?.blur();
     Keyboard.dismiss();
-    setFocused(false);
-  }, []);
+    applyFocusLifecycle({ type: "input_blur" });
+    cancelHideRecheck();
+  }, [applyFocusLifecycle, cancelHideRecheck]);
 
   const handleFocus = useCallback(() => {
-    setFocused(true);
-  }, []);
+    applyFocusLifecycle({ type: "input_focus" });
+    cancelHideRecheck();
+  }, [applyFocusLifecycle, cancelHideRecheck]);
 
   const handleBlur = useCallback(() => {
-    setFocused(false);
-  }, []);
+    applyFocusLifecycle({ type: "input_blur" });
+    cancelHideRecheck();
+  }, [applyFocusLifecycle, cancelHideRecheck]);
 
   useEffect(() => {
-    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
-      setFocused(false);
+    const showSubscription = Keyboard.addListener("keyboardDidShow", () => {
+      applyFocusLifecycle({ type: "keyboard_show" });
+      cancelHideRecheck();
     });
-    return () => hideSubscription.remove();
-  }, []);
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      const previous = focusLifecycleRef.current;
+      if (!previous.inputFocused) return;
+      // Defer the hide through the grace window: a stale hide from the
+      // previous IME epoch must not collapse the current focus, while a real
+      // dismissal collapses after the native visibility recheck. Duplicate
+      // hides are inert in the reducer, so the recheck is scheduled only when
+      // this hide newly opened the deferral window — never extending the
+      // original deadline.
+      const next = applyFocusLifecycle({
+        type: "keyboard_hide",
+        at: Date.now(),
+      });
+      if (next.pendingHide !== null && previous.pendingHide === null) {
+        scheduleHideRecheck();
+      }
+    });
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+      cancelHideRecheck();
+    };
+  }, [applyFocusLifecycle, cancelHideRecheck, scheduleHideRecheck]);
 
   useEffect(() => {
     if (!enabled) {

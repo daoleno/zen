@@ -167,6 +167,10 @@ export default function TerminalScreen() {
     agentId,
     capabilities: agent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
+    client:
+      presentedAgent.kind === "codex" || presentedAgent.kind === "claude"
+        ? presentedAgent.kind
+        : null,
     eagerLoad: true,
   });
 
@@ -221,7 +225,8 @@ export default function TerminalScreen() {
       routeSheetError: routeSheet.error,
       routeSheetDurabilityWarning: routeSheet.durabilityWarning,
       routeSheetRequiresRefresh: routeSheet.requiresRefreshBeforeMutation,
-      routeSheetNonRouted: routeSheet.managedReadOnly,
+      routeSheetNonRouted: routeSheet.direct,
+      routeSheetDirectClient: routeSheet.direct ? routeSheet.client : null,
       routeSheetManagedReadOnly: routeSheet.managedReadOnly,
       routeSheetActivationEnabled: routeSheet.activationEnabled,
       routeSheetSelection: routeSheet.selection,

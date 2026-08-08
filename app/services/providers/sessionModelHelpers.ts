@@ -20,10 +20,43 @@ import type {
 
 export type SessionModelSheetMode =
   | "hidden"
+  | "direct"
   | "managed_readonly"
   | "active_switch"
   | "capability_mismatch"
   | "missing_selection";
+
+/** Codex/Claude clients that can be truthfully labeled in the direct state. */
+export type DirectSessionClient = "codex" | "claude";
+
+export function isDirectSessionClient(
+  client: unknown,
+): client is DirectSessionClient {
+  return client === "codex" || client === "claude";
+}
+
+/**
+ * Composer chip for an official-direct Session (no daemon route binding).
+ * The label names the client's direct mode only; the daemon does not manage
+ * this process's model, so no model id is ever guessed here.
+ */
+export function resolveDirectComposerModelControl(input: {
+  client?: DirectSessionClient | null;
+  capabilities?: AgentSessionCapabilities | null;
+}): ComposerModelControlPresentation | null {
+  if (!isDirectSessionClient(input.client)) {
+    return null;
+  }
+  if (sessionSupportsModelProfileAction(input.capabilities)) {
+    // Routed/managed Sessions own the routed control, never this label.
+    return null;
+  }
+  const clientLabel = input.client === "codex" ? "Codex" : "Claude";
+  return {
+    label: `${clientLabel} · Direct`,
+    accessibilityLabel: `${clientLabel} direct official login. Model switching is not available in this Session. Opens session details.`,
+  };
+}
 
 /**
  * Concise Composer chip presentation for the current Session selection. The
@@ -73,9 +106,12 @@ export type ActivateSessionProviderRequest = {
 export function resolveSessionModelSheetMode(input: {
   capabilities?: AgentSessionCapabilities | null;
   selection: ProviderSessionSelection | null;
+  client?: DirectSessionClient | null;
 }): SessionModelSheetMode {
   if (!sessionSupportsModelProfileAction(input.capabilities)) {
-    return "hidden";
+    // Unbound official-direct Codex/Claude Sessions get a truthful read-only
+    // state; everything else keeps the model surface hidden.
+    return isDirectSessionClient(input.client) ? "direct" : "hidden";
   }
   if (!input.selection) {
     return "missing_selection";

@@ -3,8 +3,10 @@ import {
   ProviderError,
   ProviderRequestOwner,
   classifyMutationPersistence,
+  connectionsForClient,
   connectionsForSession,
   durabilityWarningMessage,
+  isDirectSessionClient,
   offlineProviderError,
   providerMutationRequiresRefresh,
   buildActivateSessionProviderRequest,
@@ -22,7 +24,9 @@ import {
 } from "../../../services/providers/sessionCapabilities";
 import {
   resolveComposerModelControl,
+  resolveDirectComposerModelControl,
   type ComposerModelControlPresentation,
+  type DirectSessionClient,
 } from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
@@ -35,6 +39,12 @@ interface UseSessionProviderSheetInput {
   capabilities?: AgentSessionCapabilities | null;
   connectionConnected: boolean;
   /**
+   * Codex/Claude Sessions the daemon does not manage (official-direct, no
+   * route binding) still get a truthful read-only Composer control and a
+   * direct sheet state. Other clients stay fully hidden.
+   */
+  client?: DirectSessionClient | null;
+  /**
    * Load the Session selection once while the sheet stays closed so the
    * Composer model control can show a label without opening the sheet.
    * The sheet re-fetches on open; the projection survives close so the
@@ -45,6 +55,7 @@ interface UseSessionProviderSheetInput {
 
 export type SessionProviderSheetMode =
   | "idle"
+  | "direct"
   | "managed_readonly"
   | "active_switch"
   | "capability_mismatch"
@@ -55,6 +66,7 @@ export function useSessionProviderSheet({
   agentId,
   capabilities,
   connectionConnected,
+  client = null,
   eagerLoad = false,
 }: UseSessionProviderSheetInput) {
   const [visible, setVisible] = useState(false);
@@ -79,6 +91,7 @@ export function useSessionProviderSheet({
   const managed = sessionSupportsModelProfileAction(capabilities);
   const readOnlyManaged = sessionIsManagedReadOnlyProfile(capabilities);
   const activationCapable = sessionAllowsModelProfileActivation(capabilities);
+  const direct = !managed && isDirectSessionClient(client);
 
   const syncActivationLockUi = useCallback(() => {
     setRequiresRefreshBeforeMutation(
@@ -122,11 +135,55 @@ export function useSessionProviderSheet({
         return;
       }
       if (!managed) {
+        if (!direct) {
+          if (mode === "sheet") {
+            setLoading(false);
+            setSelection(null);
+            setSheetMode("error");
+            setError("This Session does not support Model switching.");
+          }
+          return;
+        }
         if (mode === "sheet") {
-          setLoading(false);
+          // Direct official-login Session: no route binding exists, so there
+          // is no Session selection to load. Show the configured Provider
+          // catalog read-only and let the sheet explain what is possible.
+          ownerRef.current.rebind(serverId, agentId);
+          const admission = ownerRef.current.admitCatalogLoad();
+          if (!admission.ok) {
+            setLoading(false);
+            setSelection(null);
+            setSheetMode("error");
+            setError(admission.reason);
+            return;
+          }
+          const token = admission.token;
+          setLoading(true);
+          setError(null);
           setSelection(null);
-          setSheetMode("error");
-          setError("This Session does not support Model switching.");
+          setSheetMode("direct");
+          try {
+            const nextCatalog = await wsClient.listProviders(serverId);
+            if (!ownerRef.current.isCurrent(token)) return;
+            if (
+              !ownerRef.current.acceptCatalog(token, nextCatalog.revision)
+            ) {
+              return;
+            }
+            setCatalog(nextCatalog);
+          } catch (catalogError) {
+            if (!ownerRef.current.isCurrent(token)) return;
+            setCatalog(null);
+            setError(
+              catalogError instanceof ProviderError
+                ? catalogError
+                : "Could not load Providers for this direct Session.",
+            );
+          } finally {
+            if (ownerRef.current.isCurrent(token)) {
+              setLoading(false);
+            }
+          }
         }
         return;
       }
@@ -196,6 +253,7 @@ export function useSessionProviderSheet({
       activationCapable,
       agentId,
       connectionConnected,
+      direct,
       managed,
       readOnlyManaged,
       serverId,
@@ -358,10 +416,11 @@ export function useSessionProviderSheet({
     ],
   );
 
-  const filteredConnections: ProviderConnection[] = connectionsForSession(
-    catalog,
-    selection,
-  );
+  const filteredConnections: ProviderConnection[] = direct
+    ? catalog
+      ? connectionsForClient(catalog, client ?? "")
+      : []
+    : connectionsForSession(catalog, selection);
 
   const modelsByConnection: Record<string, ProviderModel[]> = {};
   if (catalog) {
@@ -370,13 +429,14 @@ export function useSessionProviderSheet({
     }
   }
 
-  const composerControl: ComposerModelControlPresentation | null =
-    resolveComposerModelControl({
-      capabilities,
-      connectionConnected,
-      selection,
-      refreshRequired: requiresRefreshBeforeMutation,
-    });
+  const composerControl: ComposerModelControlPresentation | null = managed
+    ? resolveComposerModelControl({
+        capabilities,
+        connectionConnected,
+        selection,
+        refreshRequired: requiresRefreshBeforeMutation,
+      })
+    : resolveDirectComposerModelControl({ client, capabilities });
 
   return {
     visible,
@@ -397,6 +457,8 @@ export function useSessionProviderSheet({
     managedReadOnly: readOnlyManaged,
     activationEnabled: activationCapable && sheetMode === "active_switch",
     managed,
+    direct,
+    client,
     composerControl,
   };
 }

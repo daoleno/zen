@@ -62,6 +62,12 @@ import {
 } from "../services/screenshotDemo";
 import { InterfaceDevicePerformanceDemoGate } from "../components/terminal/InterfaceDevicePerformanceDemo";
 import { ProvidersPresentation } from "../components/providers/ProvidersPresentation";
+import { SessionModelSheet } from "../components/providers/SessionModelSheet";
+import {
+  resolveComposerModelControl,
+  resolveDirectComposerModelControl,
+} from "../services/providers/sessionModelHelpers";
+import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
@@ -569,6 +575,8 @@ function ComposerStatesDemo() {
   const expandedRef = useRef<TextInput>(null);
   const runningRef = useRef<TextInput>(null);
   const longLabelRef = useRef<TextInput>(null);
+  const directRef = useRef<TextInput>(null);
+  const routedRef = useRef<TextInput>(null);
   const [compactDraft, setCompactDraft] = useState("");
   const [expandedDraft, setExpandedDraft] = useState("");
   const [runningDraft, setRunningDraft] = useState("");
@@ -583,6 +591,65 @@ function ComposerStatesDemo() {
     label: "gpt-5.1-codex-max-longhaul-8k-context",
     accessibilityLabel:
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
+  };
+  const [demoSheet, setDemoSheet] = useState<null | "direct" | "routed">(
+    null,
+  );
+  const directModelControl = resolveDirectComposerModelControl({
+    client: "codex",
+    capabilities: {
+      structured_events: true,
+      model_profile_managed: false,
+      model_profile_active_switch: false,
+    },
+  });
+  const demoSelection = {
+    session_id: "tmux:@demo",
+    client: "codex" as const,
+    connection_id: "c1",
+    connection_name: "DeepSeek",
+    model_id: "deepseek-chat",
+    credential_ready: true,
+    hot_switchable: true,
+  };
+  const routedModelControl = resolveComposerModelControl({
+    capabilities: {
+      structured_events: true,
+      model_profile_managed: true,
+      model_profile_active_switch: true,
+    },
+    connectionConnected: true,
+    selection: demoSelection,
+    refreshRequired: false,
+  });
+  const demoCatalog: ProvidersSnapshot = {
+    revision: 1,
+    connections: [
+      {
+        id: "c1",
+        name: "DeepSeek",
+        clients: ["codex"],
+        credential_ready: true,
+        advanced: false,
+        preset_id: "deepseek",
+      },
+      {
+        id: "c2",
+        name: "Claude Gateway",
+        clients: ["claude"],
+        credential_ready: true,
+        advanced: true,
+      },
+    ],
+    defaults: {},
+    presets: [],
+    models: {
+      c1: [
+        { id: "deepseek-chat", available: true, source: "bundled" },
+        { id: "deepseek-reasoner", available: true, source: "bundled" },
+      ],
+      c2: [{ id: "claude-sonnet-4-5", available: true, source: "bundled" }],
+    },
   };
   const narrowRow = (
     label: string,
@@ -847,7 +914,128 @@ function ComposerStatesDemo() {
             onStopPress={NOOP}
           />,
         )}
+        {narrowRow(
+          "Expanded · direct Codex session (official login)",
+          <InterfaceChatComposer
+            inputRef={directRef}
+            draft=""
+            placeholder="Message the agent"
+            editable
+            focused
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={directModelControl}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={NOOP}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+            onModelControlPress={() => setDemoSheet("direct")}
+          />,
+        )}
+        {narrowRow(
+          "Expanded · routed Provider session · switchable",
+          <InterfaceChatComposer
+            inputRef={routedRef}
+            draft=""
+            placeholder="Message the agent"
+            editable
+            focused
+            canAttach
+            uploading={false}
+            activeUpload={null}
+            sendEnabled={false}
+            sending={false}
+            sendLabel="Send message"
+            showStopButton={false}
+            stopEnabled={false}
+            stopLabel="Stop current turn"
+            stopLoading={false}
+            bottomPadding={8}
+            showActionMenuButton
+            actionMenuIcon="add"
+            composerLayout="telegram"
+            showAttachmentRail
+            showCommandMenu={false}
+            showCommandList={false}
+            showComposerActions={false}
+            composerActionButtonEnabled
+            commandQuery=""
+            commands={[]}
+            attachments={[]}
+            chrome={chrome}
+            theme={theme}
+            modelControl={routedModelControl}
+            onSelectCommand={NOOP}
+            onToggleActionMenu={NOOP}
+            onDismissActionMenu={NOOP}
+            onRemoveAttachment={NOOP}
+            onDraftChange={NOOP}
+            onUploadPress={NOOP}
+            onCancelUpload={NOOP}
+            onInputFocus={NOOP}
+            onInputBlur={NOOP}
+            onSendPress={NOOP}
+            onStopPress={NOOP}
+            onModelControlPress={() => setDemoSheet("routed")}
+          />,
+        )}
       </ScrollView>
+
+      <SessionModelSheet
+        visible={demoSheet !== null}
+        loading={false}
+        activating={false}
+        error={null}
+        durabilityWarning={null}
+        requiresRefreshBeforeMutation={false}
+        managedReadOnly={false}
+        activationEnabled={demoSheet === "routed"}
+        nonRouted={demoSheet === "direct"}
+        directClient={demoSheet === "direct" ? "codex" : null}
+        selection={demoSheet === "routed" ? demoSelection : null}
+        connections={
+          demoSheet === "direct"
+            ? demoCatalog.connections.filter((item) =>
+                item.clients.includes("codex"),
+              )
+            : demoCatalog.connections
+        }
+        modelsByConnection={demoCatalog.models}
+        chrome={chrome}
+        onClose={() => setDemoSheet(null)}
+        onRetry={NOOP}
+        onOpenProvidersSettings={NOOP}
+        onActivate={NOOP}
+      />
     </SafeAreaView>
   );
 }

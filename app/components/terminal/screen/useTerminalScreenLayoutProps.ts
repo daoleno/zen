@@ -69,6 +69,7 @@ interface UseTerminalScreenLayoutPropsInput {
   routeSheetDurabilityWarning?: string | null;
   routeSheetRequiresRefresh?: boolean;
   routeSheetNonRouted?: boolean;
+  routeSheetDirectClient?: "codex" | "claude" | null;
   routeSheetManagedReadOnly?: boolean;
   routeSheetActivationEnabled?: boolean;
   routeSheetSelection?: ProviderSessionSelection | null;
@@ -150,6 +151,7 @@ export function useTerminalScreenLayoutProps({
   routeSheetDurabilityWarning,
   routeSheetRequiresRefresh,
   routeSheetNonRouted,
+  routeSheetDirectClient,
   routeSheetManagedReadOnly,
   routeSheetActivationEnabled,
   routeSheetSelection,
@@ -269,6 +271,7 @@ export function useTerminalScreenLayoutProps({
     routeSheetDurabilityWarning,
     routeSheetRequiresRefresh,
     routeSheetNonRouted,
+    routeSheetDirectClient,
     routeSheetManagedReadOnly,
     routeSheetActivationEnabled,
     routeSheetSelection,

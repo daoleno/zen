@@ -11,11 +11,27 @@ describe("InterfaceComposerExpandingDock", () => {
 
   test("owns one Reanimated progress derived from Composer focus", () => {
     expect(dock.match(/useSharedValue\(/g)).toHaveLength(1);
-    expect(dock).toContain("const progress = useSharedValue(0);");
+    expect(dock).toContain(
+      "useSharedValue(composerExpansionTarget(focused))",
+    );
     expect(dock).toContain("composerExpansionTarget(focused)");
     expect(dock).toContain("useReducedMotion()");
     expect(dock).toContain("withSpring(target, COMPOSER_SPRING_CONFIG)");
     expect(dock).toContain("composerMotionDisabled(reducedMotion)");
+  });
+
+  test("initializes from the initial focus prop so mount-time updates are never required", () => {
+    // An initially-focused Composer must start expanded (progress 1) and an
+    // initially-compact one must start compact (progress 0) without relying
+    // on a post-mount effect update that navigation can drop.
+    expect(dock).toContain(
+      "const progress = useSharedValue(composerExpansionTarget(focused));",
+    );
+    expect(dock).not.toContain("useSharedValue(0)");
+    expect(metrics).toContain(
+      "export function composerExpansionTarget(focused: boolean): 0 | 1 {",
+    );
+    expect(metrics).toContain("return focused ? 1 : 0;");
   });
 
   test("derives every motion from the single progress", () => {

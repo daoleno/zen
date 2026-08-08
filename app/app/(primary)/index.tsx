@@ -40,6 +40,7 @@ import {
   useAppTheme,
 } from "../../constants/tokens";
 import { wsClient } from "../../services/websocket";
+import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import { shouldShowBrainLoadingState } from "../../services/connectionLifecycle";
 import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting";
 import { useAgents, type ConnectionState } from "../../store/agents";
@@ -130,6 +131,11 @@ export default function BrainScreen() {
     ? (agentState.serverConnectionIssues[activeServer.id] ?? null)
     : null;
   const hostAgent = activeBrain?.host_agent ?? null;
+  const brainHostKind = agentKindFromCommand(hostAgent?.command);
+  const brainDirectClient =
+    brainHostKind === "codex" || brainHostKind === "claude"
+      ? brainHostKind
+      : null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
   const delegatedAdapter = activeBrain?.delegated_adapter ?? null;
   const routedThreadId = routeServerMatches ? params.brainThreadId : undefined;
@@ -152,6 +158,7 @@ export default function BrainScreen() {
     agentId: hostAgent?.id ?? "",
     capabilities: hostAgent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
+    client: brainDirectClient,
     eagerLoad: true,
   });
   const canUseStructuredBrainInterface = Boolean(
@@ -518,6 +525,8 @@ export default function BrainScreen() {
         requiresRefreshBeforeMutation={brainModelSheet.requiresRefreshBeforeMutation}
         managedReadOnly={brainModelSheet.managedReadOnly}
         activationEnabled={brainModelSheet.activationEnabled}
+        nonRouted={brainModelSheet.direct}
+        directClient={brainModelSheet.direct ? brainModelSheet.client : null}
         selection={brainModelSheet.selection}
         connections={brainModelSheet.connections}
         modelsByConnection={brainModelSheet.modelsByConnection}

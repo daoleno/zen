@@ -99,7 +99,11 @@ export function InterfaceComposerExpandingDock({
   onStopPress,
 }: InterfaceComposerExpandingDockProps) {
   const reducedMotion = useReducedMotion();
-  const progress = useSharedValue(0);
+  // Initialize from the initial focus prop instead of always 0: a mount-time
+  // update can be lost when Fabric tears down the previous surface during
+  // navigation (synchronouslyUpdateUIProps failed), which would leave an
+  // already-focused Composer compact forever.
+  const progress = useSharedValue(composerExpansionTarget(focused));
 
   useEffect(() => {
     const target = composerExpansionTarget(focused);

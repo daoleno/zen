@@ -6,6 +6,7 @@ import {
   exactCurrentModelChoice,
   filterSessionModelChoices,
   resolveComposerModelControl,
+  resolveDirectComposerModelControl,
   resolveSessionModelSheetMode,
   sessionModelChoices,
 } from "./sessionModelHelpers";
@@ -152,6 +153,104 @@ describe("Plus Model helpers", () => {
         refreshRequired: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("Direct official-login Sessions", () => {
+  const unmanaged = {
+    structured_events: true,
+    model_profile_managed: false,
+    model_profile_active_switch: false,
+  };
+
+  test("Codex/Claude unbound Sessions get a truthful Direct label", () => {
+    expect(
+      resolveDirectComposerModelControl({
+        client: "codex",
+        capabilities: unmanaged,
+      }),
+    ).toEqual({
+      label: "Codex · Direct",
+      accessibilityLabel:
+        "Codex direct official login. Model switching is not available in this Session. Opens session details.",
+    });
+    expect(
+      resolveDirectComposerModelControl({
+        client: "claude",
+        capabilities: unmanaged,
+      })?.label,
+    ).toBe("Claude · Direct");
+  });
+
+  test("never guesses a model id for the direct label", () => {
+    const control = resolveDirectComposerModelControl({
+      client: "codex",
+      capabilities: unmanaged,
+    });
+    expect(control?.label).not.toMatch(/gpt|claude-\d|deepseek|model/i);
+  });
+
+  test("managed Sessions never receive the Direct label", () => {
+    expect(
+      resolveDirectComposerModelControl({
+        client: "codex",
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: true,
+          model_profile_active_switch: true,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  test("unsupported or unknown clients stay hidden", () => {
+    expect(
+      resolveDirectComposerModelControl({ client: null, capabilities: unmanaged }),
+    ).toBeNull();
+    expect(
+      resolveDirectComposerModelControl({
+        client: "pi",
+        capabilities: unmanaged,
+      } as never),
+    ).toBeNull();
+  });
+
+  test("sheet mode is direct only for unbound Codex/Claude clients", () => {
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: unmanaged,
+        selection: null,
+        client: "codex",
+      }),
+    ).toBe("direct");
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: unmanaged,
+        selection: null,
+        client: "claude",
+      }),
+    ).toBe("direct");
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: unmanaged,
+        selection: null,
+        client: null,
+      }),
+    ).toBe("hidden");
+  });
+
+  test("managed Sessions ignore the client hint", () => {
+    expect(
+      resolveSessionModelSheetMode({
+        capabilities: {
+          structured_events: true,
+          model_profile_managed: true,
+          model_profile_active_switch: true,
+        },
+        selection,
+        client: "codex",
+      }),
+    ).toBe("active_switch");
   });
 });
 
