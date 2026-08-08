@@ -1,6 +1,26 @@
 export const TIMELINE_BOTTOM_THRESHOLD = 96;
 const TIMELINE_NATIVE_ANCHOR = { minIndexForVisible: 0 } as const;
 
+/**
+ * Bounded virtualization for the chat timeline. Both modes keep a fixed
+ * viewport-multiple render window (never proportional to history length):
+ * attached (following latest) keeps the established tight window for stream
+ * cost; detached reading widens the window so rows near the reader stay
+ * measured while newest-edge append / same-ID stream / Work insertion update.
+ *
+ * The native anchor is the sole position owner (Android
+ * MaintainVisibleScrollPositionHelper pins the first visible cell across
+ * UIManager mounts; iOS anchors by cell index). Mounting the entire history
+ * (initialNumToRender/maxToRenderPerBatch = data length) is forbidden: it
+ * disables virtualization and cannot establish a production fix.
+ */
+export const TIMELINE_ATTACHED_WINDOW_SIZE = 5;
+export const TIMELINE_DETACHED_WINDOW_SIZE = 21;
+export const TIMELINE_ATTACHED_MAX_TO_RENDER_PER_BATCH = 6;
+export const TIMELINE_DETACHED_MAX_TO_RENDER_PER_BATCH = 24;
+export const TIMELINE_ATTACHED_INITIAL_NUM_TO_RENDER = 8;
+export const TIMELINE_DETACHED_INITIAL_NUM_TO_RENDER = 16;
+
 export function timelineListStabilityProps(followSuspended: boolean) {
   return {
     maintainVisibleContentPosition: followSuspended
@@ -13,6 +33,16 @@ export function timelineListStabilityProps(followSuspended: boolean) {
     // Selectable Android text takes native focus. Timeline policy, rather than
     // descendant focus, owns any viewport movement in this inverted list.
     scrollsChildToFocus: false,
+    windowSize: followSuspended
+      ? TIMELINE_DETACHED_WINDOW_SIZE
+      : TIMELINE_ATTACHED_WINDOW_SIZE,
+    maxToRenderPerBatch: followSuspended
+      ? TIMELINE_DETACHED_MAX_TO_RENDER_PER_BATCH
+      : TIMELINE_ATTACHED_MAX_TO_RENDER_PER_BATCH,
+    initialNumToRender: followSuspended
+      ? TIMELINE_DETACHED_INITIAL_NUM_TO_RENDER
+      : TIMELINE_ATTACHED_INITIAL_NUM_TO_RENDER,
+    updateCellsBatchingPeriod: 48,
   } as const;
 }
 

@@ -82,6 +82,13 @@ describe("timeline history viewport stability", () => {
     ).toEqual({
       minIndexForVisible: 0,
     });
+    // Bounded virtualization: the detached window is a fixed viewport-multiple
+    // constant, never the history length, and virtualization stays enabled.
+    expect(timelineListStabilityProps(true).windowSize).toBe(21);
+    expect(timelineListStabilityProps(false).windowSize).toBe(5);
+    expect(timelineListStabilityProps(true)).not.toHaveProperty(
+      "disableVirtualization",
+    );
   });
 
   test("content-size and item-count mutations cannot issue an imperative follow", async () => {

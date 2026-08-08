@@ -388,10 +388,6 @@ export function InterfaceTimelineView({
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchCancel}
           onContentSizeChange={onContentSizeChange}
-          initialNumToRender={8}
-          maxToRenderPerBatch={6}
-          updateCellsBatchingPeriod={48}
-          windowSize={5}
         />
 
         {items.length === 0 ? (

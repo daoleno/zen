@@ -59,6 +59,10 @@ describe("timeline scroll policy", () => {
       },
       removeClippedSubviews: false,
       scrollsChildToFocus: false,
+      windowSize: 5,
+      maxToRenderPerBatch: 6,
+      initialNumToRender: 8,
+      updateCellsBatchingPeriod: 48,
     });
   });
 
@@ -71,7 +75,15 @@ describe("timeline scroll policy", () => {
       maintainVisibleContentPosition: { minIndexForVisible: 0 },
       removeClippedSubviews: false,
       scrollsChildToFocus: false,
+      // Detached reading widens the bounded viewport-multiple window so rows
+      // near the reader stay measured through newest-edge mutations.
+      windowSize: 21,
+      maxToRenderPerBatch: 24,
+      initialNumToRender: 16,
     });
+    expect(timelineListStabilityProps(true)).not.toHaveProperty(
+      "disableVirtualization",
+    );
     expect(
       timelineListStabilityProps(true).maintainVisibleContentPosition,
     ).not.toHaveProperty("autoscrollToTopThreshold");
