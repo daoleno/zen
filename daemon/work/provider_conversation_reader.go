@@ -149,6 +149,14 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 		r.openCodeLastChangedIDs = nil
 		r.piPinnedSessionPath = ""
 	}
+	// The auto-bound Pi transcript pin belongs to a concrete process
+	// instance: an in-pane Pi restart changes only startedAt (same window,
+	// same cwd, same argv-rewritten bare "pi" command), and the old pin must
+	// not keep projecting the pre-restart conversation. Invalidate it so the
+	// next scan binds the new transcript through the new startedAt window.
+	if !r.bound || !r.binding.startedAt.Equal(next.startedAt) {
+		r.piPinnedSessionPath = ""
+	}
 	r.bound = true
 	r.binding = next
 	r.resetSource()

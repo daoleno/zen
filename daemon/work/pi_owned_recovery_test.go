@@ -190,9 +190,17 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		t.Fatalf("ambiguous window match must fail closed, got %+v", ambConversation)
 	}
 
-	// A stale owned transcript (older than 72h) never binds.
-	staleDir := ownedPiFixtureDir(t, t.TempDir())
+	// A stale owned transcript (mtime older than the 72h cutoff) never binds.
+	// HOME points at the fixture owner root and the mtime is genuinely old,
+	// so the staleness cutoff is what excludes the candidate — not an empty
+	// scan of an unrelated HOME.
+	staleHome := t.TempDir()
+	staleDir := ownedPiFixtureDir(t, staleHome)
 	stalePath := writeOwnedPiRecoveryFixture(t, staleDir, cwd, created.Add(-80*time.Hour))
+	staleUpdated := created.Add(-80 * time.Hour)
+	if err := os.Chtimes(stalePath, staleUpdated, staleUpdated); err != nil {
+		t.Fatal(err)
+	}
 	staleAgent := classifier.Agent{
 		ID:        "stale-agent",
 		Name:      "stale",
@@ -200,7 +208,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		Command:   "pi",
 		StartedAt: created.Add(-80 * time.Hour).Add(2 * time.Second),
 	}
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HOME", staleHome)
 	staleReader := NewProviderConversationReader()
 	staleConversation, err := staleReader.Load(staleAgent, AgentProviderPi, created)
 	if err != nil {
@@ -209,7 +217,31 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	if staleConversation.Available {
 		t.Fatalf("stale owned transcript must not bind: %+v", staleConversation)
 	}
-	_ = stalePath
+	if staleConversation.Reason != "transcript_not_found" {
+		t.Fatalf("stale owned transcript must fail as an honest miss, got reason %q", staleConversation.Reason)
+	}
+	// Positive control in a separate fixture root: the same-shaped transcript
+	// with a current mtime binds through the same startedAt window, proving
+	// only the mtime cutoff excludes the stale file.
+	controlHome := t.TempDir()
+	controlDir := ownedPiFixtureDir(t, controlHome)
+	controlPath := writeOwnedPiRecoveryFixture(t, controlDir, cwd, created.Add(-80*time.Hour))
+	controlAgent := classifier.Agent{
+		ID:        "control-agent",
+		Name:      "control",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: created.Add(-80 * time.Hour).Add(2 * time.Second),
+	}
+	t.Setenv("HOME", controlHome)
+	controlReader := NewProviderConversationReader()
+	controlConversation, err := controlReader.Load(controlAgent, AgentProviderPi, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !controlConversation.Available || controlConversation.Path != controlPath {
+		t.Fatalf("fresh control must bind via the same window, got %+v", controlConversation)
+	}
 
 	// An explicit command binding always wins over the directory scan.
 	t.Setenv("HOME", home)
@@ -239,5 +271,71 @@ func appendOwnedPiLines(t *testing.T, path string, lines []string) {
 	defer file.Close()
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestPiOwnedDirAutoBindRebindsAfterInPaneRestart pins the P1 correction: the
+// auto-bound transcript pin belongs to a concrete Pi process instance and
+// must not survive an in-pane restart. The subscription reader is long-lived;
+// when the bound agent's startedAt changes (same window, same cwd, same
+// argv-rewritten bare "pi" command), the pin must be invalidated so the new
+// startedAt window binds the new conversation — and an ambiguous new window
+// still fails closed instead of falling back to the pre-restart pin.
+func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := ownedPiFixtureDir(t, home)
+	created := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	oldTranscript := writeOwnedPiRecoveryFixture(t, dir, cwd, created)
+	// The in-pane restart starts a new Pi process that creates its own owned
+	// transcript whose header CreatedAt falls inside the new startedAt window.
+	restartAt := created.Add(time.Hour)
+	newTranscript := writeOwnedPiRecoveryFixture(t, dir, cwd, restartAt)
+
+	t.Setenv("HOME", home)
+	agent := classifier.Agent{
+		ID:        "restart-agent",
+		Name:      "restart",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: created.Add(2 * time.Second),
+	}
+	// One long-lived reader = one live subscription across the restart.
+	reader := NewProviderConversationReader()
+
+	// First process: the startedAt window binds and pins the old transcript.
+	first, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Available || first.Path != oldTranscript {
+		t.Fatalf("first process must bind the old transcript, got %+v", first)
+	}
+
+	// In-pane restart: only the process startedAt changes. The new window
+	// must bind the new conversation — the pre-restart pin may not survive.
+	agent.StartedAt = restartAt.Add(2 * time.Second)
+	restarted, err := reader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Available || restarted.Path != newTranscript {
+		t.Fatalf("in-pane restart must rebind the new transcript, got %+v", restarted)
+	}
+
+	// Ambiguity after the restart remains fail-closed on the SAME reader:
+	// two equidistant candidates in the new window refuse rather than
+	// guessing or falling back to any prior pin.
+	writeOwnedPiRecoveryFixture(t, dir, cwd, restartAt.Add(6*time.Second))
+	agent.StartedAt = restartAt.Add(3 * time.Second)
+	ambiguous, err := reader.Load(agent, AgentProviderPi, restartAt.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ambiguous.Available || ambiguous.Reason != "transcript_not_found" {
+		t.Fatalf("ambiguous restart window must fail closed, got %+v", ambiguous)
 	}
 }
