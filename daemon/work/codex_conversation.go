@@ -382,6 +382,15 @@ func newCodexConversationBuilder(sourceID string) *codexConversationBuilder {
 
 func (b *codexConversationBuilder) startActivity(providerID, timestamp string, lineNumber int) {
 	providerID = strings.TrimSpace(providerID)
+	if providerID != "" && b.activityLifecycle.running() &&
+		b.activityProviderID != "" && providerID != b.activityProviderID {
+		// A newer native turn is authoritative evidence that an older turn with
+		// no terminal row is no longer current. This occurs after an interrupted
+		// host/executor. Let the new turn own Activity instead of pinning the UI
+		// to the old running clock forever.
+		b.activityLifecycle = providerActivityLifecycle{}
+		b.activityProviderID = ""
+	}
 	previousActivityID := ""
 	if b.activityLifecycle.activity != nil {
 		previousActivityID = b.activityLifecycle.activity.ID

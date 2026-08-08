@@ -1669,6 +1669,47 @@ func TestParseCodexConversation_TracksProviderActivityFromNativeLifecycleEvents(
 		}
 	})
 
+	t.Run("new native turn replaces an interrupted running turn", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "interrupted-then-new.jsonl")
+		writeJSONL(t, path,
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:00Z",
+				"payload": map[string]any{
+					"type":    "task_started",
+					"turn_id": "turn-interrupted",
+				},
+			},
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:05:00Z",
+				"payload": map[string]any{
+					"type":    "task_started",
+					"turn_id": "turn-current",
+				},
+			},
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:05:03Z",
+				"payload": map[string]any{
+					"type":    "task_complete",
+					"turn_id": "turn-current",
+				},
+			},
+		)
+
+		got, err := parseCodexConversation(path)
+		if err != nil {
+			t.Fatalf("parseCodexConversation: %v", err)
+		}
+		if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted ||
+			got.Activity.StartedAt != "2026-05-20T10:05:00Z" ||
+			got.Activity.SettledAt != "2026-05-20T10:05:03Z" ||
+			!strings.Contains(got.Activity.ID, "turn-current") {
+			t.Fatalf("current turn Activity = %#v", got.Activity)
+		}
+	})
+
 	for _, terminalEvent := range []string{"task_complete", "turn_aborted"} {
 		t.Run(terminalEvent, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), terminalEvent+".jsonl")
