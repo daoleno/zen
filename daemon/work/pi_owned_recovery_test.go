@@ -40,6 +40,25 @@ func writeOwnedPiRecoveryFixture(t *testing.T, dir, cwd string, created time.Tim
 	return path
 }
 
+// writeOwnedPiRecoveryFixtureNamed writes the same fixture with an explicit
+// file name so multiple transcripts can share an identical header CreatedAt
+// (equal-timestamp ambiguity fixtures).
+func writeOwnedPiRecoveryFixtureNamed(t *testing.T, dir, cwd string, created time.Time, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	content := strings.Join([]string{
+		`{"type":"session","version":3,"id":"sess-recovery","timestamp":"` + created.UTC().Format(time.RFC3339Nano) + `","cwd":"` + cwd + `"}`,
+		`{"type":"message","id":"u1","parentId":"c55d7d0c","timestamp":"2026-08-08T10:00:01.000Z","message":{"role":"user","content":"recovery user text"}}`,
+		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-08T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"recovery reasoning"},{"type":"text","text":"recovery text"},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}}`,
+		`{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-08T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"recovery output"}],"isError":false}}`,
+		`{"type":"message","id":"a2","parentId":"r1","timestamp":"2026-08-08T10:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"recovery final"}],"stopReason":"stop"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // TestPiOwnedDirAutoBindAfterBindingLoss reproduces the real cold-replay case
 // end to end at the reader boundary: a Pi window whose durable owned binding
 // is unavailable (pre-durable-binding sessions, argv-rewritten pi, daemon
@@ -65,7 +84,7 @@ func TestPiOwnedDirAutoBindAfterBindingLoss(t *testing.T) {
 		Name:      "recovery",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
 	}
 	t.Setenv("HOME", home)
 	reader := NewProviderConversationReader()
@@ -125,11 +144,12 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := ownedPiFixtureDir(t, home)
+	// Correct geometry: a process creates its transcript header at/after its
+	// start (positive flush latency), never before.
 	created := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	writeOwnedPiRecoveryFixture(t, dir, cwd, created)
-	// A newer same-cwd session that is out of the startedAt window must not
-	// win over the window-matched live session.
-	newer := writeOwnedPiRecoveryFixture(t, dir, cwd, created.Add(time.Hour))
+	// A newer same-cwd session created well after the first process start.
+	newer := writeOwnedPiRecoveryFixture(t, dir, cwd, created.Add(time.Hour).Add(5*time.Second))
 
 	// A foreign-cwd owned transcript must never bind. Its distinct timestamp
 	// also keeps its file name unique so it cannot overwrite another fixture.
@@ -145,7 +165,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		Name:      "recovery",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
 	}
 	reader := NewProviderConversationReader()
 	conversation, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
@@ -161,7 +181,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 
 	// StartedAt matching the newer session re-binds that one from a fresh
 	// subscription (a new reader has no pinned transcript).
-	agent.StartedAt = created.Add(time.Hour).Add(2 * time.Second)
+	agent.StartedAt = created.Add(time.Hour).Add(5 * time.Second)
 	freshReader := NewProviderConversationReader()
 	rebound, err := freshReader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
 	if err != nil {
@@ -171,16 +191,20 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		t.Fatalf("startedAt window must rebind the matching session, got %+v", rebound)
 	}
 
-	// Two same-cwd sessions inside the same window are ambiguous when
-	// equidistant from the agent start: fail closed.
-	writeOwnedPiRecoveryFixture(t, dir, cwd, created.Add(6*time.Second))
+	// Two same-cwd sessions with equal CreatedAt inside the same window are
+	// ambiguous: fail closed.
+	ambiguousHome := t.TempDir()
+	ambiguousDir := ownedPiFixtureDir(t, ambiguousHome)
+	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, created.Add(2*time.Second), "amb-a.jsonl")
+	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, created.Add(2*time.Second), "amb-b.jsonl")
 	ambiguous := classifier.Agent{
 		ID:        "ambiguous-agent",
 		Name:      "ambiguous",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(3 * time.Second),
+		StartedAt: created.Add(2 * time.Second),
 	}
+	t.Setenv("HOME", ambiguousHome)
 	ambReader := NewProviderConversationReader()
 	ambConversation, err := ambReader.Load(ambiguous, AgentProviderPi, created.Add(10*time.Minute))
 	if err != nil {
@@ -206,7 +230,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		Name:      "stale",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(-80 * time.Hour).Add(2 * time.Second),
+		StartedAt: created.Add(-80 * time.Hour),
 	}
 	t.Setenv("HOME", staleHome)
 	staleReader := NewProviderConversationReader()
@@ -231,7 +255,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		Name:      "control",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(-80 * time.Hour).Add(2 * time.Second),
+		StartedAt: created.Add(-80 * time.Hour),
 	}
 	t.Setenv("HOME", controlHome)
 	controlReader := NewProviderConversationReader()
@@ -251,7 +275,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		Name:      "bound",
 		Cwd:       cwd,
 		Command:   "pi --session " + newer,
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
 	}
 	boundConversation, err := boundReader.Load(boundAgent, AgentProviderPi, created.Add(10*time.Minute))
 	if err != nil {
@@ -262,25 +286,6 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	}
 }
 
-func appendOwnedPiLines(t *testing.T, path string, lines []string) {
-	t.Helper()
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestPiOwnedDirAutoBindRebindsAfterInPaneRestart pins the P1 correction: the
-// auto-bound transcript pin belongs to a concrete Pi process instance and
-// must not survive an in-pane restart. The subscription reader is long-lived;
-// when the bound agent's startedAt changes (same window, same cwd, same
-// argv-rewritten bare "pi" command), the pin must be invalidated so the new
-// startedAt window binds the new conversation — and an ambiguous new window
-// still fails closed instead of falling back to the pre-restart pin.
 func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	home := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "workspace")
@@ -291,7 +296,8 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	created := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	oldTranscript := writeOwnedPiRecoveryFixture(t, dir, cwd, created)
 	// The in-pane restart starts a new Pi process that creates its own owned
-	// transcript whose header CreatedAt falls inside the new startedAt window.
+	// transcript whose header CreatedAt falls inside the new startedAt window
+	// (positive flush latency after the new process start).
 	restartAt := created.Add(time.Hour)
 	newTranscript := writeOwnedPiRecoveryFixture(t, dir, cwd, restartAt)
 
@@ -301,7 +307,8 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 		Name:      "restart",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
+		ProcessID: 1000,
 	}
 	// One long-lived reader = one live subscription across the restart.
 	reader := NewProviderConversationReader()
@@ -315,9 +322,10 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 		t.Fatalf("first process must bind the old transcript, got %+v", first)
 	}
 
-	// In-pane restart: only the process startedAt changes. The new window
-	// must bind the new conversation — the pre-restart pin may not survive.
-	agent.StartedAt = restartAt.Add(2 * time.Second)
+	// In-pane restart: the process startedAt changes. The new window must
+	// bind the new conversation — the pre-restart pin may not survive.
+	agent.StartedAt = restartAt
+	agent.ProcessID = 2000
 	restarted, err := reader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -326,17 +334,27 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 		t.Fatalf("in-pane restart must rebind the new transcript, got %+v", restarted)
 	}
 
-	// Ambiguity after the restart remains fail-closed on the SAME reader:
-	// two equidistant candidates in the new window refuse rather than
-	// guessing or falling back to any prior pin.
-	writeOwnedPiRecoveryFixture(t, dir, cwd, restartAt.Add(6*time.Second))
-	agent.StartedAt = restartAt.Add(3 * time.Second)
-	ambiguous, err := reader.Load(agent, AgentProviderPi, restartAt.Add(10*time.Minute))
+	// Ambiguity after the restart remains fail-closed: two transcripts with
+	// equal CreatedAt in the new window refuse rather than guessing.
+	ambiguousHome := t.TempDir()
+	ambiguousDir := ownedPiFixtureDir(t, ambiguousHome)
+	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, restartAt.Add(2*time.Second), "amb-a.jsonl")
+	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, restartAt.Add(2*time.Second), "amb-b.jsonl")
+	ambiguous := classifier.Agent{
+		ID:        "ambiguous-agent",
+		Name:      "ambiguous",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: restartAt.Add(2 * time.Second),
+	}
+	t.Setenv("HOME", ambiguousHome)
+	ambReader := NewProviderConversationReader()
+	ambConversation, err := ambReader.Load(ambiguous, AgentProviderPi, restartAt.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ambiguous.Available || ambiguous.Reason != "transcript_not_found" {
-		t.Fatalf("ambiguous restart window must fail closed, got %+v", ambiguous)
+	if ambConversation.Available || ambConversation.Reason != "transcript_not_found" {
+		t.Fatalf("ambiguous restart window must fail closed, got %+v", ambConversation)
 	}
 }
 
@@ -355,14 +373,6 @@ func piSharedFixtureDir(t *testing.T, home, cwd string) string {
 	return dir
 }
 
-// TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared reproduces the real
-// binding-loss geometry: the frozen pre-restart transcript remains under
-// ~/.zen/provider-sessions/pi while the restarted bare Pi writes its new
-// transcript under ~/.pi/agent/sessions/<cwd>. After the startedAt/processID
-// invalidation, the owned scan must NOT re-pin the old file (its CreatedAt is
-// outside the new startedAt window and its mtime froze before the restart);
-// the shared scan must bind the new transcript. A processID-only observation
-// change on the same instance keeps the bind stable.
 func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 	home := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "workspace")
@@ -392,7 +402,7 @@ func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 		Name:      "geometry",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
 		ProcessID: 1000,
 	}
 	// One long-lived reader = one live subscription across the restart.
@@ -457,7 +467,7 @@ func TestPiOwnedDirAutoBindDelayedNewHeaderFlush(t *testing.T) {
 		Name:      "flush",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: created.Add(2 * time.Second),
+		StartedAt: created,
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
@@ -580,36 +590,48 @@ func TestPiOwnedDirAutoBindZeroStartedAtRetainsFreshest(t *testing.T) {
 // the only instance signal: the pin must not survive a processID change, and
 // the scan must rebind the closer window candidate (min-delta). An
 // equidistant same-second pair stays fail-closed.
-func TestPiOwnedDirAutoBindSameSecondRestartProcessGeneration(t *testing.T) {
+// TestPiOwnedDirAutoBindSubSecondRestartClosure covers the final P1: a
+// sub-second in-pane restart must not re-admit the frozen old owned
+// transcript through either eligibility arm. The new process start is
+// sub-second precise (Linux /proc starttime evidence), so the header window
+// lower bound (CreatedAt >= startedAt) and the mtime arm (mtime >=
+// startedAt) both exclude the old file whose creation and last write precede
+// the new process start, and the shared scan binds the new transcript.
+// Phase A demonstrates the false admission with the second-rounded start the
+// pre-fix watcher supplied (control); phase B proves the closure with the
+// precise start.
+func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 	home := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	created := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
-	// Same-second restart: both processes share the same startedAt.
-	startedAt := created.Add(2 * time.Second)
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	oldStart := base                                   // previous instance start
+	oldCreated := oldStart                             // header flushed at start
+	oldFrozen := oldStart.Add(200 * time.Millisecond)  // old process last write
+	newStart := oldStart.Add(900 * time.Millisecond)   // same second, precise
+	newCreated := newStart.Add(300 * time.Millisecond) // header flush latency
 
-	// The old transcript is window-admitted (created one second before the
-	// shared startedAt). The new transcript appears only at the restart
-	// moment, exactly at startedAt.
-	dir := ownedPiFixtureDir(t, home)
-	oldPath := writeOwnedPiRecoveryFixture(t, dir, cwd, startedAt.Add(-1*time.Second))
+	ownedDir := ownedPiFixtureDir(t, home)
+	oldPath := writeOwnedPiRecoveryFixtureNamed(t, ownedDir, cwd, oldCreated, "old.jsonl")
+	if err := os.Chtimes(oldPath, oldFrozen, oldFrozen); err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := piSharedFixtureDir(t, home, cwd)
+	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
 
 	agent := classifier.Agent{
-		ID:        "same-second-agent",
-		Name:      "same-second",
+		ID:        "subsecond-agent",
+		Name:      "subsecond",
 		Cwd:       cwd,
 		Command:   "pi",
-		StartedAt: startedAt,
+		StartedAt: oldStart,
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-
-	// First instance: the old transcript binds and pins (unique window
-	// candidate for this reader's first scan).
-	first, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,41 +639,177 @@ func TestPiOwnedDirAutoBindSameSecondRestartProcessGeneration(t *testing.T) {
 		t.Fatalf("first instance must bind the old transcript, got %+v", first)
 	}
 
-	// Same-second restart: startedAt unchanged, processID changed, and the
-	// restarted Pi flushes its new transcript. The pin must be invalidated
-	// and the closer window candidate (new transcript, delta 0 vs delta 1s)
-	// must bind.
-	newPath := writeOwnedPiRecoveryFixture(t, dir, cwd, startedAt)
-	agent.ProcessID = 2000
-	restarted, err := reader.Load(agent, AgentProviderPi, created.Add(11*time.Minute))
+	// Phase A (control): with the second-rounded new start the pre-fix
+	// watcher supplied, the frozen old file is re-admitted (its mtime sits in
+	// the same rounded second) and shadows the new shared transcript.
+	roundedAgent := agent
+	roundedAgent.StartedAt = newStart.Truncate(time.Second)
+	roundedAgent.ProcessID = 2000
+	rounded, err := reader.Load(roundedAgent, AgentProviderPi, base.Add(11*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rounded.Available || rounded.Path != oldPath {
+		t.Fatalf("rounded start must re-admit the old file (control), got %+v", rounded)
+	}
+
+	// Phase B (closure): with the precise new start, the old file fails both
+	// arms (CreatedAt and mtime before the new process start) and the shared
+	// scan binds the new transcript.
+	agent.StartedAt = newStart
+	agent.ProcessID = 3000
+	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(12*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !restarted.Available || restarted.Path != newPath {
-		t.Fatalf("same-second restart must bind the new transcript, got %+v", restarted)
+		t.Fatalf("precise start must bind the new shared transcript, got %+v", restarted)
 	}
 
-	// Equidistant same-second pair on a fresh reader: fail closed rather
-	// than guessing between two equally close instance candidates.
-	ambiguousHome := t.TempDir()
-	dir2 := ownedPiFixtureDir(t, ambiguousHome)
-	_ = writeOwnedPiRecoveryFixture(t, dir2, cwd, startedAt.Add(-1*time.Second))
-	_ = writeOwnedPiRecoveryFixture(t, dir2, cwd, startedAt.Add(1*time.Second))
-	t.Setenv("HOME", ambiguousHome)
-	ambiguousAgent := classifier.Agent{
-		ID:        "same-second-ambiguous",
-		Name:      "same-second-ambiguous",
-		Cwd:       cwd,
-		Command:   "pi",
-		StartedAt: startedAt,
-		ProcessID: 3000,
-	}
-	ambReader := NewProviderConversationReader()
-	ambiguous, err := ambReader.Load(ambiguousAgent, AgentProviderPi, created.Add(12*time.Minute))
+	// Same instance afterwards: a processID-only observation change must not
+	// flip the bind (no churn).
+	agent.ProcessID = 3001
+	stable, err := reader.Load(agent, AgentProviderPi, base.Add(13*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ambiguous.Available || ambiguous.Reason != "transcript_not_found" {
-		t.Fatalf("equidistant same-second pair must fail closed, got %+v", ambiguous)
+	if !stable.Available || stable.Path != newPath {
+		t.Fatalf("processID-only wobble must keep the bind stable, got %+v", stable)
+	}
+}
+
+// TestPiOwnedDirAutoBindSubSecondWindowArmExclusion covers the window-arm
+// variant in isolation: an old owned transcript whose header CreatedAt
+// precedes the precise new process start within the same second must not be
+// admitted by any negative window margin; the shared scan binds the new
+// transcript.
+func TestPiOwnedDirAutoBindSubSecondWindowArmExclusion(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	oldStart := base
+	oldCreated := oldStart
+	newStart := oldStart.Add(700 * time.Millisecond)
+	newCreated := newStart.Add(300 * time.Millisecond)
+
+	ownedDir := ownedPiFixtureDir(t, home)
+	oldPath := writeOwnedPiRecoveryFixtureNamed(t, ownedDir, cwd, oldCreated, "old.jsonl")
+	if err := os.Chtimes(oldPath, oldStart, oldStart); err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := piSharedFixtureDir(t, home, cwd)
+	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
+
+	agent := classifier.Agent{
+		ID:        "window-arm-agent",
+		Name:      "window-arm",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: oldStart,
+		ProcessID: 1000,
+	}
+	reader := NewProviderConversationReader()
+	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Available || first.Path != oldPath {
+		t.Fatalf("first instance must bind the old transcript, got %+v", first)
+	}
+
+	agent.StartedAt = newStart
+	agent.ProcessID = 2000
+	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(11*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Available || restarted.Path != newPath {
+		t.Fatalf("old CreatedAt before the new start must not re-admit, got %+v", restarted)
+	}
+}
+
+// TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion covers the mtime-arm
+// variant in isolation: an old owned transcript whose last write precedes the
+// precise new process start within the same second must not be admitted by
+// the resume arm; the shared scan binds the new transcript. Phase A asserts
+// the false admission with the second-rounded start (control), phase B the
+// closure with the precise start.
+func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
+	home := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	base := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	oldStart := base.Add(-30 * time.Second) // old file created long before
+	oldCreated := oldStart
+	newStart := base.Add(700 * time.Millisecond) // precise new start
+	newCreated := newStart.Add(300 * time.Millisecond)
+	oldFrozen := base.Add(400 * time.Millisecond) // same rounded second, before the precise new start
+
+	ownedDir := ownedPiFixtureDir(t, home)
+	oldPath := writeOwnedPiRecoveryFixtureNamed(t, ownedDir, cwd, oldCreated, "old.jsonl")
+	if err := os.Chtimes(oldPath, oldFrozen, oldFrozen); err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := piSharedFixtureDir(t, home, cwd)
+	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
+
+	agent := classifier.Agent{
+		ID:        "mtime-arm-agent",
+		Name:      "mtime-arm",
+		Cwd:       cwd,
+		Command:   "pi",
+		StartedAt: oldStart,
+		ProcessID: 1000,
+	}
+	reader := NewProviderConversationReader()
+	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Available || first.Path != oldPath {
+		t.Fatalf("first instance must bind the old transcript, got %+v", first)
+	}
+
+	// Phase A (control): the second-rounded new start admits the frozen old
+	// file through the mtime arm (same rounded second).
+	roundedAgent := agent
+	roundedAgent.StartedAt = newStart.Truncate(time.Second)
+	roundedAgent.ProcessID = 2000
+	rounded, err := reader.Load(roundedAgent, AgentProviderPi, base.Add(11*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rounded.Available || rounded.Path != oldPath {
+		t.Fatalf("rounded start must re-admit via mtime arm (control), got %+v", rounded)
+	}
+
+	// Phase B (closure): the precise start excludes the frozen old file.
+	agent.StartedAt = newStart
+	agent.ProcessID = 3000
+	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(12*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Available || restarted.Path != newPath {
+		t.Fatalf("precise start must bind the new shared transcript, got %+v", restarted)
+	}
+}
+
+func appendOwnedPiLines(t *testing.T, path string, lines []string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		t.Fatal(err)
 	}
 }

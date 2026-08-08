@@ -248,7 +248,11 @@ func piWindowCandidates(candidates []piTranscriptCandidate, startedAt time.Time)
 		return nil
 	}
 	startedAt = startedAt.UTC()
-	minCreatedAt := startedAt.Add(-5 * time.Second)
+	// Header CreatedAt may not precede the process start: this instance
+	// writes its own header only after it begins (positive flush latency).
+	// The negative margin was dropped because a frozen pre-restart
+	// transcript within it would be re-admitted after a sub-second restart.
+	minCreatedAt := startedAt
 	maxCreatedAt := startedAt.Add(2 * time.Minute)
 	out := make([]piTranscriptCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -403,10 +407,11 @@ func findPiExclusiveSessionDir(dir string, agent classifier.Agent, now time.Time
 			continue
 		}
 		if !agent.StartedAt.IsZero() {
-			minCreated := agent.StartedAt.UTC().Add(-5 * time.Second)
-			maxCreated := agent.StartedAt.UTC().Add(2 * time.Minute)
 			created := candidate.CreatedAt.UTC()
-			if created.IsZero() || created.Before(minCreated) || created.After(maxCreated) {
+			// Header CreatedAt may not precede the process start: the
+			// transcript of this instance is written after the process
+			// begins (positive flush latency only).
+			if created.IsZero() || created.Before(agent.StartedAt.UTC()) || created.After(agent.StartedAt.UTC().Add(2*time.Minute)) {
 				continue
 			}
 		}

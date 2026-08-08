@@ -312,7 +312,9 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	owned := filepath.Join(ownedDir, "cold-replay.jsonl")
-	writePiServerFixture(t, owned, cwd)
+	// Header CreatedAt flushed after the process start (the watcher below
+	// reports startedAt 2026-08-07T10:00:02Z).
+	writePiServerFixtureAt(t, owned, cwd, time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC))
 
 	tmuxPath := filepath.Join(binDir, "tmux")
 	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' 'zero-view:@1'\n"), 0o700); err != nil {
@@ -428,11 +430,19 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 // reasoning, assistant text, one tool call with result, and a final stop.
 func writePiServerFixture(t *testing.T, path, cwd string) {
 	t.Helper()
+	writePiServerFixtureAt(t, path, cwd, time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC))
+}
+
+// writePiServerFixtureAt is writePiServerFixture with an explicit session
+// header CreatedAt so fixtures model a header flushed at/after the process
+// start (never before it).
+func writePiServerFixtureAt(t *testing.T, path, cwd string, created time.Time) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	content := strings.Join([]string{
-		`{"type":"session","version":3,"id":"sess-server-live","timestamp":"2026-08-07T10:00:00.000Z","cwd":"` + cwd + `"}`,
+		`{"type":"session","version":3,"id":"sess-server-live","timestamp":"` + created.UTC().Format(time.RFC3339Nano) + `","cwd":"` + cwd + `"}`,
 		`{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-07T10:00:01.000Z","message":{"role":"user","content":"server user text"}}`,
 		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-07T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"server reasoning"},{"type":"text","text":"server text"},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}}`,
 		`{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-07T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"server tool output"}],"isError":false}}`,
