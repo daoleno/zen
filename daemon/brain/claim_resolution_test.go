@@ -28,7 +28,7 @@ func claimResolutionStore(t *testing.T) (*Store, string, WorkEvent) {
 	event, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "held:claim",
+		DedupeKey:  "session:held:turn:one:session.done",
 		Actionable: true,
 	})
 	if err != nil {

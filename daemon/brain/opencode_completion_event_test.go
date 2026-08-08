@@ -2,17 +2,72 @@ package brain
 
 import (
 	"testing"
+	"time"
 
-	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
+// openCodeLedgerFlow drives one canonical OpenCode turn through the single
+// reducer: durable admission, correlated receipt, live provider activity, and
+// a bound provider terminal. It mirrors the production watcher/adapter path.
+func openCodeLedgerFlow(t *testing.T, store *Store, sessionID, turnID string, acceptedAt time.Time, terminal watcher.TurnFact) {
+	t.Helper()
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID:       sessionID,
+		TurnID:          turnID,
+		AcceptedAt:      acceptedAt,
+		ProcessIdentity: "opencode-proc-" + turnID,
+		PaneGeneration:  "pane-" + turnID,
+		PayloadSHA256:   "payload-" + turnID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admission := providerAdmission("opencode\x00db\x00"+sessionID, "msg-"+turnID, 1, "sha-"+turnID, acceptedAt)
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceReceipt,
+		Kind:       "admission",
+		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload-" + turnID,
+		Admission:  admission,
+		ActivityID: "activity-" + turnID,
+		At:         acceptedAt.Add(time.Second),
+		Summary:    "Delegated input accepted",
+	}); err != nil || !changed {
+		t.Fatalf("admission apply = (%v, %v)", changed, err)
+	}
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       "running",
+		SourceID:   "provider\x00" + sessionID + "\x00opencode\x00msg-" + turnID + "\x001",
+		Cursor:     1,
+		Admission:  admission,
+		ActivityID: "activity-" + turnID,
+		StartedAt:  acceptedAt.Add(2 * time.Second),
+		At:         acceptedAt.Add(3 * time.Second),
+		Summary:    "Delegated provider activity running",
+	}); err != nil || !changed {
+		t.Fatalf("provider running apply = (%v, %v)", changed, err)
+	}
+	terminal.SessionID = sessionID
+	terminal.TurnID = turnID
+	terminal.Admission = admission
+	terminal.ActivityID = "activity-" + turnID
+	terminal.Cursor = 1
+	if terminal.SourceID == "" {
+		terminal.SourceID = "provider\x00" + sessionID + "\x00opencode\x00msg-" + turnID + "\x001"
+	}
+	if _, changed, err := store.ApplyTurnFact(terminal); err != nil || !changed {
+		t.Fatalf("provider terminal apply = (%v, %v)", changed, err)
+	}
+}
+
 // TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce
-// reproduces the observed failure sequence: an ambiguous initial admission
-// used to emit two actionable session.failed Events and pin Work, so the real
-// provider completion later had no observable lifecycle transition. The
-// corrected sequence must project only nonterminal facts until the
-// authoritative turn settlement emits exactly one actionable session.done.
+// covers the live incidents: an ambiguous admission fact can never emit
+// session.failed while the provider works; the correlated turn completes with
+// exactly one actionable session.done; replay is a no-op.
 func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -31,69 +86,53 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(store, &fakeWatcher{}, nil)
-	agent := func(state classifier.AgentState, attention string, needsAttention bool, turnID string) *classifier.Agent {
-		return &classifier.Agent{
-			ID:             sessionID,
-			Name:           "OpenCode",
-			State:          state,
-			Attention:      attention,
-			NeedsAttention: needsAttention,
-			Delegated:      true,
-			PaneAlive:      true,
-			Summary:        "Delegated turn running",
-		}
-	}
-
-	// 1. The ambiguous admission attempt is projected as a nonterminal
-	// attempt fact (running, attention none): it must not emit session.failed.
-	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:    "agent_metadata_change",
-		AgentID: sessionID,
-		Agent:   agent(classifier.StateRunning, "none", false, ""),
-		TurnID:  "",
-	}); err != nil {
-		t.Fatal(err)
-	} else if woke {
-		t.Fatal("ambiguous attempt fact woke Brain")
-	}
-
-	// 2. Live provider activity projects running for the accepted turn.
-	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  sessionID,
-		Agent:    agent(classifier.StateRunning, "none", false, "turn-1"),
-		OldState: string(classifier.StateUnknown),
-		NewState: string(classifier.StateRunning),
-		TurnID:   "turn-1",
-	}); err != nil {
-		t.Fatal(err)
-	} else if woke {
-		t.Fatal("running turn woke Brain")
-	}
-
-	// 3. Authoritative settlement: exactly one actionable completion Event.
-	if _, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  sessionID,
-		Agent:    agent(classifier.StateDone, "none", false, "turn-1"),
-		OldState: string(classifier.StateRunning),
-		NewState: string(classifier.StateDone),
-		TurnID:   "turn-1",
+	acceptedAt := time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC)
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		AcceptedAt: acceptedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// 4. Duplicate completion for the same turn is idempotently suppressed.
-	if _, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  sessionID,
-		Agent:    agent(classifier.StateDone, "none", false, "turn-1"),
-		OldState: string(classifier.StateRunning),
-		NewState: string(classifier.StateDone),
-		TurnID:   "turn-1",
-	}); err != nil {
-		t.Fatal(err)
+	// 1. The ambiguous admission attempt is a control failed self-report on
+	// an Admitted turn: denied outright (C.2.3) — never failed, never a row.
+	snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "failed",
+		SourceID: "control\x00attempt-1",
+		At:       acceptedAt.Add(time.Second),
+		Summary:  "Delegated input outcome stayed ambiguous; provider start was not observed",
+	})
+	if err != nil || changed || snapshot.Status != watcher.TurnAdmitted {
+		t.Fatalf("ambiguous control failed = (%+v, %v, %v), want denied", snapshot, changed, err)
+	}
+
+	// 2-4. Correlated admission, live provider activity, bound terminal.
+	openCodeLedgerFlow(t, store, sessionID, turnID, acceptedAt, watcher.TurnFact{
+		Class:     watcher.EvidenceProvider,
+		Kind:      "done",
+		SettledAt: acceptedAt.Add(30 * time.Second),
+		Summary:   "Delegated provider completed the turn",
+	})
+
+	// 5. Duplicate completion for the same turn is idempotently suppressed.
+	admission := providerAdmission("opencode\x00db\x00"+sessionID, "msg-"+turnID, 1, "sha-"+turnID, acceptedAt)
+	replayed, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       "done",
+		SourceID:   "provider\x00" + sessionID + "\x00opencode\x00msg-" + turnID + "\x001",
+		Cursor:     1,
+		Admission:  admission,
+		ActivityID: "activity-" + turnID,
+		SettledAt:  acceptedAt.Add(30 * time.Second),
+		Summary:    "Delegated provider completed the turn",
+	})
+	if err != nil || changed || replayed.Status != watcher.TurnDone {
+		t.Fatalf("replayed terminal = (%+v, %v, %v), want no-op", replayed, changed, err)
 	}
 
 	events, err := store.ListWorkEvents(item.ID)
@@ -131,9 +170,9 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 }
 
 // TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure
-// verifies that a turn-keyed terminal fact for an older accepted turn cannot
-// block the authoritative completion of a confirmed follow-up turn: the
-// follow-up establishes a new epoch and its session.done must still emit.
+// verifies that a terminal fact for an older accepted turn cannot block the
+// authoritative completion of a confirmed follow-up turn: each canonical turn
+// is its own immutable lifecycle boundary with its own wake.
 func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -152,93 +191,94 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(store, &fakeWatcher{}, nil)
-	event := func(state, oldState classifier.AgentState, turnID string) watcher.SessionEvent {
-		return watcher.SessionEvent{
-			Type:     "agent_state_change",
-			AgentID:  sessionID,
-			Agent:    &classifier.Agent{ID: sessionID, State: state, Delegated: true, PaneAlive: true, Summary: "summary"},
-			OldState: string(oldState),
-			NewState: string(state),
-			TurnID:   turnID,
-		}
-	}
+	base := time.Date(2026, 8, 9, 7, 0, 0, 0, time.UTC)
 
-	// An older accepted turn fails authoritatively (e.g. bounded start timeout).
-	if _, err := service.RouteSessionEvent(event(classifier.StateFailed, classifier.StateRunning, "turn-old")); err != nil {
-		t.Fatal(err)
-	}
-	// The confirmed follow-up establishes a new activity epoch.
-	if _, err := service.RouteSessionEvent(event(classifier.StateRunning, classifier.StateFailed, "turn-new")); err != nil {
-		t.Fatal(err)
-	}
-	// Its authoritative completion must still emit one actionable Event.
-	if _, err := service.RouteSessionEvent(event(classifier.StateDone, classifier.StateRunning, "turn-new")); err != nil {
-		t.Fatal(err)
-	}
+	// An older accepted turn fails authoritatively (bound provider terminal).
+	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:old", base, watcher.TurnFact{
+		Class: watcher.EvidenceProvider, Kind: "failed",
+		SettledAt: base.Add(time.Minute),
+		Summary:   "Delegated provider failed the turn",
+	})
+	// The confirmed follow-up establishes a new activity epoch and completes.
+	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:new", base.Add(2*time.Minute), watcher.TurnFact{
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SettledAt: base.Add(3 * time.Minute),
+		Summary:   "Delegated provider completed the turn",
+	})
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := 0
+	failed := 0
 	for _, recorded := range events {
-		if recorded.Kind == "session.done" {
+		if recorded.Kind == "session.done" && recorded.Actionable {
 			done++
 		}
+		if recorded.Kind == "session.failed" && recorded.Actionable {
+			failed++
+		}
 	}
-	if done != 1 {
-		t.Fatalf("follow-up completion Events = %d, want exactly one: %#v", done, events)
+	if done != 1 || failed != 1 {
+		t.Fatalf("epoch Events done=%d failed=%d, want exactly one each: %#v", done, failed, events)
 	}
 }
 
-// TestSessionEventDedupeKeyCollapsesSameKindAdmissionAttemptEvents verifies
-// that repeated lifecycle Events of the same kind for one Session collapse to
-// one durable Event when no turn identity separates them, and that a
-// turn-keyed Event remains a distinct fact.
-func TestSessionEventDedupeKeyCollapsesSameKindAdmissionAttemptEvents(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
+// TestControlFailedHintsDedupeToOneNonActionableRow verifies the frozen
+// provisional-terminal rule: repeated control failed self-reports on a live
+// canonical turn collapse to one non-actionable row (per (session, turn,
+// kind)), canonical status never moves, and no wake is possible.
+func TestControlFailedHintsDedupeToOneNonActionableRow(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	acceptedAt := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
+	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceReceipt, Kind: "admission",
+		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload-digest",
+		Admission:  admission,
+		ActivityID: "activity-1",
+		At:         acceptedAt.Add(time.Second),
+	}); err != nil {
 		t.Fatal(err)
-	}
-	sessionID := "brain-agent-dedupe:@3"
-	item, err := store.CreateWork(Work{
-		Title:            "Dedupe",
-		Objective:        "Same admission attempt must not duplicate Events.",
-		Status:           WorkOpen,
-		OwnerSessionID:   sessionID,
-		CompletionPolicy: CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(store, &fakeWatcher{}, nil)
-	metadataEvent := func(attention string) watcher.SessionEvent {
-		return watcher.SessionEvent{
-			Type:    "agent_metadata_change",
-			AgentID: sessionID,
-			Agent: &classifier.Agent{
-				ID: sessionID, State: classifier.StateFailed, Attention: attention,
-				NeedsAttention: true, Delegated: true, PaneAlive: true,
-			},
-		}
 	}
 	for index := 0; index < 3; index++ {
-		if _, err := service.RouteSessionEvent(metadataEvent("failed")); err != nil {
+		// Distinct progress_event_id per attempt: each is a distinct fact, but
+		// the dedupe key per (session, turn, kind) keeps exactly one row.
+		snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+			SessionID: sessionID, TurnID: turnID,
+			Class: watcher.EvidenceControl, Kind: "failed",
+			SourceID: "control\x00attempt-" + string(rune('a'+index)),
+			At:       acceptedAt.Add(time.Duration(index+2) * time.Second),
+			Summary:  "Delegated Session reported failed; awaiting provider confirmation",
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if !changed && index == 0 {
+			t.Fatalf("first hint did not change the row")
+		}
+		if snapshot.Status != watcher.TurnAccepted {
+			t.Fatalf("control hint moved canonical status: %+v", snapshot)
+		}
 	}
-	events, err := store.ListWorkEvents(item.ID)
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	events, err := store.ListWorkEvents(workItem.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	failed := 0
+	actionable := 0
 	for _, recorded := range events {
 		if recorded.Kind == "session.failed" {
 			failed++
+			if recorded.Actionable {
+				actionable++
+			}
 		}
 	}
-	if failed != 1 {
-		t.Fatalf("same-kind admission Events = %d, want exactly one deduplicated: %#v", failed, events)
+	if failed != 1 || actionable != 0 {
+		t.Fatalf("control failed hints = %d rows (%d actionable), want one non-actionable: %#v", failed, actionable, events)
 	}
 }
 
@@ -265,40 +305,18 @@ func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(store, &fakeWatcher{}, nil)
-	event := func(state classifier.AgentState, turnID string) watcher.SessionEvent {
-		return watcher.SessionEvent{
-			Type:     "agent_state_change",
-			AgentID:  sessionID,
-			Agent:    &classifier.Agent{ID: sessionID, State: state, Delegated: true, PaneAlive: true, Summary: "summary"},
-			OldState: string(classifier.StateUnknown),
-			NewState: string(state),
-			TurnID:   turnID,
-		}
-	}
+	base := time.Date(2026, 8, 9, 9, 0, 0, 0, time.UTC)
+	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:1", base, watcher.TurnFact{
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SettledAt: base.Add(time.Minute),
+		Summary:   "Delegated provider completed the turn",
+	})
+	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:2", base.Add(2*time.Minute), watcher.TurnFact{
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SettledAt: base.Add(3 * time.Minute),
+		Summary:   "Delegated provider completed the turn",
+	})
 
-	// Turn 1 settles done: exactly one actionable completion.
-	if _, err := service.RouteSessionEvent(event(classifier.StateRunning, "turn-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-1")); err != nil {
-		t.Fatal(err)
-	}
-	// The follow-up reopens a new epoch.
-	if _, err := service.RouteSessionEvent(event(classifier.StateRunning, "turn-2")); err != nil {
-		t.Fatal(err)
-	}
-	// Authoritative settlement of the follow-up turn: one new notification.
-	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-2")); err != nil {
-		t.Fatal(err)
-	}
-	// Replayed terminal facts for either turn must not add Events.
-	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-1")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.RouteSessionEvent(event(classifier.StateDone, "turn-2")); err != nil {
-		t.Fatal(err)
-	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)

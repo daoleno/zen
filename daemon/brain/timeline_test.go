@@ -86,7 +86,7 @@ func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
 	first, created, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.needs_input",
-		DedupeKey:  "needs-1",
+		DedupeKey:  "session:needs:turn:one:session.needs_input",
 		Actionable: true,
 		Summary:    "Need a decision",
 		SourceName: "agent-a",
@@ -107,7 +107,7 @@ func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
 	second, created, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
-		DedupeKey:  "done-1",
+		DedupeKey:  "session:done:turn:one:session.done",
 		Actionable: true,
 		Summary:    "Finished",
 		SourceName: "agent-a",
@@ -159,7 +159,7 @@ func TestWorkEventStaysOnFrozenThreadAfterSwitch(t *testing.T) {
 	event, created, err := service.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.needs_input",
-		DedupeKey:  "after-switch",
+		DedupeKey:  "session:switch:turn:one:session.done",
 		Actionable: false,
 		Summary:    "Still belongs to A",
 	})
@@ -210,7 +210,7 @@ func TestMarkWorkReadClearsTimelineUnread(t *testing.T) {
 	event, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.needs_input",
-		DedupeKey:  "need",
+		DedupeKey:  "session:need:turn:one:session.needs_input",
 		Actionable: true,
 		Summary:    "Please choose",
 	})
@@ -255,7 +255,7 @@ func TestServiceAppendWorkEventMaterializesCard(t *testing.T) {
 	event, created, err := service.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.needs_input",
-		DedupeKey:  "svc-need",
+		DedupeKey:  "session:svc:turn:one:session.needs_input",
 		Actionable: false,
 		Summary:    "Current needs input",
 	})
@@ -271,21 +271,25 @@ func TestServiceAppendWorkEventMaterializesCard(t *testing.T) {
 	}
 }
 
-func TestRouteSessionEventMaterializesProjectedWorkCards(t *testing.T) {
+func TestReducerFactsMaterializeWorkCards(t *testing.T) {
+	// Canonical contract: reducer-derived lifecycle Events materialize the
+	// same timeline cards the legacy raw projection used to.
 	t.Run("session.done", func(t *testing.T) {
-		assertRouteMaterializesKind(t, "session.done", classifier.StateDone, "agent_state_change", "", "Delegated turn completed")
+		assertReducerMaterializesKind(t, "session.done", watcher.EvidenceProvider, "done")
 	})
 	t.Run("session.failed", func(t *testing.T) {
-		assertRouteMaterializesKind(t, "session.failed", classifier.StateFailed, "agent_state_change", "", "Delegated provider process or pane is no longer live")
+		assertReducerMaterializesKind(t, "session.failed", watcher.EvidenceProvider, "failed")
 	})
 	t.Run("session.needs_input", func(t *testing.T) {
-		assertRouteMaterializesKind(t, "session.needs_input", classifier.StateBlocked, "agent_metadata_change", "user_input", "Needs a decision")
+		assertReducerMaterializesKind(t, "session.needs_input", watcher.EvidenceControl, "attention")
 	})
 	t.Run("session.stale", func(t *testing.T) {
 		store, err := NewStore(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
+		now := time.Date(2026, 8, 9, 18, 0, 0, 0, time.UTC)
+		store.now = func() time.Time { return now }
 		threadID := "brain_thread_stale_card"
 		if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 			t.Fatal(err)
@@ -299,6 +303,7 @@ func TestRouteSessionEventMaterializesProjectedWorkCards(t *testing.T) {
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		}}
 		service := NewService(store, fw, nil)
+		service.now = func() time.Time { return now }
 		item, err := store.CreateWork(Work{
 			Title:            "zen-telegram-performance-publish",
 			Objective:        "Prove stale materializes a card",
@@ -309,8 +314,30 @@ func TestRouteSessionEventMaterializesProjectedWorkCards(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		service.ReconcileDelegatedSessions(nil)
-		service.ReconcileDelegatedSessions(nil)
+		acceptedAt := now.Add(-2 * time.Hour)
+		if err := store.AdmitTurn(watcher.AdmittedTurn{
+			SessionID: sessionID, TurnID: sessionID + ":turn:1", AcceptedAt: acceptedAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// Expire the current turn's own lease, then reconcile with a live
+		// pane: exactly one actionable session.stale materializes a card.
+		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+			SessionID: sessionID, TurnID: sessionID + ":turn:1",
+			Class: watcher.EvidenceControl, Kind: "running",
+			SourceID: "control\x00heartbeat-1", LeaseSeconds: 1,
+			At: now.Add(-time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		service.ReconcileDelegatedSessions([]*classifier.Agent{{
+			ID: sessionID, State: classifier.StateRunning, Delegated: true,
+			PaneAlive: true, ProcessID: 4242,
+		}})
+		service.ReconcileDelegatedSessions([]*classifier.Agent{{
+			ID: sessionID, State: classifier.StateRunning, Delegated: true,
+			PaneAlive: true, ProcessID: 4242,
+		}})
 		events, err := store.ListWorkEvents(item.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -335,19 +362,14 @@ func TestRouteSessionEventMaterializesProjectedWorkCards(t *testing.T) {
 	})
 }
 
-func assertRouteMaterializesKind(
-	t *testing.T,
-	kind string,
-	state classifier.AgentState,
-	eventType string,
-	attention string,
-	summary string,
-) {
+func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.EvidenceClass, factKind string) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 9, 19, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	threadID := "brain_thread_route_card"
 	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 		t.Fatal(err)
@@ -365,26 +387,36 @@ func assertRouteMaterializesKind(
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &classifier.Agent{
-		ID:             sessionID,
-		Name:           "zen-telegram-performance-publish (" + sessionID + ")",
-		State:          state,
-		Summary:        summary,
-		Delegated:      true,
-		PaneAlive:      true,
-		NeedsAttention: attention != "",
-		Attention:      attention,
-	}
-	service := NewService(store, &fakeWatcher{}, nil)
-	if _, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     eventType,
-		AgentID:  sessionID,
-		Agent:    agent,
-		OldState: string(classifier.StateRunning),
-		NewState: string(state),
-		TurnID:   "turn-" + kind,
+	turnID := sessionID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	admission := providerAdmission("stream", "msg-1", 1, "sha", now)
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceReceipt, Kind: "admission",
+		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload",
+		Admission:  admission,
+		ActivityID: "activity-1",
+		At:         now.Add(time.Second),
+	}); err != nil || !changed {
+		t.Fatalf("admission apply = (%v, %v)", changed, err)
+	}
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:        class,
+		Kind:         factKind,
+		SourceID:     "fact\x00" + turnID + "\x00" + factKind,
+		Admission:    admission,
+		ActivityID:   "activity-1",
+		LeaseSeconds: 300,
+		StartedAt:    now.Add(2 * time.Second),
+		SettledAt:    now.Add(30 * time.Second),
+		Summary:      "Delegated " + factKind + " fact",
+	}); err != nil || !changed {
+		t.Fatalf("lifecycle fact apply = (%v, %v)", changed, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
@@ -566,7 +598,7 @@ func TestOrchestrationSchemaV3BindsCurrentThreadWithoutBulkCards(t *testing.T) {
 	service := NewService(store, nil, nil)
 	event, created, err := service.AppendWorkEvent(WorkEvent{
 		ID: "post-upgrade-card", WorkID: active.ID, Kind: "session.needs_input",
-		DedupeKey: "post-upgrade", Actionable: false, Summary: "first post-upgrade event",
+		DedupeKey: "session:upgrade:turn:one:session.needs_input", Actionable: false, Summary: "first post-upgrade event",
 	})
 	if err != nil || !created {
 		t.Fatalf("append = %#v created=%v err=%v", event, created, err)

@@ -14,6 +14,30 @@ import (
 // ledger owns turn lifecycle state.
 const delegatedTurnOption = "zen_delegated_turn"
 
+// ProviderProbeState distinguishes a successful read (possibly with no new
+// fact) from a provably unlocatable or unreadable transcript source. Only
+// loss states may drive the bounded provider-evidence session.uncertain;
+// "no new fact yet" is never a loss.
+type ProviderProbeState string
+
+const (
+	// ProbeStateOK means the probe read the provider source successfully;
+	// the observation may carry no new fact (healthy, no evidence yet).
+	ProbeStateOK ProviderProbeState = ""
+	// ProbeStateUnlocatable means the transcript source cannot be found
+	// (missing session file, missing rollout, absent session row).
+	ProbeStateUnlocatable ProviderProbeState = "unlocatable"
+	// ProbeStateUnreadable means the source exists but cannot be read or
+	// parsed (stat/open/sqlite/parse failure, WAL lag past the reader guard).
+	ProbeStateUnreadable ProviderProbeState = "unreadable"
+)
+
+// Loss reports whether the probe state is a bounded evidence loss (as opposed
+// to a successful read with no new fact).
+func (s ProviderProbeState) Loss() bool {
+	return s == ProbeStateUnlocatable || s == ProbeStateUnreadable
+}
+
 // ProviderActivityObservation is a provider-neutral view of daemon/work's
 // native Activity. Watcher consumes it through an injected probe so the work
 // package remains the single parser and lifecycle truth owner. It is
@@ -31,6 +55,9 @@ type ProviderActivityObservation struct {
 	InputSHA256     string
 	Structured      bool
 	FallbackAllowed bool
+	// ProbeState is the channel-health classification of this observation:
+	// OK (read succeeded, possibly no new fact) vs unlocatable/unreadable.
+	ProbeState ProviderProbeState
 }
 
 type ProviderActivityProbe interface {

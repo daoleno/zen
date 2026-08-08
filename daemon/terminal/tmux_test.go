@@ -7,7 +7,7 @@ import (
 )
 
 func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T) {
-	cmd := tmuxNewViewSessionCommand(context.Background(), "zen-view")
+	cmd := tmuxNewViewSessionCommand(context.Background(), "", "zen-view")
 
 	want := []string{
 		"tmux",
@@ -28,6 +28,7 @@ func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T)
 func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
 	cmd := tmuxLinkViewWindowCommand(
 		context.Background(),
+		"",
 		"source:@12",
 		"@99",
 	)
@@ -39,7 +40,7 @@ func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
 }
 
 func TestTmuxAttachCommandIsANormalSizingClient(t *testing.T) {
-	cmd := tmuxAttachCommand(context.Background(), "zen-demo")
+	cmd := tmuxAttachCommand(context.Background(), "", "zen-demo")
 
 	want := []string{
 		"tmux",

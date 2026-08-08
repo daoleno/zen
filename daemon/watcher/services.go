@@ -70,7 +70,7 @@ var ssPIDPattern = regexp.MustCompile(`pid=([0-9]+)`)
 
 // DiscoverSessionServices scans tmux-owned process trees for listening TCP ports.
 func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
-	panes, err := listServicePanes()
+	panes, err := w.listServicePanes()
 	if err != nil {
 		return SessionServiceSnapshot{}, err
 	}
@@ -199,18 +199,52 @@ type classifierAgentSnapshot struct {
 	command string
 }
 
-func listServicePanes() ([]servicePane, error) {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{pane_active}").CombinedOutput()
-	if err != nil {
-		output := strings.TrimSpace(string(out))
-		if strings.Contains(output, "no server running") {
-			return nil, nil
+// listServicePanes inventories panes on the daemon-namespaced server first,
+// then the user's default server, using the same deterministic shadowing as
+// the window inventory: a Zen-owned target shadows a same-named user target,
+// and a missing server is tolerated as empty. Any other tmux failure is
+// returned as a hard error while the readable server's inventory is still
+// delivered.
+func (w *Watcher) listServicePanes() ([]servicePane, error) {
+	w.mu.RLock()
+	daemon := w.daemonSocketPath
+	w.mu.RUnlock()
+	panes := []servicePane{}
+	var hardErr error
+	seen := make(map[string]bool)
+	for _, socket := range []string{daemon, ""} {
+		onSocket, err := listServicePanesOn(socket)
+		if err != nil {
+			if isNoTmuxServerError(err) {
+				continue
+			}
+			if hardErr == nil {
+				hardErr = err
+			}
+			continue
 		}
-		return nil, fmt.Errorf("tmux list-panes: %w", err)
+		for _, pane := range onSocket {
+			if seen[pane.target] {
+				continue
+			}
+			seen[pane.target] = true
+			panes = append(panes, pane)
+		}
 	}
+	return panes, hardErr
+}
 
+func listServicePanesOn(socket string) ([]servicePane, error) {
+	out, err := tmuxCommand(socket, "list-panes", "-a", "-F", "#{session_name}:#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{pane_active}").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("tmux list-panes: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return parseServicePanes(string(out)), nil
+}
+
+func parseServicePanes(output string) []servicePane {
 	var panes []servicePane
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -239,7 +273,7 @@ func listServicePanes() ([]servicePane, error) {
 		}
 		panes = append(panes, pane)
 	}
-	return panes, nil
+	return panes
 }
 
 func panesByProcess(processes map[int]processInfo, panes []servicePane) map[int]servicePane {

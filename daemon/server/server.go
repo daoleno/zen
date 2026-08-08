@@ -1073,8 +1073,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			targetID = raw.AgentID
 		}
 		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
-			Cols: raw.Cols,
-			Rows: raw.Rows,
+			Cols:   raw.Cols,
+			Rows:   raw.Rows,
+			Socket: s.watcher.SocketPathFor(targetID),
 		}, func(v any) {
 			s.sendJSON(conn, v)
 		})
@@ -2992,6 +2993,17 @@ func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
 		return
 	}
 	if ev.Type == "agent_removed" {
+		return
+	}
+	// Push notifications are an actionable lifecycle projection, not a raw
+	// classifier surface. Markerless delegated Sessions (empty TurnID) and
+	// stale event projections from a superseded turn must never notify done,
+	// failed, or blocked. The canonical Turn Ledger is the only owner.
+	if s.brain == nil || strings.TrimSpace(ev.TurnID) == "" {
+		return
+	}
+	current, found, err := s.brain.Turn(ev.AgentID)
+	if err != nil || !found || current.TurnID != strings.TrimSpace(ev.TurnID) {
 		return
 	}
 	if ev.Type != "agent_state_change" || ev.OldState == ev.NewState {

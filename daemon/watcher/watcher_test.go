@@ -270,7 +270,7 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
-	w.registerCreatedSession("main:@42", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "main:@42", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Codex follow-up",
 	}, startedAt)
@@ -306,7 +306,7 @@ func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
-	w.registerCreatedSession("main:@43", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "main:@43", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Brain",
 		Hidden:  true,
@@ -328,7 +328,7 @@ func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
-	w.registerCreatedSession("brain-agent-verify-123:@44", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "brain-agent-verify-123:@44", "/repo/zen", CreateSessionOptions{
 		Command:   "codex",
 		Name:      "Verify",
 		Delegated: true,
@@ -346,7 +346,7 @@ func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
 func TestRegisterCreatedSessionDoesNotInferDelegatedFromName(t *testing.T) {
 	w := New(time.Second)
 
-	w.registerCreatedSession("brain-agent-user-owned:@44", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "brain-agent-user-owned:@44", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "User owned",
 	}, time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC))
@@ -433,7 +433,7 @@ func TestAgentMetadataChangedDetectsProgressAttentionChange(t *testing.T) {
 func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, startedAt)
@@ -488,7 +488,7 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 
 func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
@@ -555,7 +555,7 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 
 func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))

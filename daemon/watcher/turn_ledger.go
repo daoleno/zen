@@ -24,13 +24,13 @@ import (
 type EvidenceClass string
 
 const (
-	EvidenceAbsent    EvidenceClass = "absent"
-	EvidenceLegacy    EvidenceClass = "legacy"
-	EvidencePane      EvidenceClass = "pane"
-	EvidenceControl   EvidenceClass = "control"
-	EvidenceReceipt   EvidenceClass = "receipt"
-	EvidenceLiveness  EvidenceClass = "liveness"
-	EvidenceProvider  EvidenceClass = "provider"
+	EvidenceAbsent   EvidenceClass = "absent"
+	EvidenceLegacy   EvidenceClass = "legacy"
+	EvidencePane     EvidenceClass = "pane"
+	EvidenceControl  EvidenceClass = "control"
+	EvidenceReceipt  EvidenceClass = "receipt"
+	EvidenceLiveness EvidenceClass = "liveness"
+	EvidenceProvider EvidenceClass = "provider"
 )
 
 // TurnStatus is the canonical per-turn lifecycle status. Done, Failed, and
@@ -111,7 +111,17 @@ type TurnSnapshot struct {
 	// ProcessIdentity is the recorded provider process identity at admission;
 	// it anchors deterministic liveness FactIDs (never observation time).
 	ProcessIdentity string
-	UpdatedAt       time.Time
+	// TranscriptBinding is the provider-native transcript identity recorded at
+	// admission (Pi owned session flag/path). It is restored on rediscovery so
+	// provider evidence survives daemon restart; the tmux option is only an
+	// advisory cache.
+	TranscriptBinding TranscriptBinding
+	// LeaseDeadline is the turn's own expected-next-check time: minted fresh
+	// at admission and extended only by this turn's Control lease facts. It is
+	// the sole basis for session.stale, so an old turn's expired lease can
+	// never make a newer turn stale.
+	LeaseDeadline time.Time
+	UpdatedAt     time.Time
 }
 
 // TurnFact is one provider-neutral observation applied to the canonical turn
@@ -145,10 +155,15 @@ type TurnFact struct {
 	At         time.Time
 	Summary    string
 	// Liveness proof fields (EvidenceLiveness only).
-	AbnormalExit   bool // authoritative abnormal exit (nonzero dead status / signal)
-	ProcessDead    bool // positive identity disappearance
+	AbnormalExit    bool // authoritative abnormal exit (nonzero dead status / signal)
+	ProcessDead     bool // positive identity disappearance
 	SessionReplaced bool
-	PaneAbsent     bool // transient absence; never terminal
+	PaneAbsent      bool // transient absence; never terminal
+
+	// LeaseSeconds is the caller-declared progress lease for Control facts:
+	// the reducer extends the turn's own per-turn liveness deadline by this
+	// many seconds from the fact time. Zero never extends the lease.
+	LeaseSeconds int
 }
 
 // TurnFactID is the frozen deterministic fact identity:
@@ -207,6 +222,26 @@ type AdmittedTurn struct {
 	ProcessIdentity string
 	PaneGeneration  string
 	PayloadSHA256   string
+	// TranscriptBinding is the provider-native transcript identity known at
+	// admission time (currently the Zen-owned Pi session flag/path from the
+	// launch command). It is persisted with the ledger so provider evidence
+	// survives daemon restart without tmux option state.
+	TranscriptBinding TranscriptBinding
+}
+
+// TranscriptBinding is the provider-native transcript identity recorded at
+// admission. The equivalent tmux window option (@zen_agent_pi_session) is
+// only an advisory cache for sessions without a ledger record.
+type TranscriptBinding struct {
+	Provider string `json:"provider,omitempty"`
+	PiFlag   string `json:"pi_flag,omitempty"`
+	PiPath   string `json:"pi_path,omitempty"`
+}
+
+// Empty reports whether no transcript binding is recorded.
+func (b TranscriptBinding) Empty() bool {
+	return strings.TrimSpace(b.Provider) == "" ||
+		(strings.TrimSpace(b.PiFlag) == "" && strings.TrimSpace(b.PiPath) == "")
 }
 
 // LegacyDelegatedTurnMarker is one pre-protocol tmux @zen_delegated_turn

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,11 +40,12 @@ type InputResult struct {
 // any provider mutation can begin, so a markerless accepted input is
 // unrepresentable (C.2 invariant 2).
 type delegatedTurnDraft struct {
-	ID              string
-	AcceptedAt      time.Time
-	ProcessIdentity string
-	PaneGeneration  string
-	Receipt         string
+	ID                string
+	AcceptedAt        time.Time
+	ProcessIdentity   string
+	PaneGeneration    string
+	Receipt           string
+	TranscriptBinding TranscriptBinding
 }
 
 // delegatedAdmissionEvidence is the provider-native admission tuple observed
@@ -131,20 +131,38 @@ type sessionInputPane struct {
 }
 
 type sessionInputIO interface {
-	pane(sessionID string) sessionInputPane
-	loadBuffer(buffer, payload string) error
-	deleteBuffer(buffer string)
-	runQueue(args []string) (started bool, err error)
-	receiptLedger(target string) (sessionInputReceiptLedger, error)
-	writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error
-	paneContent(target string) (string, error)
+	// socket resolves the target's own tmux server ("" = the user default
+	// server). Buffer and queue operations are server-local: the caller
+	// threads the target's resolved server so load/paste/cleanup never touch
+	// a different server's buffers or panes.
+	socket(sessionID string) string
+	pane(socket, sessionID string) sessionInputPane
+	loadBuffer(socket, buffer, payload string) error
+	deleteBuffer(socket, buffer string)
+	runQueue(socket string, args []string) (started bool, err error)
+	receiptLedger(socket, target string) (sessionInputReceiptLedger, error)
+	writeReceiptLedger(socket, target string, ledger sessionInputReceiptLedger) error
+	paneContent(socket, target string) (string, error)
 }
 
-type realSessionInputIO struct{}
+// realSessionInputIO executes tmux on the target's own server: Zen-owned
+// sessions live on the daemon-namespaced socket, user/manual sessions on the
+// user's default server. socketFor resolves the per-target server; nil keeps
+// the user default (test doubles).
+type realSessionInputIO struct {
+	socketFor func(sessionID string) string
+}
 
-func (realSessionInputIO) pane(sessionID string) sessionInputPane {
-	out, err := exec.Command(
-		"tmux",
+func (io realSessionInputIO) socket(sessionID string) string {
+	if io.socketFor != nil {
+		return io.socketFor(sessionID)
+	}
+	return ""
+}
+
+func (io realSessionInputIO) pane(socket, sessionID string) sessionInputPane {
+	out, err := tmuxCommand(
+		socket,
 		"display-message",
 		"-p",
 		"-t",
@@ -187,8 +205,8 @@ func sessionInputPaneGeneration(paneID string) string {
 	return fmt.Sprintf("%x", digest[:])
 }
 
-func (realSessionInputIO) loadBuffer(buffer, payload string) error {
-	command := exec.Command("tmux", "load-buffer", "-b", buffer, "-")
+func (realSessionInputIO) loadBuffer(socket, buffer, payload string) error {
+	command := tmuxCommand(socket, "load-buffer", "-b", buffer, "-")
 	command.Stdin = strings.NewReader(payload)
 	if out, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("load payload into tmux buffer: %w%s", err, commandOutputSuffix(out))
@@ -196,12 +214,12 @@ func (realSessionInputIO) loadBuffer(buffer, payload string) error {
 	return nil
 }
 
-func (realSessionInputIO) deleteBuffer(buffer string) {
-	_ = exec.Command("tmux", "delete-buffer", "-b", buffer).Run()
+func (realSessionInputIO) deleteBuffer(socket, buffer string) {
+	_ = tmuxCommand(socket, "delete-buffer", "-b", buffer).Run()
 }
 
-func (realSessionInputIO) runQueue(args []string) (bool, error) {
-	command := exec.Command("tmux", args...)
+func (realSessionInputIO) runQueue(socket string, args []string) (bool, error) {
+	command := tmuxCommand(socket, args...)
 	if err := command.Start(); err != nil {
 		return false, err
 	}
@@ -211,15 +229,15 @@ func (realSessionInputIO) runQueue(args []string) (bool, error) {
 	return true, nil
 }
 
-func (realSessionInputIO) receiptLedger(target string) (sessionInputReceiptLedger, error) {
-	value, err := tmuxWindowUserOption(target, sessionInputReceiptOption)
+func (io realSessionInputIO) receiptLedger(socket, target string) (sessionInputReceiptLedger, error) {
+	value, err := tmuxWindowUserOption(socket, target, sessionInputReceiptOption)
 	if err != nil {
 		return sessionInputReceiptLedger{}, err
 	}
 	return decodeSessionInputReceiptLedger(value)
 }
 
-func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error {
+func (io realSessionInputIO) writeReceiptLedger(socket, target string, ledger sessionInputReceiptLedger) error {
 	if err := validateSessionInputReceiptLedger(ledger); err != nil {
 		return err
 	}
@@ -227,8 +245,8 @@ func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputR
 	if err != nil {
 		return fmt.Errorf("encode Session input receipt ledger: %w", err)
 	}
-	out, err := exec.Command(
-		"tmux",
+	out, err := tmuxCommand(
+		socket,
 		"set-option",
 		"-w",
 		"-t",
@@ -242,8 +260,8 @@ func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputR
 	return nil
 }
 
-func (realSessionInputIO) paneContent(target string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-200").Output()
+func (io realSessionInputIO) paneContent(socket, target string) (string, error) {
+	out, err := tmuxCommand(socket, "capture-pane", "-t", target, "-p", "-S", "-200").Output()
 	if err != nil {
 		return "", fmt.Errorf("capture post-dispatch pane baseline: %w", err)
 	}
@@ -342,6 +360,7 @@ func (owner *sessionInputOwner) receiptOutcome(
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
 	found := false
 	err := owner.serialized(sessionID, func() error {
+		socket := owner.ioSocket(sessionID)
 		if result.Receipt == "" || len(result.Receipt) > sessionInputReceiptMaxBytes ||
 			!utf8.ValidString(result.Receipt) {
 			return fmt.Errorf("input receipt is invalid or exceeds %d bytes", sessionInputReceiptMaxBytes)
@@ -349,18 +368,18 @@ func (owner *sessionInputOwner) receiptOutcome(
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return err
 		}
-		baseline := owner.io.pane(sessionID)
+		baseline := owner.io.pane(socket, sessionID)
 		if err := validateSessionInputPane(baseline); err != nil {
 			return err
 		}
-		ledger, err := owner.io.receiptLedger(baseline.paneID)
+		ledger, err := owner.io.receiptLedger(socket, baseline.paneID)
 		if err != nil {
 			return fmt.Errorf("read durable input receipt ledger: %w", err)
 		}
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return err
 		}
-		current := owner.io.pane(sessionID)
+		current := owner.io.pane(socket, sessionID)
 		if err := validateSameSessionInputPane(baseline, current); err != nil {
 			return err
 		}
@@ -400,6 +419,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
 	requiresConfirmation := turn != nil
 	err := owner.serialized(sessionID, func() error {
+		socket := owner.ioSocket(sessionID)
 		if !utf8.ValidString(payload) {
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("input must be valid UTF-8"))
 		}
@@ -410,7 +430,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
-		baseline := owner.io.pane(sessionID)
+		baseline := owner.io.pane(socket, sessionID)
 		if err := validateSessionInputPane(baseline); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
@@ -420,7 +440,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("input receipt is invalid or exceeds %d bytes", sessionInputReceiptMaxBytes))
 			}
 			var ledgerErr error
-			ledger, ledgerErr = owner.io.receiptLedger(baseline.paneID)
+			ledger, ledgerErr = owner.io.receiptLedger(socket, baseline.paneID)
 			if ledgerErr != nil {
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read durable input receipt ledger: %w", ledgerErr))
 			}
@@ -464,15 +484,15 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 		}
 		buffer := fmt.Sprintf("zen-session-input-%d-%d", os.Getpid(), sessionInputBufferSequence.Add(1))
-		if err := owner.io.loadBuffer(buffer, payload); err != nil {
+		if err := owner.io.loadBuffer(socket, buffer, payload); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
-		defer owner.io.deleteBuffer(buffer)
+		defer owner.io.deleteBuffer(socket, buffer)
 
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
-		current := owner.io.pane(sessionID)
+		current := owner.io.pane(socket, sessionID)
 		if err := validateSameSessionInputPane(baseline, current); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
@@ -504,6 +524,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return definitelyNotSubmitted(result.Receipt, markErr)
 			}
 			if markErr := owner.persistReceiptLedger(
+				socket,
 				current.paneID,
 				markedLedger,
 				result.Receipt,
@@ -511,6 +532,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				InputAmbiguous,
 			); markErr != nil {
 				return owner.rollbackReceiptMarker(
+					socket,
 					current.paneID,
 					originalLedger,
 					result.Receipt,
@@ -518,11 +540,11 @@ func (owner *sessionInputOwner) submitWithTurn(
 				)
 			}
 			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
-				return owner.rollbackReceiptMarker(current.paneID, originalLedger, result.Receipt, err)
+				return owner.rollbackReceiptMarker(socket, current.paneID, originalLedger, result.Receipt, err)
 			}
-			afterMarker := owner.io.pane(current.paneID)
+			afterMarker := owner.io.pane(socket, current.paneID)
 			if err := validateSameSessionInputPane(current, afterMarker); err != nil {
-				return owner.rollbackReceiptMarker(current.paneID, originalLedger, result.Receipt, err)
+				return owner.rollbackReceiptMarker(socket, current.paneID, originalLedger, result.Receipt, err)
 			}
 		}
 		if turn != nil {
@@ -531,6 +553,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			if owner.ledger == nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
+						socket,
 						current.paneID,
 						originalLedger,
 						result.Receipt,
@@ -540,17 +563,19 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn ledger is unavailable"))
 			}
 			admitErr := owner.ledger.(TurnLedgerAdmitter).AdmitTurn(AdmittedTurn{
-				SessionID:       sessionID,
-				TurnID:          turn.ID,
-				Receipt:         firstNonEmptyString(turn.Receipt, result.Receipt),
-				AcceptedAt:      turn.AcceptedAt,
-				ProcessIdentity: turn.ProcessIdentity,
-				PaneGeneration:  firstNonEmptyString(turn.PaneGeneration, current.generation),
-				PayloadSHA256:   payloadDigest,
+				SessionID:         sessionID,
+				TurnID:            turn.ID,
+				Receipt:           firstNonEmptyString(turn.Receipt, result.Receipt),
+				AcceptedAt:        turn.AcceptedAt,
+				ProcessIdentity:   turn.ProcessIdentity,
+				PaneGeneration:    firstNonEmptyString(turn.PaneGeneration, current.generation),
+				PayloadSHA256:     payloadDigest,
+				TranscriptBinding: turn.TranscriptBinding,
 			})
 			if admitErr != nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
+						socket,
 						current.paneID,
 						originalLedger,
 						result.Receipt,
@@ -567,6 +592,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			if confirm.baseline == nil || confirm.confirm == nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
+						socket,
 						current.paneID,
 						originalLedger,
 						result.Receipt,
@@ -583,6 +609,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			if baselineErr != nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
+						socket,
 						current.paneID,
 						originalLedger,
 						result.Receipt,
@@ -596,7 +623,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 		}
 		mutationBoundary := time.Now().UTC()
-		started, queueErr := owner.io.runQueue(sessionInputSubmitQueue(
+		started, queueErr := owner.io.runQueue(socket, sessionInputSubmitQueue(
 			current.paneID,
 			buffer,
 			adapter,
@@ -608,6 +635,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 			if result.Receipt != "" {
 				return owner.rollbackReceiptMarker(
+					socket,
 					current.paneID,
 					originalLedger,
 					result.Receipt,
@@ -647,6 +675,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return ambiguousSubmission(result.Receipt, acceptErr)
 			}
 			if acceptErr := owner.persistReceiptLedger(
+				socket,
 				current.paneID,
 				acceptedLedger,
 				result.Receipt,
@@ -671,11 +700,11 @@ func (owner *sessionInputOwner) submitWithTurn(
 				receipt = turn.ID
 			}
 			_, _, applyErr := owner.ledger.ApplyTurnFact(TurnFact{
-				SessionID:  sessionID,
-				TurnID:     turn.ID,
-				Class:      EvidenceReceipt,
-				Kind:       "admission",
-				SourceID:   "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
+				SessionID: sessionID,
+				TurnID:    turn.ID,
+				Class:     EvidenceReceipt,
+				Kind:      "admission",
+				SourceID:  "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
 				Admission: TurnAdmission{
 					Stream: strings.TrimSpace(admission.Stream),
 					ID:     strings.TrimSpace(admission.ID),
@@ -702,6 +731,15 @@ func (owner *sessionInputOwner) submitWithTurn(
 		result.Outcome = InputOutcomeFromError(err)
 	}
 	return result, err
+}
+
+// ioSocket resolves the target's tmux server for the Session input IO
+// through the owner's IO implementation.
+func (owner *sessionInputOwner) ioSocket(sessionID string) string {
+	if owner == nil || owner.io == nil {
+		return ""
+	}
+	return owner.io.socket(sessionID)
 }
 
 // ledgerTurn reads the current canonical turn for the session through the
@@ -832,13 +870,13 @@ func (ledger sessionInputReceiptLedger) withOutcome(
 }
 
 func (owner *sessionInputOwner) writeAndConfirmReceiptLedger(
-	target string,
+	socket, target string,
 	ledger sessionInputReceiptLedger,
 ) error {
-	if err := owner.io.writeReceiptLedger(target, ledger); err != nil {
+	if err := owner.io.writeReceiptLedger(socket, target, ledger); err != nil {
 		return err
 	}
-	confirmed, err := owner.io.receiptLedger(target)
+	confirmed, err := owner.io.receiptLedger(socket, target)
 	if err != nil {
 		return fmt.Errorf("read back Session input receipt ledger: %w", err)
 	}
@@ -849,13 +887,13 @@ func (owner *sessionInputOwner) writeAndConfirmReceiptLedger(
 }
 
 func (owner *sessionInputOwner) persistReceiptLedger(
-	target string,
+	socket, target string,
 	ledger sessionInputReceiptLedger,
 	receipt string,
 	payloadHash string,
 	outcome InputOutcome,
 ) error {
-	if err := owner.writeAndConfirmReceiptLedger(target, ledger); err != nil {
+	if err := owner.writeAndConfirmReceiptLedger(socket, target, ledger); err != nil {
 		return err
 	}
 	entry, found := ledger.entry(receipt)
@@ -866,12 +904,12 @@ func (owner *sessionInputOwner) persistReceiptLedger(
 }
 
 func (owner *sessionInputOwner) rollbackReceiptMarker(
-	target string,
+	socket, target string,
 	original sessionInputReceiptLedger,
 	receipt string,
 	cause error,
 ) error {
-	if err := owner.writeAndConfirmReceiptLedger(target, original); err != nil {
+	if err := owner.writeAndConfirmReceiptLedger(socket, target, original); err != nil {
 		return definitelyNotSubmitted(
 			receipt,
 			fmt.Errorf("%v; durable ambiguity rollback could not be confirmed: %w", cause, err),

@@ -14,8 +14,10 @@ import (
 )
 
 type fakeSessionInputIO struct {
-	mu        sync.Mutex
-	paneValue sessionInputPane
+	mu           sync.Mutex
+	sockets      []string
+	queueSockets []string
+	paneValue    sessionInputPane
 	// paneIDView models App Terminal link-window resolution: when set,
 	// pane("%pane_id") returns this value while pane(sessionID) keeps
 	// paneValue. Both must share pane_id/generation; session fields may differ.
@@ -104,7 +106,13 @@ func newFakeSessionInputIO() *fakeSessionInputIO {
 	}
 }
 
-func (io *fakeSessionInputIO) pane(target string) sessionInputPane {
+func (io *fakeSessionInputIO) socket(sessionID string) string {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	return ""
+}
+
+func (io *fakeSessionInputIO) pane(socket, target string) sessionInputPane {
 	io.mu.Lock()
 	defer io.mu.Unlock()
 	io.paneCalls = append(io.paneCalls, target)
@@ -117,7 +125,10 @@ func (io *fakeSessionInputIO) pane(target string) sessionInputPane {
 	return io.paneValue
 }
 
-func (io *fakeSessionInputIO) loadBuffer(buffer, payload string) error {
+func (io *fakeSessionInputIO) loadBuffer(socket, buffer, payload string) error {
+	io.mu.Lock()
+	io.sockets = append(io.sockets, socket)
+	io.mu.Unlock()
 	io.mu.Lock()
 	io.buffers[buffer] = payload
 	io.loadedPayloads = append(io.loadedPayloads, payload)
@@ -129,13 +140,16 @@ func (io *fakeSessionInputIO) loadBuffer(buffer, payload string) error {
 	return nil
 }
 
-func (io *fakeSessionInputIO) deleteBuffer(buffer string) {
+func (io *fakeSessionInputIO) deleteBuffer(socket, buffer string) {
 	io.mu.Lock()
 	delete(io.buffers, buffer)
 	io.mu.Unlock()
 }
 
-func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
+func (io *fakeSessionInputIO) runQueue(socket string, args []string) (bool, error) {
+	io.mu.Lock()
+	io.queueSockets = append(io.queueSockets, socket)
+	io.mu.Unlock()
 	io.mu.Lock()
 	io.activeQueues++
 	if io.activeQueues > io.maxQueues {
@@ -161,7 +175,7 @@ func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
 	return started, err
 }
 
-func (io *fakeSessionInputIO) receiptLedger(string) (sessionInputReceiptLedger, error) {
+func (io *fakeSessionInputIO) receiptLedger(socket, target string) (sessionInputReceiptLedger, error) {
 	io.mu.Lock()
 	defer io.mu.Unlock()
 	io.ledgerReads++
@@ -171,7 +185,7 @@ func (io *fakeSessionInputIO) receiptLedger(string) (sessionInputReceiptLedger, 
 	return cloneSessionInputReceiptLedger(io.ledger), nil
 }
 
-func (io *fakeSessionInputIO) writeReceiptLedger(_ string, ledger sessionInputReceiptLedger) error {
+func (io *fakeSessionInputIO) writeReceiptLedger(socket, _ string, ledger sessionInputReceiptLedger) error {
 	io.mu.Lock()
 	call := len(io.ledgerWrites) + 1
 	io.ledgerWrites = append(io.ledgerWrites, cloneSessionInputReceiptLedger(ledger))
@@ -190,7 +204,7 @@ func (io *fakeSessionInputIO) writeReceiptLedger(_ string, ledger sessionInputRe
 	return nil
 }
 
-func (io *fakeSessionInputIO) paneContent(string) (string, error) {
+func (io *fakeSessionInputIO) paneContent(socket, target string) (string, error) {
 	io.mu.Lock()
 	defer io.mu.Unlock()
 	return io.paneContentValue, nil

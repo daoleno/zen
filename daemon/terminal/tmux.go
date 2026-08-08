@@ -20,6 +20,26 @@ import (
 var sessionCounter atomic.Int64
 var terminalIDCounter atomic.Int64
 
+// tmuxCommand builds a tmux invocation bound to the given server socket; an
+// empty socketPath means the user's default server (manual Terminal
+// Sessions). Zen-owned Brain/delegated Sessions live on the daemon-namespaced
+// server, so their linked view sessions are created there too.
+func tmuxCommand(socketPath string, args ...string) *exec.Cmd {
+	return exec.Command("tmux", append(tmuxSocketArgs(socketPath), args...)...)
+}
+
+func tmuxCommandContext(ctx context.Context, socketPath string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "tmux", append(tmuxSocketArgs(socketPath), args...)...)
+}
+
+func tmuxSocketArgs(socketPath string) []string {
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		return nil
+	}
+	return []string{"-S", socketPath}
+}
+
 // TmuxBackend attaches a dedicated tmux client to an existing tmux session
 // and streams the client's PTY output directly to the mobile terminal.
 type TmuxBackend struct{}
@@ -38,14 +58,20 @@ func (b *TmuxBackend) Open(targetID string, opts OpenOptions) (Session, error) {
 	return &tmuxSession{
 		id:       fmt.Sprintf("%s#%d", targetID, id),
 		targetID: targetID,
+		socket:   strings.TrimSpace(opts.Socket),
 		size:     size,
 		events:   make(chan Event, 128),
 	}, nil
 }
 
 type tmuxSession struct {
-	id            string
-	targetID      string
+	id       string
+	targetID string
+	// socket is the tmux server for the target: the daemon-namespaced server
+	// for Zen-owned Brain/delegated Sessions, or "" (the user's default
+	// server) for manual Terminal Sessions. The linked view session lives on
+	// the same server so link-window stays server-local.
+	socket        string
 	linkedSession string // disposable linked view session, cleaned up on close
 	size          Size   // exact phone/Ghostty/client PTY grid
 
@@ -101,7 +127,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	s.cancel = cancel
 	s.runContext = runCtx
 
-	linkedName, cmd, err := tmuxLinkedViewSession(runCtx, s.targetID)
+	linkedName, cmd, err := tmuxLinkedViewSession(runCtx, s.socket, s.targetID)
 	if err != nil {
 		s.mu.Unlock()
 		cancel()
@@ -115,7 +141,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 		Rows: uint16(s.size.Rows),
 	})
 	if err != nil {
-		killTmuxSessionBounded(s.linkedSession)
+		killTmuxSessionBounded(s.socket, s.linkedSession)
 		s.linkedSession = ""
 		s.mu.Unlock()
 		cancel()
@@ -433,7 +459,7 @@ func (s *tmuxSession) runTmuxLocked(args ...string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return exec.CommandContext(ctx, "tmux", args...).Run()
+	return tmuxCommandContext(ctx, s.socket, args...).Run()
 }
 
 func (s *tmuxSession) readTmuxLocked(args ...string) ([]byte, error) {
@@ -444,7 +470,7 @@ func (s *tmuxSession) readTmuxLocked(args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return exec.CommandContext(ctx, "tmux", args...).Output()
+	return tmuxCommandContext(ctx, s.socket, args...).Output()
 }
 
 func (s *tmuxSession) scheduleScrollReconcile() {
@@ -519,8 +545,8 @@ func (s *tmuxSession) FocusPane(col, row int) error {
 	target := s.interactiveTargetLocked()
 	s.mu.Unlock()
 
-	out, err := exec.Command(
-		"tmux",
+	out, err := tmuxCommand(
+		s.socket,
 		"list-panes",
 		"-t",
 		target,
@@ -551,7 +577,7 @@ func (s *tmuxSession) FocusPane(col, row int) error {
 			continue
 		}
 
-		if err := exec.Command("tmux", "select-pane", "-t", paneID).Run(); err != nil {
+		if err := tmuxCommand(s.socket, "select-pane", "-t", paneID).Run(); err != nil {
 			return fmt.Errorf("select tmux pane: %w", err)
 		}
 		return nil
@@ -599,7 +625,7 @@ func (s *tmuxSession) Close() error {
 	}
 	// Kill the disposable view session so it doesn't linger.
 	if s.linkedSession != "" {
-		killTmuxSessionBounded(s.linkedSession)
+		killTmuxSessionBounded(s.socket, s.linkedSession)
 	}
 	return nil
 }
@@ -630,7 +656,7 @@ func (s *tmuxSession) interactiveTargetLocked() string {
 // session can otherwise seed those new shared windows with its own geometry.
 func tmuxLinkedViewSession(
 	ctx context.Context,
-	targetID string,
+	socket, targetID string,
 ) (string, *exec.Cmd, error) {
 	sourceTarget, err := tmuxSourceWindowTarget(targetID)
 	if err != nil {
@@ -641,15 +667,16 @@ func tmuxLinkedViewSession(
 	id := sessionCounter.Add(1)
 	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
 
-	// Bootstrap an independent session, then atomically replace its private
-	// window with a link to the source window. The bootstrap geometry is never
+	// Bootstrap an independent session on the target's own server, then
+	// atomically replace its private window with a link to the source window
+	// (link-window requires one server). The bootstrap geometry is never
 	// shared with the source.
-	bootstrapOut, err := tmuxNewViewSessionCommand(ctx, linkedName).Output()
+	bootstrapOut, err := tmuxNewViewSessionCommand(ctx, socket, linkedName).Output()
 	if err != nil {
 		return "", nil, fmt.Errorf("create tmux view session: %w", err)
 	}
 	cleanup := func() {
-		killTmuxSessionBounded(linkedName)
+		killTmuxSessionBounded(socket, linkedName)
 	}
 	bootstrapTarget := strings.TrimSpace(string(bootstrapOut))
 	if bootstrapTarget == "" {
@@ -658,6 +685,7 @@ func tmuxLinkedViewSession(
 	}
 	if err := tmuxLinkViewWindowCommand(
 		ctx,
+		socket,
 		sourceTarget,
 		bootstrapTarget,
 	).Run(); err != nil {
@@ -665,10 +693,10 @@ func tmuxLinkedViewSession(
 		return "", nil, fmt.Errorf("link source tmux window %s into view: %w", sourceTarget, err)
 	}
 
-	return linkedName, tmuxAttachCommand(ctx, linkedName), nil
+	return linkedName, tmuxAttachCommand(ctx, socket, linkedName), nil
 }
 
-func killTmuxSessionBounded(sessionName string) {
+func killTmuxSessionBounded(socket, sessionName string) {
 	if strings.TrimSpace(sessionName) == "" {
 		return
 	}
@@ -677,9 +705,9 @@ func killTmuxSessionBounded(sessionName string) {
 		tmuxCleanupTimeout,
 	)
 	defer cancel()
-	_ = exec.CommandContext(
+	_ = tmuxCommandContext(
 		ctx,
-		"tmux",
+		socket,
 		"kill-session",
 		"-t",
 		sessionName,
@@ -688,11 +716,11 @@ func killTmuxSessionBounded(sessionName string) {
 
 func tmuxNewViewSessionCommand(
 	ctx context.Context,
-	sessionName string,
+	socket, sessionName string,
 ) *exec.Cmd {
-	return exec.CommandContext(
+	return tmuxCommandContext(
 		ctx,
-		"tmux",
+		socket,
 		"new-session",
 		"-d",
 		"-P",
@@ -706,12 +734,12 @@ func tmuxNewViewSessionCommand(
 
 func tmuxLinkViewWindowCommand(
 	ctx context.Context,
-	sourceTarget string,
+	socket, sourceTarget string,
 	bootstrapTarget string,
 ) *exec.Cmd {
-	return exec.CommandContext(
+	return tmuxCommandContext(
 		ctx,
-		"tmux",
+		socket,
 		"link-window",
 		"-k",
 		"-s",
@@ -759,11 +787,11 @@ func tmuxWindowRef(targetID string) string {
 
 func tmuxAttachCommand(
 	ctx context.Context,
-	sessionName string,
+	socket, sessionName string,
 ) *exec.Cmd {
-	return exec.CommandContext(
+	return tmuxCommandContext(
 		ctx,
-		"tmux",
+		socket,
 		"-T",
 		"RGB,256",
 		"attach-session",

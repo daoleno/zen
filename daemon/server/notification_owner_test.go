@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -71,12 +72,50 @@ func (p *recordingNotificationPusher) snapshot() []recordedPush {
 	return append([]recordedPush(nil), p.calls...)
 }
 
+// ledgerNotificationServer builds a Server whose Brain ledger owns one
+// current turn for agentID, so the lifecycle-push gate admits exactly that
+// turn's projections. Returns the server and the current TurnID.
+func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
+	t.Helper()
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWork(brain.Work{
+		Title:            "Push gate test",
+		Objective:        "Exercise the canonical lifecycle-push gate.",
+		Status:           brain.WorkRunning,
+		OwnerSessionID:   agentID,
+		CompletionPolicy: brain.CompletionBounded,
+		NextAction:       "Wait for the delegated Session.",
+		WaitFor:          "Session " + agentID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turnID := agentID + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID:  agentID,
+		TurnID:     turnID,
+		AcceptedAt: time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		brain:  brain.NewService(store, nil, nil),
+		active: map[*websocket.Conn]string{},
+	}
+	return srv, turnID
+}
+
 func TestOrdinaryDelegatedTransitionsEachAttemptOnePush(t *testing.T) {
 	for _, state := range []string{"blocked", "failed", "done"} {
 		t.Run(state, func(t *testing.T) {
 			pusher := &recordingNotificationPusher{}
-			srv := &Server{pusher: pusher, active: map[*websocket.Conn]string{}}
-			srv.maybeNotifyForSessionEvent(notificationTransition("agent-1", "running", state))
+			srv, turnID := ledgerNotificationServer(t, "agent-1")
+			srv.pusher = pusher
+			event := notificationTransition("agent-1", "running", state)
+			event.TurnID = turnID
+			srv.maybeNotifyForSessionEvent(event)
 			calls := pusher.snapshot()
 			if len(calls) != 1 || calls[0].kind != state || calls[0].agentID != "agent-1" {
 				t.Fatalf("calls = %#v", calls)
@@ -88,18 +127,19 @@ func TestOrdinaryDelegatedTransitionsEachAttemptOnePush(t *testing.T) {
 func TestNotificationSuppressionUsesExactAgentViewer(t *testing.T) {
 	viewer := &websocket.Conn{}
 	pusher := &recordingNotificationPusher{}
-	srv := &Server{
-		pusher: pusher,
-		active: map[*websocket.Conn]string{viewer: "agent-target"},
-	}
+	srv, turnID := ledgerNotificationServer(t, "agent-target")
+	srv.pusher = pusher
+	srv.active[viewer] = "agent-target"
 
-	srv.maybeNotifyForSessionEvent(notificationTransition("agent-target", "running", "blocked"))
+	event := notificationTransition("agent-target", "running", "blocked")
+	event.TurnID = turnID
+	srv.maybeNotifyForSessionEvent(event)
 	if calls := pusher.snapshot(); len(calls) != 0 {
 		t.Fatalf("exact viewer did not suppress target: %#v", calls)
 	}
 
 	srv.active[viewer] = "agent-other"
-	srv.maybeNotifyForSessionEvent(notificationTransition("agent-target", "running", "blocked"))
+	srv.maybeNotifyForSessionEvent(event)
 	if calls := pusher.snapshot(); len(calls) != 1 || calls[0].agentID != "agent-target" {
 		t.Fatalf("other viewer suppressed target: %#v", calls)
 	}
@@ -107,13 +147,51 @@ func TestNotificationSuppressionUsesExactAgentViewer(t *testing.T) {
 
 func TestRepeatedRealBlockedTransitionsEachAttemptPush(t *testing.T) {
 	pusher := &recordingNotificationPusher{}
-	srv := &Server{pusher: pusher, active: map[*websocket.Conn]string{}}
+	srv, turnID := ledgerNotificationServer(t, "agent-1")
+	srv.pusher = pusher
 
-	srv.maybeNotifyForSessionEvent(notificationTransition("agent-1", "running", "blocked"))
-	srv.maybeNotifyForSessionEvent(notificationTransition("agent-1", "blocked", "running"))
-	srv.maybeNotifyForSessionEvent(notificationTransition("agent-1", "running", "blocked"))
+	blocked := notificationTransition("agent-1", "running", "blocked")
+	blocked.TurnID = turnID
+	running := notificationTransition("agent-1", "blocked", "running")
+	running.TurnID = turnID
+	srv.maybeNotifyForSessionEvent(blocked)
+	srv.maybeNotifyForSessionEvent(running)
+	srv.maybeNotifyForSessionEvent(blocked)
 	if calls := pusher.snapshot(); len(calls) != 2 || calls[0].kind != "blocked" || calls[1].kind != "blocked" {
 		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+// TestMarkerlessAndSupersededSessionEventsNeverPush covers the canonical
+// lifecycle-push gate: raw classifier states (empty TurnID), projections from
+// a superseded turn, and daemons without a Brain ledger never push done,
+// failed, or blocked; only the current ledger turn's projection does.
+func TestMarkerlessAndSupersededSessionEventsNeverPush(t *testing.T) {
+	pusher := &recordingNotificationPusher{}
+	srv, turnID := ledgerNotificationServer(t, "agent-1")
+	srv.pusher = pusher
+
+	// Markerless raw classifier event: never pushes.
+	srv.maybeNotifyForSessionEvent(notificationTransition("agent-1", "running", "blocked"))
+	// Projection from a superseded turn: never pushes.
+	stale := notificationTransition("agent-1", "running", "done")
+	stale.TurnID = "agent-1:turn:0"
+	srv.maybeNotifyForSessionEvent(stale)
+	// Daemon without a Brain ledger: never pushes, even turn-marked events.
+	brainless := &Server{pusher: &recordingNotificationPusher{}, active: map[*websocket.Conn]string{}}
+	marked := notificationTransition("agent-1", "running", "failed")
+	marked.TurnID = turnID
+	brainless.maybeNotifyForSessionEvent(marked)
+	if calls := pusher.snapshot(); len(calls) != 0 {
+		t.Fatalf("markerless/superseded/brainless events pushed: %#v", calls)
+	}
+
+	// The current ledger turn's projection pushes exactly once.
+	current := notificationTransition("agent-1", "running", "blocked")
+	current.TurnID = turnID
+	srv.maybeNotifyForSessionEvent(current)
+	if calls := pusher.snapshot(); len(calls) != 1 || calls[0].kind != "blocked" {
+		t.Fatalf("current-turn push = %#v", calls)
 	}
 }
 
