@@ -3,6 +3,7 @@ package work
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,91 @@ import (
 
 	"github.com/daoleno/zen/daemon/classifier"
 )
+
+type failAfterReader struct {
+	reader    io.Reader
+	remaining int
+}
+
+func (r *failAfterReader) Read(buffer []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, fmt.Errorf("reader crossed explicit metadata budget")
+	}
+	if len(buffer) > r.remaining {
+		buffer = buffer[:r.remaining]
+	}
+	n, err := r.reader.Read(buffer)
+	r.remaining -= n
+	return n, err
+}
+
+func TestReadCodexMetaUsesOnlyBoundedFirstRecord(t *testing.T) {
+	t.Run("common session_meta first", func(t *testing.T) {
+		line := `{"type":"session_meta","payload":{"id":"bounded-session","cwd":"/repo/zen"}}` + "\n"
+		source := &failAfterReader{reader: strings.NewReader(line + strings.Repeat("body", 1024)), remaining: len(line)}
+		meta, err := readCodexMetaFromReader(source)
+		if err != nil || meta.ID != "bounded-session" || meta.CWD != "/repo/zen" {
+			t.Fatalf("bounded first-record meta = (%+v, %v)", meta, err)
+		}
+	})
+
+	t.Run("non-meta first fails without scanning transcript", func(t *testing.T) {
+		body := `{"type":"event_msg","payload":{"type":"message"}}` + "\n"
+		lateMeta := `{"type":"session_meta","payload":{"id":"must-not-bind"}}` + "\n"
+		_, err := readCodexMetaFromReader(strings.NewReader(body + lateMeta))
+		if err == nil {
+			t.Fatal("late session_meta was scanned across transcript bodies")
+		}
+	})
+
+	t.Run("oversized first record fails at explicit limit", func(t *testing.T) {
+		oversized := `{"type":"session_meta","payload":{"id":"` + strings.Repeat("x", 2<<20) + `"}}`
+		_, err := readCodexMetaFromReader(strings.NewReader(oversized))
+		if err == nil || !strings.Contains(err.Error(), "limit") {
+			t.Fatalf("oversized metadata error = %v, want explicit limit", err)
+		}
+	})
+
+	t.Run("record budget rejects delayed metadata", func(t *testing.T) {
+		delayed := strings.Repeat("\n", maxCodexMetaRecords) +
+			`{"type":"session_meta","payload":{"id":"too-late"}}` + "\n"
+		_, err := readCodexMetaFromReader(strings.NewReader(delayed))
+		if err == nil || !strings.Contains(err.Error(), "records") {
+			t.Fatalf("record-budget error = %v", err)
+		}
+	})
+}
+
+func TestParseCodexConversationOversizedLegacyHeaderFallsBackToPathIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-oversized.jsonl")
+	nativeTurnID := "native-terminal-only"
+	writeJSONL(t, path,
+		map[string]any{
+			"type": "response_item",
+			"payload": map[string]any{
+				"type": "message",
+				"body": strings.Repeat("x", maxCodexConversationRead+1024),
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-09T04:28:00Z",
+			"payload": map[string]any{
+				"type":    "task_complete",
+				"turn_id": nativeTurnID,
+			},
+		},
+	)
+	conversation, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Base(path) + ":activity:" + nativeTurnID
+	if conversation.Activity == nil || conversation.Activity.ID != want ||
+		conversation.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("legacy fallback Activity = %#v, want completed %q", conversation.Activity, want)
+	}
+}
 
 func TestProviderConversationReaderSelectsOnlyExplicitKnownProvider(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
@@ -1908,6 +1994,31 @@ func TestProviderConversationReaderCodexTailRetainsActivityIdentityAcrossIncreme
 	}
 	if !foundFirstTerminal {
 		t.Fatalf("provider terminal history does not retain exact prior ActivityID: %#v", advanced.ProviderActivities)
+	}
+}
+
+func TestCodexProviderTerminalHistoryHasDeterministicFailClosedBound(t *testing.T) {
+	builder := newCodexConversationBuilder("bounded-rollout.jsonl")
+	builder.sessionID = "bounded-session"
+	for index := 0; index < maxCodexProviderActivities+1; index++ {
+		nativeID := fmt.Sprintf("native-%02d", index)
+		builder.startActivity(nativeID, "2026-08-09T04:00:00Z", index*2+1)
+		builder.settleActivity(nativeID, ProviderActivityCompleted, "2026-08-09T04:00:01Z", index*2+2)
+	}
+	activities := builder.conversation().ProviderActivities
+	if len(activities) != maxCodexProviderActivities {
+		t.Fatalf("terminal history len = %d, want %d", len(activities), maxCodexProviderActivities)
+	}
+	dropped := "bounded-session:activity:native-00"
+	retained := "bounded-session:activity:native-01"
+	foundDropped := false
+	foundRetained := false
+	for _, activity := range activities {
+		foundDropped = foundDropped || activity.ID == dropped
+		foundRetained = foundRetained || activity.ID == retained
+	}
+	if foundDropped || !foundRetained {
+		t.Fatalf("terminal history bound = dropped:%v retained:%v", foundDropped, foundRetained)
 	}
 }
 

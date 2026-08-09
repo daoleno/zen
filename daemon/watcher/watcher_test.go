@@ -553,6 +553,39 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	}
 }
 
+func TestRebindDelegatedTurnProjectionBypassesRecentTurnCache(t *testing.T) {
+	w := New(time.Second)
+	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Worker",
+	}, time.Date(2026, 8, 9, 4, 24, 0, 0, time.UTC))
+	<-w.Events()
+
+	ledger := newFakeTurnLedger()
+	readAt := time.Now().UTC()
+	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
+		SessionID: "brain-agent-worker:@1", TurnID: "cached-old", Status: TurnDone,
+		AcceptedAt: readAt.Add(-time.Minute),
+	})
+	w.turnLedger = ledger
+	if turn, found, err := w.ledgerTurnFor("brain-agent-worker:@1", readAt); err != nil || !found || turn.TurnID != "cached-old" {
+		t.Fatalf("seed cache = (%+v, %v, %v)", turn, found, err)
+	}
+	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
+		SessionID: "brain-agent-worker:@1", TurnID: "authoritative-new", Status: TurnAccepted,
+		AcceptedAt: readAt.Add(time.Second),
+	})
+
+	rebound, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.State != classifier.StateRunning ||
+		w.ledgerTurns["brain-agent-worker:@1"].TurnID != "authoritative-new" {
+		t.Fatalf("rebind reused stale cache: agent=%+v cached=%+v", rebound, w.ledgerTurns["brain-agent-worker:@1"])
+	}
+}
+
 func TestCanonicalTurnProjectionClearsControlDoneMetadata(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{

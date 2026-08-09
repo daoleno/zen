@@ -414,35 +414,52 @@ func readCodexMeta(path string) (codexMeta, error) {
 	return readCodexMetaFromReader(file)
 }
 
+const (
+	// Codex writes session_meta as the first non-empty JSONL record. These
+	// limits make that immutable-header lookup independent of transcript body
+	// size. A malformed/legacy source fails back to the caller's path-scoped
+	// identity instead of scanning later prompt/response records.
+	maxCodexMetaReadBytes   = 1 << 20
+	maxCodexMetaRecordBytes = 1 << 20
+	maxCodexMetaRecords     = 8
+)
+
 func readCodexMetaFromReader(source io.Reader) (codexMeta, error) {
-	reader := bufio.NewReader(source)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(bytes.TrimSpace(line)) > 0 {
-			var envelope struct {
-				Type    string `json:"type"`
-				Payload struct {
-					ID         string `json:"id"`
-					CWD        string `json:"cwd"`
-					Originator string `json:"originator"`
-				} `json:"payload"`
-			}
-			if json.Unmarshal(line, &envelope) == nil && envelope.Type == "session_meta" {
-				return codexMeta{
-					ID:         strings.TrimSpace(envelope.Payload.ID),
-					CWD:        strings.TrimSpace(envelope.Payload.CWD),
-					Originator: strings.TrimSpace(envelope.Payload.Originator),
-				}, nil
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return codexMeta{}, err
-		}
+	if source == nil {
+		return codexMeta{}, fmt.Errorf("missing codex session metadata")
 	}
-	return codexMeta{}, fmt.Errorf("missing codex session metadata")
+	limited := &io.LimitedReader{R: source, N: maxCodexMetaReadBytes + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 64*1024), maxCodexMetaRecordBytes)
+	for records := 1; records <= maxCodexMetaRecords && scanner.Scan(); records++ {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var envelope struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID         string `json:"id"`
+				CWD        string `json:"cwd"`
+				Originator string `json:"originator"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &envelope) != nil || envelope.Type != "session_meta" {
+			return codexMeta{}, fmt.Errorf("missing codex session metadata in first record")
+		}
+		return codexMeta{
+			ID:         strings.TrimSpace(envelope.Payload.ID),
+			CWD:        strings.TrimSpace(envelope.Payload.CWD),
+			Originator: strings.TrimSpace(envelope.Payload.Originator),
+		}, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return codexMeta{}, fmt.Errorf("codex session metadata exceeded explicit read/record limit: %w", err)
+	}
+	if limited.N <= 0 {
+		return codexMeta{}, fmt.Errorf("codex session metadata exceeded explicit read limit")
+	}
+	return codexMeta{}, fmt.Errorf("missing codex session metadata within %d records", maxCodexMetaRecords)
 }
 
 type claudeMeta struct {

@@ -69,6 +69,23 @@ type delegatedInputBaseline struct {
 	Provider  ProviderActivityObservation
 }
 
+type delegatedReuseMode uint8
+
+const (
+	delegatedReuseFresh delegatedReuseMode = iota
+	// delegatedReuseConditionalSteer means the baseline proved the existing
+	// activity was running. The candidate must remain durable until post-submit
+	// confirmation decides whether the provider kept that activity (steer) or
+	// admitted a different activity (fresh canonical turn).
+	delegatedReuseConditionalSteer
+)
+
+type delegatedReuseDecision struct {
+	Mode             delegatedReuseMode
+	ExistingTurn     TurnSnapshot
+	BaselineActivity string
+}
+
 type delegatedInputConfirmer struct {
 	baseline func() (delegatedInputBaseline, error)
 	confirm  func(
@@ -144,7 +161,7 @@ type sessionInputIO interface {
 	pane(socket, sessionID string) sessionInputPane
 	loadBuffer(socket, buffer, payload string) error
 	deleteBuffer(socket, buffer string)
-	runQueue(socket string, args []string) (started bool, err error)
+	runQueue(socket string, args []string, beforeStart func() error) (started bool, err error)
 	receiptLedger(socket, target string) (sessionInputReceiptLedger, error)
 	writeReceiptLedger(socket, target string, ledger sessionInputReceiptLedger) error
 	paneContent(socket, target string) (string, error)
@@ -223,8 +240,22 @@ func (realSessionInputIO) deleteBuffer(socket, buffer string) {
 	_ = tmuxCommand(socket, "delete-buffer", "-b", buffer).Run()
 }
 
-func (realSessionInputIO) runQueue(socket string, args []string) (bool, error) {
+func (realSessionInputIO) runQueue(
+	socket string,
+	args []string,
+	beforeStart func() error,
+) (bool, error) {
 	command := tmuxCommand(socket, args...)
+	// This is the last pre-mutation operation: the target-bound tmux command
+	// has already been constructed, but Start has not been called. The guard
+	// re-proves the provider process lifetime and immutable pane generation.
+	// It closes deterministic replacements during baseline/ledger work; it
+	// does not pretend an external process can never race after this check.
+	if beforeStart != nil {
+		if err := beforeStart(); err != nil {
+			return false, err
+		}
+	}
 	if err := command.Start(); err != nil {
 		return false, err
 	}
@@ -327,6 +358,11 @@ type sessionInputReceiptEntry struct {
 	Receipt       string       `json:"receipt"`
 	PayloadSHA256 string       `json:"payload_sha256"`
 	Outcome       InputOutcome `json:"outcome"`
+	// TurnID permanently binds a delegated receipt to the lifecycle identity
+	// that actually accepted it. Ambiguous pre-mutation markers carry the
+	// fresh candidate ID so an uncertain send never loses its candidate across
+	// owner restart; accepted steering rewrites it to the existing TurnID.
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 type sessionInputReceiptLedger struct {
@@ -394,6 +430,7 @@ func (owner *sessionInputOwner) receiptOutcome(
 		}
 		found = true
 		result.Outcome = entry.Outcome
+		result.TurnID = strings.TrimSpace(entry.TurnID)
 		return nil
 	})
 	return result, found, err
@@ -423,6 +460,9 @@ func (owner *sessionInputOwner) submitWithTurn(
 ) (InputResult, error) {
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
 	requiresConfirmation := turn != nil
+	if turn != nil {
+		result.TurnID = strings.TrimSpace(turn.ID)
+	}
 	err := owner.serialized(sessionID, func() error {
 		socket := owner.ioSocket(sessionID)
 		if !utf8.ValidString(payload) {
@@ -454,36 +494,16 @@ func (owner *sessionInputOwner) submitWithTurn(
 					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("receipt already belongs to different input"))
 				}
 				result.Outcome = entry.Outcome
+				result.TurnID = strings.TrimSpace(entry.TurnID)
 				if entry.Outcome == InputAccepted {
+					if turn != nil && result.TurnID == "" {
+						return ambiguousSubmission(
+							result.Receipt,
+							fmt.Errorf("input was already accepted but its original canonical turn identity is missing"),
+						)
+					}
 					result.Duplicate = true
-					currentTurn, exists, turnErr := owner.ledgerTurn(sessionID)
-					if turnErr != nil {
-						return ambiguousSubmission(
-							result.Receipt,
-							fmt.Errorf("input was already accepted but its canonical turn could not be read: %w", turnErr),
-						)
-					}
-					if exists {
-						result.TurnID = currentTurn.TurnID
-					} else if turn != nil {
-						return ambiguousSubmission(
-							result.Receipt,
-							fmt.Errorf("input was already accepted but its durable canonical turn is missing"),
-						)
-					}
 					return nil
-				}
-				if turn != nil {
-					currentTurn, exists, turnErr := owner.ledgerTurn(sessionID)
-					if turnErr != nil {
-						return ambiguousSubmission(
-							result.Receipt,
-							fmt.Errorf("input was already ambiguous and its canonical turn could not be read: %w", turnErr),
-						)
-					}
-					if exists && !TurnTerminal(currentTurn.Status) {
-						result.TurnID = currentTurn.TurnID
-					}
 				}
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior attempt may already have submitted"))
 			}
@@ -509,7 +529,11 @@ func (owner *sessionInputOwner) submitWithTurn(
 		markedLedger := ledger
 		if result.Receipt != "" {
 			var markErr error
-			markedLedger, markErr = ledger.withAmbiguous(result.Receipt, payloadDigest)
+			markedLedger, markErr = ledger.withAmbiguous(
+				result.Receipt,
+				payloadDigest,
+				result.TurnID,
+			)
 			if markErr != nil {
 				return definitelyNotSubmitted(result.Receipt, markErr)
 			}
@@ -574,6 +598,8 @@ func (owner *sessionInputOwner) submitWithTurn(
 			admissionBaseline = captured.Admission
 			providerBaseline = captured.Provider
 		}
+		reuse := delegatedReuseDecision{}
+		admitBeforeMutation := turn != nil
 		if turn != nil {
 			existing, exists, turnErr := owner.ledgerTurn(sessionID)
 			if turnErr != nil {
@@ -588,14 +614,12 @@ func (owner *sessionInputOwner) submitWithTurn(
 				}
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
 			}
-			if exists && existing.TurnID != turn.ID && !TurnTerminal(existing.Status) {
-				// Ledger status alone cannot decide Session reuse: a provider
-				// terminal may already be durable while a prior parser/poll left
-				// the row running. Reconcile an exact authoritative baseline
-				// through the canonical reducer first. Only a bound activity that
-				// is still truly running may receive steering; a bound terminal
-				// settles the old turn and this submission receives the new turn.
-				steer, reconcileErr := owner.reconcileSubmissionActivity(
+			if exists && existing.TurnID != turn.ID {
+				// Every Session reuse validates the exact provider baseline,
+				// including Done/Failed/Unknown ledger rows. Ledger status alone
+				// cannot authorize either steering or a fresh mutation.
+				var reconcileErr error
+				reuse, reconcileErr = owner.reconcileSubmissionActivity(
 					sessionID,
 					existing,
 					providerBaseline,
@@ -612,41 +636,27 @@ func (owner *sessionInputOwner) submitWithTurn(
 					}
 					return definitelyNotSubmitted(result.Receipt, reconcileErr)
 				}
-				if steer {
-					result.TurnID = existing.TurnID
-					turn = nil
-				} else {
-					result.TurnID = turn.ID
+				if reuse.Mode == delegatedReuseConditionalSteer {
+					// The ambiguity receipt already durably carries the fresh
+					// candidate. Do not replace the live canonical row until the
+					// post-mutation admission says the provider created a different
+					// activity; equally, do not discard the candidate yet.
+					admitBeforeMutation = false
 				}
-			} else {
-				result.TurnID = turn.ID
 			}
 		}
-		if turn != nil {
+		if admitBeforeMutation {
 			// Persist A: the canonical Admitted record is durable before the
-			// submit queue runs. Failure fails closed as not-submitted.
-			if owner.ledger == nil {
-				if result.Receipt != "" {
-					return owner.rollbackReceiptMarker(
-						socket,
-						current.paneID,
-						originalLedger,
-						result.Receipt,
-						fmt.Errorf("canonical turn ledger is unavailable"),
-					)
-				}
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn ledger is unavailable"))
-			}
-			admitErr := owner.ledger.(TurnLedgerAdmitter).AdmitTurn(AdmittedTurn{
-				SessionID:         sessionID,
-				TurnID:            turn.ID,
-				Receipt:           firstNonEmptyString(turn.Receipt, result.Receipt),
-				AcceptedAt:        turn.AcceptedAt,
-				ProcessIdentity:   turn.ProcessIdentity,
-				PaneGeneration:    firstNonEmptyString(turn.PaneGeneration, current.generation),
-				PayloadSHA256:     payloadDigest,
-				TranscriptBinding: turn.TranscriptBinding,
-			})
+			// submit queue runs. Conditional steering is the sole exception:
+			// its fresh candidate is carried by the durable ambiguity receipt
+			// until post-submit activity identity decides which Turn owns it.
+			admitErr := owner.admitDelegatedTurn(
+				sessionID,
+				*turn,
+				current.generation,
+				payloadDigest,
+				result.Receipt,
+			)
 			if admitErr != nil {
 				if result.Receipt != "" {
 					return owner.rollbackReceiptMarker(
@@ -662,12 +672,29 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 
 		adapter := sessionInputProviderForCommand(command)
-		mutationBoundary := time.Now().UTC()
+		mutationBoundary := time.Time{}
 		started, queueErr := owner.io.runQueue(socket, sessionInputSubmitQueue(
 			current.paneID,
 			buffer,
 			adapter,
-		))
+		), func() error {
+			// Run this inside runQueue immediately before command.Start. The
+			// queue is bound to the immutable pane id; the two identity reads
+			// bracket the pane-generation proof so deterministic process/pane
+			// replacement during provider baseline cannot reach mutation.
+			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+				return err
+			}
+			boundaryPane := owner.io.pane(socket, current.paneID)
+			if err := validateSameSessionInputPane(current, boundaryPane); err != nil {
+				return err
+			}
+			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+				return err
+			}
+			mutationBoundary = time.Now().UTC()
+			return nil
+		})
 		if queueErr != nil {
 			if started {
 				result.Outcome = InputAmbiguous
@@ -704,44 +731,58 @@ func (owner *sessionInputOwner) submitWithTurn(
 				)
 			}
 		}
-		if result.Receipt != "" {
-			acceptedLedger, acceptErr := markedLedger.withOutcome(
-				result.Receipt,
-				payloadDigest,
-				InputAccepted,
-			)
-			if acceptErr != nil {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(result.Receipt, acceptErr)
-			}
-			if acceptErr := owner.persistReceiptLedger(
-				socket,
-				current.paneID,
-				acceptedLedger,
-				result.Receipt,
-				payloadDigest,
-				InputAccepted,
-			); acceptErr != nil {
+
+		acceptedTurn := turn
+		deliveryTurnID := result.TurnID
+		if reuse.Mode == delegatedReuseConditionalSteer {
+			confirmedActivity := strings.TrimSpace(confirmation.ProviderActivity)
+			if confirmedActivity == "" {
 				result.Outcome = InputAmbiguous
 				return ambiguousSubmission(
 					result.Receipt,
-					fmt.Errorf("submit succeeded but acceptance receipt was not confirmed: %w", acceptErr),
+					fmt.Errorf("provider admission did not identify the activity that accepted the input"),
 				)
 			}
+			if confirmedActivity == reuse.BaselineActivity {
+				// Same exact provider activity: the input is steering for the
+				// existing turn. Only now may the result/receipt adopt that TurnID.
+				acceptedTurn = nil
+				deliveryTurnID = reuse.ExistingTurn.TurnID
+			} else {
+				// The provider finished/advanced between baseline and admission.
+				// The ambiguity receipt already preserves this candidate across
+				// restart; admit it now and bind the newly confirmed activity.
+				if admitErr := owner.admitDelegatedTurn(
+					sessionID,
+					*turn,
+					current.generation,
+					payloadDigest,
+					result.Receipt,
+				); admitErr != nil {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(
+						result.Receipt,
+						fmt.Errorf("provider admitted a fresh activity but its canonical turn could not be persisted: %w", admitErr),
+					)
+				}
+				deliveryTurnID = turn.ID
+			}
 		}
-		if turn != nil && confirmation.Outcome == InputAccepted {
+		result.TurnID = strings.TrimSpace(deliveryTurnID)
+
+		if acceptedTurn != nil && confirmation.Outcome == InputAccepted {
 			// Persist B: the correlated admission tuple promotes the durable
 			// Admitted record to Accepted. The receipt state is part of the
 			// deterministic FactID, so ambiguous → accepted promotion is a
 			// distinct fact and same-state retries dedupe.
 			admission := confirmation.Admission
-			receipt := firstNonEmptyString(turn.Receipt, result.Receipt)
+			receipt := firstNonEmptyString(acceptedTurn.Receipt, result.Receipt)
 			if receipt == "" {
-				receipt = turn.ID
+				receipt = acceptedTurn.ID
 			}
 			_, _, applyErr := owner.ledger.ApplyTurnFact(TurnFact{
 				SessionID: sessionID,
-				TurnID:    turn.ID,
+				TurnID:    acceptedTurn.ID,
 				Class:     EvidenceReceipt,
 				Kind:      "admission",
 				SourceID:  "receipt\x00" + receipt + "\x00accepted\x00" + payloadDigest,
@@ -761,6 +802,32 @@ func (owner *sessionInputOwner) submitWithTurn(
 				return ambiguousSubmission(
 					result.Receipt,
 					fmt.Errorf("submit succeeded but canonical turn acceptance was not confirmed: %w", applyErr),
+				)
+			}
+		}
+		if result.Receipt != "" {
+			acceptedLedger, acceptErr := markedLedger.withOutcome(
+				result.Receipt,
+				payloadDigest,
+				InputAccepted,
+				result.TurnID,
+			)
+			if acceptErr != nil {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(result.Receipt, acceptErr)
+			}
+			if acceptErr := owner.persistReceiptLedger(
+				socket,
+				current.paneID,
+				acceptedLedger,
+				result.Receipt,
+				payloadDigest,
+				InputAccepted,
+			); acceptErr != nil {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(
+					result.Receipt,
+					fmt.Errorf("submit succeeded but acceptance receipt was not confirmed: %w", acceptErr),
 				)
 			}
 		}
@@ -791,11 +858,39 @@ func (owner *sessionInputOwner) ledgerTurn(sessionID string) (TurnSnapshot, bool
 	return owner.ledger.Turn(sessionID)
 }
 
-// reconcileSubmissionActivity decides the only two valid reuse outcomes for
-// a nonterminal ledger row. The decision is made from authoritative provider
-// activity, never from the possibly stale ledger status alone:
+func (owner *sessionInputOwner) admitDelegatedTurn(
+	sessionID string,
+	turn delegatedTurnDraft,
+	paneGeneration string,
+	payloadDigest string,
+	receipt string,
+) error {
+	if owner == nil || owner.ledger == nil {
+		return fmt.Errorf("canonical turn ledger is unavailable")
+	}
+	admitter, ok := owner.ledger.(TurnLedgerAdmitter)
+	if !ok {
+		return fmt.Errorf("canonical turn ledger cannot durably admit turns")
+	}
+	return admitter.AdmitTurn(AdmittedTurn{
+		SessionID:         sessionID,
+		TurnID:            turn.ID,
+		Receipt:           firstNonEmptyString(turn.Receipt, receipt),
+		AcceptedAt:        turn.AcceptedAt,
+		ProcessIdentity:   turn.ProcessIdentity,
+		PaneGeneration:    firstNonEmptyString(turn.PaneGeneration, paneGeneration),
+		PayloadSHA256:     payloadDigest,
+		TranscriptBinding: turn.TranscriptBinding,
+	})
+}
+
+// reconcileSubmissionActivity validates every reuse whose proposed TurnID is
+// different from the current ledger row. The decision is made from
+// authoritative provider activity, never from the possibly stale ledger
+// status alone:
 //
-//   - an exact bound running activity steers the existing canonical turn;
+//   - an exact bound running activity makes steering conditional on the
+//     post-mutation confirmed ActivityID;
 //   - an exact bound terminal is applied through the canonical reducer, after
 //     which the pending submission owns its freshly minted turn.
 //
@@ -805,43 +900,58 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	sessionID string,
 	turn TurnSnapshot,
 	provider ProviderActivityObservation,
-) (bool, error) {
+) (delegatedReuseDecision, error) {
+	decision := delegatedReuseDecision{ExistingTurn: turn}
 	if owner == nil || owner.ledger == nil {
-		return false, fmt.Errorf("canonical turn ledger is unavailable")
+		return decision, fmt.Errorf("canonical turn ledger is unavailable")
 	}
-	provider = providerObservationForTurn(provider, turn)
+	// Historical terminal metadata is valid for poll-time reconciliation, but
+	// it cannot authorize a new input transaction while the provider's current
+	// projection is a different activity. Reuse must bind the baseline itself.
 	if !providerObservationCanBindTurn(turn, provider) {
-		return false, fmt.Errorf(
+		return decision, fmt.Errorf(
 			"current provider activity is not authoritatively bound to canonical turn %s",
 			turn.TurnID,
 		)
 	}
 	fact := activityFactFromObservation(sessionID, turn, provider)
 	if fact == nil {
-		return false, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+	}
+	if strings.TrimSpace(provider.Status) == "running" && TurnTerminal(turn.Status) {
+		return decision, fmt.Errorf(
+			"terminal canonical turn %s cannot be reused from a running provider baseline",
+			turn.TurnID,
+		)
 	}
 	snapshot, _, err := owner.ledger.ApplyTurnFact(*fact)
 	if err != nil {
-		return false, fmt.Errorf("reconcile canonical provider activity: %w", err)
+		return decision, fmt.Errorf("reconcile canonical provider activity: %w", err)
 	}
 	switch strings.TrimSpace(provider.Status) {
 	case "running":
-		if TurnTerminal(snapshot.Status) || strings.TrimSpace(snapshot.ActivityID) != strings.TrimSpace(provider.ID) {
-			return false, fmt.Errorf("provider running activity did not bind the canonical turn")
+		if snapshot.TurnID != turn.TurnID || TurnTerminal(snapshot.Status) ||
+			strings.TrimSpace(snapshot.ActivityID) != strings.TrimSpace(provider.ID) {
+			return decision, fmt.Errorf("provider running activity did not bind the canonical turn")
 		}
-		return true, nil
+		decision.Mode = delegatedReuseConditionalSteer
+		decision.ExistingTurn = snapshot
+		decision.BaselineActivity = strings.TrimSpace(provider.ID)
+		return decision, nil
 	case "completed":
 		if snapshot.Status != TurnDone {
-			return false, fmt.Errorf("provider completion did not settle the canonical turn")
+			return decision, fmt.Errorf("provider completion did not settle the canonical turn")
 		}
-		return false, nil
+		decision.ExistingTurn = snapshot
+		return decision, nil
 	case "failed", "interrupted", "cancelled":
 		if snapshot.Status != TurnFailed {
-			return false, fmt.Errorf("provider failure did not settle the canonical turn")
+			return decision, fmt.Errorf("provider failure did not settle the canonical turn")
 		}
-		return false, nil
+		decision.ExistingTurn = snapshot
+		return decision, nil
 	default:
-		return false, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
 	}
 }
 
@@ -917,6 +1027,9 @@ func validateSessionInputReceiptLedger(ledger sessionInputReceiptLedger) error {
 		if entry.Outcome != InputAccepted && entry.Outcome != InputAmbiguous {
 			return fmt.Errorf("Session input receipt %q has invalid outcome %q", entry.Receipt, entry.Outcome)
 		}
+		if len(entry.TurnID) > sessionInputReceiptMaxBytes || !utf8.ValidString(entry.TurnID) {
+			return fmt.Errorf("Session input receipt %q has an invalid turn id", entry.Receipt)
+		}
 	}
 	return nil
 }
@@ -933,6 +1046,7 @@ func (ledger sessionInputReceiptLedger) entry(receipt string) (sessionInputRecei
 func (ledger sessionInputReceiptLedger) withAmbiguous(
 	receipt string,
 	payloadHash string,
+	turnID string,
 ) (sessionInputReceiptLedger, error) {
 	if _, found := ledger.entry(receipt); found {
 		return sessionInputReceiptLedger{}, fmt.Errorf("receipt %q already exists", receipt)
@@ -957,6 +1071,7 @@ func (ledger sessionInputReceiptLedger) withAmbiguous(
 		Receipt:       receipt,
 		PayloadSHA256: payloadHash,
 		Outcome:       InputAmbiguous,
+		TurnID:        strings.TrimSpace(turnID),
 	})
 	next := sessionInputReceiptLedger{
 		SchemaVersion: sessionInputReceiptLedgerSchema,
@@ -969,6 +1084,7 @@ func (ledger sessionInputReceiptLedger) withOutcome(
 	receipt string,
 	payloadHash string,
 	outcome InputOutcome,
+	turnID string,
 ) (sessionInputReceiptLedger, error) {
 	entries := append([]sessionInputReceiptEntry(nil), ledger.Entries...)
 	for index := range entries {
@@ -979,6 +1095,7 @@ func (ledger sessionInputReceiptLedger) withOutcome(
 			return sessionInputReceiptLedger{}, fmt.Errorf("receipt %q belongs to different input", receipt)
 		}
 		entries[index].Outcome = outcome
+		entries[index].TurnID = strings.TrimSpace(turnID)
 		next := sessionInputReceiptLedger{
 			SchemaVersion: sessionInputReceiptLedgerSchema,
 			Entries:       entries,

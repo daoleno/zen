@@ -301,15 +301,20 @@ func TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity(t *
 		TurnID:     sessionID + ":turn:1",
 		Status:     TurnDone,
 		AcceptedAt: firstAt,
+		ActivityID: "act-old",
 	})
 	identity := testSessionInputIdentity("opencode")
 	followDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("follow-up")))
 	probe := &scriptedProviderActivityProbe{
 		steps: []ProviderActivityObservation{
-			{Structured: true, FallbackAllowed: true},
+			{
+				ID: "act-old", Status: "completed",
+				StartedAt: firstAt.Add(2 * time.Second), SettledAt: firstAt.Add(time.Minute),
+				Structured: true, FallbackAllowed: true,
+			},
 			{
 				ID: "act-new", Status: "running",
-				StartedAt: now.Add(time.Second),
+				StartedAt:       now.Add(time.Second),
 				AdmissionStream: "opencode_db\x00ses_1\x00/db",
 				AdmissionID:     "msg_new",
 				AdmissionCursor: 6,
@@ -380,16 +385,21 @@ func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing
 		TurnID:     sessionID + ":turn:1",
 		Status:     TurnDone,
 		AcceptedAt: firstAt,
+		ActivityID: "old-activity",
 	})
 	identity := testSessionInputIdentity("opencode")
 	probe := &scriptedProviderActivityProbe{
 		steps: []ProviderActivityObservation{
-			// Admission baseline: nothing admitted.
-			{Structured: true, FallbackAllowed: true},
+			// Reuse baseline: the exact prior activity is terminal.
+			{
+				ID: "old-activity", Status: "completed",
+				StartedAt: firstAt, SettledAt: firstAt.Add(time.Minute),
+				Structured: true, FallbackAllowed: true,
+			},
 			// The confirm loop fails (SHA mismatch / timeout) — ambiguous.
 			{
 				ID: "new-activity", Status: "running",
-				StartedAt: now.Add(2 * time.Second),
+				StartedAt:       now.Add(2 * time.Second),
 				AdmissionStream: "opencode_db\x00ses_8174\x00/db",
 				AdmissionID:     "msg_new",
 				AdmissionCursor: 42,
@@ -400,7 +410,7 @@ func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing
 			// The poll observes the same live activity (adoption).
 			{
 				ID: "new-activity", Status: "running",
-				StartedAt: now.Add(2 * time.Second),
+				StartedAt:       now.Add(2 * time.Second),
 				AdmissionStream: "opencode_db\x00ses_8174\x00/db",
 				AdmissionID:     "msg_new",
 				AdmissionCursor: 42,

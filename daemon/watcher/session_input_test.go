@@ -49,6 +49,7 @@ type transportAdmissionProbe struct {
 	mu        sync.Mutex
 	io        *fakeSessionInputIO
 	inputs    map[int]string
+	activity  map[int]string
 	missing   map[int]bool
 	staleAt   map[int]time.Time
 	fixedStep *int
@@ -79,8 +80,12 @@ func (p *transportAdmissionProbe) ObserveProviderActivity(
 	if stale := p.staleAt[step]; !stale.IsZero() {
 		at = stale
 	}
+	activityID := p.activity[step]
+	if activityID == "" {
+		activityID = fmt.Sprintf("activity-%d", step)
+	}
 	return ProviderActivityObservation{
-		ID:              fmt.Sprintf("activity-%d", step),
+		ID:              activityID,
 		Status:          "running",
 		StartedAt:       at,
 		AdmissionStream: "cursor-session",
@@ -148,7 +153,16 @@ func (io *fakeSessionInputIO) deleteBuffer(socket, buffer string) {
 	io.mu.Unlock()
 }
 
-func (io *fakeSessionInputIO) runQueue(socket string, args []string) (bool, error) {
+func (io *fakeSessionInputIO) runQueue(
+	socket string,
+	args []string,
+	beforeStart func() error,
+) (bool, error) {
+	if beforeStart != nil {
+		if err := beforeStart(); err != nil {
+			return false, err
+		}
+	}
 	io.mu.Lock()
 	io.queueSockets = append(io.queueSockets, socket)
 	io.mu.Unlock()
@@ -311,6 +325,43 @@ func scriptedAmbiguousAdmission() delegatedInputConfirmer {
 	}
 }
 
+func scriptedActivityTransitionAdmission(
+	payload string,
+	baseline ProviderActivityObservation,
+	confirmedActivity string,
+) delegatedInputConfirmer {
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	return delegatedInputConfirmer{
+		baseline: func() (delegatedInputBaseline, error) {
+			return delegatedInputBaseline{
+				Admission: delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1},
+				Provider:  baseline,
+			}, nil
+		},
+		confirm: func(
+			_ delegatedAdmissionEvidence,
+			mutationBoundary time.Time,
+			payloadSHA256 string,
+		) (delegatedInputConfirmation, error) {
+			if payloadSHA256 != digest {
+				return delegatedInputConfirmation{Outcome: InputAmbiguous},
+					fmt.Errorf("unexpected payload digest")
+			}
+			return delegatedInputConfirmation{
+				Outcome:          InputAccepted,
+				ProviderActivity: confirmedActivity,
+				Admission: delegatedAdmissionEvidence{
+					Stream:      "test",
+					ID:          "after",
+					Cursor:      2,
+					StartedAt:   mutationBoundary,
+					InputSHA256: digest,
+				},
+			}, nil
+		},
+	}
+}
+
 func watcherWithAdmissionProbe(probe ProviderActivityProbe) *Watcher {
 	w := New(time.Second)
 	w.agents["agent:@1"] = &classifier.Agent{
@@ -380,9 +431,10 @@ func (l *fakeTurnLedger) AdmitTurn(admitted AdmittedTurn) error {
 		return l.admitErr
 	}
 	if existing, exists := l.turns[admitted.SessionID]; exists {
-		// Steering into a live nonterminal turn is handled before AdmitTurn;
-		// a terminal turn (session reuse) is superseded by the new turn.
-		if !TurnTerminal(existing.Status) {
+		// Idempotent retry of the same candidate. A different candidate may
+		// supersede a nonterminal row only after the production transaction has
+		// confirmed that the provider admitted a different native activity.
+		if existing.TurnID == admitted.TurnID {
 			return nil
 		}
 	}
@@ -405,7 +457,7 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 	defer l.mu.Unlock()
 	l.applied = append(l.applied, fact)
 	turn, ok := l.turns[fact.SessionID]
-	if !ok || turn.TurnID != fact.TurnID || TurnTerminal(turn.Status) {
+	if !ok || turn.TurnID != fact.TurnID || TurnImmutable(turn.Status) {
 		return turn, false, nil
 	}
 	changed := false
@@ -877,6 +929,7 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 		Status:     TurnDone,
 		AcceptedAt: acceptedAt,
 		SettledAt:  &settledAt,
+		ActivityID: "activity-accepted",
 	})
 	second := delegatedTurnDraft{
 		ID:              "turn-follow-up",
@@ -887,7 +940,14 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	restartedOwner.ledger = ledger
 	result, err = restartedOwner.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "follow-up", second,
-		scriptedCorrelatedAdmission("follow-up"),
+		scriptedActivityTransitionAdmission(
+			"follow-up",
+			ProviderActivityObservation{
+				ID: "activity-accepted", Status: "completed",
+				StartedAt: acceptedAt, SettledAt: settledAt,
+			},
+			"activity-follow-up",
+		),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.Receipt != second.ID {
 		t.Fatalf("follow-up delegated submit = (%+v, %v)", result, err)
@@ -956,6 +1016,291 @@ func TestSessionInputProviderCompletedRunningLedgerMintsFollowUpTurn(t *testing.
 	)
 	if err != nil || !duplicate.Duplicate || duplicate.TurnID != next.ID || len(io.queues) != 1 {
 		t.Fatalf("restart duplicate = (%+v, %v), queues=%d", duplicate, err, len(io.queues))
+	}
+}
+
+func TestSessionInputRunningBaselineDifferentConfirmedActivityMintsFreshTurn(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	acceptedAt := time.Date(2026, 8, 9, 4, 20, 0, 0, time.UTC)
+	oldActivityID := "session:activity:native-old"
+	newActivityID := "session:activity:native-new"
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID:  "agent:@1",
+		TurnID:     "canonical-running",
+		Status:     TurnRunning,
+		AcceptedAt: acceptedAt.Add(-time.Minute),
+		ActivityID: oldActivityID,
+	})
+	next := delegatedTurnDraft{
+		ID:              "canonical-fresh",
+		AcceptedAt:      acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	confirm := scriptedActivityTransitionAdmission(
+		"follow-up",
+		ProviderActivityObservation{
+			ID: oldActivityID, Status: "running", StartedAt: acceptedAt.Add(-time.Minute),
+		},
+		newActivityID,
+	)
+
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
+		t.Fatalf("activity transition follow-up = (%+v, %v), want fresh %s", result, err, next.ID)
+	}
+	current := ledger.snapshot("agent:@1")
+	if current.TurnID != next.ID || current.Status != TurnAccepted || current.ActivityID != newActivityID {
+		t.Fatalf("new provider activity has no fresh canonical owner: %+v", current)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("provider queue count = %d, want one", len(io.queues))
+	}
+	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted ||
+		entry.TurnID != next.ID {
+		t.Fatalf("fresh activity receipt = %+v found=%v", entry, found)
+	}
+}
+
+func TestSessionInputBaselineIdentityReplacementNeverStartsProviderQueue(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace func(*fakeSessionInputIO, *targetProcessIdentity)
+	}{
+		{
+			name: "process",
+			replace: func(_ *fakeSessionInputIO, identity *targetProcessIdentity) {
+				identity.ProcessStart++
+			},
+		},
+		{
+			name: "pane",
+			replace: func(io *fakeSessionInputIO, _ *targetProcessIdentity) {
+				io.mu.Lock()
+				io.paneValue = sessionInputPane{alive: true, paneID: "%replacement", generation: "replacement"}
+				io.mu.Unlock()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			io := newFakeSessionInputIO()
+			ledger := newFakeTurnLedger()
+			expected := testSessionInputIdentity("codex")
+			currentIdentity := expected
+			resolver := func(string) (targetProcessIdentity, bool) {
+				return currentIdentity, true
+			}
+			confirm := scriptedCorrelatedAdmission("payload")
+			baseline := confirm.baseline
+			confirm.baseline = func() (delegatedInputBaseline, error) {
+				captured, err := baseline()
+				test.replace(io, &currentIdentity)
+				return captured, err
+			}
+			turn := delegatedTurnDraft{
+				ID:              "candidate-identity-race",
+				AcceptedAt:      time.Date(2026, 8, 9, 4, 21, 0, 0, time.UTC),
+				ProcessIdentity: delegatedTurnIdentity(expected),
+			}
+
+			owner := newLedgerSessionInputOwner(io, ledger)
+			result, err := owner.submitDelegated(
+				"agent:@1", expected, resolver, expected.Command, "payload", turn, confirm,
+			)
+			if InputOutcomeFromError(err) != InputNotSubmitted || result.Outcome != InputNotSubmitted {
+				t.Fatalf("identity replacement = (%+v, %v), want NotSubmitted", result, err)
+			}
+			if len(io.queues) != 0 || len(io.submissions) != 0 {
+				t.Fatalf("identity replacement reached provider mutation: queues=%d submissions=%d", len(io.queues), len(io.submissions))
+			}
+			if _, found := io.ledger.entry(turn.ID); found {
+				t.Fatalf("NotSubmitted path retained receipt marker: %+v", io.ledger)
+			}
+		})
+	}
+}
+
+func TestSessionInputTerminalOrUnknownReuseRejectsMismatchedProviderBaseline(t *testing.T) {
+	for _, status := range []TurnStatus{TurnDone, TurnUnknown} {
+		t.Run(string(status), func(t *testing.T) {
+			io := newFakeSessionInputIO()
+			ledger := newFakeTurnLedger()
+			identity := testSessionInputIdentity("codex")
+			settledAt := time.Date(2026, 8, 9, 4, 22, 0, 0, time.UTC)
+			ledger.seed("agent:@1", TurnSnapshot{
+				SessionID: "agent:@1", TurnID: "canonical-prior", Status: status,
+				AcceptedAt: settledAt.Add(-time.Minute), SettledAt: &settledAt,
+				ActivityID: "session:activity:canonical",
+			})
+			confirm := scriptedActivityTransitionAdmission(
+				"follow-up",
+				ProviderActivityObservation{
+					ID: "session:activity:different", Status: "running", StartedAt: settledAt,
+					TerminalActivities: []ProviderTerminalActivity{{
+						ID: "session:activity:canonical", Status: "completed",
+						StartedAt: settledAt.Add(-time.Minute), SettledAt: settledAt,
+					}},
+				},
+				"session:activity:different",
+			)
+			next := delegatedTurnDraft{
+				ID: "must-not-be-admitted", AcceptedAt: settledAt.Add(time.Second),
+				ProcessIdentity: delegatedTurnIdentity(identity),
+			}
+
+			owner := newLedgerSessionInputOwner(io, ledger)
+			result, err := owner.submitDelegated(
+				"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+				"follow-up", next, confirm,
+			)
+			if InputOutcomeFromError(err) != InputNotSubmitted || result.Outcome != InputNotSubmitted {
+				t.Fatalf("terminal mismatch = (%+v, %v), want NotSubmitted", result, err)
+			}
+			if len(io.queues) != 0 || ledger.snapshot("agent:@1").TurnID != "canonical-prior" {
+				t.Fatalf("terminal mismatch mutated provider/ledger: queues=%d turn=%+v", len(io.queues), ledger.snapshot("agent:@1"))
+			}
+			if _, found := io.ledger.entry(next.ID); found {
+				t.Fatalf("terminal mismatch retained receipt marker: %+v", io.ledger)
+			}
+		})
+	}
+}
+
+func TestSessionInputUnknownReuseExactTerminalSettlesBeforeFreshAdmission(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	acceptedAt := time.Date(2026, 8, 9, 4, 25, 0, 0, time.UTC)
+	oldActivityID := "session:activity:unknown-old"
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID: "agent:@1", TurnID: "canonical-unknown", Status: TurnUnknown,
+		AcceptedAt: acceptedAt.Add(-time.Minute), ActivityID: oldActivityID,
+	})
+	next := delegatedTurnDraft{
+		ID: "canonical-after-unknown", AcceptedAt: acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	confirm := scriptedActivityTransitionAdmission(
+		"follow-up",
+		ProviderActivityObservation{
+			ID: oldActivityID, Status: "completed",
+			StartedAt: acceptedAt.Add(-time.Minute), SettledAt: acceptedAt.Add(-time.Second),
+		},
+		"session:activity:after-unknown",
+	)
+
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
+		t.Fatalf("unknown exact-terminal reuse = (%+v, %v)", result, err)
+	}
+	if current := ledger.snapshot("agent:@1"); current.TurnID != next.ID ||
+		current.Status != TurnAccepted || current.ActivityID != "session:activity:after-unknown" {
+		t.Fatalf("unknown terminal did not converge before fresh admission: %+v", current)
+	}
+	if len(ledger.applied) < 2 || ledger.applied[0].TurnID != "canonical-unknown" ||
+		ledger.applied[0].Kind != "done" {
+		t.Fatalf("unknown row was not settled through provider reducer first: %+v", ledger.applied)
+	}
+}
+
+func TestSessionInputRunningBaselineMissingConfirmedActivityStaysCandidateAmbiguous(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	acceptedAt := time.Date(2026, 8, 9, 4, 26, 0, 0, time.UTC)
+	oldActivityID := "session:activity:running-old"
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID: "agent:@1", TurnID: "canonical-running", Status: TurnRunning,
+		AcceptedAt: acceptedAt.Add(-time.Minute), ActivityID: oldActivityID,
+	})
+	next := delegatedTurnDraft{
+		ID: "durable-ambiguous-candidate", AcceptedAt: acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	confirm := scriptedActivityTransitionAdmission(
+		"follow-up",
+		ProviderActivityObservation{
+			ID: oldActivityID, Status: "running", StartedAt: acceptedAt.Add(-time.Minute),
+		},
+		"",
+	)
+
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.Outcome != InputAmbiguous ||
+		result.TurnID != next.ID {
+		t.Fatalf("missing confirmed activity = (%+v, %v), want candidate ambiguity", result, err)
+	}
+	if current := ledger.snapshot("agent:@1"); current.TurnID != "canonical-running" {
+		t.Fatalf("missing confirmed activity replaced current turn: %+v", current)
+	}
+	entry, found := io.ledger.entry(next.ID)
+	if !found || entry.Outcome != InputAmbiguous || entry.TurnID != next.ID {
+		t.Fatalf("ambiguous candidate receipt = %+v found=%v", entry, found)
+	}
+
+	restarted := newLedgerSessionInputOwner(io, ledger)
+	duplicate, retryErr := restarted.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if InputOutcomeFromError(retryErr) != InputAmbiguous || duplicate.TurnID != next.ID || len(io.queues) != 1 {
+		t.Fatalf("ambiguous candidate replay = (%+v, %v), queues=%d", duplicate, retryErr, len(io.queues))
+	}
+}
+
+func TestDelegatedInputConfirmerNeverSubstitutesAdmissionIDForMissingActivityID(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("cursor-agent --force")
+	acceptedAt := time.Now().UTC()
+	payload := "follow-up"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	oldActivityID := "session:activity:running-old"
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID: "agent:@1", TurnID: "canonical-running", Status: TurnRunning,
+		AcceptedAt: acceptedAt.Add(-time.Minute), ActivityID: oldActivityID,
+	})
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{
+			ID: oldActivityID, Status: "running", StartedAt: acceptedAt.Add(-time.Minute),
+			AdmissionStream: "stream", AdmissionID: "before", AdmissionCursor: 1,
+			AdmissionAt: acceptedAt.Add(-time.Minute), InputSHA256: "older",
+		},
+		{
+			Status: "running", StartedAt: acceptedAt,
+			AdmissionStream: "stream", AdmissionID: "admission-is-not-activity", AdmissionCursor: 2,
+			AdmissionAt: acceptedAt.Add(time.Second), InputSHA256: digest,
+		},
+	}}
+	w := watcherWithAdmissionProbe(probe)
+	owner := newLedgerSessionInputOwner(io, ledger)
+	next := delegatedTurnDraft{
+		ID: "candidate-missing-activity", AcceptedAt: acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		payload, next, w.delegatedInputConfirmer("agent:@1", identity.Command),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.TurnID != next.ID {
+		t.Fatalf("missing production ActivityID = (%+v, %v), want candidate ambiguity", result, err)
+	}
+	if ledger.snapshot("agent:@1").TurnID != "canonical-running" || len(io.queues) != 1 {
+		t.Fatalf("missing ActivityID changed owner/replayed: turn=%+v queues=%d", ledger.snapshot("agent:@1"), len(io.queues))
 	}
 }
 
@@ -1047,6 +1392,10 @@ func TestWatcherDelegatedAdmissionConfirmsCursorInitialAndActiveSteering(t *test
 		},
 		missing: map[int]bool{},
 		staleAt: map[int]time.Time{},
+		activity: map[int]string{
+			1: "activity-1",
+			2: "activity-1",
+		},
 	}
 	w := watcherWithAdmissionProbe(probe)
 	owner := newSessionInputOwner(io)
@@ -1465,6 +1814,45 @@ func TestSessionInputDuplicateNewTurnReceiptReturnsExistingLifecycleIdentity(t *
 	}
 }
 
+func TestSessionInputAcceptedReceiptRestartReturnsOriginalTurnAfterSessionAdvances(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	firstTurn := delegatedTurnDraft{
+		ID:              "receipt-original-turn",
+		AcceptedAt:      time.Date(2026, 8, 9, 4, 23, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	first := newLedgerSessionInputOwner(io, ledger)
+	if _, err := first.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "payload", firstTurn,
+		scriptedCorrelatedAdmission("payload"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID: "agent:@1", TurnID: "later-current-turn", Status: TurnRunning,
+		AcceptedAt: firstTurn.AcceptedAt.Add(time.Minute), ActivityID: "later-activity",
+	})
+
+	restarted := newLedgerSessionInputOwner(io, ledger)
+	duplicate, err := restarted.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "payload", firstTurn,
+		scriptedCorrelatedAdmission("payload"),
+	)
+	if err != nil || !duplicate.Duplicate || duplicate.Outcome != InputAccepted ||
+		duplicate.TurnID != firstTurn.ID {
+		t.Fatalf("advanced-session duplicate = (%+v, %v), want original %s", duplicate, err, firstTurn.ID)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("restart duplicate replayed input: queues=%d", len(io.queues))
+	}
+	if entry, found := io.ledger.entry(firstTurn.ID); !found || entry.TurnID != firstTurn.ID {
+		t.Fatalf("accepted receipt lost original turn: %+v found=%v", entry, found)
+	}
+}
+
 func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
@@ -1483,9 +1871,16 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 	); err != nil {
 		t.Fatal(err)
 	}
+	io.mu.Lock()
+	for index := range io.ledger.Entries {
+		if io.ledger.Entries[index].Receipt == turn.ID {
+			io.ledger.Entries[index].TurnID = ""
+		}
+	}
+	io.mu.Unlock()
 
-	// The durable ledger record is the identity: an accepted receipt with no
-	// canonical turn is ambiguous and never replayed.
+	// A legacy accepted receipt with neither its persisted TurnID nor a
+	// canonical row is ambiguous and never replayed.
 	restarted := newSessionInputOwner(io)
 	restarted.ledger = newFakeTurnLedger()
 	_, err := restarted.submitDelegated(
@@ -1493,7 +1888,7 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 		scriptedCorrelatedAdmission("task"),
 	)
 	if InputOutcomeFromError(err) != InputAmbiguous ||
-		!strings.Contains(err.Error(), "canonical turn is missing") {
+		!strings.Contains(err.Error(), "original canonical turn identity is missing") {
 		t.Fatalf("accepted duplicate without canonical turn = %v", err)
 	}
 	if len(io.queues) != 1 {
@@ -1533,6 +1928,10 @@ func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing
 		ledger.snapshot("agent:@1").Status != TurnRunning {
 		t.Fatalf("steering replaced lifecycle owner: %+v", ledger.snapshot("agent:@1"))
 	}
+	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted ||
+		entry.TurnID != "active-turn" {
+		t.Fatalf("accepted steering receipt = %+v found=%v, want active-turn", entry, found)
+	}
 }
 
 func TestSessionInputActiveSteeringWithoutAdmissionIsAmbiguousAndNeverReplayed(t *testing.T) {
@@ -1560,7 +1959,7 @@ func TestSessionInputActiveSteeringWithoutAdmissionIsAmbiguousAndNeverReplayed(t
 		scriptedAmbiguousAdmission(),
 	)
 	if InputOutcomeFromError(err) != InputAmbiguous ||
-		result.Outcome != InputAmbiguous || result.TurnID != "active-turn" {
+		result.Outcome != InputAmbiguous || result.TurnID != steering.ID {
 		t.Fatalf("ambiguous active steering = (%+v, %v)", result, err)
 	}
 	if ledger.snapshot("agent:@1").TurnID != "active-turn" || len(io.queues) != 1 {
@@ -1575,7 +1974,7 @@ func TestSessionInputActiveSteeringWithoutAdmissionIsAmbiguousAndNeverReplayed(t
 		scriptedCorrelatedAdmission("steer once"),
 	)
 	if InputOutcomeFromError(err) != InputAmbiguous ||
-		result.Outcome != InputAmbiguous || result.TurnID != "active-turn" ||
+		result.Outcome != InputAmbiguous || result.TurnID != steering.ID ||
 		len(io.queues) != 1 {
 		t.Fatalf("restart replayed ambiguous steering = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
@@ -1634,6 +2033,7 @@ func TestSessionInputDefinitelyNotSubmittedKeepsDurableAdmittedIdentity(t *testi
 		Status:     TurnDone,
 		AcceptedAt: settledAt.Add(-time.Minute),
 		SettledAt:  &settledAt,
+		ActivityID: "settled-activity",
 	})
 	io.runErr = errors.New("queue did not start")
 	io.runStarted = false
@@ -1646,7 +2046,15 @@ func TestSessionInputDefinitelyNotSubmittedKeepsDurableAdmittedIdentity(t *testi
 	}
 	_, err := owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "next task", next, scriptedCorrelatedAdmission("next task"),
+		identity.Command, "next task", next,
+		scriptedActivityTransitionAdmission(
+			"next task",
+			ProviderActivityObservation{
+				ID: "settled-activity", Status: "completed",
+				StartedAt: settledAt.Add(-time.Minute), SettledAt: settledAt,
+			},
+			"next-activity",
+		),
 	)
 	if InputOutcomeFromError(err) != InputNotSubmitted {
 		t.Fatalf("queue start failure outcome = %s, err=%v", InputOutcomeFromError(err), err)
@@ -1671,7 +2079,7 @@ func TestSessionInputReceiptLedgerIsBoundedAndNeverEvictsAmbiguity(t *testing.T)
 			Outcome:       InputAccepted,
 		})
 	}
-	next, err := accepted.withAmbiguous("new", strings.Repeat("a", sha256.Size*2))
+	next, err := accepted.withAmbiguous("new", strings.Repeat("a", sha256.Size*2), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1693,7 +2101,7 @@ func TestSessionInputReceiptLedgerIsBoundedAndNeverEvictsAmbiguity(t *testing.T)
 			Outcome:       InputAmbiguous,
 		})
 	}
-	if _, err := ambiguous.withAmbiguous("must-not-evict", strings.Repeat("b", sha256.Size*2)); err == nil {
+	if _, err := ambiguous.withAmbiguous("must-not-evict", strings.Repeat("b", sha256.Size*2), ""); err == nil {
 		t.Fatal("ledger full of ambiguity accepted a new receipt")
 	}
 }

@@ -43,9 +43,12 @@ title, kind, source, summary, next action, and context/payload references. It
 never includes the full objective, worklog, history, a delivery token, an
 encoded envelope, or a fetch instruction. The stable Event ID is the optional
 receipt in a bounded receiver-side tmux ledger. Each retained receipt carries
-the payload hash and an accepted or ambiguous outcome. Zen writes and confirms
-ambiguity before provider mutation, then promotes that same entry to accepted
-only after the submit queue succeeds. Codex, Claude Code, Cursor, Grok, Pi, OpenCode, and
+the payload hash, accepted or ambiguous outcome, and the delegated candidate
+Turn ID. An accepted steering receipt is rebound to the exact existing Turn ID
+that received it, so restart dedupe never consults whichever Turn later became
+current. Zen writes and confirms ambiguity before provider mutation, then
+promotes that same entry to accepted only after the submit queue succeeds.
+Codex, Claude Code, Cursor, Grok, Pi, OpenCode, and
 future interactive providers share one per-Session input serializer and one
 target-bound tmux command queue: replace the current unsent draft, paste the
 exact original UTF-8 payload, send the provider adapter's submit key once, and

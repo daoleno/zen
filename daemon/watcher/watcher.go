@@ -695,7 +695,9 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 		return nil, fmt.Errorf("missing agent id")
 	}
 	now := time.Now().UTC()
-	turn, hasTurn, err := w.ledgerTurnFor(id, now)
+	// Rebind is the synchronous post-input boundary. It must observe the Turn
+	// written by that transaction immediately, not the two-second poll cache.
+	turn, hasTurn, err := w.ledgerTurnAuthoritative(id, now)
 	if err != nil {
 		return nil, err
 	}
@@ -1366,6 +1368,32 @@ func (w *Watcher) ledgerTurnFor(sessionID string, now time.Time) (TurnSnapshot, 
 		w.ledgerTurnReadAt[sessionID] = now
 		w.mu.Unlock()
 	}
+	return turn, hasTurn, nil
+}
+
+// ledgerTurnAuthoritative bypasses and refreshes the short poll projection
+// cache. Transaction boundaries such as post-input rebind use this path so a
+// freshly admitted/reused Turn is visible immediately.
+func (w *Watcher) ledgerTurnAuthoritative(
+	sessionID string,
+	now time.Time,
+) (TurnSnapshot, bool, error) {
+	if w == nil || w.turnLedger == nil {
+		return TurnSnapshot{}, false, nil
+	}
+	turn, hasTurn, err := w.turnLedger.Turn(sessionID)
+	if err != nil {
+		return turn, hasTurn, err
+	}
+	w.mu.Lock()
+	if hasTurn {
+		w.ledgerTurns[sessionID] = turn
+		w.ledgerTurnReadAt[sessionID] = now
+	} else {
+		delete(w.ledgerTurns, sessionID)
+		delete(w.ledgerTurnReadAt, sessionID)
+	}
+	w.mu.Unlock()
 	return turn, hasTurn, nil
 }
 
@@ -2399,7 +2427,7 @@ func (w *Watcher) delegatedInputConfirmer(
 				case delegatedAdmissionAccepted:
 					return delegatedInputConfirmation{
 						Outcome:          InputAccepted,
-						ProviderActivity: firstNonEmptyString(observation.ID, evidence.ID),
+						ProviderActivity: strings.TrimSpace(observation.ID),
 						Admission:        evidence,
 					}, nil
 				case delegatedAdmissionMismatched:

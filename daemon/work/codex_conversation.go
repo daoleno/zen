@@ -436,6 +436,13 @@ func (b *codexConversationBuilder) startActivity(providerID, timestamp string, l
 	}
 }
 
+// maxCodexProviderActivities is a recovery-only resource ceiling, not a
+// correctness window: it bounds the probe payload to 64 fixed-size lifecycle
+// records already encountered in the 4 MiB conversation tail, without a
+// second history owner or full-file scan. Correctness never depends on finding
+// an older record. A desired ActivityID displaced by the 65th terminal is
+// deliberately unavailable, so watcher binding fails closed and requires
+// explicit offline reconciliation.
 const maxCodexProviderActivities = 64
 
 func (b *codexConversationBuilder) retainProviderActivity(activity *ProviderActivity) {
