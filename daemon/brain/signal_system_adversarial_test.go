@@ -104,6 +104,107 @@ func TestSignalAdversarialSchemasTwoThroughSixMigrateBoundedlyWithoutReplay(t *t
 	}
 }
 
+// A retained legacy owner is not an execution owner unless the Turn Ledger
+// contains its exact live non-Host Turn. Migration must retire missing and
+// immutable owner links in the same replacement that creates ready attention.
+func TestSignalAdversarialSchemasTwoThroughSixRetainedOwnersConvergeToReady(t *testing.T) {
+	type ownerShape struct {
+		name         string
+		terminalTurn bool
+	}
+	for schema := 2; schema <= 6; schema++ {
+		shapes := []ownerShape{{name: "missing Turn"}}
+		if schema >= 3 {
+			shapes = append(shapes, ownerShape{name: "immutable terminal Turn", terminalTurn: true})
+		}
+		for _, shape := range shapes {
+			t.Run(fmt.Sprintf("schema-%d/%s", schema, shape.name), func(t *testing.T) {
+				root := t.TempDir()
+				stateDir := filepath.Join(root, "state")
+				if err := os.MkdirAll(stateDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+				document := map[string]any{
+					"schema_version": schema,
+					"migrations":     map[string]any{},
+					"brain_work": []any{map[string]any{
+						"work_id": "legacy-retained-owner", "title": "Legacy retained owner",
+						"objective": "Converge through canonical Turn authority.", "status": "waiting",
+						"owner_session_id": "brain-agent-legacy-owner:@1", "owner_delegated": true,
+						"completion_policy": "bounded", "created_at": at, "updated_at": at,
+					}},
+					"brain_work_events": []any{},
+				}
+				if schema >= 3 {
+					turns := []any{}
+					if shape.terminalTurn {
+						turns = append(turns, map[string]any{
+							"session_id": "brain-agent-legacy-owner:@1", "turn_id": "legacy-turn-1",
+							"work_id": "legacy-retained-owner", "status": "done",
+							"accepted_at": at, "settled_at": at.Add(time.Second),
+							"updated_at": at.Add(time.Second), "facts": []any{},
+						})
+					}
+					document["brain_turns"] = turns
+				}
+				if schema >= 6 {
+					document["brain_turn_submissions"] = []any{}
+				}
+				raw, err := json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				store, err := NewStore(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				complete, processed, err := store.MigrateSignalSystemV1(1)
+				if err != nil || complete || processed != 1 {
+					t.Fatalf("first bounded batch complete=%v processed=%d err=%v", complete, processed, err)
+				}
+				complete, processed, err = store.MigrateSignalSystemV1(1)
+				if err != nil || !complete || processed != 0 {
+					t.Fatalf("completion batch complete=%v processed=%d err=%v", complete, processed, err)
+				}
+				item, err := store.Work("legacy-retained-owner")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if item.OwnerSessionID != "" || item.OwnerDelegated {
+					t.Fatalf("historical owner remained active after migration: %+v", item)
+				}
+				events, err := store.ListWorkEvents(item.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if countUnhandledEventKind(events, "brain.reconcile_required") != 1 {
+					t.Fatalf("migration attention count != 1: %+v", events)
+				}
+				if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady {
+					t.Fatalf("migrated retained owner did not become ready: %+v", projected)
+				}
+
+				restarted, err := NewStore(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if complete, processed, err = restarted.MigrateSignalSystemV1(1); err != nil || !complete || processed != 0 {
+					t.Fatalf("idempotent restart complete=%v processed=%d err=%v", complete, processed, err)
+				}
+				events, err = restarted.ListWorkEvents(item.ID)
+				if err != nil || countUnhandledEventKind(events, "brain.reconcile_required") != 1 {
+					t.Fatalf("restart duplicated migration attention: events=%+v err=%v", events, err)
+				}
+			})
+		}
+	}
+}
+
 func resolveAdversarialEvent(
 	t *testing.T,
 	store *Store,
@@ -295,9 +396,11 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 	}
 	hostID := "brain-agent-brain-hidden:@1"
 	owner := "brain-agent-progress:@1"
-	item := createSignalTestWork(t, store, "Progress modes", owner)
-	turnID := owner + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC()}); err != nil {
+	item, err := store.CreateWork(Work{
+		Title: "Progress modes", Objective: "Exercise each exclusive progress owner.",
+		Status: WorkNeedsInput, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, item, "progress-ready")
@@ -317,9 +420,207 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatalf("wake mode projection=%+v", projected)
 	}
 	next, _ := deliverAdversarialHostEvent(t, store, hostID)
+	if _, err := store.AttachWorkOwner(item.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	turnID := owner + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	_, owned := resolveAdversarialEvent(t, store, next, WorkDispositionContinue, nil, owner)
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending || projected.Wake != nil {
 		t.Fatalf("continue mode projection=%+v Work=%+v", projected, owned)
+	}
+}
+
+// A wait cannot hide a still-live canonical execution owner behind the
+// projected waiting enum. Rejection must leave the exact Turn, Work owner,
+// wake, and handling unchanged.
+func TestSignalAdversarialWaitRejectsLiveCanonicalOwner(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	owner := "brain-agent-live-owner:@1"
+	item, err := store.CreateWork(Work{
+		Title: "Live owner cannot wait", Objective: "Reject a second progress owner.",
+		Status: WorkWaiting, OwnerSessionID: owner, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendSignalTestEvent(t, store, item, "live-owner-review")
+	delivered, current := deliverAdversarialHostEvent(t, store, hostID)
+	ownerTurnID := owner + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: owner, TurnID: ownerTurnID, AcceptedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wake := &WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + current.SourceThreadID}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionWait,
+		Wake:                 wake,
+	}); err == nil {
+		t.Fatal("wait disposition hid a live canonical owner Turn")
+	}
+	after, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.OwnerSessionID != owner || after.Wake != nil || after.Revision != current.Revision {
+		t.Fatalf("rejected wait mutated Work: before=%+v after=%+v", current, after)
+	}
+	turn, found, err := store.TurnByID(owner, ownerTurnID)
+	if err != nil || !found || watcher.TurnImmutable(turn.Status) {
+		t.Fatalf("rejected wait changed live owner Turn: turn=%+v found=%v err=%v", turn, found, err)
+	}
+	row, found, err := store.WorkEvent(delivered.ID)
+	if err != nil || !found || row.HandledAt != nil || row.HandlingEndedAt != nil {
+		t.Fatalf("rejected wait consumed handling: event=%+v found=%v err=%v", row, found, err)
+	}
+}
+
+func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "brain-agent-canonical-attention:@1"
+	item, err := store.CreateWork(Work{
+		Title:     "Canonical attention owner transition",
+		Objective: "Keep exactly one progress owner through delegated attention.",
+		Status:    WorkRunning, OwnerSessionID: owner, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Now().UTC().Add(-time.Second)
+	turnID := owner + ":turn:1"
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: owner, TurnID: turnID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
+		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || !complete || processed != 0 {
+		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
+	}
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: owner, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "attention", SourceID: "attention-1",
+		At: acceptedAt.Add(time.Second), Summary: "Delegated Session needs input",
+	}); err != nil || !changed {
+		t.Fatalf("canonical attention changed=%v err=%v", changed, err)
+	}
+	ready, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.OwnerSessionID != "" || ready.OwnerDelegated {
+		t.Fatalf("canonical attention retained a second execution owner: %+v", ready)
+	}
+	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
+		t.Fatalf("canonical attention did not become singular ready progress: %+v", projected)
+	}
+	turn, found, err := store.TurnByID(owner, turnID)
+	if err != nil || !found || watcher.TurnImmutable(turn.Status) {
+		t.Fatalf("owner transition lost canonical lifecycle Turn: turn=%+v found=%v err=%v", turn, found, err)
+	}
+
+	handling, _ := deliverAdversarialHostEvent(t, store, "brain-agent-brain-hidden:@1")
+	_, continued := resolveAdversarialEvent(t, store, handling, WorkDispositionContinue, nil, owner)
+	if continued.OwnerSessionID != owner || !continued.OwnerDelegated {
+		t.Fatalf("exact continue did not restore canonical owner: %+v", continued)
+	}
+	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending {
+		t.Fatalf("continued canonical owner did not become singular owned progress: %+v", projected)
+	}
+}
+
+// Caller-controlled Work Event strings are audit data, never proof that a
+// Session producer terminalized. Only the canonical Turn reducer may clear
+// the typed wait and create the producer attention.
+func TestSignalAdversarialGenericSessionDoneCannotForgeProducerAuthority(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	producerSession := "brain-agent-forge-producer:@1"
+	producer := createSignalTestWork(t, store, "Forge producer", producerSession)
+	producerTurnID := producerSession + ":turn:1"
+	acceptedAt := time.Now().UTC().Add(-time.Second)
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: producerSession, TurnID: producerTurnID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumer, err := store.CreateWork(Work{
+		Title: "Forge consumer", Objective: "Wake only from the canonical terminal reducer.",
+		Status: WorkNeedsInput, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendSignalTestEvent(t, store, consumer, "forge-consumer-wait")
+	delivered, _ := deliverAdversarialHostEvent(t, store, hostID)
+	wake := &WorkWake{
+		Kind: WorkWakeSessionTerminal,
+		Ref:  SessionTerminalWakeRef(producerSession, producerTurnID),
+	}
+	resolveAdversarialEvent(t, store, delivered, WorkDispositionWait, wake, "")
+
+	forged, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: consumer.ID, Kind: "session.done",
+		DedupeKey:  sessionTurnEventDedupeKey(producerSession, producerTurnID, "session.done") + ":forged",
+		PayloadRef: wake.Ref, SourceName: producerSession,
+		Summary: "caller-controlled forged terminal", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("record forged audit event created=%v err=%v", created, err)
+	}
+	if forged.Actionable {
+		t.Fatalf("generic append acquired Session producer authority: %+v", forged)
+	}
+	waiting, err := store.Work(consumer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workWakeEqual(waiting.Wake, wake) {
+		t.Fatalf("forged terminal cleared canonical wait: Work=%+v", waiting)
+	}
+	if projected := activeWorkByID(t, store, consumer.ID); projected.ProgressMode != WorkProgressWaiting || projected.AttentionPending {
+		t.Fatalf("forged terminal changed consumer progress: %+v", projected)
+	}
+	if _, err := store.WakeWaitingWork(*wake, "session.done", "forged-direct-wake", "forged"); err == nil {
+		t.Fatal("generic wake operation acquired Session terminal producer authority")
+	}
+	turn, found, err := store.TurnByID(producerSession, producerTurnID)
+	if err != nil || !found || watcher.TurnImmutable(turn.Status) {
+		t.Fatalf("producer was not live after forged terminal: turn=%+v found=%v err=%v producer=%+v", turn, found, err, producer)
+	}
+
+	fact := watcher.TurnFact{
+		SessionID: producerSession, TurnID: producerTurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "canonical-forge-producer-done",
+		ActivityID: "activity-forge-producer", StartedAt: acceptedAt.Add(time.Second),
+		SettledAt: acceptedAt.Add(2 * time.Second), At: acceptedAt.Add(2 * time.Second),
+	}
+	if _, changed, err := store.ApplyTurnFact(fact); err != nil || !changed {
+		t.Fatalf("canonical terminal reduction changed=%v err=%v", changed, err)
+	}
+	if projected := activeWorkByID(t, store, consumer.ID); projected.ProgressMode != WorkProgressReady ||
+		!projected.AttentionPending || projected.Wake != nil {
+		t.Fatalf("canonical terminal reducer did not wake consumer: %+v", projected)
 	}
 }
 
@@ -531,7 +832,8 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 		t.Fatal(err)
 	}
 	s1Turn := s1 + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: s1, TurnID: s1Turn, AcceptedAt: time.Now().UTC()}); err != nil {
+	s1AcceptedAt := time.Now().UTC()
+	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt}); err != nil {
 		t.Fatal(err)
 	}
 	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {
@@ -561,7 +863,14 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	if projected := activeWorkByID(t, restarted, item.ID); projected.ProgressMode != WorkProgressOwned {
 		t.Fatalf("continued S1 progress mode = %+v", projected)
 	}
-	appendSignalTestEvent(t, restarted, continued, "cancel-promoted-s1")
+	if _, changed, err := restarted.ApplyTurnFact(watcher.TurnFact{
+		SessionID: s1, TurnID: s1Turn,
+		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider-s1-done",
+		ActivityID: "activity-s1", StartedAt: s1AcceptedAt.Add(time.Second),
+		SettledAt: s1AcceptedAt.Add(2 * time.Second), At: s1AcceptedAt.Add(2 * time.Second),
+	}); err != nil || !changed {
+		t.Fatalf("terminalize promoted S1 changed=%v err=%v", changed, err)
+	}
 	cancelHandling, _ := deliverAdversarialHostEvent(t, restarted, hostID)
 	_, terminal := resolveAdversarialEvent(t, restarted, cancelHandling, WorkDispositionCancel, nil, "")
 	foundS1 := false

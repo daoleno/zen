@@ -912,7 +912,14 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 			reserved = strings.TrimSpace(item.SuccessorReservation.SessionID)
 		}
 		if turn.SessionID != owner && turn.SessionID != reserved {
-			return fmt.Errorf("brain_turns: active Session %q is not an owner or reserved successor of Work %q", turn.SessionID, item.ID)
+			state := reduceWorkProgressState(database, item)
+			// The canonical Turn reducer may explicitly relinquish a blocked or
+			// stale execution owner while retaining its exact Turn as lifecycle
+			// evidence. Ready attention or a later typed wait then owns progress;
+			// exact continue may promote this same active Session again.
+			if owner != "" || (!state.Ready && !state.Waiting) {
+				return fmt.Errorf("brain_turns: active Session %q is not an owner or reserved successor of Work %q", turn.SessionID, item.ID)
+			}
 		}
 		if activeByWork[item.ID] == nil {
 			activeByWork[item.ID] = map[string]struct{}{}
@@ -1156,42 +1163,87 @@ func validateWorkSignalState(database orchestrationDatabase, item Work) error {
 	return err
 }
 
+type workProgressState struct {
+	Owned             bool
+	Waiting           bool
+	Ready             bool
+	LiveCanonicalTurn bool
+	OwnerAdmission    bool
+}
+
+func (state workProgressState) count() int {
+	count := 0
+	if state.Owned {
+		count++
+	}
+	if state.Waiting {
+		count++
+	}
+	if state.Ready {
+		count++
+	}
+	return count
+}
+
+func workHasLiveCanonicalOwnerTurn(database orchestrationDatabase, item Work) bool {
+	ownerID := strings.TrimSpace(item.OwnerSessionID)
+	if ownerID == "" {
+		return false
+	}
+	turn, found := currentTurnForSession(database, ownerID)
+	return found && turn.WorkID == item.ID && !watcher.TurnImmutable(turn.Status) &&
+		!isHostHandlingTurn(database, turn)
+}
+
+// reduceWorkProgressState derives the three progress predicates independently.
+// OwnerSessionID text is not authority: only its current canonical nonterminal
+// execution Turn owns progress. The narrow running/no-Turn admission window is
+// retained for the existing two-phase delegated launch; migration never treats
+// that window as legacy owner authority.
+func reduceWorkProgressState(database orchestrationDatabase, item Work) workProgressState {
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		return workProgressState{}
+	}
+	liveOwner := workHasLiveCanonicalOwnerTurn(database, item)
+	ownerAdmission := !liveOwner && strings.TrimSpace(item.OwnerSessionID) != "" && item.Status == WorkRunning
+	state := workProgressState{
+		Owned:             liveOwner || ownerAdmission,
+		Waiting:           item.Wake != nil,
+		Ready:             workHasUnhandledAttention(database, item.ID),
+		LiveCanonicalTurn: liveOwner,
+		OwnerAdmission:    ownerAdmission,
+	}
+	// An accepted S1 reservation remains lifecycle-exclusive across Host
+	// requeue, but the ready disposition obligation is the progress owner. An
+	// unbound reservation is an owner only when no wait or attention exists.
+	if !state.Owned && !state.Waiting && !state.Ready {
+		if reservation := item.SuccessorReservation; reservation != nil && strings.TrimSpace(reservation.EventID) == "" {
+			state.Owned = true
+		}
+	}
+	return state
+}
+
 func deriveWorkProgressMode(database orchestrationDatabase, item Work) (WorkProgressMode, error) {
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		return "", nil
 	}
-	attention := workHasUnhandledAttention(database, item.ID)
-	if attention && item.Wake != nil {
-		return "", fmt.Errorf("nonterminal Work cannot be both ready and waiting")
+	state := reduceWorkProgressState(database, item)
+	if state.count() != 1 {
+		return "", fmt.Errorf(
+			"nonterminal Work requires exactly one owned, waiting, or ready progress mode (owned=%t waiting=%t ready=%t)",
+			state.Owned,
+			state.Waiting,
+			state.Ready,
+		)
 	}
-	if attention {
-		// An admitted successor remains a Work-level exclusivity reservation
-		// until exact continue; it is deliberately not the progress owner while
-		// a disposition obligation is ready. The one ready mode makes that
-		// obligation visible without allowing S2 or losing S1.
-		return WorkProgressReady, nil
-	}
-	if item.Wake != nil {
-		return WorkProgressWaiting, nil
-	}
-	if reservation := item.SuccessorReservation; reservation != nil && strings.TrimSpace(reservation.EventID) == "" {
+	if state.Owned {
 		return WorkProgressOwned, nil
 	}
-	ownerID := strings.TrimSpace(item.OwnerSessionID)
-	if ownerID != "" {
-		for _, turn := range database.BrainTurns {
-			if turn.WorkID == item.ID && turn.SessionID == ownerID && !watcher.TurnImmutable(turn.Status) {
-				return WorkProgressOwned, nil
-			}
-		}
-		// Owner attachment is itself a persisted host effect. It precedes the
-		// provider mutation transaction, so this narrow admission window is
-		// owned even before the first canonical Turn row is accepted.
-		if item.Status == WorkRunning {
-			return WorkProgressOwned, nil
-		}
+	if state.Waiting {
+		return WorkProgressWaiting, nil
 	}
-	return "", fmt.Errorf("nonterminal Work requires exactly one owned, waiting, or ready progress mode")
+	return WorkProgressReady, nil
 }
 
 func mustDeriveWorkProgressMode(database orchestrationDatabase, item Work) WorkProgressMode {
@@ -1480,11 +1532,7 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 			now := s.nowUTC()
 			item, err = applyWorkUpdateLocked(&database, index, update, now)
 			if err == nil {
-				if item.Status != WorkDone && item.Status != WorkCancelled &&
-					strings.TrimSpace(item.OwnerSessionID) == "" && item.Wake == nil &&
-					!workHasUnhandledAttention(database, item.ID) {
-					item, err = ensureInitialAttentionLocked(&database, index, item, now)
-				}
+				item, err = ensureInitialAttentionLocked(&database, index, item, now)
 				if err == nil {
 					err = s.persistOrchestrationLocked(database)
 				}
@@ -1683,9 +1731,23 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 }
 
 func ensureInitialAttentionLocked(database *orchestrationDatabase, itemIndex int, item Work, now time.Time) (Work, error) {
-	if database.Migrations.SignalSystemV1At == nil || item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.OwnerSessionID) != "" ||
-		item.Wake != nil || workHasUnhandledAttention(*database, item.ID) {
+	if database.Migrations.SignalSystemV1At == nil || item.Status == WorkDone || item.Status == WorkCancelled {
 		return item, nil
+	}
+	state := reduceWorkProgressState(*database, item)
+	if state.count() == 1 {
+		return item, nil
+	}
+	if state.count() > 1 {
+		_, err := deriveWorkProgressMode(*database, item)
+		return Work{}, err
+	}
+	if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn && !state.OwnerAdmission {
+		item.OwnerSessionID = ""
+		item.OwnerDelegated = false
+		item.Revision++
+		item.UpdatedAt = now
+		database.BrainWork[itemIndex] = item
 	}
 	event := WorkEvent{
 		ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.reconcile_required",
@@ -1766,6 +1828,21 @@ func (s *Store) WorkByOwnerSession(sessionID string) (Work, bool, error) {
 	for _, item := range database.BrainWork {
 		if item.OwnerSessionID == sessionID && item.Status != WorkDone && item.Status != WorkCancelled {
 			return item, true, nil
+		}
+	}
+	// A canonical attention transition relinquishes progress ownership but
+	// retains the exact Turn as lifecycle/finalization evidence. Preserve this
+	// lookup contract for callers reconciling that Session without restoring
+	// OwnerSessionID or treating it as a second progress owner.
+	if turn, found := currentTurnForSession(database, sessionID); found {
+		if index := workIndex(database.BrainWork, turn.WorkID); index >= 0 {
+			item := database.BrainWork[index]
+			state := reduceWorkProgressState(database, item)
+			if strings.TrimSpace(item.OwnerSessionID) == "" &&
+				item.Status != WorkDone && item.Status != WorkCancelled &&
+				(state.Ready || state.Waiting) {
+				return item, true, nil
+			}
 		}
 	}
 	return Work{}, false, nil
@@ -1881,29 +1958,50 @@ func (s *Store) MigrateSignalSystemV1(limit int) (complete bool, processed int, 
 	changedIDs := []string{}
 	for index := start; index < len(database.BrainWork) && processed < limit; index++ {
 		item := database.BrainWork[index]
-		if item.Status != WorkDone && item.Status != WorkCancelled &&
-			strings.TrimSpace(item.OwnerSessionID) == "" && item.Wake == nil &&
-			!workHasUnhandledAttention(database, item.ID) {
-			dedupeKey := "brain:migration:signal-system-v1:" + item.ID
-			exists := false
-			for _, current := range database.BrainWorkEvents {
-				if current.WorkID == item.ID && current.DedupeKey == dedupeKey {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				event := WorkEvent{
-					ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.reconcile_required",
-					DedupeKey: dedupeKey, PayloadRef: "work:" + item.ID, SourceName: "brain",
-					Summary:    "Legacy nonterminal Work requires a typed disposition.",
-					Actionable: true, CreatedAt: now,
-				}
-				if _, appendErr := appendWorkEventLocked(&database, index, event, true); appendErr != nil {
-					s.mu.Unlock()
-					return false, processed, appendErr
-				}
+		revisionBumped := false
+		if item.Status != WorkDone && item.Status != WorkCancelled {
+			state := reduceWorkProgressState(database, item)
+			// A legacy owner link has execution authority only when its exact
+			// current canonical non-Host Turn is still nonterminal. Missing and
+			// immutable Turns make the link historical, so retire it before
+			// deriving the single durable progress mode.
+			if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn {
+				item.OwnerSessionID = ""
+				item.OwnerDelegated = false
+				item.Revision++
+				item.UpdatedAt = now
+				database.BrainWork[index] = item
+				revisionBumped = true
 				changedIDs = append(changedIDs, item.ID)
+				state = reduceWorkProgressState(database, item)
+			}
+			if state.count() > 1 {
+				s.mu.Unlock()
+				_, stateErr := deriveWorkProgressMode(database, item)
+				return false, processed, stateErr
+			}
+			if state.count() == 0 {
+				dedupeKey := "brain:migration:signal-system-v1:" + item.ID
+				exists := false
+				for _, current := range database.BrainWorkEvents {
+					if current.WorkID == item.ID && current.DedupeKey == dedupeKey {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					event := WorkEvent{
+						ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.reconcile_required",
+						DedupeKey: dedupeKey, PayloadRef: "work:" + item.ID, SourceName: "brain",
+						Summary:    "Legacy nonterminal Work requires a typed disposition.",
+						Actionable: true, CreatedAt: now,
+					}
+					if _, appendErr := appendWorkEventLocked(&database, index, event, !revisionBumped); appendErr != nil {
+						s.mu.Unlock()
+						return false, processed, appendErr
+					}
+					changedIDs = append(changedIDs, item.ID)
+				}
 			}
 		}
 		database.Migrations.SignalSystemV1Cursor = item.ID
@@ -1963,6 +2061,13 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 				s.mu.Unlock()
 				return current, false, nil
 			}
+		}
+		item := database.BrainWork[itemIndex]
+		if event.Actionable && (item.Wake != nil || reduceWorkProgressState(database, item).Owned) {
+			// Generic append is an audit/attention operation, not a producer or
+			// owner-transition authority. It cannot clear a typed wait or place
+			// ready attention over an existing execution owner.
+			event.Actionable = false
 		}
 		event, err = appendWorkEventLocked(&database, itemIndex, event, true)
 		if err == nil {
@@ -2036,6 +2141,9 @@ func (s *Store) ApplyProducerTransition(
 		wake = cloneWorkWake(wake)
 		if err := validateWorkWake(wake); err != nil {
 			return Work{}, WorkEvent{}, false, nil, err
+		}
+		if wake.Kind == WorkWakeSessionTerminal {
+			return Work{}, WorkEvent{}, false, nil, fmt.Errorf("session_terminal producer authority belongs to the canonical Turn reducer")
 		}
 		if occurrenceID == "" {
 			return Work{}, WorkEvent{}, false, nil, fmt.Errorf("producer wake requires occurrence identity")
@@ -2113,16 +2221,6 @@ func appendWorkEventLocked(database *orchestrationDatabase, itemIndex int, event
 		return WorkEvent{}, ErrWorkNotFound
 	}
 	item := &database.BrainWork[itemIndex]
-	if item.Wake != nil {
-		if eventMatchesWake(event, item.Wake) {
-			item.Wake = nil
-			event.Actionable = true
-		} else if event.Actionable {
-			// A typed wait is owned by one exact producer. Other facts remain
-			// audit-only and cannot accidentally wake Brain.
-			event.Actionable = false
-		}
-	}
 	if bumpRevision {
 		item.Revision++
 		item.UpdatedAt = event.CreatedAt.UTC()
@@ -2155,27 +2253,6 @@ func readyAttentionEventID(database orchestrationDatabase, workID string) string
 	return ""
 }
 
-func eventMatchesWake(event WorkEvent, wake *WorkWake) bool {
-	if wake == nil || strings.TrimSpace(wake.Ref) == "" {
-		return false
-	}
-	ref := strings.TrimSpace(wake.Ref)
-	source := strings.TrimSpace(event.SourceName)
-	payload := strings.TrimSpace(event.PayloadRef)
-	switch wake.Kind {
-	case WorkWakeSessionTerminal:
-		return (event.Kind == "session.done" || event.Kind == "session.failed" || event.Kind == "session.uncertain") &&
-			(source == ref || payload == ref)
-	case WorkWakeCalendarResult:
-		return (event.Kind == "calendar.result" || event.Kind == "calendar.failure") &&
-			(source == ref || payload == ref)
-	case WorkWakeUserInput:
-		return event.Kind == "user.input" && (source == ref || payload == ref)
-	default:
-		return false
-	}
-}
-
 // WakeWaitingWork atomically projects one external producer fact to every Work
 // waiting on that exact typed reference. It is idempotent per Work and source
 // occurrence; unrelated waits remain untouched.
@@ -2186,6 +2263,9 @@ func (s *Store) WakeWaitingWork(wake WorkWake, kind, occurrenceID, summary strin
 	summary = strings.TrimSpace(summary)
 	if err := validateWorkWake(&wake); err != nil {
 		return nil, err
+	}
+	if wake.Kind == WorkWakeSessionTerminal {
+		return nil, fmt.Errorf("session_terminal producer authority belongs to the canonical Turn reducer")
 	}
 	if kind == "" || occurrenceID == "" {
 		return nil, fmt.Errorf("wake fact requires kind and occurrence identity")
@@ -2241,6 +2321,12 @@ func wakeWaitingWorkLocked(database *orchestrationDatabase, wake WorkWake, kind,
 			PayloadRef: wake.Ref, SourceName: wake.Ref, Summary: summary,
 			Actionable: true, CreatedAt: now,
 		}
+		// Only provenance-bearing producer transactions call this helper.
+		// Clearing the wait before append makes wake satisfaction and ready
+		// attention one atomic database replacement without trusting strings in
+		// the generic append path.
+		item.Wake = nil
+		database.BrainWork[index] = item
 		var err error
 		event, err = appendWorkEventLocked(database, index, event, true)
 		if err != nil {
@@ -2637,6 +2723,10 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		return WorkEvent{}, Work{}, fmt.Errorf("terminal Work cannot return to a nonterminal disposition")
 	}
 	if request.Disposition == WorkDispositionWait {
+		if workHasLiveCanonicalOwnerTurn(database, item) {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, fmt.Errorf("%w: wait requires the live canonical owner Turn to settle first", ErrWorkOwnerConflict)
+		}
 		if err := validateWorkWakeProducer(database, item, request.Wake); err != nil {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, err
@@ -2673,6 +2763,11 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		item.SuccessorReservation = nil
 		item.SessionFinalizations = nil
 	case WorkDispositionWait:
+		// OwnerSessionID without a live canonical owner Turn is historical
+		// linkage, not execution authority. Retire it in the same disposition
+		// replacement before installing the one typed wait owner.
+		item.OwnerSessionID = ""
+		item.OwnerDelegated = false
 		item.Status = WorkWaiting
 		item.Wake = cloneWorkWake(request.Wake)
 		item.WaitFor = request.Wake.Ref

@@ -1492,6 +1492,18 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 			workChanged = true
 		}
 	}
+	if !terminalWork && mutation.eventActionable && !watcher.TurnImmutable(turn.Status) &&
+		workIndex >= 0 && strings.TrimSpace(workItem.OwnerSessionID) == turn.SessionID {
+		// A canonical blocked/stale Turn may transfer progress back to Brain,
+		// but it cannot remain a second execution owner hidden behind ready.
+		// Retain the exact Turn for lifecycle/finalization and allow an exact
+		// continue disposition to promote the same Session again.
+		workItem.OwnerSessionID = ""
+		workItem.OwnerDelegated = false
+		workItem.UpdatedAt = now
+		database.BrainWork[workIndex] = workItem
+		workChanged = true
+	}
 
 	// Outbox event: exactly one row per (work, dedupe key); corrections flip
 	// the existing non-actionable row actionable in place. Terminal Work keeps

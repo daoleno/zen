@@ -1706,7 +1706,7 @@ func TestReconcileDeadOrAbsentTurnOwnedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != WorkNeedsInput || got.OwnerSessionID != sessionID {
+	if got.Status != WorkNeedsInput || got.OwnerSessionID != "" || got.OwnerDelegated {
 		t.Fatalf("absent reconcile Work=%#v", got)
 	}
 }

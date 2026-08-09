@@ -479,11 +479,19 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkOwnerConflict) {
 		t.Fatalf("spawn outside handling err=%v, want owner conflict", err)
 	}
-	if _, _, err := store.AppendWorkEvent(brain.WorkEvent{
-		WorkID: item.ID, Kind: "session.done",
-		DedupeKey: "session:brain-agent-incumbent:@1:turn:one:session.done", Actionable: true,
+	acceptedAt := time.Now().UTC().Add(-time.Second)
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: "brain-agent-incumbent:@1", TurnID: "incumbent-turn-1", AcceptedAt: acceptedAt,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: "brain-agent-incumbent:@1", TurnID: "incumbent-turn-1",
+		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider-incumbent-done",
+		ActivityID: "activity-incumbent", StartedAt: acceptedAt.Add(time.Second),
+		SettledAt: acceptedAt.Add(2 * time.Second), At: acceptedAt.Add(2 * time.Second),
+	}); err != nil || !changed {
+		t.Fatalf("terminalize incumbent changed=%v err=%v", changed, err)
 	}
 	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {

@@ -17,10 +17,10 @@ func createSignalTestWork(t *testing.T, store *Store, title, owner string) Work 
 	item, err := store.CreateWork(Work{
 		Title:            title,
 		Objective:        "Exercise the durable Brain signal protocol.",
-		Status:           WorkRunning,
+		Status:           WorkWaiting,
 		OwnerSessionID:   owner,
 		CompletionPolicy: CompletionBounded,
-		NextAction:       "Wait for the delegated Session.",
+		NextAction:       "Review the delegated Session result.",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,15 +136,20 @@ func TestSignalResolutionCASConflictLeavesAttentionDurable(t *testing.T) {
 	}
 }
 
-func TestTypedWaitOnlyExactProducerWakesWork(t *testing.T) {
+func TestTypedWaitOnlyProvenanceBearingExactProducerWakesWork(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	threadID, err := store.ChatThreadID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + threadID}
 	item, err := store.CreateWork(Work{
 		Title: "Typed wait", Objective: "Wait for one exact user input.",
 		Status: WorkWaiting, CompletionPolicy: CompletionBounded,
-		Wake: &WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:thread-1"},
+		Wake: &wake,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,16 +165,27 @@ func TestTypedWaitOnlyExactProducerWakesWork(t *testing.T) {
 		t.Fatalf("wrong producer woke typed wait: %+v", nonmatch)
 	}
 	match, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: item.ID, Kind: "user.input", DedupeKey: "user:thread-1:input:1",
-		SourceName: "brain-thread:thread-1", Actionable: true,
+		WorkID: item.ID, Kind: "user.input", DedupeKey: "user:" + threadID + ":input:forged",
+		SourceName: wake.Ref, Actionable: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !match.Actionable {
-		t.Fatalf("exact producer did not wake typed wait: %+v", match)
+	if match.Actionable {
+		t.Fatalf("generic matching strings acquired producer authority: %+v", match)
 	}
 	current, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workWakeEqual(current.Wake, &wake) {
+		t.Fatalf("generic matching strings cleared typed wait: %+v", current)
+	}
+	woken, err := store.WakeWaitingWork(wake, "user.input", "admitted-input-1", "continue")
+	if err != nil || len(woken) != 1 || !woken[0].Actionable {
+		t.Fatalf("provenance-bearing exact producer wake=%+v err=%v", woken, err)
+	}
+	current, err = store.Work(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

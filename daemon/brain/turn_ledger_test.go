@@ -1065,6 +1065,23 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	if _, changed, err := store.ApplyTurnFact(oldStale); err != nil || !changed {
 		t.Fatalf("old turn stale apply = changed:%v err:%v", changed, err)
 	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok {
+		t.Fatalf("claim stale attention=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionContinue,
+		SuccessorSessionID:   sessionID,
+	}); err != nil {
+		t.Fatalf("restore exact owner before next Turn: %v", err)
+	}
 	// A newer turn is admitted; the old turn's stale fact re-applied (e.g.
 	// restart reconciliation replay) must be ignored, not re-applied to the
 	// old row and never affect the new turn.
@@ -1151,10 +1168,30 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	// A loss fact for an older turn record after a newer turn is current is
 	// ignored entirely (current-turn gate).
 	newTurnID := sessionID + ":turn:2"
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok {
+		t.Fatalf("claim uncertain attention=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AttachWorkOwner(workItem.ID, sessionID); err != nil {
+		t.Fatalf("reserve replacement Turn: %v", err)
+	}
 	if err := store.AdmitTurn(watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: at.Add(2 * time.Minute),
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionContinue,
+		SuccessorSessionID:   sessionID,
+	}); err != nil {
+		t.Fatalf("continue replacement Turn: %v", err)
 	}
 	staleLoss := loss
 	staleLoss.At = at.Add(3 * time.Minute)
