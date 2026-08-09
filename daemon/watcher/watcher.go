@@ -1313,12 +1313,21 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 	return state, summary
 }
 
-// clearStaleAttemptMetadata removes failed-attempt projection residue (a
-// sticky attention/phase/lease from an ambiguous handoff attempt or a
-// non-canonical progress report) while a canonical turn owns the Session.
-// A live running lease is never cleared: it drives session.stale.
+// clearStaleAttemptMetadata removes terminal-attempt projection residue (a
+// sticky done/failed attention, phase, event kind, or lease from a
+// non-canonical Control report) while a canonical turn owns the Session.
+// Control terminal reports are hints only; leaving their metadata attached to
+// an Admitted/Accepted/Running turn would expose the impossible combination
+// event_kind=done with canonical status=running. A live running/blocked lease
+// is never cleared: it drives session.stale.
 func clearStaleAttemptMetadata(agent *classifier.Agent) {
-	if agent == nil || agent.Attention != "failed" {
+	if agent == nil {
+		return
+	}
+	terminalAttempt := agent.Attention == "done" || agent.Attention == "failed" ||
+		agent.State == classifier.StateDone || agent.State == classifier.StateFailed ||
+		agent.EventKind == "done"
+	if !terminalAttempt {
 		return
 	}
 	agent.Attention = "none"
@@ -1391,9 +1400,10 @@ func (w *Watcher) applyPollFacts(
 	provider ProviderActivityObservation,
 ) TurnSnapshot {
 	ledger := w.turnLedger
-	if ledger == nil {
+	if ledger == nil || TurnImmutable(turn.Status) {
 		return turn
 	}
+	provider = providerObservationForTurn(provider, turn)
 	facts := []TurnFact{}
 	if providerFactRelevant(provider) {
 		if fact := admissionFactFromObservation(id, turn, provider); fact != nil {
@@ -1513,6 +1523,7 @@ func (w *Watcher) resolveRemovedTurnFacts(
 	if probe != nil {
 		provider = probe.ObserveProviderActivity(agent, now)
 	}
+	provider = providerObservationForTurn(provider, turn)
 	if providerFactRelevant(provider) {
 		if fact := admissionFactFromObservation(id, turn, provider); fact != nil {
 			_, _, _ = w.turnLedger.ApplyTurnFact(*fact)
@@ -1538,6 +1549,40 @@ func providerFactRelevant(provider ProviderActivityObservation) bool {
 	return strings.TrimSpace(provider.ID) != "" ||
 		strings.TrimSpace(provider.AdmissionID) != "" ||
 		!provider.StartedAt.IsZero()
+}
+
+// providerObservationForTurn selects the exact activity identity already
+// recorded by the canonical turn. Reusable provider sessions expose only
+// their latest Activity as the ordinary projection, but the bounded terminal
+// metadata from the same authoritative source can safely settle an older
+// stuck turn when — and only when — its full ActivityID matches. Admission
+// fields are cleared for a historical selection because they describe the
+// source's latest input, not the selected older activity.
+func providerObservationForTurn(
+	provider ProviderActivityObservation,
+	turn TurnSnapshot,
+) ProviderActivityObservation {
+	activityID := strings.TrimSpace(turn.ActivityID)
+	if activityID == "" || strings.TrimSpace(provider.ID) == activityID {
+		return provider
+	}
+	for index := len(provider.TerminalActivities) - 1; index >= 0; index-- {
+		terminal := provider.TerminalActivities[index]
+		if strings.TrimSpace(terminal.ID) != activityID {
+			continue
+		}
+		provider.ID = strings.TrimSpace(terminal.ID)
+		provider.Status = strings.TrimSpace(terminal.Status)
+		provider.StartedAt = terminal.StartedAt.UTC()
+		provider.SettledAt = terminal.SettledAt.UTC()
+		provider.AdmissionStream = ""
+		provider.AdmissionID = ""
+		provider.AdmissionCursor = 0
+		provider.AdmissionAt = time.Time{}
+		provider.InputSHA256 = ""
+		return provider
+	}
+	return provider
 }
 
 // admissionFactFromObservation derives the admission-correlated fact for an
@@ -2323,12 +2368,15 @@ func (w *Watcher) delegatedInputConfirmer(
 		return providerProbe.ObserveProviderActivity(*agent, w.admissionNowValue()), nil
 	}
 	return delegatedInputConfirmer{
-		baseline: func() (delegatedAdmissionEvidence, error) {
+		baseline: func() (delegatedInputBaseline, error) {
 			observation, err := observe()
 			if err != nil {
-				return delegatedAdmissionEvidence{}, err
+				return delegatedInputBaseline{}, err
 			}
-			return delegatedAdmissionEvidenceFromObservation(observation), nil
+			return delegatedInputBaseline{
+				Admission: delegatedAdmissionEvidenceFromObservation(observation),
+				Provider:  observation,
+			}, nil
 		},
 		confirm: func(
 			baseline delegatedAdmissionEvidence,

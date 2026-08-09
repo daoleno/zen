@@ -411,8 +411,11 @@ func readCodexMeta(path string) (codexMeta, error) {
 		return codexMeta{}, err
 	}
 	defer file.Close()
+	return readCodexMetaFromReader(file)
+}
 
-	reader := bufio.NewReader(file)
+func readCodexMetaFromReader(source io.Reader) (codexMeta, error) {
+	reader := bufio.NewReader(source)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 {

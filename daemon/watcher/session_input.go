@@ -64,8 +64,13 @@ type delegatedInputConfirmation struct {
 	Admission        delegatedAdmissionEvidence
 }
 
+type delegatedInputBaseline struct {
+	Admission delegatedAdmissionEvidence
+	Provider  ProviderActivityObservation
+}
+
 type delegatedInputConfirmer struct {
-	baseline func() (delegatedAdmissionEvidence, error)
+	baseline func() (delegatedInputBaseline, error)
 	confirm  func(
 		baseline delegatedAdmissionEvidence,
 		mutationBoundary time.Time,
@@ -496,21 +501,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 		if err := validateSameSessionInputPane(baseline, current); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
-		if turn != nil {
-			existing, exists, turnErr := owner.ledgerTurn(sessionID)
-			if turnErr != nil {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
-			}
-			if exists && existing.TurnID != turn.ID && !TurnTerminal(existing.Status) {
-				// A submitted message while work is active is steering for the
-				// current turn. Keep its distinct input receipt, but do not
-				// create a second lifecycle identity or reset settlement.
-				result.TurnID = existing.TurnID
-				turn = nil
-			} else {
-				result.TurnID = turn.ID
-			}
-		}
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
@@ -545,6 +535,91 @@ func (owner *sessionInputOwner) submitWithTurn(
 			afterMarker := owner.io.pane(socket, current.paneID)
 			if err := validateSameSessionInputPane(current, afterMarker); err != nil {
 				return owner.rollbackReceiptMarker(socket, current.paneID, originalLedger, result.Receipt, err)
+			}
+		}
+		var admissionBaseline delegatedAdmissionEvidence
+		var providerBaseline ProviderActivityObservation
+		if requiresConfirmation {
+			if confirm.baseline == nil || confirm.confirm == nil {
+				if result.Receipt != "" {
+					return owner.rollbackReceiptMarker(
+						socket,
+						current.paneID,
+						originalLedger,
+						result.Receipt,
+						fmt.Errorf("delegated provider admission observer is unavailable"),
+					)
+				}
+				return definitelyNotSubmitted(
+					result.Receipt,
+					fmt.Errorf("delegated provider admission observer is unavailable"),
+				)
+			}
+			captured, baselineErr := confirm.baseline()
+			if baselineErr != nil {
+				if result.Receipt != "" {
+					return owner.rollbackReceiptMarker(
+						socket,
+						current.paneID,
+						originalLedger,
+						result.Receipt,
+						fmt.Errorf("capture provider admission baseline: %w", baselineErr),
+					)
+				}
+				return definitelyNotSubmitted(
+					result.Receipt,
+					fmt.Errorf("capture provider admission baseline: %w", baselineErr),
+				)
+			}
+			admissionBaseline = captured.Admission
+			providerBaseline = captured.Provider
+		}
+		if turn != nil {
+			existing, exists, turnErr := owner.ledgerTurn(sessionID)
+			if turnErr != nil {
+				if result.Receipt != "" {
+					return owner.rollbackReceiptMarker(
+						socket,
+						current.paneID,
+						originalLedger,
+						result.Receipt,
+						fmt.Errorf("read canonical delegated turn: %w", turnErr),
+					)
+				}
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
+			}
+			if exists && existing.TurnID != turn.ID && !TurnTerminal(existing.Status) {
+				// Ledger status alone cannot decide Session reuse: a provider
+				// terminal may already be durable while a prior parser/poll left
+				// the row running. Reconcile an exact authoritative baseline
+				// through the canonical reducer first. Only a bound activity that
+				// is still truly running may receive steering; a bound terminal
+				// settles the old turn and this submission receives the new turn.
+				steer, reconcileErr := owner.reconcileSubmissionActivity(
+					sessionID,
+					existing,
+					providerBaseline,
+				)
+				if reconcileErr != nil {
+					if result.Receipt != "" {
+						return owner.rollbackReceiptMarker(
+							socket,
+							current.paneID,
+							originalLedger,
+							result.Receipt,
+							reconcileErr,
+						)
+					}
+					return definitelyNotSubmitted(result.Receipt, reconcileErr)
+				}
+				if steer {
+					result.TurnID = existing.TurnID
+					turn = nil
+				} else {
+					result.TurnID = turn.ID
+				}
+			} else {
+				result.TurnID = turn.ID
 			}
 		}
 		if turn != nil {
@@ -587,41 +662,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 
 		adapter := sessionInputProviderForCommand(command)
-		var admissionBaseline delegatedAdmissionEvidence
-		if requiresConfirmation {
-			if confirm.baseline == nil || confirm.confirm == nil {
-				if result.Receipt != "" {
-					return owner.rollbackReceiptMarker(
-						socket,
-						current.paneID,
-						originalLedger,
-						result.Receipt,
-						fmt.Errorf("delegated provider admission observer is unavailable"),
-					)
-				}
-				return definitelyNotSubmitted(
-					result.Receipt,
-					fmt.Errorf("delegated provider admission observer is unavailable"),
-				)
-			}
-			var baselineErr error
-			admissionBaseline, baselineErr = confirm.baseline()
-			if baselineErr != nil {
-				if result.Receipt != "" {
-					return owner.rollbackReceiptMarker(
-						socket,
-						current.paneID,
-						originalLedger,
-						result.Receipt,
-						fmt.Errorf("capture provider admission baseline: %w", baselineErr),
-					)
-				}
-				return definitelyNotSubmitted(
-					result.Receipt,
-					fmt.Errorf("capture provider admission baseline: %w", baselineErr),
-				)
-			}
-		}
 		mutationBoundary := time.Now().UTC()
 		started, queueErr := owner.io.runQueue(socket, sessionInputSubmitQueue(
 			current.paneID,
@@ -749,6 +789,85 @@ func (owner *sessionInputOwner) ledgerTurn(sessionID string) (TurnSnapshot, bool
 		return TurnSnapshot{}, false, nil
 	}
 	return owner.ledger.Turn(sessionID)
+}
+
+// reconcileSubmissionActivity decides the only two valid reuse outcomes for
+// a nonterminal ledger row. The decision is made from authoritative provider
+// activity, never from the possibly stale ledger status alone:
+//
+//   - an exact bound running activity steers the existing canonical turn;
+//   - an exact bound terminal is applied through the canonical reducer, after
+//     which the pending submission owns its freshly minted turn.
+//
+// Missing, mismatched, or non-lifecycle evidence fails closed before the tmux
+// mutation boundary.
+func (owner *sessionInputOwner) reconcileSubmissionActivity(
+	sessionID string,
+	turn TurnSnapshot,
+	provider ProviderActivityObservation,
+) (bool, error) {
+	if owner == nil || owner.ledger == nil {
+		return false, fmt.Errorf("canonical turn ledger is unavailable")
+	}
+	provider = providerObservationForTurn(provider, turn)
+	if !providerObservationCanBindTurn(turn, provider) {
+		return false, fmt.Errorf(
+			"current provider activity is not authoritatively bound to canonical turn %s",
+			turn.TurnID,
+		)
+	}
+	fact := activityFactFromObservation(sessionID, turn, provider)
+	if fact == nil {
+		return false, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+	}
+	snapshot, _, err := owner.ledger.ApplyTurnFact(*fact)
+	if err != nil {
+		return false, fmt.Errorf("reconcile canonical provider activity: %w", err)
+	}
+	switch strings.TrimSpace(provider.Status) {
+	case "running":
+		if TurnTerminal(snapshot.Status) || strings.TrimSpace(snapshot.ActivityID) != strings.TrimSpace(provider.ID) {
+			return false, fmt.Errorf("provider running activity did not bind the canonical turn")
+		}
+		return true, nil
+	case "completed":
+		if snapshot.Status != TurnDone {
+			return false, fmt.Errorf("provider completion did not settle the canonical turn")
+		}
+		return false, nil
+	case "failed", "interrupted", "cancelled":
+		if snapshot.Status != TurnFailed {
+			return false, fmt.Errorf("provider failure did not settle the canonical turn")
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+	}
+}
+
+func providerObservationCanBindTurn(
+	turn TurnSnapshot,
+	provider ProviderActivityObservation,
+) bool {
+	activityID := strings.TrimSpace(provider.ID)
+	if recorded := strings.TrimSpace(turn.ActivityID); recorded != "" {
+		return activityID == recorded
+	}
+	admission := admissionFromObservation(provider)
+	if !turn.Admission.Empty() {
+		return admission.Stream == turn.Admission.Stream &&
+			strings.TrimSpace(admission.ID) != "" &&
+			admission.Cursor >= turn.Admission.Cursor &&
+			(strings.TrimSpace(turn.Admission.SHA256) == "" ||
+				strings.TrimSpace(admission.SHA256) == turn.Admission.SHA256)
+	}
+	if turn.Status != TurnAdmitted && turn.Status != TurnAccepted {
+		return false
+	}
+	if provider.StartedAt.IsZero() || provider.StartedAt.Before(turn.AcceptedAt) {
+		return false
+	}
+	return !admission.Empty() || activityID != ""
 }
 
 func emptySessionInputReceiptLedger() sessionInputReceiptLedger {

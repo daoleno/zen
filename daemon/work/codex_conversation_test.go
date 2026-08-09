@@ -1791,6 +1791,126 @@ func TestParseCodexConversation_TracksProviderActivityFromNativeLifecycleEvents(
 	})
 }
 
+// A bounded Codex tail can begin after session_meta/task_started while still
+// containing task_complete. The terminal row carries the same native turn id,
+// so incremental parsing must retain the session-scoped Activity identity that
+// was published while the turn was running. Otherwise the canonical ledger
+// sees an unbound terminal and can never settle.
+func TestProviderConversationReaderCodexTailRetainsActivityIdentityAcrossIncrementAndCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout-tail.jsonl")
+	sessionID := "session-tail-identity"
+	nativeTurnID := "native-turn-identity"
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-08-08T22:22:42Z",
+			"payload": map[string]any{
+				"id":  sessionID,
+				"cwd": "/repo/zen",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-08T22:22:43Z",
+			"payload": map[string]any{
+				"type":    "task_started",
+				"turn_id": nativeTurnID,
+			},
+		},
+	)
+
+	reader := NewProviderConversationReader()
+	running, err := reader.loadCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantActivityID := sessionID + ":activity:" + nativeTurnID
+	if running.Activity == nil || running.Activity.ID != wantActivityID ||
+		running.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("running Activity = %#v, want %q running", running.Activity, wantActivityID)
+	}
+
+	appendJSONL(t, path,
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-08-08T22:22:44Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": strings.Repeat("x", maxCodexConversationRead+1024),
+				}},
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-08T22:22:45Z",
+			"payload": map[string]any{
+				"type":    "task_complete",
+				"turn_id": nativeTurnID,
+			},
+		},
+	)
+
+	completed, err := reader.loadCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Activity == nil || completed.Activity.ID != wantActivityID ||
+		completed.Activity.Status != ProviderActivityCompleted ||
+		completed.Activity.SettledAt != "2026-08-08T22:22:45Z" {
+		t.Fatalf("incremental terminal Activity = %#v, want stable completed %q", completed.Activity, wantActivityID)
+	}
+
+	cached, err := reader.loadCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.Activity != completed.Activity {
+		t.Fatal("unchanged Codex source was reparsed instead of using the reader cache")
+	}
+
+	secondNativeTurnID := "native-turn-follow-up"
+	appendJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-08T22:23:00Z",
+			"payload": map[string]any{
+				"type":    "task_started",
+				"turn_id": secondNativeTurnID,
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-08T22:23:01Z",
+			"payload": map[string]any{
+				"type":    "task_complete",
+				"turn_id": secondNativeTurnID,
+			},
+		},
+	)
+	advanced, err := reader.loadCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSecondActivityID := sessionID + ":activity:" + secondNativeTurnID
+	if advanced.Activity == nil || advanced.Activity.ID != wantSecondActivityID ||
+		advanced.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("follow-up Activity = %#v, want completed %q", advanced.Activity, wantSecondActivityID)
+	}
+	foundFirstTerminal := false
+	for _, activity := range advanced.ProviderActivities {
+		if activity.ID == wantActivityID && activity.Status == ProviderActivityCompleted &&
+			activity.SettledAt == "2026-08-08T22:22:45Z" {
+			foundFirstTerminal = true
+		}
+	}
+	if !foundFirstTerminal {
+		t.Fatalf("provider terminal history does not retain exact prior ActivityID: %#v", advanced.ProviderActivities)
+	}
+}
+
 func assertEvent(t *testing.T, event CodexConversationEvent, kind, role, title, bodyPart string) {
 	t.Helper()
 	if event.Kind != kind || event.Role != role || event.Title != title || !strings.Contains(event.Body, bodyPart) {

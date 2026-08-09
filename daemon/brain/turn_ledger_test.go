@@ -254,6 +254,107 @@ func TestTurnBoundProviderTerminalFlipsUnboundHintInPlace(t *testing.T) {
 	}
 }
 
+func TestExactActivityProviderTerminalConvergesAtomicallyAndNeverReopens(t *testing.T) {
+	store, sessionID, turnID := ledgerTestStore(t)
+	acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	activityID := "codex-session:activity:native-turn"
+	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt.Add(time.Second))
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceReceipt, Kind: "admission",
+		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload-digest",
+		Admission:  admission,
+		ActivityID: activityID,
+		At:         acceptedAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control done remains fail-closed: it may attach one audit hint but
+	// cannot settle the turn, wake Brain, or move Work to review-ready.
+	controlDone := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:    watcher.EvidenceControl,
+		Kind:     "done",
+		SourceID: "control\x00done-report",
+		At:       acceptedAt.Add(3 * time.Second),
+	}
+	snapshot, changed, err := store.ApplyTurnFact(controlDone)
+	if err != nil || !changed || snapshot.Status != watcher.TurnAccepted {
+		t.Fatalf("Control done = (%+v, %v, %v), want hint-only Accepted", snapshot, changed, err)
+	}
+	workItem, _, _ := store.WorkByOwnerSession(sessionID)
+	dedupeKey := "session:" + sessionID + ":turn:" + turnID + ":session.done"
+	row, found := turnEvent(t, store, workItem.ID, dedupeKey)
+	if !found || row.Actionable {
+		t.Fatalf("Control done row = %+v found=%v, want non-actionable", row, found)
+	}
+
+	// The authoritative terminal intentionally carries no admission tuple:
+	// exact ActivityID identity alone must bind and atomically converge the
+	// turn, Work review state, and the existing exactly-once outbox row.
+	terminal := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:      watcher.EvidenceProvider,
+		Kind:       "done",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00" + activityID + "\x000",
+		ActivityID: activityID,
+		StartedAt:  acceptedAt.Add(time.Second),
+		SettledAt:  acceptedAt.Add(10 * time.Second),
+		At:         acceptedAt.Add(11 * time.Second),
+	}
+	snapshot, changed, err = store.ApplyTurnFact(terminal)
+	if err != nil || !changed || snapshot.Status != watcher.TurnDone || snapshot.SettledAt == nil {
+		t.Fatalf("exact Activity terminal = (%+v, %v, %v), want settled Done", snapshot, changed, err)
+	}
+	workItem, err = store.Work(workItem.ID)
+	if err != nil || workItem.Status != WorkWaiting ||
+		workItem.NextAction != "Review the delegated Session result." || workItem.WaitFor != "" {
+		t.Fatalf("Work did not converge to review-ready waiting: %+v err=%v", workItem, err)
+	}
+	row, found = turnEvent(t, store, workItem.ID, dedupeKey)
+	if !found || !row.Actionable {
+		t.Fatalf("provider terminal did not flip the same row actionable: %+v found=%v", row, found)
+	}
+
+	// Restart replay and a later unique heartbeat are both no-ops. Neither can
+	// reopen the turn/Work nor create a second actionable terminal row.
+	restarted, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay, changed, err := restarted.ApplyTurnFact(terminal); err != nil || changed || replay.Status != watcher.TurnDone {
+		t.Fatalf("restart terminal replay = (%+v, %v, %v), want immutable no-op", replay, changed, err)
+	}
+	if afterHeartbeat, changed, err := restarted.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class:        watcher.EvidenceControl,
+		Kind:         "running",
+		SourceID:     "control\x00late-heartbeat",
+		LeaseSeconds: 300,
+		At:           acceptedAt.Add(time.Hour),
+	}); err != nil || changed || afterHeartbeat.Status != watcher.TurnDone {
+		t.Fatalf("late heartbeat = (%+v, %v, %v), want immutable Done", afterHeartbeat, changed, err)
+	}
+	afterWork, err := restarted.Work(workItem.ID)
+	if err != nil || afterWork.Status != WorkWaiting || afterWork.NextAction != workItem.NextAction || afterWork.WaitFor != "" {
+		t.Fatalf("late facts reopened Work: before=%+v after=%+v err=%v", workItem, afterWork, err)
+	}
+	events, err := restarted.ListWorkEvents(workItem.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneRows := 0
+	for _, event := range events {
+		if event.DedupeKey == dedupeKey && event.Actionable {
+			doneRows++
+		}
+	}
+	if doneRows != 1 {
+		t.Fatalf("actionable session.done rows = %d, want exactly one", doneRows)
+	}
+}
+
 // TestTurnTerminalImmutabilityAndSessionReuse covers C.2.8: a terminal turn
 // is immutable; a reused Session's new turn is a new lifecycle boundary and
 // old terminal facts are ignored.

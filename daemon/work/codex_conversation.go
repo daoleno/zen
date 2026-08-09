@@ -34,6 +34,11 @@ type CodexConversation struct {
 	Updated   *time.Time               `json:"updated_at,omitempty"`
 	Activity  *ProviderActivity        `json:"activity,omitempty"`
 	Events    []CodexConversationEvent `json:"events"`
+	// ProviderActivities is parser-internal lifecycle history used only to
+	// reconcile an exact previously recorded ActivityID after a reusable
+	// provider session has advanced to a later native turn. It is never a UI
+	// event surface and is not serialized.
+	ProviderActivities []ProviderActivity `json:"-"`
 }
 
 type ProviderActivityStatus string
@@ -273,6 +278,15 @@ func parseCodexConversation(path string) (CodexConversation, error) {
 	}
 	defer file.Close()
 
+	// The bounded parser may seek past session_meta on large rollouts. Read
+	// that immutable header from this same open file first so every lifecycle
+	// row — including a lone task_complete in the retained tail — derives the
+	// same session-scoped Activity identity that was published when
+	// task_started was still in the parse window. Failure stays backward-
+	// compatible: malformed/legacy files continue through the ordinary tail
+	// parser and use the path-scoped id.
+	meta, _ := readCodexMetaFromReader(file)
+
 	if err := seekCodexConversationTail(file); err != nil {
 		return CodexConversation{}, err
 	}
@@ -281,6 +295,8 @@ func parseCodexConversation(path string) (CodexConversation, error) {
 		return CodexConversation{}, err
 	}
 	builder := newCodexConversationBuilder(filepath.Base(path))
+	builder.sessionID = strings.TrimSpace(meta.ID)
+	builder.cwd = strings.TrimSpace(meta.CWD)
 	reader := bufio.NewReader(file)
 	for {
 		currentLineOffset := lineOffset
@@ -339,6 +355,7 @@ type codexConversationBuilder struct {
 	activityLifecycle    providerActivityLifecycle
 	slashCommandActivity bool
 	activityProviderID   string
+	providerActivities   []ProviderActivity
 	events               []CodexConversationEvent
 	commandByCall        map[string]string
 	commandCallBySession map[string]string
@@ -391,6 +408,9 @@ func (b *codexConversationBuilder) startActivity(providerID, timestamp string, l
 		b.activityLifecycle = providerActivityLifecycle{}
 		b.activityProviderID = ""
 	}
+	if b.activityLifecycle.activity != nil && !b.activityLifecycle.running() {
+		b.retainProviderActivity(b.activityLifecycle.activity)
+	}
 	previousActivityID := ""
 	if b.activityLifecycle.activity != nil {
 		previousActivityID = b.activityLifecycle.activity.ID
@@ -414,6 +434,50 @@ func (b *codexConversationBuilder) startActivity(providerID, timestamp string, l
 	if b.activityLifecycle.activity != nil && b.activityLifecycle.activity.ID != previousActivityID {
 		b.activityProviderID = providerID
 	}
+}
+
+const maxCodexProviderActivities = 64
+
+func (b *codexConversationBuilder) retainProviderActivity(activity *ProviderActivity) {
+	if activity == nil || strings.TrimSpace(activity.ID) == "" ||
+		normalizedProviderActivityTerminalStatus(activity.Status) == "" {
+		return
+	}
+	for index := range b.providerActivities {
+		if b.providerActivities[index].ID == activity.ID {
+			b.providerActivities[index] = *activity
+			return
+		}
+	}
+	b.providerActivities = append(b.providerActivities, *activity)
+	if len(b.providerActivities) > maxCodexProviderActivities {
+		b.providerActivities = append(
+			[]ProviderActivity(nil),
+			b.providerActivities[len(b.providerActivities)-maxCodexProviderActivities:]...,
+		)
+	}
+}
+
+func (b *codexConversationBuilder) providerActivitySnapshots() []ProviderActivity {
+	activities := append([]ProviderActivity(nil), b.providerActivities...)
+	if current := b.activityLifecycle.snapshot(); current != nil {
+		replaced := false
+		for index := range activities {
+			if activities[index].ID != current.ID {
+				continue
+			}
+			activities[index] = *current
+			replaced = true
+			break
+		}
+		if !replaced {
+			activities = append(activities, *current)
+		}
+	}
+	if len(activities) > maxCodexProviderActivities {
+		activities = activities[len(activities)-maxCodexProviderActivities:]
+	}
+	return activities
 }
 
 func (b *codexConversationBuilder) settleActivity(providerID string, status ProviderActivityStatus, timestamp string, lineNumber int) {
@@ -1539,11 +1603,12 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 	}
 	b.reindexEvents()
 	return conversationWithActivity(CodexConversation{
-		Available: true,
-		Source:    "codex_rollout",
-		SessionID: b.sessionID,
-		CWD:       b.cwd,
-		Events:    b.events,
+		Available:          true,
+		Source:             "codex_rollout",
+		SessionID:          b.sessionID,
+		CWD:                b.cwd,
+		Events:             b.events,
+		ProviderActivities: b.providerActivitySnapshots(),
 	}, &b.activityLifecycle)
 }
 

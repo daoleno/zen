@@ -146,8 +146,12 @@ func TestOpenCodeCacheConcurrentReadersWithWriter(t *testing.T) {
 		<-start
 		reader := NewProviderConversationReader()
 		agent := classifier.Agent{Cwd: directory, Command: "opencode"}
+		// Keep discovery inside the fixture's declared 72-hour freshness
+		// window. Wall-clock time would make this deterministic concurrency
+		// test start returning session_not_found as the fixed fixture ages.
+		readAt := fixture.startedAt.Add(24 * time.Hour)
 		for loop := 0; loop < readerLoops; loop++ {
-			conversation, err := reader.Load(agent, AgentProviderOpenCode, time.Now())
+			conversation, err := reader.Load(agent, AgentProviderOpenCode, readAt)
 			if err != nil {
 				t.Errorf("reader load: %v", err)
 				return

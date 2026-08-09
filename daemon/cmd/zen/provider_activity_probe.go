@@ -93,6 +93,24 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 		observation.StartedAt = parseProviderActivityTime(conversation.Activity.StartedAt)
 		observation.SettledAt = parseProviderActivityTime(conversation.Activity.SettledAt)
 	}
+	for _, activity := range conversation.ProviderActivities {
+		status := strings.TrimSpace(string(activity.Status))
+		switch status {
+		case string(work.ProviderActivityCompleted),
+			string(work.ProviderActivityFailed),
+			string(work.ProviderActivityInterrupted),
+			string(work.ProviderActivityCancelled):
+			observation.TerminalActivities = append(
+				observation.TerminalActivities,
+				watcher.ProviderTerminalActivity{
+					ID:        strings.TrimSpace(activity.ID),
+					Status:    status,
+					StartedAt: parseProviderActivityTime(activity.StartedAt),
+					SettledAt: parseProviderActivityTime(activity.SettledAt),
+				},
+			)
+		}
+	}
 	for index := len(conversation.Events) - 1; index >= 0; index-- {
 		event := conversation.Events[index]
 		if event.Kind != "user_message" || strings.TrimSpace(event.Body) == "" {

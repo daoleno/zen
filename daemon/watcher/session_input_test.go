@@ -81,6 +81,8 @@ func (p *transportAdmissionProbe) ObserveProviderActivity(
 	}
 	return ProviderActivityObservation{
 		ID:              fmt.Sprintf("activity-%d", step),
+		Status:          "running",
+		StartedAt:       at,
 		AdmissionStream: "cursor-session",
 		AdmissionID:     fmt.Sprintf("cursor-user-%d", step),
 		AdmissionCursor: uint64(step + 1),
@@ -254,8 +256,14 @@ func fixedSessionInputResolver(identity targetProcessIdentity) func(string) (tar
 func scriptedCorrelatedAdmission(payload string) delegatedInputConfirmer {
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 	return delegatedInputConfirmer{
-		baseline: func() (delegatedAdmissionEvidence, error) {
-			return delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1}, nil
+		baseline: func() (delegatedInputBaseline, error) {
+			return delegatedInputBaseline{
+				Admission: delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1},
+				Provider: ProviderActivityObservation{
+					ID:     "activity-accepted",
+					Status: "running",
+				},
+			}, nil
 		},
 		confirm: func(
 			_ delegatedAdmissionEvidence,
@@ -283,8 +291,14 @@ func scriptedCorrelatedAdmission(payload string) delegatedInputConfirmer {
 
 func scriptedAmbiguousAdmission() delegatedInputConfirmer {
 	return delegatedInputConfirmer{
-		baseline: func() (delegatedAdmissionEvidence, error) {
-			return delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1}, nil
+		baseline: func() (delegatedInputBaseline, error) {
+			return delegatedInputBaseline{
+				Admission: delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1},
+				Provider: ProviderActivityObservation{
+					ID:     "activity-accepted",
+					Status: "running",
+				},
+			}, nil
 		},
 		confirm: func(
 			delegatedAdmissionEvidence,
@@ -447,6 +461,7 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 				bound = true
 			}
 			if !bound && !turn.HasAdmission &&
+				(turn.Status == TurnAdmitted || turn.Status == TurnAccepted) &&
 				!fact.StartedAt.IsZero() && !fact.StartedAt.Before(turn.AcceptedAt) &&
 				(fact.Admission.ID != "" || fact.ActivityID != "") {
 				bound = true
@@ -881,6 +896,107 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	if turn.TurnID != second.ID || turn.Status != TurnAccepted ||
 		len(io.submissions) != 2 {
 		t.Fatalf("follow-up canonical turn=%+v submissions=%#v", turn, io.submissions)
+	}
+}
+
+func TestSessionInputProviderCompletedRunningLedgerMintsFollowUpTurn(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	acceptedAt := time.Date(2026, 8, 8, 22, 22, 41, 0, time.UTC)
+	oldActivityID := "session:activity:native-old"
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID:  "agent:@1",
+		TurnID:     "stuck-running-turn",
+		Status:     TurnRunning,
+		AcceptedAt: acceptedAt,
+		ActivityID: oldActivityID,
+	})
+
+	confirm := scriptedCorrelatedAdmission("follow-up")
+	base := confirm.baseline
+	confirm.baseline = func() (delegatedInputBaseline, error) {
+		baseline, err := base()
+		baseline.Provider = ProviderActivityObservation{
+			ID:        oldActivityID,
+			Status:    "completed",
+			StartedAt: acceptedAt.Add(time.Second),
+			SettledAt: acceptedAt.Add(time.Minute),
+		}
+		return baseline, err
+	}
+
+	next := delegatedTurnDraft{
+		ID:              "canonical-follow-up",
+		AcceptedAt:      acceptedAt.Add(2 * time.Minute),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "follow-up", next, confirm,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
+		t.Fatalf("completed-provider follow-up = (%+v, %v), want fresh %s", result, err, next.ID)
+	}
+	current := ledger.snapshot("agent:@1")
+	if current.TurnID != next.ID || current.Status != TurnAccepted {
+		t.Fatalf("follow-up did not replace settled stale ledger turn: %+v", current)
+	}
+	if len(ledger.applied) < 2 || ledger.applied[0].TurnID != "stuck-running-turn" ||
+		ledger.applied[0].Kind != "done" || ledger.applied[0].ActivityID != oldActivityID {
+		t.Fatalf("old canonical turn was not settled first: %+v", ledger.applied)
+	}
+
+	// A receiver restart and duplicate receipt cannot replay the provider
+	// mutation or manufacture another turn.
+	restarted := newLedgerSessionInputOwner(io, ledger)
+	duplicate, err := restarted.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "follow-up", next, confirm,
+	)
+	if err != nil || !duplicate.Duplicate || duplicate.TurnID != next.ID || len(io.queues) != 1 {
+		t.Fatalf("restart duplicate = (%+v, %v), queues=%d", duplicate, err, len(io.queues))
+	}
+}
+
+func TestSessionInputSteeringFailsClosedWithoutExactRunningProviderActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	acceptedAt := time.Date(2026, 8, 8, 22, 22, 41, 0, time.UTC)
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID:  "agent:@1",
+		TurnID:     "canonical-running",
+		Status:     TurnRunning,
+		AcceptedAt: acceptedAt,
+		ActivityID: "session:activity:canonical",
+	})
+	confirm := scriptedCorrelatedAdmission("follow-up")
+	base := confirm.baseline
+	confirm.baseline = func() (delegatedInputBaseline, error) {
+		baseline, err := base()
+		baseline.Provider = ProviderActivityObservation{
+			ID:        "session:activity:different",
+			Status:    "running",
+			StartedAt: acceptedAt.Add(time.Second),
+		}
+		return baseline, err
+	}
+	next := delegatedTurnDraft{
+		ID:              "must-not-be-admitted",
+		AcceptedAt:      acceptedAt.Add(time.Minute),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted || result.Outcome != InputNotSubmitted {
+		t.Fatalf("mismatched running activity = (%+v, %v), want fail-closed", result, err)
+	}
+	if len(io.queues) != 0 || ledger.snapshot("agent:@1").TurnID != "canonical-running" {
+		t.Fatalf("mismatched activity mutated provider or ledger: queues=%d turn=%+v", len(io.queues), ledger.snapshot("agent:@1"))
 	}
 }
 
@@ -1394,6 +1510,7 @@ func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing
 		TurnID:     "active-turn",
 		Status:     TurnRunning,
 		AcceptedAt: time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC),
+		ActivityID: "activity-accepted",
 	})
 	owner := newSessionInputOwner(io)
 	owner.ledger = ledger
@@ -1427,6 +1544,7 @@ func TestSessionInputActiveSteeringWithoutAdmissionIsAmbiguousAndNeverReplayed(t
 		TurnID:     "active-turn",
 		Status:     TurnRunning,
 		AcceptedAt: time.Now().UTC().Add(-time.Minute),
+		ActivityID: "activity-accepted",
 	})
 	steering := delegatedTurnDraft{
 		ID:              "steering-ambiguous",
@@ -1475,6 +1593,7 @@ func TestSessionInputDuplicateSteeringReceiptRetainsActiveTurn(t *testing.T) {
 		TurnID:     "active-turn",
 		Status:     TurnRunning,
 		AcceptedAt: time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC),
+		ActivityID: "activity-accepted",
 	})
 	steering := delegatedTurnDraft{
 		ID:              "steering-delivery",

@@ -58,6 +58,19 @@ type ProviderActivityObservation struct {
 	// ProbeState is the channel-health classification of this observation:
 	// OK (read succeeded, possibly no new fact) vs unlocatable/unreadable.
 	ProbeState ProviderProbeState
+	// TerminalActivities contains bounded provider-native terminal metadata
+	// from the same durable source. It lets the watcher reconcile the exact
+	// ActivityID already recorded on a canonical turn even after a reusable
+	// provider session has advanced to a later native activity. No transcript
+	// text is carried here.
+	TerminalActivities []ProviderTerminalActivity
+}
+
+type ProviderTerminalActivity struct {
+	ID        string
+	Status    string
+	StartedAt time.Time
+	SettledAt time.Time
 }
 
 type ProviderActivityProbe interface {

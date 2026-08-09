@@ -553,6 +553,56 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	}
 }
 
+func TestCanonicalTurnProjectionClearsControlDoneMetadata(t *testing.T) {
+	w := New(time.Second)
+	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Worker",
+	}, time.Date(2026, 8, 8, 8, 0, 0, 0, time.UTC))
+	<-w.Events()
+
+	ledger := newFakeTurnLedger()
+	acceptedAt := time.Now().UTC()
+	if err := ledger.AdmitTurn(AdmittedTurn{
+		SessionID:  "brain-agent-worker:@1",
+		TurnID:     "brain-agent-worker:@1:turn:1",
+		AcceptedAt: acceptedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ledger.ApplyTurnFact(TurnFact{
+		SessionID: "brain-agent-worker:@1",
+		TurnID:    "brain-agent-worker:@1:turn:1",
+		Class:     EvidenceReceipt,
+		Kind:      "admission",
+		SourceID:  "receipt\x00brain-agent-worker:@1:turn:1\x00accepted\x00payload",
+		Admission: TurnAdmission{Stream: "test", ID: "admission-1", Cursor: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.turnLedger = ledger
+
+	agent, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+		Status:       "done",
+		Phase:        "reporting",
+		Attention:    "done",
+		Summary:      "Provider result is ready",
+		TaskClass:    "lasting_design",
+		EventKind:    "done",
+		DetailsJSON:  `{"verification":"complete"}`,
+		LeaseSeconds: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-w.Events()
+	if agent.State != classifier.StateRunning || agent.Attention != "none" || agent.NeedsAttention ||
+		agent.Phase != "" || agent.TaskClass != "" || agent.EventKind != "" || agent.DetailsJSON != "" ||
+		agent.LastProgressAt != nil || agent.ExpectedNextCheckAt != nil || agent.LeaseSeconds != 0 {
+		t.Fatalf("Control done metadata contradicted canonical running turn: %#v", agent)
+	}
+}
+
 func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
