@@ -384,6 +384,15 @@ func (w *fakeWatcher) SendInputWithReceiptResult(sessionID, text, receipt string
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
+func (w *fakeWatcher) SubmitBrainHostInput(
+	sessionID, payload, eventID, providerTurnID string,
+	_ time.Time,
+) (watcher.InputResult, error) {
+	result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
+	result.TurnID = providerTurnID
+	return result, err
+}
+
 func (w *fakeWatcher) InputReceiptResult(_ string, receipt string) (watcher.InputResult, bool, error) {
 	outcome, found := w.outcomes[receipt]
 	return watcher.InputResult{Outcome: outcome, Receipt: receipt}, found, nil

@@ -15,9 +15,12 @@ const (
 type DirectWorkEventInput struct {
 	EventID            string `json:"event_id"`
 	WorkID             string `json:"work_id"`
-	WorkRevision       uint64 `json:"work_revision,omitempty"`
-	HostTurnID         string `json:"host_turn_id,omitempty"`
+	WorkRevision       uint64 `json:"work_revision"`
+	HandlingID         string `json:"handling_id"`
+	ProviderTurnID     string `json:"provider_turn_id"`
 	EventSequenceFence uint64 `json:"event_sequence_fence,omitempty"`
+	ResolutionRequired bool   `json:"resolution_required"`
+	ResolveCommand     string `json:"resolve_command"`
 	WorkTitle          string `json:"work_title"`
 	Kind               string `json:"kind"`
 	Source             string `json:"source"`
@@ -41,7 +44,10 @@ func ParseCanonicalDirectWorkEventInput(value string) (DirectWorkEventInput, boo
 	var input DirectWorkEventInput
 	if err := json.Unmarshal([]byte(raw), &input); err != nil ||
 		strings.TrimSpace(input.EventID) == "" ||
-		strings.TrimSpace(input.WorkID) == "" {
+		strings.TrimSpace(input.WorkID) == "" || input.WorkRevision == 0 ||
+		strings.TrimSpace(input.HandlingID) == "" ||
+		strings.TrimSpace(input.ProviderTurnID) == "" ||
+		!input.ResolutionRequired || strings.TrimSpace(input.ResolveCommand) == "" {
 		return DirectWorkEventInput{}, false
 	}
 	if value != FormatDirectWorkEventInput(input) {

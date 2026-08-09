@@ -17,6 +17,7 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 		Summary:               "Completed the exact requested implementation.",
 		PayloadRef:            "session:brain-agent-worker:@1",
 		HandlingID:            "handling-direct-1",
+		ProviderTurnID:        "provider-turn-direct-1",
 		DeliveryWorkRevision:  7,
 		DeliverySequenceFence: 11,
 	}
@@ -52,8 +53,11 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 		EventID:            event.ID,
 		WorkID:             item.ID,
 		WorkRevision:       event.DeliveryWorkRevision,
-		HostTurnID:         event.HandlingID,
+		HandlingID:         event.HandlingID,
+		ProviderTurnID:     event.ProviderTurnID,
 		EventSequenceFence: event.DeliverySequenceFence,
+		ResolutionRequired: true,
+		ResolveCommand:     "zen brain work resolve --event-id event-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede>",
 		WorkTitle:          item.Title,
 		Kind:               event.Kind,
 		Source:             event.SourceName,
@@ -78,11 +82,10 @@ func decodeDirectWorkEventInput(t *testing.T, payload string) work.DirectWorkEve
 
 func TestDirectWorkEventInputCompactsDescriptiveFieldsWithoutChangingIdentity(t *testing.T) {
 	event := WorkEvent{
-		ID:         "event-exact-identity",
-		WorkID:     "work-exact-identity",
-		Kind:       strings.Repeat("kind ", 100),
-		SourceName: strings.Repeat("source ", 100),
-		Summary:    strings.Repeat("summary ", 200),
+		ID: "event-exact-identity", WorkID: "work-exact-identity",
+		HandlingID: "handling-exact-identity", ProviderTurnID: "provider-turn-exact-identity",
+		DeliveryWorkRevision: 1, Kind: strings.Repeat("kind ", 100),
+		SourceName: strings.Repeat("source ", 100), Summary: strings.Repeat("summary ", 200),
 		PayloadRef: strings.Repeat("payload/", 200),
 	}
 	item := Work{

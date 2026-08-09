@@ -257,12 +257,13 @@ func TestPruneSettledTurnsKeepsHeldAndUncertainRows(t *testing.T) {
 	if err != nil || !ok || claimed.ID != terminal.ID {
 		t.Fatalf("terminal claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	}); err != nil {

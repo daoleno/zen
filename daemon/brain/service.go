@@ -39,6 +39,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, eventID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
 	// LegacyDelegatedTurnMarkers returns the raw pre-protocol tmux
@@ -130,11 +131,13 @@ func (s *Service) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEve
 	if err != nil {
 		return event, item, err
 	}
-	if item.Finalization == nil || item.Finalization.State != SessionFinalizationPending {
-		return event, item, nil
+	for hasPendingSessionFinalization(item) {
+		item, err = s.RetryTerminalFinalization(item.ID)
+		if err != nil {
+			return event, item, err
+		}
 	}
-	finalized, finalizeErr := s.RetryTerminalFinalization(item.ID)
-	return event, finalized, finalizeErr
+	return event, item, nil
 }
 
 // RetryTerminalFinalization retries only the exact persisted terminal owner.
@@ -148,46 +151,73 @@ func (s *Service) RetryTerminalFinalization(workID string) (Work, error) {
 	if err != nil {
 		return Work{}, err
 	}
-	if item.Finalization == nil || item.Finalization.State == SessionFinalizationComplete ||
-		item.Finalization.State == SessionFinalizationSkipped {
+	finalization, ok := nextSessionFinalization(item)
+	if !ok {
 		return item, nil
 	}
+	return s.retryTerminalFinalization(item, finalization)
+}
+
+func (s *Service) retryTerminalFinalization(item Work, finalization SessionFinalization) (Work, error) {
 	if item.Status != WorkDone && item.Status != WorkCancelled {
 		return Work{}, fmt.Errorf("Session finalization requires terminal Work")
 	}
-	sessionID := strings.TrimSpace(item.Finalization.SessionID)
+	sessionID := strings.TrimSpace(finalization.SessionID)
 	if sessionID == "" {
 		return Work{}, fmt.Errorf("Session finalization is missing session_id")
 	}
 	if s.watcher == nil {
 		failed := fmt.Errorf("watcher unavailable for delegated Session finalization")
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, failed)
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, failed)
 		return updated, errors.Join(failed, recordErr)
 	}
 	agent := s.watcher.GetAgent(sessionID)
 	if agent != nil && !agent.Delegated {
-		return s.store.RecordSessionFinalization(item.ID, SessionFinalizationSkipped,
+		return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationSkipped,
 			fmt.Errorf("Session is not delegated; teardown intentionally skipped"))
 	}
 	if agent == nil && !s.watcher.HasSession(sessionID) {
-		if item.Finalization.Delegated {
+		if finalization.Delegated {
 			if err := s.teardownOwnedSession(sessionID); err != nil {
-				updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, err)
+				updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, err)
 				return updated, errors.Join(err, recordErr)
 			}
 		}
-		return s.store.RecordSessionFinalization(item.ID, SessionFinalizationComplete, nil)
+		return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
 	}
 	if agent == nil {
 		failure := fmt.Errorf("delegated ownership could not be proven; teardown was not attempted")
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, failure)
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, failure)
 		return updated, errors.Join(failure, recordErr)
 	}
 	if err := s.teardownOwnedSession(sessionID); err != nil {
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, err)
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, err)
 		return updated, errors.Join(err, recordErr)
 	}
-	return s.store.RecordSessionFinalization(item.ID, SessionFinalizationComplete, nil)
+	return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
+}
+
+func hasPendingSessionFinalization(item Work) bool {
+	for _, finalization := range item.SessionFinalizations {
+		if finalization.State == SessionFinalizationPending {
+			return true
+		}
+	}
+	return false
+}
+
+func nextSessionFinalization(item Work) (SessionFinalization, bool) {
+	for _, finalization := range item.SessionFinalizations {
+		if finalization.State == SessionFinalizationPending {
+			return finalization, true
+		}
+	}
+	for _, finalization := range item.SessionFinalizations {
+		if finalization.State == SessionFinalizationFailed {
+			return finalization, true
+		}
+	}
+	return SessionFinalization{}, false
 }
 
 // MigrateSignalSystemV1 exposes the store's bounded, crash-resumable startup
@@ -200,8 +230,9 @@ func (s *Service) MigrateSignalSystemV1(limit int) (bool, int, error) {
 }
 
 // ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
-// watchers are already wired, an interrupted idle Host handling is requeued by
-// Work key, and only newly pending terminal finalizations are attempted.
+// watchers are already wired, every persisted live Host handling is reconciled
+// by its original Session and exact provider Turn (not the current binding),
+// and only newly pending terminal finalizations are attempted.
 func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit int) (bool, error) {
 	if s == nil || s.store == nil {
 		return true, nil
@@ -212,14 +243,26 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 			byID[agent.ID] = agent
 		}
 	}
-	host, err := s.store.HostSession()
+	handlings, handlingMore, err := s.store.LiveHostHandlings(limit)
 	if err != nil {
 		return false, err
 	}
-	if hostID := strings.TrimSpace(host.ID); hostID != "" {
-		agent := byID[hostID]
-		if agent == nil || agent.State != classifier.StateRunning && agent.State != classifier.StateBlocked {
-			if _, _, err := s.store.RequeueUnhandledHostAttention(hostID); err != nil {
+	for _, handling := range handlings {
+		agent := byID[handling.DeliveryHostSessionID]
+		turn, hasTurn, turnErr := s.store.TurnByID(handling.DeliveryHostSessionID, handling.ProviderTurnID)
+		if turnErr != nil {
+			return false, turnErr
+		}
+		currentTurn, hasCurrentTurn, currentTurnErr := s.store.Turn(handling.DeliveryHostSessionID)
+		if currentTurnErr != nil {
+			return false, currentTurnErr
+		}
+		live := agent != nil && (agent.State == classifier.StateRunning || agent.State == classifier.StateBlocked) &&
+			hasTurn && !watcher.TurnImmutable(turn.Status) && hasCurrentTurn && currentTurn.TurnID == handling.ProviderTurnID
+		if !live {
+			if _, _, err := s.store.RequeueUnhandledHostAttention(
+				handling.ID, handling.HandlingID, handling.ProviderTurnID,
+			); err != nil {
 				return false, err
 			}
 		}
@@ -229,13 +272,17 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 		return false, err
 	}
 	for _, item := range pending {
-		if _, finalizeErr := s.RetryTerminalFinalization(item.ID); finalizeErr != nil {
+		workItem, workErr := s.store.Work(item.WorkID)
+		if workErr != nil {
+			return false, workErr
+		}
+		if _, finalizeErr := s.retryTerminalFinalization(workItem, item.Finalization); finalizeErr != nil {
 			// The failed transition and retry attention are already durable.
-			log.Printf("Brain terminal Session finalization failed for Work %s: %v", item.ID, finalizeErr)
+			log.Printf("Brain terminal Session finalization failed for Work %s: %v", item.WorkID, finalizeErr)
 		}
 	}
 	_, dispatchErr := s.DispatchPendingEvent()
-	return !more, dispatchErr
+	return !handlingMore && !more, dispatchErr
 }
 
 func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
@@ -1020,7 +1067,14 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 		}
 		switch result.Outcome {
 		case watcher.InputAccepted:
-			if _, _, err := s.store.ConsumeClaimedWorkEvent(claimed.ID, hostID); err != nil {
+			if _, found, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
+				return false, turnErr
+			} else if !found {
+				// The transport receipt alone is not a provider Turn. Hold the
+				// claim without replay until canonical admission is recoverable.
+				continue
+			}
+			if _, _, err := s.store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID); err != nil {
 				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
 			}
 		case watcher.InputAmbiguous:
@@ -1074,7 +1128,11 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 		}
 		return false, err
 	}
-	result, sendErr := s.watcher.SendInputWithReceiptResult(hostID, payload, event.ID)
+	acceptedAt := s.now().UTC()
+	if event.ClaimedAt != nil {
+		acceptedAt = event.ClaimedAt.UTC()
+	}
+	result, sendErr := s.watcher.SubmitBrainHostInput(hostID, payload, event.ID, event.ProviderTurnID, acceptedAt)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {
 			if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
@@ -1086,7 +1144,15 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if result.Outcome != watcher.InputAccepted {
 		return false, fmt.Errorf("Work Event %s Session Input returned non-accepted outcome %q", event.ID, result.Outcome)
 	}
-	if _, _, err := s.store.ConsumeClaimedWorkEvent(event.ID, hostID); err != nil {
+	if result.TurnID != event.ProviderTurnID {
+		return false, fmt.Errorf("Work Event %s admitted provider Turn %q, want %q", event.ID, result.TurnID, event.ProviderTurnID)
+	}
+	if err := s.store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: hostID, TurnID: result.TurnID, Receipt: event.ID, AcceptedAt: acceptedAt,
+	}); err != nil {
+		return false, fmt.Errorf("record accepted Host provider Turn %s: %w", result.TurnID, err)
+	}
+	if _, _, err := s.store.ConsumeClaimedWorkEvent(event.ID, hostID, event.ProviderTurnID); err != nil {
 		return false, fmt.Errorf("consume accepted Work Event %s: %w", event.ID, err)
 	}
 	return true, nil
@@ -1138,29 +1204,40 @@ func (s *Service) CurrentHostSessionID() string {
 // Host turn ends. Missing disposition never replays the delivered input: the
 // Work key is durably reconciled once at the FIFO tail before dispatch resumes.
 func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, error) {
-	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden {
+	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden ||
+		event.Type != "agent_state_change" || strings.TrimSpace(event.TurnID) == "" ||
+		strings.TrimSpace(event.OldState) == strings.TrimSpace(event.NewState) {
 		return false, nil
 	}
-	host, err := s.store.HostSession()
-	if err != nil || strings.TrimSpace(host.ID) != strings.TrimSpace(event.Agent.ID) {
+	state := classifier.AgentState(strings.TrimSpace(event.NewState))
+	if state != classifier.StateDone && state != classifier.StateUnknown && state != classifier.StateFailed {
+		return false, nil
+	}
+	handlings, _, err := s.store.LiveHostHandlings(2)
+	if err != nil {
 		return false, err
 	}
-	state := classifier.AgentState(firstNonEmpty(event.NewState, string(event.Agent.State)))
-	if state == classifier.StateRunning {
-		return false, nil
-	}
-	s.dispatchMu.Lock()
-	wasForeground := s.foregroundInput
-	s.foregroundInput = false
-	s.dispatchMu.Unlock()
 	requeued := false
-	if state == classifier.StateDone || state == classifier.StateUnknown || state == classifier.StateFailed {
-		_, requeued, err = s.store.RequeueUnhandledHostAttention(host.ID)
-		if err != nil {
-			return false, err
+	for _, handling := range handlings {
+		if handling.DeliveryHostSessionID == strings.TrimSpace(event.Agent.ID) &&
+			handling.ProviderTurnID == strings.TrimSpace(event.TurnID) {
+			_, requeued, err = s.store.RequeueUnhandledHostAttention(
+				handling.ID, handling.HandlingID, handling.ProviderTurnID,
+			)
+			if err != nil {
+				return false, err
+			}
+			break
 		}
 	}
-	if wasForeground || requeued || state == classifier.StateDone || state == classifier.StateUnknown {
+	wasForeground := false
+	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == strings.TrimSpace(event.Agent.ID) {
+		s.dispatchMu.Lock()
+		wasForeground = s.foregroundInput
+		s.foregroundInput = false
+		s.dispatchMu.Unlock()
+	}
+	if wasForeground || requeued {
 		return s.DispatchPendingEvent()
 	}
 	return false, nil
@@ -1527,29 +1604,54 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 	default:
 		return false, nil
 	}
-	if workUpdateChanges(item, update) {
-		item, err = s.store.UpdateWork(item.ID, update)
-		if err != nil {
-			return false, err
-		}
-	}
-	recorded, created, err := s.store.AppendWorkEvent(WorkEvent{
+	producerEvent := WorkEvent{
 		WorkID:     item.ID,
 		Kind:       kind,
 		DedupeKey:  fmt.Sprintf("calendar:%s:%s:%s", event.Item.ID, run.ID, kind),
 		PayloadRef: payloadRef,
 		SourceName: contextRef,
 		Actionable: actionable,
-	})
-	if err != nil || !created || !recorded.Actionable {
-		return false, err
+	}
+	var recorded WorkEvent
+	created := false
+	producerWoke := false
+	if kind == "calendar.result" || kind == "calendar.failure" {
+		var updatePtr *WorkUpdate
+		if workUpdateChanges(item, update) {
+			updatePtr = &update
+		}
+		wakes := []WorkEvent{}
+		item, recorded, created, wakes, err = s.store.ApplyProducerTransition(
+			updatePtr,
+			producerEvent,
+			&WorkWake{Kind: WorkWakeCalendarResult, Ref: contextRef},
+			event.Item.ID+":"+run.ID+":"+kind,
+		)
+		if err != nil {
+			return false, err
+		}
+		producerWoke = len(wakes) > 0
+	} else {
+		if workUpdateChanges(item, update) {
+			item, err = s.store.UpdateWork(item.ID, update)
+			if err != nil {
+				return false, err
+			}
+		}
+		recorded, created, err = s.store.AppendWorkEvent(producerEvent)
+		if err != nil {
+			return false, err
+		}
+	}
+	if !created && !producerWoke {
+		return false, nil
 	}
 	var finalizeErr error
-	if item.Finalization != nil && item.Finalization.State == SessionFinalizationPending {
+	if hasPendingSessionFinalization(item) {
 		_, finalizeErr = s.RetryTerminalFinalization(item.ID)
 	}
 	woke, dispatchErr := s.DispatchPendingEvent()
-	return woke, errors.Join(finalizeErr, dispatchErr)
+	return woke || producerWoke || recorded.Actionable, errors.Join(finalizeErr, dispatchErr)
 }
 
 func calendarRunWake(run calendar.Run, contextRef string) *WorkWake {
@@ -2599,6 +2701,7 @@ Agent orchestration rules:
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat a direct Work Event input as one claimed actionable delta; use its compact facts and inspect only its referenced change, then act, summarize, or wait.
+- Every direct Work Event has resolution_required=true and an exact resolve_command. Before the provider Turn ends, run that command with one typed disposition; keep event_id, handling_id, provider_turn_id, and revision unchanged.
 - After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
 - Continue low-risk next steps autonomously. Research discoverable environment facts with tools or delegated agents. Ask the user only for decisions that materially change outcome, risk, permissions, credentials, or user values; put every currently independent required decision in one small numbered round with a recommended default. Let unresolved research block only dependent decisions, and proceed when remaining unknowns have safe defaults and completion is checkable; when blocked, consolidate options and a recommendation.
 

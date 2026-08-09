@@ -34,6 +34,8 @@ export type BrainWorkWake = {
   ref: string;
 };
 
+export type BrainWorkProgressMode = "owned" | "waiting" | "ready";
+
 export type BrainSessionFinalization = {
   session_id: string;
   delegated: boolean;
@@ -48,12 +50,13 @@ export type BrainActiveWork = {
   revision: number;
   title: string;
   status: BrainWorkStatus;
+  progress_mode?: BrainWorkProgressMode;
   owner_session_id?: string;
   owner_delegated?: boolean;
   wait_for?: string;
   wake?: BrainWorkWake;
   attention_pending: boolean;
-  session_finalization?: BrainSessionFinalization;
+  session_finalizations?: BrainSessionFinalization[];
   unread_result: boolean;
 };
 
@@ -202,7 +205,9 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
       typeof item.work_id === "string" ? item.work_id.trim() : "";
     const title = typeof item.title === "string" ? item.title.trim() : "";
     const status = normalizeWorkStatus(item.status);
-    if (!workId || !title || !status) {
+    const progressMode = normalizeWorkProgressMode(item.progress_mode);
+    const terminal = status === "done" || status === "cancelled";
+    if (!workId || !title || !status || (!terminal && !progressMode)) {
       return;
     }
     byId.set(workId, {
@@ -215,6 +220,7 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
           : 0,
       title,
       status,
+      progress_mode: progressMode,
       owner_session_id:
         typeof item.owner_session_id === "string" &&
         item.owner_session_id.trim()
@@ -227,13 +233,37 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
           : undefined,
       wake: normalizeWorkWake(item.wake),
       attention_pending: item.attention_pending === true,
-      session_finalization: normalizeSessionFinalization(
-        item.session_finalization,
+      session_finalizations: normalizeSessionFinalizations(
+        item.session_finalizations,
       ),
       unread_result: item.unread_result === true,
     });
   });
   return Array.from(byId.values());
+}
+
+function normalizeWorkProgressMode(
+  value: unknown,
+): BrainWorkProgressMode | undefined {
+  return value === "owned" || value === "waiting" || value === "ready"
+    ? value
+    : undefined;
+}
+
+function normalizeSessionFinalizations(
+  value: unknown,
+): BrainSessionFinalization[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const bySession = new Map<string, BrainSessionFinalization>();
+  value.forEach((candidate) => {
+    const finalization = normalizeSessionFinalization(candidate);
+    if (finalization) {
+      bySession.set(finalization.session_id, finalization);
+    }
+  });
+  return bySession.size > 0 ? Array.from(bySession.values()) : undefined;
 }
 
 function normalizeWorkWake(value: unknown): BrainWorkWake | undefined {

@@ -238,6 +238,16 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 	}, err
 }
 
+func (w *fakeControlWatcher) SubmitBrainHostInput(
+	sessionID, payload, eventID, providerTurnID string,
+	_ time.Time,
+) (watcher.InputResult, error) {
+	err := w.SubmitInput(sessionID, payload)
+	return watcher.InputResult{
+		Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID,
+	}, err
+}
+
 func (w *fakeControlWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	if w.killLeavesLive && w.killErr != nil {
@@ -479,7 +489,7 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	if err != nil || !ok {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID); err != nil {
+	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); err != nil {
@@ -1465,7 +1475,7 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1473,6 +1483,7 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 		Type: "brain_work_resolve",
 		BrainWorkDisposition: &brain.WorkEventDispositionRequest{
 			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			ProviderTurnID:       delivered.ProviderTurnID,
 			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 			Disposition:          brain.WorkDispositionComplete,
 		},

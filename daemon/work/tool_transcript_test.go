@@ -72,8 +72,9 @@ func TestSanitizeConversationProjectionDropsTypedGoalEventsAndEmbeddedContext(t 
 
 func TestSanitizeConversationProjectionDropsDirectWorkEventInput(t *testing.T) {
 	canonical := FormatDirectWorkEventInput(DirectWorkEventInput{
-		EventID:    "event-1",
-		WorkID:     "work-1",
+		EventID: "event-1", WorkID: "work-1", WorkRevision: 2,
+		HandlingID: "handling-1", ProviderTurnID: "provider-turn-1",
+		ResolutionRequired: true, ResolveCommand: "zen brain work resolve --event-id event-1 --handling-id handling-1 --provider-turn-id provider-turn-1 --revision 2 --disposition complete",
 		WorkTitle:  "Canonical Work",
 		Kind:       "session.done",
 		Source:     "Worker",

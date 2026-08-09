@@ -41,6 +41,7 @@ type InputResult struct {
 // unrepresentable (C.2 invariant 2).
 type delegatedTurnDraft struct {
 	ID                string
+	Receipt           string
 	AcceptedAt        time.Time
 	ProcessIdentity   string
 	PaneGeneration    string
@@ -438,7 +439,11 @@ func (owner *sessionInputOwner) submitDelegated(
 	turn delegatedTurnDraft,
 	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
-	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, turn.ID, &turn, confirm)
+	receipt := strings.TrimSpace(turn.Receipt)
+	if receipt == "" {
+		receipt = strings.TrimSpace(turn.ID)
+	}
+	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, receipt, &turn, confirm)
 }
 
 func (owner *sessionInputOwner) submitWithTurn(

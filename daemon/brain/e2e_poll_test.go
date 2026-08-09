@@ -170,9 +170,15 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	}
 	// Ending the Host turn without disposition requeues one level-based
 	// reconcile attention at the FIFO tail; it does not replay either raw fact.
+	handlings, _, err := store.LiveHostHandlings(2)
+	if err != nil || len(handlings) != 1 {
+		t.Fatalf("live Host handling = %+v err=%v", handlings, err)
+	}
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type: "agent_state_change", AgentID: "brain-agent-brain-hidden:@1",
+		OldState: string(classifier.StateRunning),
 		NewState: string(classifier.StateDone),
+		TurnID:   handlings[0].ProviderTurnID,
 		Agent:    &classifier.Agent{ID: "brain-agent-brain-hidden:@1", Hidden: true, State: classifier.StateDone},
 	}); err != nil || !woke {
 		t.Fatalf("Host turn end woke=%v err=%v", woke, err)

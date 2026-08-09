@@ -50,7 +50,7 @@ func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEven
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
-	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID)
+	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +75,7 @@ func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testi
 	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID:              delivered.ID,
 		HandlingID:           delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 		Summary:              "Accepted the delegated result.",
@@ -88,6 +89,7 @@ func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testi
 	}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	}); !errors.Is(err, ErrEventHandled) {
@@ -110,12 +112,13 @@ func TestSignalResolutionCASConflictLeavesAttentionDurable(t *testing.T) {
 	}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	}); !errors.Is(err, ErrWorkRevisionConflict) {
 		t.Fatalf("stale resolution err=%v, want ErrWorkRevisionConflict", err)
 	}
-	if _, created, err := store.RequeueUnhandledHostAttention("brain-agent-brain-hidden:@1"); err != nil || !created {
+	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
@@ -227,7 +230,7 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.DeliveryHostSessionID); err != nil || !created {
+	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}
 	for index, wantWorkID := range []string{b.ID, c.ID, a.ID} {
@@ -236,12 +239,13 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Work %s", index, claimed, ok, err, wantWorkID)
 		}
 		if index < 2 {
-			delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID)
+			delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+				ProviderTurnID:       delivered.ProviderTurnID,
 				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 				Disposition:          WorkDispositionComplete,
 			}); err != nil {
@@ -250,7 +254,7 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 		}
 	}
 	// Requeueing the same ended handling is idempotent.
-	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.DeliveryHostSessionID); err != nil || created {
+	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || created {
 		t.Fatalf("duplicate requeue created=%v err=%v", created, err)
 	}
 }
@@ -345,7 +349,7 @@ func TestSignalMigrationNeverBackfillsHistoricalTerminalFinalization(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != WorkDone || current.Finalization != nil {
+	if current.Status != WorkDone || len(current.SessionFinalizations) != 0 {
 		t.Fatalf("historical terminal ownership was bulk-finalized: %+v", current)
 	}
 }
@@ -423,10 +427,11 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	service := NewService(store, fw, nil)
 	_, failedWork, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	})
-	if err == nil || failedWork.Finalization == nil || failedWork.Finalization.State != SessionFinalizationFailed {
+	if err == nil || len(failedWork.SessionFinalizations) != 1 || failedWork.SessionFinalizations[0].State != SessionFinalizationFailed {
 		t.Fatalf("failed finalization Work=%+v err=%v", failedWork, err)
 	}
 	fw.killErr = nil
@@ -437,10 +442,11 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	}
 	_, got, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: retryEvent.ID, HandlingID: retryEvent.HandlingID,
+		ProviderTurnID:       retryEvent.ProviderTurnID,
 		ExpectedWorkRevision: retryEvent.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	})
-	if err != nil || got.Finalization == nil || got.Finalization.State != SessionFinalizationComplete || len(fw.killed) != 2 {
+	if err != nil || len(got.SessionFinalizations) != 1 || got.SessionFinalizations[0].State != SessionFinalizationComplete || len(fw.killed) != 2 {
 		t.Fatalf("retry Work=%+v killed=%v err=%v", got, fw.killed, err)
 	}
 
@@ -451,10 +457,11 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	fw.sessions[nondelegatedID] = &classifier.Agent{ID: nondelegatedID, Delegated: false}
 	_, safeWork, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionCancel,
 	})
-	if err != nil || safeWork.Finalization == nil || safeWork.Finalization.State != SessionFinalizationSkipped {
+	if err != nil || len(safeWork.SessionFinalizations) != 1 || safeWork.SessionFinalizations[0].State != SessionFinalizationSkipped {
 		t.Fatalf("nondelegated finalization Work=%+v err=%v", safeWork, err)
 	}
 	for _, killed := range fw.killed {
@@ -480,6 +487,7 @@ func TestReviewRejectionDispositionKeepsAcceptedSuccessorOwner(t *testing.T) {
 	}
 	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionContinue, SuccessorSessionID: owner,
 		NextAction: "Review the corrected delegated result.",
@@ -515,8 +523,9 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].SuccessorSessionID != successor {
-		t.Fatalf("staged successor Event=%+v", events)
+	if stagedWork.SuccessorReservation == nil || stagedWork.SuccessorReservation.SessionID != successor ||
+		stagedWork.SuccessorReservation.EventID != delivered.ID || len(events) != 1 {
+		t.Fatalf("staged successor Work=%+v Events=%+v", stagedWork, events)
 	}
 	acceptedAt := time.Now().UTC()
 	turnID := successor + ":turn:1"
@@ -541,6 +550,7 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 	}
 	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionContinue, SuccessorSessionID: successor,
 		NextAction: "Review the correction.",
@@ -548,7 +558,7 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolvedEvent.SuccessorSessionID != successor || resolvedWork.OwnerSessionID != successor ||
+	if resolvedEvent.Disposition != WorkDispositionContinue || resolvedWork.OwnerSessionID != successor ||
 		!resolvedWork.OwnerDelegated || resolvedWork.Revision != current.Revision+1 {
 		t.Fatalf("successor was not atomically attached: event=%+v Work=%+v", resolvedEvent, resolvedWork)
 	}

@@ -2468,6 +2468,38 @@ func (w *Watcher) SubmitDelegatedInput(
 	return result, err
 }
 
+// SubmitBrainHostInput admits a direct Brain Event as a real canonical
+// provider Turn while keeping the Event receipt, random handling token, and
+// provider Turn identity distinct. It reuses the sole Session Input owner and
+// provider-neutral admission confirmer; there is no second scheduler.
+func (w *Watcher) SubmitBrainHostInput(
+	sessionID, payload, eventID, providerTurnID string,
+	acceptedAt time.Time,
+) (InputResult, error) {
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+			definitelyNotSubmitted(eventID, fmt.Errorf("target provider could not be proven"))
+	}
+	result, err := w.sessionInputOwner().submitDelegated(
+		sessionID,
+		identity,
+		w.targetForSession,
+		identity.Command,
+		payload,
+		delegatedTurnDraft{
+			ID:                strings.TrimSpace(providerTurnID),
+			Receipt:           strings.TrimSpace(eventID),
+			AcceptedAt:        acceptedAt.UTC(),
+			ProcessIdentity:   delegatedTurnIdentity(identity),
+			TranscriptBinding: transcriptBindingForCommand(identity.Command),
+		},
+		w.delegatedInputConfirmer(sessionID, identity.Command),
+	)
+	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	return result, err
+}
+
 // transcriptBindingForCommand records the provider-native transcript identity
 // known at admission. Only a Zen-owned Pi launch carries an admission-time
 // binding (the owned --session/--session-dir path); other providers discover

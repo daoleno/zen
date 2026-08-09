@@ -372,7 +372,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			return watcher.TurnSubmission{}, false, fmt.Errorf("Session already has an unresolved pending submission")
 		}
 	}
-	workID := databaseActiveWorkIDForExecutionSession(database, candidate.SessionID)
+	workID := databaseWorkIDForTurnAdmission(database, candidate.SessionID, candidate.ProposedTurnID, candidate.Receipt)
 	if workID == "" {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", candidate.SessionID)
 	}
@@ -629,6 +629,11 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 		})
 		if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
 			item := database.BrainWork[workIndex]
+			if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == record.SessionID {
+				reservation.ProviderTurnID = record.ProposedTurnID
+				item.SuccessorReservation = reservation
+				database.BrainWork[workIndex] = item
+			}
 			// A successor Turn accepted during an in-flight Brain handling is
 			// durable in the Turn Ledger, but attachment to Work belongs to the
 			// exact continue disposition. Updating Work here would invalidate the
@@ -683,7 +688,7 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 	if err != nil {
 		return err
 	}
-	workID := databaseActiveWorkIDForExecutionSession(database, admitted.SessionID)
+	workID := databaseWorkIDForTurnAdmission(database, admitted.SessionID, admitted.TurnID, admitted.Receipt)
 	if workID == "" {
 		return fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", admitted.SessionID)
 	}
@@ -707,7 +712,28 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 		LeaseDeadline:     admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
 		UpdatedAt:         now,
 	})
+	if index := workIndex(database.BrainWork, workID); index >= 0 {
+		item := database.BrainWork[index]
+		if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == admitted.SessionID {
+			reservation.ProviderTurnID = admitted.TurnID
+			item.SuccessorReservation = reservation
+			database.BrainWork[index] = item
+		}
+	}
 	return s.persistOrchestrationLocked(database)
+}
+
+func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID, turnID, receipt string) string {
+	if workID := databaseActiveWorkIDForExecutionSession(database, sessionID); workID != "" {
+		return workID
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.ID == receipt && event.DeliveryHostSessionID == sessionID && event.ProviderTurnID == turnID &&
+			event.ClaimedAt != nil && event.DeliveredAt == nil && event.Resolution == "" {
+			return event.WorkID
+		}
+	}
+	return ""
 }
 
 // BackfillTurnTranscriptBinding idempotently records the provider-native
@@ -762,6 +788,28 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 		return watcher.TurnSnapshot{}, false, nil
 	}
 	return turn.snapshot(), true, nil
+}
+
+// TurnByID reads one exact canonical provider Turn. Host handling recovery
+// must never substitute whichever Turn happens to be current for the Session.
+func (s *Store) TurnByID(sessionID, turnID string) (watcher.TurnSnapshot, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	turnID = strings.TrimSpace(turnID)
+	if s == nil || sessionID == "" || turnID == "" {
+		return watcher.TurnSnapshot{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return watcher.TurnSnapshot{}, false, err
+	}
+	for _, turn := range database.BrainTurns {
+		if turn.SessionID == sessionID && turn.TurnID == turnID {
+			return turn.snapshot(), true, nil
+		}
+	}
+	return watcher.TurnSnapshot{}, false, nil
 }
 
 func currentTurnForSession(database orchestrationDatabase, sessionID string) (TurnRecord, bool) {
@@ -1400,6 +1448,16 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		Summary: fact.Summary,
 	})
 	turn.UpdatedAt = now
+	if isHostHandlingTurn(database, turn) {
+		// Host provider Turns own only the delivery handling. Their lifecycle
+		// may close/recover that exact handling, but must never be reinterpreted
+		// as delegated Work progress or emit a second scheduler signal.
+		database.BrainTurns[turnIndex] = turn
+		if err := s.persistOrchestrationLocked(database); err != nil {
+			return watcher.TurnSnapshot{}, false, err
+		}
+		return turn.snapshot(), true, nil
+	}
 
 	// Derive the Work update (status only on final-grade facts; hints only
 	// adjust next-action text). WorkDone/WorkCancelled are terminal scheduler
@@ -1510,12 +1568,34 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		database.BrainWork[workIndex] = workItem
 	}
 
+	// Canonical producer terminalization and every matching cross-Work wake
+	// share this one orchestration persist. A crash cannot expose the producer
+	// terminal without the consumer attention, and FactID makes replay a no-op.
+	wokenWorkIDs := []string{}
+	if mutation.eventActionable && (mutation.eventKind == "session.done" ||
+		mutation.eventKind == "session.failed" || mutation.eventKind == "session.uncertain") {
+		_, wokenWorkIDs, err = wakeWaitingWorkLocked(
+			&database,
+			WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(turn.SessionID, turn.TurnID)},
+			mutation.eventKind,
+			factID,
+			mutation.eventSummary,
+			now,
+		)
+		if err != nil {
+			return watcher.TurnSnapshot{}, false, err
+		}
+	}
+
 	database.BrainTurns[turnIndex] = turn
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return watcher.TurnSnapshot{}, false, err
 	}
 	if workChanged || eventCreated {
 		s.broadcastWorkChange(workID)
+	}
+	for _, wokenWorkID := range wokenWorkIDs {
+		s.broadcastWorkChange(wokenWorkID)
 	}
 	if eventCreated && isProjectedWorkResultEvent(mutation.eventKind) {
 		if workIndex >= 0 {
@@ -1756,52 +1836,26 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 // Host received the event (C.2.6.1). It records delivery only, then requeues
 // the Work key for a typed disposition. Actor-recorded, never time-based.
 func (s *Store) MarkDeliveredClaim(eventID, actor, reason string) error {
-	err := s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
+	return s.resolveClaimWithReconcile(eventID, actor, reason, func(event *WorkEvent, now time.Time) {
 		deliveredAt := now.UTC()
 		event.DeliveredAt = &deliveredAt
+		event.HandlingEndedAt = &deliveredAt
+		event.HistoricalDelivery = true
 		event.Resolution = EventResolutionMarkDelivered
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
-		return nil
 	})
-	if err != nil {
-		return err
-	}
-	_, _, err = s.RequeueUnhandledHostAttentionForEvent(eventID)
-	return err
 }
 
 // DiscardClaim abandons a held delivery (C.2.6.2). The row leaves the held
 // set forever; Brain separately reconciles the owning Work.
 func (s *Store) DiscardClaim(eventID, actor, reason string) error {
-	err := s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
+	return s.resolveClaimWithReconcile(eventID, actor, reason, func(event *WorkEvent, now time.Time) {
 		event.DiscardedAt = &now
 		event.Resolution = EventResolutionDiscard
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
-		return nil
 	})
-	if err != nil {
-		return err
-	}
-	events, err := s.ListWorkEvents("")
-	if err != nil {
-		return err
-	}
-	for _, event := range events {
-		if event.ID != strings.TrimSpace(eventID) {
-			continue
-		}
-		_, _, err = s.AppendWorkEvent(WorkEvent{
-			WorkID: event.WorkID, Kind: "brain.reconcile_required",
-			DedupeKey:  "brain:discarded-delivery:" + event.ID,
-			PayloadRef: "work:" + event.WorkID, SourceName: "brain",
-			Summary:    "A held delivery was discarded and the current Work state requires a disposition.",
-			Actionable: true,
-		})
-		return err
-	}
-	return ErrEventClaim
 }
 
 // ReplayEvent performs an explicit user-authorized replay as a new event with
@@ -1869,7 +1923,7 @@ func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 	return replay, nil
 }
 
-func (s *Store) resolveClaim(eventID, actor, reason string, resolve func(*WorkEvent, time.Time) error) error {
+func (s *Store) resolveClaimWithReconcile(eventID, actor, reason string, resolve func(*WorkEvent, time.Time)) error {
 	eventID = strings.TrimSpace(eventID)
 	actor = strings.TrimSpace(actor)
 	if eventID == "" || actor == "" || strings.TrimSpace(reason) == "" {
@@ -1893,7 +1947,18 @@ func (s *Store) resolveClaim(eventID, actor, reason string, resolve func(*WorkEv
 	if event.DeliveredAt != nil || event.DiscardedAt != nil {
 		return fmt.Errorf("event %s is already resolved", eventID)
 	}
-	if err := resolve(event, now); err != nil {
+	resolve(event, now)
+	itemIndex := workIndex(database.BrainWork, event.WorkID)
+	if itemIndex < 0 {
+		return ErrWorkNotFound
+	}
+	reconcile := WorkEvent{
+		ID: uuid.NewString(), WorkID: event.WorkID, Kind: "brain.reconcile_required",
+		DedupeKey: "brain:delivery-resolution:" + event.ID, PayloadRef: "work:" + event.WorkID,
+		SourceName: "brain", Summary: "A held Host delivery was resolved; the current Work state requires a disposition.",
+		Actionable: true, CreatedAt: now,
+	}
+	if _, err := appendWorkEventLocked(&database, itemIndex, reconcile, true); err != nil {
 		return err
 	}
 	if err := s.persistOrchestrationLocked(database); err != nil {

@@ -36,6 +36,7 @@ type controlWatcher interface {
 	SubmitInputWhenReady(sessionID, command, payload string) error
 	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, eventID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
@@ -488,6 +489,29 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		var sendErr error
 		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, true)
 		if sendErr != nil {
+			if reservation := ownedWork.SuccessorReservation; reservation != nil && reservation.SessionID == agentID {
+				provedNonAdmission := watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted
+				var cleanupErr error
+				if provedNonAdmission {
+					if a.profiles != nil && routeSnap != nil {
+						cleanup := modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
+						cleanupErr = cleanup.Err
+						if cleanupErr == nil && !cleanup.Persist.Applied {
+							cleanupErr = modelprofiles.ErrLaunchCleanupIncomplete
+						}
+					} else {
+						cleanupErr = a.watcher.KillSession(agentID)
+					}
+				}
+				failure := errors.Join(sendErr, cleanupErr)
+				if failure == nil {
+					failure = sendErr
+				}
+				_, lifecycleErr := a.brainStore.RecordSuccessorLaunchFailure(
+					ownedWork.ID, agentID, failure.Error(), provedNonAdmission && cleanupErr == nil,
+				)
+				return control.ErrorResponse("send_prompt_failed", errors.Join(failure, lifecycleErr).Error())
+			}
 			a.recordSpawnWorkFailure(ownedWork, sendErr)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
 		}

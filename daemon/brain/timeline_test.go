@@ -458,8 +458,9 @@ func TestTimelineOmitsCanonicalDirectWorkEventUserRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	envelope := work.FormatDirectWorkEventInput(work.DirectWorkEventInput{
-		EventID:    "1aa90ab5-cf46-4643-9985-f6fd26c9526b",
-		WorkID:     "ae621005-929b-49b5-9d42-fa476d42d3f3",
+		EventID: "1aa90ab5-cf46-4643-9985-f6fd26c9526b", WorkID: "ae621005-929b-49b5-9d42-fa476d42d3f3",
+		WorkRevision: 7, HandlingID: "handling-envelope", ProviderTurnID: "provider-turn-envelope",
+		ResolutionRequired: true, ResolveCommand: "zen brain work resolve --event-id 1aa90ab5-cf46-4643-9985-f6fd26c9526b --handling-id handling-envelope --provider-turn-id provider-turn-envelope --revision 7 --disposition complete",
 		WorkTitle:  "zen-telegram-performance-publish",
 		Kind:       "session.failed",
 		Source:     "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
