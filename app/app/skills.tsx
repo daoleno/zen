@@ -432,7 +432,7 @@ export default function SkillsScreen() {
   }, [currentServerId, focusGeneration, loadLeaderboards, mode]);
 
   const runSearch = useCallback(
-    async (rawQuery: string) => {
+    async (rawQuery: string, intent: "new-query" | "same-query") => {
       cancelActiveSearch();
       const normalizedQuery = rawQuery.trim();
       if (normalizedQuery.length < 2) {
@@ -440,7 +440,11 @@ export default function SkillsScreen() {
       }
       const token = requestOwnerRef.current.issue("search");
       setSearchState((current) =>
-        beginSkillsRequest(current, token.generation, false),
+        beginSkillsRequest(
+          current,
+          token.generation,
+          intent === "same-query",
+        ),
       );
       if (!token.serverId || !currentServer) {
         setSearchState((current) =>
@@ -539,7 +543,7 @@ export default function SkillsScreen() {
     if (transition.effect.type === "clear_search") {
       clearSearch();
     } else if (transition.effect.type === "submit_search") {
-      void runSearch(transition.effect.query);
+      void runSearch(transition.effect.query, "new-query");
     }
   }, [clearSearch, discover, runSearch]);
 
@@ -1051,7 +1055,9 @@ export default function SkillsScreen() {
       onClearSearch={clearDiscoverSearch}
       onSelectLeaderboard={selectLeaderboardView}
       onRetryCatalog={() => void loadLeaderboards()}
-      onRetrySearch={() => void runSearch(discover.submittedQuery)}
+      onRetrySearch={() =>
+        void runSearch(discover.submittedQuery, "same-query")
+      }
       onInstall={(skill) => void prepareInstall(skill)}
     />
   );

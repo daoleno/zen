@@ -426,6 +426,31 @@ describe("Skills management wire boundary", () => {
       error: "Update the Zen daemon.",
     });
   });
+
+  test("same-query retry retains exact search result and rows through loading and error", () => {
+    const skills = [{ id: "old-result" }];
+    const result = { skills };
+    let state = completeSkillsRequest(
+      beginSkillsRequest(createSkillsRequestState<typeof result>()),
+      1,
+      result,
+      false,
+    );
+
+    state = beginSkillsRequest(state, 2, true);
+    expect(state.status).toBe("loading");
+    expect(skillsRequestData(state)).toBe(result);
+    expect(skillsRequestData(state)?.skills).toBe(skills);
+
+    state = failSkillsRequest(state, 2, "Search unavailable.");
+    expect(state.status).toBe("error");
+    expect(skillsRequestData(state)).toBe(result);
+    expect(skillsRequestData(state)?.skills).toBe(skills);
+
+    const differentQuery = beginSkillsRequest(state, 3, false);
+    expect(differentQuery.status).toBe("loading");
+    expect(skillsRequestData(differentQuery)).toBeUndefined();
+  });
 });
 
 describe("Skills mutation review", () => {

@@ -30,15 +30,27 @@ describe("Plugins & Skills V3 action wiring", () => {
 
   test("inventory, Plugins, and leaderboards refresh through one data-retaining request state", () => {
     expect(screenSource.match(/beginSkillsRequest\(current, token\.generation\)/g)).toHaveLength(3);
-    expect(screenSource).toContain(
-      "beginSkillsRequest(current, token.generation, false)",
-    );
     expect(screenSource).toContain("skillsRequestData(visibleInventoryState)");
     expect(screenSource).toContain("skillsRequestData(visiblePluginsState)");
     expect(screenSource).toContain("skillsRequestData(visibleCatalogState)");
     expect(screenSource).toContain("useMemo(\n    () => pluginSectionView");
     expect(presentationSource).toContain(
       "skillsRequestData(state) !== undefined",
+    );
+  });
+
+  test("new-query search clears data while same-query refresh and retry retain it", () => {
+    expect(screenSource).toContain(
+      'void runSearch(transition.effect.query, "new-query")',
+    );
+    expect(screenSource).toContain(
+      'void runSearch(discover.submittedQuery, "same-query")',
+    );
+    expect(screenSource).toContain(
+      'intent: "new-query" | "same-query"',
+    );
+    expect(screenSource).toContain(
+      'intent === "same-query"',
     );
   });
 
