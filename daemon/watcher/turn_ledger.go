@@ -203,17 +203,76 @@ type TurnLedger interface {
 	ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error)
 }
 
-// TurnLedgerAdmitter is the pre-dispatch half of the ledger contract: the
-// Admitted record must be durable before any provider mutation can begin, so
-// a markerless accepted input is unrepresentable (C.2 invariant 2).
-type TurnLedgerAdmitter interface {
-	// AdmitTurn durably records the Admitted turn before the submit queue
-	// runs. It fails closed (NotSubmitted) when no durable identity can be
-	// established.
-	AdmitTurn(admitted AdmittedTurn) error
+// TurnSubmissionState is the durable state of one delegated input
+// transaction. Pending submissions are owned exclusively by the Brain Turn
+// Ledger; the tmux receipt is only a transport replay fence.
+type TurnSubmissionState string
+
+const (
+	TurnSubmissionPending  TurnSubmissionState = "pending"
+	TurnSubmissionResolved TurnSubmissionState = "resolved"
+	TurnSubmissionAborted  TurnSubmissionState = "aborted"
+)
+
+// TurnSubmissionMode records how a provider activity observed before
+// mutation may own the input after confirmation.
+type TurnSubmissionMode string
+
+const (
+	TurnSubmissionFresh            TurnSubmissionMode = "fresh"
+	TurnSubmissionConditionalSteer TurnSubmissionMode = "conditional_steer"
+)
+
+// TurnSubmission is the provider-neutral projection of the ledger-owned
+// pending submission row. It is deliberately separate from TurnSnapshot: a
+// pending candidate is never the current canonical Turn.
+type TurnSubmission struct {
+	SessionID          string
+	ProposedTurnID     string
+	Receipt            string
+	PayloadSHA256      string
+	ProcessIdentity    string
+	PaneGeneration     string
+	AcceptedAt         time.Time
+	TranscriptBinding  TranscriptBinding
+	Mode               TurnSubmissionMode
+	ExistingTurnID     string
+	BaselineActivityID string
+	State              TurnSubmissionState
+	ResolvedTurnID     string
+	ResolvedActivityID string
+	ResolvedAdmission  TurnAdmission
 }
 
-// AdmittedTurn is the durable pre-dispatch turn identity.
+// TurnSubmissionResolution is the exact provider admission that resolves a
+// pending submission. Admission.SHA256 must equal the pending payload digest;
+// a provider admission for different bytes can never claim the candidate.
+type TurnSubmissionResolution struct {
+	SessionID      string
+	ProposedTurnID string
+	Receipt        string
+	PayloadSHA256  string
+	ActivityID     string
+	Admission      TurnAdmission
+	ResolvedAt     time.Time
+}
+
+// TurnSubmissionLedger is the transactional delegated-input half of the
+// canonical Turn Ledger. Prepare persists before provider mutation without
+// replacing the current Turn. Resolve atomically either records steering on
+// the existing exact activity or promotes the proposed Turn; Abort is a
+// permanent, non-adoptable terminal state.
+type TurnSubmissionLedger interface {
+	PrepareTurnSubmission(submission TurnSubmission) (TurnSubmission, bool, error)
+	TurnSubmission(sessionID, proposedTurnID string) (TurnSubmission, bool, error)
+	PendingTurnSubmission(sessionID string) (TurnSubmission, bool, error)
+	ResolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error)
+	AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (TurnSubmission, error)
+}
+
+// AdmittedTurn is the legacy/bootstrap durable turn identity used by ledger
+// migrations and reducer fixtures. Live delegated input uses
+// TurnSubmissionLedger; it never creates an Admitted Turn before mutation.
 type AdmittedTurn struct {
 	SessionID       string
 	TurnID          string

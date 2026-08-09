@@ -584,12 +584,20 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 
 	now := time.Now().UTC()
-	turn, hasCurrentTurn, turnErr := w.ledgerTurnFor(id, now)
+	// A progress heartbeat can race the post-confirmation fresh-Turn commit.
+	// Classify it from an authoritative read, refreshing the two-second poll
+	// cache before deriving its TurnID, so the first heartbeat can never target
+	// the superseded Turn.
+	turn, hasCurrentTurn, turnErr := w.ledgerTurnAuthoritative(id, now)
 	if turnErr != nil {
 		return nil, turnErr
 	}
+	_, hasPendingSubmission, pendingErr := w.pendingTurnSubmission(id)
+	if pendingErr != nil {
+		return nil, pendingErr
+	}
 	appliedFact := false
-	if hasCurrentTurn && w.turnLedger != nil {
+	if hasCurrentTurn && !hasPendingSubmission && w.turnLedger != nil {
 		if fact := controlFactFromProgress(id, turn.TurnID, progress, now); fact != nil {
 			snapshot, changed, applyErr := w.turnLedger.ApplyTurnFact(*fact)
 			if applyErr != nil {
@@ -612,7 +620,14 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 	oldState := agent.State
 	classifier.ApplyProgress(agent, progress, now)
-	if hasCurrentTurn {
+	if hasPendingSubmission && (!hasCurrentTurn || TurnTerminal(turn.Status)) {
+		// Pending is canonical transaction state, not a Turn. It suppresses raw
+		// Control terminal projection until provider admission resolves it, but
+		// cannot mutate or replace the previous terminal Turn.
+		clearStaleAttemptMetadata(agent)
+		agent.State = classifier.StateRunning
+		agent.Summary = "Delegated input is awaiting provider admission"
+	} else if hasCurrentTurn {
 		// The canonical turn owns the Session projection: status, attention,
 		// and summary come from the ledger, and stale terminal-attempt
 		// metadata (attention/phase/lease) never survives.
@@ -629,7 +644,12 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
-		TurnID:  turn.TurnID,
+		TurnID: func() string {
+			if hasPendingSubmission && (!hasCurrentTurn || TurnTerminal(turn.Status)) {
+				return ""
+			}
+			return turn.TurnID
+		}(),
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -701,7 +721,11 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 	if err != nil {
 		return nil, err
 	}
-	if !hasTurn {
+	_, hasPendingSubmission, pendingErr := w.pendingTurnSubmission(id)
+	if pendingErr != nil {
+		return nil, pendingErr
+	}
+	if !hasTurn && !hasPendingSubmission {
 		return nil, fmt.Errorf("delegated Session %s has no canonical turn", id)
 	}
 	var event SessionEvent
@@ -713,10 +737,15 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 		return nil, fmt.Errorf("agent session not found")
 	}
 	oldState := agent.State
-	w.ledgerTurns[id] = turn
-	w.ledgerTurnReadAt[id] = now
+	if hasTurn {
+		w.ledgerTurns[id] = turn
+		w.ledgerTurnReadAt[id] = now
+	}
 	clearStaleAttemptMetadata(agent)
-	newState, summary := projectDelegatedTurn(agent, turn)
+	newState, summary := classifier.StateRunning, "Delegated input is awaiting provider admission"
+	if hasTurn && (!hasPendingSubmission || !TurnTerminal(turn.Status)) {
+		newState, summary = projectDelegatedTurn(agent, turn)
+	}
 	agent.State = newState
 	agent.Summary = summary
 	agent.UpdatedAt = now
@@ -725,7 +754,12 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
-		TurnID:  turn.TurnID,
+		TurnID: func() string {
+			if hasPendingSubmission && (!hasTurn || TurnTerminal(turn.Status)) {
+				return ""
+			}
+			return turn.TurnID
+		}(),
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -1060,14 +1094,23 @@ func (w *Watcher) poll() {
 		// a nil Provider probe: only the Provider observation is gated, so
 		// liveness facts (abnormal exit, end-of-identity) always apply.
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
+		pending, hasPending, pendingErr := w.pendingTurnSubmission(item.id)
+		if pendingErr != nil {
+			turnErr = pendingErr
+		}
 		provider := ProviderActivityObservation{}
-		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
-			if providerProbe != nil {
-				provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+		if providerProbe != nil && pendingErr == nil && (hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
+			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+		}
+		if hasPending && providerFactRelevant(provider) {
+			if _, resolved := w.resolvePendingProviderAdmission(pending, provider, item.now); resolved {
+				turn, hasTurn, turnErr = w.ledgerTurnAuthoritative(item.id, item.now)
 			}
+		}
+		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
 			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
-		if providerProbe != nil && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
+		if providerProbe != nil && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
 		}
 		results = append(results, probedAgent{
@@ -1395,6 +1438,61 @@ func (w *Watcher) ledgerTurnAuthoritative(
 	}
 	w.mu.Unlock()
 	return turn, hasTurn, nil
+}
+
+func (w *Watcher) pendingTurnSubmission(sessionID string) (TurnSubmission, bool, error) {
+	if w == nil || w.turnLedger == nil {
+		return TurnSubmission{}, false, nil
+	}
+	ledger, ok := w.turnLedger.(TurnSubmissionLedger)
+	if !ok {
+		return TurnSubmission{}, false, nil
+	}
+	submission, found, err := ledger.PendingTurnSubmission(sessionID)
+	if err != nil {
+		return TurnSubmission{}, false, err
+	}
+	return submission, found, nil
+}
+
+// resolvePendingProviderAdmission is the restart/crash recovery path for the
+// same canonical submission transaction. It consumes only an exact provider
+// admission tuple whose digest equals the pending payload; tmux receipt state
+// is irrelevant to canonical ownership and input is never replayed here.
+func (w *Watcher) resolvePendingProviderAdmission(
+	submission TurnSubmission,
+	provider ProviderActivityObservation,
+	now time.Time,
+) (TurnSubmission, bool) {
+	if w == nil || w.turnLedger == nil {
+		return TurnSubmission{}, false
+	}
+	ledger, ok := w.turnLedger.(TurnSubmissionLedger)
+	if !ok {
+		return TurnSubmission{}, false
+	}
+	identity, known := w.targetForSession(submission.SessionID)
+	if !known || delegatedTurnIdentity(identity) != submission.ProcessIdentity ||
+		w.currentPaneGeneration(submission.SessionID) != submission.PaneGeneration {
+		return TurnSubmission{}, false
+	}
+	switch strings.TrimSpace(provider.Status) {
+	case "running", "completed", "failed", "interrupted", "cancelled":
+	default:
+		return TurnSubmission{}, false
+	}
+	admission := admissionFromObservation(provider)
+	if strings.TrimSpace(provider.ID) == "" || admission.Empty() ||
+		strings.TrimSpace(admission.SHA256) != submission.PayloadSHA256 {
+		return TurnSubmission{}, false
+	}
+	resolved, err := ledger.ResolveTurnSubmission(TurnSubmissionResolution{
+		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
+		Receipt: submission.Receipt, PayloadSHA256: submission.PayloadSHA256,
+		ActivityID: strings.TrimSpace(provider.ID), Admission: admission,
+		ResolvedAt: now.UTC(),
+	})
+	return resolved, err == nil
 }
 
 // providerEvidenceLossWindow bounds a consecutive provider-evidence loss
@@ -2299,7 +2397,7 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
 			agentInputNotReady(identity.Command)
 	}
-	return w.sessionInputOwner().submitDelegated(
+	result, err := w.sessionInputOwner().submitDelegated(
 		sessionID,
 		identity,
 		resolver,
@@ -2316,6 +2414,8 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 			identity.Command,
 		),
 	)
+	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	return result, err
 }
 
 // SubmitInput submits one exact payload without consulting rendered provider
@@ -2347,7 +2447,7 @@ func (w *Watcher) SubmitDelegatedInput(
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
 			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
 	}
-	return w.sessionInputOwner().submitDelegated(
+	result, err := w.sessionInputOwner().submitDelegated(
 		sessionID,
 		identity,
 		w.targetForSession,
@@ -2364,6 +2464,8 @@ func (w *Watcher) SubmitDelegatedInput(
 			identity.Command,
 		),
 	)
+	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	return result, err
 }
 
 // transcriptBindingForCommand records the provider-native transcript identity

@@ -59,6 +59,24 @@ func TestOrchestrationSchemaV0MigratesDeterministically(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSchemaV5AddsEmptyPendingSubmissionTable(t *testing.T) {
+	raw, err := json.Marshal(orchestrationDatabaseRecord{
+		SchemaVersion: 5, BrainWork: []workRecord{},
+		BrainWorkEvents: []WorkEvent{}, BrainTurns: []TurnRecord{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || database.SchemaVersion != orchestrationSchemaVersion || database.BrainTurnSubmissions == nil ||
+		len(database.BrainTurnSubmissions) != 0 {
+		t.Fatalf("v5 migration = migrated=%v database=%+v", migrated, database)
+	}
+}
+
 func TestOrchestrationSchemaV2DropsDeliveryCeremonyDeterministically(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state", "orchestration.json")

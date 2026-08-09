@@ -59,13 +59,14 @@ func lifecycleTestWatcher(io *fakeSessionInputIO, ledger *fakeTurnLedger, probe 
 // TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce
 // reproduces the observed failure: an initial delegated spawn is judged
 // byte-mismatched (ambiguous) while OpenCode actually accepted the prompt and
-// keeps working. The canonical turn stays Admitted (never failed, never
-// replayed); the watcher poll adopts the live provider activity and only the
-// authoritative turn settlement may reach done, exactly once.
+// keeps working. The canonical transaction stays Pending outside brain_turns
+// (never failed, never replayed); a later exact digest resolves it and only
+// authoritative provider settlement may reach done, exactly once.
 func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
+	taskDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("task brief")))
 	probe := &scriptedProviderActivityProbe{
 		steps: []ProviderActivityObservation{
 			// step 0: admission baseline — nothing admitted yet.
@@ -84,8 +85,14 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 				InputSHA256:     "not-the-submitted-payload-digest",
 				Structured:      true,
 			},
-			// step 2: authoritative provider activity for the accepted turn.
-			{ID: "act-turn", Status: "running", StartedAt: now.Add(2 * time.Second), Structured: true},
+			// step 2: authoritative exact admission after the ambiguous return;
+			// the pending ledger transaction resolves without replay.
+			{
+				ID: "act-turn", Status: "running", StartedAt: now.Add(2 * time.Second),
+				AdmissionStream: "opencode_db\x00ses_1\x00/db", AdmissionID: "msg_user_exact",
+				AdmissionCursor: 2, AdmissionAt: now.Add(2 * time.Second),
+				InputSHA256: taskDigest, Structured: true,
+			},
 			// step 3: authoritative settlement.
 			{ID: "act-turn", Status: "completed", StartedAt: now.Add(2 * time.Second), SettledAt: now.Add(20 * time.Second), Structured: true},
 		},
@@ -110,8 +117,11 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 		t.Fatalf("ambiguous spawn replayed the prompt: queues=%d submissions=%d", len(io.queues), len(io.submissions))
 	}
 	turn, hasTurn, _ := ledger.Turn(sessionID)
-	if !hasTurn || turn.Status != TurnAdmitted {
-		t.Fatalf("canonical turn after ambiguous admission = %+v, want Admitted (never failed)", turn)
+	if hasTurn {
+		t.Fatalf("ambiguous admission created a phantom current Turn: %+v", turn)
+	}
+	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.State != TurnSubmissionPending {
+		t.Fatalf("canonical pending submission = %+v found=%v", pending, found)
 	}
 
 	// A stale failed progress report must never terminalize the turn: the
@@ -132,14 +142,28 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 		agent.EventKind != "" || agent.LeaseSeconds != 0 {
 		t.Fatalf("stale failed attempt survived a live canonical turn: %+v", agent)
 	}
-	turn, _, _ = ledger.Turn(sessionID)
-	if turn.Status != TurnAdmitted {
-		t.Fatalf("control failed report moved canonical status: %+v", turn)
+	if _, found, _ := ledger.Turn(sessionID); found {
+		t.Fatal("control failed report promoted pending submission")
 	}
 
-	// The poll adopts the live provider activity: Admitted → Accepted →
-	// Running through the single reducer, never failed.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())
+	// The poll resolves the exact pending admission first, then the normal
+	// reducer advances Accepted → Running; input is never replayed.
+	pending, found, pendingErr := w.pendingTurnSubmission(sessionID)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
+	}
+	if !found {
+		t.Fatal("pending submission disappeared before provider reconciliation")
+	}
+	provider := probe.next()
+	if _, resolved := w.resolvePendingProviderAdmission(pending, provider, now.Add(3*time.Second)); !resolved {
+		t.Fatal("exact pending provider admission did not resolve")
+	}
+	turn, hasTurn, _ = ledger.Turn(sessionID)
+	if !hasTurn {
+		t.Fatal("resolved pending submission did not promote a Turn")
+	}
+	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, provider)
 	if turn.Status != TurnRunning {
 		t.Fatalf("provider-native running did not promote the turn: %+v", turn)
 	}
@@ -177,6 +201,7 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
+	firstDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("first brief")))
 	followDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("follow-up")))
 	probe := &scriptedProviderActivityProbe{
 		steps: []ProviderActivityObservation{
@@ -192,15 +217,26 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 			},
 			{
 				ID: "act-first", Status: "running",
-				StartedAt:  now.Add(time.Second),
+				StartedAt:       now.Add(time.Second),
+				AdmissionStream: "opencode_db\x00ses_1\x00/db",
+				AdmissionID:     "msg_first_exact", AdmissionCursor: 2,
+				AdmissionAt: now.Add(time.Second), InputSHA256: firstDigest,
 				Structured: true, FallbackAllowed: true,
 			},
 			{
 				ID: "act-first", Status: "running",
 				StartedAt:       now.Add(time.Second),
 				AdmissionStream: "opencode_db\x00ses_1\x00/db",
+				AdmissionID:     "msg_first_exact", AdmissionCursor: 2,
+				AdmissionAt: now.Add(time.Second), InputSHA256: firstDigest,
+				Structured: true,
+			},
+			{
+				ID: "act-first", Status: "running", StartedAt: now.Add(time.Second),
+				AdmissionStream: "opencode_db\x00ses_1\x00/db",
 				AdmissionID:     "msg_followup",
-				AdmissionCursor: 2,
+				AdmissionCursor: 3,
+				AdmissionAt:     now.Add(time.Minute + time.Second),
 				InputSHA256:     followDigest,
 				Structured:      true,
 			},
@@ -220,9 +256,14 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 	if err == nil || result.Outcome != InputAmbiguous {
 		t.Fatalf("first admission = (%+v, %v), want ambiguous", result, err)
 	}
-	turn, hasTurn, _ := ledger.Turn(sessionID)
-	if !hasTurn || turn.Status != TurnAdmitted {
-		t.Fatalf("first turn after ambiguous admission = %+v", turn)
+	if _, hasTurn, _ := ledger.Turn(sessionID); hasTurn {
+		t.Fatal("ambiguous first admission created a phantom Turn")
+	}
+	// Retry the same receipt only reconciles exact provider evidence; it does
+	// not replay the first input.
+	result, err = w.SubmitDelegatedInput(sessionID, "first brief", firstTurn, now)
+	if err != nil || !result.Duplicate || result.TurnID != firstTurn || len(io.queues) != 1 {
+		t.Fatalf("pending first admission reconciliation = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 
 	// A confirmed follow-up steers into the existing nonterminal turn; the
@@ -235,7 +276,7 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 	if len(io.queues) != 2 {
 		t.Fatalf("follow-up replayed: queues=%d", len(io.queues))
 	}
-	turn, _, _ = ledger.Turn(sessionID)
+	turn, _, _ := ledger.Turn(sessionID)
 	if turn.TurnID != firstTurn {
 		t.Fatalf("follow-up created a competing lifecycle: %+v", turn)
 	}
@@ -250,11 +291,11 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 	}
 }
 
-// TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysAdmitted verifies that
+// TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending verifies that
 // an ambiguous admission with no provider evidence is never terminalized by a
-// timeout or by absence of activity: the canonical turn stays Admitted and the
-// projection stays running; liveness rules (not time) resolve it.
-func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysAdmitted(t *testing.T) {
+// timeout or by absence of activity: no phantom Turn is created and the
+// canonical pending projection stays running.
+func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
@@ -275,13 +316,17 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysAdmitted(t *testing.T)
 	if err == nil || result.Outcome != InputAmbiguous {
 		t.Fatalf("spawn admission = (%+v, %v), want ambiguous", result, err)
 	}
-	turn, _, _ := ledger.Turn(sessionID)
-	if turn.Status != TurnAdmitted {
-		t.Fatalf("ambiguous admission without evidence must stay Admitted, got %+v", turn)
+	if turn, found, _ := ledger.Turn(sessionID); found {
+		t.Fatalf("ambiguous admission without evidence created a Turn: %+v", turn)
 	}
-	state, _ := projectDelegatedTurn(nil, turn)
-	if state != classifier.StateRunning {
-		t.Fatalf("Admitted projection = %s, want running (never failed)", state)
+	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.State != TurnSubmissionPending {
+		t.Fatalf("pending submission = %+v found=%v", pending, found)
+	}
+	if _, err := w.RebindDelegatedTurnProjection(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if agent := w.GetAgent(sessionID); agent == nil || agent.State != classifier.StateRunning {
+		t.Fatalf("pending projection = %+v, want running", agent)
 	}
 }
 
@@ -368,21 +413,19 @@ func TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity(t *
 	}
 }
 
-// TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend reproduces
-// the live incident after protocol freeze: a reused OpenCode Session accepted
-// a follow-up while `zen agent send` returned ambiguous, and list/capture
-// inherited the previous turn's done state. The new canonical turn adopts the
-// live provider activity (started inside its admission window) without blind
-// replay, superseding the old terminal projection.
-func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing.T) {
+// TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending verifies that a
+// provider activity for different bytes cannot claim a reused Session's
+// pending submission, even when the activity later becomes terminal.
+func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
 	sessionID := "brain-agent-opencode:@8174"
 	firstAt := now.Add(-30 * time.Minute)
+	firstTurn := sessionID + ":turn:1"
 	ledger.seed(sessionID, TurnSnapshot{
 		SessionID:  sessionID,
-		TurnID:     sessionID + ":turn:1",
+		TurnID:     firstTurn,
 		Status:     TurnDone,
 		AcceptedAt: firstAt,
 		ActivityID: "old-activity",
@@ -451,33 +494,27 @@ func TestOpenCodeReusedSessionAdoptionBindsLiveTurnAfterAmbiguousSend(t *testing
 		t.Fatalf("ambiguous send replayed: queues=%d", len(io.queues))
 	}
 	turn, hasTurn, _ := ledger.Turn(sessionID)
-	if !hasTurn || turn.TurnID != followTurn || turn.Status != TurnAdmitted {
-		t.Fatalf("new canonical turn = %+v, want Admitted", turn)
+	if !hasTurn || turn.TurnID != firstTurn || turn.Status != TurnDone {
+		t.Fatalf("ambiguous send replaced prior terminal Turn: %+v", turn)
 	}
-	// list/capture must not inherit the previous turn's done projection.
-	state, _ := projectDelegatedTurn(nil, turn)
-	if state != classifier.StateRunning {
-		t.Fatalf("reused session projected %s, want running", state)
+	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.ProposedTurnID != followTurn {
+		t.Fatalf("fresh pending candidate = %+v found=%v", pending, found)
 	}
 
-	// The poll adopts the live provider activity: the new canonical turn
-	// supersedes the old terminal projection, without replay.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())
-	if turn.Status != TurnRunning || !turn.HasAdmission {
-		t.Fatalf("poll adoption = %+v, want Running with bound admission", turn)
+	// Provider evidence for normalized/different bytes cannot claim the
+	// pending payload, whether running or terminal.
+	pending, _, pendingErr := w.pendingTurnSubmission(sessionID)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
 	}
-	if turn.Admission.ID != "msg_new" || turn.Admission.Cursor != 42 {
-		t.Fatalf("adopted admission tuple = %+v", turn.Admission)
+	if _, resolved := w.resolvePendingProviderAdmission(pending, probe.next(), now.Add(3*time.Second)); resolved {
+		t.Fatal("mismatched provider digest adopted pending submission")
 	}
-
-	// The true completion settles the new canonical turn exactly once.
-	turn = w.applyPollFacts(sessionID, true, -1, now.Add(11*time.Minute), turn, probe.next())
-	if turn.Status != TurnDone {
-		t.Fatalf("true completion = %+v, want Done", turn)
+	if _, resolved := w.resolvePendingProviderAdmission(pending, probe.next(), now.Add(11*time.Minute)); resolved {
+		t.Fatal("mismatched terminal digest adopted pending submission")
 	}
-	state, _ = projectDelegatedTurn(nil, turn)
-	if state != classifier.StateDone {
-		t.Fatalf("final projection = %s, want done", state)
+	if current, _, _ := ledger.Turn(sessionID); current.TurnID != firstTurn || current.Status != TurnDone {
+		t.Fatalf("digest mismatch changed current Turn: %+v", current)
 	}
 }
 

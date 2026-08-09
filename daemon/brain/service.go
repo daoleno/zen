@@ -162,8 +162,43 @@ func (s *Service) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bo
 	return s.store.ApplyTurnFact(fact)
 }
 
-// AdmitTurn durably records the pre-dispatch Admitted turn. It implements
-// watcher.TurnLedgerAdmitter; a markerless accepted input is unrepresentable.
+func (s *Service) PrepareTurnSubmission(submission watcher.TurnSubmission) (watcher.TurnSubmission, bool, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.PrepareTurnSubmission(submission)
+}
+
+func (s *Service) TurnSubmission(sessionID, proposedTurnID string) (watcher.TurnSubmission, bool, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSubmission{}, false, nil
+	}
+	return s.store.TurnSubmission(sessionID, proposedTurnID)
+}
+
+func (s *Service) PendingTurnSubmission(sessionID string) (watcher.TurnSubmission, bool, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSubmission{}, false, nil
+	}
+	return s.store.PendingTurnSubmission(sessionID)
+}
+
+func (s *Service) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolution) (watcher.TurnSubmission, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSubmission{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.ResolveTurnSubmission(resolution)
+}
+
+func (s *Service) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (watcher.TurnSubmission, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnSubmission{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256)
+}
+
+// AdmitTurn is retained for legacy ledger bootstrap and reducer fixtures.
+// Live delegated input uses the pending-submission transaction methods above.
 func (s *Service) AdmitTurn(admitted watcher.AdmittedTurn) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("brain store is not configured")

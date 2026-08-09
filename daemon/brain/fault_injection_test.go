@@ -1,12 +1,50 @@
 package brain
 
 import (
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/watcher"
 )
+
+func pendingSubmissionDigest(payload string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+}
+
+func pendingSubmissionTestStore(t *testing.T) (*Store, string, time.Time) {
+	t.Helper()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-pending:@1"
+	if _, err := store.CreateWork(Work{
+		Title: "Pending submission", Objective: "Exercise the canonical input transaction.",
+		Status: WorkRunning, OwnerSessionID: sessionID,
+		CompletionPolicy: CompletionBounded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return store, sessionID, time.Date(2026, 8, 9, 4, 0, 0, 0, time.UTC)
+}
+
+func prepareInitialSubmission(t *testing.T, store *Store, sessionID, turnID, payload string, at time.Time) watcher.TurnSubmission {
+	t.Helper()
+	submission, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256:   pendingSubmissionDigest(payload),
+		ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+		AcceptedAt: at, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare submission = (%+v, %v, %v)", submission, created, err)
+	}
+	return submission
+}
 
 // This file implements the frozen fault-injection matrix (worklog C.2.10):
 // each fault is injected through the real store + reducer and verified
@@ -36,7 +74,7 @@ func TestFaultCrashBeforeStateCommit(t *testing.T) {
 	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	admission := admittedAcceptedTurn(t, store, sessionID, turnID, at)
 	fact := watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "done",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -93,11 +131,11 @@ func TestFaultTransientTmuxAbsenceNeverTerminalizes(t *testing.T) {
 	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	if snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,
-		Class:     watcher.EvidencePane,
-		Kind:      "running",
+		Class:      watcher.EvidencePane,
+		Kind:       "running",
 		PaneAbsent: true,
-		SourceID:  "pane\x00absent",
-		At:        at.Add(5 * time.Second),
+		SourceID:   "pane\x00absent",
+		At:         at.Add(5 * time.Second),
 	}); err != nil || changed || snapshot.Status != watcher.TurnAdmitted {
 		t.Fatalf("PaneAbsent moved state: (%+v, %v, %v)", snapshot, changed, err)
 	}
@@ -176,7 +214,7 @@ func TestFaultFalseTerminalThenTrueCompletion(t *testing.T) {
 	}
 	// True bound completion: canonical Done, one actionable wake.
 	snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "done",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -264,7 +302,7 @@ func TestFaultDuplicatedAndReorderedFacts(t *testing.T) {
 	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	admission := admittedAcceptedTurn(t, store, sessionID, turnID, at)
 	terminal := watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "done",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -289,8 +327,8 @@ func TestFaultDuplicatedAndReorderedFacts(t *testing.T) {
 	}
 }
 
-// TestFaultMarkerlessAcceptedTurnUnrepresentable: AdmitTurn is the only
-// admission path; an input without a durable Admitted record cannot exist.
+// TestFaultMarkerlessAcceptedTurnUnrepresentable: even the legacy bootstrap
+// path requires an owning Work; live input is stricter through pending resolve.
 func TestFaultMarkerlessAcceptedTurnUnrepresentable(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -303,6 +341,220 @@ func TestFaultMarkerlessAcceptedTurnUnrepresentable(t *testing.T) {
 		AcceptedAt: time.Now().UTC(),
 	}); err == nil || !strings.Contains(err.Error(), "no active Brain Work") {
 		t.Fatalf("markerless admission = %v, want fail-closed", err)
+	}
+}
+
+func TestFaultPendingSubmissionPrepareCrashAndAbortAreFailClosed(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	payload := "first payload"
+	turnID := sessionID + ":turn:first"
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error { return errors.New("injected prepare persistence failure") }
+	if _, _, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pendingSubmissionDigest(payload), ProcessIdentity: "process-identity",
+		PaneGeneration: "pane-generation", AcceptedAt: at,
+		Mode: watcher.TurnSubmissionFresh,
+	}); err == nil {
+		t.Fatal("prepare persistence failure was accepted")
+	}
+	store.writeOrchestration = originalWrite
+	if _, found, err := store.TurnSubmission(sessionID, turnID); err != nil || found {
+		t.Fatalf("failed prepare survived = found=%v err=%v", found, err)
+	}
+	if _, found, err := store.Turn(sessionID); err != nil || found {
+		t.Fatalf("failed prepare created current Turn = found=%v err=%v", found, err)
+	}
+
+	prepared := prepareInitialSubmission(t, store, sessionID, turnID, payload, at)
+	store.writeOrchestration = func(string, any) error { return errors.New("injected abort persistence failure") }
+	if _, err := store.AbortTurnSubmission(sessionID, turnID, turnID, prepared.PayloadSHA256); err == nil {
+		t.Fatal("abort persistence failure was reported successful")
+	}
+	store.writeOrchestration = originalWrite
+	restarted, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillPending, found, err := restarted.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || stillPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed abort changed durable state = (%+v, %v, %v)", stillPending, found, err)
+	}
+	if _, err := restarted.AbortTurnSubmission(sessionID, turnID, turnID, prepared.PayloadSHA256); err != nil {
+		t.Fatal(err)
+	}
+	resolution := watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: prepared.PayloadSHA256, ActivityID: "activity-first",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-first", Cursor: 1,
+			SHA256: prepared.PayloadSHA256, At: at.Add(time.Second),
+		},
+	}
+	if _, err := restarted.ResolveTurnSubmission(resolution); err == nil || !strings.Contains(err.Error(), "never be adopted") {
+		t.Fatalf("aborted submission was adoptable: %v", err)
+	}
+	if _, found, err := restarted.Turn(sessionID); err != nil || found {
+		t.Fatalf("aborted submission created phantom Turn = found=%v err=%v", found, err)
+	}
+
+	// A different payload with a different proposed Turn is a new transaction;
+	// the permanently aborted row neither adopts nor blocks it.
+	next := prepareInitialSubmission(t, restarted, sessionID, sessionID+":turn:second", "different payload", at.Add(time.Minute))
+	resolution.ProposedTurnID = next.ProposedTurnID
+	resolution.Receipt = next.Receipt
+	resolution.PayloadSHA256 = next.PayloadSHA256
+	resolution.ActivityID = "activity-second"
+	resolution.Admission.ID = "admission-second"
+	resolution.Admission.Cursor = 2
+	resolution.Admission.SHA256 = next.PayloadSHA256
+	resolution.Admission.At = at.Add(time.Minute + time.Second)
+	resolved, err := restarted.ResolveTurnSubmission(resolution)
+	if err != nil || resolved.ResolvedTurnID != next.ProposedTurnID {
+		t.Fatalf("different payload retry = (%+v, %v)", resolved, err)
+	}
+}
+
+func TestFaultPendingSubmissionResolveIsAtomicAcrossCrashAndDigestMismatch(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	pending := prepareInitialSubmission(t, store, sessionID, sessionID+":turn:1", "payload", at)
+	if pending.ProcessIdentity != "process-identity" || pending.PaneGeneration != "pane-generation" ||
+		pending.Receipt != pending.ProposedTurnID {
+		t.Fatalf("pending submission lost transport identity: %+v", pending)
+	}
+	resolution := watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: pending.ProposedTurnID, Receipt: pending.Receipt,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-new",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-new", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: at.Add(time.Second),
+		},
+	}
+
+	mismatch := resolution
+	mismatch.Admission.SHA256 = pendingSubmissionDigest("different provider bytes")
+	if _, err := store.ResolveTurnSubmission(mismatch); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("digest mismatch claimed pending submission: %v", err)
+	}
+	if _, found, _ := store.Turn(sessionID); found {
+		t.Fatal("digest mismatch promoted a Turn")
+	}
+
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error { return errors.New("injected post-mutation resolve persistence failure") }
+	if _, err := store.ResolveTurnSubmission(resolution); err == nil {
+		t.Fatal("resolve persistence failure was reported successful")
+	}
+	store.writeOrchestration = originalWrite
+	restarted, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := restarted.Turn(sessionID); found {
+		t.Fatal("failed atomic resolve exposed a fresh Turn")
+	}
+	stillPending, found, err := restarted.TurnSubmission(sessionID, pending.ProposedTurnID)
+	if err != nil || !found || stillPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed atomic resolve lost pending row = (%+v, %v, %v)", stillPending, found, err)
+	}
+	resolved, err := restarted.ResolveTurnSubmission(resolution)
+	if err != nil || resolved.State != watcher.TurnSubmissionResolved || resolved.ResolvedTurnID != pending.ProposedTurnID {
+		t.Fatalf("restart resolve = (%+v, %v)", resolved, err)
+	}
+	if resolved.ResolvedActivityID != resolution.ActivityID ||
+		resolved.ResolvedAdmission.SHA256 != pending.PayloadSHA256 {
+		t.Fatalf("resolved submission lost exact provider proof: %+v", resolved)
+	}
+	current, found, err := restarted.Turn(sessionID)
+	if err != nil || !found || current.TurnID != pending.ProposedTurnID || current.Status != watcher.TurnAccepted {
+		t.Fatalf("restart current Turn = (%+v, %v, %v)", current, found, err)
+	}
+	if duplicate, err := restarted.ResolveTurnSubmission(resolution); err != nil || duplicate.ResolvedTurnID != pending.ProposedTurnID {
+		t.Fatalf("repeat resolve = (%+v, %v)", duplicate, err)
+	}
+	database, err := restarted.loadOrchestrationLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(database.BrainTurns) != 1 {
+		t.Fatalf("repeat resolve duplicated Turns: %+v", database.BrainTurns)
+	}
+}
+
+func TestFaultPendingSubmissionSameActivitySteersDifferentActivityPromotes(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		confirmedActivity string
+		wantFresh         bool
+	}{
+		{name: "same activity steers", confirmedActivity: "activity-running"},
+		{name: "different activity promotes", confirmedActivity: "activity-new", wantFresh: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, sessionID, at := pendingSubmissionTestStore(t)
+			oldTurnID := sessionID + ":turn:old"
+			if err := store.AdmitTurn(watcher.AdmittedTurn{
+				SessionID: sessionID, TurnID: oldTurnID, AcceptedAt: at.Add(-time.Minute),
+				ProcessIdentity: "old-process", PaneGeneration: "old-pane",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			oldAdmission := watcher.TurnAdmission{
+				Stream: "provider", ID: "old-admission", Cursor: 1,
+				SHA256: pendingSubmissionDigest("old"), At: at.Add(-time.Minute + time.Second),
+			}
+			if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: sessionID, TurnID: oldTurnID, Class: watcher.EvidenceReceipt,
+				Kind: "admission", SourceID: "old-receipt", Admission: oldAdmission,
+				ActivityID: "activity-running", At: at.Add(-time.Minute + time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: sessionID, TurnID: oldTurnID, Class: watcher.EvidenceProvider,
+				Kind: "running", SourceID: "old-running", Admission: oldAdmission,
+				ActivityID: "activity-running", StartedAt: at.Add(-time.Minute), At: at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			payload := "follow-up"
+			proposed := sessionID + ":turn:new"
+			pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+				SessionID: sessionID, ProposedTurnID: proposed, Receipt: proposed,
+				PayloadSHA256:   pendingSubmissionDigest(payload),
+				ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+				AcceptedAt: at, Mode: watcher.TurnSubmissionConditionalSteer,
+				ExistingTurnID: oldTurnID, BaselineActivityID: "activity-running",
+			})
+			if err != nil || !created {
+				t.Fatalf("prepare conditional = (%+v, %v, %v)", pending, created, err)
+			}
+			if current, _, _ := store.Turn(sessionID); current.TurnID != oldTurnID {
+				t.Fatalf("pending replaced running Turn: %+v", current)
+			}
+			resolved, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+				SessionID: sessionID, ProposedTurnID: proposed, Receipt: proposed,
+				PayloadSHA256: pending.PayloadSHA256, ActivityID: test.confirmedActivity,
+				Admission: watcher.TurnAdmission{
+					Stream: "provider", ID: "new-admission", Cursor: 2,
+					SHA256: pending.PayloadSHA256, At: at.Add(time.Second),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTurnID := oldTurnID
+			if test.wantFresh {
+				wantTurnID = proposed
+			}
+			if resolved.ResolvedTurnID != wantTurnID {
+				t.Fatalf("resolved TurnID=%s want %s", resolved.ResolvedTurnID, wantTurnID)
+			}
+			current, found, err := store.Turn(sessionID)
+			if err != nil || !found || current.TurnID != wantTurnID {
+				t.Fatalf("current after resolve = (%+v, %v, %v)", current, found, err)
+			}
+		})
 	}
 }
 
@@ -331,7 +583,7 @@ func TestFaultDeadPaneUnknownThenLateBoundTerminal(t *testing.T) {
 
 			// Late bound Provider terminal upgrades Unknown exactly once.
 			terminal := watcher.TurnFact{
-				SessionID:  sessionID, TurnID: turnID,
+				SessionID: sessionID, TurnID: turnID,
 				Class:      watcher.EvidenceProvider,
 				Kind:       kind,
 				SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",

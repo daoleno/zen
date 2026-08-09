@@ -586,6 +586,47 @@ func TestRebindDelegatedTurnProjectionBypassesRecentTurnCache(t *testing.T) {
 	}
 }
 
+func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T) {
+	w := New(time.Second)
+	const sessionID = "brain-agent-worker:@heartbeat"
+	w.registerCreatedSession("", sessionID, "/repo/zen", CreateSessionOptions{
+		Command: "codex", Name: "Worker",
+	}, time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC))
+	<-w.Events()
+
+	ledger := newFakeTurnLedger()
+	readAt := time.Now().UTC()
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: "old-turn", Status: TurnRunning,
+		AcceptedAt: readAt.Add(-time.Minute), ActivityID: "old-activity",
+	})
+	w.turnLedger = ledger
+	if cached, found, err := w.ledgerTurnFor(sessionID, readAt); err != nil || !found || cached.TurnID != "old-turn" {
+		t.Fatalf("seed old cache = (%+v, %v, %v)", cached, found, err)
+	}
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: "fresh-turn", Status: TurnAccepted,
+		AcceptedAt: readAt.Add(time.Second), ActivityID: "fresh-activity",
+	})
+
+	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+		Status: "running", Phase: "working", Attention: "none",
+		Summary: "first fresh heartbeat", ProgressEventID: "heartbeat-fresh-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-w.Events()
+	if agent.State != classifier.StateRunning || w.ledgerTurns[sessionID].TurnID != "fresh-turn" {
+		t.Fatalf("first heartbeat used superseded cache: agent=%+v cache=%+v", agent, w.ledgerTurns[sessionID])
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if len(ledger.applied) == 0 || ledger.applied[len(ledger.applied)-1].TurnID != "fresh-turn" {
+		t.Fatalf("heartbeat fact targeted wrong Turn: %+v", ledger.applied)
+	}
+}
+
 func TestCanonicalTurnProjectionClearsControlDoneMetadata(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{

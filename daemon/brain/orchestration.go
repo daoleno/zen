@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 5
+const orchestrationSchemaVersion = 6
 
 var (
 	ErrWorkNotFound      = errors.New("Brain Work not found")
@@ -125,11 +125,12 @@ type WorkChange struct {
 const workResultSummaryRuneLimit = 360
 
 type orchestrationDatabase struct {
-	SchemaVersion   int                     `json:"schema_version"`
-	Migrations      orchestrationMigrations `json:"migrations"`
-	BrainWork       []Work                  `json:"brain_work"`
-	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
-	BrainTurns      []TurnRecord            `json:"brain_turns"`
+	SchemaVersion        int                     `json:"schema_version"`
+	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainWork            []Work                  `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
+	BrainTurns           []TurnRecord            `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
 }
 
 // workRecord is the on-disk Work shape during decode. Unknown never-released
@@ -152,11 +153,12 @@ type workRecord struct {
 }
 
 type orchestrationDatabaseRecord struct {
-	SchemaVersion   int                     `json:"schema_version"`
-	Migrations      orchestrationMigrations `json:"migrations"`
-	BrainWork       []workRecord            `json:"brain_work"`
-	BrainWorkEvents []WorkEvent             `json:"brain_work_events"`
-	BrainTurns      []TurnRecord            `json:"brain_turns"`
+	SchemaVersion        int                     `json:"schema_version"`
+	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainWork            []workRecord            `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
+	BrainTurns           []TurnRecord            `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
 }
 
 type orchestrationMigrations struct {
@@ -199,9 +201,11 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	raw, err := os.ReadFile(s.orchestrationPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return s.persistOrchestrationLocked(orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			BrainWork:       []Work{},
-			BrainWorkEvents: []WorkEvent{},
+			SchemaVersion:        orchestrationSchemaVersion,
+			BrainWork:            []Work{},
+			BrainWorkEvents:      []WorkEvent{},
+			BrainTurns:           []TurnRecord{},
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		})
 	}
 	if err != nil {
@@ -257,11 +261,12 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			return orchestrationDatabase{}, false, err
 		}
 		return orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			Migrations:      orchestrationMigrations{},
-			BrainWork:       []Work{},
-			BrainWorkEvents: []WorkEvent{},
-			BrainTurns:      []TurnRecord{},
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           orchestrationMigrations{},
+			BrainWork:            []Work{},
+			BrainWorkEvents:      []WorkEvent{},
+			BrainTurns:           []TurnRecord{},
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}, true, nil
 	case 2:
 		var legacy legacyOrchestrationDatabase
@@ -277,11 +282,12 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
 		}
 		database := orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			Migrations:      legacy.Migrations,
-			BrainWork:       worksFromRecords(legacy.BrainWork),
-			BrainWorkEvents: make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
-			BrainTurns:      []TurnRecord{},
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           legacy.Migrations,
+			BrainWork:            worksFromRecords(legacy.BrainWork),
+			BrainWorkEvents:      make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
+			BrainTurns:           []TurnRecord{},
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		for _, old := range legacy.BrainWorkEvents {
 			event := WorkEvent{
@@ -310,11 +316,12 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
 		}
 		database := orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			Migrations:      record.Migrations,
-			BrainWork:       worksFromRecords(record.BrainWork),
-			BrainWorkEvents: record.BrainWorkEvents,
-			BrainTurns:      []TurnRecord{},
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           record.Migrations,
+			BrainWork:            worksFromRecords(record.BrainWork),
+			BrainWorkEvents:      record.BrainWorkEvents,
+			BrainTurns:           []TurnRecord{},
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
@@ -329,11 +336,32 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
 		}
 		database := orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			Migrations:      record.Migrations,
-			BrainWork:       worksFromRecords(record.BrainWork),
-			BrainWorkEvents: record.BrainWorkEvents,
-			BrainTurns:      []TurnRecord{},
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           record.Migrations,
+			BrainWork:            worksFromRecords(record.BrainWork),
+			BrainWorkEvents:      record.BrainWorkEvents,
+			BrainTurns:           []TurnRecord{},
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
+		}
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		return database, true, nil
+	case 5:
+		var record orchestrationDatabaseRecord
+		if err := json.Unmarshal(trimmed, &record); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if record.BrainWork == nil || record.BrainWorkEvents == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
+		}
+		database := orchestrationDatabase{
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           record.Migrations,
+			BrainWork:            worksFromRecords(record.BrainWork),
+			BrainWorkEvents:      record.BrainWorkEvents,
+			BrainTurns:           record.BrainTurns,
+			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
@@ -345,15 +373,16 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		if err := json.Unmarshal(trimmed, &record); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
+		if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
 		}
 		database := orchestrationDatabase{
-			SchemaVersion:   orchestrationSchemaVersion,
-			Migrations:      record.Migrations,
-			BrainWork:       worksFromRecords(record.BrainWork),
-			BrainWorkEvents: record.BrainWorkEvents,
-			BrainTurns:      record.BrainTurns,
+			SchemaVersion:        orchestrationSchemaVersion,
+			Migrations:           record.Migrations,
+			BrainWork:            worksFromRecords(record.BrainWork),
+			BrainWorkEvents:      record.BrainWorkEvents,
+			BrainTurns:           record.BrainTurns,
+			BrainTurnSubmissions: record.BrainTurnSubmissions,
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
@@ -508,6 +537,9 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 	if err := validateTurnLedger(database.BrainTurns, workIDs); err != nil {
 		return err
 	}
+	if err := validateTurnSubmissions(database.BrainTurnSubmissions, workIDs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -608,6 +640,9 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 	if database.BrainTurns == nil {
 		database.BrainTurns = []TurnRecord{}
 	}
+	if database.BrainTurnSubmissions == nil {
+		database.BrainTurnSubmissions = []TurnSubmissionRecord{}
+	}
 	sort.Slice(database.BrainWork, func(left, right int) bool {
 		if database.BrainWork[left].CreatedAt.Equal(database.BrainWork[right].CreatedAt) {
 			return database.BrainWork[left].ID < database.BrainWork[right].ID
@@ -625,6 +660,12 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 			return database.BrainTurns[left].TurnID < database.BrainTurns[right].TurnID
 		}
 		return database.BrainTurns[left].SessionID < database.BrainTurns[right].SessionID
+	})
+	sort.Slice(database.BrainTurnSubmissions, func(left, right int) bool {
+		if database.BrainTurnSubmissions[left].SessionID == database.BrainTurnSubmissions[right].SessionID {
+			return database.BrainTurnSubmissions[left].ProposedTurnID < database.BrainTurnSubmissions[right].ProposedTurnID
+		}
+		return database.BrainTurnSubmissions[left].SessionID < database.BrainTurnSubmissions[right].SessionID
 	})
 	if err := validateOrchestrationDatabase(database); err != nil {
 		return err

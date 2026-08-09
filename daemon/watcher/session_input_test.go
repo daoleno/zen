@@ -397,18 +397,114 @@ func testTurnDraft(id string, acceptedAt time.Time, identity targetProcessIdenti
 // turns immutable) so the submission boundary can be tested without the
 // Brain store; the full transition table is tested in daemon/brain.
 type fakeTurnLedger struct {
-	mu       sync.Mutex
-	turns    map[string]TurnSnapshot
-	admitted map[string]AdmittedTurn
-	applied  []TurnFact
-	admitErr error
+	mu          sync.Mutex
+	turns       map[string]TurnSnapshot
+	admitted    map[string]AdmittedTurn
+	submissions map[string]TurnSubmission
+	applied     []TurnFact
+	admitErr    error
+	prepareErr  error
+	resolveErr  error
+	abortErr    error
 }
 
 func newFakeTurnLedger() *fakeTurnLedger {
 	return &fakeTurnLedger{
-		turns:    map[string]TurnSnapshot{},
-		admitted: map[string]AdmittedTurn{},
+		turns:       map[string]TurnSnapshot{},
+		admitted:    map[string]AdmittedTurn{},
+		submissions: map[string]TurnSubmission{},
 	}
+}
+
+func fakeSubmissionKey(sessionID, proposedTurnID string) string {
+	return sessionID + "\x00" + proposedTurnID
+}
+
+func (l *fakeTurnLedger) PrepareTurnSubmission(submission TurnSubmission) (TurnSubmission, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.prepareErr != nil {
+		return TurnSubmission{}, false, l.prepareErr
+	}
+	key := fakeSubmissionKey(submission.SessionID, submission.ProposedTurnID)
+	if existing, ok := l.submissions[key]; ok {
+		return existing, false, nil
+	}
+	for _, existing := range l.submissions {
+		if existing.SessionID == submission.SessionID && existing.State == TurnSubmissionPending {
+			return TurnSubmission{}, false, fmt.Errorf("pending submission exists")
+		}
+	}
+	submission.State = TurnSubmissionPending
+	l.submissions[key] = submission
+	return submission, true, nil
+}
+
+func (l *fakeTurnLedger) TurnSubmission(sessionID, proposedTurnID string) (TurnSubmission, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	submission, ok := l.submissions[fakeSubmissionKey(sessionID, proposedTurnID)]
+	return submission, ok, nil
+}
+
+func (l *fakeTurnLedger) PendingTurnSubmission(sessionID string) (TurnSubmission, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, submission := range l.submissions {
+		if submission.SessionID == sessionID && submission.State == TurnSubmissionPending {
+			return submission, true, nil
+		}
+	}
+	return TurnSubmission{}, false, nil
+}
+
+func (l *fakeTurnLedger) ResolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.resolveErr != nil {
+		return TurnSubmission{}, l.resolveErr
+	}
+	key := fakeSubmissionKey(resolution.SessionID, resolution.ProposedTurnID)
+	submission, ok := l.submissions[key]
+	if !ok || submission.State != TurnSubmissionPending {
+		return TurnSubmission{}, fmt.Errorf("pending submission unavailable")
+	}
+	if resolution.ActivityID == "" || resolution.Admission.Empty() ||
+		resolution.Admission.SHA256 != submission.PayloadSHA256 {
+		return TurnSubmission{}, fmt.Errorf("provider admission digest mismatch")
+	}
+	if submission.Mode == TurnSubmissionConditionalSteer && resolution.ActivityID == submission.BaselineActivityID {
+		submission.ResolvedTurnID = submission.ExistingTurnID
+	} else {
+		submission.ResolvedTurnID = submission.ProposedTurnID
+		l.turns[submission.SessionID] = TurnSnapshot{
+			SessionID: submission.SessionID, TurnID: submission.ProposedTurnID,
+			Status: TurnAccepted, AcceptedAt: submission.AcceptedAt,
+			ActivityID: resolution.ActivityID, Admission: resolution.Admission,
+			HasAdmission: true, PaneGeneration: submission.PaneGeneration,
+		}
+	}
+	submission.State = TurnSubmissionResolved
+	submission.ResolvedActivityID = resolution.ActivityID
+	submission.ResolvedAdmission = resolution.Admission
+	l.submissions[key] = submission
+	return submission, nil
+}
+
+func (l *fakeTurnLedger) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (TurnSubmission, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.abortErr != nil {
+		return TurnSubmission{}, l.abortErr
+	}
+	key := fakeSubmissionKey(sessionID, proposedTurnID)
+	submission, ok := l.submissions[key]
+	if !ok || submission.Receipt != receipt || submission.PayloadSHA256 != payloadSHA256 {
+		return TurnSubmission{}, fmt.Errorf("pending submission unavailable")
+	}
+	submission.State = TurnSubmissionAborted
+	l.submissions[key] = submission
+	return submission, nil
 }
 
 func (l *fakeTurnLedger) Turn(sessionID string) (TurnSnapshot, bool, error) {
@@ -1003,7 +1099,7 @@ func TestSessionInputProviderCompletedRunningLedgerMintsFollowUpTurn(t *testing.
 	if current.TurnID != next.ID || current.Status != TurnAccepted {
 		t.Fatalf("follow-up did not replace settled stale ledger turn: %+v", current)
 	}
-	if len(ledger.applied) < 2 || ledger.applied[0].TurnID != "stuck-running-turn" ||
+	if len(ledger.applied) < 1 || ledger.applied[0].TurnID != "stuck-running-turn" ||
 		ledger.applied[0].Kind != "done" || ledger.applied[0].ActivityID != oldActivityID {
 		t.Fatalf("old canonical turn was not settled first: %+v", ledger.applied)
 	}
@@ -1061,8 +1157,7 @@ func TestSessionInputRunningBaselineDifferentConfirmedActivityMintsFreshTurn(t *
 	if len(io.queues) != 1 {
 		t.Fatalf("provider queue count = %d, want one", len(io.queues))
 	}
-	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted ||
-		entry.TurnID != next.ID {
+	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted {
 		t.Fatalf("fresh activity receipt = %+v found=%v", entry, found)
 	}
 }
@@ -1122,6 +1217,37 @@ func TestSessionInputBaselineIdentityReplacementNeverStartsProviderQueue(t *test
 				t.Fatalf("NotSubmitted path retained receipt marker: %+v", io.ledger)
 			}
 		})
+	}
+}
+
+func TestSessionInputPostMutationIdentityReplacementCannotResolvePending(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	expected := testSessionInputIdentity("codex")
+	currentIdentity := expected
+	resolver := func(string) (targetProcessIdentity, bool) { return currentIdentity, true }
+	confirm := scriptedCorrelatedAdmission("payload")
+	confirmAccepted := confirm.confirm
+	confirm.confirm = func(baseline delegatedAdmissionEvidence, boundary time.Time, digest string) (delegatedInputConfirmation, error) {
+		confirmation, err := confirmAccepted(baseline, boundary, digest)
+		currentIdentity.ProcessStart++
+		return confirmation, err
+	}
+	turn := testTurnDraft("post-mutation-replacement", time.Now().UTC(), expected)
+	result, err := newLedgerSessionInputOwner(io, ledger).submitDelegated(
+		"agent:@1", expected, resolver, expected.Command, "payload", turn, confirm,
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.Outcome != InputAmbiguous {
+		t.Fatalf("post-mutation replacement = (%+v, %v), want ambiguous", result, err)
+	}
+	if len(io.queues) != 1 || io.startedQueues != 1 {
+		t.Fatalf("mutation boundary was not crossed exactly once: queues=%d started=%d", len(io.queues), io.startedQueues)
+	}
+	if _, found, _ := ledger.Turn("agent:@1"); found {
+		t.Fatal("replacement provider admission promoted a canonical Turn")
+	}
+	if pending, found, _ := ledger.PendingTurnSubmission("agent:@1"); !found || pending.State != TurnSubmissionPending {
+		t.Fatalf("replacement lost ledger-owned pending transaction: %+v found=%v", pending, found)
 	}
 }
 
@@ -1206,7 +1332,7 @@ func TestSessionInputUnknownReuseExactTerminalSettlesBeforeFreshAdmission(t *tes
 		current.Status != TurnAccepted || current.ActivityID != "session:activity:after-unknown" {
 		t.Fatalf("unknown terminal did not converge before fresh admission: %+v", current)
 	}
-	if len(ledger.applied) < 2 || ledger.applied[0].TurnID != "canonical-unknown" ||
+	if len(ledger.applied) < 1 || ledger.applied[0].TurnID != "canonical-unknown" ||
 		ledger.applied[0].Kind != "done" {
 		t.Fatalf("unknown row was not settled through provider reducer first: %+v", ledger.applied)
 	}
@@ -1247,7 +1373,7 @@ func TestSessionInputRunningBaselineMissingConfirmedActivityStaysCandidateAmbigu
 		t.Fatalf("missing confirmed activity replaced current turn: %+v", current)
 	}
 	entry, found := io.ledger.entry(next.ID)
-	if !found || entry.Outcome != InputAmbiguous || entry.TurnID != next.ID {
+	if !found || entry.Outcome != InputAmbiguous {
 		t.Fatalf("ambiguous candidate receipt = %+v found=%v", entry, found)
 	}
 
@@ -1734,9 +1860,13 @@ func TestSessionInputCursorFollowUpIsNotAcceptedWithoutProviderStart(t *testing.
 	if err == nil || result.Outcome == InputAccepted {
 		t.Fatalf("idle composer submit = (%+v, %v), must not be accepted without provider start", result, err)
 	}
-	// The canonical turn stays Admitted (uncertain, never failed).
-	if ledger.snapshot("agent:@1").Status != TurnAdmitted {
-		t.Fatalf("ambiguous follow-up must stay Admitted, got %+v", ledger.snapshot("agent:@1"))
+	// The transaction stays pending outside brain_turns (uncertain, never a
+	// phantom current Turn).
+	if _, found, _ := ledger.Turn("agent:@1"); found {
+		t.Fatalf("ambiguous follow-up created a canonical Turn: %+v", ledger.snapshot("agent:@1"))
+	}
+	if pending, found, _ := ledger.PendingTurnSubmission("agent:@1"); !found || pending.State != TurnSubmissionPending {
+		t.Fatalf("ambiguous follow-up lost pending transaction: %+v found=%v", pending, found)
 	}
 }
 
@@ -1765,19 +1895,111 @@ func TestSessionInputDefiniteQueueNonStartRollsBackAndIsRetryable(t *testing.T) 
 	if _, found := io.ledger.entry(turn.ID); found {
 		t.Fatalf("definite non-submit retained durable ambiguity: ledger=%+v", io.ledger)
 	}
-	// The canonical Admitted record stays (never replayed, never removed);
-	// the retry below steers into it per the durable uncertainty rules.
-	if ledger.snapshot("agent:@1").TurnID != turn.ID {
-		t.Fatalf("definite non-submit lost canonical turn: %+v", ledger.snapshot("agent:@1"))
+	// NotSubmitted atomically aborts and never creates an Admitted phantom.
+	if _, found, _ := ledger.Turn("agent:@1"); found {
+		t.Fatalf("definite non-submit created canonical turn: %+v", ledger.snapshot("agent:@1"))
+	}
+	if aborted, found, _ := ledger.TurnSubmission("agent:@1", turn.ID); !found || aborted.State != TurnSubmissionAborted {
+		t.Fatalf("definite non-submit did not persist abort: %+v found=%v", aborted, found)
 	}
 
 	io.runErr = nil
+	retry := turn
+	retry.ID = "cursor-retryable-new-payload"
 	result, err = owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "retry me", turn, scriptedCorrelatedAdmission("retry me"),
+		identity.Command, "retry me with different payload", retry,
+		scriptedCorrelatedAdmission("retry me with different payload"),
 	)
 	if err != nil || result.Outcome != InputAccepted || len(io.queues) != 2 {
 		t.Fatalf("retry after definite non-submit = (%+v, %v), queues=%d", result, err, len(io.queues))
+	}
+}
+
+func TestSessionInputAbortPersistenceFailureIsAmbiguousWithoutProviderMutation(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.runErr = errors.New("tmux queue did not start")
+	io.runStarted = false
+	ledger := newFakeTurnLedger()
+	ledger.abortErr = errors.New("abort persistence failed")
+	identity := testSessionInputIdentity("codex")
+	turn := testTurnDraft("abort-persist-failure", time.Now().UTC(), identity)
+	result, err := newLedgerSessionInputOwner(io, ledger).submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"payload", turn, scriptedCorrelatedAdmission("payload"),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.Outcome != InputAmbiguous {
+		t.Fatalf("abort persistence failure = (%+v, %v), want ambiguous", result, err)
+	}
+	if io.startedQueues != 0 {
+		t.Fatalf("provider mutated on pre-start failure: started queues=%d", io.startedQueues)
+	}
+	pending, found, pendingErr := ledger.PendingTurnSubmission("agent:@1")
+	if pendingErr != nil || !found || pending.State != TurnSubmissionPending {
+		t.Fatalf("failed abort did not retain pending owner = (%+v, %v, %v)", pending, found, pendingErr)
+	}
+}
+
+func TestSessionInputPostMutationResolveFailureReconcilesAfterRestartWithoutReplay(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	ledger.resolveErr = errors.New("resolve persistence failed")
+	identity := testSessionInputIdentity("codex")
+	payload := "payload"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	turn := testTurnDraft("resolve-persist-failure", time.Now().UTC(), identity)
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		payload, turn, scriptedCorrelatedAdmission(payload),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.Outcome != InputAmbiguous || len(io.queues) != 1 {
+		t.Fatalf("resolve persistence failure = (%+v, %v), queues=%d", result, err, len(io.queues))
+	}
+	if _, found, _ := ledger.Turn("agent:@1"); found {
+		t.Fatal("failed resolve exposed a fresh canonical Turn")
+	}
+	ledger.resolveErr = nil
+	reconcile := delegatedInputConfirmer{baseline: func() (delegatedInputBaseline, error) {
+		return delegatedInputBaseline{
+			Admission: delegatedAdmissionEvidence{
+				Stream: "test", ID: "after", Cursor: 2,
+				StartedAt: turn.AcceptedAt.Add(time.Second), InputSHA256: digest,
+			},
+			Provider: ProviderActivityObservation{
+				ID: "activity-accepted", Status: "running", Structured: true,
+			},
+		}, nil
+	}}
+	restarted := newLedgerSessionInputOwner(io, ledger)
+	result, err = restarted.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		payload, turn, reconcile,
+	)
+	if err != nil || result.Outcome != InputAccepted || !result.Duplicate || result.TurnID != turn.ID {
+		t.Fatalf("restart reconciliation = (%+v, %v)", result, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("restart reconciliation replayed input: queues=%d", len(io.queues))
+	}
+}
+
+func TestSessionInputPreparePersistenceFailureNeverTouchesTmuxOrProvider(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	ledger.prepareErr = errors.New("prepare persistence failed")
+	identity := testSessionInputIdentity("codex")
+	turn := testTurnDraft("prepare-persist-failure", time.Now().UTC(), identity)
+	result, err := newLedgerSessionInputOwner(io, ledger).submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"payload", turn, scriptedCorrelatedAdmission("payload"),
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted || result.Outcome != InputNotSubmitted {
+		t.Fatalf("prepare persistence failure = (%+v, %v)", result, err)
+	}
+	if len(io.loadedPayloads) != 0 || len(io.ledgerWrites) != 0 || len(io.queues) != 0 || io.startedQueues != 0 {
+		t.Fatalf("prepare failure mutated transport/provider: loads=%d writes=%d queues=%d started=%d",
+			len(io.loadedPayloads), len(io.ledgerWrites), len(io.queues), io.startedQueues)
 	}
 }
 
@@ -1848,12 +2070,12 @@ func TestSessionInputAcceptedReceiptRestartReturnsOriginalTurnAfterSessionAdvanc
 	if len(io.queues) != 1 {
 		t.Fatalf("restart duplicate replayed input: queues=%d", len(io.queues))
 	}
-	if entry, found := io.ledger.entry(firstTurn.ID); !found || entry.TurnID != firstTurn.ID {
+	if entry, found := io.ledger.entry(firstTurn.ID); !found || entry.Outcome != InputAccepted {
 		t.Fatalf("accepted receipt lost original turn: %+v found=%v", entry, found)
 	}
 }
 
-func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed(t *testing.T) {
+func TestSessionInputTransportReceiptWithoutCanonicalSubmissionIsAmbiguousAndNotReplayed(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	identity := testSessionInputIdentity("future-agent")
@@ -1871,16 +2093,8 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 	); err != nil {
 		t.Fatal(err)
 	}
-	io.mu.Lock()
-	for index := range io.ledger.Entries {
-		if io.ledger.Entries[index].Receipt == turn.ID {
-			io.ledger.Entries[index].TurnID = ""
-		}
-	}
-	io.mu.Unlock()
-
-	// A legacy accepted receipt with neither its persisted TurnID nor a
-	// canonical row is ambiguous and never replayed.
+	// The tmux receipt cannot decide canonical ownership without the Brain
+	// submission row, even if transport recorded Accepted.
 	restarted := newSessionInputOwner(io)
 	restarted.ledger = newFakeTurnLedger()
 	_, err := restarted.submitDelegated(
@@ -1888,7 +2102,7 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 		scriptedCorrelatedAdmission("task"),
 	)
 	if InputOutcomeFromError(err) != InputAmbiguous ||
-		!strings.Contains(err.Error(), "original canonical turn identity is missing") {
+		!strings.Contains(err.Error(), "no canonical Turn Ledger submission") {
 		t.Fatalf("accepted duplicate without canonical turn = %v", err)
 	}
 	if len(io.queues) != 1 {
@@ -1928,8 +2142,7 @@ func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing
 		ledger.snapshot("agent:@1").Status != TurnRunning {
 		t.Fatalf("steering replaced lifecycle owner: %+v", ledger.snapshot("agent:@1"))
 	}
-	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted ||
-		entry.TurnID != "active-turn" {
+	if entry, found := io.ledger.entry(next.ID); !found || entry.Outcome != InputAccepted {
 		t.Fatalf("accepted steering receipt = %+v found=%v, want active-turn", entry, found)
 	}
 }
@@ -2059,11 +2272,14 @@ func TestSessionInputDefinitelyNotSubmittedKeepsDurableAdmittedIdentity(t *testi
 	if InputOutcomeFromError(err) != InputNotSubmitted {
 		t.Fatalf("queue start failure outcome = %s, err=%v", InputOutcomeFromError(err), err)
 	}
-	// The durable Admitted record stays (C.6): the mutation provably never
-	// started, the receipt was rolled back, and the turn is never replayed.
+	// The mutation provably never started: the previous terminal Turn remains
+	// current and the fresh candidate is permanently Aborted, never Admitted.
 	turn := ledger.snapshot("agent:@1")
-	if turn.TurnID != next.ID || turn.Status != TurnAdmitted {
-		t.Fatalf("definite pre-submit failure lost the durable Admitted identity: %+v", turn)
+	if turn.TurnID != "settled-prior" || turn.Status != TurnDone {
+		t.Fatalf("definite pre-submit failure replaced the previous Turn: %+v", turn)
+	}
+	if aborted, found, _ := ledger.TurnSubmission("agent:@1", next.ID); !found || aborted.State != TurnSubmissionAborted {
+		t.Fatalf("definite pre-submit failure did not persist abort: %+v found=%v", aborted, found)
 	}
 	if _, found := io.ledger.entry(next.ID); found {
 		t.Fatalf("definite non-submit retained durable ambiguity: %+v", io.ledger)
@@ -2079,7 +2295,7 @@ func TestSessionInputReceiptLedgerIsBoundedAndNeverEvictsAmbiguity(t *testing.T)
 			Outcome:       InputAccepted,
 		})
 	}
-	next, err := accepted.withAmbiguous("new", strings.Repeat("a", sha256.Size*2), "")
+	next, err := accepted.withAmbiguous("new", strings.Repeat("a", sha256.Size*2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2101,7 +2317,7 @@ func TestSessionInputReceiptLedgerIsBoundedAndNeverEvictsAmbiguity(t *testing.T)
 			Outcome:       InputAmbiguous,
 		})
 	}
-	if _, err := ambiguous.withAmbiguous("must-not-evict", strings.Repeat("b", sha256.Size*2), ""); err == nil {
+	if _, err := ambiguous.withAmbiguous("must-not-evict", strings.Repeat("b", sha256.Size*2)); err == nil {
 		t.Fatal("ledger full of ambiguity accepted a new receipt")
 	}
 }
@@ -2215,6 +2431,33 @@ func TestSessionInputAcceptanceWriteFailureLeavesDurableAmbiguityAcrossRestart(t
 	if InputOutcomeFromError(retryErr) != InputAmbiguous || len(io.queues) != 1 {
 		t.Fatalf("durable ambiguity replayed after restart: outcome=%s queues=%d err=%v",
 			InputOutcomeFromError(retryErr), len(io.queues), retryErr)
+	}
+}
+
+func TestDelegatedAcceptanceDoesNotDependOnTmuxReceiptOutcome(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.writeErrors[2] = errors.New("accepted transport receipt write failed")
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	turn := testTurnDraft("brain-owned-acceptance", time.Now().UTC(), identity)
+	owner := newLedgerSessionInputOwner(io, ledger)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"payload", turn, scriptedCorrelatedAdmission("payload"),
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID {
+		t.Fatalf("Brain-resolved acceptance = (%+v, %v)", result, err)
+	}
+	if entry, found := io.ledger.entry(turn.ID); !found || entry.Outcome != InputAmbiguous {
+		t.Fatalf("tmux failure precondition = %+v found=%v", entry, found)
+	}
+	restarted := newLedgerSessionInputOwner(io, ledger)
+	duplicate, err := restarted.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"payload", turn, scriptedCorrelatedAdmission("payload"),
+	)
+	if err != nil || !duplicate.Duplicate || duplicate.TurnID != turn.ID || len(io.queues) != 1 {
+		t.Fatalf("Brain-owned duplicate = (%+v, %v), queues=%d", duplicate, err, len(io.queues))
 	}
 }
 
