@@ -1422,6 +1422,26 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 	if !duplicate.OK || duplicate.Confirmation != "Duplicate event already recorded." {
 		t.Fatalf("duplicate response = %#v", duplicate)
 	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok {
+		t.Fatalf("claim = %+v ok=%v err=%v", claimed, ok, err)
+	}
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := app.HandleControlRequest(control.Request{
+		Type: "brain_work_resolve",
+		BrainWorkDisposition: &brain.WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+			Disposition:          brain.WorkDispositionComplete,
+		},
+	})
+	if !resolved.OK || resolved.BrainWork == nil || resolved.BrainWork.Status != brain.WorkDone ||
+		resolved.BrainWorkEvent == nil || resolved.BrainWorkEvent.HandledAt == nil {
+		t.Fatalf("resolve response = %#v", resolved)
+	}
 	listed := app.HandleControlRequest(control.Request{
 		Type:   "brain_work_list",
 		WorkID: created.BrainWork.ID,

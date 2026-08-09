@@ -89,6 +89,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainWorkEvent(req)
 	case "brain_work_event_resolve":
 		return a.handleBrainWorkEventResolve(req)
+	case "brain_work_resolve":
+		return a.handleBrainWorkResolve(req)
 	case "brain_set_executor":
 		return a.handleBrainSetExecutor(req)
 	case "set_delegated_executor":
@@ -140,6 +142,17 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
 	}
+}
+
+func (a *controlApp) handleBrainWorkResolve(req control.Request) control.Response {
+	if a == nil || a.brainService == nil || req.BrainWorkDisposition == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work disposition is not configured.")
+	}
+	event, item, err := a.brainService.ResolveWorkEvent(*req.BrainWorkDisposition)
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	return control.Response{OK: true, BrainWork: &item, BrainWorkEvent: &event}
 }
 
 func (a *controlApp) handleDeviceList() control.Response {
@@ -630,6 +643,9 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 		case "objective":
 			update.Objective = &source.Objective
 		case "status":
+			if source.Status == brain.WorkDone || source.Status == brain.WorkCancelled {
+				return control.ErrorResponse("invalid_brain_work", "Terminal handling requires zen brain work resolve with the delivered Event identity and Work revision.")
+			}
 			update.Status = &source.Status
 		case "owner_session_id":
 			update.OwnerSessionID = &source.OwnerSessionID
@@ -715,6 +731,12 @@ func brainWorkControlError(err error) control.Response {
 		code = "conflict"
 	case errors.Is(err, brain.ErrWorkOwnerConflict):
 		code = "conflict"
+	case errors.Is(err, brain.ErrWorkRevisionConflict):
+		code = "brain_work_revision_conflict"
+	case errors.Is(err, brain.ErrEventHandled):
+		code = "brain_work_event_handled"
+	case errors.Is(err, brain.ErrEventClaim):
+		code = "brain_work_event_claim_conflict"
 	}
 	return control.ErrorResponse(code, err.Error())
 }

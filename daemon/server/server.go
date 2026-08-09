@@ -105,14 +105,16 @@ type Server struct {
 	runtimeClosing               bool
 	terminalCleanup              terminalCleanupOwner
 
-	workSubID                   int
-	workSub                     <-chan work.Event
-	calendarSubID               int
-	calendarSub                 <-chan calendar.Event
-	brainWorkSubID              int
-	brainWorkSub                <-chan brain.WorkChange
-	brainMigrationComplete      bool
-	turnLedgerMigrationComplete bool
+	workSubID                     int
+	workSub                       <-chan work.Event
+	calendarSubID                 int
+	calendarSub                   <-chan calendar.Event
+	brainWorkSubID                int
+	brainWorkSub                  <-chan brain.WorkChange
+	brainMigrationComplete        bool
+	turnLedgerMigrationComplete   bool
+	signalSystemMigrationComplete bool
+	signalSystemStartupComplete   bool
 
 	clients            map[*websocket.Conn]*authenticatedClient
 	active             map[*websocket.Conn]string
@@ -2897,6 +2899,22 @@ func (s *Server) heartbeat(ctx context.Context) {
 					} else {
 						s.watcher.ClearDelegatedTurnMarkers(targets)
 						s.turnLedgerMigrationComplete = true
+					}
+				}
+				if s.brainMigrationComplete && s.turnLedgerMigrationComplete && !s.signalSystemMigrationComplete {
+					complete, _, err := s.brain.MigrateSignalSystemV1(128)
+					if err != nil {
+						log.Printf("brain signal-system migration failed: %v", err)
+					} else {
+						s.signalSystemMigrationComplete = complete
+					}
+				}
+				if s.signalSystemMigrationComplete && !s.signalSystemStartupComplete {
+					complete, err := s.brain.ReconcileSignalSystemStartup(allAgentSessions, 64)
+					if err != nil {
+						log.Printf("brain signal-system startup reconciliation failed: %v", err)
+					} else {
+						s.signalSystemStartupComplete = complete
 					}
 				}
 				s.brain.ReconcileDelegatedSessions(allAgentSessions)

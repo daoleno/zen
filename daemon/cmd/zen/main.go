@@ -1151,7 +1151,7 @@ func runBrainGC(args []string, stderr io.Writer) error {
 
 func runBrainWork(args []string, stderr io.Writer) error {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		fmt.Fprintln(stderr, "Usage: zen brain work <list|get|create|update|event> [flags]")
+		fmt.Fprintln(stderr, "Usage: zen brain work <list|get|create|update|event|resolve> [flags]")
 		return flag.ErrHelp
 	}
 	switch args[0] {
@@ -1165,9 +1165,47 @@ func runBrainWork(args []string, stderr io.Writer) error {
 		return runBrainWorkEvent(args[1:], stderr)
 	case "event-resolve":
 		return runBrainWorkEventResolve(args[1:], stderr)
+	case "resolve":
+		return runBrainWorkResolve(args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown brain work command: %s", args[0])
 	}
+}
+
+func runBrainWorkResolve(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work resolve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	request := brain.WorkEventDispositionRequest{}
+	var disposition string
+	var wakeKind string
+	var wakeRef string
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&request.EventID, "event-id", "", "delivered Work Event id")
+	fs.StringVar(&request.HandlingID, "host-turn-id", "", "exact Host turn identity")
+	fs.Uint64Var(&request.ExpectedWorkRevision, "revision", 0, "expected Work revision from the delivered input")
+	fs.StringVar(&disposition, "disposition", "", "continue, wait, complete, cancel, or supersede")
+	fs.StringVar(&request.SuccessorSessionID, "owner", "", "accepted successor Session id for continue")
+	fs.StringVar(&wakeKind, "wake-kind", "", "session_terminal, calendar_result, or user_input for wait")
+	fs.StringVar(&wakeRef, "wake-ref", "", "exact producer reference for wait")
+	fs.StringVar(&request.NextAction, "next-action", "", "descriptive next action")
+	fs.StringVar(&request.Summary, "summary", "", "audited disposition summary")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	request.Disposition = brain.WorkDisposition(strings.TrimSpace(disposition))
+	if strings.TrimSpace(wakeKind) != "" || strings.TrimSpace(wakeRef) != "" {
+		request.Wake = &brain.WorkWake{Kind: brain.WorkWakeKind(strings.TrimSpace(wakeKind)), Ref: strings.TrimSpace(wakeRef)}
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_work_resolve", BrainWorkDisposition: &request})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
 func runBrainWorkList(args []string, stderr io.Writer) error {
