@@ -336,6 +336,18 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: producerSession, TurnID: producerTurn, AcceptedAt: acceptedAt}); err != nil {
 		t.Fatal(err)
 	}
+	unrelatedSession := "brain-agent-unrelated-producer:@1"
+	unrelatedTurn := unrelatedSession + ":turn:1"
+	if _, err := store.CreateWork(Work{
+		Title: "Unrelated Session producer", Objective: "Stay outside the consumer dependency scope.",
+		Status: WorkRunning, OwnerSessionID: unrelatedSession, OwnerDelegated: true,
+		SourceThreadID: "brain-thread-unrelated", CompletionPolicy: CompletionBounded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: unrelatedSession, TurnID: unrelatedTurn, AcceptedAt: acceptedAt}); err != nil {
+		t.Fatal(err)
+	}
 	calendarProducer, err := store.CreateWork(Work{
 		ID:    calendarWorkID("item-1", "run-1"),
 		Title: "Calendar producer", Objective: "Produce one exact occurrence.",
@@ -346,6 +358,15 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 		t.Fatal(err)
 	}
 	_ = calendarProducer
+	if _, err := store.CreateWork(Work{
+		ID:    calendarWorkID("item-unrelated", "run-1"),
+		Title: "Unrelated Calendar producer", Objective: "Stay outside the consumer dependency scope.",
+		Status: WorkRunning, OwnerSessionID: "brain-agent-calendar-unrelated:@1", OwnerDelegated: true,
+		SourceThreadID: "brain-thread-unrelated", CompletionPolicy: CompletionBounded,
+		ContextRef: "calendar:item-unrelated:run-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, test := range []struct {
 		name string
@@ -354,8 +375,10 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 	}{
 		{name: "session exact", wake: WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(producerSession, producerTurn)}, ok: true},
 		{name: "session missing", wake: WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef("missing", "turn")}},
+		{name: "session unrelated", wake: WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(unrelatedSession, unrelatedTurn)}},
 		{name: "calendar exact", wake: WorkWake{Kind: WorkWakeCalendarResult, Ref: "calendar:item-1:run-1"}, ok: true},
 		{name: "calendar missing", wake: WorkWake{Kind: WorkWakeCalendarResult, Ref: "calendar:item-2:run-9"}},
+		{name: "calendar unrelated", wake: WorkWake{Kind: WorkWakeCalendarResult, Ref: "calendar:item-unrelated:run-1"}},
 		{name: "user exact", wake: WorkWake{Kind: WorkWakeUserInput}, ok: true},
 		{name: "user cross thread", wake: WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:not-the-work-thread"}},
 	} {
@@ -526,8 +549,21 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	if _, err := restarted.AttachWorkOwner(item.ID, s2); !errors.Is(err, ErrWorkOwnerConflict) {
 		t.Fatalf("S2 replaced admitted S1: err=%v", err)
 	}
+	if projected := activeWorkByID(t, restarted, item.ID); projected.ProgressMode != WorkProgressReady ||
+		projected.SuccessorReservation == nil || projected.SuccessorReservation.SessionID != s1 {
+		t.Fatalf("requeued disposition did not remain the singular ready mode with exclusive S1: %+v", projected)
+	}
 	reconcile, _ := deliverAdversarialHostEvent(t, restarted, hostID)
-	_, terminal := resolveAdversarialEvent(t, restarted, reconcile, WorkDispositionCancel, nil, "")
+	_, continued := resolveAdversarialEvent(t, restarted, reconcile, WorkDispositionContinue, nil, s1)
+	if continued.OwnerSessionID != s1 || continued.SuccessorReservation != nil {
+		t.Fatalf("requeued S1 did not promote through exact continue: %+v", continued)
+	}
+	if projected := activeWorkByID(t, restarted, item.ID); projected.ProgressMode != WorkProgressOwned {
+		t.Fatalf("continued S1 progress mode = %+v", projected)
+	}
+	appendSignalTestEvent(t, restarted, continued, "cancel-promoted-s1")
+	cancelHandling, _ := deliverAdversarialHostEvent(t, restarted, hostID)
+	_, terminal := resolveAdversarialEvent(t, restarted, cancelHandling, WorkDispositionCancel, nil, "")
 	foundS1 := false
 	for _, finalization := range terminal.SessionFinalizations {
 		if finalization.SessionID == s1 {

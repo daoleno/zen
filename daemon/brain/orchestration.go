@@ -851,7 +851,24 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 	}
 	for index, item := range database.BrainWork {
 		reservation := item.SuccessorReservation
-		if reservation == nil || strings.TrimSpace(reservation.ProviderTurnID) == "" {
+		if reservation == nil {
+			continue
+		}
+		if strings.TrimSpace(reservation.EventID) != "" {
+			liveBinding := false
+			for _, event := range database.BrainWorkEvents {
+				if event.ID == reservation.EventID && event.WorkID == item.ID &&
+					event.HandlingID == reservation.HandlingID && event.DeliveredAt != nil &&
+					event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+					liveBinding = true
+					break
+				}
+			}
+			if !liveBinding {
+				return fmt.Errorf("brain_work[%d]: successor reservation is bound to a non-live Host handling", index)
+			}
+		}
+		if strings.TrimSpace(reservation.ProviderTurnID) == "" {
 			continue
 		}
 		found := false
@@ -1086,12 +1103,16 @@ func validateWorkWakeProducer(database orchestrationDatabase, item Work, wake *W
 		}
 	case WorkWakeSessionTerminal:
 		for _, turn := range database.BrainTurns {
-			if !watcher.TurnImmutable(turn.Status) && !isHostHandlingTurn(database, turn) &&
-				ref == SessionTerminalWakeRef(turn.SessionID, turn.TurnID) {
+			if watcher.TurnImmutable(turn.Status) || isHostHandlingTurn(database, turn) ||
+				ref != SessionTerminalWakeRef(turn.SessionID, turn.TurnID) {
+				continue
+			}
+			producerIndex := workIndex(database.BrainWork, turn.WorkID)
+			if producerIndex >= 0 && database.BrainWork[producerIndex].SourceThreadID == item.SourceThreadID {
 				return nil
 			}
 		}
-		return fmt.Errorf("session_terminal wake does not name a live canonical Session Turn")
+		return fmt.Errorf("session_terminal wake does not name a permitted live canonical Session Turn")
 	case WorkWakeCalendarResult:
 		calendarIDs := strings.SplitN(strings.TrimPrefix(ref, "calendar:"), ":", 2)
 		if len(calendarIDs) != 2 || calendarIDs[0] == "" || calendarIDs[1] == "" {
@@ -1100,11 +1121,12 @@ func validateWorkWakeProducer(database orchestrationDatabase, item Work, wake *W
 		expectedProducerID := calendarWorkID(calendarIDs[0], calendarIDs[1])
 		for _, producer := range database.BrainWork {
 			if producer.ID != item.ID && producer.Status != WorkDone && producer.Status != WorkCancelled &&
-				producer.ID == expectedProducerID && strings.TrimSpace(producer.ContextRef) == ref {
+				producer.ID == expectedProducerID && strings.TrimSpace(producer.ContextRef) == ref &&
+				producer.SourceThreadID == item.SourceThreadID {
 				return nil
 			}
 		}
-		return fmt.Errorf("calendar_result wake does not name a live canonical Calendar producer")
+		return fmt.Errorf("calendar_result wake does not name a permitted live canonical Calendar producer")
 	}
 	return nil
 }
@@ -1143,6 +1165,10 @@ func deriveWorkProgressMode(database orchestrationDatabase, item Work) (WorkProg
 		return "", fmt.Errorf("nonterminal Work cannot be both ready and waiting")
 	}
 	if attention {
+		// An admitted successor remains a Work-level exclusivity reservation
+		// until exact continue; it is deliberately not the progress owner while
+		// a disposition obligation is ready. The one ready mode makes that
+		// obligation visible without allowing S2 or losing S1.
 		return WorkProgressReady, nil
 	}
 	if item.Wake != nil {
@@ -2446,6 +2472,13 @@ func (s *Store) ConsumeClaimedWorkEvent(eventID, hostSessionID, providerTurnID s
 			now := s.nowUTC()
 			deliveredAt := now.UTC()
 			event.DeliveredAt = &deliveredAt
+			if reservation := database.BrainWork[workIndex].SuccessorReservation; reservation != nil &&
+				strings.TrimSpace(reservation.EventID) == "" && strings.TrimSpace(reservation.HandlingID) == "" {
+				reservation = cloneSuccessorReservation(reservation)
+				reservation.EventID = event.ID
+				reservation.HandlingID = event.HandlingID
+				database.BrainWork[workIndex].SuccessorReservation = reservation
+			}
 			claimed = *event
 			item = database.BrainWork[workIndex]
 			err = s.persistOrchestrationLocked(database)
@@ -2511,6 +2544,13 @@ func (s *Store) RequeueUnhandledHostAttention(eventID, handlingID, providerTurnI
 		}
 	}
 	itemIndex := workIndex(database.BrainWork, active.WorkID)
+	if reservation := database.BrainWork[itemIndex].SuccessorReservation; reservation != nil &&
+		reservation.EventID == active.ID && reservation.HandlingID == active.HandlingID {
+		reservation = cloneSuccessorReservation(reservation)
+		reservation.EventID = ""
+		reservation.HandlingID = ""
+		database.BrainWork[itemIndex].SuccessorReservation = reservation
+	}
 	reconcile, err = appendWorkEventLocked(&database, itemIndex, reconcile, true)
 	if err != nil {
 		return WorkEvent{}, false, err
