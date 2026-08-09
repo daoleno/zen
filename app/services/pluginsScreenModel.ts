@@ -1,4 +1,3 @@
-import type { SkillScope, SkillsInventory } from "./skillsManagement";
 import type {
   AvailablePlugin,
   InstalledPluginRow,
@@ -11,24 +10,13 @@ import type {
  *
  * The Plugins section has two authoritative presentations: Installed rows and
  * the Explore catalog, both derived from the owning client's plugin manager
- * via the daemon `plugins_inventory` wire. On daemons that predate that wire,
- * a cache-derived read-only projection from `skills_inventory` is the only
- * fallback: it shows installed plugins truthfully with every lifecycle action
- * unavailable.
+ * via the daemon `plugins_inventory` wire.
  *
  * The mutation gate is the single fail-closed authority: install requires a
  * ready catalog entry, update/uninstall require an installed Claude-hosted
  * mutable row. Codex-hosted plugins have no stable lifecycle adapter in this
  * release and are always unsupported (a visual state, never a fake button).
  */
-
-export interface CacheFallbackPlugin {
-  id: string;
-  name: string;
-  hosts: string[];
-  skillCount: number;
-  skills: Array<{ name: string; scope: SkillScope; canonicalPath: string }>;
-}
 
 export type PluginMutationIntent =
   | { kind: "install"; entry: AvailablePlugin; installedIds: Set<string> }
@@ -57,10 +45,7 @@ export type PluginExpansionAction =
   | { type: "toggle"; pluginId: string }
   | { type: "reset" };
 
-export type PluginSourceMode = "authoritative" | "cache-fallback";
-
 export interface PluginSectionView {
-  source: PluginSourceMode;
   catalogReady: boolean;
   catalogUnavailableCode?: string;
   installed: InstalledPluginRow[];
@@ -77,7 +62,6 @@ export function pluginSectionView(
 ): PluginSectionView {
   if (!inventory) {
     return {
-      source: "authoritative",
       catalogReady: false,
       installed: [],
       explore: [],
@@ -85,7 +69,6 @@ export function pluginSectionView(
   }
   const catalogReady = inventory.catalog.status === "ready";
   return {
-    source: "authoritative",
     catalogReady,
     catalogUnavailableCode: catalogReady
       ? undefined
@@ -99,52 +82,6 @@ export function pluginSectionView(
         )
       : [],
   };
-}
-
-/**
- * Read-only fallback for daemons without the plugin inventory wire: projects
- * plugin-owned Skills from the authoritative Skills inventory into plugin
- * rows. Lifecycle actions are never rendered for this source.
- */
-export function projectPlugins(
-  inventory: SkillsInventory | undefined,
-): CacheFallbackPlugin[] {
-  const groups = new Map<string, CacheFallbackPlugin>();
-  for (const skill of inventory?.skills ?? []) {
-    if (skill.manager !== "plugin") {
-      continue;
-    }
-    const name = pluginName(skill.plugin, skill.provenance);
-    const key = name.toLocaleLowerCase();
-    let plugin = groups.get(key);
-    if (!plugin) {
-      plugin = {
-        id: `plugin:${key}`,
-        name,
-        hosts: [],
-        skillCount: 0,
-        skills: [],
-      };
-      groups.set(key, plugin);
-    }
-    plugin.skills.push({
-      name: skill.name,
-      scope: skill.scope,
-      canonicalPath: skill.canonicalPath,
-    });
-    for (const agent of skill.agents) {
-      if (!plugin.hosts.includes(agent)) {
-        plugin.hosts.push(agent);
-      }
-    }
-  }
-  const plugins = [...groups.values()];
-  for (const plugin of plugins) {
-    plugin.skills.sort((left, right) => left.name.localeCompare(right.name));
-    plugin.hosts.sort();
-    plugin.skillCount = plugin.skills.length;
-  }
-  return plugins.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export function createPluginExpansionState(): PluginExpansionState {
@@ -234,12 +171,4 @@ export function evaluatePluginMutation(
       };
     }
   }
-}
-
-function pluginName(plugin: string | undefined, provenance: string): string {
-  const direct = plugin?.trim();
-  if (direct) {
-    return direct;
-  }
-  return provenance.trim() || "Plugin";
 }

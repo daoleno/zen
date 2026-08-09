@@ -118,6 +118,19 @@ export function skillsAgentCounts(
   return counts;
 }
 
+/** Counts only Skills that belong on the first-level Skills surface. */
+export function skillsSectionAgentCounts(
+  inventory: SkillsInventory | undefined,
+): SkillsAgentCounts {
+  const visibleInventory = inventory
+    ? {
+        ...inventory,
+        skills: inventory.skills.filter((skill) => skill.manager !== "plugin"),
+      }
+    : undefined;
+  return skillsAgentCounts(visibleInventory);
+}
+
 export function skillsAgentProjection(
   inventory: SkillsInventory | undefined,
   agent: ManagedSkillAgent,
