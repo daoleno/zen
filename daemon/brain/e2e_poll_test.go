@@ -152,9 +152,9 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	if uncertain != 1 || doneActionable != 1 {
 		t.Fatalf("wake counts: uncertain=%d done=%d events=%#v", uncertain, doneActionable, events)
 	}
-	// Exactly one wake per kind: the uncertain audit wake and the truthful
-	// done wake are each delivered once, and no further dispatch adds more.
-	deliveredKinds := map[string]int{}
+	// One Work key is never handled concurrently. The first uncertain wake is
+	// delivered, while the later done fact dirties that in-flight key instead
+	// of delivering a second input into the same Host turn.
 	for range 4 {
 		woke, err := service.DispatchPendingEvent()
 		if err != nil {
@@ -164,18 +164,22 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 			break
 		}
 	}
-	for _, call := range hostWatcher.sentCalls {
-		for _, kind := range []string{"session.uncertain", "session.done"} {
-			if strings.Contains(call.text, `"kind":"`+kind+`"`) {
-				deliveredKinds[kind]++
-			}
-		}
+	if len(hostWatcher.sentCalls) != 1 ||
+		!strings.Contains(hostWatcher.sentCalls[0].text, `"kind":"session.uncertain"`) {
+		t.Fatalf("concurrent Work-key delivery was not suppressed: %#v", hostWatcher.sentCalls)
 	}
-	if deliveredKinds["session.uncertain"] != 1 || deliveredKinds["session.done"] != 1 {
-		t.Fatalf("delivered wakes per kind = %#v sends=%#v", deliveredKinds, hostWatcher.sentCalls)
+	// Ending the Host turn without disposition requeues one level-based
+	// reconcile attention at the FIFO tail; it does not replay either raw fact.
+	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
+		Type: "agent_state_change", AgentID: "brain-agent-brain-hidden:@1",
+		NewState: string(classifier.StateDone),
+		Agent:    &classifier.Agent{ID: "brain-agent-brain-hidden:@1", Hidden: true, State: classifier.StateDone},
+	}); err != nil || !woke {
+		t.Fatalf("Host turn end woke=%v err=%v", woke, err)
 	}
-	if len(hostWatcher.sentCalls) != 2 {
-		t.Fatalf("host deliveries = %d, want exactly two (one per kind)", len(hostWatcher.sentCalls))
+	if len(hostWatcher.sentCalls) != 2 ||
+		!strings.Contains(hostWatcher.sentCalls[1].text, `"kind":"brain.reconcile_required"`) {
+		t.Fatalf("Work key was not reconciled exactly once: %#v", hostWatcher.sentCalls)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
@@ -195,7 +199,7 @@ func TestE2ERealPollPiBlockedFrameNeverWakes(t *testing.T) {
 	e2eAdmission(t, store, sessionID, turnID, at)
 	// Bound running: the canonical turn is live.
 	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "running",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -340,7 +344,7 @@ func TestE2ERealPollDeadPaneWithMatchedIdentityNeverFails(t *testing.T) {
 			return "OpenCode\n", false, 1 // dead, non-zero exit
 		},
 		SnapshotProcesses: func() map[int]watcher.PollProcess { return nil }, // empty/unreadable snapshot
-		PaneGeneration:    func(string) string { return "pane-1" },            // same pane
+		PaneGeneration:    func(string) string { return "pane-1" },           // same pane
 	}, nil, service)
 	defer cancel()
 

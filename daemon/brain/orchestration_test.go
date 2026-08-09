@@ -315,7 +315,7 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 		t.Fatalf("different Host consumed assigned Event: err=%v", err)
 	}
 	gotEvent, gotWork, err := store.ConsumeClaimedWorkEvent(event.ID, hostID)
-	if err != nil || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.ConsumedAt == nil {
+	if err != nil || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", gotEvent, gotWork, err)
 	}
 	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, hostID); !errors.Is(err, ErrEventClaim) {
@@ -435,7 +435,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	}
 	consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID)
 	if err != nil || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
-		consumed.ConsumedAt == nil {
+		consumed.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", consumed, consumedWork, err)
 	}
 	if _, _, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID); !errors.Is(err, ErrEventClaim) {
@@ -507,7 +507,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatalf("card acknowledgement changed the exact delivery claim: blockers=%#v err=%v", blockers, err)
 	}
 	consumedRead, _, err := store.ConsumeClaimedWorkEvent(readEvent.ID, hostID)
-	if err != nil || consumedRead.ConsumedAt == nil {
+	if err != nil || consumedRead.DeliveredAt == nil {
 		t.Fatalf("exact accepted claim was not consumable after card acknowledgement: event=%#v err=%v", consumedRead, err)
 	}
 	readEvents, err := store.ListWorkEvents(readWork.ID)
@@ -547,7 +547,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	if len(terminalEvents) != 1 || terminalEvents[0].ID != terminalEvent.ID ||
-		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].ConsumedAt != nil ||
+		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil ||
 		terminalEvents[0].ReadAt != nil {
 		t.Fatalf("terminal Event history changed: %#v", terminalEvents)
 	}
@@ -823,7 +823,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 2 || events[1].ID != actionable.ID || events[1].ConsumedAt == nil {
+	if err != nil || len(events) != 2 || events[1].ID != actionable.ID || events[1].DeliveredAt == nil {
 		t.Fatalf("accepted direct Event was not consumed exactly: events=%#v err=%v", events, err)
 	}
 }
@@ -875,7 +875,7 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil {
+	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveredAt != nil {
 		t.Fatalf("failed send claim = %#v", events)
 	}
 	// The tmux receipt ledger proves the mutation may have begun: the claim
@@ -901,7 +901,7 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 			original = event
 		}
 	}
-	if original.ClaimedAt == nil || original.ConsumedAt != nil || len(fw.sentCalls) != 1 {
+	if original.ClaimedAt == nil || original.DeliveredAt != nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
 	}
 	// The held claim is surfaced as a deduped delivery.ambiguous note.
@@ -968,7 +968,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 		t.Fatal(err)
 	}
 	if len(events) != 1 || events[0].ID != event.ID ||
-		events[0].ClaimedAt == nil || events[0].ConsumedAt != nil ||
+		events[0].ClaimedAt == nil || events[0].DeliveredAt != nil ||
 		len(fw.sentCalls) != 1 || fw.outcomes[event.ID] != watcher.InputAccepted {
 		t.Fatalf("accepted persistence boundary events=%#v sends=%#v outcomes=%#v", events, fw.sentCalls, fw.outcomes)
 	}
@@ -984,7 +984,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ID != event.ID || events[0].ConsumedAt == nil ||
+	if len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil ||
 		len(fw.sentCalls) != 1 {
 		t.Fatalf("restart did not finalize without resend: events=%#v sends=%#v", events, fw.sentCalls)
 	}
@@ -1127,7 +1127,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 				t.Fatal(err)
 			}
 			if len(events) != 2 || events[0].ID != event.ID || events[0].ClaimedAt == nil ||
-				events[0].ConsumedAt != nil ||
+				events[0].DeliveredAt != nil ||
 				len(restartedWatcher.sentCalls) != 0 {
 				t.Fatalf("ambiguous Event did not remain singly held: events=%#v sends=%#v",
 					events, restartedWatcher.sentCalls)
@@ -1239,7 +1239,7 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt != nil || events[0].ConsumedAt != nil {
+	if len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
 		t.Fatalf("preempted event was not preserved unclaimed: %#v", events)
 	}
 

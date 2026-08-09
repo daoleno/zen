@@ -10,12 +10,15 @@ import (
 
 func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 	event := WorkEvent{
-		ID:         "event-direct-1",
-		WorkID:     "work-direct-1",
-		Kind:       "session.done",
-		SourceName: "Worker One",
-		Summary:    "Completed the exact requested implementation.",
-		PayloadRef: "session:brain-agent-worker:@1",
+		ID:                    "event-direct-1",
+		WorkID:                "work-direct-1",
+		Kind:                  "session.done",
+		SourceName:            "Worker One",
+		Summary:               "Completed the exact requested implementation.",
+		PayloadRef:            "session:brain-agent-worker:@1",
+		HandlingID:            "handling-direct-1",
+		DeliveryWorkRevision:  7,
+		DeliverySequenceFence: 11,
 	}
 	item := Work{
 		ID:         event.WorkID,
@@ -46,15 +49,18 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 	}
 	got := decodeDirectWorkEventInput(t, first)
 	want := work.DirectWorkEventInput{
-		EventID:    event.ID,
-		WorkID:     item.ID,
-		WorkTitle:  item.Title,
-		Kind:       event.Kind,
-		Source:     event.SourceName,
-		Summary:    event.Summary,
-		NextAction: item.NextAction,
-		ContextRef: item.ContextRef,
-		PayloadRef: event.PayloadRef,
+		EventID:            event.ID,
+		WorkID:             item.ID,
+		WorkRevision:       event.DeliveryWorkRevision,
+		HostTurnID:         event.HandlingID,
+		EventSequenceFence: event.DeliverySequenceFence,
+		WorkTitle:          item.Title,
+		Kind:               event.Kind,
+		Source:             event.SourceName,
+		Summary:            event.Summary,
+		NextAction:         item.NextAction,
+		ContextRef:         item.ContextRef,
+		PayloadRef:         event.PayloadRef,
 	}
 	if got != want {
 		t.Fatalf("direct input = %#v, want %#v", got, want)

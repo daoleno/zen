@@ -636,11 +636,17 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 		})
 		if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
 			item := database.BrainWork[workIndex]
-			if item.Status != WorkDone && item.Status != WorkCancelled {
+			// A successor Turn accepted during an in-flight Brain handling is
+			// durable in the Turn Ledger, but attachment to Work belongs to the
+			// exact continue disposition. Updating Work here would invalidate the
+			// delivered revision before Brain could commit that disposition.
+			if item.Status != WorkDone && item.Status != WorkCancelled &&
+				!workHasInFlightHandling(database, record.WorkID) {
 				update := derivedWorkUpdate(watcher.TurnAccepted, record.SessionID, "")
 				if workUpdateChanges(item, update) {
 					applyWorkUpdate(&item, update)
 					item.UpdatedAt = now
+					item.Revision++
 					database.BrainWork[workIndex] = item
 				}
 			}
@@ -1252,26 +1258,27 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	needsInput := WorkNeedsInput
 	waiting := WorkWaiting
 	sessionWait := "Session " + sessionID
+	var noWake *WorkWake
 	if eventKind == "session.stale" {
 		// Lease expiry never moves canonical status; the stale wake is
 		// needs_input regardless of the current canonical state.
 		next := "Inspect the delegated Session lease expiry."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
+		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	}
 	switch status {
 	case watcher.TurnAccepted, watcher.TurnRunning:
 		next := "Wait for the delegated Session."
-		return WorkUpdate{Status: &running, NextAction: &next, WaitFor: &sessionWait}
+		return WorkUpdate{Status: &running, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	case watcher.TurnBlocked:
 		next := "Resolve the delegated Session request."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
+		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	case watcher.TurnDone:
 		return terminalSessionWorkUpdate("session.done")
 	case watcher.TurnFailed:
 		return terminalSessionWorkUpdate("session.failed")
 	case watcher.TurnUnknown:
 		next := "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait}
+		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	}
 	return WorkUpdate{Status: &waiting}
 }
@@ -1449,6 +1456,7 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	eventCreated := false
 	eventID := ""
 	workID := turn.WorkID
+	revisionBumped := false
 	if mutation.eventKind != "" {
 		actionable := mutation.eventActionable && !terminalWork
 		dedupeKey := sessionTurnEventDedupeKey(turn.SessionID, turn.TurnID, mutation.eventKind)
@@ -1472,22 +1480,48 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 				Actionable: actionable,
 				CreatedAt:  now,
 			}
-			if err := validateWorkEvent(event); err != nil {
-				return watcher.TurnSnapshot{}, false, err
+			if workIndex >= 0 {
+				if workChanged {
+					workItem.Revision++
+					database.BrainWork[workIndex] = workItem
+					revisionBumped = true
+				}
+				event, err = appendWorkEventLocked(&database, workIndex, event, !revisionBumped)
+				if err != nil {
+					return watcher.TurnSnapshot{}, false, err
+				}
+				workItem = database.BrainWork[workIndex]
+				revisionBumped = true
+			} else {
+				return watcher.TurnSnapshot{}, false, ErrWorkNotFound
 			}
-			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 			eventID = event.ID
 			eventCreated = true
 		} else if actionable &&
 			!database.BrainWorkEvents[eventIndex].Actionable {
 			// In-place correction flip: the same row becomes actionable; the
 			// row count never changes, so no second wake is possible.
+			if workIndex >= 0 && !revisionBumped {
+				workItem.Revision++
+				workItem.UpdatedAt = now
+				database.BrainWork[workIndex] = workItem
+				revisionBumped = true
+			}
 			database.BrainWorkEvents[eventIndex].Actionable = true
 			database.BrainWorkEvents[eventIndex].Summary = mutation.eventSummary
 			database.BrainWorkEvents[eventIndex].SourceName = turn.SessionID
+			database.BrainWorkEvents[eventIndex].WorkRevision = workItem.Revision
+			if readyID := readyAttentionEventID(database, workID); readyID != "" &&
+				readyID != database.BrainWorkEvents[eventIndex].ID {
+				database.BrainWorkEvents[eventIndex].CoalescedInto = readyID
+			}
 			eventID = database.BrainWorkEvents[eventIndex].ID
 			eventCreated = true
 		}
+	}
+	if workChanged && !revisionBumped && workIndex >= 0 {
+		workItem.Revision++
+		database.BrainWork[workIndex] = workItem
 	}
 
 	database.BrainTurns[turnIndex] = turn
@@ -1665,7 +1699,7 @@ func (s *Store) PruneSettledTurns(olderThan time.Time) (int, error) {
 		dedupeKey := sessionTurnEventDedupeKey(turn.SessionID, turn.TurnID, eventKind)
 		for _, event := range database.BrainWorkEvents {
 			if event.WorkID == turn.WorkID && event.DedupeKey == dedupeKey &&
-				event.ConsumedAt != nil && event.Actionable {
+				event.HandledAt != nil && event.Actionable {
 				consumed = true
 				break
 			}
@@ -1720,10 +1754,11 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 		Actionable: actionable,
 		CreatedAt:  now,
 	}
-	if err := validateWorkEvent(event); err != nil {
+	itemIndex := workIndex(database.BrainWork, workID)
+	event, err = appendWorkEventLocked(&database, itemIndex, event, true)
+	if err != nil {
 		return WorkEvent{}, false, err
 	}
-	database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return WorkEvent{}, false, err
 	}
@@ -1732,28 +1767,55 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 }
 
 // MarkDeliveredClaim closes a held claim by explicit user assertion that the
-// host received and acted on the event (C.2.6.1). Actor-recorded, idempotent,
-// never time-based.
+// Host received the event (C.2.6.1). It records delivery only, then requeues
+// the Work key for a typed disposition. Actor-recorded, never time-based.
 func (s *Store) MarkDeliveredClaim(eventID, actor, reason string) error {
-	return s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
-		event.ConsumedAt = &now
+	err := s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
+		deliveredAt := now.UTC()
+		event.DeliveredAt = &deliveredAt
 		event.Resolution = EventResolutionMarkDelivered
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	_, _, err = s.RequeueUnhandledHostAttentionForEvent(eventID)
+	return err
 }
 
 // DiscardClaim abandons a held delivery (C.2.6.2). The row leaves the held
 // set forever; Brain separately reconciles the owning Work.
 func (s *Store) DiscardClaim(eventID, actor, reason string) error {
-	return s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
+	err := s.resolveClaim(eventID, actor, reason, func(event *WorkEvent, now time.Time) error {
 		event.DiscardedAt = &now
 		event.Resolution = EventResolutionDiscard
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	events, err := s.ListWorkEvents("")
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.ID != strings.TrimSpace(eventID) {
+			continue
+		}
+		_, _, err = s.AppendWorkEvent(WorkEvent{
+			WorkID: event.WorkID, Kind: "brain.reconcile_required",
+			DedupeKey:  "brain:discarded-delivery:" + event.ID,
+			PayloadRef: "work:" + event.WorkID, SourceName: "brain",
+			Summary:    "A held delivery was discarded and the current Work state requires a disposition.",
+			Actionable: true,
+		})
+		return err
+	}
+	return ErrEventClaim
 }
 
 // ReplayEvent performs an explicit user-authorized replay as a new event with
@@ -1786,7 +1848,7 @@ func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 	if original.ClaimedAt == nil {
 		return WorkEvent{}, fmt.Errorf("event %s is not a held claim; no replay", eventID)
 	}
-	if original.ConsumedAt != nil || original.DiscardedAt != nil {
+	if original.DeliveredAt != nil || original.DiscardedAt != nil {
 		return WorkEvent{}, fmt.Errorf("event %s is already resolved; no replay", eventID)
 	}
 	if original.Resolution != "" {
@@ -1805,14 +1867,15 @@ func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 		CreatedAt:  now,
 		ReplayOf:   eventID,
 	}
-	if err := validateWorkEvent(replay); err != nil {
-		return WorkEvent{}, err
-	}
 	original.Resolution = EventResolutionReplayed
 	original.ResolvedBy = actor
 	original.ResolvedAt = &now
 	database.BrainWorkEvents[index] = original
-	database.BrainWorkEvents = append(database.BrainWorkEvents, replay)
+	itemIndex := workIndex(database.BrainWork, replay.WorkID)
+	replay, err = appendWorkEventLocked(&database, itemIndex, replay, true)
+	if err != nil {
+		return WorkEvent{}, err
+	}
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return WorkEvent{}, err
 	}
@@ -1841,7 +1904,7 @@ func (s *Store) resolveClaim(eventID, actor, reason string, resolve func(*WorkEv
 	if event.ClaimedAt == nil {
 		return fmt.Errorf("event %s is not claimed", eventID)
 	}
-	if event.ConsumedAt != nil || event.DiscardedAt != nil {
+	if event.DeliveredAt != nil || event.DiscardedAt != nil {
 		return fmt.Errorf("event %s is already resolved", eventID)
 	}
 	if err := resolve(event, now); err != nil {

@@ -103,6 +103,10 @@ func (s *Service) sessionRoutes() SessionRouteLifecycle {
 // route only when the window is confirmed gone. Surfaces joined kill/release
 // errors; preserves the route when kill fails and the Session is still live.
 func (s *Service) teardownHostSession(sessionID string) error {
+	return s.teardownOwnedSession(sessionID)
+}
+
+func (s *Service) teardownOwnedSession(sessionID string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || s == nil || s.watcher == nil {
 		return nil
@@ -113,6 +117,125 @@ func (s *Service) teardownHostSession(sessionID string) error {
 	}
 	result := modelprofiles.TeardownSession(sessionID, s.watcher.KillSession, s.sessionLivenessProbe, release)
 	return result.Err
+}
+
+// ResolveWorkEvent commits Brain's typed disposition before attempting any
+// terminal Session teardown. A teardown error leaves a durable failed
+// finalization plus one retry attention and is returned to the caller.
+func (s *Service) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent, Work, error) {
+	if s == nil || s.store == nil {
+		return WorkEvent{}, Work{}, fmt.Errorf("brain store is not configured")
+	}
+	event, item, err := s.store.ResolveWorkEvent(request)
+	if err != nil {
+		return event, item, err
+	}
+	if item.Finalization == nil || item.Finalization.State != SessionFinalizationPending {
+		return event, item, nil
+	}
+	finalized, finalizeErr := s.RetryTerminalFinalization(item.ID)
+	return event, finalized, finalizeErr
+}
+
+// RetryTerminalFinalization retries only the exact persisted terminal owner.
+// Runtime Delegated=false evidence always wins and is recorded as skipped
+// without calling KillSession.
+func (s *Service) RetryTerminalFinalization(workID string) (Work, error) {
+	if s == nil || s.store == nil {
+		return Work{}, fmt.Errorf("brain store is not configured")
+	}
+	item, err := s.store.Work(workID)
+	if err != nil {
+		return Work{}, err
+	}
+	if item.Finalization == nil || item.Finalization.State == SessionFinalizationComplete ||
+		item.Finalization.State == SessionFinalizationSkipped {
+		return item, nil
+	}
+	if item.Status != WorkDone && item.Status != WorkCancelled {
+		return Work{}, fmt.Errorf("Session finalization requires terminal Work")
+	}
+	sessionID := strings.TrimSpace(item.Finalization.SessionID)
+	if sessionID == "" {
+		return Work{}, fmt.Errorf("Session finalization is missing session_id")
+	}
+	if s.watcher == nil {
+		failed := fmt.Errorf("watcher unavailable for delegated Session finalization")
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, failed)
+		return updated, errors.Join(failed, recordErr)
+	}
+	agent := s.watcher.GetAgent(sessionID)
+	if agent != nil && !agent.Delegated {
+		return s.store.RecordSessionFinalization(item.ID, SessionFinalizationSkipped,
+			fmt.Errorf("Session is not delegated; teardown intentionally skipped"))
+	}
+	if agent == nil && !s.watcher.HasSession(sessionID) {
+		if item.Finalization.Delegated {
+			if err := s.teardownOwnedSession(sessionID); err != nil {
+				updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, err)
+				return updated, errors.Join(err, recordErr)
+			}
+		}
+		return s.store.RecordSessionFinalization(item.ID, SessionFinalizationComplete, nil)
+	}
+	if agent == nil {
+		failure := fmt.Errorf("delegated ownership could not be proven; teardown was not attempted")
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, failure)
+		return updated, errors.Join(failure, recordErr)
+	}
+	if err := s.teardownOwnedSession(sessionID); err != nil {
+		updated, recordErr := s.store.RecordSessionFinalization(item.ID, SessionFinalizationFailed, err)
+		return updated, errors.Join(err, recordErr)
+	}
+	return s.store.RecordSessionFinalization(item.ID, SessionFinalizationComplete, nil)
+}
+
+// MigrateSignalSystemV1 exposes the store's bounded, crash-resumable startup
+// migration to the daemon owner.
+func (s *Service) MigrateSignalSystemV1(limit int) (bool, int, error) {
+	if s == nil || s.store == nil {
+		return true, 0, nil
+	}
+	return s.store.MigrateSignalSystemV1(limit)
+}
+
+// ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
+// watchers are already wired, an interrupted idle Host handling is requeued by
+// Work key, and only newly pending terminal finalizations are attempted.
+func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit int) (bool, error) {
+	if s == nil || s.store == nil {
+		return true, nil
+	}
+	byID := make(map[string]*classifier.Agent, len(agents))
+	for _, agent := range agents {
+		if agent != nil {
+			byID[agent.ID] = agent
+		}
+	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return false, err
+	}
+	if hostID := strings.TrimSpace(host.ID); hostID != "" {
+		agent := byID[hostID]
+		if agent == nil || agent.State != classifier.StateRunning && agent.State != classifier.StateBlocked {
+			if _, _, err := s.store.RequeueUnhandledHostAttention(hostID); err != nil {
+				return false, err
+			}
+		}
+	}
+	pending, more, err := s.store.PendingSessionFinalizations(limit)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range pending {
+		if _, finalizeErr := s.RetryTerminalFinalization(item.ID); finalizeErr != nil {
+			// The failed transition and retry attention are already durable.
+			log.Printf("Brain terminal Session finalization failed for Work %s: %v", item.ID, finalizeErr)
+		}
+	}
+	_, dispatchErr := s.DispatchPendingEvent()
+	return !more, dispatchErr
 }
 
 func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
@@ -549,10 +672,12 @@ func terminalSessionWorkUpdate(kind string) WorkUpdate {
 		next = "Inspect the delegated Session failure."
 	}
 	empty := ""
+	var noWake *WorkWake
 	return WorkUpdate{
 		Status:     &status,
 		NextAction: &next,
 		WaitFor:    &empty,
+		Wake:       &noWake,
 	}
 }
 
@@ -596,6 +721,7 @@ func workUpdateChanges(item Work, update WorkUpdate) bool {
 		update.DoneCriteriaRef != nil && strings.TrimSpace(*update.DoneCriteriaRef) != item.DoneCriteriaRef ||
 		update.NextAction != nil && strings.TrimSpace(*update.NextAction) != item.NextAction ||
 		update.WaitFor != nil && strings.TrimSpace(*update.WaitFor) != item.WaitFor ||
+		update.Wake != nil && !workWakeEqual(*update.Wake, item.Wake) ||
 		update.ContextRef != nil && strings.TrimSpace(*update.ContextRef) != item.ContextRef
 }
 
@@ -622,6 +748,7 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 			Objective:        firstNonEmpty(agent.Summary, "Complete the delegated Session."),
 			Status:           status,
 			OwnerSessionID:   agent.ID,
+			OwnerDelegated:   true,
 			CompletionPolicy: CompletionBounded,
 			NextAction:       "Wait for the delegated Session.",
 			WaitFor:          "Session " + agent.ID,
@@ -1007,9 +1134,9 @@ func (s *Service) CurrentHostSessionID() string {
 	return strings.TrimSpace(host.ID)
 }
 
-// ObserveHostSessionEvent lets foreground user steering finish before a queued
-// internal Event is claimed. The assistant turn ending is not itself persisted
-// as an Event; it only makes the existing Event claimable.
+// ObserveHostSessionEvent closes the exact in-flight handling attempt when the
+// Host turn ends. Missing disposition never replays the delivered input: the
+// Work key is durably reconciled once at the FIFO tail before dispatch resumes.
 func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden {
 		return false, nil
@@ -1026,7 +1153,14 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	wasForeground := s.foregroundInput
 	s.foregroundInput = false
 	s.dispatchMu.Unlock()
-	if wasForeground || state == classifier.StateDone || state == classifier.StateUnknown {
+	requeued := false
+	if state == classifier.StateDone || state == classifier.StateUnknown || state == classifier.StateFailed {
+		_, requeued, err = s.store.RequeueUnhandledHostAttention(host.ID)
+		if err != nil {
+			return false, err
+		}
+	}
+	if wasForeground || requeued || state == classifier.StateDone || state == classifier.StateUnknown {
 		return s.DispatchPendingEvent()
 	}
 	return false, nil
@@ -1219,7 +1353,15 @@ func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversation
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(host.ID)
 	}
-	_, err = s.store.AdmitUserMessage(threadID, sessionID, receipt, displayBody)
+	if _, err = s.store.AdmitUserMessage(threadID, sessionID, receipt, displayBody); err != nil {
+		return err
+	}
+	_, err = s.store.WakeWaitingWork(
+		WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + threadID},
+		"user.input",
+		strings.TrimSpace(receipt),
+		"User input arrived on the waiting Brain thread.",
+	)
 	return err
 }
 
@@ -1328,10 +1470,12 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		Objective:        strings.TrimSpace(event.Item.ActionInstruction),
 		Status:           WorkRunning,
 		OwnerSessionID:   strings.TrimSpace(run.AgentSession),
+		OwnerDelegated:   strings.TrimSpace(run.AgentSession) != "",
 		SourceThreadID:   sourceThreadID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the scheduled action.",
 		WaitFor:          calendarWaitCondition(run),
+		Wake:             calendarRunWake(run, contextRef),
 		ContextRef:       contextRef,
 	})
 	if err != nil {
@@ -1348,11 +1492,13 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		next := "Wait for the scheduled action."
 		wait := calendarWaitCondition(run)
 		owner := strings.TrimSpace(run.AgentSession)
+		wake := calendarRunWake(run, contextRef)
 		update = WorkUpdate{
 			Status:         &status,
 			OwnerSessionID: &owner,
 			NextAction:     &next,
 			WaitFor:        &wait,
+			Wake:           &wake,
 		}
 		if owner != "" {
 			kind = "calendar.launched"
@@ -1360,7 +1506,8 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 	case calendar.StatusCompleted:
 		status := WorkDone
 		empty := ""
-		update = WorkUpdate{Status: &status, NextAction: &empty, WaitFor: &empty}
+		var noWake *WorkWake
+		update = WorkUpdate{Status: &status, NextAction: &empty, WaitFor: &empty, Wake: &noWake}
 		kind = "calendar.result"
 		actionable = true
 		if event.ScheduledResult != nil {
@@ -1370,7 +1517,8 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		status := WorkNeedsInput
 		next := "Inspect the scheduled action failure."
 		empty := ""
-		update = WorkUpdate{Status: &status, NextAction: &next, WaitFor: &empty}
+		var noWake *WorkWake
+		update = WorkUpdate{Status: &status, NextAction: &next, WaitFor: &empty, Wake: &noWake}
 		kind = "calendar.failure"
 		actionable = true
 		if event.ScheduledResult != nil {
@@ -1390,12 +1538,25 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		Kind:       kind,
 		DedupeKey:  fmt.Sprintf("calendar:%s:%s:%s", event.Item.ID, run.ID, kind),
 		PayloadRef: payloadRef,
+		SourceName: contextRef,
 		Actionable: actionable,
 	})
 	if err != nil || !created || !recorded.Actionable {
 		return false, err
 	}
-	return s.DispatchPendingEvent()
+	var finalizeErr error
+	if item.Finalization != nil && item.Finalization.State == SessionFinalizationPending {
+		_, finalizeErr = s.RetryTerminalFinalization(item.ID)
+	}
+	woke, dispatchErr := s.DispatchPendingEvent()
+	return woke, errors.Join(finalizeErr, dispatchErr)
+}
+
+func calendarRunWake(run calendar.Run, contextRef string) *WorkWake {
+	if strings.TrimSpace(run.AgentSession) != "" {
+		return nil
+	}
+	return &WorkWake{Kind: WorkWakeCalendarResult, Ref: strings.TrimSpace(contextRef)}
 }
 
 func latestCalendarRun(item calendar.Item) (calendar.Run, bool) {

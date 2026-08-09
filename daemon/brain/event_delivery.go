@@ -19,15 +19,18 @@ const (
 
 func marshalDirectWorkEventInput(event WorkEvent, item Work) (string, error) {
 	input := work.DirectWorkEventInput{
-		EventID:    strings.TrimSpace(event.ID),
-		WorkID:     strings.TrimSpace(event.WorkID),
-		WorkTitle:  compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),
-		Kind:       compactDirectWorkEventField(event.Kind, directWorkEventKindRuneLimit),
-		Source:     compactDirectWorkEventField(event.SourceName, directWorkEventSourceRuneLimit),
-		Summary:    compactWorkResultText(event.Summary),
-		NextAction: compactDirectWorkEventField(item.NextAction, directWorkEventNextActionRuneLimit),
-		ContextRef: compactDirectWorkEventField(item.ContextRef, directWorkEventReferenceRuneLimit),
-		PayloadRef: compactDirectWorkEventField(event.PayloadRef, directWorkEventReferenceRuneLimit),
+		EventID:            strings.TrimSpace(event.ID),
+		WorkID:             strings.TrimSpace(event.WorkID),
+		WorkRevision:       event.DeliveryWorkRevision,
+		HostTurnID:         strings.TrimSpace(event.HandlingID),
+		EventSequenceFence: event.DeliverySequenceFence,
+		WorkTitle:          compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),
+		Kind:               compactDirectWorkEventField(event.Kind, directWorkEventKindRuneLimit),
+		Source:             compactDirectWorkEventField(event.SourceName, directWorkEventSourceRuneLimit),
+		Summary:            compactWorkResultText(event.Summary),
+		NextAction:         compactDirectWorkEventField(item.NextAction, directWorkEventNextActionRuneLimit),
+		ContextRef:         compactDirectWorkEventField(item.ContextRef, directWorkEventReferenceRuneLimit),
+		PayloadRef:         compactDirectWorkEventField(event.PayloadRef, directWorkEventReferenceRuneLimit),
 	}
 	payload := work.FormatDirectWorkEventInput(input)
 	if len(payload) > directWorkEventInputMaxBytes {

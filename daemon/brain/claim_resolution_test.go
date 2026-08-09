@@ -9,7 +9,7 @@ import (
 )
 
 // claimResolutionStore builds a store with one Work and one claimed actionable
-// Event (the held-claim shape: ClaimedAt set, ConsumedAt/DiscardedAt nil).
+// Event (the held-claim shape: ClaimedAt set, DeliveredAt/DiscardedAt nil).
 func claimResolutionStore(t *testing.T) (*Store, string, WorkEvent) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
@@ -65,7 +65,7 @@ func TestMarkDeliveredClaimClosesHeldClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := events[0]
-	if row.ConsumedAt == nil || row.Resolution != EventResolutionMarkDelivered ||
+	if row.DeliveredAt == nil || row.Resolution != EventResolutionMarkDelivered ||
 		row.ResolvedBy != "user" || row.ResolvedAt == nil {
 		t.Fatalf("mark_delivered row = %#v", row)
 	}
@@ -92,13 +92,15 @@ func TestDiscardClaimRemovesHeldClaimForever(t *testing.T) {
 		row.ResolvedBy != "user" || row.ResolvedAt == nil {
 		t.Fatalf("discard row = %#v", row)
 	}
-	// The row is excluded from claims forever; the event never re-dispatches.
+	// The discarded row is excluded from claims forever. Its Work receives one
+	// fresh level-based reconciliation; the discarded input is never replayed.
 	claimed, err := store.ClaimedActionableEvents()
 	if err != nil || len(claimed) != 0 {
 		t.Fatalf("discarded claim still listed: %#v", claimed)
 	}
-	if _, claimed, err := store.ClaimNextActionableEvent("host"); err != nil || claimed {
-		t.Fatalf("discarded event re-claimed: claimed=%v err=%v", claimed, err)
+	reconcile, wasClaimed, err := store.ClaimNextActionableEvent("host")
+	if err != nil || !wasClaimed || reconcile.ID == event.ID || reconcile.Kind != "brain.reconcile_required" {
+		t.Fatalf("discard reconciliation = %+v claimed=%v err=%v", reconcile, wasClaimed, err)
 	}
 }
 
@@ -242,7 +244,8 @@ func TestPruneSettledTurnsKeepsHeldAndUncertainRows(t *testing.T) {
 	if err != nil || pruned != 0 {
 		t.Fatalf("prune with unconsumed event = %d err=%v", pruned, err)
 	}
-	// Consume the terminal event, then the closed turn is pruned.
+	// Delivery alone is not handling. Resolve the terminal attention, then the
+	// closed turn is eligible for pruning.
 	events, _ := store.ListWorkEvents(storeWorkID(t, store, sessionID))
 	var terminal WorkEvent
 	for _, event := range events {
@@ -250,22 +253,22 @@ func TestPruneSettledTurnsKeepsHeldAndUncertainRows(t *testing.T) {
 			terminal = event
 		}
 	}
-	now := time.Now().UTC()
-	store.mu.Lock()
-	database, err := store.loadOrchestrationLocked()
-	if err == nil {
-		for index := range database.BrainWorkEvents {
-			if database.BrainWorkEvents[index].ID == terminal.ID {
-				database.BrainWorkEvents[index].ClaimedAt = &now
-				database.BrainWorkEvents[index].ConsumedAt = &now
-			}
-		}
-		err = store.persistOrchestrationLocked(database)
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok || claimed.ID != terminal.ID {
+		t.Fatalf("terminal claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	store.mu.Unlock()
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionComplete,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
 	pruned, err = store.PruneSettledTurns(now.Add(time.Hour))
 	if err != nil || pruned != 1 {
 		t.Fatalf("prune settled turn = %d err=%v", pruned, err)
