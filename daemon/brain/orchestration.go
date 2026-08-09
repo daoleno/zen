@@ -139,6 +139,7 @@ type WorkEvent struct {
 	HandlingID            string          `json:"host_turn_id,omitempty"`
 	DeliveryWorkRevision  uint64          `json:"delivery_work_revision,omitempty"`
 	DeliverySequenceFence uint64          `json:"delivery_sequence_fence,omitempty"`
+	SuccessorSessionID    string          `json:"successor_session_id,omitempty"`
 	DeliveredAt           *time.Time      `json:"delivered_at,omitempty"`
 	HandlingEndedAt       *time.Time      `json:"handling_ended_at,omitempty"`
 	HandledAt             *time.Time      `json:"handled_at,omitempty"`
@@ -189,12 +190,17 @@ type WorkEventDispositionRequest struct {
 }
 
 type ActiveWork struct {
-	ID             string     `json:"work_id"`
-	Title          string     `json:"title"`
-	Status         WorkStatus `json:"status"`
-	OwnerSessionID string     `json:"owner_session_id,omitempty"`
-	WaitFor        string     `json:"wait_for,omitempty"`
-	UnreadResult   bool       `json:"unread_result"`
+	ID               string               `json:"work_id"`
+	Revision         uint64               `json:"revision"`
+	Title            string               `json:"title"`
+	Status           WorkStatus           `json:"status"`
+	OwnerSessionID   string               `json:"owner_session_id,omitempty"`
+	OwnerDelegated   bool                 `json:"owner_delegated,omitempty"`
+	WaitFor          string               `json:"wait_for,omitempty"`
+	Wake             *WorkWake            `json:"wake,omitempty"`
+	AttentionPending bool                 `json:"attention_pending"`
+	Finalization     *SessionFinalization `json:"session_finalization,omitempty"`
+	UnreadResult     bool                 `json:"unread_result"`
 }
 
 type WorkChange struct {
@@ -759,6 +765,13 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 			return fmt.Errorf("brain_work_events[%d]: duplicate dedupe_key %q", index, event.DedupeKey)
 		}
 		dedupeKeys[key] = struct{}{}
+		if successor := strings.TrimSpace(event.SuccessorSessionID); successor != "" &&
+			event.HandledAt == nil && event.HandlingEndedAt == nil {
+			if existingID := activeOwners[successor]; existingID != "" && existingID != event.WorkID {
+				return fmt.Errorf("brain_work_events[%d]: successor_session_id %q already executes active Work %q", index, successor, existingID)
+			}
+			activeOwners[successor] = event.WorkID
+		}
 	}
 	inFlightByWork := map[string]string{}
 	for index, event := range database.BrainWorkEvents {
@@ -889,6 +902,14 @@ func validateWorkEvent(event WorkEvent) error {
 	if event.DeliveredAt != nil && (strings.TrimSpace(event.HandlingID) == "" || event.DeliveryWorkRevision == 0 || event.DeliverySequenceFence == 0) && !event.HistoricalDelivery {
 		return fmt.Errorf("live delivery requires handling identity, Work revision, and sequence fence")
 	}
+	if strings.TrimSpace(event.SuccessorSessionID) != "" {
+		if event.DeliveredAt == nil || event.HistoricalDelivery {
+			return fmt.Errorf("successor Session requires a live delivered handling")
+		}
+		if event.HandledAt != nil && event.Disposition != WorkDispositionContinue {
+			return fmt.Errorf("handled successor Session requires continue disposition")
+		}
+	}
 	if event.HandledAt != nil {
 		if event.DeliveredAt == nil && strings.TrimSpace(event.CoalescedInto) == "" || !validWorkDisposition(event.Disposition) {
 			return fmt.Errorf("handled event requires delivery and disposition")
@@ -960,6 +981,23 @@ func workHasInFlightHandling(database orchestrationDatabase, workID string) bool
 		}
 	}
 	return false
+}
+
+// WorkHasInFlightHandling reports whether Work is currently owned by an exact
+// delivered Host handling transaction. It is a preflight hint for delegated
+// spawn; AttachWorkOwner performs the authoritative check under the Store lock.
+func (s *Store) WorkHasInFlightHandling(workID string) (bool, error) {
+	workID = strings.TrimSpace(workID)
+	if s == nil || workID == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return false, err
+	}
+	return workHasInFlightHandling(database, workID), nil
 }
 
 func validWorkStatus(status WorkStatus) bool {
@@ -1244,8 +1282,10 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 }
 
 // AttachWorkOwner is the only delegated-spawn ownership transition. It
-// atomically changes an active unowned Work record to one running owner; a
-// concurrent incumbent is never replaced.
+// atomically changes an active unowned Work record to one running owner. While
+// Brain is handling an exact delivered Event, it instead stages the new Session
+// on that Event; the Work owner and revision change only when Brain commits the
+// matching continue disposition. A concurrent incumbent is never replaced.
 func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
 	id = strings.TrimSpace(id)
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
@@ -1263,6 +1303,16 @@ func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
 			item = database.BrainWork[index]
 			if item.Status == WorkDone || item.Status == WorkCancelled {
 				err = fmt.Errorf("%w: Work %s is %s", ErrWorkOwnerConflict, item.ID, item.Status)
+			} else if executionWorkID := databaseActiveWorkIDForExecutionSession(database, ownerSessionID); executionWorkID != "" && executionWorkID != item.ID {
+				err = fmt.Errorf("%w: Session %s already executes Work %s", ErrWorkOwnerConflict, ownerSessionID, executionWorkID)
+			} else if handlingIndex := inFlightHandlingEventIndex(database, item.ID); handlingIndex >= 0 {
+				handling := &database.BrainWorkEvents[handlingIndex]
+				if staged := strings.TrimSpace(handling.SuccessorSessionID); staged != "" && staged != ownerSessionID {
+					err = fmt.Errorf("%w: Work %s already staged successor %s", ErrWorkOwnerConflict, item.ID, staged)
+				} else if staged == "" {
+					handling.SuccessorSessionID = ownerSessionID
+					err = s.persistOrchestrationLocked(database)
+				}
 			} else if strings.TrimSpace(item.OwnerSessionID) != "" {
 				err = fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, item.OwnerSessionID)
 			} else {
@@ -1287,6 +1337,16 @@ func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
 	}
 	s.broadcastWorkChange(item.ID)
 	return item, nil
+}
+
+func inFlightHandlingEventIndex(database orchestrationDatabase, workID string) int {
+	for index, event := range database.BrainWorkEvents {
+		if event.WorkID == workID && event.DeliveredAt != nil && event.HandledAt == nil &&
+			event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+			return index
+		}
+	}
+	return -1
 }
 
 func ensureInitialAttentionLocked(database *orchestrationDatabase, itemIndex int, item Work, now time.Time) (Work, error) {
@@ -1376,6 +1436,28 @@ func (s *Store) WorkByOwnerSession(sessionID string) (Work, bool, error) {
 		}
 	}
 	return Work{}, false, nil
+}
+
+func databaseActiveWorkIDForExecutionSession(database orchestrationDatabase, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	for _, item := range database.BrainWork {
+		if item.OwnerSessionID == sessionID && item.Status != WorkDone && item.Status != WorkCancelled {
+			return item.ID
+		}
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.SuccessorSessionID != sessionID || event.DeliveredAt == nil || event.HandledAt != nil ||
+			event.HandlingEndedAt != nil || event.HistoricalDelivery {
+			continue
+		}
+		if index := workIndex(database.BrainWork, event.WorkID); index >= 0 {
+			item := database.BrainWork[index]
+			if item.Status != WorkDone && item.Status != WorkCancelled {
+				return item.ID
+			}
+		}
+	}
+	return ""
 }
 
 // MigrateDelegatedSessionsV1 performs the only legacy ownership adoption.
@@ -2070,6 +2152,10 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, fmt.Errorf("terminal Work cannot return to a nonterminal disposition")
 	}
+	if event.SuccessorSessionID != "" && request.Disposition != WorkDispositionContinue {
+		s.mu.Unlock()
+		return WorkEvent{}, Work{}, fmt.Errorf("a staged successor Session requires a continue disposition")
+	}
 	switch request.Disposition {
 	case WorkDispositionContinue:
 		if request.SuccessorSessionID == "" {
@@ -2079,6 +2165,10 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		if !databaseHasActiveSuccessor(database, item.ID, request.SuccessorSessionID) {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, fmt.Errorf("successor Session is not an accepted active owner of Work")
+		}
+		if staged := strings.TrimSpace(event.SuccessorSessionID); staged != "" && staged != request.SuccessorSessionID {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, fmt.Errorf("continue successor does not match the Session staged for this Host turn")
 		}
 		item.Status = WorkRunning
 		item.OwnerSessionID = request.SuccessorSessionID
@@ -2126,6 +2216,9 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		candidate.HandledAt = &handledAt
 		candidate.Disposition = request.Disposition
 		candidate.DispositionSummary = request.Summary
+	}
+	if request.Disposition == WorkDispositionContinue {
+		database.BrainWorkEvents[eventIndex].SuccessorSessionID = request.SuccessorSessionID
 	}
 	database.BrainWork[itemIndex] = item
 	if err := s.persistOrchestrationLocked(database); err != nil {
@@ -2271,12 +2364,17 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 			continue
 		}
 		out = append(out, ActiveWork{
-			ID:             item.ID,
-			Title:          item.Title,
-			Status:         item.Status,
-			OwnerSessionID: item.OwnerSessionID,
-			WaitFor:        item.WaitFor,
-			UnreadResult:   hasUnread,
+			ID:               item.ID,
+			Revision:         item.Revision,
+			Title:            item.Title,
+			Status:           item.Status,
+			OwnerSessionID:   item.OwnerSessionID,
+			OwnerDelegated:   item.OwnerDelegated,
+			WaitFor:          item.WaitFor,
+			Wake:             cloneWorkWake(item.Wake),
+			AttentionPending: workHasUnhandledAttention(database, item.ID),
+			Finalization:     cloneSessionFinalization(item.Finalization),
+			UnreadResult:     hasUnread,
 		})
 	}
 	sort.SliceStable(out, func(left, right int) bool {

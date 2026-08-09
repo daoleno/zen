@@ -29,12 +29,31 @@ export type BrainWorkStatus =
   | "done"
   | "cancelled";
 
+export type BrainWorkWake = {
+  kind: "session_terminal" | "calendar_result" | "user_input";
+  ref: string;
+};
+
+export type BrainSessionFinalization = {
+  session_id: string;
+  delegated: boolean;
+  state: "pending" | "failed" | "complete" | "skipped";
+  attempts?: number;
+  last_error?: string;
+  updated_at: string;
+};
+
 export type BrainActiveWork = {
   work_id: string;
+  revision: number;
   title: string;
   status: BrainWorkStatus;
   owner_session_id?: string;
+  owner_delegated?: boolean;
   wait_for?: string;
+  wake?: BrainWorkWake;
+  attention_pending: boolean;
+  session_finalization?: BrainSessionFinalization;
   unread_result: boolean;
 };
 
@@ -188,6 +207,12 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
     }
     byId.set(workId, {
       work_id: workId,
+      revision:
+        typeof item.revision === "number" &&
+        Number.isSafeInteger(item.revision) &&
+        item.revision >= 0
+          ? item.revision
+          : 0,
       title,
       status,
       owner_session_id:
@@ -195,14 +220,87 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
         item.owner_session_id.trim()
           ? item.owner_session_id.trim()
           : undefined,
+      owner_delegated: item.owner_delegated === true ? true : undefined,
       wait_for:
         typeof item.wait_for === "string" && item.wait_for.trim()
           ? item.wait_for.trim()
           : undefined,
+      wake: normalizeWorkWake(item.wake),
+      attention_pending: item.attention_pending === true,
+      session_finalization: normalizeSessionFinalization(
+        item.session_finalization,
+      ),
       unread_result: item.unread_result === true,
     });
   });
   return Array.from(byId.values());
+}
+
+function normalizeWorkWake(value: unknown): BrainWorkWake | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const wake = value as Record<string, unknown>;
+  const ref = typeof wake.ref === "string" ? wake.ref.trim() : "";
+  if (!ref) {
+    return undefined;
+  }
+  switch (wake.kind) {
+    case "session_terminal":
+    case "calendar_result":
+    case "user_input":
+      return { kind: wake.kind, ref };
+    default:
+      return undefined;
+  }
+}
+
+function normalizeSessionFinalization(
+  value: unknown,
+): BrainSessionFinalization | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const finalization = value as Record<string, unknown>;
+  const sessionId =
+    typeof finalization.session_id === "string"
+      ? finalization.session_id.trim()
+      : "";
+  const updatedAt =
+    typeof finalization.updated_at === "string"
+      ? finalization.updated_at.trim()
+      : "";
+  const delegated = finalization.delegated === true;
+  const state = finalization.state;
+  if (
+    !sessionId ||
+    !updatedAt ||
+    (state !== "pending" &&
+      state !== "failed" &&
+      state !== "complete" &&
+      state !== "skipped")
+  ) {
+    return undefined;
+  }
+  const attempts =
+    typeof finalization.attempts === "number" &&
+    Number.isSafeInteger(finalization.attempts) &&
+    finalization.attempts >= 0
+      ? finalization.attempts
+      : undefined;
+  const lastError =
+    typeof finalization.last_error === "string" &&
+    finalization.last_error.trim()
+      ? finalization.last_error.trim()
+      : undefined;
+  return {
+    session_id: sessionId,
+    delegated,
+    state,
+    attempts,
+    last_error: lastError,
+    updated_at: updatedAt,
+  };
 }
 
 function normalizeWorkStatus(value: unknown): BrainWorkStatus | null {

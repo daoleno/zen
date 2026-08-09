@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -448,6 +449,44 @@ func TestControlAppAgentSpawnWorkCASPreservesIncumbentAndKillsOnlyLoser(t *testi
 			fw.created,
 			fw.killed,
 		)
+	}
+}
+
+func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *testing.T) {
+	store := newControlBrainStore(t)
+	item, err := store.CreateWork(brain.Work{
+		Title: "Review correction", Objective: "Attach a successor only through disposition.",
+		Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AttachWorkOwner(item.ID, "brain-agent-incumbent:@1"); err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{brainStore: store}
+	req := control.Request{WorkID: item.ID}
+	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkOwnerConflict) {
+		t.Fatalf("spawn outside handling err=%v, want owner conflict", err)
+	}
+	if _, _, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "session:brain-agent-incumbent:@1:turn:one:session.done", Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); err != nil {
+		t.Fatalf("delivered handling rejected successor: %v", err)
+	}
+	if _, err := app.prepareSpawnWork(req, "Correction", ""); !errors.Is(err, brain.ErrWorkOwnerConflict) {
+		t.Fatalf("promptless successor err=%v, want owner conflict", err)
 	}
 }
 

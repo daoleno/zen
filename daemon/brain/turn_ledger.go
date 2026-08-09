@@ -372,14 +372,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			return watcher.TurnSubmission{}, false, fmt.Errorf("Session already has an unresolved pending submission")
 		}
 	}
-	workID := ""
-	for _, item := range database.BrainWork {
-		if strings.TrimSpace(item.OwnerSessionID) == candidate.SessionID &&
-			item.Status != WorkDone && item.Status != WorkCancelled {
-			workID = item.ID
-			break
-		}
-	}
+	workID := databaseActiveWorkIDForExecutionSession(database, candidate.SessionID)
 	if workID == "" {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", candidate.SessionID)
 	}
@@ -690,14 +683,7 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 	if err != nil {
 		return err
 	}
-	workID := ""
-	for _, item := range database.BrainWork {
-		if strings.TrimSpace(item.OwnerSessionID) == admitted.SessionID &&
-			item.Status != WorkDone && item.Status != WorkCancelled {
-			workID = item.ID
-			break
-		}
-	}
+	workID := databaseActiveWorkIDForExecutionSession(database, admitted.SessionID)
 	if workID == "" {
 		return fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", admitted.SessionID)
 	}

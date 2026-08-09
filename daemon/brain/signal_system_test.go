@@ -492,3 +492,64 @@ func TestReviewRejectionDispositionKeepsAcceptedSuccessorOwner(t *testing.T) {
 		t.Fatalf("continuation did not retain successor ownership: event=%+v Work=%+v", resolvedEvent, resolvedWork)
 	}
 }
+
+func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	incumbent := "brain-agent-first-attempt:@1"
+	successor := "brain-agent-correction:@2"
+	item := createSignalTestWork(t, store, "Delegated correction", incumbent)
+	appendSignalTestEvent(t, store, item, "correction-1")
+	delivered, current := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+
+	stagedWork, err := store.AttachWorkOwner(item.ID, successor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stagedWork.Revision != current.Revision || stagedWork.OwnerSessionID != incumbent {
+		t.Fatalf("staging changed Work before disposition: before=%+v after=%+v", current, stagedWork)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].SuccessorSessionID != successor {
+		t.Fatalf("staged successor Event=%+v", events)
+	}
+	acceptedAt := time.Now().UTC()
+	turnID := successor + ":turn:1"
+	pending := prepareInitialSubmission(t, store, successor, turnID, "correct the result", acceptedAt)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: successor, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-correction",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-correction", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: acceptedAt.Add(time.Second),
+		},
+		ResolvedAt: acceptedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeDisposition, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeDisposition.Revision != current.Revision || beforeDisposition.OwnerSessionID != incumbent {
+		t.Fatalf("accepted successor bypassed disposition: before=%+v after=%+v", current, beforeDisposition)
+	}
+	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionContinue, SuccessorSessionID: successor,
+		NextAction: "Review the correction.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedEvent.SuccessorSessionID != successor || resolvedWork.OwnerSessionID != successor ||
+		!resolvedWork.OwnerDelegated || resolvedWork.Revision != current.Revision+1 {
+		t.Fatalf("successor was not atomically attached: event=%+v Work=%+v", resolvedEvent, resolvedWork)
+	}
+}

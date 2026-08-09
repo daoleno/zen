@@ -84,9 +84,12 @@ describe("Brain Active work normalization", () => {
         active_work: [
           {
             work_id: "work-a",
+            revision: 7,
             title: "Release Zen",
             status: "running",
             owner_session_id: "agent-a",
+            owner_delegated: true,
+            attention_pending: false,
             unread_result: false,
             claim_token: "must-not-project",
           },
@@ -95,6 +98,8 @@ describe("Brain Active work normalization", () => {
             title: "Review sources",
             status: "waiting",
             wait_for: "Calendar occurrence",
+            wake: { kind: "calendar_result", ref: "calendar:run-c" },
+            attention_pending: false,
             unread_result: true,
           },
           {
@@ -110,18 +115,28 @@ describe("Brain Active work normalization", () => {
     expect(received.byServer["server-1"]?.active_work).toEqual([
       {
         work_id: "work-a",
+        revision: 7,
         title: "Release Zen",
         status: "running",
         owner_session_id: "agent-a",
+        owner_delegated: true,
         wait_for: undefined,
+        wake: undefined,
+        attention_pending: false,
+        session_finalization: undefined,
         unread_result: false,
       },
       {
         work_id: "work-c",
+        revision: 0,
         title: "Review sources",
         status: "waiting",
         owner_session_id: undefined,
+        owner_delegated: undefined,
         wait_for: "Calendar occurrence",
+        wake: { kind: "calendar_result", ref: "calendar:run-c" },
+        attention_pending: false,
+        session_finalization: undefined,
         unread_result: true,
       },
     ]);

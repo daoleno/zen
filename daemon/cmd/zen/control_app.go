@@ -546,12 +546,18 @@ func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) 
 			return brain.Work{}, fmt.Errorf("Brain Work %s is already %s", item.ID, item.Status)
 		}
 		if strings.TrimSpace(item.OwnerSessionID) != "" {
-			return brain.Work{}, fmt.Errorf(
-				"%w: Work %s is owned by %s",
-				brain.ErrWorkOwnerConflict,
-				item.ID,
-				item.OwnerSessionID,
-			)
+			inFlight, inFlightErr := a.brainStore.WorkHasInFlightHandling(item.ID)
+			if inFlightErr != nil {
+				return brain.Work{}, inFlightErr
+			}
+			if !inFlight || strings.TrimSpace(prompt) == "" {
+				return brain.Work{}, fmt.Errorf(
+					"%w: Work %s is owned by %s",
+					brain.ErrWorkOwnerConflict,
+					item.ID,
+					item.OwnerSessionID,
+				)
+			}
 		}
 		return item, nil
 	}
