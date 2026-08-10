@@ -170,10 +170,9 @@ type sessionInputIO interface {
 	paneContent(socket, target string) (string, error)
 }
 
-// realSessionInputIO executes tmux on the target's own server: Zen-owned
-// sessions live on the daemon-namespaced socket, user/manual sessions on the
-// user's default server. socketFor resolves the per-target server; nil keeps
-// the user default (test doubles).
+// realSessionInputIO executes every tmux mutation on the one host server
+// selected at daemon startup. socketFor returns that immutable server binding;
+// nil keeps ordinary default-server semantics for test doubles.
 type realSessionInputIO struct {
 	socketFor func(sessionID string) string
 }

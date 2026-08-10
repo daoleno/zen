@@ -1116,6 +1116,21 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if targetID == "" {
 			targetID = raw.AgentID
 		}
+		if backend == "tmux" {
+			presence, probeErr := s.watcher.ProbeSession(targetID)
+			if probeErr != nil || presence != watcher.SessionPresencePresent {
+				message := "tmux target is not an available Zen-owned Session"
+				if probeErr != nil {
+					message = probeErr.Error()
+				}
+				s.sendJSON(conn, map[string]any{
+					"type":    "terminal_error",
+					"code":    "open_failed",
+					"message": message,
+				})
+				return
+			}
+		}
 		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
 			Cols:   raw.Cols,
 			Rows:   raw.Rows,

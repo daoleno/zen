@@ -34,6 +34,9 @@ func TestKillSessionResourceReleaseFailureAfterSuccessfulKill(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+if [ "$1" = "show-options" ]; then
+  echo 1
+fi
 exit 0
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o700); err != nil {
@@ -93,6 +96,10 @@ func TestKillSessionRetryAfterResourceFailureConverges(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+if [ "$1" = "show-options" ]; then
+  echo 1
+  exit 0
+fi
 if echo "$*" | grep -q 'kill-window'; then
   echo "can't find window" >&2
   exit 1

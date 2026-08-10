@@ -3,12 +3,8 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -374,45 +370,24 @@ func TestNonBrainSendInputStillAcknowledgesAfterProviderAccept(t *testing.T) {
 	}
 }
 
-func TestServerSendInputWithReceiptSubmitsRawTextThroughRealWatcher(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is required for the real watcher boundary test")
-	}
-	session := fmt.Sprintf("zen-server-session-input-%d-%d", os.Getpid(), time.Now().UnixNano())
-	outputPath := filepath.Join(t.TempDir(), "input.txt")
-	command := fmt.Sprintf("IFS= read -r line; printf '%%s' \"$line\" > %q; sleep 5", outputPath)
-	if out, err := exec.Command("tmux", "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
-		t.Fatalf("create tmux Session: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", session).Run()
-	})
-	time.Sleep(100 * time.Millisecond)
-
-	srv := &Server{watcher: watcher.New(time.Second)}
+func TestServerSendInputWithReceiptForwardsExactRawText(t *testing.T) {
+	var gotAgent, gotText, gotReceipt string
+	srv := &Server{sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+		gotAgent, gotText, gotReceipt = agentID, text, receipt
+		return nil
+	}}
 	conn := openThinProxyTestSocket(t, srv)
 	response := sendThinProxyRequest(t, conn, clientMessage{
 		Type:      "send_input",
 		RequestID: "request-raw-text",
-		AgentID:   session,
-		Text:      "hello",
+		AgentID:   "owned-session:@1",
+		Text:      "hello\nraw text",
 	})
 	if response.Type != "input_sent" || response.RequestID != "request-raw-text" {
 		t.Fatalf("WebSocket send_input response = %#v", response)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		raw, err := os.ReadFile(outputPath)
-		if err == nil {
-			if string(raw) != "hello" {
-				t.Fatalf("provider received %q, want exact raw WebSocket Text", raw)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("provider did not receive raw WebSocket Text: %v", err)
-		}
-		time.Sleep(25 * time.Millisecond)
+	if gotAgent != "owned-session:@1" || gotText != "hello\nraw text" || gotReceipt != "request-raw-text" {
+		t.Fatalf("forwarded input = agent %q text %q receipt %q", gotAgent, gotText, gotReceipt)
 	}
 }
 

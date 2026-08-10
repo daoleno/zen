@@ -53,6 +53,7 @@ func lifecycleTestWatcher(io *fakeSessionInputIO, ledger *fakeTurnLedger, probe 
 	w.sessionInput = owner
 	w.turnLedger = ledger
 	w.targetCommandResolver = func(string) (string, bool) { return "opencode", true }
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	return w
 }
 

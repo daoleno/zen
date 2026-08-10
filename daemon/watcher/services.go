@@ -199,39 +199,37 @@ type classifierAgentSnapshot struct {
 	command string
 }
 
-// listServicePanes inventories panes on the daemon-namespaced server first,
-// then the user's default server, using the same deterministic shadowing as
-// the window inventory: a Zen-owned target shadows a same-named user target,
-// and a missing server is tolerated as empty. Any other tmux failure is
-// returned as a hard error while the readable server's inventory is still
-// delivered.
+// listServicePanes inventories explicitly Zen-owned panes on the one selected
+// host server. Ambient user panes never enter service attribution. A missing
+// server is an empty inventory; other tmux failures remain hard errors.
 func (w *Watcher) listServicePanes() ([]servicePane, error) {
 	w.mu.RLock()
-	daemon := w.daemonSocketPath
+	socket := w.tmuxSocketPath
 	w.mu.RUnlock()
-	panes := []servicePane{}
-	var hardErr error
-	seen := make(map[string]bool)
-	for _, socket := range []string{daemon, ""} {
-		onSocket, err := listServicePanesOn(socket)
-		if err != nil {
-			if isNoTmuxServerError(err) {
-				continue
-			}
-			if hardErr == nil {
-				hardErr = err
-			}
-			continue
+	onSocket, err := listServicePanesOn(socket)
+	if err != nil {
+		if isNoTmuxServerError(err) {
+			return nil, nil
 		}
-		for _, pane := range onSocket {
-			if seen[pane.target] {
-				continue
+		return nil, err
+	}
+	panes := make([]servicePane, 0, len(onSocket))
+	owned := make(map[string]bool)
+	checked := make(map[string]bool)
+	for _, pane := range onSocket {
+		if !checked[pane.target] {
+			present, targetOwned, probeErr := probeTmuxTargetOwnership(socket, pane.target)
+			if probeErr != nil {
+				return nil, probeErr
 			}
-			seen[pane.target] = true
+			checked[pane.target] = true
+			owned[pane.target] = present && targetOwned
+		}
+		if owned[pane.target] {
 			panes = append(panes, pane)
 		}
 	}
-	return panes, hardErr
+	return panes, nil
 }
 
 func listServicePanesOn(socket string) ([]servicePane, error) {

@@ -221,27 +221,26 @@ type Watcher struct {
 	appliedFactIDs        map[string]string         // session -> last applied provider FactID (skip identical applies)
 	ledgerTurnReadAt      map[string]time.Time      // TTL for authoritative ledger re-reads
 	probeLossSince        map[string]probeLossState // session -> current turn loss streak
-	// daemonSocketPath is the daemon-namespaced tmux server that hosts all
-	// Zen-owned Brain and delegated Sessions; empty keeps the legacy default
-	// server (tests). daemonScratchDir is the TMUX_TMPDIR for hidden host
-	// sessions without a per-agent resource scratch.
-	daemonSocketPath string
-	daemonScratchDir string
-	// targetSockets maps every inventoried target to its tmux server
-	// ownership. known distinguishes a target this watcher has actually seen
-	// or created from a genuinely unknown target; socket is the server path
-	// ("" = the user's default server). Ownership is never mixed.
-	targetSockets         map[string]targetSocket
+	// tmuxSocketPath is the one caller-visible tmux server selected when the
+	// daemon starts ("" = the Unix user's ordinary default server).
+	// tmuxScratchDir is the private TMUX_TMPDIR for provider panes without a
+	// per-agent resource scratch. It contains provider-internal plain tmux;
+	// it is never the host server.
+	tmuxSocketPath        string
+	tmuxScratchDir        string
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
 	sessionInput          *sessionInputOwner
 	targetProcessResolver func(string) (targetProcessIdentity, bool)
 	targetCommandResolver func(string) (string, bool)
-	admissionNow          func() time.Time
-	admissionSleep        func(time.Duration)
-	admissionTimeout      func(string) time.Duration
-	pollNow               func() time.Time
+	// targetOwnershipResolver is a test-only seam for tmux-free input tests.
+	// Production leaves it nil and proves the window-local durable marker.
+	targetOwnershipResolver func(string) (bool, error)
+	admissionNow            func() time.Time
+	admissionSleep          func(time.Duration)
+	admissionTimeout        func(string) time.Duration
+	pollNow                 func() time.Time
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -257,7 +256,6 @@ func New(pollInterval time.Duration) *Watcher {
 		appliedFactIDs:   make(map[string]string),
 		ledgerTurnReadAt: make(map[string]time.Time),
 		probeLossSince:   make(map[string]probeLossState),
-		targetSockets:    make(map[string]targetSocket),
 		events:           make(chan SessionEvent, 100),
 		resources:        noopDelegatedResourceManager{},
 	}
@@ -271,40 +269,27 @@ func New(pollInterval time.Duration) *Watcher {
 	return w
 }
 
-// targetSocket is the tmux server ownership of one target. known=true means
-// the target was inventoried or created by this watcher; socket is the server
-// path, where "" means the user's default server. A missing entry (known =
-// false) is a genuinely unknown target — distinct from a known user-server
-// target.
-type targetSocket struct {
-	known  bool
-	socket string
-}
-
 type probeLossState struct {
 	turnID string
 	since  time.Time
 }
 
-// SetDaemonSocket installs the daemon-namespaced tmux server that hosts all
-// Zen-owned Brain and delegated Sessions, plus the TMUX_TMPDIR scratch for
-// hidden host sessions. Sessions already inventoried keep their recorded
-// socket; new sessions are created on the daemon socket.
-func (w *Watcher) SetDaemonSocket(socketPath, scratchDir string) {
+// SetTmuxServer installs the one caller-visible tmux server that hosts every
+// Zen-owned Brain and delegated Session, plus the private TMUX_TMPDIR used by
+// provider-internal plain tmux commands. Call it once before Run or CreateSession.
+func (w *Watcher) SetTmuxServer(socketPath, scratchDir string) {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
-	w.daemonSocketPath = strings.TrimSpace(socketPath)
-	w.daemonScratchDir = strings.TrimSpace(scratchDir)
+	w.tmuxSocketPath = socketPath
+	w.tmuxScratchDir = strings.TrimSpace(scratchDir)
 	w.mu.Unlock()
 }
 
-// SocketPathFor returns the tmux server socket path that hosts a KNOWN
-// target: the daemon-namespaced socket for Zen-owned Sessions, or "" (the
-// user's default server) for known user/manual Sessions. Genuinely unknown
-// targets resolve to "" so user-visible surfaces never leak the daemon
-// socket and never assume ownership.
+// SocketPathFor returns the selected host server only for a currently known
+// Zen-owned target. Unknown targets resolve to "" so user-visible surfaces do
+// not acquire access to a custom caller server without watcher ownership.
 func (w *Watcher) SocketPathFor(target string) string {
 	if w == nil {
 		return ""
@@ -312,29 +297,56 @@ func (w *Watcher) SocketPathFor(target string) string {
 	target = strings.TrimSpace(target)
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.targetSockets[target].socket
+	if _, owned := w.agents[target]; !owned {
+		return ""
+	}
+	return w.tmuxSocketPath
 }
 
-// socketPathFor resolves the tmux server for one target for internal
-// operations. A KNOWN user-server target resolves to "" (its own server); a
-// known daemon target resolves to the daemon socket; only a genuinely
-// UNKNOWN target falls back to the daemon socket (fresh Zen creates and the
-// Brain host before its first inventory). Same-name targets across servers
-// are resolved deterministically by the inventory (daemon shadows user) and
-// by the create path (the socket actually used for the create is recorded).
+func (w *Watcher) ownsTarget(target string) bool {
+	if w == nil {
+		return false
+	}
+	target = strings.TrimSpace(target)
+	w.mu.RLock()
+	_, owned := w.agents[target]
+	w.mu.RUnlock()
+	return owned
+}
+
+// targetIsDurablyOwned requires both an existing target and Zen's window-local
+// ownership marker. A global tmux option with the same name is deliberately
+// insufficient: ambient windows must never inherit ownership from server
+// configuration.
+func (w *Watcher) targetIsDurablyOwned(target string) (bool, error) {
+	if w == nil {
+		return false, nil
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, nil
+	}
+	w.mu.RLock()
+	resolver := w.targetOwnershipResolver
+	w.mu.RUnlock()
+	if resolver != nil {
+		return resolver(target)
+	}
+	present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(target), target)
+	return present && owned, err
+}
+
+// socketPathFor resolves every internal tmux operation to the one immutable
+// host server selected at startup. Ownership is enforced separately through
+// the durable @zen_agent_created marker and the owned discovery projection.
 func (w *Watcher) socketPathFor(target string) string {
 	if w == nil {
 		return ""
 	}
-	target = strings.TrimSpace(target)
 	w.mu.RLock()
-	ownership := w.targetSockets[target]
-	daemon := w.daemonSocketPath
+	socket := w.tmuxSocketPath
 	w.mu.RUnlock()
-	if ownership.known {
-		return ownership.socket
-	}
-	return daemon
+	return socket
 }
 
 // SetTurnLedger installs the canonical per-turn ledger. The watcher applies
@@ -390,10 +402,19 @@ func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, boo
 	if w == nil {
 		return targetProcessIdentity{}, false
 	}
+	sessionID = strings.TrimSpace(sessionID)
 	w.mu.RLock()
+	_, owned := w.agents[sessionID]
 	identityResolver := w.targetProcessResolver
 	resolver := w.targetCommandResolver
 	w.mu.RUnlock()
+	if !owned {
+		return targetProcessIdentity{}, false
+	}
+	durablyOwned, err := w.targetIsDurablyOwned(sessionID)
+	if err != nil || !durablyOwned {
+		return targetProcessIdentity{}, false
+	}
 	if identityResolver != nil {
 		return identityResolver(sessionID)
 	}
@@ -404,10 +425,8 @@ func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, boo
 }
 
 // resolveTargetProcessIdentity resolves the exact pane/process identity on
-// the target's own tmux server (daemon-namespaced for Zen-owned Sessions,
-// user default for known user/manual Sessions), so every production
-// admission/input path proves identity against the server that actually owns
-// the pane.
+// the one selected host server. The owned agent projection gates calls into
+// this resolver, so ambient panes never become mutation candidates.
 func (w *Watcher) resolveTargetProcessIdentity(target string) (targetProcessIdentity, bool) {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -819,6 +838,11 @@ const (
 // missing) but delegated resource cleanup failed and remains retryable.
 var ErrDelegatedResourceRelease = errors.New("delegated resource release failed")
 
+// ErrUnownedTmuxTarget means a target exists on the shared host server but
+// lacks Zen's durable ownership marker. Mutating it would cross the lifecycle
+// boundary into an ambient user session.
+var ErrUnownedTmuxTarget = errors.New("tmux target is not owned by Zen")
+
 // HasSession reports whether tmux still has a session matching the target.
 // Probe failures collapse to false for backward-compatible callers; prefer
 // ProbeSession when absence must be proven.
@@ -827,8 +851,9 @@ func (w *Watcher) HasSession(target string) bool {
 	return err == nil && presence == SessionPresencePresent
 }
 
-// ProbeSession reports whether tmux still has the target. Transport/probe
-// failures return SessionPresenceUnknown with a non-nil error — never Absent.
+// ProbeSession reports whether the selected host server still has an explicitly
+// Zen-owned target. An ambient target with the same name is absent from Zen's
+// lifecycle, not present. Transport/probe failures return Unknown with an error.
 func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -840,32 +865,12 @@ func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 			probeTarget = name
 		}
 	}
-	// Known targets probe their recorded server (including a known user-server
-	// target, which probes the user default ONLY); genuinely unknown targets
-	// probe the daemon-namespaced server first (Zen-owned), then the user's
-	// default server. A hard error on any probed server fails closed to
-	// Unknown.
-	sockets := []string{""}
-	if w != nil {
-		w.mu.RLock()
-		ownership := w.targetSockets[target]
-		daemon := w.daemonSocketPath
-		w.mu.RUnlock()
-		if ownership.known {
-			sockets = []string{ownership.socket}
-		} else {
-			sockets = []string{daemon, ""}
-		}
+	present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(target), probeTarget)
+	if err != nil {
+		return SessionPresenceUnknown, err
 	}
-	for _, socket := range sockets {
-		out, err := tmuxCommand(socket, "has-session", "-t", probeTarget).CombinedOutput()
-		if err == nil {
-			return SessionPresencePresent, nil
-		}
-		if isTmuxTargetMissing(err, string(out)) || isNoTmuxServerError(err) || isNoTmuxServerError(fmt.Errorf("%s", out)) {
-			continue
-		}
-		return SessionPresenceUnknown, fmt.Errorf("tmux has-session %s: %w: %s", probeTarget, err, strings.TrimSpace(string(out)))
+	if present && owned {
+		return SessionPresencePresent, nil
 	}
 	return SessionPresenceAbsent, nil
 }
@@ -895,6 +900,10 @@ func (w *Watcher) ClearDelegatedTurnMarkers(targets []string) {
 	for _, target := range targets {
 		target = strings.TrimSpace(target)
 		if target == "" {
+			continue
+		}
+		present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(target), target)
+		if err != nil || !present || !owned {
 			continue
 		}
 		_ = tmuxCommand(
@@ -962,12 +971,6 @@ func (w *Watcher) poll() {
 	}
 	observations := make([]paneObs, 0, len(windows))
 	for _, win := range windows {
-		// Tag ownership BEFORE the first capture of this poll: pane/readiness
-		// reads resolve the target's own server (daemon-namespaced vs user
-		// default), so the first observation already uses the right socket.
-		w.mu.Lock()
-		w.targetSockets[win.target] = targetSocket{known: true, socket: win.socket}
-		w.mu.Unlock()
 		content, alive, deadStatus := capturePaneContentFunc(win.target)
 		observations = append(observations, paneObs{
 			win:        win,
@@ -1273,7 +1276,6 @@ func (w *Watcher) poll() {
 			delete(w.appliedFactIDs, id)
 			delete(w.ledgerTurnReadAt, id)
 			delete(w.probeLossSince, id)
-			delete(w.targetSockets, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -2011,49 +2013,39 @@ type tmuxWindow struct {
 	delegated        bool
 	resourceUnit     string
 	delegatedTurnRaw string
-	socket           string // tmux server socket path ("" = user default server)
 }
 
-// listTmuxWindows inventories the daemon-namespaced server (Zen-owned Brain
-// and delegated Sessions) and the user's default server (manual Terminal
-// Sessions) without mixing ownership: every window is tagged with the socket
-// it lives on. A missing server on either socket is an empty inventory for
-// that socket, never an error — removal reconciliation owns vanished
-// sessions.
+// listTmuxWindows inventories only explicitly Zen-owned windows on the one
+// caller-visible server selected at startup. Ambient user windows are read only
+// as part of tmux's formatted listing and are discarded by the durable
+// @zen_agent_created marker before they can enter discovery or reconciliation.
+// A missing server is an empty inventory so removal reconciliation owns vanished
+// Zen sessions.
 func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
 	if w == nil {
-		return listTmuxWindowsOn("")
+		return nil, nil
 	}
 	w.mu.RLock()
-	daemon := w.daemonSocketPath
+	socket := w.tmuxSocketPath
 	w.mu.RUnlock()
-	windows := []tmuxWindow{}
-	var hardErr error
-	// Daemon server first, then the user default server. Same-name targets
-	// across servers are resolved deterministically: the daemon-namespaced
-	// (Zen-owned) entry shadows the user entry, so a user session that
-	// collides with a Zen-owned name is never misrouted to the user server.
-	seen := make(map[string]bool)
-	for _, socket := range []string{daemon, ""} {
-		onSocket, err := listTmuxWindowsOn(socket)
-		if err != nil {
-			if isNoTmuxServerError(err) {
-				continue
-			}
-			if hardErr == nil {
-				hardErr = err
-			}
-			continue
+	onSocket, err := listTmuxWindowsOn(socket)
+	if err != nil {
+		if isNoTmuxServerError(err) {
+			return nil, nil
 		}
-		for _, win := range onSocket {
-			if seen[win.target] {
-				continue
-			}
-			seen[win.target] = true
+		return nil, err
+	}
+	windows := make([]tmuxWindow, 0, len(onSocket))
+	for _, win := range onSocket {
+		present, owned, probeErr := probeTmuxTargetOwnership(socket, win.target)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		if present && owned {
 			windows = append(windows, win)
 		}
 	}
-	return windows, hardErr
+	return windows, nil
 }
 
 func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
@@ -2116,7 +2108,6 @@ func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
 			piSessionBinding: piSessionBinding,
 			panePID:          panePID, hidden: hidden, delegated: delegated,
 			resourceUnit: resourceUnit, delegatedTurnRaw: delegatedTurnRaw,
-			socket: socket,
 		})
 	}
 	return windows, nil
@@ -2129,6 +2120,41 @@ func tmuxBoolOption(value string) bool {
 	default:
 		return false
 	}
+}
+
+// probeTmuxTargetOwnership reads the durable, window-local ownership fact from
+// the selected server. show-options intentionally omits -A: an ambient window
+// must not inherit @zen_agent_created from a global tmux option. Missing targets
+// and missing servers are ordinary absence; any other failure is unknown.
+func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, false, nil
+	}
+	out, commandErr := tmuxCommand(
+		socket,
+		"show-options",
+		"-w",
+		"-qv",
+		"-t",
+		target,
+		"@zen_agent_created",
+	).CombinedOutput()
+	if commandErr != nil {
+		outText := strings.TrimSpace(string(out))
+		if isTmuxTargetMissing(commandErr, outText) ||
+			isNoTmuxServerError(commandErr) ||
+			isNoTmuxServerError(fmt.Errorf("%s", outText)) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf(
+			"probe tmux ownership for %s: %w: %s",
+			target,
+			commandErr,
+			outText,
+		)
+	}
+	return true, tmuxBoolOption(string(out)), nil
 }
 
 // capturePaneContent captures the visible content of a tmux window's active
@@ -2175,6 +2201,16 @@ func (w *Watcher) CapturePaneContent(sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("missing session id")
+	}
+	if !w.ownsTarget(sessionID) {
+		return "", fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+	}
+	owned, ownershipErr := w.targetIsDurablyOwned(sessionID)
+	if ownershipErr != nil {
+		return "", ownershipErr
+	}
+	if !owned {
+		return "", fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
 	}
 	out, err := tmuxCommand(w.socketPathFor(sessionID), "capture-pane", "-t", sessionID, "-p", "-S", "-200").Output()
 	if err != nil {
@@ -3436,15 +3472,23 @@ type CreateSessionOptions struct {
 
 // CreateSession creates a new tmux window and returns its target id.
 // If preferredTarget is set, the new window is created in the same tmux
-// session as that target. Otherwise the first non-zen tmux session is used.
+// session as that explicitly Zen-owned target. Otherwise the first session
+// containing a Zen-owned window is used, or a new detached session is created.
+// Ambient user sessions are never joined or adopted.
 func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOptions) (string, error) {
 	createdAt := time.Now().UTC()
-	// Zen-owned sessions (Brain host, delegated spawns, launcher) live on the
-	// daemon-namespaced tmux server; only an explicit preferred target on the
-	// user server joins that server.
-	createSocket := w.daemonSocketPath
+	createSocket := w.socketPathFor("")
 	if preferredTarget != "" {
-		createSocket = w.socketPathFor(preferredTarget)
+		present, owned, err := probeTmuxTargetOwnership(createSocket, preferredTarget)
+		if err != nil {
+			return "", err
+		}
+		if !present {
+			return "", fmt.Errorf("preferred tmux target %q is missing", preferredTarget)
+		}
+		if !owned {
+			return "", fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, preferredTarget)
+		}
 	}
 	sessionName := baseSessionName(preferredTarget)
 	createDetachedSession := opts.Detached
@@ -3479,17 +3523,6 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 			cwd = workingDir
 		}
 	}
-	// Daemon tmux isolation: every daemon-owned pane gets a private
-	// TMUX_TMPDIR (the daemon host scratch, overridden by the per-agent
-	// resource scratch once prepared) and an unset TMUX (in the launch shell),
-	// so an unscoped nested `tmux kill-server` cannot reach the daemon server
-	// or the user's default server.
-	if opts.ProgressEnv {
-		opts.Env = cloneEnvironment(opts.Env)
-		if scratch := strings.TrimSpace(w.daemonScratchDir); scratch != "" {
-			opts.Env["TMUX_TMPDIR"] = scratch
-		}
-	}
 	manager := w.resourceManager()
 	resourceCommitted := false
 	if opts.Delegated && !opts.Hidden {
@@ -3511,9 +3544,6 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 				opts.Env["TMP"] = spec.TempDir
 				opts.Env["TEMP"] = spec.TempDir
 				opts.Env["ZEN_BUILD_TMPDIR"] = spec.TempDir
-				// Per-agent private tmux scratch: nested plain `tmux` commands
-				// from this pane resolve under the agent's own directory.
-				opts.Env["TMUX_TMPDIR"] = spec.TempDir
 			}
 			defer func() {
 				if !resourceCommitted {
@@ -3522,6 +3552,7 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 			}()
 		}
 	}
+	applyProviderTmuxIsolation(&opts, w)
 
 	if shellCommand, err := buildWindowCommand(opts); err != nil {
 		return "", err
@@ -3548,7 +3579,7 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 			}
 			return "", fmt.Errorf("mark owned tmux window: %w", err)
 		}
-		w.registerCreatedSession(createSocket, target, cwd, opts, createdAt)
+		w.registerCreatedSession(target, cwd, opts, createdAt)
 		resourceCommitted = true
 		return target, nil
 	}
@@ -3575,7 +3606,7 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		}
 		return "", fmt.Errorf("mark owned tmux window: %w", err)
 	}
-	w.registerCreatedSession(createSocket, target, cwd, opts, createdAt)
+	w.registerCreatedSession(target, cwd, opts, createdAt)
 	resourceCommitted = true
 	return target, nil
 }
@@ -3662,7 +3693,7 @@ func newTmuxSessionName(opts CreateSessionOptions) string {
 	return fmt.Sprintf("brain-agent-%s-%d", base, time.Now().UnixNano())
 }
 
-func (w *Watcher) registerCreatedSession(socket, target, cwd string, opts CreateSessionOptions, createdAt time.Time) {
+func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionOptions, createdAt time.Time) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return
@@ -3673,13 +3704,6 @@ func (w *Watcher) registerCreatedSession(socket, target, cwd string, opts Create
 	if opts.resource != nil {
 		w.resourceManager().Bind(target, opts.resource.Unit)
 	}
-	w.mu.Lock()
-	// Record the server actually used for the create/join (daemon-namespaced
-	// for Zen-owned sessions, the preferred target's own server on join), so
-	// first-poll and pre-inventory routing already target the right server.
-	w.targetSockets[target] = targetSocket{known: true, socket: socket}
-	w.mu.Unlock()
-
 	agent := &classifier.Agent{
 		ID:        target,
 		Name:      formatAgentName(createdSessionName(opts), target),
@@ -3840,11 +3864,10 @@ func buildWindowCommandForShellWithOptions(shellPath, command string, progressEn
 }
 
 func agentProgressEnvScript() string {
-	// The progress script derives ZEN_AGENT_ID from the pane's own server
-	// ($TMUX is set by tmux), then unsets TMUX: with TMUX_TMPDIR pointed at
-	// the agent's private scratch, any later unscoped `tmux` invocation
-	// (including kill-server) can reach neither the daemon server nor the
-	// user's default server (Slice 3).
+	// Derive ZEN_AGENT_ID while tmux still exposes the shared host server, then
+	// remove that capability. TMUX_TMPDIR already points at private provider
+	// scratch, so later plain tmux commands (including kill-server) cannot
+	// target the host server.
 	return `if [ -z "${ZEN_AGENT_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_AGENT_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_AGENT_ID; fi; if [ -z "${ZEN_AGENT_PROGRESS_CMD:-}" ]; then ZEN_AGENT_PROGRESS_CMD=` + shellQuote(ZenExecutablePath()) + `; export ZEN_AGENT_PROGRESS_CMD; fi; unset TMUX`
 }
 
@@ -3965,13 +3988,11 @@ func loginShellFromPasswd() string {
 	return ""
 }
 
-// applyDaemonWindowEnvironment injects the daemon tmux isolation into a
-// daemon-owned pane environment: TMUX_TMPDIR points at the per-agent resource
-// scratch (or the daemon host scratch for hidden host sessions) so an
-// unscoped nested `tmux kill-server` resolves into a private directory and
-// can reach neither the daemon server nor the user's default server. The
-// launch shell additionally unsets TMUX (agentProgressEnvScript). Idempotent.
-func applyDaemonWindowEnvironment(opts *CreateSessionOptions, w *Watcher) {
+// applyProviderTmuxIsolation points provider-internal plain tmux at per-agent
+// resource scratch (or daemon scratch for the hidden Brain host). The launch
+// shell derives its Zen identity against the shared host server and then
+// unsets TMUX, so later plain tmux commands cannot reach that server.
+func applyProviderTmuxIsolation(opts *CreateSessionOptions, w *Watcher) {
 	if opts == nil || w == nil || !opts.ProgressEnv {
 		return
 	}
@@ -3980,7 +4001,7 @@ func applyDaemonWindowEnvironment(opts *CreateSessionOptions, w *Watcher) {
 		opts.Env["TMUX_TMPDIR"] = strings.TrimSpace(opts.resource.TempDir)
 		return
 	}
-	if scratch := strings.TrimSpace(w.daemonScratchDir); scratch != "" {
+	if scratch := strings.TrimSpace(w.tmuxScratchDir); scratch != "" {
 		opts.Env["TMUX_TMPDIR"] = scratch
 	}
 }
@@ -4007,16 +4028,25 @@ func (w *Watcher) KillSession(sessionID string) error {
 	unit := manager.UnitForTarget(sessionID)
 	delegated := unit != ""
 	socket := w.socketPathFor(sessionID)
-	if !delegated {
+	present, owned, ownershipErr := probeTmuxTargetOwnership(socket, sessionID)
+	if ownershipErr != nil {
+		return ownershipErr
+	}
+	if present && !owned {
+		return fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+	}
+	if present && !delegated {
 		delegated, unit = tmuxDelegatedResource(socket, sessionID)
 	}
-	out, killErr := tmuxCommand(socket, "kill-window", "-t", sessionID).CombinedOutput()
-	outText := strings.TrimSpace(string(out))
-	missing := killErr != nil && isTmuxTargetMissing(killErr, outText)
-	if killErr != nil && !missing {
-		// Non-missing kill failure: window may still be live. Do not release
-		// delegated resources; surface the kill error for retry.
-		return fmt.Errorf("kill tmux window: %w: %s", killErr, outText)
+	if present {
+		out, killErr := tmuxCommand(socket, "kill-window", "-t", sessionID).CombinedOutput()
+		outText := strings.TrimSpace(string(out))
+		missing := killErr != nil && isTmuxTargetMissing(killErr, outText)
+		if killErr != nil && !missing {
+			// Non-missing kill failure: window may still be live. Do not release
+			// delegated resources; surface the kill error for retry.
+			return fmt.Errorf("kill tmux window: %w: %s", killErr, outText)
+		}
 	}
 	if delegated {
 		if releaseErr := manager.Release(sessionID, unit); releaseErr != nil {
@@ -4068,17 +4098,26 @@ func tmuxDelegatedResource(socket, target string) (bool, string) {
 }
 
 func listTmuxSessionsOn(socket string) ([]string, error) {
-	out, err := tmuxCommand(socket, "list-sessions", "-F", "#{session_name}").CombinedOutput()
+	windows, err := listTmuxWindowsOn(socket)
 	if err != nil {
-		return nil, fmt.Errorf("tmux list-sessions: %w: %s", err, strings.TrimSpace(string(out)))
+		return nil, err
 	}
 
 	sessions := make([]string, 0)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		sessionName := strings.TrimSpace(line)
-		if sessionName == "" || strings.HasPrefix(sessionName, "zen-") {
+	seen := make(map[string]bool)
+	for _, win := range windows {
+		present, owned, probeErr := probeTmuxTargetOwnership(socket, win.target)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		if !present || !owned {
 			continue
 		}
+		sessionName := baseSessionName(win.target)
+		if sessionName == "" || seen[sessionName] {
+			continue
+		}
+		seen[sessionName] = true
 		sessions = append(sessions, sessionName)
 	}
 	return sessions, nil

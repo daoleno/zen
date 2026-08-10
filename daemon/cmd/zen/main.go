@@ -104,13 +104,13 @@ func isSetupUserError(err error) bool {
 		errors.Is(err, setup.ErrIncomplete)
 }
 
-// daemonTmuxPaths returns the daemon-namespaced tmux socket and scratch
-// directory for a daemon identity. The socket path must stay well under
-// sockaddr_un (~108 bytes), so only a short digest of the durable daemon
-// identity namespaces it. An empty identity fails closed: a socket without a
-// unique daemon namespace could collide with another daemon's server and
-// mix ownership.
-func daemonTmuxPaths(home, daemonID string) (socketPath, scratchDir string, err error) {
+// daemonTmuxRuntime returns the user-visible tmux server selected at daemon
+// startup and the daemon-namespaced scratch directory used to contain plain
+// tmux commands launched inside provider panes. An inherited TMUX value binds
+// Zen to that exact caller server; an empty value selects the Unix user's
+// ordinary default server. The durable daemon identity namespaces only the
+// provider scratch, never a private host server.
+func daemonTmuxRuntime(home, daemonID, tmuxEnv string) (socketPath, scratchDir string, err error) {
 	daemonID = strings.TrimSpace(daemonID)
 	if daemonID == "" {
 		return "", "", fmt.Errorf("empty daemon identity")
@@ -118,7 +118,7 @@ func daemonTmuxPaths(home, daemonID string) (socketPath, scratchDir string, err 
 	if len(daemonID) > 24 {
 		daemonID = daemonID[:24]
 	}
-	return filepath.Join(home, ".zen", "run", "tmux", "zen-"+daemonID+".sock"),
+	return tmuxSocketFromEnvironment(tmuxEnv),
 		filepath.Join(home, ".zen", "run", "tmux-scratch", daemonID), nil
 }
 
@@ -149,27 +149,23 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
-	// Daemon tmux isolation (Slice 3): Zen-owned Brain and delegated Sessions
-	// live on one daemon-namespaced tmux server, never the user's default
-	// server. This setup fails closed: an unresolvable home, an empty daemon
-	// identity, or an uncreatable directory aborts startup instead of
-	// silently routing Zen-owned Sessions to the user's default server,
-	// which would reopen the confirmed cross-session blast radius.
+	// Bind every Zen-owned Brain and delegated Session to the server visible to
+	// the daemon's caller. When launched inside tmux this is the exact inherited
+	// server socket; otherwise empty socket semantics select the user's ordinary
+	// default server. Provider-internal plain tmux remains contained by the
+	// daemon-namespaced scratch directory and the launch-shell TMUX scrub.
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve home for daemon tmux isolation: %w", err)
+		return fmt.Errorf("resolve home for daemon tmux runtime: %w", err)
 	}
-	daemonSocketPath, daemonScratchDir, err := daemonTmuxPaths(home, authManager.DaemonID())
+	tmuxSocketPath, tmuxScratchDir, err := daemonTmuxRuntime(home, authManager.DaemonID(), os.Getenv("TMUX"))
 	if err != nil {
-		return fmt.Errorf("daemon tmux isolation: %w", err)
+		return fmt.Errorf("daemon tmux runtime: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(daemonSocketPath), 0o700); err != nil {
-		return fmt.Errorf("create daemon tmux socket directory: %w", err)
-	}
-	if err := os.MkdirAll(daemonScratchDir, 0o700); err != nil {
+	if err := os.MkdirAll(tmuxScratchDir, 0o700); err != nil {
 		return fmt.Errorf("create daemon tmux scratch directory: %w", err)
 	}
-	w.SetDaemonSocket(daemonSocketPath, daemonScratchDir)
+	w.SetTmuxServer(tmuxSocketPath, tmuxScratchDir)
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	w.SetProviderActivityProbe(newWorkProviderActivityProbe())
 	sc := stats.NewCollector()
@@ -913,21 +909,31 @@ func parseAgentSpawnArgs(args []string, stderr io.Writer) (cliConfig, control.Re
 	return cfg, req, nil
 }
 
-// tmuxClientSocket returns the tmux server socket of the caller's own pane
-// from the TMUX client variable, or "" for the user's default server when
-// the caller is not inside tmux. The first TMUX field is always the server
-// socket path, so pane identity hints resolve the pane's own server —
-// including the daemon-namespaced server for delegated panes — never a
-// different server's pane.
-func tmuxClientSocket() string {
-	value := strings.TrimSpace(os.Getenv("TMUX"))
-	if value == "" {
+// tmuxSocketFromEnvironment returns the server socket encoded in a TMUX
+// environment value. Empty means ordinary default-server semantics.
+func tmuxSocketFromEnvironment(value string) string {
+	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	if socket, _, ok := strings.Cut(value, ","); ok {
-		return strings.TrimSpace(socket)
+	// TMUX is socket,pid,index. Parse from the right because an explicit -S
+	// socket path may itself contain commas; the inherited server binding must
+	// remain byte-for-byte exact.
+	lastComma := strings.LastIndexByte(value, ',')
+	if lastComma < 0 {
+		return value
 	}
-	return value
+	previousComma := strings.LastIndexByte(value[:lastComma], ',')
+	if previousComma < 0 {
+		return value
+	}
+	return value[:previousComma]
+}
+
+// tmuxClientSocket returns the exact tmux server of the caller's own pane, or
+// "" when the caller is outside tmux and ordinary default-server semantics
+// apply. Pane identity hints and daemon startup share the same parser.
+func tmuxClientSocket() string {
+	return tmuxSocketFromEnvironment(os.Getenv("TMUX"))
 }
 
 func currentAgentID() string {

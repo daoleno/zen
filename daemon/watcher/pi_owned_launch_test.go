@@ -190,7 +190,7 @@ func TestPollPreservesOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC),
 	})
 	launchCommand := "env PATH=/x pi --session " + owned
-	w.registerCreatedSession("", "brain-agent-pi:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("brain-agent-pi:@1", "/repo/zen", CreateSessionOptions{
 		Command:   launchCommand,
 		Name:      "Pi task",
 		Delegated: true,
@@ -272,7 +272,7 @@ func TestPollPreservesQuotedOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
 	})
-	w.registerCreatedSession("", "brain-agent-pi-quoted:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("brain-agent-pi-quoted:@1", "/repo/zen", CreateSessionOptions{
 		Command:   launchCommand,
 		Name:      "Pi quoted task",
 		Delegated: true,
@@ -318,12 +318,12 @@ func TestPollPiSiblingAgentsNeverShareOwnedPaths(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
 	})
-	w.registerCreatedSession("", "brain-agent-pi-a:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("brain-agent-pi-a:@1", "/repo/zen", CreateSessionOptions{
 		Command:   "pi --session " + ownedA,
 		Name:      "Pi A",
 		Delegated: true,
 	}, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC))
-	w.registerCreatedSession("", "brain-agent-pi-b:@2", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("brain-agent-pi-b:@2", "/repo/zen", CreateSessionOptions{
 		Command:   "pi --session " + ownedB,
 		Name:      "Pi B",
 		Delegated: true,

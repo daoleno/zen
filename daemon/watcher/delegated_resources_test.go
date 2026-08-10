@@ -1053,6 +1053,9 @@ func TestKillDelegatedSessionReleasesExactBoundUnit(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+if [ "$1" = "show-options" ]; then
+  echo 1
+fi
 exit 0
 `
 	if err := os.WriteFile(tmuxPath, []byte(script), 0o700); err != nil {

@@ -15,9 +15,6 @@ type PollWindow struct {
 	Delegated        bool
 	ResourceUnit     string
 	DelegatedTurnRaw string
-	// Socket is the tmux server the window lives on ("" = user default);
-	// ownership is never mixed. Test-only.
-	Socket string
 }
 
 // PollProcess is the wire shape of one process-table entry for the test-only
@@ -69,7 +66,6 @@ func (w *Watcher) SetPollSources(sources PollSources) func() {
 					command: win.Command, piSessionBinding: win.PiSessionBinding, panePID: win.PanePID,
 					hidden: win.Hidden, delegated: win.Delegated,
 					resourceUnit: win.ResourceUnit, delegatedTurnRaw: win.DelegatedTurnRaw,
-					socket: win.Socket,
 				})
 			}
 			return out, nil

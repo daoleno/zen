@@ -48,6 +48,7 @@ func scriptedOpenCodeHandoff(t *testing.T, contents []string) (*Watcher, *fakeSe
 	w := New(time.Second)
 	w.sessionInput = owner
 	w.targetProcessResolver = fixedSessionInputResolver(testSessionInputIdentity("opencode"))
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.agents["opencode-handoff:@1"] = &classifier.Agent{
 		ID:        "opencode-handoff:@1",
 		Command:   "opencode",
