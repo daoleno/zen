@@ -202,6 +202,10 @@ func TestBrainThreadScopeFlowsWorkCardDeltas(t *testing.T) {
 	}
 }
 
+func recentOpenCodeServerDeltaFixtureStart(now time.Time) time.Time {
+	return now.UTC().Add(-time.Hour).Truncate(time.Second)
+}
+
 // P1 regression: a deleted OpenCode row must be reported through the server
 // delta as an authoritative delete (the reader's count-mismatch full read
 // removes it from the conversation, and the id-set diff emits the delete).
@@ -209,7 +213,7 @@ func TestOpenCodeDeletionFlowsServerDelta(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 required")
 	}
-	started := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	started := recentOpenCodeServerDeltaFixtureStart(time.Now())
 	dbPath := t.TempDir() + "/opencode.db"
 	schema := `
 CREATE TABLE project (id TEXT PRIMARY KEY);
@@ -254,7 +258,7 @@ INSERT INTO project(id) VALUES ('proj');
 		TargetID:  "agent-del",
 		Cwd:       "/repo/srvdel",
 		Command:   "opencode",
-		StartedAt: json.RawMessage(`"2026-08-07T00:00:00Z"`),
+		StartedAt: json.RawMessage(fmt.Sprintf("%q", started.Format(time.RFC3339Nano))),
 	}
 	if err := conn.WriteJSON(request); err != nil {
 		t.Fatal(err)
@@ -315,7 +319,7 @@ func TestOpenCodeInPlaceUpdateFlowsMemoizedDelta(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 required")
 	}
-	started := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	started := recentOpenCodeServerDeltaFixtureStart(time.Now())
 	dbPath := t.TempDir() + "/opencode.db"
 	schema := `
 CREATE TABLE project (id TEXT PRIMARY KEY);
@@ -360,7 +364,7 @@ INSERT INTO project(id) VALUES ('proj');
 		TargetID:  "agent-inc",
 		Cwd:       "/repo/inc",
 		Command:   "opencode",
-		StartedAt: json.RawMessage(`"2026-08-07T00:00:00Z"`),
+		StartedAt: json.RawMessage(fmt.Sprintf("%q", started.Format(time.RFC3339Nano))),
 	}
 	if err := conn.WriteJSON(request); err != nil {
 		t.Fatal(err)
