@@ -8,7 +8,12 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import {
+  Pressable,
+  type PressableProps,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useIsFocused } from "expo-router";
 import { useAppColors } from "../../constants/tokens";
 import { NavOverflowIcon } from "./PrimaryNavIcons";
@@ -27,9 +32,11 @@ export const PRIMARY_PAGE_ACTION_HIT_SIZE = 44;
  */
 export interface PrimaryPageActionDescriptor {
   accessibilityLabel: string;
+  accessibilityActions?: PressableProps["accessibilityActions"];
   disabled?: boolean;
   /** Defaults to the shared vertical overflow glyph. */
   icon?: ReactNode;
+  onAccessibilityAction?: PressableProps["onAccessibilityAction"];
   onPress(): void;
 }
 
@@ -89,8 +96,10 @@ function samePageActionContent(
   if (left.kind === "descriptor" && right.kind === "descriptor") {
     return (
       left.value.accessibilityLabel === right.value.accessibilityLabel &&
+      left.value.accessibilityActions === right.value.accessibilityActions &&
       left.value.disabled === right.value.disabled &&
       left.value.icon === right.value.icon &&
+      left.value.onAccessibilityAction === right.value.onAccessibilityAction &&
       left.value.onPress === right.value.onPress
     );
   }
@@ -193,9 +202,11 @@ function DescriptorActionButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={descriptor.accessibilityLabel}
+      accessibilityActions={descriptor.accessibilityActions}
       accessibilityState={{ disabled }}
       disabled={disabled}
       hitSlop={6}
+      onAccessibilityAction={descriptor.onAccessibilityAction}
       onPress={descriptor.onPress}
       tabIndex={drawerVisible ? -1 : 0}
       style={({ pressed }) => [

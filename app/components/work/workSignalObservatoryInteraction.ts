@@ -6,7 +6,53 @@ export const WORK_OBSERVATORY_PULL = {
   axisDominance: 1.25,
 } as const;
 
+export const WORK_OBSERVATORY_ACCESSIBILITY_ACTION = {
+  name: "open-work-observatory",
+  label: "Open Work",
+} as const;
+
+export const WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS = [
+  WORK_OBSERVATORY_ACCESSIBILITY_ACTION,
+] as const;
+
 export type WorkObservatoryPullIntent = "pending" | "activate" | "fail";
+
+export function dispatchWorkObservatoryAccessibilityAction(
+  actionName: string,
+  open: () => void,
+): boolean {
+  if (actionName !== WORK_OBSERVATORY_ACCESSIBILITY_ACTION.name) {
+    return false;
+  }
+  open();
+  return true;
+}
+
+export function createWorkObservatoryAccessibilityProps(open: () => void): {
+  accessibilityActions: typeof WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS;
+  onAccessibilityAction(event: {
+    nativeEvent: { actionName: string };
+  }): void;
+} {
+  return {
+    accessibilityActions: WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS,
+    onAccessibilityAction: (event) => {
+      dispatchWorkObservatoryAccessibilityAction(
+        event.nativeEvent.actionName,
+        open,
+      );
+    },
+  };
+}
+
+export function resolveWorkObservatoryMotion(reducedMotion: boolean): {
+  modalAnimationType: "none" | "fade";
+  animateRows: boolean;
+} {
+  return reducedMotion
+    ? { modalAnimationType: "none", animateRows: false }
+    : { modalAnimationType: "fade", animateRows: true };
+}
 
 export function resolveWorkObservatoryPullIntent({
   touchCount,

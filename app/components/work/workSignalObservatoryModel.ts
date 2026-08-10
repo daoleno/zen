@@ -51,11 +51,34 @@ export type WorkSignalObservatoryModel = {
   summaryLabel: string;
 };
 
+export type WorkSignalObservatoryProjection =
+  | { state: "updating" }
+  | { state: "ready"; model: WorkSignalObservatoryModel };
+
 export type WorkResourcePresentation = {
   state: "idle" | "loading" | "steady" | "pressure" | "unavailable";
   label: string;
   level?: number;
 };
+
+export type WorkResourceRequestState =
+  | { identity: string; status: "loading" }
+  | {
+      identity: string;
+      status: "ready";
+      snapshot: SessionResourceSnapshot;
+    }
+  | { identity: string; status: "failed" };
+
+export type WorkResourceRequestProjection =
+  | { identity: null; status: "idle"; snapshot: null }
+  | { identity: string; status: "loading"; snapshot: null }
+  | {
+      identity: string;
+      status: "ready";
+      snapshot: SessionResourceSnapshot;
+    }
+  | { identity: string; status: "failed"; snapshot: null };
 
 type Projection = Omit<
   WorkSignalItem,
@@ -66,10 +89,74 @@ export function workResourceRequestIdentity(
   serverId: string | null,
   sessionId: string | null,
   connected: boolean,
+  connectionGeneration: number,
 ): string | null {
-  return serverId && sessionId && connected
-    ? `${serverId}\u0000${sessionId}`
+  return serverId && sessionId && connected && connectionGeneration > 0
+    ? `${serverId}\u0000${sessionId}\u0000${connectionGeneration}`
     : null;
+}
+
+export function buildWorkSignalObservatoryProjection({
+  brainHydrated,
+  agentListFresh,
+  work,
+  owners,
+}: {
+  brainHydrated: boolean;
+  agentListFresh: boolean;
+  work: readonly BrainActiveWork[];
+  owners: readonly WorkSignalOwner[];
+}): WorkSignalObservatoryProjection {
+  if (!brainHydrated || !agentListFresh) {
+    return { state: "updating" };
+  }
+  return {
+    state: "ready",
+    model: buildWorkSignalObservatoryModel(work, owners),
+  };
+}
+
+export function reconcileStableWorkSignalItems(
+  current: readonly WorkSignalItem[],
+  incoming: readonly WorkSignalItem[],
+): readonly WorkSignalItem[] {
+  const incomingById = new Map(incoming.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  const next: WorkSignalItem[] = [];
+
+  current.forEach((item) => {
+    const replacement = incomingById.get(item.id);
+    if (replacement) {
+      seen.add(item.id);
+      next.push(replacement);
+    }
+  });
+  incoming.forEach((item) => {
+    if (!seen.has(item.id)) {
+      next.push(item);
+    }
+  });
+
+  return next.length === current.length &&
+    next.every((item, index) => item === current[index])
+    ? current
+    : next;
+}
+
+export function projectWorkResourceRequest(
+  identity: string | null,
+  request: WorkResourceRequestState | null,
+): WorkResourceRequestProjection {
+  if (!identity) {
+    return { identity: null, status: "idle", snapshot: null };
+  }
+  if (!request || request.identity !== identity) {
+    return { identity, status: "loading", snapshot: null };
+  }
+  if (request.status === "ready") {
+    return request;
+  }
+  return { identity, status: request.status, snapshot: null };
 }
 
 export function buildWorkSignalObservatoryModel(
@@ -226,15 +313,14 @@ function projectWaiting(
 ): Projection {
   if (!work.wake) return problem("waiting", "Waiting details unavailable");
   if (work.wake.kind === "user_input") {
-    return waiting("Waiting for you", work.wait_for);
+    return waiting("Waiting for you");
   }
   if (work.wake.kind === "calendar_result") {
-    return waiting("Waiting for Calendar", work.wait_for);
+    return waiting("Waiting for Calendar");
   }
-  const owner = ownerById.get(sessionIdFromWakeRef(work.wake.ref) ?? "");
+  const owner = ownerFromSessionWakeRef(work.wake.ref, ownerById);
   return waiting(
     owner ? `Waiting for ${owner.label}` : "Waiting for Session",
-    work.wait_for,
     owner?.sessionId,
   );
 }
@@ -289,12 +375,11 @@ function projectTerminal(work: BrainActiveWork): Projection {
   };
 }
 
-function waiting(label: string, detail?: string, targetSessionId?: string): Projection {
+function waiting(label: string, targetSessionId?: string): Projection {
   return {
     stage: "waiting",
     tone: "waiting",
     signalLabel: label,
-    detail: detail?.trim() || undefined,
     targetSessionId,
     contradiction: false,
   };
@@ -328,12 +413,20 @@ function transitionKey(work: BrainActiveWork): string {
   ].join(":");
 }
 
-function sessionIdFromWakeRef(ref: string): string | undefined {
-  const prefix = "session:";
-  const marker = ":turn:";
-  const markerIndex = ref.lastIndexOf(marker);
-  if (!ref.startsWith(prefix) || markerIndex <= prefix.length) return undefined;
-  return ref.slice(prefix.length, markerIndex).trim() || undefined;
+function ownerFromSessionWakeRef(
+  ref: string,
+  ownerById: ReadonlyMap<string, WorkSignalOwner>,
+): WorkSignalOwner | undefined {
+  let match: WorkSignalOwner | undefined;
+  ownerById.forEach((owner) => {
+    if (
+      ref.startsWith(`session:${owner.sessionId}:turn:`) &&
+      (!match || owner.sessionId.length > match.sessionId.length)
+    ) {
+      match = owner;
+    }
+  });
+  return match;
 }
 
 function withAccessibility(

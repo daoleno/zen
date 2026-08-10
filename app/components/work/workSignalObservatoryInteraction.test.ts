@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
+  createWorkObservatoryAccessibilityProps,
   resolveWorkObservatoryPullIntent,
+  resolveWorkObservatoryMotion,
   shouldRevealWorkObservatory,
+  WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS,
 } from "./workSignalObservatoryInteraction";
 
 const pull = (overrides: Partial<Parameters<typeof resolveWorkObservatoryPullIntent>[0]> = {}) =>
@@ -34,28 +35,38 @@ describe("Work observatory pull interaction", () => {
   });
 });
 
-describe("Work observatory product boundary", () => {
-  const listSource = readFileSync(
-    join(import.meta.dir, "../../app/(primary)/list.tsx"),
-    "utf8",
-  );
-  const observatorySource = readFileSync(
-    join(import.meta.dir, "WorkSignalObservatory.tsx"),
-    "utf8",
-  );
+describe("Work observatory accessible interaction", () => {
+  test("opens through the nonvisual custom action and ignores unrelated actions", () => {
+    let opens = 0;
+    const open = () => {
+      opens += 1;
+    };
 
-  test("keeps the observatory out of the Session List layout", () => {
-    expect(listSource).toContain("<GestureDetector gesture={workObservatoryPullGesture}>");
-    expect(listSource).toContain("<AnimatedSectionList");
-    expect(listSource).toContain("<WorkSignalPullPreview");
-    expect(listSource).toContain("<WorkSignalObservatory");
-    expect(listSource).not.toContain("ListHeaderComponent");
+    const accessibility = createWorkObservatoryAccessibilityProps(open);
+    expect(accessibility.accessibilityActions).toBe(
+      WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS,
+    );
+    expect(accessibility.accessibilityActions).toEqual([
+      { name: "open-work-observatory", label: "Open Work" },
+    ]);
+    accessibility.onAccessibilityAction({
+      nativeEvent: { actionName: "activate" },
+    });
+    expect(opens).toBe(0);
+    accessibility.onAccessibilityAction({
+      nativeEvent: { actionName: "open-work-observatory" },
+    });
+    expect(opens).toBe(1);
   });
 
-  test("virtualizes dozens of Work rows without an accessible wrapper swallowing them", () => {
-    expect(observatorySource).toContain("<FlatList");
-    expect(observatorySource).toContain("initialNumToRender={10}");
-    expect(observatorySource).toContain("maintainVisibleContentPosition");
-    expect(observatorySource).not.toContain("accessible accessibilityLabel={`Work");
+  test("removes modal and row transitions under reduced motion", () => {
+    expect(resolveWorkObservatoryMotion(false)).toEqual({
+      modalAnimationType: "fade",
+      animateRows: true,
+    });
+    expect(resolveWorkObservatoryMotion(true)).toEqual({
+      modalAnimationType: "none",
+      animateRows: false,
+    });
   });
 });

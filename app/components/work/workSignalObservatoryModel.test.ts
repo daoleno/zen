@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import type { BrainActiveWork } from "../../store/brain";
+import {
+  agentReducer,
+  initialAgentState,
+  isAgentSessionListFreshForConnection,
+  type State as AgentState,
+} from "../../store/agents";
 import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
 import {
   buildWorkResourcePresentation,
   buildWorkSignalObservatoryModel,
+  buildWorkSignalObservatoryProjection,
+  projectWorkResourceRequest,
+  reconcileStableWorkSignalItems,
   workResourceRequestIdentity,
   type WorkSignalOwner,
 } from "./workSignalObservatoryModel";
@@ -16,7 +25,9 @@ const owner: WorkSignalOwner = {
 };
 
 describe("Work signal observatory model", () => {
-  test("maps canonical owners, typed waits, attention, and outcomes without exposing refs", () => {
+  test("maps the daemon WaitFor=Wake.Ref fixture without exposing its canonical Session Turn ref", () => {
+    const producerTurnId = `${owner.sessionId}:turn:1`;
+    const daemonWaitRef = `session:${owner.sessionId}:turn:${producerTurnId}`;
     const model = buildWorkSignalObservatoryModel(
       [
         work({
@@ -33,9 +44,10 @@ describe("Work signal observatory model", () => {
           progress_mode: "waiting",
           wake: {
             kind: "session_terminal",
-            ref: "session:main:@7:turn:provider-4",
+            ref: daemonWaitRef,
           },
-          wait_for: "Review evidence",
+          // WorkDispositionWait stores this exact identity in both fields.
+          wait_for: daemonWaitRef,
         }),
         work({
           work_id: "calendar-wait",
@@ -79,7 +91,10 @@ describe("Work signal observatory model", () => {
       "completed",
     ]);
     expect(model.items[1]?.targetSessionId).toBe(owner.sessionId);
-    expect(model.items[1]?.accessibilityLabel).not.toContain("provider-4");
+    expect(model.items[1]?.detail).toBeUndefined();
+    expect(model.items[1]?.signalLabel).not.toContain(daemonWaitRef);
+    expect(model.items[1]?.accessibilityLabel).not.toContain(daemonWaitRef);
+    expect(model.items[1]?.accessibilityLabel).not.toContain("turn:1");
     expect(model.items[2]?.accessibilityLabel).not.toContain("item-3");
     expect(model.activeCount).toBe(4);
     expect(model.ownerCount).toBe(1);
@@ -235,6 +250,120 @@ describe("Work signal observatory model", () => {
   });
 });
 
+describe("Work observatory projection integration", () => {
+  test("waits for Brain hydration and the current generation full Session list", () => {
+    const serverId = "server-a";
+    const nextOwnerId = "brain-agent-next:@2";
+    const activeWork = [
+      work({
+        progress_mode: "owned",
+        owner_session_id: nextOwnerId,
+        owner_delegated: true,
+      }),
+    ];
+    let state = agentReducer(initialAgentState, {
+      type: "SET_SERVER_CONNECTION_STATE",
+      serverId,
+      connectionState: "connected",
+    });
+    state = replaceServerAgents(state, serverId, [rawAgent("old-owner")]);
+    expect(isAgentSessionListFreshForConnection(state, serverId)).toBe(true);
+    expect(
+      buildWorkSignalObservatoryProjection({
+        brainHydrated: false,
+        agentListFresh: true,
+        work: activeWork,
+        owners: ownersFromState(state, serverId),
+      }),
+    ).toEqual({ state: "updating" });
+
+    state = agentReducer(state, {
+      type: "SET_SERVER_CONNECTION_STATE",
+      serverId,
+      connectionState: "offline",
+    });
+    state = agentReducer(state, {
+      type: "SET_SERVER_CONNECTION_STATE",
+      serverId,
+      connectionState: "connected",
+    });
+    expect(isAgentSessionListFreshForConnection(state, serverId)).toBe(false);
+
+    const beforeFullList = buildWorkSignalObservatoryProjection({
+      brainHydrated: true,
+      agentListFresh: isAgentSessionListFreshForConnection(state, serverId),
+      work: activeWork,
+      owners: ownersFromState(state, serverId),
+    });
+    expect(beforeFullList).toEqual({ state: "updating" });
+    expect(JSON.stringify(beforeFullList)).not.toContain("Session unavailable");
+
+    state = agentReducer(state, {
+      type: "UPSERT_AGENT",
+      serverId,
+      serverName: "Server A",
+      serverUrl: "https://server-a.example",
+      agent: rawAgent(nextOwnerId),
+    });
+    expect(isAgentSessionListFreshForConnection(state, serverId)).toBe(false);
+    expect(
+      buildWorkSignalObservatoryProjection({
+        brainHydrated: true,
+        agentListFresh: isAgentSessionListFreshForConnection(state, serverId),
+        work: activeWork,
+        owners: ownersFromState(state, serverId),
+      }),
+    ).toEqual({ state: "updating" });
+
+    state = replaceServerAgents(state, serverId, [rawAgent(nextOwnerId)]);
+    const afterFullList = buildWorkSignalObservatoryProjection({
+      brainHydrated: true,
+      agentListFresh: isAgentSessionListFreshForConnection(state, serverId),
+      work: activeWork,
+      owners: ownersFromState(state, serverId),
+    });
+    expect(afterFullList.state).toBe("ready");
+    if (afterFullList.state !== "ready") {
+      throw new Error("expected a ready projection");
+    }
+    expect(afterFullList.model.items[0]?.signalLabel).toBe(nextOwnerId);
+    expect(afterFullList.model.items[0]?.contradiction).toBe(false);
+  });
+
+  test("keeps mounted rows stable across UpdatedAt source reorders and appends newcomers", () => {
+    const current = buildWorkSignalObservatoryModel(
+      [
+        work({ work_id: "a", title: "A", revision: 1 }),
+        work({ work_id: "b", title: "B", revision: 1 }),
+      ],
+      [],
+    ).items;
+    const reordered = buildWorkSignalObservatoryModel(
+      [
+        work({ work_id: "b", title: "B updated", revision: 2 }),
+        work({ work_id: "c", title: "C", revision: 1 }),
+        work({ work_id: "a", title: "A updated", revision: 2 }),
+      ],
+      [],
+    ).items;
+
+    const stable = reconcileStableWorkSignalItems(current, reordered);
+    expect(stable.map((item) => item.id)).toEqual(["a", "b", "c"]);
+    expect(stable.map((item) => item.title)).toEqual([
+      "A updated",
+      "B updated",
+      "C",
+    ]);
+    expect(reconcileStableWorkSignalItems(stable, reordered)).toBe(stable);
+
+    const removed = reconcileStableWorkSignalItems(
+      stable,
+      reordered.filter((item) => item.id !== "a"),
+    );
+    expect(removed.map((item) => item.id)).toEqual(["b", "c"]);
+  });
+});
+
 describe("Work resource pressure presentation", () => {
   test("uses the existing Session pool threshold and host pressure without inventing availability", () => {
     const snapshot: SessionResourceSnapshot = {
@@ -295,16 +424,126 @@ describe("Work resource pressure presentation", () => {
     ).toEqual({ state: "unavailable", label: "Resources paused" });
   });
 
-  test("keys reads only to the current server, owner Session, and connection", () => {
-    const identity = workResourceRequestIdentity("server-a", owner.sessionId, true);
+  test("projects loading, success, and failure atomically by server, Session, and connection generation", () => {
+    const identity = workResourceRequestIdentity(
+      "server-a",
+      owner.sessionId,
+      true,
+      4,
+    );
+    const nextConnectionIdentity = workResourceRequestIdentity(
+      "server-a",
+      owner.sessionId,
+      true,
+      5,
+    );
+    const nextServerIdentity = workResourceRequestIdentity(
+      "server-b",
+      owner.sessionId,
+      true,
+      1,
+    );
+    const nextOwnerIdentity = workResourceRequestIdentity(
+      "server-a",
+      "main:@8",
+      true,
+      4,
+    );
+    const snapshot: SessionResourceSnapshot = {
+      agent_id: owner.sessionId,
+      session: { delegated: true, managed: true },
+    };
+    if (
+      !identity ||
+      !nextConnectionIdentity ||
+      !nextServerIdentity ||
+      !nextOwnerIdentity
+    ) {
+      throw new Error("expected connected resource identities");
+    }
 
-    expect(identity).toBe(`server-a\u0000${owner.sessionId}`);
-    expect(workResourceRequestIdentity("server-a", owner.sessionId, true)).toBe(identity);
-    expect(workResourceRequestIdentity("server-b", owner.sessionId, true)).not.toBe(identity);
-    expect(workResourceRequestIdentity("server-a", owner.sessionId, false)).toBeNull();
-    expect(workResourceRequestIdentity(null, owner.sessionId, true)).toBeNull();
+    expect(identity).toBe(`server-a\u0000${owner.sessionId}\u00004`);
+    expect(nextConnectionIdentity).not.toBe(identity);
+    expect(
+      workResourceRequestIdentity("server-b", owner.sessionId, true, 4),
+    ).not.toBe(identity);
+    expect(
+      workResourceRequestIdentity("server-a", owner.sessionId, false, 4),
+    ).toBeNull();
+    expect(workResourceRequestIdentity(null, owner.sessionId, true, 4)).toBeNull();
+
+    const ready = { identity, status: "ready" as const, snapshot };
+    expect(projectWorkResourceRequest(identity, ready)).toEqual(ready);
+    expect(projectWorkResourceRequest(nextConnectionIdentity, ready)).toEqual({
+      identity: nextConnectionIdentity,
+      status: "loading",
+      snapshot: null,
+    });
+    expect(projectWorkResourceRequest(nextServerIdentity, ready)).toEqual({
+      identity: nextServerIdentity,
+      status: "loading",
+      snapshot: null,
+    });
+    expect(projectWorkResourceRequest(nextOwnerIdentity, ready)).toEqual({
+      identity: nextOwnerIdentity,
+      status: "loading",
+      snapshot: null,
+    });
+    expect(
+      projectWorkResourceRequest(nextConnectionIdentity, {
+        identity,
+        status: "failed",
+      }),
+    ).toEqual({
+      identity: nextConnectionIdentity,
+      status: "loading",
+      snapshot: null,
+    });
+    expect(projectWorkResourceRequest(null, ready)).toEqual({
+      identity: null,
+      status: "idle",
+      snapshot: null,
+    });
   });
 });
+
+function replaceServerAgents(
+  state: AgentState,
+  serverId: string,
+  agents: ReturnType<typeof rawAgent>[],
+): AgentState {
+  return agentReducer(state, {
+    type: "UPSERT_SERVER_AGENTS",
+    serverId,
+    serverName: "Server A",
+    serverUrl: "https://server-a.example",
+    agents,
+  });
+}
+
+function rawAgent(id: string) {
+  return {
+    id,
+    name: id,
+    status: "running" as const,
+    delegated: true,
+    summary: "Working",
+  };
+}
+
+function ownersFromState(
+  state: AgentState,
+  serverId: string,
+): WorkSignalOwner[] {
+  return state.agents
+    .filter((agent) => agent.serverId === serverId)
+    .map((agent) => ({
+      sessionId: agent.id,
+      label: agent.name,
+      status: agent.status,
+      delegated: agent.delegated === true,
+    }));
+}
 
 function work(overrides: Partial<BrainActiveWork> = {}): BrainActiveWork {
   return {

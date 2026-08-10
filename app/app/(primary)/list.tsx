@@ -42,6 +42,7 @@ import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
 import { WorkSignalObservatory } from "../../components/work/WorkSignalObservatory";
 import { WorkSignalPullPreview } from "../../components/work/WorkSignalPullPreview";
 import {
+  createWorkObservatoryAccessibilityProps,
   resolveWorkObservatoryPullIntent,
   shouldRevealWorkObservatory,
   WORK_OBSERVATORY_PULL,
@@ -563,6 +564,11 @@ export default function InboxScreen() {
     setWorkObservatoryVisible(false);
   }, []);
 
+  const workObservatoryAccessibilityProps = useMemo(
+    () => createWorkObservatoryAccessibilityProps(openWorkObservatory),
+    [openWorkObservatory],
+  );
+
   const handleContentScroll = useAnimatedScrollHandler({
     onScroll: (event) => {
       const nextOffset = Math.max(0, event.contentOffset.y);
@@ -811,9 +817,10 @@ export default function InboxScreen() {
   const listPageAction = useMemo(
     () => ({
       accessibilityLabel: "Session options",
+      ...workObservatoryAccessibilityProps,
       onPress: openHeaderMenu,
     }),
-    [openHeaderMenu],
+    [openHeaderMenu, workObservatoryAccessibilityProps],
   );
   usePrimaryPageAction(listPageAction);
   const listContentContainerStyle = useMemo(

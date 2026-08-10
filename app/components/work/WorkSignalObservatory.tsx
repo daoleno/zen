@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,14 +18,17 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import Animated, { FadeIn, useReducedMotion } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useAgents, type Agent } from "../../store/agents";
+import {
+  isAgentSessionListFreshForConnection,
+  useAgents,
+  type Agent,
+} from "../../store/agents";
 import { useBrain } from "../../store/brain";
 import { useCurrentServer } from "../../store/currentServer";
 import type { StoredAgentAliases } from "../../services/storage";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   acceptSessionResourceSnapshotResponse,
-  type SessionResourceSnapshot,
 } from "../../services/sessionResourceSnapshot";
 import { wsClient } from "../../services/websocket";
 import {
@@ -32,13 +42,17 @@ import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
   buildWorkResourcePresentation,
-  buildWorkSignalObservatoryModel,
+  buildWorkSignalObservatoryProjection,
+  projectWorkResourceRequest,
+  reconcileStableWorkSignalItems,
   workResourceRequestIdentity,
   type WorkResourcePresentation,
+  type WorkResourceRequestState,
   type WorkSignalItem,
   type WorkSignalOwner,
   type WorkSignalTone,
 } from "./workSignalObservatoryModel";
+import { resolveWorkObservatoryMotion } from "./workSignalObservatoryInteraction";
 
 type WorkSignalObservatoryProps = {
   visible: boolean;
@@ -48,6 +62,7 @@ type WorkSignalObservatoryProps = {
 };
 
 const MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 } as const;
+const EMPTY_WORK_SIGNAL_ITEMS: readonly WorkSignalItem[] = [];
 
 export function WorkSignalObservatory({
   visible,
@@ -57,6 +72,7 @@ export function WorkSignalObservatory({
 }: WorkSignalObservatoryProps) {
   const { theme } = useAppTheme();
   const reducedMotion = useReducedMotion();
+  const motion = resolveWorkObservatoryMotion(reducedMotion);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
@@ -71,7 +87,13 @@ export function WorkSignalObservatory({
     ? agentState.serverConnections[serverId] ?? "offline"
     : "offline";
   const connected = connectionState === "connected";
-  const hydrated = currentServerHydrated && Boolean(brain?.hydrated);
+  const connectionGeneration = serverId
+    ? agentState.connectionGenerationByServer[serverId] ?? 0
+    : 0;
+  const agentListFresh = serverId
+    ? isAgentSessionListFreshForConnection(agentState, serverId)
+    : false;
+  const brainHydrated = currentServerHydrated && Boolean(brain?.hydrated);
 
   const currentAgents = useMemo(
     () => agentState.agents.filter((agent) => agent.serverId === serverId),
@@ -92,30 +114,48 @@ export function WorkSignalObservatory({
       })),
     [aliases, currentAgents],
   );
-  const model = useMemo(
-    () => buildWorkSignalObservatoryModel(brain?.active_work ?? [], owners),
-    [brain?.active_work, owners],
+  const projection = useMemo(
+    () =>
+      buildWorkSignalObservatoryProjection({
+        brainHydrated,
+        agentListFresh,
+        work: brain?.active_work ?? [],
+        owners,
+      }),
+    [agentListFresh, brain?.active_work, brainHydrated, owners],
+  );
+  const model = projection.state === "ready" ? projection.model : null;
+  const projectionScopeKey = `${serverId ?? ""}\u0000${connectionGeneration}`;
+  const items = useStableWorkSignalItems(
+    projectionScopeKey,
+    model?.items ?? EMPTY_WORK_SIGNAL_ITEMS,
   );
   const resourceSessionId = useMemo(
     () =>
-      model.items.find(
+      items.find(
         (item) => item.stage === "owned" && item.targetSessionId,
       )?.targetSessionId ?? null,
-    [model.items],
+    [items],
   );
   const resource = useWorkResourceSnapshot({
     serverId,
     sessionId: resourceSessionId,
     connected: visible && connected,
+    connectionGeneration,
   });
-  const resourcePresentation = buildWorkResourcePresentation({
-    activeCount: model.activeCount,
-    ownerCount: resourceSessionId ? model.ownerCount : 0,
-    connected,
-    loading: resource.loading,
-    snapshot: resource.snapshot,
-    failed: resource.failed,
-  });
+  const resourcePresentation: WorkResourcePresentation = model
+    ? buildWorkResourcePresentation({
+        activeCount: model.activeCount,
+        ownerCount: resourceSessionId ? model.ownerCount : 0,
+        connected,
+        loading: resource.status === "loading",
+        snapshot: resource.snapshot,
+        failed: resource.status === "failed",
+      })
+    : {
+        state: connected ? "loading" : "unavailable",
+        label: connected ? "Updating" : "Resources paused",
+      };
 
   const openSession = useCallback(
     (agent: Agent) => {
@@ -133,26 +173,26 @@ export function WorkSignalObservatory({
         <WorkSignalRow
           item={item}
           onPress={target ? () => openSession(target) : undefined}
-          reducedMotion={reducedMotion}
+          animateRows={motion.animateRows}
           styles={styles}
         />
       );
     },
-    [agentById, openSession, reducedMotion, styles],
+    [agentById, motion.animateRows, openSession, styles],
   );
   const emptyState = resolveEmptyState({
     currentServerHydrated,
     hasServer: Boolean(currentServer),
-    hydrated,
+    projectionReady: model !== null,
     connected,
   });
   const liveLabel = connected ? "live" : "last known";
-  const summary = hydrated ? model.summaryLabel : "Updating";
+  const summary = model?.summaryLabel ?? "Updating";
 
   return (
     <Modal
       visible={visible}
-      animationType={reducedMotion ? "none" : "fade"}
+      animationType={motion.modalAnimationType}
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
@@ -184,7 +224,10 @@ export function WorkSignalObservatory({
           accessibilityLabel={`Work, ${liveLabel}, ${summary}, ${resourcePresentation.label}`}
         >
           <SignalGlyph
-            tone={headerTone(model.failureCount, model.attentionCount)}
+            tone={headerTone(
+              model?.failureCount ?? 0,
+              model?.attentionCount ?? 0,
+            )}
             styles={styles}
           />
           <View style={styles.summaryCopy}>
@@ -199,7 +242,7 @@ export function WorkSignalObservatory({
         </View>
 
         <FlatList
-          data={hydrated ? model.items : []}
+          data={items}
           keyExtractor={workKeyExtractor}
           renderItem={renderItem}
           ItemSeparatorComponent={RowSeparator}
@@ -213,7 +256,7 @@ export function WorkSignalObservatory({
           }
           contentContainerStyle={[
             styles.listContent,
-            (!hydrated || model.items.length === 0) && styles.emptyListContent,
+            (!model || items.length === 0) && styles.emptyListContent,
           ]}
           initialNumToRender={10}
           maxToRenderPerBatch={8}
@@ -229,12 +272,12 @@ export function WorkSignalObservatory({
 
 function WorkSignalRow({
   item,
-  reducedMotion,
+  animateRows,
   styles,
   onPress,
 }: {
   item: WorkSignalItem;
-  reducedMotion: boolean;
+  animateRows: boolean;
   styles: ReturnType<typeof createStyles>;
   onPress?: () => void;
 }) {
@@ -242,7 +285,7 @@ function WorkSignalRow({
   const content = (
     <Animated.View
       key={item.transitionKey}
-      entering={reducedMotion ? undefined : FadeIn.duration(180)}
+      entering={animateRows ? FadeIn.duration(180) : undefined}
       style={styles.rowContent}
     >
       <View style={styles.rail} pointerEvents="none">
@@ -388,36 +431,63 @@ function ResourceIndicator({
   );
 }
 
+function useStableWorkSignalItems(
+  scopeKey: string,
+  incoming: readonly WorkSignalItem[],
+): readonly WorkSignalItem[] {
+  const [committed, setCommitted] = useState<{
+    scopeKey: string;
+    items: readonly WorkSignalItem[];
+  }>(() => ({ scopeKey, items: incoming }));
+  const stableItems = useMemo(
+    () =>
+      committed.scopeKey === scopeKey
+        ? reconcileStableWorkSignalItems(committed.items, incoming)
+        : incoming,
+    [committed, incoming, scopeKey],
+  );
+
+  useLayoutEffect(() => {
+    setCommitted((current) =>
+      current.scopeKey === scopeKey && current.items === stableItems
+        ? current
+        : { scopeKey, items: stableItems },
+    );
+  }, [scopeKey, stableItems]);
+
+  return stableItems;
+}
+
 function useWorkResourceSnapshot({
   serverId,
   sessionId,
   connected,
+  connectionGeneration,
 }: {
   serverId: string | null;
   sessionId: string | null;
   connected: boolean;
+  connectionGeneration: number;
 }) {
   const requestSeqRef = useRef(0);
-  const identity = workResourceRequestIdentity(serverId, sessionId, connected);
-  const [result, setResult] = useState<{
-    identity: string;
-    snapshot: SessionResourceSnapshot;
-  } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const snapshot = identity && result?.identity === identity ? result.snapshot : null;
+  const identity = workResourceRequestIdentity(
+    serverId,
+    sessionId,
+    connected,
+    connectionGeneration,
+  );
+  const [request, setRequest] = useState<WorkResourceRequestState | null>(null);
+  const projection = projectWorkResourceRequest(identity, request);
 
   useEffect(() => {
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    setLoading(false);
-    setFailed(false);
     if (!identity || !serverId || !sessionId) {
-      setResult(null);
+      setRequest(null);
       return;
     }
 
-    setLoading(true);
+    setRequest({ identity, status: "loading" });
     void wsClient
       .getSessionResourceSnapshot(serverId, sessionId)
       .then((next) => {
@@ -431,17 +501,11 @@ function useWorkResourceSnapshot({
         ) {
           return;
         }
-        setResult({ identity, snapshot: next });
+        setRequest({ identity, status: "ready", snapshot: next });
       })
       .catch(() => {
         if (requestSeqRef.current === requestSeq) {
-          setResult(null);
-          setFailed(true);
-        }
-      })
-      .finally(() => {
-        if (requestSeqRef.current === requestSeq) {
-          setLoading(false);
+          setRequest({ identity, status: "failed" });
         }
       });
 
@@ -452,18 +516,18 @@ function useWorkResourceSnapshot({
     };
   }, [identity, serverId, sessionId]);
 
-  return { snapshot, loading, failed };
+  return projection;
 }
 
 function resolveEmptyState({
   currentServerHydrated,
   hasServer,
-  hydrated,
+  projectionReady,
   connected,
 }: {
   currentServerHydrated: boolean;
   hasServer: boolean;
-  hydrated: boolean;
+  projectionReady: boolean;
   connected: boolean;
 }) {
   if (!currentServerHydrated) {
@@ -472,9 +536,9 @@ function resolveEmptyState({
   if (!hasServer) {
     return { title: "Work unavailable", detail: "Connect a current server", loading: false };
   }
-  if (!hydrated) {
+  if (!projectionReady) {
     return connected
-      ? { title: "Updating Work", detail: "Reading the latest state", loading: true }
+      ? { title: "Updating", detail: "Reading the latest Work", loading: true }
       : { title: "Work unavailable", detail: "Reconnect to update", loading: false };
   }
   return {
