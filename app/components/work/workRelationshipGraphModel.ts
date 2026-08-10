@@ -1,5 +1,5 @@
 import type { AgentStatus } from "../../constants/tokens";
-import type { BrainActiveWork, BrainSessionFinalization } from "../../store/brain";
+import type { BrainCurrentWork } from "../../store/brain";
 import { WORK_GRAPH_CONTROL_TOUCH_REGIONS } from "./workSignalObservatoryInteraction";
 
 export const WORK_GRAPH_VISIBLE_WORK_LIMIT = 4;
@@ -38,7 +38,7 @@ export type WorkGraphWorkNode = WorkGraphNodeBase & {
 
 export type WorkGraphEndpointNode = WorkGraphNodeBase & {
   kind: "endpoint";
-  endpointKind: "agent" | "wake" | "placeholder";
+  endpointKind: "agent" | "wake";
   state: WorkGraphState;
   stateLabel: string;
   sessionId?: string;
@@ -192,7 +192,7 @@ export function buildWorkRelationshipGraphProjection({
   hasCurrentServer: boolean;
   brainHydrated: boolean;
   agentListFresh: boolean;
-  work: readonly BrainActiveWork[];
+  work: readonly BrainCurrentWork[];
   owners: readonly WorkGraphOwner[];
   page?: number;
   visibleWorkLimit?: number;
@@ -216,7 +216,7 @@ export function buildWorkRelationshipGraphProjection({
 }
 
 export function buildWorkRelationshipGraphModel(
-  work: readonly BrainActiveWork[],
+  work: readonly BrainCurrentWork[],
   owners: readonly WorkGraphOwner[],
   options: { page?: number; visibleWorkLimit?: number } = {},
 ): WorkRelationshipGraphModel {
@@ -480,11 +480,22 @@ export function workRelationshipGraphVisibleText(
 }
 
 function projectMeaningfulWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   ownerById: ReadonlyMap<string, WorkGraphOwner>,
 ): MeaningfulWork | null {
   if (work.status === "done" || work.status === "cancelled") {
     return projectTerminalWork(work, ownerById);
+  }
+  if (work.attention_state) {
+    return {
+      ...workBase(work),
+      state: "review",
+      relationshipLabel:
+        work.attention_state === "reviewing"
+          ? "Brain is reviewing"
+          : "Queued for Brain review",
+      contradiction: false,
+    };
   }
   if (work.progress_mode === "owned") {
     return projectOwnedWork(work, ownerById);
@@ -493,40 +504,22 @@ function projectMeaningfulWork(
     return projectWaitingWork(work, ownerById);
   }
   if (work.progress_mode === "ready") {
-    return work.attention_pending
-      ? {
-          ...workBase(work),
-          state: "review",
-          relationshipLabel:
-            work.status === "needs_input"
-              ? "Needs your input"
-              : "Brain is reviewing",
-          contradiction: false,
-        }
-      : blockedWork(work, "Next step unavailable");
+    return blockedWork(work, "Next step unavailable");
   }
   return blockedWork(work, "Next step unavailable");
 }
 
 function projectOwnedWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   ownerById: ReadonlyMap<string, WorkGraphOwner>,
-): MeaningfulWork {
+): MeaningfulWork | null {
   const sessionId = work.owner_session_id?.trim();
   if (!sessionId || work.owner_delegated !== true) {
-    return blockedWork(
-      work,
-      "No Session assigned",
-      placeholderEndpoint(work, "Unassigned"),
-    );
+    return null;
   }
   const owner = ownerById.get(sessionId);
   if (!owner || !owner.delegated) {
-    return blockedWork(
-      work,
-      "Session unavailable",
-      placeholderEndpoint(work, "Unavailable"),
-    );
+    return null;
   }
   const endpoint = agentEndpoint(owner);
   if (owner.status === "failed") {
@@ -573,15 +566,11 @@ function projectOwnedWork(
 }
 
 function projectWaitingWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   ownerById: ReadonlyMap<string, WorkGraphOwner>,
-): MeaningfulWork {
+): MeaningfulWork | null {
   if (!work.wake) {
-    return blockedWork(
-      work,
-      "Waiting details unavailable",
-      placeholderEndpoint(work, "Unknown wait"),
-    );
+    return null;
   }
   if (work.wake.kind === "user_input") {
     return waitingWork(work, "Waiting for you", {
@@ -601,56 +590,56 @@ function projectWaitingWork(
   }
   const owner = ownerFromSessionWakeRef(work.wake.ref, ownerById);
   if (!owner) {
-    return blockedWork(
-      work,
-      "Waiting for unavailable Session",
-      placeholderEndpoint(work, "Unavailable"),
-      "wait",
-    );
+    return null;
   }
   return waitingWork(work, `Waiting for ${owner.label}`, agentEndpoint(owner));
 }
 
 function projectTerminalWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   ownerById: ReadonlyMap<string, WorkGraphOwner>,
 ): MeaningfulWork | null {
   const finalizations = work.session_finalizations ?? [];
-  const failed = finalizations.find((item) => item.state === "failed");
+  const failed = finalizations.find(
+    (item) =>
+      item.state === "failed" && ownerById.get(item.session_id)?.delegated,
+  );
   if (failed) {
-    const endpoint = endpointFromFinalization(work, failed, ownerById);
+    const endpoint = agentEndpoint(ownerById.get(failed.session_id)!);
     return {
       ...workBase(work),
       state: "blocked",
       relationshipLabel:
-        endpoint.kind === "agent"
-          ? `${endpoint.title} could not close`
-          : "Session could not close",
+        `${endpoint.title} could not close`,
       endpoint,
       endpointEdgeKind: "blocked",
       contradiction: false,
     };
   }
-  const pending = finalizations.find((item) => item.state === "pending");
+  const pending = finalizations.find(
+    (item) =>
+      item.state === "pending" && ownerById.get(item.session_id)?.delegated,
+  );
   if (pending) {
-    const endpoint = endpointFromFinalization(work, pending, ownerById);
+    const endpoint = agentEndpoint(ownerById.get(pending.session_id)!);
     return {
       ...workBase(work),
       state: "running",
       relationshipLabel:
-        endpoint.kind === "agent"
-          ? `${endpoint.title} is closing`
-          : "Session is closing",
+        `${endpoint.title} is closing`,
       endpoint,
       endpointEdgeKind: "ownership",
       contradiction: false,
     };
   }
-  if (work.attention_pending) {
+  if (work.attention_state) {
     return {
       ...workBase(work),
       state: "review",
-      relationshipLabel: "Result needs review",
+      relationshipLabel:
+        work.attention_state === "reviewing"
+          ? "Brain is reviewing"
+          : "Queued for Brain review",
       contradiction: false,
     };
   }
@@ -658,7 +647,7 @@ function projectTerminalWork(
 }
 
 function waitingWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   relationshipLabel: string,
   endpoint: EndpointProjection,
 ): MeaningfulWork {
@@ -673,7 +662,7 @@ function waitingWork(
 }
 
 function blockedWork(
-  work: BrainActiveWork,
+  work: BrainCurrentWork,
   relationshipLabel: string,
   endpoint?: EndpointProjection,
   endpointEdgeKind: WorkGraphEdgeKind = "blocked",
@@ -688,23 +677,12 @@ function blockedWork(
   };
 }
 
-function workBase(work: BrainActiveWork) {
+function workBase(work: BrainCurrentWork) {
   return {
     workId: work.work_id,
     title: work.title,
     terminal: work.status === "done" || work.status === "cancelled",
   };
-}
-
-function endpointFromFinalization(
-  work: BrainActiveWork,
-  finalization: BrainSessionFinalization,
-  ownerById: ReadonlyMap<string, WorkGraphOwner>,
-): EndpointProjection {
-  const owner = ownerById.get(finalization.session_id);
-  return owner && owner.delegated
-    ? agentEndpoint(owner)
-    : placeholderEndpoint(work, "Unavailable");
 }
 
 function agentEndpoint(owner: WorkGraphOwner): EndpointProjection {
@@ -714,18 +692,6 @@ function agentEndpoint(owner: WorkGraphOwner): EndpointProjection {
     kind: "agent",
     state: ownerGraphState(owner),
     sessionId: owner.sessionId,
-  };
-}
-
-function placeholderEndpoint(
-  work: BrainActiveWork,
-  title: string,
-): EndpointProjection {
-  return {
-    key: `placeholder:${work.work_id}`,
-    title,
-    kind: "placeholder",
-    state: "blocked",
   };
 }
 

@@ -3,7 +3,8 @@ export type BrainWorkEventKind =
   | "session.done"
   | "session.failed"
   | "session.needs_input"
-  | "session.stale";
+  | "session.stale"
+  | "session.uncertain";
 
 export type BrainWorkResultEvent = {
   event_id: string;
@@ -15,4 +16,12 @@ export type BrainWorkResultEvent = {
   session_name?: string;
   occurred_at: string;
   unread: boolean;
+  review_state: "queued" | "reviewing" | "resolved";
+  session_state:
+    | "open"
+    | "closing"
+    | "finalized"
+    | "close_failed"
+    | "not_required";
+  current_result: boolean;
 };

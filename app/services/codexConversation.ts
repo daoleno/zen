@@ -14,6 +14,13 @@ export type CodexPlanStepStatus = "pending" | "in_progress" | "completed";
 
 export type ProviderActivityStatus =
   "running" | "completed" | "failed" | "interrupted" | "cancelled";
+export type WorkReviewState = "queued" | "reviewing" | "resolved";
+export type WorkSessionState =
+  | "open"
+  | "closing"
+  | "finalized"
+  | "close_failed"
+  | "not_required";
 
 /**
  * Provider-neutral executor lifecycle. Transcript events are deliberately not
@@ -68,6 +75,9 @@ export interface CodexConversationEvent {
   work_session_id?: string;
   session_name?: string;
   unread?: boolean;
+  work_review_state?: WorkReviewState;
+  work_session_state?: WorkSessionState;
+  work_result_current?: boolean;
 }
 
 export interface CodexConversation {
@@ -250,6 +260,12 @@ function normalizeCodexConversationEvent(
     session_name:
       typeof event.session_name === "string" ? event.session_name : undefined,
     unread: typeof event.unread === "boolean" ? event.unread : undefined,
+    work_review_state: normalizeWorkReviewState(event.work_review_state),
+    work_session_state: normalizeWorkSessionState(event.work_session_state),
+    work_result_current:
+      typeof event.work_result_current === "boolean"
+        ? event.work_result_current
+        : undefined,
   };
   if (
     (normalized.kind === "user_message" ||
@@ -259,6 +275,27 @@ function normalizeCodexConversationEvent(
     return null;
   }
   return normalized;
+}
+
+function normalizeWorkReviewState(value: unknown): WorkReviewState | undefined {
+  return value === "queued" || value === "reviewing" || value === "resolved"
+    ? value
+    : undefined;
+}
+
+function normalizeWorkSessionState(
+  value: unknown,
+): WorkSessionState | undefined {
+  switch (value) {
+    case "open":
+    case "closing":
+    case "finalized":
+    case "close_failed":
+    case "not_required":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 const CODEX_GOAL_INTERNAL_CONTEXT_RE =

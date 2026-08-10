@@ -73,7 +73,7 @@ describe("brain scheduled result normalization", () => {
   });
 });
 
-describe("Brain Active work normalization", () => {
+describe("Brain current Work and backlog normalization", () => {
   test("keeps multiple minimal Work projections and rejects scheduler internals", () => {
     const received = brainReducer(initialBrainState, {
       type: "BRAIN_SNAPSHOT",
@@ -81,7 +81,7 @@ describe("Brain Active work normalization", () => {
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        active_work: [
+        current_work: [
           {
             work_id: "work-a",
             revision: 7,
@@ -90,7 +90,7 @@ describe("Brain Active work normalization", () => {
             progress_mode: "owned",
             owner_session_id: "agent-a",
             owner_delegated: true,
-            attention_pending: false,
+            attention_state: undefined,
             unread_result: false,
             claim_token: "must-not-project",
           },
@@ -101,7 +101,7 @@ describe("Brain Active work normalization", () => {
             progress_mode: "waiting",
             wait_for: "Calendar occurrence",
             wake: { kind: "calendar_result", ref: "calendar:run-c" },
-            attention_pending: false,
+            attention_state: undefined,
             unread_result: true,
           },
           {
@@ -114,7 +114,7 @@ describe("Brain Active work normalization", () => {
             work_id: "invalid-mode",
             title: "Missing progress owner",
             status: "running",
-            attention_pending: false,
+            attention_state: undefined,
             unread_result: false,
           },
           {
@@ -122,7 +122,7 @@ describe("Brain Active work normalization", () => {
             revision: 9,
             title: "Finalizing sessions",
             status: "done",
-            attention_pending: true,
+            attention_state: "reviewing",
             session_finalizations: [
               {
                 session_id: "agent-successor",
@@ -134,10 +134,16 @@ describe("Brain Active work normalization", () => {
             unread_result: true,
           },
         ],
+        work_backlog: {
+          total: 274,
+          queued_attention: 22,
+          historical_results: 202,
+          repair_needed: 25,
+        },
       },
     });
 
-    expect(received.byServer["server-1"]?.active_work).toEqual([
+    expect(received.byServer["server-1"]?.current_work).toEqual([
       {
         work_id: "work-a",
         revision: 7,
@@ -148,7 +154,7 @@ describe("Brain Active work normalization", () => {
         owner_delegated: true,
         wait_for: undefined,
         wake: undefined,
-        attention_pending: false,
+        attention_state: undefined,
         session_finalizations: undefined,
         unread_result: false,
       },
@@ -162,7 +168,7 @@ describe("Brain Active work normalization", () => {
         owner_delegated: undefined,
         wait_for: "Calendar occurrence",
         wake: { kind: "calendar_result", ref: "calendar:run-c" },
-        attention_pending: false,
+        attention_state: undefined,
         session_finalizations: undefined,
         unread_result: true,
       },
@@ -176,7 +182,7 @@ describe("Brain Active work normalization", () => {
         owner_delegated: undefined,
         wait_for: undefined,
         wake: undefined,
-        attention_pending: true,
+        attention_state: "reviewing",
         session_finalizations: [
           {
             session_id: "agent-successor",
@@ -190,5 +196,11 @@ describe("Brain Active work normalization", () => {
         unread_result: true,
       },
     ]);
+    expect(received.byServer["server-1"]?.work_backlog).toEqual({
+      total: 274,
+      queued_attention: 22,
+      historical_results: 202,
+      repair_needed: 25,
+    });
   });
 });

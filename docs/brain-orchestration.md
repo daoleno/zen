@@ -6,8 +6,9 @@ Session.
 - **Work** is a durable user commitment. It exists only when an outcome must
   survive the current turn. Ordinary questions and discussion do not create
   Work.
-- **Event** is an append-only fact about one Work. Only an unconsumed,
-  actionable Event can make Brain run automatically.
+- **Event** is an append-only result fact about one Work. A fact becoming
+  actionable queues Attention; it is not itself admission, handling, or a
+  disposition.
 - **Session** is the existing executor resource and remains authoritative for
   process state, delegation, progress, and leases. Brain manages only Sessions
   marked `delegated=true`.
@@ -15,11 +16,24 @@ Session.
 The complete automatic scheduling rule is:
 
 ```text
-if an actionable Work Event can be atomically claimed:
-    start one Brain turn and consume that Event
+if the exact foreground Host turn is still running:
+    preserve queued Attention without interrupting or replaying that turn
+else if a unique ready Work key can be atomically claimed:
+    alternate the oldest and newest ready Work keys
+    admit one exact Brain handling turn for that Work
 else:
     wait
 ```
+
+The scheduler keeps at most one in-flight handling per Work key and one
+delivered handling globally. Repeated facts for a ready Work coalesce behind
+its scheduler head. A claim carries a sequence fence and presents the latest
+authoritative fact through that fence, so `session.stale` followed by
+`session.done` asks Brain to review `done` without rewriting either audit row.
+The oldest/newest alternation is persisted only on successful claims, excludes
+the Work that just yielded when peers are ready, and is bounded in both
+directions: a fresh completion gets an admission opportunity within two
+claims, while every fixed backlog key advances on every other claim.
 
 Open, running, or waiting Work does not poll Brain. The `until_done` completion
 policy requires an explicit done-criteria reference and changes only when Work
@@ -31,8 +45,9 @@ projections.
 ## Persistence and ownership
 
 Brain stores a versioned atomic JSON database at
-`~/.zen/brain/state/orchestration.json`. Its two logical tables are
-`brain_work` and `brain_work_events`. Work carries only title, objective,
+`~/.zen/brain/state/orchestration.json`. Work, append-only Events, canonical
+Turns, input admissions, and pending Turn submissions are replaced atomically.
+Work carries only title, objective,
 status, optional owner Session, completion policy, next action, wait condition,
 and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
@@ -58,11 +73,12 @@ If target identity or pane generation changes before that queue starts,
 Session Input reports a definite pre-mutation failure and atomically releases
 that exact Event claim. If the queue starts, an ambiguous result retains the
 claim and is never automatically replayed. Exact input acceptance atomically
-consumes that exact host-bound Event; consumption does not complete its Work.
-If persistence of `consumed_at` fails after acceptance, a later dispatch reads
-that exact receipt from the same Session Input ledger and finalizes consumption
+marks that exact host-bound Event delivered; delivery does not handle its
+Attention and does not complete its Work. If persistence of delivery fails
+after acceptance, a later dispatch reads that exact receipt from the same
+Session Input ledger and finalizes delivery
 without reconstructing or resubmitting the payload. An ambiguous or unavailable
-receipt remains claimed and unconsumed.
+receipt remains claimed and undelivered.
 Pane history, rendered Composer/Footer/ANSI state, pending PTY byte counts, and
 elapsed time are never send authorization. There is no transaction journal,
 spool, background resume loop, second scheduler, replacement Event, ordinary
@@ -73,16 +89,20 @@ one-way schema-1 migration binds an unresolved claim to the persisted host when
 available. A migrated unresolved claim remains closed; the migration does not
 create a table, copy an Event, or add another delivery path.
 
-On the first authoritative Watcher inventory after an upgrade, schema migration
-`delegated_sessions_v1` adopts visible `delegated=true` Sessions that predate
-Work. The migration marker is durable and the adoption is one-way. New visible
-delegated Sessions create Work before launch and attach through an empty-owner
-compare-and-set after Session creation. A concurrent losing spawn terminates
-only its newly created Session and preserves the incumbent. A persisted owner
-missing from the first authoritative post-restart inventory is atomically
-detached into waiting Work plus one deduplicated actionable stale Event.
-Present `delegated=false` Sessions are not managed, and no runtime fallback
-adopts later unowned Sessions.
+New visible delegated Sessions create Work before launch and attach through an
+empty-owner compare-and-set after Session creation. A concurrent losing spawn
+terminates only its newly created Session and preserves the incumbent. Every
+successful fresh Session inventory is an authority boundary: a nonterminal
+Work owner absent from that inventory is atomically detached, moves to
+`needs_input`, and retains or receives one deduplicated actionable review
+obligation. A nonterminal canonical Turn first records `session.uncertain`;
+absence never fabricates done/failed. Markerless or immutable Turns and pending
+input submissions keep their append-only audit rows, but none can leave the
+Work operationally owned by an absent Session or cause input replay. Repeating
+the same inventory or reopening the store is a no-op. Present
+`delegated=false` Sessions are not managed, and no runtime fallback adopts
+later unowned Sessions. This convergence uses the one current state model; it
+does not add a migration, compatibility channel, or second scheduler.
 
 ## Event sources
 
@@ -95,8 +115,11 @@ irreconcilable delegated Session produces one deduplicated actionable stale
 Event, while present `delegated=false` Sessions remain unmanaged. Within one
 running phase, routine progress cannot move an active lease deadline backward;
 a phase transition may establish a shorter lease. User input to the Brain host
-has foreground priority, so an internal Event remains unclaimed until that user
-turn ends.
+has foreground priority, so an internal Event remains queued until that exact
+user Turn reaches a terminal transition. The turn-end observer clears the
+foreground gate and reserves the next Attention claim while holding the same
+admission mutex. A following user send cannot overtake that checkpoint, but
+the current response is never preempted and its input is never replayed.
 
 Delegated input carries one durable turn marker on the existing Session input
 receipt boundary. A successful tmux submit queue records only dispatched input;
@@ -114,8 +137,19 @@ checks the current status and next action, and takes the next useful
 orchestration step. This is prompt policy, not automatic daemon workflow. Raw
 direct Event input is removed at the user-facing conversation projection only
 when it exactly matches Zen's canonical typed input. Malformed, partial,
-reordered, padded, or otherwise noncanonical user text remains visible. Durable
-Work result cards continue to derive from Event/Work state.
+reordered, padded, or otherwise noncanonical user text remains visible. A typed
+disposition is the only operation that marks every applicable fact through the
+delivery fence handled and changes Work. Terminal Work can additionally create
+an idempotent Session-finalization obligation. Result fact, queued Attention,
+admitted handling, handled disposition, and Session finalization are therefore
+five observable and non-interchangeable states.
+
+Durable Work result cards remain chronological facts. Their wire projection
+adds `work_review_state` (`queued`, `reviewing`, or `resolved`),
+`work_session_state` (`open`, `closing`, `finalized`, `close_failed`, or
+`not_required`), and `work_result_current`. A historical stale card can remain
+visible while a later done card is current; neither card is relabeled as the
+other.
 
 Calendar remains authoritative for scheduled-action occurrence claims,
 execution, canonical results, source-thread delivery, and recurrence. Brain
@@ -146,13 +180,25 @@ Session to an existing nonterminal Work. Use `-completion until_done` together
 with `-done-criteria` only for an explicit verified-completion commitment.
 Hidden host Sessions do not create Work.
 
-The mobile Brain screen shows the current server's minimal Active work
-projection: title, status, owner or wait condition, and unread-result state.
-Marking an item read changes only the projection; it does not alter Work
-completion or Session lifecycle.
+The Brain snapshot exposes two different read models for the current server:
+
+- `current_work` is a bounded operational relationship projection: present
+  delegated owners, present typed Session waits, user/Calendar waits, the live
+  handling, the fair next queued Attention window, and present terminal
+  finalization obligations.
+- `work_backlog` summarizes durable rows excluded from current relationships,
+  including queued Attention, historical results, and relationship repair.
+
+Unread terminal history alone is never current execution. Stored owner or wait
+strings cannot manufacture an unavailable Session endpoint. The mobile graph
+renders `current_work`, labels queued and reviewing truth separately, and shows
+the backlog as a compact summary instead of paging through historical
+`Blocked -> Unavailable` relationships. Marking a card read changes only its
+presentation; it does not handle Attention, change Work completion, or finalize
+a Session.
 
 For diagnosis, inspect `orchestration.json`, `zen brain work list --json`, and
-`zen agent list --json`. There is no diagnostic command that consumes a claimed
-Event. A waiting item without an actionable unconsumed Event is intentionally
+`zen agent list --json`. There is no diagnostic command that handles a claimed
+Event. A waiting item without queued actionable Attention is intentionally
 idle. Do not repair that state by injecting a continuation; record the actual
 external fact as a deduplicated Event.

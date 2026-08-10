@@ -80,6 +80,9 @@ function makeBrainEvent(
     session_name: "main",
     occurred_at: "2026-08-06T12:00:00.000Z",
     unread: true,
+    review_state: "queued",
+    session_state: "open",
+    current_result: true,
     ...overrides,
   };
 }
@@ -404,6 +407,9 @@ function buildEqualityBenchmarkItems(count: number): ZenTimelineItem[] {
           session_name: `session-${index}`,
           occurred_at: `2026-08-06T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
           unread: index % 3 === 0,
+          review_state: index % 2 === 0 ? "queued" : "resolved",
+          session_state: index % 2 === 0 ? "open" : "not_required",
+          current_result: true,
         },
         onPress,
       });
@@ -581,6 +587,9 @@ describe("timelineItemsSemanticEqual", () => {
       { session_name: "other-name" },
       { occurred_at: "2026-08-06T13:00:00.000Z" },
       { unread: false },
+      { review_state: "reviewing" },
+      { session_state: "closing" },
+      { current_result: false },
     ];
     for (const override of fields) {
       expect(

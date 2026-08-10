@@ -388,10 +388,6 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	activeWork, err := s.store.ActiveWork()
-	if err != nil {
-		return Snapshot{}, err
-	}
 	chatThreadID, err := s.store.ChatThreadID()
 	if err != nil {
 		return Snapshot{}, err
@@ -418,7 +414,12 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
-	snapshot.ActiveWork = activeWork
+	inventory, err := s.store.ProjectWorkInventory(presentDelegatedSessions(snapshot.Agents))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.CurrentWork = inventory.Current
+	snapshot.WorkBacklog = inventory.Backlog
 	return snapshot, nil
 }
 
@@ -433,10 +434,6 @@ func (s *Service) ProjectionSnapshot() (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("brain service is not configured")
 	}
 	snapshot, err := s.store.Snapshot()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	activeWork, err := s.store.ActiveWork()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -466,7 +463,12 @@ func (s *Service) ProjectionSnapshot() (Snapshot, error) {
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
-	snapshot.ActiveWork = activeWork
+	inventory, err := s.store.ProjectWorkInventory(presentDelegatedSessions(snapshot.Agents))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.CurrentWork = inventory.Current
+	snapshot.WorkBacklog = inventory.Backlog
 	return snapshot, nil
 }
 
@@ -524,7 +526,8 @@ func (s *Service) Context() (BrainContext, error) {
 		Memory:            snapshot.Memory,
 		Profile:           snapshot.Profile,
 		Personality:       snapshot.Personality,
-		ActiveWork:        snapshot.ActiveWork,
+		CurrentWork:       snapshot.CurrentWork,
+		WorkBacklog:       snapshot.WorkBacklog,
 		Playbooks:         playbooks.Playbooks,
 		HostAgent:         snapshot.HostAgent,
 		HostExecutor:      snapshot.HostExecutor,
@@ -1035,6 +1038,18 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
+	return s.dispatchPendingEventLocked()
+}
+
+// dispatchPendingEventLocked owns the admission checkpoint. Callers that end
+// an exact foreground Host turn keep dispatchMu held while clearing the
+// foreground gate and reserving the next Work admission, so another foreground
+// send cannot overtake the checkpoint. The current response is never
+// interrupted: this path is entered only after its terminal Turn fact.
+func (s *Service) dispatchPendingEventLocked() (bool, error) {
+	if s == nil || s.store == nil || s.watcher == nil {
+		return false, nil
+	}
 	claimedEvents, err := s.store.ClaimedActionableEvents()
 	if err != nil {
 		return false, err
@@ -1212,9 +1227,9 @@ func (s *Service) CancelUserSteering(agentID string) {
 		return
 	}
 	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
 	s.foregroundInput = false
-	s.dispatchMu.Unlock()
-	_, _ = s.DispatchPendingEvent()
+	_, _ = s.dispatchPendingEventLocked()
 }
 
 // CurrentHostSessionID returns the recorded Brain host Session id, or empty
@@ -1264,11 +1279,14 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	wasForeground := false
 	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == strings.TrimSpace(event.Agent.ID) {
 		s.dispatchMu.Lock()
+		defer s.dispatchMu.Unlock()
 		wasForeground = s.foregroundInput
 		s.foregroundInput = false
-		s.dispatchMu.Unlock()
+		if wasForeground || requeued {
+			return s.dispatchPendingEventLocked()
+		}
 	}
-	if wasForeground || requeued {
+	if requeued {
 		return s.DispatchPendingEvent()
 	}
 	return false, nil
@@ -1305,11 +1323,36 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			log.Printf("brain Session canonical turn read failed for %s: %v", item.OwnerSessionID, turnErr)
 			continue
 		}
+		if agent == nil {
+			if !item.OwnerDelegated && !hasTurn {
+				// A bare non-delegated relationship is not a Zen-managed Session
+				// authority. It is excluded from CurrentWork projection, but this
+				// inventory pass does not mutate foreign lifecycle state.
+				continue
+			}
+			if hasTurn && !watcher.TurnImmutable(turn.Status) {
+				// Preserve outcome uncertainty as an append-only Turn fact before
+				// retiring the stale Work relationship. Absence never fabricates
+				// done/failed and never replays pending Session input.
+				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
+					SessionID:   item.OwnerSessionID,
+					TurnID:      turn.TurnID,
+					Class:       watcher.EvidenceLiveness,
+					Kind:        "uncertain",
+					ProcessDead: true,
+					SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
+					At:          now,
+					Summary:     "Delegated Session is absent after restart; outcome is unknown",
+				})
+			}
+			if _, _, reconcileErr := s.store.ReconcileAbsentWorkOwner(item.ID, item.OwnerSessionID); reconcileErr != nil {
+				log.Printf("brain absent Work owner reconciliation failed for %s: %v", item.ID, reconcileErr)
+			}
+			continue
+		}
 		if !hasTurn {
-			// No canonical current TurnID: the ledger owns no lifecycle for
-			// this Work. Heartbeat reconciliation cannot fabricate terminal
-			// or stale state from pane/process/classifier state, so nothing
-			// is routed and no Work text is rewritten from raw state.
+			// A present markerless Session still has no canonical lifecycle;
+			// raw classifier state cannot fabricate a Turn fact.
 			continue
 		}
 		// Canonical-turn path: the ledger owns Work + Events. Immutable
@@ -1318,25 +1361,6 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		// wake and the restart-absent recovery are re-derived here, both
 		// from the current ledger record.
 		if watcher.TurnImmutable(turn.Status) {
-			continue
-		}
-		if agent == nil {
-			// A canonical Session absent from a successful inventory
-			// (daemon was down, or the window vanished): end-of-identity
-			// recovery. Without a readable bound Provider terminal this
-			// resolves Unknown + one actionable session.uncertain
-			// (deduped once per turn) so Brain reconciles; the reducer
-			// never fabricates Failed from disappearance.
-			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-				SessionID:   item.OwnerSessionID,
-				TurnID:      turn.TurnID,
-				Class:       watcher.EvidenceLiveness,
-				Kind:        "uncertain",
-				ProcessDead: true,
-				SourceID:    "liveness\x00" + turn.ProcessIdentity + "\x00process-dead",
-				At:          now,
-				Summary:     "Delegated Session is absent after restart; outcome is unknown",
-			})
 			continue
 		}
 		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
@@ -1427,6 +1451,34 @@ func (s *Service) MaterializeProviderConversation(threadID string, conversation 
 		return nil
 	}
 	return s.store.MaterializeProviderConversation(threadID, conversation)
+}
+
+// AnnotateWorkResultEvents adds current lifecycle truth to immutable result
+// cards. The fact label remains Status; these fields do not rewrite history.
+func (s *Service) AnnotateWorkResultEvents(events []work.CodexConversationEvent) error {
+	if s == nil || s.store == nil || len(events) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		if event.Source == workResultConversationSource && strings.TrimSpace(event.ID) != "" {
+			ids = append(ids, event.ID)
+		}
+	}
+	lifecycles, err := s.store.WorkResultLifecycles(ids)
+	if err != nil {
+		return err
+	}
+	for index := range events {
+		lifecycle, found := lifecycles[events[index].ID]
+		if !found {
+			continue
+		}
+		events[index].WorkReviewState = string(lifecycle.ReviewState)
+		events[index].WorkSessionState = string(lifecycle.SessionState)
+		events[index].WorkResultCurrent = lifecycle.CurrentResult
+	}
+	return nil
 }
 
 func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
@@ -2918,6 +2970,16 @@ func (s *Service) agentRefs(hostID string) []AgentRef {
 		return out[i].Updated.After(out[j].Updated)
 	})
 	return out
+}
+
+func presentDelegatedSessions(agents []AgentRef) map[string]bool {
+	present := make(map[string]bool, len(agents))
+	for _, agent := range agents {
+		if agent.Delegated && strings.TrimSpace(agent.ID) != "" {
+			present[strings.TrimSpace(agent.ID)] = true
+		}
+	}
+	return present
 }
 
 func agentRefFromClassifier(agent *classifier.Agent) AgentRef {

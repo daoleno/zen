@@ -45,7 +45,9 @@ export type BrainSessionFinalization = {
   updated_at: string;
 };
 
-export type BrainActiveWork = {
+export type BrainWorkAttentionState = "queued" | "reviewing";
+
+export type BrainCurrentWork = {
   work_id: string;
   revision: number;
   title: string;
@@ -55,9 +57,16 @@ export type BrainActiveWork = {
   owner_delegated?: boolean;
   wait_for?: string;
   wake?: BrainWorkWake;
-  attention_pending: boolean;
+  attention_state?: BrainWorkAttentionState;
   session_finalizations?: BrainSessionFinalization[];
   unread_result: boolean;
+};
+
+export type BrainWorkBacklog = {
+  total: number;
+  queued_attention: number;
+  historical_results: number;
+  repair_needed: number;
 };
 
 export type BrainAgentRef = {
@@ -102,7 +111,8 @@ export type BrainSnapshot = {
   adapters?: BrainAdapterRef[];
   chat_thread_id?: string;
   scheduled_results?: BrainScheduledResult[];
-  active_work?: BrainActiveWork[];
+  current_work?: BrainCurrentWork[];
+  work_backlog?: BrainWorkBacklog;
   workspace?: string;
   generated_at?: string;
 };
@@ -124,10 +134,11 @@ export const initialBrainState: BrainState = {
 
 type RawBrainSnapshot = Omit<
   Partial<BrainSnapshot>,
-  "scheduled_results" | "active_work"
+  "scheduled_results" | "current_work" | "work_backlog"
 > & {
   scheduled_results?: unknown[];
-  active_work?: unknown[];
+  current_work?: unknown[];
+  work_backlog?: unknown;
   host_executor?: BrainAdapterRef | null;
   delegated_executor?: BrainAdapterRef | null;
   executors?: BrainAdapterRef[];
@@ -182,17 +193,18 @@ function normalizeSnapshot(
     scheduled_results: Array.isArray(raw?.scheduled_results)
       ? normalizeScheduledResults(raw.scheduled_results)
       : [],
-    active_work: Array.isArray(raw?.active_work)
-      ? normalizeActiveWork(raw.active_work)
+    current_work: Array.isArray(raw?.current_work)
+      ? normalizeCurrentWork(raw.current_work)
       : [],
+    work_backlog: normalizeWorkBacklog(raw?.work_backlog),
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
     generated_at:
       typeof raw?.generated_at === "string" ? raw.generated_at : undefined,
   };
 }
 
-function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
-  const byId = new Map<string, BrainActiveWork>();
+function normalizeCurrentWork(raw: unknown[]): BrainCurrentWork[] {
+  const byId = new Map<string, BrainCurrentWork>();
   raw.forEach((value) => {
     const item =
       value && typeof value === "object"
@@ -232,7 +244,7 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
           ? item.wait_for.trim()
           : undefined,
       wake: normalizeWorkWake(item.wake),
-      attention_pending: item.attention_pending === true,
+      attention_state: normalizeWorkAttentionState(item.attention_state),
       session_finalizations: normalizeSessionFinalizations(
         item.session_finalizations,
       ),
@@ -240,6 +252,31 @@ function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
     });
   });
   return Array.from(byId.values());
+}
+
+function normalizeWorkAttentionState(
+  value: unknown,
+): BrainWorkAttentionState | undefined {
+  return value === "queued" || value === "reviewing" ? value : undefined;
+}
+
+function normalizeWorkBacklog(value: unknown): BrainWorkBacklog {
+  const backlog =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const count = (candidate: unknown) =>
+    typeof candidate === "number" &&
+    Number.isSafeInteger(candidate) &&
+    candidate >= 0
+      ? candidate
+      : 0;
+  return {
+    total: count(backlog.total),
+    queued_attention: count(backlog.queued_attention),
+    historical_results: count(backlog.historical_results),
+    repair_needed: count(backlog.repair_needed),
+  };
 }
 
 function normalizeWorkProgressMode(
@@ -521,13 +558,14 @@ function brainServerStatesEqual(
       left.scheduled_results ?? [],
       right.scheduled_results ?? [],
     ) &&
-    activeWorkArraysEqual(left.active_work ?? [], right.active_work ?? [])
+    currentWorkArraysEqual(left.current_work ?? [], right.current_work ?? []) &&
+    JSON.stringify(left.work_backlog) === JSON.stringify(right.work_backlog)
   );
 }
 
-function activeWorkArraysEqual(
-  left: BrainActiveWork[],
-  right: BrainActiveWork[],
+function currentWorkArraysEqual(
+  left: BrainCurrentWork[],
+  right: BrainCurrentWork[],
 ) {
   return (
     left.length === right.length &&

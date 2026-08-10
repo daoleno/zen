@@ -1937,9 +1937,9 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 				}
 			}
 			if terminal != 1 || stale != 0 ||
-				got.OwnerSessionID != ownerID ||
-				got.Status != WorkWaiting ||
-				got.NextAction != test.nextAction {
+				got.OwnerSessionID != "" || got.OwnerDelegated ||
+				got.Status != WorkNeedsInput ||
+				got.NextAction != "Review the absent Session outcome and choose the next Work disposition." {
 				t.Fatalf("reconciled Work=%#v Events=%#v", got, events)
 			}
 		})
@@ -1947,10 +1947,9 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 }
 
 func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing.T) {
-	// Slice 1 contract: a Work-owning delegated Session with NO canonical turn
-	// produces no lifecycle event at all — raw absence is not routed, and the
-	// old session:...:missing stale is deleted. The canonical restart-absent
-	// wake lives in the ledger path (TestReconcileDeadOrAbsentTurnOwnedSessions).
+	// A successful fresh inventory retires a delegated Work owner even when its
+	// initial provider Turn never became canonical. It preserves uncertainty as
+	// one review obligation and never fabricates a lifecycle terminal.
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
@@ -1965,17 +1964,16 @@ func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing
 	}
 	item, err := store.CreateWork(Work{
 		Title:            "Missing owner",
-		Objective:        "No canonical turn means no lifecycle event.",
+		Objective:        "An absent owner cannot remain operational.",
 		Status:           WorkRunning,
 		OwnerSessionID:   ownerID,
+		OwnerDelegated:   true,
 		CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
-		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-	}}
+	fw := &fakeWatcher{}
 	service := NewService(store, fw, nil)
 	service.now = func() time.Time { return now }
 	service.ReconcileDelegatedSessions(nil)
@@ -1989,8 +1987,9 @@ func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OwnerSessionID != ownerID || got.Status != WorkRunning ||
-		len(events) != 0 || len(fw.sentCalls) != 0 {
+	if got.OwnerSessionID != "" || got.OwnerDelegated || got.Status != WorkNeedsInput ||
+		len(events) != 1 || events[0].Kind != "brain.owner_absent" ||
+		events[0].ClaimedAt != nil || len(fw.sentCalls) != 0 {
 		t.Fatalf("markerless missing-owner reconcile Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
 	}
 }

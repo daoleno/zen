@@ -7,6 +7,8 @@ import { TypeScale } from "../../constants/tokens";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
+  brainWorkEventReviewLabel,
+  brainWorkEventSessionLabel,
   brainWorkEventSourceLabel,
   brainWorkEventSummary,
   brainWorkEventWorkTitle,
@@ -35,6 +37,8 @@ export function BrainWorkEventCard({
   const workTitle = brainWorkEventWorkTitle(item.event);
   const summary = brainWorkEventSummary(item.event);
   const source = brainWorkEventSourceLabel(item.event);
+  const reviewLabel = brainWorkEventReviewLabel(item.event);
+  const sessionLabel = brainWorkEventSessionLabel(item.event);
   const time = formatChatBubbleTime(item.event.occurred_at);
   const accessibilityTime = new Date(
     item.event.occurred_at,
@@ -83,6 +87,29 @@ export function BrainWorkEventCard({
         {summary}
       </Text>
 
+      <View style={styles.lifecycleRow}>
+        <View style={styles.lifecycleBadge}>
+          <Ionicons
+            name={
+              item.event.review_state === "queued"
+                ? "time-outline"
+                : item.event.review_state === "reviewing"
+                  ? "eye-outline"
+                  : "checkmark-done-outline"
+            }
+            size={12}
+            color={chrome.textMuted}
+          />
+          <Text style={styles.lifecycleText}>{reviewLabel}</Text>
+        </View>
+        {sessionLabel ? (
+          <Text style={styles.sessionLifecycleText}>{sessionLabel}</Text>
+        ) : null}
+        {!item.event.current_result ? (
+          <Text style={styles.supersededText}>Superseded result</Text>
+        ) : null}
+      </View>
+
       <View style={styles.footer}>
         {source ? (
           <>
@@ -126,6 +153,12 @@ function resultPresentation(kind: BrainWorkResultEvent["kind"]) {
       return {
         label: "Session unavailable",
         icon: "cloud-offline-outline" as const,
+        colorKey: "textMuted" as const,
+      };
+    case "session.uncertain":
+      return {
+        label: "Outcome uncertain",
+        icon: "help-circle-outline" as const,
         colorKey: "textMuted" as const,
       };
   }
@@ -187,6 +220,36 @@ function createStyles(chrome: TerminalThemeChrome) {
       color: chrome.text,
       marginTop: 4,
       lineHeight: 20,
+    },
+    lifecycleRow: {
+      marginTop: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 6,
+    },
+    lifecycleBadge: {
+      minHeight: 22,
+      paddingHorizontal: 8,
+      borderRadius: 11,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      backgroundColor: chrome.surfaceActive,
+    },
+    lifecycleText: {
+      ...TypeScale.caption,
+      color: chrome.textMuted,
+      fontWeight: "600",
+    },
+    sessionLifecycleText: {
+      ...TypeScale.caption,
+      color: chrome.textSubtle,
+    },
+    supersededText: {
+      ...TypeScale.caption,
+      color: chrome.textSubtle,
+      fontStyle: "italic",
     },
     footer: {
       flexDirection: "row",

@@ -201,6 +201,14 @@ type WorkEvent struct {
 	ResolvedAt            *time.Time      `json:"resolved_at,omitempty"`
 	DiscardedAt           *time.Time      `json:"discarded_at,omitempty"`
 	ReplayOf              string          `json:"replay_of,omitempty"`
+
+	// Review* is a read-time delivery projection. The append-only fact named by
+	// ID never changes identity, while a coalesced newer fact can be the latest
+	// authoritative result Brain must review through DeliverySequenceFence.
+	ReviewKind       string `json:"-"`
+	ReviewPayloadRef string `json:"-"`
+	ReviewSourceName string `json:"-"`
+	ReviewSummary    string `json:"-"`
 }
 
 // WorkEventResolution values for held-claim closure (C.2.6).
@@ -254,6 +262,72 @@ type ActiveWork struct {
 	UnreadResult         bool                      `json:"unread_result"`
 }
 
+type WorkAttentionState string
+
+const (
+	WorkAttentionQueued    WorkAttentionState = "queued"
+	WorkAttentionReviewing WorkAttentionState = "reviewing"
+)
+
+// CurrentWork is the bounded operational relationship projection. Durable
+// Work and result history remain in the Work ledger and are summarized by
+// WorkBacklog; they are not execution relationships merely because they are
+// unread or once named a Session.
+type CurrentWork struct {
+	ID                   string                `json:"work_id"`
+	Revision             uint64                `json:"revision"`
+	Title                string                `json:"title"`
+	Status               WorkStatus            `json:"status"`
+	ProgressMode         WorkProgressMode      `json:"progress_mode,omitempty"`
+	OwnerSessionID       string                `json:"owner_session_id,omitempty"`
+	OwnerDelegated       bool                  `json:"owner_delegated,omitempty"`
+	WaitFor              string                `json:"wait_for,omitempty"`
+	Wake                 *WorkWake             `json:"wake,omitempty"`
+	AttentionState       WorkAttentionState    `json:"attention_state,omitempty"`
+	SessionFinalizations []SessionFinalization `json:"session_finalizations,omitempty"`
+	UnreadResult         bool                  `json:"unread_result"`
+}
+
+// WorkBacklog keeps durable history/repair truth explicit without projecting
+// every historical row as a current relationship. Category counts are
+// intentionally non-exclusive.
+type WorkBacklog struct {
+	Total             int `json:"total"`
+	QueuedAttention   int `json:"queued_attention"`
+	HistoricalResults int `json:"historical_results"`
+	RepairNeeded      int `json:"repair_needed"`
+}
+
+type WorkInventory struct {
+	Current []CurrentWork
+	Backlog WorkBacklog
+}
+
+type WorkReviewState string
+
+const (
+	WorkReviewQueued    WorkReviewState = "queued"
+	WorkReviewReviewing WorkReviewState = "reviewing"
+	WorkReviewResolved  WorkReviewState = "resolved"
+)
+
+type WorkResultSessionState string
+
+const (
+	WorkResultSessionOpen        WorkResultSessionState = "open"
+	WorkResultSessionClosing     WorkResultSessionState = "closing"
+	WorkResultSessionFinalized   WorkResultSessionState = "finalized"
+	WorkResultSessionCloseFailed WorkResultSessionState = "close_failed"
+	WorkResultSessionNotRequired WorkResultSessionState = "not_required"
+)
+
+type WorkResultLifecycle struct {
+	EventID       string
+	ReviewState   WorkReviewState
+	SessionState  WorkResultSessionState
+	CurrentResult bool
+}
+
 type WorkChange struct {
 	WorkID string
 }
@@ -263,6 +337,8 @@ const workResultSummaryRuneLimit = 360
 type orchestrationDatabase struct {
 	SchemaVersion        int                     `json:"schema_version"`
 	NextEventSequence    uint64                  `json:"next_event_sequence"`
+	AttentionAdmissions  uint64                  `json:"attention_admissions"`
+	LastAttentionWorkID  string                  `json:"last_attention_work_id,omitempty"`
 	Migrations           orchestrationMigrations `json:"migrations"`
 	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
 	BrainWork            []Work                  `json:"brain_work"`
@@ -298,6 +374,8 @@ type workRecord struct {
 type orchestrationDatabaseRecord struct {
 	SchemaVersion        int                     `json:"schema_version"`
 	NextEventSequence    uint64                  `json:"next_event_sequence"`
+	AttentionAdmissions  uint64                  `json:"attention_admissions"`
+	LastAttentionWorkID  string                  `json:"last_attention_work_id,omitempty"`
 	Migrations           orchestrationMigrations `json:"migrations"`
 	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
 	BrainWork            []workRecord            `json:"brain_work"`
@@ -586,6 +664,8 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			NextEventSequence:    record.NextEventSequence,
+			AttentionAdmissions:  record.AttentionAdmissions,
+			LastAttentionWorkID:  strings.TrimSpace(record.LastAttentionWorkID),
 			Migrations:           record.Migrations,
 			BrainInputAdmissions: record.BrainInputAdmissions,
 			BrainWork:            worksFromRecords(record.BrainWork),
@@ -2650,16 +2730,7 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 			return WorkEvent{}, false, nil
 		}
 	}
-	index := -1
-	for candidate := range database.BrainWorkEvents {
-		event := database.BrainWorkEvents[candidate]
-		if !workEventSchedulerEligible(database, event) || event.ClaimedAt != nil {
-			continue
-		}
-		if index < 0 || event.Sequence < database.BrainWorkEvents[index].Sequence {
-			index = candidate
-		}
-	}
+	index := nextAttentionCandidateIndex(database, database.AttentionAdmissions)
 	if index < 0 {
 		return WorkEvent{}, false, nil
 	}
@@ -2671,10 +2742,85 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 	itemIndex := workIndex(database.BrainWork, database.BrainWorkEvents[index].WorkID)
 	database.BrainWorkEvents[index].DeliveryWorkRevision = database.BrainWork[itemIndex].Revision
 	database.BrainWorkEvents[index].DeliverySequenceFence = database.NextEventSequence
+	database.AttentionAdmissions++
+	database.LastAttentionWorkID = database.BrainWorkEvents[index].WorkID
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return WorkEvent{}, false, err
 	}
-	return database.BrainWorkEvents[index], true, nil
+	return authoritativeReviewEvent(database, database.BrainWorkEvents[index]), true, nil
+}
+
+// attentionCandidateIndexes returns at most one ready head per Work key. This
+// makes fairness a property of Work, not of how many append-only facts one Work
+// accumulated while it waited.
+func attentionCandidateIndexes(database orchestrationDatabase) []int {
+	byWork := map[string]int{}
+	for index, event := range database.BrainWorkEvents {
+		if event.ClaimedAt != nil || !workEventSchedulerEligible(database, event) {
+			continue
+		}
+		current, found := byWork[event.WorkID]
+		if !found || event.Sequence < database.BrainWorkEvents[current].Sequence {
+			byWork[event.WorkID] = index
+		}
+	}
+	out := make([]int, 0, len(byWork))
+	for _, index := range byWork {
+		out = append(out, index)
+	}
+	sort.Slice(out, func(left, right int) bool {
+		leftEvent := database.BrainWorkEvents[out[left]]
+		rightEvent := database.BrainWorkEvents[out[right]]
+		if leftEvent.Sequence == rightEvent.Sequence {
+			return leftEvent.WorkID < rightEvent.WorkID
+		}
+		return leftEvent.Sequence < rightEvent.Sequence
+	})
+	return out
+}
+
+// nextAttentionCandidateIndex alternates the oldest and newest unique ready
+// Work keys. A current completion is admitted within two claims, while every
+// fixed older key advances on every other claim; neither edge can starve.
+func nextAttentionCandidateIndex(database orchestrationDatabase, admissions uint64) int {
+	candidates := attentionCandidateIndexes(database)
+	if len(candidates) == 0 {
+		return -1
+	}
+	if len(candidates) > 1 && strings.TrimSpace(database.LastAttentionWorkID) != "" {
+		filtered := candidates[:0]
+		for _, index := range candidates {
+			if database.BrainWorkEvents[index].WorkID != database.LastAttentionWorkID {
+				filtered = append(filtered, index)
+			}
+		}
+		if len(filtered) > 0 {
+			candidates = filtered
+		}
+	}
+	if admissions%2 == 0 {
+		return candidates[0]
+	}
+	return candidates[len(candidates)-1]
+}
+
+func authoritativeReviewEvent(database orchestrationDatabase, claimed WorkEvent) WorkEvent {
+	latest := claimed
+	for _, candidate := range database.BrainWorkEvents {
+		if candidate.WorkID != claimed.WorkID || !candidate.Actionable ||
+			candidate.Sequence > claimed.DeliverySequenceFence || candidate.HandledAt != nil ||
+			candidate.DiscardedAt != nil || candidate.Resolution != "" || candidate.HistoricalDelivery {
+			continue
+		}
+		if candidate.Sequence > latest.Sequence {
+			latest = candidate
+		}
+	}
+	claimed.ReviewKind = latest.Kind
+	claimed.ReviewPayloadRef = latest.PayloadRef
+	claimed.ReviewSourceName = latest.SourceName
+	claimed.ReviewSummary = latest.Summary
+	return claimed
 }
 
 func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
@@ -2989,6 +3135,79 @@ func (s *Store) WorkEvent(eventID string) (WorkEvent, bool, error) {
 		return WorkEvent{}, false, nil
 	}
 	return database.BrainWorkEvents[index], true, nil
+}
+
+// WorkResultLifecycles derives presentation labels from durable authorities;
+// cards themselves stay immutable timeline messages.
+func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLifecycle, error) {
+	wanted := map[string]bool{}
+	for _, eventID := range eventIDs {
+		if eventID = strings.TrimSpace(eventID); eventID != "" {
+			wanted[eventID] = true
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, err
+	}
+	latestResult := map[string]WorkEvent{}
+	for _, event := range database.BrainWorkEvents {
+		if !isProjectedWorkResultEvent(event.Kind) {
+			continue
+		}
+		if current, found := latestResult[event.WorkID]; !found || event.Sequence > current.Sequence {
+			latestResult[event.WorkID] = event
+		}
+	}
+	out := map[string]WorkResultLifecycle{}
+	for _, event := range database.BrainWorkEvents {
+		if !wanted[event.ID] || !isProjectedWorkResultEvent(event.Kind) {
+			continue
+		}
+		outstanding := event.Actionable && event.HandledAt == nil && event.DiscardedAt == nil &&
+			event.Resolution == "" && !event.HistoricalDelivery
+		reviewState := WorkReviewResolved
+		if outstanding {
+			reviewState = WorkReviewQueued
+			for _, handling := range database.BrainWorkEvents {
+				if handling.WorkID == event.WorkID && handling.DeliveredAt != nil && handling.HandledAt == nil &&
+					handling.HandlingEndedAt == nil && !handling.HistoricalDelivery &&
+					event.Sequence <= handling.DeliverySequenceFence {
+					reviewState = WorkReviewReviewing
+					break
+				}
+			}
+		}
+		sessionState := WorkResultSessionOpen
+		if itemIndex := workIndex(database.BrainWork, event.WorkID); itemIndex >= 0 {
+			for _, finalization := range database.BrainWork[itemIndex].SessionFinalizations {
+				if finalization.SessionID != event.SourceName && finalization.SessionID != strings.TrimPrefix(event.PayloadRef, "session:") {
+					continue
+				}
+				switch finalization.State {
+				case SessionFinalizationPending:
+					sessionState = WorkResultSessionClosing
+				case SessionFinalizationFailed:
+					sessionState = WorkResultSessionCloseFailed
+				case SessionFinalizationComplete, SessionFinalizationSkipped:
+					sessionState = WorkResultSessionFinalized
+				}
+				break
+			}
+		}
+		if reviewState == WorkReviewResolved && sessionState == WorkResultSessionOpen {
+			sessionState = WorkResultSessionNotRequired
+		}
+		out[event.ID] = WorkResultLifecycle{
+			EventID:       event.ID,
+			ReviewState:   reviewState,
+			SessionState:  sessionState,
+			CurrentResult: latestResult[event.WorkID].ID == event.ID,
+		}
+	}
+	return out, nil
 }
 
 // ResolveWorkEvent is the single Fact/Attention/Disposition transaction. It
@@ -3333,6 +3552,87 @@ func workEventIndex(events []WorkEvent, eventID string) int {
 	return -1
 }
 
+// ReconcileAbsentWorkOwner retires one stale operational relationship after a
+// successful fresh Session inventory proves the named owner is absent. It
+// never changes or closes the Session ledger and never replays a pending
+// submission; those rows remain audit evidence. Repeated inventories are a
+// no-op after the owner link is cleared.
+func (s *Store) ReconcileAbsentWorkOwner(workID, sessionID string) (Work, bool, error) {
+	workID = strings.TrimSpace(workID)
+	sessionID = strings.TrimSpace(sessionID)
+	if workID == "" || sessionID == "" {
+		return Work{}, false, fmt.Errorf("work_id and absent session_id are required")
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return Work{}, false, err
+	}
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		s.mu.Unlock()
+		return Work{}, false, ErrWorkNotFound
+	}
+	item := database.BrainWork[itemIndex]
+	if item.Status == WorkDone || item.Status == WorkCancelled || item.OwnerSessionID != sessionID {
+		s.mu.Unlock()
+		return item, false, nil
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID == workID && event.ClaimedAt != nil && event.HandledAt == nil &&
+			event.DiscardedAt == nil && event.Resolution == "" && !event.HistoricalDelivery {
+			// Do not invalidate the immutable Work revision already carried by
+			// an admitted or admitting Host turn. Attention, not the absent
+			// owner string, is operational during this bounded deferral.
+			s.mu.Unlock()
+			return item, false, nil
+		}
+	}
+
+	item.OwnerSessionID = ""
+	item.OwnerDelegated = false
+	item.Status = WorkNeedsInput
+	item.NextAction = "Review the absent Session outcome and choose the next Work disposition."
+	item.WaitFor = ""
+	item.Wake = nil
+	if item.SuccessorReservation != nil && item.SuccessorReservation.SessionID == sessionID {
+		item.SuccessorReservation = nil
+	}
+	database.BrainWork[itemIndex] = item
+
+	if !workHasUnhandledAttention(database, workID) {
+		event := WorkEvent{
+			ID:         uuid.NewString(),
+			WorkID:     workID,
+			Kind:       "brain.owner_absent",
+			DedupeKey:  "brain:owner-absent:" + sessionID,
+			PayloadRef: "session:" + sessionID,
+			SourceName: sessionID,
+			Summary:    "A fresh Session inventory no longer contains the recorded Work owner; its outcome requires review.",
+			Actionable: true,
+			CreatedAt:  now,
+		}
+		if _, err = appendWorkEventLocked(&database, itemIndex, event, true); err != nil {
+			s.mu.Unlock()
+			return Work{}, false, err
+		}
+	} else {
+		item.Revision++
+		item.UpdatedAt = now
+		database.BrainWork[itemIndex] = item
+	}
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		s.mu.Unlock()
+		return Work{}, false, err
+	}
+	item = database.BrainWork[itemIndex]
+	s.mu.Unlock()
+	s.broadcastWorkChange(workID)
+	return item, true, nil
+}
+
 func (s *Store) ActiveWork() ([]ActiveWork, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3379,6 +3679,212 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 		return leftWork.UpdatedAt.After(rightWork.UpdatedAt)
 	})
 	return out, nil
+}
+
+const currentWorkQueuedAttentionLimit = 4
+
+// ProjectWorkInventory separates bounded current operational relationships
+// from the durable Work ledger. presentSessions must come from one successful,
+// fresh delegated Session inventory; a stored Session string is never enough
+// to manufacture an endpoint.
+func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInventory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return WorkInventory{}, err
+	}
+	present := map[string]bool{}
+	for sessionID, isPresent := range presentSessions {
+		if normalized := strings.TrimSpace(sessionID); normalized != "" && isPresent {
+			present[normalized] = true
+		}
+	}
+
+	unread := map[string]bool{}
+	hasResult := map[string]bool{}
+	for _, event := range database.BrainWorkEvents {
+		if isResultEvent(event.Kind) {
+			hasResult[event.WorkID] = true
+			if event.Actionable && event.ReadAt == nil {
+				unread[event.WorkID] = true
+			}
+		}
+	}
+	reviewing := map[string]bool{}
+	for _, event := range database.BrainWorkEvents {
+		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+			reviewing[event.WorkID] = true
+		}
+	}
+	queued := projectedAttentionWork(database, currentWorkQueuedAttentionLimit)
+	queueRank := map[string]int{}
+	for index, workID := range queued {
+		queueRank[workID] = index
+	}
+
+	current := make([]CurrentWork, 0, len(database.BrainWork))
+	currentIDs := map[string]bool{}
+	repair := map[string]bool{}
+	for _, item := range database.BrainWork {
+		mode := mustDeriveWorkProgressMode(database, item)
+		attentionState := WorkAttentionState("")
+		if reviewing[item.ID] {
+			attentionState = WorkAttentionReviewing
+		} else if _, selected := queueRank[item.ID]; selected {
+			attentionState = WorkAttentionQueued
+		}
+		finalizations := presentFinalizations(item.SessionFinalizations, present)
+		include := attentionState != ""
+		terminal := item.Status == WorkDone || item.Status == WorkCancelled
+		if !terminal {
+			switch mode {
+			case WorkProgressOwned:
+				if item.OwnerDelegated && present[item.OwnerSessionID] {
+					include = true
+				} else {
+					repair[item.ID] = true
+				}
+			case WorkProgressWaiting:
+				if currentWakePresent(item.Wake, present) {
+					include = true
+				} else {
+					repair[item.ID] = true
+				}
+			case WorkProgressReady:
+				// Only the bounded fair queue window is operationally current.
+			default:
+				repair[item.ID] = true
+			}
+			if strings.TrimSpace(item.OwnerSessionID) != "" && !present[item.OwnerSessionID] {
+				repair[item.ID] = true
+			}
+		} else {
+			for _, finalization := range item.SessionFinalizations {
+				if (finalization.State == SessionFinalizationPending || finalization.State == SessionFinalizationFailed) &&
+					!present[finalization.SessionID] {
+					repair[item.ID] = true
+				}
+			}
+			if len(finalizations) > 0 {
+				include = true
+			}
+		}
+		if !include {
+			continue
+		}
+		currentIDs[item.ID] = true
+		current = append(current, CurrentWork{
+			ID:                   item.ID,
+			Revision:             item.Revision,
+			Title:                item.Title,
+			Status:               item.Status,
+			ProgressMode:         mode,
+			OwnerSessionID:       currentOwnerSessionID(item, present),
+			OwnerDelegated:       item.OwnerDelegated && present[item.OwnerSessionID],
+			WaitFor:              item.WaitFor,
+			Wake:                 cloneWorkWake(item.Wake),
+			AttentionState:       attentionState,
+			SessionFinalizations: finalizations,
+			UnreadResult:         unread[item.ID],
+		})
+	}
+	sort.SliceStable(current, func(left, right int) bool {
+		leftReview := current[left].AttentionState == WorkAttentionReviewing
+		rightReview := current[right].AttentionState == WorkAttentionReviewing
+		if leftReview != rightReview {
+			return leftReview
+		}
+		leftRank, leftQueued := queueRank[current[left].ID]
+		rightRank, rightQueued := queueRank[current[right].ID]
+		if leftQueued != rightQueued {
+			return leftQueued
+		}
+		if leftQueued && leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		leftIndex := workIndex(database.BrainWork, current[left].ID)
+		rightIndex := workIndex(database.BrainWork, current[right].ID)
+		if database.BrainWork[leftIndex].UpdatedAt.Equal(database.BrainWork[rightIndex].UpdatedAt) {
+			return current[left].ID < current[right].ID
+		}
+		return database.BrainWork[leftIndex].UpdatedAt.After(database.BrainWork[rightIndex].UpdatedAt)
+	})
+
+	backlog := WorkBacklog{RepairNeeded: len(repair)}
+	for _, item := range database.BrainWork {
+		if currentIDs[item.ID] {
+			continue
+		}
+		backlog.Total++
+		if workHasUnhandledAttention(database, item.ID) {
+			backlog.QueuedAttention++
+		}
+		if item.Status == WorkDone || item.Status == WorkCancelled || hasResult[item.ID] {
+			backlog.HistoricalResults++
+		}
+	}
+	return WorkInventory{Current: current, Backlog: backlog}, nil
+}
+
+func projectedAttentionWork(database orchestrationDatabase, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	projection := database
+	projection.BrainWorkEvents = append([]WorkEvent(nil), database.BrainWorkEvents...)
+	for len(out) < limit {
+		index := nextAttentionCandidateIndex(projection, projection.AttentionAdmissions)
+		if index < 0 {
+			break
+		}
+		workID := projection.BrainWorkEvents[index].WorkID
+		out = append(out, workID)
+		claimed := time.Unix(1, int64(len(out))).UTC()
+		projection.BrainWorkEvents[index].ClaimedAt = &claimed
+		projection.BrainWorkEvents[index].DeliveryHostSessionID = "projection"
+		projection.LastAttentionWorkID = workID
+		projection.AttentionAdmissions++
+	}
+	return out
+}
+
+func presentFinalizations(finalizations []SessionFinalization, present map[string]bool) []SessionFinalization {
+	out := []SessionFinalization{}
+	for _, finalization := range finalizations {
+		if (finalization.State == SessionFinalizationPending || finalization.State == SessionFinalizationFailed) &&
+			present[finalization.SessionID] {
+			out = append(out, finalization)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return cloneSessionFinalizations(out)
+}
+
+func currentOwnerSessionID(item Work, present map[string]bool) string {
+	if item.OwnerDelegated && present[item.OwnerSessionID] {
+		return item.OwnerSessionID
+	}
+	return ""
+}
+
+func currentWakePresent(wake *WorkWake, present map[string]bool) bool {
+	if wake == nil {
+		return false
+	}
+	switch wake.Kind {
+	case WorkWakeUserInput, WorkWakeCalendarResult:
+		return true
+	case WorkWakeSessionTerminal:
+		ref := strings.TrimPrefix(strings.TrimSpace(wake.Ref), "session:")
+		marker := strings.Index(ref, ":turn:")
+		return marker > 0 && present[ref[:marker]]
+	default:
+		return false
+	}
 }
 
 func compactWorkResultText(value string) string {

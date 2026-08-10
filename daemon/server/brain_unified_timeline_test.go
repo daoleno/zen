@@ -105,7 +105,8 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHost(t *testing.T) {
 			assistantIndex = index
 		}
 	}
-	if needsCard == nil || needsCard.Source != "work_result" || needsCard.Status != "session.needs_input" || !needsCard.Unread {
+	if needsCard == nil || needsCard.Source != "work_result" || needsCard.Status != "session.needs_input" || !needsCard.Unread ||
+		needsCard.WorkReviewState != "resolved" || needsCard.WorkSessionState != "not_required" || !needsCard.WorkResultCurrent {
 		t.Fatalf("needs_input card = %#v", needsCard)
 	}
 	if userIndex < 0 || assistantIndex < 0 || userIndex > assistantIndex {

@@ -530,6 +530,11 @@ func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {
 	if strings.Contains(string(raw), "result_events") {
 		t.Fatalf("snapshot must not carry result_events: %s", raw)
 	}
+	if strings.Contains(string(raw), `"active_work"`) ||
+		!strings.Contains(string(raw), `"current_work"`) ||
+		!strings.Contains(string(raw), `"work_backlog"`) {
+		t.Fatalf("snapshot did not separate current relationships from durable backlog: %s", raw)
+	}
 	items, err := store.ThreadTimeline(snapshot.ChatThreadID, 0)
 	if err != nil {
 		t.Fatal(err)

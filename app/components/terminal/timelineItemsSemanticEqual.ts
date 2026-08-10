@@ -218,7 +218,10 @@ export function brainWorkResultEventsEqual(
     left.session_id === right.session_id &&
     left.session_name === right.session_name &&
     left.occurred_at === right.occurred_at &&
-    left.unread === right.unread
+    left.unread === right.unread &&
+    left.review_state === right.review_state &&
+    left.session_state === right.session_state &&
+    left.current_result === right.current_result
   );
 }
 

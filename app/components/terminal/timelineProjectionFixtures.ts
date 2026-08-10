@@ -35,6 +35,9 @@ export function makeMixedTimelineEvents(count: number): CodexConversationEvent[]
         title: `Work ${index}`,
         body: `Summary ${index}`,
         timestamp,
+        work_review_state: "resolved",
+        work_session_state: "not_required",
+        work_result_current: true,
       });
       continue;
     }

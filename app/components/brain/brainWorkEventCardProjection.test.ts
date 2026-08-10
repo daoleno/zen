@@ -14,6 +14,7 @@ const PROJECTED_KINDS = [
   "session.failed",
   "session.needs_input",
   "session.stale",
+  "session.uncertain",
 ] as const;
 
 function workResultEvent(
@@ -35,6 +36,9 @@ function workResultEvent(
     session_name:
       "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
     unread: true,
+    work_review_state: "queued",
+    work_session_state: "open",
+    work_result_current: true,
   };
 }
 
@@ -72,12 +76,13 @@ describe("Brain Work Event dedicated card projection", () => {
       "brain-work-event",
       "brain-work-event",
       "brain-work-event",
+      "brain-work-event",
     ]);
     for (const item of initial.items) {
       if (item.type !== "brain-work-event") {
         throw new Error("expected work card");
       }
-      expect(item.event.kind).toMatch(/^session\.(done|failed|needs_input|stale)$/);
+      expect(item.event.kind).toMatch(/^session\.(done|failed|needs_input|stale|uncertain)$/);
     }
 
     const withAssistant: CodexConversationEvent[] = [

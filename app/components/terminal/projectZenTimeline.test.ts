@@ -249,6 +249,9 @@ describe("projectZenTimeline incremental projection", () => {
         title: "Ship",
         body: "done",
         timestamp: "2026-08-06T03:00:00.000Z",
+        work_review_state: "resolved",
+        work_session_state: "not_required",
+        work_result_current: true,
       },
       {
         id: "assist-work",

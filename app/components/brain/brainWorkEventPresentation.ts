@@ -19,6 +19,36 @@ export function brainWorkEventSummary(event: BrainWorkResultEvent): string {
   );
 }
 
+export function brainWorkEventReviewLabel(
+  event: BrainWorkResultEvent,
+): string {
+  switch (event.review_state) {
+    case "queued":
+      return "Queued for Brain review";
+    case "reviewing":
+      return "Brain is reviewing";
+    case "resolved":
+      return "Brain resolved";
+  }
+}
+
+export function brainWorkEventSessionLabel(
+  event: BrainWorkResultEvent,
+): string | undefined {
+  switch (event.session_state) {
+    case "open":
+      return "Session open";
+    case "closing":
+      return "Session closing";
+    case "finalized":
+      return "Session finalized";
+    case "close_failed":
+      return "Session close failed";
+    case "not_required":
+      return undefined;
+  }
+}
+
 export function brainWorkEventSourceLabel(
   event: BrainWorkResultEvent,
 ): string | undefined {
@@ -51,10 +81,15 @@ export function brainWorkEventAccessibilityLabel({
   const source = brainWorkEventSourceLabel(event);
   const workTitle = brainWorkEventWorkTitle(event);
   const summary = brainWorkEventSummary(event);
+  const review = brainWorkEventReviewLabel(event);
+  const sessionState = brainWorkEventSessionLabel(event);
   return [
     statusLabel,
     `Work ${workTitle}`,
     summary,
+    review,
+    sessionState ?? "",
+    event.current_result ? "Current result" : "Superseded result",
     source ? `Source: ${source}` : "",
     occurredAtLabel,
     event.unread ? "Unread result" : "Read result",

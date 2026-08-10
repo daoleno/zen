@@ -172,6 +172,9 @@ export function buildZenTimelineFromSortedEvents(
         items.push(workCard);
         continue;
       }
+      if (event.source === "work_result") {
+        continue;
+      }
       if (shouldRenderStatusAsMessage(event)) {
         const body = (event.body || "").trim();
         if (body) {
@@ -402,7 +405,9 @@ function brainWorkEventTimelineItemFromConversationEvent(
     return null;
   }
   const kind = normalizeBrainWorkResultKind(event.status);
-  if (!kind) {
+  const reviewState = normalizeBrainWorkReviewState(event.work_review_state);
+  const sessionState = normalizeBrainWorkSessionState(event.work_session_state);
+  if (!kind || !reviewState || !sessionState) {
     return null;
   }
   const workEvent: BrainWorkResultEvent = {
@@ -415,6 +420,9 @@ function brainWorkEventTimelineItemFromConversationEvent(
     session_name: event.session_name?.trim() || undefined,
     occurred_at: event.timestamp || new Date(0).toISOString(),
     unread: Boolean(event.unread),
+    review_state: reviewState,
+    session_state: sessionState,
+    current_result: event.work_result_current === true,
   };
   if (!workEvent.work_id || !workEvent.occurred_at) {
     return null;
@@ -427,6 +435,29 @@ function brainWorkEventTimelineItemFromConversationEvent(
   };
 }
 
+function normalizeBrainWorkReviewState(
+  value: string | undefined,
+): BrainWorkResultEvent["review_state"] | null {
+  return value === "queued" || value === "reviewing" || value === "resolved"
+    ? value
+    : null;
+}
+
+function normalizeBrainWorkSessionState(
+  value: string | undefined,
+): BrainWorkResultEvent["session_state"] | null {
+  switch (value) {
+    case "open":
+    case "closing":
+    case "finalized":
+    case "close_failed":
+    case "not_required":
+      return value;
+    default:
+      return null;
+  }
+}
+
 function normalizeBrainWorkResultKind(
   value: string | undefined,
 ): BrainWorkResultEvent["kind"] | null {
@@ -435,6 +466,7 @@ function normalizeBrainWorkResultKind(
     case "session.failed":
     case "session.needs_input":
     case "session.stale":
+    case "session.uncertain":
       return value;
     default:
       return null;

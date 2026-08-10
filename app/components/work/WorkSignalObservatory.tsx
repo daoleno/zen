@@ -127,13 +127,13 @@ export function WorkSignalObservatory({
         hasCurrentServer: Boolean(currentServer),
         brainHydrated,
         agentListFresh,
-        work: brain?.active_work ?? [],
+        work: brain?.current_work ?? [],
         owners,
         page,
       }),
     [
       agentListFresh,
-      brain?.active_work,
+      brain?.current_work,
       brainHydrated,
       currentServer,
       currentServerHydrated,
@@ -241,6 +241,13 @@ export function WorkSignalObservatory({
         </View>
 
         <GraphLegend styles={styles} />
+
+        <WorkBacklogSummary
+          total={brain?.work_backlog?.total ?? 0}
+          queued={brain?.work_backlog?.queued_attention ?? 0}
+          repair={brain?.work_backlog?.repair_needed ?? 0}
+          styles={styles}
+        />
 
         <View
           style={styles.graphFrame}
@@ -669,6 +676,46 @@ function GraphLegend({ styles }: { styles: ReturnType<typeof createStyles> }) {
   );
 }
 
+function WorkBacklogSummary({
+  total,
+  queued,
+  repair,
+  styles,
+}: {
+  total: number;
+  queued: number;
+  repair: number;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  if (total === 0 && queued === 0 && repair === 0) return null;
+  const parts = [
+    total > 0 ? `${total} in durable history` : "",
+    queued > 0 ? `${queued} queued` : "",
+    repair > 0 ? `${repair} need relationship repair` : "",
+  ].filter(Boolean);
+  return (
+    <View
+      style={styles.backlogSummary}
+      accessible
+      accessibilityRole="summary"
+      accessibilityLabel={`Work backlog. ${parts.join(". ")}.`}
+    >
+      <Ionicons
+        name="archive-outline"
+        size={12}
+        color={styles.colors.textTertiary}
+      />
+      <Text
+        style={styles.backlogSummaryText}
+        numberOfLines={1}
+        maxFontSizeMultiplier={1.3}
+      >
+        {parts.join(" · ")}
+      </Text>
+    </View>
+  );
+}
+
 function LegendItem({
   label,
   kind,
@@ -891,6 +938,19 @@ function createStyles(theme: ResolvedZenTheme) {
         backgroundColor: colors.bgPrimary,
       },
       legendLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textTertiary },
+      backlogSummary: {
+        minHeight: 24,
+        marginHorizontal: 18,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 5,
+      },
+      backlogSummaryText: {
+        ...UiTextMetrics,
+        ...TypeScale.micro,
+        color: colors.textTertiary,
+      },
       graphFrame: {
         flex: 1,
         minHeight: 260,

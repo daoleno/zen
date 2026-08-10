@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
+  brainWorkEventReviewLabel,
+  brainWorkEventSessionLabel,
   brainWorkEventSourceLabel,
   brainWorkEventSummary,
   brainWorkEventWorkTitle,
@@ -23,6 +25,9 @@ function resultEvent(
     session_name: `zen-brain-event-cards (${canonicalSessionID})`,
     occurred_at: "2026-08-04T02:00:00Z",
     unread: true,
+    review_state: "queued",
+    session_state: "open",
+    current_result: true,
     ...overrides,
   };
 }
@@ -105,5 +110,32 @@ describe("Brain Work event source presentation", () => {
     expect(label).toContain("Source: zen-brain-event-cards");
     expect(label).not.toContain(canonicalSessionID);
     expect(label).not.toContain("brain-agent-");
+  });
+
+  test("keeps result fact, review attention, and Session finalization distinct", () => {
+    const queued = resultEvent({
+      review_state: "queued",
+      session_state: "open",
+      current_result: true,
+    });
+    expect(brainWorkEventReviewLabel(queued)).toBe("Queued for Brain review");
+    expect(brainWorkEventSessionLabel(queued)).toBe("Session open");
+
+    const resolved = resultEvent({
+      review_state: "resolved",
+      session_state: "finalized",
+      current_result: false,
+    });
+    expect(brainWorkEventReviewLabel(resolved)).toBe("Brain resolved");
+    expect(brainWorkEventSessionLabel(resolved)).toBe("Session finalized");
+    const label = brainWorkEventAccessibilityLabel({
+      event: resolved,
+      statusLabel: "Completed",
+      occurredAtLabel: "August 4, 2026 at 10:00",
+    });
+    expect(label).toContain("Completed");
+    expect(label).toContain("Brain resolved");
+    expect(label).toContain("Session finalized");
+    expect(label).toContain("Superseded result");
   });
 });

@@ -206,6 +206,12 @@ type CodexConversationEvent struct {
 	WorkSession string `json:"work_session_id,omitempty"`
 	SessionName string `json:"session_name,omitempty"`
 	Unread      bool   `json:"unread,omitempty"`
+	// Work result lifecycle is separate from the immutable result fact in
+	// Status: queued attention, admitted review, handled disposition, and
+	// Session finalization are different authorities.
+	WorkReviewState   string `json:"work_review_state,omitempty"`
+	WorkSessionState  string `json:"work_session_state,omitempty"`
+	WorkResultCurrent bool   `json:"work_result_current"`
 	// AdmissionSHA256 is the exact provider-native user input digest when the
 	// source preserves those bytes separately from its display projection.
 	AdmissionSHA256 string `json:"-"`

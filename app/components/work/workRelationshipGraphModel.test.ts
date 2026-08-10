@@ -115,7 +115,15 @@ describe("Work relationship graph projection", () => {
     ).toEqual(["Release review", "Calendar", "You"]);
   });
 
-  test("uses Review for ready/correction and Blocked for failure or contradiction", () => {
+  test("uses Review for attention and omits relationships without a present endpoint", () => {
+    const absentOwnerReview = graphWork({
+      work_id: "absent-owner-review",
+      title: "Review an absent owner result",
+      progress_mode: "owned",
+      owner_session_id: "brain-agent-absent:@99",
+      owner_delegated: true,
+      attention_state: "reviewing",
+    });
     const ids = new Set([
       "review-ready",
       "correction",
@@ -124,7 +132,10 @@ describe("Work relationship graph projection", () => {
       "failed-finalization",
     ]);
     const model = buildWorkRelationshipGraphModel(
-      GRAPH_PRODUCTION_WORK.filter((item) => ids.has(item.work_id)),
+      [
+        ...GRAPH_PRODUCTION_WORK.filter((item) => ids.has(item.work_id)),
+        absentOwnerReview,
+      ],
       GRAPH_PRODUCTION_OWNERS,
       { visibleWorkLimit: 6 },
     );
@@ -136,24 +147,25 @@ describe("Work relationship graph projection", () => {
     expect(byTitle.get("Correct compact Android spacing")?.stateLabel).toBe(
       "Review",
     );
+    expect(byTitle.get("Review an absent owner result")?.relationshipLabel).toBe(
+      "Brain is reviewing",
+    );
     expect(byTitle.get("Verify the iOS export")?.stateLabel).toBe("Blocked");
     expect(byTitle.get("Close delegated export checks")?.stateLabel).toBe(
       "Blocked",
     );
     const ownerless = byTitle.get("Resolve the missing owner");
-    expect(ownerless?.stateLabel).toBe("Blocked");
-    expect(ownerless?.relationshipLabel).toBe("No Session assigned");
-    expect(ownerless?.contradiction).toBe(true);
+    expect(ownerless).toBeUndefined();
     expect(
       model.edges.filter(
         (edge) => edge.from === "brain" && edge.kind === "review",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(
       model.nodes.some(
-        (node) => node.kind === "endpoint" && node.title === "Unassigned",
+        (node) => node.kind === "endpoint" && node.title === "Unavailable",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       new Set(workNodes(model).map((node) => node.stateLabel)),
     ).toEqual(new Set(["Review", "Blocked"]));
@@ -165,7 +177,7 @@ describe("Work relationship graph projection", () => {
       GRAPH_PRODUCTION_OWNERS,
     );
 
-    expect(model.totalWorkCount).toBe(9);
+    expect(model.totalWorkCount).toBe(8);
     expect(
       model.nodes.some(
         (node) => node.kind === "work" && node.title === "Historical finished Work",
@@ -190,28 +202,28 @@ describe("Work relationship graph projection", () => {
       { page: 2 },
     );
 
-    expect(first.pageCount).toBe(3);
-    expect(first.hiddenWorkCount).toBe(5);
+    expect(first.pageCount).toBe(2);
+    expect(first.hiddenWorkCount).toBe(4);
     expect(workNodes(first).map((node) => node.workId)).toEqual([
       "owned-running",
       "failed-owner",
-      "ownerless-contradiction",
       "correction",
+      "review-ready",
     ]);
     expect(
       first.nodes.find((node) => node.kind === "aggregate")?.title,
-    ).toBe("+5 more");
+    ).toBe("+4 more");
     expect(workNodes(second).map((node) => node.workId)).toEqual([
-      "review-ready",
       "calendar-wait",
       "typed-session-wait",
       "user-wait",
+      "failed-finalization",
     ]);
     expect(workNodes(third).map((node) => node.workId)).toEqual([
-      "failed-finalization",
       "owned-running",
       "failed-owner",
-      "ownerless-contradiction",
+      "correction",
+      "review-ready",
     ]);
     expect(
       buildWorkRelationshipGraphModel(
@@ -219,7 +231,7 @@ describe("Work relationship graph projection", () => {
         GRAPH_PRODUCTION_OWNERS,
         { page: 3 },
       ).page,
-    ).toBe(0);
+    ).toBe(1);
   });
 
   test("never places raw wake refs, revisions, provider turns, or Session IDs in visible text", () => {

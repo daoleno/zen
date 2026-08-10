@@ -20,6 +20,9 @@ describe("Brain work cards in canonical conversation timeline", () => {
       work_session_id: "sess-1",
       session_name: "agent",
       unread: true,
+      work_review_state: "queued",
+      work_session_state: "open",
+      work_result_current: true,
     };
     const items = buildZenTimeline([
       {
@@ -50,6 +53,9 @@ describe("Brain work cards in canonical conversation timeline", () => {
       session_name: "agent",
       occurred_at: "2026-08-06T10:00:00.000Z",
       unread: true,
+      review_state: "queued",
+      session_state: "open",
+      current_result: true,
     });
   });
 
@@ -67,6 +73,9 @@ describe("Brain work cards in canonical conversation timeline", () => {
         work_id: "work-1",
         work_session_id: "sess-1",
         unread: true,
+        work_review_state: "resolved",
+        work_session_state: "finalized",
+        work_result_current: true,
       },
     ]);
     const activated: string[] = [];
@@ -83,5 +92,22 @@ describe("Brain work cards in canonical conversation timeline", () => {
     }
     card.onPress();
     expect(activated).toEqual(["event-1"]);
+  });
+
+  test("does not invent lifecycle labels when the daemon omits authority", () => {
+    const items = buildZenTimeline([
+      {
+        id: "incomplete-work-result",
+        seq: 1,
+        timestamp: "2026-08-06T10:00:00.000Z",
+        kind: "status",
+        title: "Incomplete",
+        body: "No lifecycle authority",
+        status: "session.done",
+        source: "work_result",
+        work_id: "work-incomplete",
+      },
+    ]);
+    expect(items).toEqual([]);
   });
 });

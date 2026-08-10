@@ -165,7 +165,7 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 		}
 	}
 	if len(hostWatcher.sentCalls) != 1 ||
-		!strings.Contains(hostWatcher.sentCalls[0].text, `"kind":"session.uncertain"`) {
+		!strings.Contains(hostWatcher.sentCalls[0].text, `"kind":"session.done"`) {
 		t.Fatalf("concurrent Work-key delivery was not suppressed: %#v", hostWatcher.sentCalls)
 	}
 	// Ending the Host turn without disposition requeues one level-based

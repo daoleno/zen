@@ -1,4 +1,4 @@
-import type { BrainActiveWork } from "../../store/brain";
+import type { BrainCurrentWork } from "../../store/brain";
 import type { WorkGraphOwner } from "./workRelationshipGraphModel";
 
 export const GRAPH_OWNER_RUNNING: WorkGraphOwner = {
@@ -30,7 +30,7 @@ export const GRAPH_RAW_SESSION_WAKE_REF =
   `session:${GRAPH_OWNER_RUNNING.sessionId}:turn:` +
   `${GRAPH_OWNER_RUNNING.sessionId}:turn:provider-turn-9`;
 
-export const GRAPH_PRODUCTION_WORK: BrainActiveWork[] = [
+export const GRAPH_PRODUCTION_WORK: BrainCurrentWork[] = [
   graphWork({
     work_id: "owned-running",
     title: "Prepare the mobile release candidate",
@@ -74,7 +74,7 @@ export const GRAPH_PRODUCTION_WORK: BrainActiveWork[] = [
     title: "Review the relationship wording",
     status: "running",
     progress_mode: "ready",
-    attention_pending: true,
+    attention_state: "queued",
   }),
   graphWork({
     work_id: "correction",
@@ -120,7 +120,7 @@ export const GRAPH_PRODUCTION_WORK: BrainActiveWork[] = [
     title: "Historical finished Work",
     status: "done",
     progress_mode: undefined,
-    attention_pending: false,
+    attention_state: undefined,
     unread_result: false,
   }),
 ];
@@ -132,15 +132,15 @@ export const GRAPH_PRODUCTION_OWNERS: WorkGraphOwner[] = [
 ];
 
 export function graphWork(
-  overrides: Partial<BrainActiveWork> = {},
-): BrainActiveWork {
+  overrides: Partial<BrainCurrentWork> = {},
+): BrainCurrentWork {
   return {
     work_id: "work-default",
     revision: 1,
     title: "Prepare release",
     status: "running",
     progress_mode: "ready",
-    attention_pending: true,
+    attention_state: undefined,
     unread_result: false,
     ...overrides,
   };
