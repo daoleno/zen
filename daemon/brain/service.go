@@ -1718,6 +1718,26 @@ func (s *Service) hostOwnedGeneration(hostSessionID string) (string, error) {
 // Input may mutate the provider. created=false means this request/thread was
 // already pending or accepted and must not be submitted again.
 func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
+	if s == nil || s.store == nil {
+		return BrainInputAdmission{}, false, nil
+	}
+	threadID := threadIDFromConversationScopeKey(conversationScopeKey)
+	var err error
+	if threadID == "" {
+		threadID, err = s.store.ChatThreadID()
+		if err != nil {
+			return BrainInputAdmission{}, false, err
+		}
+	}
+	if existing, found, lookupErr := s.store.BrainInputAdmission(receipt, threadID); lookupErr != nil {
+		return BrainInputAdmission{}, false, lookupErr
+	} else if found {
+		if existing.HostSessionID != strings.TrimSpace(agentID) ||
+			existing.DisplayBody != strings.TrimSpace(displayBody) {
+			return BrainInputAdmission{}, false, fmt.Errorf("Brain input admission identity belongs to different input")
+		}
+		return existing, false, nil
+	}
 	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
 	if err != nil || !hostInput {
 		return admission, false, err
@@ -1735,17 +1755,26 @@ func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 }
 
 // AdmitHostUserInput makes provider acceptance and every matching user_input
-// Attention authoritative in one orchestration replacement, reserves any
-// queued future Attention behind that accepted foreground turn, then attempts
-// the idempotent messages.jsonl projection. Projection remains independently
-// retryable and cannot strand the scheduler gate. request_id + thread_id is
-// the exact durable admission identity.
-func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
-	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
-	if err != nil || !hostInput {
+// Attention authoritative from the exact admission persisted before provider
+// mutation. It never reconstructs immutable generation/Session identity from
+// ambient state after acceptance. It then reserves any queued future Attention
+// behind that foreground turn and attempts the independently retryable
+// messages.jsonl projection.
+func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	persisted, found, err := s.store.BrainInputAdmission(prepared.RequestID, prepared.ThreadID)
+	if err != nil {
 		return err
 	}
-	accepted, _, _, err := s.store.AcceptBrainInputAdmission(admission)
+	if !found {
+		return fmt.Errorf("Brain input admission must be prepared before provider acceptance")
+	}
+	if !samePreparedBrainInputAdmission(persisted, prepared) {
+		return fmt.Errorf("Brain input admission identity changed after provider acceptance")
+	}
+	accepted, _, _, err := s.store.AcceptBrainInputAdmission(persisted)
 	if err != nil {
 		return err
 	}

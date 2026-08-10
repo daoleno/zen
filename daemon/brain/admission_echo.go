@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -28,30 +29,61 @@ func admissionCorrelationDigest(item TimelineItem) string {
 	return AdmissionDigest(item.Body)
 }
 
-func providerUserCorrelationDigest(event work.CodexConversationEvent) string {
-	if digest := strings.TrimSpace(event.AdmissionSHA256); digest != "" {
-		return digest
+func providerEchoMatchesAdmission(
+	admission BrainInputAdmission,
+	threadID string,
+	providerSessionID string,
+	body string,
+	createdAt time.Time,
+) bool {
+	if admission.State != BrainInputAdmissionAccepted || admission.AcceptedAt == nil || createdAt.IsZero() {
+		return false
 	}
-	if strings.TrimSpace(event.Body) == "" {
-		return ""
+	if strings.TrimSpace(threadID) != admission.ThreadID ||
+		strings.TrimSpace(providerSessionID) != admission.SessionID {
+		return false
 	}
-	return AdmissionDigest(event.Body)
+	if AdmissionDigest(strings.TrimSpace(body)) != admission.BodySHA256 {
+		return false
+	}
+	createdAt = createdAt.UTC()
+	return !createdAt.Before(admission.CreatedAt.UTC()) && !createdAt.After(admission.AcceptedAt.UTC())
 }
 
-// ProviderUserEchoSuppressions returns provider user_message IDs that are
-// one-to-one echoes of Brain input admissions. Digests only correlate a
-// candidate; each admission contributes at most one suppression credit.
-// Already-materialized provider-native user row IDs are never candidates.
-func ProviderUserEchoSuppressions(
-	items []TimelineItem,
-	providerEvents []work.CodexConversationEvent,
-) map[string]bool {
-	suppress, _, _ := claimProviderUserEchoes(items, providerEvents, false)
+func exactProviderEventTimestamp(event work.CodexConversationEvent) (time.Time, bool) {
+	raw := strings.TrimSpace(event.Timestamp)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.UTC(), true
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+// ProviderUserEchoSuppressions returns only provider user-message IDs already
+// claimed by durable exact admission reconciliation for the current provider
+// Session. Overlay rendering never performs a second, digest-only matching
+// decision or carries a claim across a replacement Session.
+func ProviderUserEchoSuppressions(items []TimelineItem, providerSessionID string) map[string]bool {
+	providerSessionID = strings.TrimSpace(providerSessionID)
+	suppress := map[string]bool{}
+	for _, item := range items {
+		if !IsBrainInputAdmission(item) || strings.TrimSpace(item.SessionID) != providerSessionID {
+			continue
+		}
+		if echoID := strings.TrimSpace(item.AdmissionEchoEventID); echoID != "" {
+			suppress[echoID] = true
+		}
+	}
 	return suppress
 }
 
-// claimProviderUserEchoes matches provider user events against Brain admissions
-// in causal order. When assign is true, unconsumed admissions receive
+// claimProviderUserEchoes matches provider user events against accepted
+// orchestration admissions in causal order. Unconsumed admissions receive
 // AdmissionEchoEventID for durable idempotence.
 //
 // Already-durable provider-native user event IDs are excluded from candidates
@@ -59,7 +91,9 @@ func ProviderUserEchoSuppressions(
 func claimProviderUserEchoes(
 	items []TimelineItem,
 	providerEvents []work.CodexConversationEvent,
-	assign bool,
+	admissions []BrainInputAdmission,
+	threadID string,
+	providerSessionID string,
 ) (map[string]bool, []TimelineItem, bool) {
 	suppress := map[string]bool{}
 	if len(items) == 0 || len(providerEvents) == 0 {
@@ -80,14 +114,11 @@ func claimProviderUserEchoes(
 	}
 
 	type credit struct {
-		index  int
-		digest string
+		index     int
+		admission BrainInputAdmission
 	}
 	credits := make([]credit, 0, len(items))
-	out := items
-	if assign {
-		out = append([]TimelineItem(nil), items...)
-	}
+	out := append([]TimelineItem(nil), items...)
 	for index, item := range out {
 		if !IsBrainInputAdmission(item) {
 			continue
@@ -97,11 +128,14 @@ func claimProviderUserEchoes(
 			suppress[echoID] = true
 			continue
 		}
-		digest := admissionCorrelationDigest(item)
-		if digest == "" {
-			continue
+		for _, admission := range admissions {
+			if admission.State != BrainInputAdmissionAccepted ||
+				!timelineItemMatchesBrainInputAdmission(item, admission) {
+				continue
+			}
+			credits = append(credits, credit{index: index, admission: admission})
+			break
 		}
-		credits = append(credits, credit{index: index, digest: digest})
 	}
 
 	dirty := false
@@ -120,13 +154,19 @@ func claimProviderUserEchoes(
 		if knownProviderUserIDs[eventID] {
 			continue
 		}
-		digest := providerUserCorrelationDigest(event)
-		if digest == "" {
+		createdAt, hasExactTimestamp := exactProviderEventTimestamp(event)
+		if !hasExactTimestamp {
 			continue
 		}
 		matched := -1
 		for cursor := 0; cursor < len(credits); cursor++ {
-			if credits[cursor].digest != digest {
+			if !providerEchoMatchesAdmission(
+				credits[cursor].admission,
+				threadID,
+				providerSessionID,
+				event.Body,
+				createdAt,
+			) {
 				continue
 			}
 			matched = cursor
@@ -136,10 +176,8 @@ func claimProviderUserEchoes(
 			continue
 		}
 		suppress[eventID] = true
-		if assign {
-			out[credits[matched].index].AdmissionEchoEventID = eventID
-			dirty = true
-		}
+		out[credits[matched].index].AdmissionEchoEventID = eventID
+		dirty = true
 		credits = append(credits[:matched], credits[matched+1:]...)
 	}
 	return suppress, out, dirty

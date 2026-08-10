@@ -826,7 +826,7 @@ func TestLongForegroundTurnPersistsFutureAttentionAcrossReopenAndConsumesAtBound
 	if err != nil || !created {
 		t.Fatalf("prepare foreground admission=%+v created=%v err=%v", prepared, created, err)
 	}
-	if err := service.AdmitHostUserInput(hostID, "foreground-request-1", "keep working", ""); err != nil {
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 	item := createSignalTestWork(t, store, "durable future review", "brain-agent-worker:@reservation")
@@ -969,12 +969,13 @@ func TestAcceptedForegroundInputReservesAttentionBeforeTimelineProjection(t *tes
 		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
 	}
 	requestID := "foreground-projection-failure"
-	if _, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", ""); err != nil || !created {
+	prepared, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", "")
+	if err != nil || !created {
 		t.Fatalf("prepare created=%v err=%v", created, err)
 	}
 	projectionErr := errors.New("injected timeline projection failure")
 	store.projectBrainInputAdmission = func(BrainInputAdmission) error { return projectionErr }
-	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); !errors.Is(err, projectionErr) {
+	if err := service.AdmitHostUserInput(prepared); !errors.Is(err, projectionErr) {
 		t.Fatalf("projection failure err=%v, want %v", err, projectionErr)
 	}
 	active, reservation, err := store.HostForegroundState()
@@ -993,7 +994,7 @@ func TestAcceptedForegroundInputReservesAttentionBeforeTimelineProjection(t *tes
 	}
 
 	store.projectBrainInputAdmission = nil
-	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); err != nil {
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatalf("idempotent projection retry: %v", err)
 	}
 	_, repeated, err := store.HostForegroundState()
@@ -1015,7 +1016,7 @@ type changingHostGenerationWatcher struct {
 func (w *changingHostGenerationWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
 	w.calls++
 	generation := "host-generation-prepared"
-	if w.calls >= 3 {
+	if w.calls >= 2 {
 		generation = "host-generation-replaced"
 	}
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
@@ -1045,10 +1046,11 @@ func TestAcceptedForegroundInputGenerationMismatchStillPersistsExactReservation(
 		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
 	}
 	requestID := "foreground-generation-mismatch"
-	if _, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", ""); err != nil || !created {
+	prepared, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", "")
+	if err != nil || !created {
 		t.Fatalf("prepare created=%v err=%v", created, err)
 	}
-	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); err == nil ||
+	if err := service.AdmitHostUserInput(prepared); err == nil ||
 		!strings.Contains(err.Error(), "generation") {
 		t.Fatalf("generation mismatch was not surfaced: %v", err)
 	}
@@ -1097,12 +1099,13 @@ func TestHostForegroundLateBindsNewActivityAfterPriorTerminal(t *testing.T) {
 	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
 		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
 	}
-	if _, created, err := service.PrepareHostUserInput(
+	prepared, created, err := service.PrepareHostUserInput(
 		hostID, "foreground-late-bind", "continue", "",
-	); err != nil || !created {
+	)
+	if err != nil || !created {
 		t.Fatalf("prepare created=%v err=%v", created, err)
 	}
-	if err := service.AdmitHostUserInput(hostID, "foreground-late-bind", "continue", ""); err != nil {
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 	active, reservation, err := store.HostForegroundState()

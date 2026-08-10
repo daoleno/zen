@@ -23,11 +23,24 @@ func TestAdmitUserMessageSurvivesEmptyHostAndDedupesProviderEcho(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetHostProviderTranscript("provider-moved", "", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	service := NewService(store, nil, nil)
 	body := "P0 admit durable user before provider echo"
 	receipt := "request-admit-1"
-	if err := service.AdmitHostUserInput(hostID, receipt, body, "brain-thread:"+threadID); err != nil {
+	store.now = func() time.Time {
+		return time.Date(2026, 8, 6, 4, 39, 59, 0, time.UTC)
+	}
+	prepared, created, err := service.PrepareHostUserInput(hostID, receipt, body, "brain-thread:"+threadID)
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	store.now = func() time.Time {
+		return time.Date(2026, 8, 6, 4, 40, 0, 500000000, time.UTC)
+	}
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +151,11 @@ func TestAdmitUserMessageUsesScopedThreadNotCurrentGuess(t *testing.T) {
 	service := NewService(store, nil, nil)
 	receipt := "scoped-request-id"
 	body := "display body for scoped thread"
-	if err := service.AdmitHostUserInput(hostID, receipt, body, "brain-thread:"+target); err != nil {
+	prepared, created, err := service.PrepareHostUserInput(hostID, receipt, body, "brain-thread:"+target)
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 	currentItems, err := store.ThreadTimeline(current, 0)

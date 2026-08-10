@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -347,6 +348,104 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 	claims, err := store.ClaimedActionableEvents()
 	if err != nil || len(claims) != 0 {
 		t.Fatalf("future reservation became a delivered/held claim: claims=%+v err=%v", claims, err)
+	}
+}
+
+type changingProxyGenerationWatcher struct {
+	*brainServiceTestWatcher
+	generation string
+}
+
+func (w *changingProxyGenerationWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	if w.GetAgent(sessionID) == nil {
+		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
+	}
+	return watcher.OwnedGeneration{SessionID: sessionID, Generation: w.generation}, nil
+}
+
+func (w *changingProxyGenerationWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
+	return watcher.ProviderActivityObservation{
+		ID: "host-generation-g2-activity", Status: "running", StartedAt: time.Now().UTC(),
+	}, true, nil
+}
+
+func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@prepared-generation"
+	threadID := "thread-prepared-generation"
+	requestID := "request-prepared-generation"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(brain.Work{
+		Title: "Prepared generation review", Objective: "Reserve against the provider generation that accepted input.",
+		Status: brain.WorkWaiting, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, created, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "review.ready", DedupeKey: "review:prepared-generation",
+		Summary: "Review remains queued behind the accepted foreground turn.", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
+	}
+	watcherFixture := &changingProxyGenerationWatcher{
+		brainServiceTestWatcher: &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+		}},
+		generation: "host-generation-g1",
+	}
+	service := brain.NewService(store, watcherFixture, nil)
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: service,
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != hostID || text != "continue" || receipt != requestID {
+				t.Fatalf("provider call=%q %q %q", agentID, text, receipt)
+			}
+			// Provider mutation succeeded on G1; the ambient pane/process
+			// generation changes before Brain commits that accepted admission.
+			watcherFixture.generation = "host-generation-g2"
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
+		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
+	}
+	first := sendThinProxyRequest(t, conn, request)
+	if first.Type != "input_pending" || first.RequestID != requestID {
+		t.Fatalf("generation mismatch response=%#v", first)
+	}
+	second := sendThinProxyRequest(t, conn, request)
+	if second.Type != "input_sent" || second.RequestID != requestID {
+		t.Fatalf("idempotent accepted retry response=%#v", second)
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider submissions=%d want exactly one", providerCalls.Load())
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionAccepted ||
+		admission.HostGeneration != "host-generation-g1" {
+		t.Fatalf("accepted prepared admission found=%v row=%+v err=%v", found, admission, err)
+	}
+	active, reservation, err := store.HostForegroundState()
+	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
+		active.HostGeneration != "host-generation-g1" || reservation.HostGeneration != "host-generation-g1" {
+		t.Fatalf("prepared generation state active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	if active.ProviderActivityID != "" {
+		t.Fatalf("ambient G2 Activity was adopted: %+v", active)
 	}
 }
 

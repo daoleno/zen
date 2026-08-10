@@ -858,7 +858,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				// idempotent duplicate that may still need timeline projection.
 				s.brain.CancelUserSteering(raw.AgentID)
 				if prepared.State == brain.BrainInputAdmissionAccepted {
-					if admitErr := s.brain.AdmitHostUserInput(raw.AgentID, raw.RequestID, displayBody, raw.ConversationScopeKey); admitErr == nil {
+					if admitErr := s.brain.AdmitHostUserInput(prepared); admitErr == nil {
 						s.sendJSON(conn, map[string]any{"type": "input_sent", "request_id": raw.RequestID})
 						break
 					}
@@ -896,12 +896,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			})
 		} else {
 			if brainSteering {
-				if admitErr := s.brain.AdmitHostUserInput(
-					raw.AgentID,
-					raw.RequestID,
-					displayBody,
-					raw.ConversationScopeKey,
-				); admitErr != nil {
+				if admitErr := s.brain.AdmitHostUserInput(brainAdmission); admitErr != nil {
 					// Provider already accepted. Canonical Brain persistence failed,
 					// so do not falsely ack input_sent. Pending preserves the local
 					// row for transcript recovery without encouraging a duplicate retry.
@@ -1940,7 +1935,11 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	for _, event := range timelineItemsToConversationEventsForServer(timelineItems) {
 		appendUnique(event)
 	}
-	echoSuppressions := brain.ProviderUserEchoSuppressions(timelineItems, providerEvents)
+	echoProviderSessionID := strings.TrimSpace(conversation.SessionID)
+	if echoProviderSessionID == "" {
+		echoProviderSessionID = "provider"
+	}
+	echoSuppressions := brain.ProviderUserEchoSuppressions(timelineItems, echoProviderSessionID)
 	// Current-host provider events overlay the durable timeline so tools,
 	// streaming partials, and live Activity remain visible. An empty provider
 	// snapshot leaves the durable timeline intact. Durable calendar/work_result

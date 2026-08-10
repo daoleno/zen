@@ -1666,9 +1666,12 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewService(store, nil, nil).AdmitHostUserInput(
-		hostID, "progress-input-1", "continue", wake.Ref,
-	); err != nil {
+	service := NewService(store, nil, nil)
+	prepared, created, err := service.PrepareHostUserInput(hostID, "progress-input-1", "continue", wake.Ref)
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
@@ -2161,11 +2164,12 @@ func TestSignalAdversarialHostUserInputAdmissionFaultReopenMatrix(t *testing.T) 
 
 	t.Run("accepted plus Attention write failure", func(t *testing.T) {
 		store, service, item, hostID, threadID, requestID := newFixture(t)
-		if _, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil || !created {
+		prepared, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID)
+		if err != nil || !created {
 			t.Fatalf("prepare created=%v err=%v", created, err)
 		}
 		store.writeOrchestration = func(string, any) error { return errors.New("injected accepted admission write failure") }
-		if err := service.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err == nil {
+		if err := service.AdmitHostUserInput(prepared); err == nil {
 			t.Fatal("accepted admission persistence failure was ignored")
 		}
 		reopened, err := NewStore(store.Root)
@@ -2187,13 +2191,14 @@ func TestSignalAdversarialHostUserInputAdmissionFaultReopenMatrix(t *testing.T) 
 			writes++
 			return write(path, value)
 		}
-		if _, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil || !created {
+		prepared, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID)
+		if err != nil || !created {
 			t.Fatalf("prepare created=%v err=%v", created, err)
 		}
 		store.projectBrainInputAdmission = func(BrainInputAdmission) error {
 			return errors.New("injected timeline projection failure")
 		}
-		if err := service.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err == nil {
+		if err := service.AdmitHostUserInput(prepared); err == nil {
 			t.Fatal("timeline projection failure was ignored")
 		}
 		if writes != 2 {
@@ -2230,7 +2235,11 @@ func TestSignalAdversarialHostUserInputAdmissionFaultReopenMatrix(t *testing.T) 
 		if err != nil || len(items) != 1 || items[0].ID != requestID || !items[0].BrainAdmission || items[0].Body != "first accepted body" {
 			t.Fatalf("recovered timeline items=%+v err=%v", items, err)
 		}
-		if err := restarted.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil {
+		accepted, found, err := reopened.BrainInputAdmission(requestID, threadID)
+		if err != nil || !found {
+			t.Fatalf("accepted admission found=%v err=%v", found, err)
+		}
+		if err := restarted.AdmitHostUserInput(accepted); err != nil {
 			t.Fatalf("duplicate accepted admission: %v", err)
 		}
 		events, _ = reopened.ListWorkEvents(item.ID)

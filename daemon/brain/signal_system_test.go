@@ -227,7 +227,11 @@ func TestAdmittedHostUserInputIsOnlyTypedThreadWakeAuthority(t *testing.T) {
 		t.Fatalf("generic matching strings cleared typed wait: %+v", current)
 	}
 	service := NewService(store, nil, nil)
-	if err := service.AdmitHostUserInput(hostID, "admitted-input-1", "continue", wake.Ref); err != nil {
+	prepared, created, err := service.PrepareHostUserInput(hostID, "admitted-input-1", "continue", wake.Ref)
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 	current, err = store.Work(item.ID)

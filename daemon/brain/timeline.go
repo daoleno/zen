@@ -89,21 +89,71 @@ func providerRowMatchesAdmissionWindow(item TimelineItem, admission BrainInputAd
 		!strings.EqualFold(strings.TrimSpace(item.Role), "user") {
 		return false
 	}
-	if strings.TrimSpace(item.ThreadID) != admission.ThreadID ||
-		strings.TrimSpace(item.SessionID) != admission.SessionID {
-		return false
+	return providerEchoMatchesAdmission(
+		admission,
+		item.ThreadID,
+		item.SessionID,
+		item.Body,
+		item.CreatedAt,
+	)
+}
+
+func brainInputAdmissionProjectionState(
+	allItems []TimelineItem,
+	admission BrainInputAdmission,
+) (int, []int, error) {
+	canonicalIndex := -1
+	canonicalID := AdmissionTimelineItemID(admission.RequestID)
+	for index, existing := range allItems {
+		if strings.TrimSpace(existing.ID) != canonicalID {
+			continue
+		}
+		if !timelineItemMatchesBrainInputAdmission(existing, admission) {
+			return -1, nil, fmt.Errorf(
+				"timeline identity %q belongs to different Brain input admission",
+				existing.ID,
+			)
+		}
+		canonicalIndex = index
+		break
 	}
-	if AdmissionDigest(strings.TrimSpace(item.Body)) != admission.BodySHA256 {
-		return false
+
+	claimedProviderIDs := make(map[string]bool, len(allItems))
+	for _, existing := range allItems {
+		if !IsBrainInputAdmission(existing) {
+			continue
+		}
+		if echoID := strings.TrimSpace(existing.AdmissionEchoEventID); echoID != "" {
+			claimedProviderIDs[echoID] = true
+		}
 	}
-	createdAt := item.CreatedAt.UTC()
-	return !createdAt.Before(admission.CreatedAt.UTC()) && !createdAt.After(admission.AcceptedAt.UTC())
+	candidates := make([]int, 0, 1)
+	for index, existing := range allItems {
+		if claimedProviderIDs[strings.TrimSpace(existing.ID)] {
+			continue
+		}
+		if providerRowMatchesAdmissionWindow(existing, admission) {
+			candidates = append(candidates, index)
+		}
+	}
+	return canonicalIndex, candidates, nil
 }
 
 // ProjectBrainInputAdmission idempotently materializes the presentation row
 // from accepted orchestration authority. Failure never rolls back acceptance
 // or Attention; the existing bounded startup pass retries this projection.
 func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error {
+	persisted, found, err := s.BrainInputAdmission(admission.RequestID, admission.ThreadID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("Brain input admission is not durable")
+	}
+	if !samePersistedBrainInputAdmission(persisted, admission) {
+		return fmt.Errorf("Brain input admission projection identity differs from durable authority")
+	}
+	admission = persisted
 	if admission.State != BrainInputAdmissionAccepted || admission.AcceptedAt == nil {
 		return fmt.Errorf("only accepted Brain input admission can be projected")
 	}
@@ -124,17 +174,12 @@ func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error 
 		return err
 	}
 	item := brainInputAdmissionTimelineItem(admission)
-	canonicalIndex := -1
-	for index, existing := range allItems {
-		if strings.TrimSpace(existing.ID) != item.ID {
-			continue
-		}
-		if !timelineItemMatchesBrainInputAdmission(existing, admission) {
-			return fmt.Errorf("timeline identity %q belongs to different Brain input admission", existing.ID)
-		}
-		canonicalIndex = index
-		item = existing
-		break
+	canonicalIndex, candidates, err := brainInputAdmissionProjectionState(allItems, admission)
+	if err != nil {
+		return err
+	}
+	if canonicalIndex >= 0 {
+		item = allItems[canonicalIndex]
 	}
 	if canonicalIndex >= 0 && strings.TrimSpace(item.AdmissionEchoEventID) != "" {
 		return nil
@@ -145,23 +190,6 @@ func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error 
 	// from that closed interval. This is deliberately narrower than ordinary
 	// echo suppression: exact thread, provider Session, digest, and timestamp
 	// are all required, and one admission may consume only one provider row.
-	claimedProviderIDs := make(map[string]bool, len(allItems))
-	for _, existing := range allItems {
-		if IsBrainInputAdmission(existing) {
-			if echoID := strings.TrimSpace(existing.AdmissionEchoEventID); echoID != "" {
-				claimedProviderIDs[echoID] = true
-			}
-		}
-	}
-	candidates := make([]int, 0, 1)
-	for index, existing := range allItems {
-		if claimedProviderIDs[strings.TrimSpace(existing.ID)] {
-			continue
-		}
-		if providerRowMatchesAdmissionWindow(existing, admission) {
-			candidates = append(candidates, index)
-		}
-	}
 	if len(candidates) > 1 {
 		return fmt.Errorf(
 			"Brain input admission %q has %d provider echoes in its acceptance window",
@@ -461,6 +489,10 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	if err != nil {
 		return err
 	}
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return err
+	}
 	items := make([]TimelineItem, 0, len(allItems))
 	for _, item := range allItems {
 		if item.ThreadID != threadID {
@@ -470,8 +502,18 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 		items = append(items, item)
 	}
 	sortTimelineItems(items)
+	sessionID := strings.TrimSpace(conversation.SessionID)
+	if sessionID == "" {
+		sessionID = "provider"
+	}
 	// Assign echo credits before appending so restart/replay stays idempotent.
-	suppress, updatedItems, dirty := claimProviderUserEchoes(items, conversation.Events, true)
+	suppress, updatedItems, dirty := claimProviderUserEchoes(
+		items,
+		conversation.Events,
+		database.BrainInputAdmissions,
+		threadID,
+		sessionID,
+	)
 	if dirty {
 		byID := make(map[string]TimelineItem, len(updatedItems))
 		for _, item := range updatedItems {
@@ -490,10 +532,6 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	known := make(map[string]bool, len(items))
 	for _, item := range items {
 		known[item.ID] = true
-	}
-	sessionID := strings.TrimSpace(conversation.SessionID)
-	if sessionID == "" {
-		sessionID = "provider"
 	}
 	for _, event := range conversation.Events {
 		if !providerEventMaterializable(event) {
@@ -527,7 +565,8 @@ func providerEventMaterializable(event work.CodexConversationEvent) bool {
 		if work.IsCanonicalDirectWorkEventInput(event.Body) {
 			return false
 		}
-		return strings.TrimSpace(event.Body) != ""
+		_, hasExactTimestamp := exactProviderEventTimestamp(event)
+		return strings.TrimSpace(event.Body) != "" && hasExactTimestamp
 	case timelineKindAssistantMessage:
 		return strings.TrimSpace(event.Body) != ""
 	default:

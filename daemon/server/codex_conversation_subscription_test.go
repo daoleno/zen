@@ -594,11 +594,29 @@ func TestBrainScopedConversationShowsOneBubbleWhenProviderEchoPrecedesAdmissionP
 	if err != nil || !changed {
 		t.Fatalf("accept changed=%v row=%+v err=%v", changed, accepted, err)
 	}
-	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+	// Reproduce the pre-fix durable shape: provider echo materialized first,
+	// then the old projection appended the canonical receipt without claiming
+	// or removing that already-durable echo.
+	if _, err := store.AdmitUserMessage(threadID, sessionID, requestID, body); err != nil {
 		t.Fatal(err)
 	}
+	beforeReopen, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(beforeReopen) != 2 {
+		t.Fatalf("pre-startup duplicate timeline=%+v err=%v", beforeReopen, err)
+	}
+	reopened, err := brain.NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(reopened, nil, nil)
+	for attempt := 0; attempt < 2; attempt++ {
+		complete, err := service.ReconcileSignalSystemStartup(nil, 8)
+		if err != nil || !complete {
+			t.Fatalf("startup attempt=%d complete=%v err=%v", attempt+1, complete, err)
+		}
+	}
 
-	srv := &Server{brain: brain.NewService(store, nil, nil)}
+	srv := &Server{brain: service}
 	got := srv.brainScopedConversation("brain-thread:"+threadID, conversation, time.Now().UTC())
 	userEvents := make([]work.CodexConversationEvent, 0, 1)
 	for _, event := range got.Events {

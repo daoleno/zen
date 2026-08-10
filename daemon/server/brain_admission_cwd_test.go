@@ -31,10 +31,6 @@ func TestBrainAdmissionClearsPendingPathAcrossCWDLossAndProviderEcho(t *testing.
 	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeServerCodexRollout(t, rolloutPath, "provider-session-p0",
-		"accepted user body for pending clear",
-		"assistant reply after cwd vanished",
-	)
 	if err := store.SetHostProviderTranscript("provider-session-p0", rolloutPath, hostHome); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +41,19 @@ func TestBrainAdmissionClearsPendingPathAcrossCWDLossAndProviderEcho(t *testing.
 	receipt := "app-request-pending-1"
 	body := "accepted user body for pending clear"
 	scope := "brain-thread:" + threadID
-	if err := service.AdmitHostUserInput(hostID, receipt, body, scope); err != nil {
+	prepared, created, err := service.PrepareHostUserInput(hostID, receipt, body, scope)
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	writeServerCodexRollout(
+		t,
+		rolloutPath,
+		"provider-session-p0",
+		body,
+		"assistant reply after cwd vanished",
+		prepared.CreatedAt.Add(time.Nanosecond),
+	)
+	if err := service.AdmitHostUserInput(prepared); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,41 +117,53 @@ func TestBrainAdmissionOverlaySuppressesEchoesOneToOneNotByBodySet(t *testing.T)
 		t.Fatal(err)
 	}
 	body := "identical overlay body"
-	if _, err := store.AdmitUserMessage(threadID, "host", "receipt-overlay-a", body); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AdmitUserMessage(threadID, "host", "receipt-overlay-b", body); err != nil {
-		t.Fatal(err)
+	base := time.Now().UTC().Add(-time.Minute)
+	for _, receipt := range []string{"receipt-overlay-a", "receipt-overlay-b"} {
+		candidate := brain.BrainInputAdmission{
+			RequestID: receipt, ThreadID: threadID, HostSessionID: "brain-host:@overlay",
+			SessionID: "provider-overlay", DisplayBody: body, CreatedAt: base,
+		}
+		if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+			t.Fatalf("prepare %s created=%v err=%v", receipt, created, err)
+		}
+		accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+		if err != nil || !changed {
+			t.Fatalf("accept %s changed=%v err=%v", receipt, changed, err)
+		}
+		if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	srv := &Server{brain: brain.NewService(store, nil, nil)}
+	outsideWindow := time.Now().UTC().Add(time.Minute)
 	provider := work.CodexConversation{
 		Available: true,
 		SessionID: "provider-overlay",
 		Events: []work.CodexConversationEvent{{
 			ID:              "provider-overlay:1",
-			Timestamp:       "2026-08-06T06:00:00Z",
+			Timestamp:       base.Add(time.Second).Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Role:            "user",
 			Body:            body,
 			AdmissionSHA256: brain.AdmissionDigest(body),
 		}, {
 			ID:              "provider-overlay:2",
-			Timestamp:       "2026-08-06T06:00:01Z",
+			Timestamp:       base.Add(2 * time.Second).Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Role:            "user",
 			Body:            body,
 			AdmissionSHA256: brain.AdmissionDigest(body),
 		}, {
 			ID:              "provider-overlay:3",
-			Timestamp:       "2026-08-06T06:00:02Z",
+			Timestamp:       outsideWindow.Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Role:            "user",
 			Body:            body,
 			AdmissionSHA256: brain.AdmissionDigest(body),
 		}, {
 			ID:        "provider-overlay:4",
-			Timestamp: "2026-08-06T06:00:03Z",
+			Timestamp: outsideWindow.Add(time.Second).Format(time.RFC3339Nano),
 			Kind:      "assistant_message",
 			Role:      "assistant",
 			Body:      "ok",
@@ -196,7 +216,14 @@ func idsContainAssistant(events []work.CodexConversationEvent, body string) bool
 	return false
 }
 
-func writeServerCodexRollout(t *testing.T, path, sessionID, userBody, assistantBody string) {
+func writeServerCodexRollout(
+	t *testing.T,
+	path string,
+	sessionID string,
+	userBody string,
+	assistantBody string,
+	userAt time.Time,
+) {
 	t.Helper()
 	lines := []map[string]any{
 		{
@@ -209,7 +236,7 @@ func writeServerCodexRollout(t *testing.T, path, sessionID, userBody, assistantB
 			},
 		},
 		{
-			"timestamp": "2026-08-06T04:55:01Z",
+			"timestamp": userAt.Format(time.RFC3339Nano),
 			"type":      "event_msg",
 			"payload": map[string]any{
 				"type":    "user_message",
@@ -217,7 +244,7 @@ func writeServerCodexRollout(t *testing.T, path, sessionID, userBody, assistantB
 			},
 		},
 		{
-			"timestamp": "2026-08-06T04:55:02Z",
+			"timestamp": userAt.Add(time.Nanosecond).Format(time.RFC3339Nano),
 			"type":      "event_msg",
 			"payload": map[string]any{
 				"type":    "agent_message",

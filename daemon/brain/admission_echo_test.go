@@ -12,6 +12,36 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
+func acceptAndProjectEchoTestAdmission(
+	t *testing.T,
+	store *Store,
+	requestID string,
+	threadID string,
+	sessionID string,
+	body string,
+	createdAt time.Time,
+	acceptedAt time.Time,
+) BrainInputAdmission {
+	t.Helper()
+	store.now = func() time.Time { return createdAt }
+	candidate := BrainInputAdmission{
+		RequestID: requestID, ThreadID: threadID, HostSessionID: "brain-host:@echo-test",
+		SessionID: sessionID, DisplayBody: body,
+	}
+	if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	store.now = func() time.Time { return acceptedAt }
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v err=%v", changed, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatal(err)
+	}
+	return accepted
+}
+
 func TestProviderEchoMaterializedDuringAdmissionWindowReconcilesAtProjection(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
@@ -166,6 +196,68 @@ func TestProviderRowsOutsideExactAdmissionWindowRemainIndependent(t *testing.T) 
 	}
 }
 
+func TestAdmissionFirstEchoMatchingRequiresExactSessionAndWindow(t *testing.T) {
+	base := time.Date(2026, 8, 11, 14, 15, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		providerSession string
+		providerAt      time.Time
+		wantSuppressed  bool
+	}{
+		{name: "exact causal echo", providerSession: "provider-session", providerAt: base.Add(500 * time.Millisecond), wantSuppressed: true},
+		{name: "same text before prepare", providerSession: "provider-session", providerAt: base.Add(-time.Nanosecond)},
+		{name: "same text after accept", providerSession: "provider-session", providerAt: base.Add(time.Second + time.Nanosecond)},
+		{name: "same text replacement session", providerSession: "replacement-session", providerAt: base.Add(500 * time.Millisecond)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			threadID := "thread-admission-first-window"
+			body := "same text with distinct causal authority"
+			if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+				t.Fatal(err)
+			}
+			acceptAndProjectEchoTestAdmission(
+				t, store, "receipt-admission-first", threadID, "provider-session", body,
+				base, base.Add(time.Second),
+			)
+			providerID := test.providerSession + ":user"
+			if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+				Available: true, SessionID: test.providerSession,
+				Events: []work.CodexConversationEvent{{
+					ID: providerID, Timestamp: test.providerAt.Format(time.RFC3339Nano),
+					Kind: timelineKindUserMessage, Role: "user", Body: body,
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			items, err := store.ThreadTimeline(threadID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			byID := map[string]TimelineItem{}
+			for _, item := range items {
+				byID[item.ID] = item
+			}
+			admission := byID["receipt-admission-first"]
+			if test.wantSuppressed {
+				if len(items) != 1 || admission.AdmissionEchoEventID != providerID {
+					t.Fatalf("exact echo was not claimed once: %+v", items)
+				}
+				return
+			}
+			provider := byID[providerID]
+			if len(items) != 2 || provider.ID == "" || provider.BrainAdmission ||
+				admission.AdmissionEchoEventID != "" {
+				t.Fatalf("independent same-text input was deleted/suppressed: %+v", items)
+			}
+		})
+	}
+}
+
 func TestProviderEchoAdmissionWindowAmbiguityFailsClosed(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -219,6 +311,71 @@ func TestProviderEchoAdmissionWindowAmbiguityFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProjectionRejectsReconstructedAdmissionWindowAndPreservesProviderRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-reconstructed-window"
+	sessionID := "provider-reconstructed-window"
+	body := "same text outside the durable window"
+	createdAt := time.Date(2026, 8, 11, 14, 45, 0, 0, time.UTC)
+	acceptedAt := createdAt.Add(time.Second)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return createdAt }
+	candidate := BrainInputAdmission{
+		RequestID: "receipt-reconstructed-window", ThreadID: threadID,
+		HostSessionID: "brain-host:@reconstructed-window", SessionID: sessionID, DisplayBody: body,
+	}
+	if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	store.now = func() time.Time { return acceptedAt }
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v err=%v", changed, err)
+	}
+	providerID := sessionID + ":outside"
+	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+		Available: true, SessionID: sessionID,
+		Events: []work.CodexConversationEvent{{
+			ID: providerID, Timestamp: acceptedAt.Add(time.Second).Format(time.RFC3339Nano),
+			Kind: timelineKindUserMessage, Role: "user", Body: body,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconstructed := accepted
+	extendedAcceptedAt := acceptedAt.Add(2 * time.Second)
+	reconstructed.AcceptedAt = &extendedAcceptedAt
+	if err := store.ProjectBrainInputAdmission(reconstructed); err == nil ||
+		!strings.Contains(err.Error(), "differs from durable authority") {
+		t.Fatalf("reconstructed projection err=%v", err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != providerID || items[0].BrainAdmission {
+		t.Fatalf("reconstructed window removed provider row: items=%+v err=%v", items, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("durable projection timeline=%+v err=%v", items, err)
+	}
+	byID := map[string]TimelineItem{}
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	if byID[providerID].ID == "" || byID[providerID].BrainAdmission ||
+		byID[accepted.RequestID].AdmissionEchoEventID != "" {
+		t.Fatalf("durable window consumed outside provider row: %+v", items)
+	}
+}
+
 func TestTwoIdenticalAdmissionsKeepTwoRowsAndEchoesAddZero(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -229,15 +386,16 @@ func TestTwoIdenticalAdmissionsKeepTwoRowsAndEchoesAddZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "same deliberate body"
-	first, err := store.AdmitUserMessage(threadID, "host-session", "receipt-a", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := store.AdmitUserMessage(threadID, "host-session", "receipt-b", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ID == second.ID || !first.BrainAdmission || !second.BrainAdmission {
+	base := time.Date(2026, 8, 6, 5, 0, 0, 0, time.UTC)
+	first := acceptAndProjectEchoTestAdmission(
+		t, store, "receipt-a", threadID, "provider-session", body,
+		base.Add(-time.Minute), base.Add(30*time.Second),
+	)
+	second := acceptAndProjectEchoTestAdmission(
+		t, store, "receipt-b", threadID, "provider-session", body,
+		base.Add(-30*time.Second), base.Add(30*time.Second),
+	)
+	if first.RequestID == second.RequestID {
 		t.Fatalf("admissions = %#v %#v", first, second)
 	}
 
@@ -248,21 +406,21 @@ func TestTwoIdenticalAdmissionsKeepTwoRowsAndEchoesAddZero(t *testing.T) {
 		SessionID: "provider-session",
 		Events: []work.CodexConversationEvent{{
 			ID:              echoA,
-			Timestamp:       "2026-08-06T05:00:00Z",
+			Timestamp:       base.Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Role:            "user",
 			Body:            body,
 			AdmissionSHA256: AdmissionDigest(body),
 		}, {
 			ID:              echoB,
-			Timestamp:       "2026-08-06T05:00:01Z",
+			Timestamp:       base.Add(time.Second).Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Role:            "user",
 			Body:            body,
 			AdmissionSHA256: AdmissionDigest(body),
 		}, {
 			ID:        "provider-session:13",
-			Timestamp: "2026-08-06T05:00:02Z",
+			Timestamp: base.Add(2 * time.Second).Format(time.RFC3339Nano),
 			Kind:      "assistant_message",
 			Role:      "assistant",
 			Body:      "ack",
@@ -339,9 +497,11 @@ func TestSameBodyDirectProviderInputStillMaterializes(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "continue"
-	if _, err := store.AdmitUserMessage(threadID, "host-session", "receipt-once", body); err != nil {
-		t.Fatal(err)
-	}
+	base := time.Date(2026, 8, 6, 5, 10, 0, 0, time.UTC)
+	acceptAndProjectEchoTestAdmission(
+		t, store, "receipt-once", threadID, "019fcf7a-session", body,
+		base.Add(-time.Second), base.Add(30*time.Second),
+	)
 	echoID := "019fcf7a-session:10"
 	terminalID := "019fcf7a-session:20"
 	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
@@ -349,13 +509,13 @@ func TestSameBodyDirectProviderInputStillMaterializes(t *testing.T) {
 		SessionID: "019fcf7a-session",
 		Events: []work.CodexConversationEvent{{
 			ID:              echoID,
-			Timestamp:       "2026-08-06T05:10:00Z",
+			Timestamp:       base.Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Body:            body,
 			AdmissionSHA256: AdmissionDigest(body),
 		}, {
 			ID:              terminalID,
-			Timestamp:       "2026-08-06T05:11:00Z",
+			Timestamp:       base.Add(time.Minute).Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Body:            body,
 			AdmissionSHA256: AdmissionDigest(body),
@@ -583,9 +743,11 @@ func TestPriorProviderRowDoesNotConsumeLaterAdmissionCredit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.AdmitUserMessage(threadID, "host-session", "receipt-later", body); err != nil {
-		t.Fatal(err)
-	}
+	base := time.Date(2026, 8, 6, 5, 30, 0, 0, time.UTC)
+	acceptAndProjectEchoTestAdmission(
+		t, store, "receipt-later", threadID, "provider-session", body,
+		base.Add(-time.Minute), base.Add(30*time.Second),
+	)
 	newEchoID := "provider-session:50"
 	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
 		Available: true,
@@ -598,7 +760,7 @@ func TestPriorProviderRowDoesNotConsumeLaterAdmissionCredit(t *testing.T) {
 			AdmissionSHA256: AdmissionDigest(body),
 		}, {
 			ID:              newEchoID,
-			Timestamp:       "2026-08-06T05:30:00Z",
+			Timestamp:       base.Format(time.RFC3339Nano),
 			Kind:            "user_message",
 			Body:            body,
 			AdmissionSHA256: AdmissionDigest(body),
@@ -655,48 +817,34 @@ func TestProviderUserEchoSuppressionsAreOneToOne(t *testing.T) {
 	body := "echo body"
 	digest := AdmissionDigest(body)
 	items := []TimelineItem{{
-		ID:              "receipt-1",
-		Kind:            "user_message",
-		Body:            body,
-		BrainAdmission:  true,
-		AdmissionSHA256: digest,
+		ID:                   "receipt-1",
+		SessionID:            "provider-session",
+		Kind:                 "user_message",
+		Body:                 body,
+		BrainAdmission:       true,
+		AdmissionSHA256:      digest,
+		AdmissionEchoEventID: "echo-1",
 	}, {
-		ID:              "receipt-2",
-		Kind:            "user_message",
-		Body:            body,
-		BrainAdmission:  true,
-		AdmissionSHA256: digest,
+		ID:                   "receipt-2",
+		SessionID:            "provider-session",
+		Kind:                 "user_message",
+		Body:                 body,
+		BrainAdmission:       true,
+		AdmissionSHA256:      digest,
+		AdmissionEchoEventID: "echo-2",
 	}, {
 		ID:   "provider-native:1",
 		Kind: "user_message",
 		Body: body,
 	}}
-	events := []work.CodexConversationEvent{{
-		ID:              "provider-native:1",
-		Kind:            "user_message",
-		Body:            body,
-		AdmissionSHA256: digest,
-	}, {
-		ID:              "echo-1",
-		Kind:            "user_message",
-		Body:            body,
-		AdmissionSHA256: digest,
-	}, {
-		ID:              "echo-2",
-		Kind:            "user_message",
-		Body:            body,
-		AdmissionSHA256: digest,
-	}, {
-		ID:              "terminal-3",
-		Kind:            "user_message",
-		Body:            body,
-		AdmissionSHA256: digest,
-	}}
-	suppress := ProviderUserEchoSuppressions(items, events)
+	suppress := ProviderUserEchoSuppressions(items, "provider-session")
 	if suppress["provider-native:1"] {
 		t.Fatalf("durable provider row consumed a credit: %#v", suppress)
 	}
 	if !suppress["echo-1"] || !suppress["echo-2"] || suppress["terminal-3"] {
 		t.Fatalf("suppress = %#v", suppress)
+	}
+	if replacement := ProviderUserEchoSuppressions(items, "replacement-session"); len(replacement) != 0 {
+		t.Fatalf("replacement Session inherited echo claims: %#v", replacement)
 	}
 }

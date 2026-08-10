@@ -2521,6 +2521,23 @@ func sameBrainInputAdmission(left, right BrainInputAdmission) bool {
 		left.BodySHA256 == right.BodySHA256
 }
 
+func samePersistedBrainInputAdmission(left, right BrainInputAdmission) bool {
+	if !sameBrainInputAdmission(left, right) || left.HostTurnID != right.HostTurnID ||
+		left.ProviderActivityID != right.ProviderActivityID || left.State != right.State ||
+		!left.CreatedAt.Equal(right.CreatedAt) {
+		return false
+	}
+	if left.AcceptedAt == nil || right.AcceptedAt == nil {
+		return left.AcceptedAt == nil && right.AcceptedAt == nil
+	}
+	return left.AcceptedAt.Equal(*right.AcceptedAt)
+}
+
+func samePreparedBrainInputAdmission(left, right BrainInputAdmission) bool {
+	return sameBrainInputAdmission(left, right) && left.HostTurnID == right.HostTurnID &&
+		left.CreatedAt.Equal(right.CreatedAt)
+}
+
 // PrepareBrainInputAdmission persists the exact no-replay intent before the
 // provider mutation boundary. Duplicate request/thread identities are returned
 // without another write and must never cause another provider submission.
@@ -2682,8 +2699,9 @@ func (s *Store) BrainInputAdmission(requestID, threadID string) (BrainInputAdmis
 }
 
 // UnprojectedBrainInputAdmissions returns a bounded restart batch. Projection
-// membership is derived from the idempotent timeline identity, so no second
-// durable acknowledgement field or repair queue is needed.
+// membership is derived from the idempotent timeline identity plus any exact
+// provider echo still stranded inside the admission's causal window, so no
+// second durable acknowledgement field or repair queue is needed.
 func (s *Store) UnprojectedBrainInputAdmissions(limit int) ([]BrainInputAdmission, bool, error) {
 	if limit <= 0 {
 		return nil, false, fmt.Errorf("positive Brain input admission limit required")
@@ -2694,19 +2712,24 @@ func (s *Store) UnprojectedBrainInputAdmissions(limit int) ([]BrainInputAdmissio
 	if err != nil {
 		return nil, false, err
 	}
+	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
+		return nil, false, formatAdmissionProvenanceError(err)
+	}
+	allItems, err := s.readAllTimelineItemsLocked()
+	if err != nil {
+		return nil, false, err
+	}
 	out := make([]BrainInputAdmission, 0, limit)
 	for _, admission := range database.BrainInputAdmissions {
 		if admission.State != BrainInputAdmissionAccepted {
 			continue
 		}
-		existing, found, err := s.timelineItemByIDLocked(AdmissionTimelineItemID(admission.RequestID))
+		canonicalIndex, candidates, err := brainInputAdmissionProjectionState(allItems, admission)
 		if err != nil {
 			return nil, false, err
 		}
-		if found {
-			if !timelineItemMatchesBrainInputAdmission(existing, admission) {
-				return nil, false, fmt.Errorf("timeline identity %q belongs to different Brain input admission", existing.ID)
-			}
+		if canonicalIndex >= 0 &&
+			(strings.TrimSpace(allItems[canonicalIndex].AdmissionEchoEventID) != "" || len(candidates) == 0) {
 			continue
 		}
 		if len(out) == limit {
