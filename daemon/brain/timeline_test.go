@@ -315,11 +315,9 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 			t.Fatal(err)
 		}
 		acceptedAt := now.Add(-2 * time.Hour)
-		if err := store.AdmitTurn(watcher.AdmittedTurn{
+		bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 			SessionID: sessionID, TurnID: sessionID + ":turn:1", AcceptedAt: acceptedAt,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 		// Expire the current turn's own lease, then reconcile with a live
 		// pane: exactly one actionable session.stale materializes a card.
 		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
@@ -388,11 +386,9 @@ func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.Evid
 		t.Fatal(err)
 	}
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission := providerAdmission("stream", "msg-1", 1, "sha", now)
 	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,

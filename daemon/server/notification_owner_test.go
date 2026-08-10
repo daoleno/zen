@@ -81,24 +81,38 @@ func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateWork(brain.Work{
+	item, err := store.CreateWork(brain.Work{
 		Title:            "Push gate test",
 		Objective:        "Exercise the canonical lifecycle-push gate.",
-		Status:           brain.WorkRunning,
-		OwnerSessionID:   agentID,
+		Status:           brain.WorkOpen,
 		CompletionPolicy: brain.CompletionBounded,
-		NextAction:       "Wait for the delegated Session.",
-		WaitFor:          "Session " + agentID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	turnID := agentID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
-		SessionID:  agentID,
-		TurnID:     turnID,
-		AcceptedAt: time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatal(err)
+	acceptedAt := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	payloadDigest := "0000000000000000000000000000000000000000000000000000000000000000"
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: payloadDigest, ProcessIdentity: "push-gate-process",
+		PaneGeneration: "push-gate-pane", AcceptedAt: acceptedAt,
+		Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare canonical notification Turn: pending=%+v created=%v err=%v", pending, created, err)
+	}
+	resolved, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: payloadDigest, ActivityID: "push-gate-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "push-gate", ID: "push-gate-admission", Cursor: 1,
+			SHA256: payloadDigest, At: acceptedAt.Add(time.Second),
+		},
+		ResolvedAt: acceptedAt.Add(time.Second),
+	})
+	if err != nil || resolved.ResolvedTurnID != turnID {
+		t.Fatalf("resolve canonical notification Turn: resolved=%+v err=%v", resolved, err)
 	}
 	srv := &Server{
 		brain:  brain.NewService(store, nil, nil),

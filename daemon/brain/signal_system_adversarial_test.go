@@ -254,6 +254,82 @@ func resolveDelegatedSubmission(t *testing.T, store *Store, pending watcher.Turn
 	return resolved
 }
 
+// A retained owner link is never admission authority by itself. Admission
+// requires exact canonical submission/Turn evidence, and reopening must not
+// promote the same bare owner string into authority.
+func TestSignalAdversarialBareOwnerCannotAdmitTurnAcrossReopen(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-bare-owner:@1"
+	item, err := store.CreateWork(Work{
+		Title: "Bare owner authority", Objective: "Reject owner text as Turn admission evidence.",
+		Status: WorkRunning, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: sessionID + ":turn:1",
+		AcceptedAt: time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC),
+	}
+	if err := store.admitTurn(admitted); err == nil {
+		t.Fatal("bare owner_session_id admitted a canonical Turn")
+	}
+	if _, found, err := store.Turn(sessionID); err != nil || found {
+		t.Fatalf("rejected bare owner admission created Turn: found=%v err=%v", found, err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.admitTurn(admitted); err == nil {
+		t.Fatal("reopen promoted bare owner_session_id into admission authority")
+	}
+	if _, found, err := reopened.Turn(sessionID); err != nil || found {
+		t.Fatalf("reopen rejection created Turn: found=%v err=%v", found, err)
+	}
+	after, err := reopened.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.OwnerSessionID != sessionID || after.Revision != item.Revision {
+		t.Fatalf("rejected admission mutated retained owner Work: before=%+v after=%+v", item, after)
+	}
+
+	canonicalStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalWork, err := canonicalStore.CreateWork(Work{
+		Title: "Canonical owner admission", Objective: "Admit through the exact submission ledger.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalSessionID := "brain-agent-canonical-owner:@1"
+	pending, created, err := canonicalStore.PrepareTurnSubmission(delegatedSubmissionCandidate(
+		canonicalWork.ID,
+		canonicalSessionID,
+		canonicalSessionID+":turn:1",
+		"canonical admission payload",
+		admitted.AcceptedAt,
+	))
+	if err != nil || !created {
+		t.Fatalf("prepare canonical submission: pending=%+v created=%v err=%v", pending, created, err)
+	}
+	resolved := resolveDelegatedSubmission(t, canonicalStore, pending, "canonical-activity", admitted.AcceptedAt.Add(time.Second))
+	turn, found, err := canonicalStore.Turn(canonicalSessionID)
+	if err != nil || !found || turn.TurnID != resolved.ResolvedTurnID || !turn.HasAdmission {
+		t.Fatalf("canonical pending/resolved path did not admit exact Turn: turn=%+v found=%v resolved=%+v err=%v", turn, found, resolved, err)
+	}
+}
+
 // Initial delegated ownership and its pending Turn submission are one durable
 // authority transition. A failed replacement leaves the original ready Work;
 // a committed replacement reopens with both the owner link and the canonical
@@ -699,7 +775,7 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatal(err)
 	}
 	turnID := owner + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC()}); err != nil {
+	if err := store.admitTurn(watcher.AdmittedTurn{SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	_, owned := resolveAdversarialEvent(t, store, next, WorkDispositionContinue, nil, owner)
@@ -729,11 +805,9 @@ func TestSignalAdversarialWaitRejectsLiveCanonicalOwner(t *testing.T) {
 	appendSignalTestEvent(t, store, item, "live-owner-review")
 	delivered, current := deliverSignalTestEvent(t, store, hostID)
 	ownerTurnID := owner + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: owner, TurnID: ownerTurnID, AcceptedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	wake := &WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + current.SourceThreadID}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
@@ -778,11 +852,9 @@ func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner
 	}
 	acceptedAt := time.Now().UTC().Add(-time.Second)
 	turnID := owner + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: owner, TurnID: turnID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
 		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
 	}
@@ -834,11 +906,9 @@ func TestSignalAdversarialGenericSessionDoneCannotForgeProducerAuthority(t *test
 	producer := createSignalTestWork(t, store, "Forge producer", producerSession)
 	producerTurnID := producerSession + ":turn:1"
 	acceptedAt := time.Now().UTC().Add(-time.Second)
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, producer.ID, watcher.AdmittedTurn{
 		SessionID: producerSession, TurnID: producerTurnID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	consumer, err := store.CreateWork(Work{
 		Title: "Forge consumer", Objective: "Wake only from the canonical terminal reducer.",
 		Status: WorkNeedsInput, CompletionPolicy: CompletionBounded,
@@ -906,21 +976,22 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 	producer := createSignalTestWork(t, store, "Session producer", producerSession)
 	producerTurn := producerSession + ":turn:1"
 	acceptedAt := time.Now().UTC().Add(-time.Second)
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: producerSession, TurnID: producerTurn, AcceptedAt: acceptedAt}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapAdmittedTurnFixture(t, store, producer.ID, watcher.AdmittedTurn{
+		SessionID: producerSession, TurnID: producerTurn, AcceptedAt: acceptedAt,
+	})
 	unrelatedSession := "brain-agent-unrelated-producer:@1"
 	unrelatedTurn := unrelatedSession + ":turn:1"
-	if _, err := store.CreateWork(Work{
+	unrelatedProducer, err := store.CreateWork(Work{
 		Title: "Unrelated Session producer", Objective: "Stay outside the consumer dependency scope.",
 		Status: WorkRunning, OwnerSessionID: unrelatedSession, OwnerDelegated: true,
 		SourceThreadID: "brain-thread-unrelated", CompletionPolicy: CompletionBounded,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: unrelatedSession, TurnID: unrelatedTurn, AcceptedAt: acceptedAt}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapAdmittedTurnFixture(t, store, unrelatedProducer.ID, watcher.AdmittedTurn{
+		SessionID: unrelatedSession, TurnID: unrelatedTurn, AcceptedAt: acceptedAt,
+	})
 	calendarProducer, err := store.CreateWork(Work{
 		ID:    calendarWorkID("item-1", "run-1"),
 		Title: "Calendar producer", Objective: "Produce one exact occurrence.",
@@ -1029,7 +1100,7 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 		if !ok {
 			break
 		}
-		if err := store.AdmitTurn(watcher.AdmittedTurn{
+		if err := store.admitTurn(watcher.AdmittedTurn{
 			SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID, AcceptedAt: time.Now().UTC(),
 		}); err != nil {
 			t.Fatal(err)
@@ -1428,7 +1499,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	}
 	s1Turn := s1 + ":turn:1"
 	s1AcceptedAt := time.Now().UTC()
-	if err := store.AdmitTurn(watcher.AdmittedTurn{SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt}); err != nil {
+	if err := store.admitTurn(watcher.AdmittedTurn{SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt}); err != nil {
 		t.Fatal(err)
 	}
 	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {

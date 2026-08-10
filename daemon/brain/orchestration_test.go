@@ -1374,23 +1374,22 @@ func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
 			if err := store.SetHostSession(hostID, "codex"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.CreateWork(Work{
+			item, err := store.CreateWork(Work{
 				Title:            "Delegated change",
 				Objective:        "Handle one terminal transition.",
 				Status:           WorkRunning,
 				OwnerSessionID:   sessionID,
 				CompletionPolicy: CompletionBounded,
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
 			now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
 			store.now = func() time.Time { return now }
 			turnID := sessionID + ":turn:1"
-			if err := store.AdmitTurn(watcher.AdmittedTurn{
+			bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 				SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			admission := providerAdmission("stream", "msg-1", 1, "sha", now)
 			applyReceiptAdmission(t, store, sessionID, turnID, admission)
 			test.fact(store, sessionID, turnID, admission)
@@ -1434,11 +1433,9 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	now := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission := providerAdmission("stream", "msg-1", 1, "sha", now)
 	applyReceiptAdmission(t, store, sessionID, turnID, admission)
 
@@ -1544,22 +1541,21 @@ func TestReconcileStaleUsesPerTurnLeaseNotAgentLease(t *testing.T) {
 	store.now = func() time.Time { return now }
 	service := NewService(store, fw, nil)
 	service.now = func() time.Time { return now }
-	if _, err := store.CreateWork(Work{
+	item, err := store.CreateWork(Work{
 		Title:            "Leased work",
 		Objective:        "Wait for the current turn's own lease.",
 		Status:           WorkRunning,
 		OwnerSessionID:   sessionID,
 		CompletionPolicy: CompletionBounded,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	acceptedAt := now.Add(-time.Minute)
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	// The agent's shared lease is long expired (inherited from an older
 	// turn), but the current turn's own deadline is fresh: no stale.
@@ -1666,12 +1662,10 @@ func TestReconcileDeadOrAbsentTurnOwnedSessions(t *testing.T) {
 	}
 	acceptedAt := now.Add(-2 * time.Hour)
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
 		ProcessIdentity: "proc-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	// Expire the turn's own lease so any unguarded path would stale.
 	service.now = func() time.Time { return now }
 	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
@@ -1755,11 +1749,9 @@ func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t
 	}
 	acceptedAt := now.Add(-time.Hour)
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
 	applyReceiptAdmission(t, store, sessionID, turnID, admission)
 	applyProviderTerminal(t, store, sessionID, turnID, "failed", admission)
@@ -1815,11 +1807,9 @@ func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T)
 	}
 	acceptedAt := now.Add(-time.Hour)
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
 	applyReceiptAdmission(t, store, sessionID, turnID, admission)
 	applyProviderTerminal(t, store, sessionID, turnID, "done", admission)
@@ -1885,11 +1875,9 @@ func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) 
 			now := time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC)
 			store.now = func() time.Time { return now }
 			turnID := ownerID + ":turn:1"
-			if err := store.AdmitTurn(watcher.AdmittedTurn{
+			bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 				SessionID: ownerID, TurnID: turnID, AcceptedAt: now,
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			admission := providerAdmission("stream", "msg-1", 1, "sha", now)
 			applyReceiptAdmission(t, store, ownerID, turnID, admission)
 			terminalKind := "done"

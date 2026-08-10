@@ -8,6 +8,62 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
+// bootstrapAdmittedTurnFixture seeds the exact pre-receipt reducer state that
+// Turn fact tests need. It is deliberately test-only and requires the exact
+// Work ID; live delegated input must use Prepare/ResolveTurnSubmission and
+// cannot derive authority from owner_session_id text.
+func bootstrapAdmittedTurnFixture(t *testing.T, store *Store, workID string, admitted watcher.AdmittedTurn) {
+	t.Helper()
+	workID = strings.TrimSpace(workID)
+	admitted.SessionID = strings.TrimSpace(admitted.SessionID)
+	admitted.TurnID = strings.TrimSpace(admitted.TurnID)
+	if workID == "" || admitted.SessionID == "" || admitted.TurnID == "" || admitted.AcceptedAt.IsZero() {
+		t.Fatal("exact Work, Session, Turn, and acceptance identities are required")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := workIndex(database.BrainWork, workID)
+	if index < 0 {
+		t.Fatalf("fixture Work %s not found", workID)
+	}
+	if item := database.BrainWork[index]; item.Status == WorkDone || item.Status == WorkCancelled {
+		t.Fatalf("fixture Work %s is terminal", workID)
+	}
+	for _, turn := range database.BrainTurns {
+		if turn.SessionID == admitted.SessionID && turn.TurnID == admitted.TurnID {
+			return
+		}
+	}
+	database.BrainTurns = append(database.BrainTurns, TurnRecord{
+		SessionID:         admitted.SessionID,
+		TurnID:            admitted.TurnID,
+		WorkID:            workID,
+		Status:            watcher.TurnAdmitted,
+		Receipt:           strings.TrimSpace(admitted.Receipt),
+		PaneGeneration:    strings.TrimSpace(admitted.PaneGeneration),
+		ProcessIdentity:   strings.TrimSpace(admitted.ProcessIdentity),
+		PayloadSHA256:     strings.TrimSpace(admitted.PayloadSHA256),
+		AcceptedAt:        admitted.AcceptedAt.UTC(),
+		Facts:             []TurnFactRecord{},
+		TranscriptBinding: admitted.TranscriptBinding,
+		LeaseDeadline:     admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
+		UpdatedAt:         store.nowUTC(),
+	})
+	item := database.BrainWork[index]
+	if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == admitted.SessionID {
+		reservation.ProviderTurnID = admitted.TurnID
+		item.SuccessorReservation = reservation
+		database.BrainWork[index] = item
+	}
+	if err := store.persistOrchestrationLocked(database); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // ledgerTestStore builds a real store with an active owned Work and an
 // admitted canonical turn ready for reducer facts.
 func ledgerTestStore(t *testing.T) (*Store, string, string) {
@@ -17,7 +73,7 @@ func ledgerTestStore(t *testing.T) (*Store, string, string) {
 		t.Fatal(err)
 	}
 	sessionID := "brain-agent-test:@1"
-	_, err = store.CreateWork(Work{
+	item, err := store.CreateWork(Work{
 		Title:            "Canonical turn test",
 		Objective:        "Exercise the single reducer.",
 		Status:           WorkRunning,
@@ -30,16 +86,14 @@ func ledgerTestStore(t *testing.T) (*Store, string, string) {
 		t.Fatal(err)
 	}
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID:       sessionID,
 		TurnID:          turnID,
 		AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
 		ProcessIdentity: "proc-identity-1",
 		PaneGeneration:  "pane-gen-1",
 		PayloadSHA256:   "payload-digest",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	return store, sessionID, turnID
 }
 
@@ -401,7 +455,7 @@ func TestTurnTerminalImmutabilityAndSessionReuse(t *testing.T) {
 
 	// Session reuse: a new turn is a new lifecycle boundary.
 	turn2 := sessionID + ":turn:2"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	if err := store.admitTurn(watcher.AdmittedTurn{
 		SessionID:       sessionID,
 		TurnID:          turn2,
 		AcceptedAt:      acceptedAt.Add(30 * time.Second),
@@ -1088,7 +1142,7 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	now := oldStaleAt.Add(time.Minute)
 	store.now = func() time.Time { return now }
 	newTurnID := sessionID + ":turn:2"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	if err := store.admitTurn(watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -1179,7 +1233,7 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	if _, err := store.ReserveWorkSuccessor(workItem.ID, sessionID); err != nil {
 		t.Fatalf("reserve replacement Turn: %v", err)
 	}
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	if err := store.admitTurn(watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: at.Add(2 * time.Minute),
 	}); err != nil {
 		t.Fatal(err)

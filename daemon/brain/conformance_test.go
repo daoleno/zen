@@ -270,7 +270,7 @@ func TestAdapterConformanceReusedSessionNewTurn(t *testing.T) {
 
 			// Reused Session: a new turn admits with a fresh identity.
 			turn2 := sessionID + ":turn:2"
-			if err := store.AdmitTurn(watcher.AdmittedTurn{
+			if err := store.admitTurn(watcher.AdmittedTurn{
 				SessionID:       sessionID,
 				TurnID:          turn2,
 				AcceptedAt:      acceptedAt.Add(30 * time.Second),

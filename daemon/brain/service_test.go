@@ -239,13 +239,11 @@ func TestRouteSessionEventWithCanonicalTurnRedispatchesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID:  sessionID,
 		TurnID:     "turn-one",
 		AcceptedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	service := NewService(store, &fakeWatcher{}, nil)
 	agent := &classifier.Agent{
 		ID: sessionID, State: classifier.StateFailed, Summary: "Session starting",

@@ -376,15 +376,6 @@ func (s *Service) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloa
 	return s.store.AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256)
 }
 
-// AdmitTurn is retained for legacy ledger bootstrap and reducer fixtures.
-// Live delegated input uses the pending-submission transaction methods above.
-func (s *Service) AdmitTurn(admitted watcher.AdmittedTurn) error {
-	if s == nil || s.store == nil {
-		return fmt.Errorf("brain store is not configured")
-	}
-	return s.store.AdmitTurn(admitted)
-}
-
 func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot, err := s.store.Snapshot()
 	if err != nil {
@@ -1156,7 +1147,7 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if result.TurnID != event.ProviderTurnID {
 		return false, fmt.Errorf("Work Event %s admitted provider Turn %q, want %q", event.ID, result.TurnID, event.ProviderTurnID)
 	}
-	if err := s.store.AdmitTurn(watcher.AdmittedTurn{
+	if err := s.store.admitTurn(watcher.AdmittedTurn{
 		SessionID: hostID, TurnID: result.TurnID, Receipt: event.ID, AcceptedAt: acceptedAt,
 	}); err != nil {
 		return false, fmt.Errorf("record accepted Host provider Turn %s: %w", result.TurnID, err)

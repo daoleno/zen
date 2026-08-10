@@ -29,7 +29,7 @@ func e2eStore(t *testing.T) (*Store, *Service, *fakeWatcher, string, string) {
 	}
 	service := NewService(store, hostWatcher, nil)
 	sessionID := "brain-agent-e2e:@1"
-	if _, err := store.CreateWork(Work{
+	item, err := store.CreateWork(Work{
 		Title:            "E2E wake",
 		Objective:        "Brain wakes exactly once on real completion.",
 		Status:           WorkRunning,
@@ -37,20 +37,19 @@ func e2eStore(t *testing.T) (*Store, *Service, *fakeWatcher, string, string) {
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the delegated Session.",
 		WaitFor:          "Session " + sessionID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID:       sessionID,
 		TurnID:          turnID,
 		AcceptedAt:      time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
 		ProcessIdentity: "proc-1",
 		PaneGeneration:  "pane-1",
 		PayloadSHA256:   "payload",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	return store, service, hostWatcher, sessionID, turnID
 }
 
@@ -93,7 +92,7 @@ func TestE2EWakeExactlyOnceOnRealCompletion(t *testing.T) {
 
 	// Provider running: still no terminal wake.
 	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "running",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -110,7 +109,7 @@ func TestE2EWakeExactlyOnceOnRealCompletion(t *testing.T) {
 
 	// Real completion: the routed state change wakes Brain exactly once.
 	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID:  sessionID, TurnID: turnID,
+		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
 		Kind:       "done",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",

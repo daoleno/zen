@@ -10,18 +10,16 @@ import (
 // openCodeLedgerFlow drives one canonical OpenCode turn through the single
 // reducer: durable admission, correlated receipt, live provider activity, and
 // a bound provider terminal. It mirrors the production watcher/adapter path.
-func openCodeLedgerFlow(t *testing.T, store *Store, sessionID, turnID string, acceptedAt time.Time, terminal watcher.TurnFact) {
+func openCodeLedgerFlow(t *testing.T, store *Store, workID, sessionID, turnID string, acceptedAt time.Time, terminal watcher.TurnFact) {
 	t.Helper()
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, workID, watcher.AdmittedTurn{
 		SessionID:       sessionID,
 		TurnID:          turnID,
 		AcceptedAt:      acceptedAt,
 		ProcessIdentity: "opencode-proc-" + turnID,
 		PaneGeneration:  "pane-" + turnID,
 		PayloadSHA256:   "payload-" + turnID,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission := providerAdmission("opencode\x00db\x00"+sessionID, "msg-"+turnID, 1, "sha-"+turnID, acceptedAt)
 	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID:  sessionID,
@@ -88,13 +86,11 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 	}
 	acceptedAt := time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC)
 	turnID := sessionID + ":turn:1"
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 		SessionID:  sessionID,
 		TurnID:     turnID,
 		AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	// 1. The ambiguous admission attempt is a control failed self-report on
 	// an Admitted turn: denied outright (C.2.3) — never failed, never a row.
@@ -110,7 +106,7 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 	}
 
 	// 2-4. Correlated admission, live provider activity, bound terminal.
-	openCodeLedgerFlow(t, store, sessionID, turnID, acceptedAt, watcher.TurnFact{
+	openCodeLedgerFlow(t, store, item.ID, sessionID, turnID, acceptedAt, watcher.TurnFact{
 		Class:     watcher.EvidenceProvider,
 		Kind:      "done",
 		SettledAt: acceptedAt.Add(30 * time.Second),
@@ -194,13 +190,13 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	base := time.Date(2026, 8, 9, 7, 0, 0, 0, time.UTC)
 
 	// An older accepted turn fails authoritatively (bound provider terminal).
-	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:old", base, watcher.TurnFact{
+	openCodeLedgerFlow(t, store, item.ID, sessionID, sessionID+":turn:old", base, watcher.TurnFact{
 		Class: watcher.EvidenceProvider, Kind: "failed",
 		SettledAt: base.Add(time.Minute),
 		Summary:   "Delegated provider failed the turn",
 	})
 	// The confirmed follow-up establishes a new activity epoch and completes.
-	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:new", base.Add(2*time.Minute), watcher.TurnFact{
+	openCodeLedgerFlow(t, store, item.ID, sessionID, sessionID+":turn:new", base.Add(2*time.Minute), watcher.TurnFact{
 		Class: watcher.EvidenceProvider, Kind: "done",
 		SettledAt: base.Add(3 * time.Minute),
 		Summary:   "Delegated provider completed the turn",
@@ -306,12 +302,12 @@ func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 8, 9, 9, 0, 0, 0, time.UTC)
-	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:1", base, watcher.TurnFact{
+	openCodeLedgerFlow(t, store, item.ID, sessionID, sessionID+":turn:1", base, watcher.TurnFact{
 		Class: watcher.EvidenceProvider, Kind: "done",
 		SettledAt: base.Add(time.Minute),
 		Summary:   "Delegated provider completed the turn",
 	})
-	openCodeLedgerFlow(t, store, sessionID, sessionID+":turn:2", base.Add(2*time.Minute), watcher.TurnFact{
+	openCodeLedgerFlow(t, store, item.ID, sessionID, sessionID+":turn:2", base.Add(2*time.Minute), watcher.TurnFact{
 		Class: watcher.EvidenceProvider, Kind: "done",
 		SettledAt: base.Add(3 * time.Minute),
 		Summary:   "Delegated provider completed the turn",

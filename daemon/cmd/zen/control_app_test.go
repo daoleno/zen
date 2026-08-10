@@ -63,7 +63,7 @@ func newControlBrainStore(t *testing.T) *brain.Store {
 	return store
 }
 
-func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID string) {
+func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID string) string {
 	t.Helper()
 	acceptedAt := time.Now().UTC().Add(-time.Second)
 	turnID := sessionID + ":turn:fixture"
@@ -87,6 +87,7 @@ func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID s
 	}); err != nil {
 		t.Fatalf("resolve fixture owner: %v", err)
 	}
+	return turnID
 }
 
 func (w *fakeControlWatcher) Agents() []*classifier.Agent {
@@ -472,7 +473,7 @@ func TestControlAppAgentSpawnWorkCASPreservesIncumbentAndKillsOnlyLoser(t *testi
 		Delegated: true,
 	}
 	fw.onCreate = func(string) {
-		admitControlWorkOwner(t, store, item.ID, incumbentID)
+		_ = admitControlWorkOwner(t, store, item.ID, incumbentID)
 	}
 	fw.turnStore = store
 	app := &controlApp{
@@ -539,22 +540,22 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitControlWorkOwner(t, store, item.ID, "brain-agent-incumbent:@1")
+	incumbentTurnID := admitControlWorkOwner(t, store, item.ID, "brain-agent-incumbent:@1")
 	app := &controlApp{brainStore: store}
 	req := control.Request{WorkID: item.ID}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkOwnerConflict) {
 		t.Fatalf("spawn outside handling err=%v, want owner conflict", err)
 	}
-	acceptedAt := time.Now().UTC().Add(-time.Second)
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
-		SessionID: "brain-agent-incumbent:@1", TurnID: "incumbent-turn-1", AcceptedAt: acceptedAt,
-	}); err != nil {
-		t.Fatal(err)
+	incumbentTurn, found, err := store.Turn("brain-agent-incumbent:@1")
+	if err != nil || !found || incumbentTurn.TurnID != incumbentTurnID {
+		t.Fatalf("canonical incumbent Turn=%+v found=%v err=%v", incumbentTurn, found, err)
 	}
+	acceptedAt := incumbentTurn.AcceptedAt
 	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID: "brain-agent-incumbent:@1", TurnID: "incumbent-turn-1",
-		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider-incumbent-done",
-		ActivityID: "activity-incumbent", StartedAt: acceptedAt.Add(time.Second),
+		SessionID: "brain-agent-incumbent:@1", TurnID: incumbentTurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+		SourceID: "provider-incumbent-done", Admission: incumbentTurn.Admission,
+		ActivityID: incumbentTurn.ActivityID, StartedAt: acceptedAt.Add(time.Second),
 		SettledAt: acceptedAt.Add(2 * time.Second), At: acceptedAt.Add(2 * time.Second),
 	}); err != nil || !changed {
 		t.Fatalf("terminalize incumbent changed=%v err=%v", changed, err)

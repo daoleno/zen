@@ -271,9 +271,9 @@ type TurnSubmissionLedger interface {
 	AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (TurnSubmission, error)
 }
 
-// AdmittedTurn is the legacy/bootstrap durable turn identity used by ledger
-// migrations and reducer fixtures. Live delegated input uses
-// TurnSubmissionLedger; it never creates an Admitted Turn before mutation.
+// AdmittedTurn is the exact identity of a provider Turn whose owning claim is
+// already canonical. Live delegated input uses TurnSubmissionLedger; it never
+// creates an Admitted Turn before mutation.
 type AdmittedTurn struct {
 	SessionID       string
 	TurnID          string

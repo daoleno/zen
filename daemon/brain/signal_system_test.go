@@ -53,7 +53,7 @@ func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEven
 	if claimed.HandlingID == "" || claimed.ProviderTurnID == "" || claimed.HandlingID == claimed.ProviderTurnID {
 		t.Fatalf("claim did not separate handling and provider turn identities: %+v", claimed)
 	}
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	if err := store.admitTurn(watcher.AdmittedTurn{
 		SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID,
 		AcceptedAt: time.Now().UTC(),
 	}); err != nil {

@@ -781,11 +781,11 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 	return record.snapshot(), nil
 }
 
-// AdmitTurn imports an Admitted row for legacy bootstrap and reducer fixtures.
-// The live provider-mutation path must use Prepare/Resolve/AbortTurnSubmission
-// so a NotSubmitted attempt cannot leave an Admitted phantom. The owning Work
-// must exist and be active. Idempotent per (session, turn).
-func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
+// admitTurn records an Admitted row only when the database already contains
+// exact canonical Work/Turn evidence for it. Live delegated input uses
+// Prepare/Resolve/AbortTurnSubmission; Host signal delivery is admitted from
+// its exact claimed Event identity. Idempotent per (session, turn).
+func (s *Store) admitTurn(admitted watcher.AdmittedTurn) error {
 	if s == nil {
 		return fmt.Errorf("brain store is not configured")
 	}
@@ -806,18 +806,7 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 	}
 	workID := databaseWorkIDForTurnAdmission(database, admitted.SessionID, admitted.TurnID, admitted.Receipt)
 	if workID == "" {
-		// Legacy/bootstrap import may start from a retained owner link. The Turn
-		// and that link become authoritative together in this one replacement;
-		// live provider mutation is stricter and must use pending submission.
-		for _, item := range database.BrainWork {
-			if item.OwnerSessionID == admitted.SessionID && item.Status != WorkDone && item.Status != WorkCancelled {
-				workID = item.ID
-				break
-			}
-		}
-	}
-	if workID == "" {
-		return fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", admitted.SessionID)
+		return fmt.Errorf("no canonical Brain Work/Turn evidence admits Session %s Turn %s", admitted.SessionID, admitted.TurnID)
 	}
 	for _, turn := range database.BrainTurns {
 		if turn.SessionID == admitted.SessionID && turn.TurnID == admitted.TurnID {

@@ -347,11 +347,11 @@ func TestFaultMarkerlessAcceptedTurnUnrepresentable(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No Work owns the session: admission fails closed as not-submitted.
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
+	if err := store.admitTurn(watcher.AdmittedTurn{
 		SessionID:  "brain-agent-nobody:@1",
 		TurnID:     "brain-agent-nobody:@1:turn:1",
 		AcceptedAt: time.Now().UTC(),
-	}); err == nil || !strings.Contains(err.Error(), "no active Brain Work") {
+	}); err == nil || !strings.Contains(err.Error(), "no canonical Brain Work/Turn evidence") {
 		t.Fatalf("markerless admission = %v, want fail-closed", err)
 	}
 }
@@ -516,13 +516,15 @@ func TestFaultPendingSubmissionSameActivitySteersDifferentActivityPromotes(t *te
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, sessionID, at := pendingSubmissionTestStore(t)
+			item, found, err := store.WorkByOwnerSession(sessionID)
+			if err != nil || !found {
+				t.Fatalf("pending submission Work found=%v err=%v", found, err)
+			}
 			oldTurnID := sessionID + ":turn:old"
-			if err := store.AdmitTurn(watcher.AdmittedTurn{
+			bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 				SessionID: sessionID, TurnID: oldTurnID, AcceptedAt: at.Add(-time.Minute),
 				ProcessIdentity: "old-process", PaneGeneration: "old-pane",
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			oldAdmission := watcher.TurnAdmission{
 				Stream: "provider", ID: "old-admission", Cursor: 1,
 				SHA256: pendingSubmissionDigest("old"), At: at.Add(-time.Minute + time.Second),
