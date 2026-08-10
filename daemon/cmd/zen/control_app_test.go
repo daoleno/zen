@@ -1388,6 +1388,7 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			}
 
 			fw := newFakeControlWatcher()
+			fw.turnStore = store
 			fw.sendErr = &watcher.InputSubmissionError{
 				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
 				Cause:  errors.New("provider composer was not ready"),
@@ -1409,10 +1410,10 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
 				t.Fatalf("failed spawn Work=%+v err=%v", items, err)
 			}
-			if len(fw.sent) != 1 || len(fw.created) != 1 {
-				t.Fatalf("provider effects sent=%d created=%d, want one each", len(fw.sent), len(fw.created))
+			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 {
+				t.Fatalf("provider effects sent=%d submitted=%d created=%d, want one each",
+					len(fw.sent), len(fw.submitted), len(fw.created))
 			}
-
 			reopened, err := brain.NewStore(root)
 			if err != nil {
 				t.Fatal(err)
@@ -1432,22 +1433,52 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 				t.Fatal(err)
 			}
 			reconciles := 0
+			notAdmitted := 0
+			var notAdmittedEvent brain.WorkEvent
 			for _, event := range events {
-				if event.Kind == "brain.reconcile_required" && event.HandledAt == nil {
+				if event.Kind == "brain.reconcile_required" && event.HandledAt == nil &&
+					event.DiscardedAt == nil && event.Resolution == "" {
 					reconciles++
+				}
+				if event.Kind == "brain.submission_not_admitted" && event.Actionable &&
+					event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" {
+					notAdmitted++
+					notAdmittedEvent = event
 				}
 				if strings.HasPrefix(event.Kind, "session.") {
 					t.Fatalf("definite non-submission projected a Session result: %+v", events)
 				}
 			}
-			if reconciles != 1 {
-				t.Fatalf("reconcile obligations=%d, want one: %+v", reconciles, events)
+			wantEvents := 1
+			if test.migrationCompleteFirst {
+				wantEvents = 2
+			}
+			if len(events) != wantEvents || reconciles != 0 || notAdmitted != 1 {
+				t.Fatalf("final Events=%+v; count=%d want=%d reconcile=%d not_admitted=%d",
+					events, len(events), wantEvents, reconciles, notAdmitted)
+			}
+			if test.migrationCompleteFirst && (events[0].Kind != "brain.reconcile_required" ||
+				events[0].Resolution != brain.EventResolutionDiscard || events[0].DiscardedAt == nil ||
+				events[1].Kind != "brain.submission_not_admitted") {
+				t.Fatalf("initial reconcile was not atomically replaced by submission abort: %+v", events)
+			}
+			turnID := strings.TrimPrefix(notAdmittedEvent.DedupeKey, "brain:submission-abort:")
+			if turnID == notAdmittedEvent.DedupeKey || !strings.Contains(fw.sent[0].text, "--turn-id "+turnID) {
+				t.Fatalf("submission abort identity is absent from exact provider payload: event=%+v", notAdmittedEvent)
+			}
+			submission, found, err := reopened.TurnSubmission(notAdmittedEvent.SourceName, turnID)
+			if err != nil || !found || submission.State != watcher.TurnSubmissionAborted ||
+				submission.Receipt != turnID {
+				t.Fatalf("aborted submission=%+v found=%v err=%v", submission, found, err)
+			}
+			if turn, found, err := reopened.Turn(notAdmittedEvent.SourceName); err != nil || found {
+				t.Fatalf("definite non-submission created Turn=%+v found=%v err=%v", turn, found, err)
 			}
 
 			hostID := "brain-agent-brain-hidden:@spawn-failure"
 			claimed, ok, err := reopened.ClaimNextActionableEvent(hostID)
-			if err != nil || !ok || claimed.Kind != "brain.reconcile_required" {
-				t.Fatalf("reconcile claim=%+v ok=%v err=%v", claimed, ok, err)
+			if err != nil || !ok || claimed.Kind != "brain.submission_not_admitted" {
+				t.Fatalf("submission-not-admitted claim=%+v ok=%v err=%v", claimed, ok, err)
 			}
 			resolveControlHostClaim(t, reopened, claimed)
 			delivered, _, err := reopened.ConsumeClaimedWorkEvent(
@@ -1472,8 +1503,16 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
 				t.Fatalf("resolved spawn failure replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
 			}
-			if len(fw.sent) != 1 || len(fw.created) != 1 {
-				t.Fatalf("restart replayed Session effect: sent=%d created=%d", len(fw.sent), len(fw.created))
+			finalEvents, err := reopenedAgain.ListWorkEvents(items[0].ID)
+			if err != nil || len(finalEvents) != wantEvents ||
+				finalEvents[len(finalEvents)-1].Kind != "brain.submission_not_admitted" ||
+				finalEvents[len(finalEvents)-1].HandledAt == nil ||
+				finalEvents[len(finalEvents)-1].Disposition != brain.WorkDispositionCancel {
+				t.Fatalf("resolved final Events=%+v err=%v", finalEvents, err)
+			}
+			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 {
+				t.Fatalf("restart replayed Session effect: sent=%d submitted=%d created=%d",
+					len(fw.sent), len(fw.submitted), len(fw.created))
 			}
 		})
 	}
