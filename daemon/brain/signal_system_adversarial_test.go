@@ -815,6 +815,329 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 	}
 }
 
+func TestSignalAdversarialHostUserInputAdmissionFaultReopenMatrix(t *testing.T) {
+	newFixture := func(t *testing.T) (*Store, *Service, Work, string, string, string) {
+		t.Helper()
+		store, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		threadID := "thread-first-admission"
+		hostID := "brain-agent-brain-hidden:@admission"
+		requestID := "request-first-admission"
+		if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetHostSession(hostID, "codex"); err != nil {
+			t.Fatal(err)
+		}
+		item, err := store.CreateWork(Work{
+			Title: "Wait for admitted user input", Objective: "Wake on one exact Brain thread input.",
+			Status: WorkWaiting, CompletionPolicy: CompletionBounded,
+			Wake: &WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + threadID},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store, NewService(store, nil, nil), item, hostID, threadID, requestID
+	}
+	assertBefore := func(t *testing.T, store *Store, item Work, threadID, requestID string, wantIntent bool) {
+		t.Helper()
+		admission, found, err := store.BrainInputAdmission(requestID, threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found != wantIntent {
+			t.Fatalf("admission found=%v want=%v row=%+v", found, wantIntent, admission)
+		}
+		if found && admission.State != BrainInputAdmissionPending {
+			t.Fatalf("ambiguous admission state=%q want pending", admission.State)
+		}
+		current, err := store.Work(item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != WorkWaiting || current.Wake == nil ||
+			current.Wake.Kind != WorkWakeUserInput || current.Wake.Ref != "brain-thread:"+threadID {
+			t.Fatalf("before-state wait changed: %+v", current)
+		}
+		events, err := store.ListWorkEvents(item.ID)
+		if err != nil || len(events) != 0 {
+			t.Fatalf("before-state Attention=%+v err=%v", events, err)
+		}
+		items, err := store.ThreadTimeline(threadID, 0)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("before-state timeline=%+v err=%v", items, err)
+		}
+	}
+
+	t.Run("intent write failure", func(t *testing.T) {
+		store, service, item, hostID, threadID, requestID := newFixture(t)
+		store.writeOrchestration = func(string, any) error { return errors.New("injected intent write failure") }
+		if _, _, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err == nil {
+			t.Fatal("intent persistence failure was ignored")
+		}
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete, err := NewService(reopened, nil, nil).ReconcileSignalSystemStartup(nil, 8)
+		if err != nil || !complete {
+			t.Fatalf("startup complete=%v err=%v", complete, err)
+		}
+		assertBefore(t, reopened, item, threadID, requestID, false)
+	})
+
+	t.Run("crash after provider acceptance", func(t *testing.T) {
+		store, service, item, hostID, threadID, requestID := newFixture(t)
+		admission, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID)
+		if err != nil || !created || admission.State != BrainInputAdmissionPending {
+			t.Fatalf("prepare created=%v admission=%+v err=%v", created, admission, err)
+		}
+		// The provider accepted here, but the process stopped before committing
+		// the exact result. Pending is a durable no-replay hold, not acceptance.
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted := NewService(reopened, nil, nil)
+		complete, err := restarted.ReconcileSignalSystemStartup(nil, 8)
+		if err != nil || !complete {
+			t.Fatalf("startup complete=%v err=%v", complete, err)
+		}
+		assertBefore(t, reopened, item, threadID, requestID, true)
+		duplicate, duplicateCreated, err := restarted.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID)
+		if err != nil || duplicateCreated || duplicate.State != BrainInputAdmissionPending {
+			t.Fatalf("duplicate pending prepare created=%v admission=%+v err=%v", duplicateCreated, duplicate, err)
+		}
+	})
+
+	t.Run("accepted plus Attention write failure", func(t *testing.T) {
+		store, service, item, hostID, threadID, requestID := newFixture(t)
+		if _, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil || !created {
+			t.Fatalf("prepare created=%v err=%v", created, err)
+		}
+		store.writeOrchestration = func(string, any) error { return errors.New("injected accepted admission write failure") }
+		if err := service.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err == nil {
+			t.Fatal("accepted admission persistence failure was ignored")
+		}
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete, err := NewService(reopened, nil, nil).ReconcileSignalSystemStartup(nil, 8)
+		if err != nil || !complete {
+			t.Fatalf("startup complete=%v err=%v", complete, err)
+		}
+		assertBefore(t, reopened, item, threadID, requestID, true)
+	})
+
+	t.Run("timeline projection failure", func(t *testing.T) {
+		store, service, item, hostID, threadID, requestID := newFixture(t)
+		writes := 0
+		write := store.writeOrchestration
+		store.writeOrchestration = func(path string, value any) error {
+			writes++
+			return write(path, value)
+		}
+		if _, created, err := service.PrepareHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil || !created {
+			t.Fatalf("prepare created=%v err=%v", created, err)
+		}
+		store.projectBrainInputAdmission = func(BrainInputAdmission) error {
+			return errors.New("injected timeline projection failure")
+		}
+		if err := service.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err == nil {
+			t.Fatal("timeline projection failure was ignored")
+		}
+		if writes != 2 {
+			t.Fatalf("intent plus accepted/Attention writes=%d want 2", writes)
+		}
+
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admission, found, err := reopened.BrainInputAdmission(requestID, threadID)
+		if err != nil || !found || admission.State != BrainInputAdmissionAccepted {
+			t.Fatalf("accepted authority found=%v admission=%+v err=%v", found, admission, err)
+		}
+		current, err := reopened.Work(item.ID)
+		if err != nil || current.Wake != nil {
+			t.Fatalf("accepted authority retained wait: Work=%+v err=%v", current, err)
+		}
+		events, err := reopened.ListWorkEvents(item.ID)
+		if err != nil || countUnhandledEventKind(events, "user.input") != 1 {
+			t.Fatalf("accepted Attention events=%+v err=%v", events, err)
+		}
+		items, err := reopened.ThreadTimeline(threadID, 0)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("failed projection unexpectedly materialized: items=%+v err=%v", items, err)
+		}
+
+		restarted := NewService(reopened, nil, nil)
+		complete, err := restarted.ReconcileSignalSystemStartup(nil, 8)
+		if err != nil || !complete {
+			t.Fatalf("startup complete=%v err=%v", complete, err)
+		}
+		items, err = reopened.ThreadTimeline(threadID, 0)
+		if err != nil || len(items) != 1 || items[0].ID != requestID || !items[0].BrainAdmission || items[0].Body != "first accepted body" {
+			t.Fatalf("recovered timeline items=%+v err=%v", items, err)
+		}
+		if err := restarted.AdmitHostUserInput(hostID, requestID, "first accepted body", "brain-thread:"+threadID); err != nil {
+			t.Fatalf("duplicate accepted admission: %v", err)
+		}
+		events, _ = reopened.ListWorkEvents(item.ID)
+		items, _ = reopened.ThreadTimeline(threadID, 0)
+		if countUnhandledEventKind(events, "user.input") != 1 || len(items) != 1 {
+			t.Fatalf("duplicate admission was not a no-op: events=%+v items=%+v", events, items)
+		}
+	})
+}
+
+func TestSignalAdversarialFirstSeenTerminalCalendarFaultReopenMatrix(t *testing.T) {
+	for _, terminalStatus := range []calendar.Status{calendar.StatusCompleted, calendar.StatusFailed} {
+		t.Run(string(terminalStatus), func(t *testing.T) {
+			newFixture := func(t *testing.T) (*Store, *Service, Work, calendar.Event, string) {
+				t.Helper()
+				store, err := NewStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				threadID, err := store.ChatThreadID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				itemID := "first-terminal-item-" + string(terminalStatus)
+				runID := "first-terminal-run-" + string(terminalStatus)
+				contextRef := "calendar:" + itemID + ":" + runID
+				consumer, err := store.CreateWork(Work{
+					Title: "First terminal Calendar consumer", Objective: "Wake on the exact first-seen occurrence.",
+					Status: WorkWaiting, CompletionPolicy: CompletionBounded,
+					Wake: &WorkWake{Kind: WorkWakeCalendarResult, Ref: contextRef},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				finished := time.Date(2026, 8, 10, 4, 0, 0, 0, time.UTC)
+				run := calendar.Run{
+					ID: runID, Title: "First terminal Calendar occurrence", SourceThreadID: threadID,
+					ScheduledFor: finished.Add(-time.Minute), StartedAt: finished.Add(-30 * time.Second),
+					FinishedAt: &finished, Status: terminalStatus,
+				}
+				body := "Canonical Calendar result"
+				if terminalStatus == calendar.StatusCompleted {
+					run.Result = body
+				} else {
+					run.FailureReason = "Canonical Calendar failure"
+					body = run.FailureReason
+				}
+				event := calendar.Event{
+					Item: calendar.Item{
+						ID: itemID, Title: run.Title, Kind: calendar.KindScheduledAction,
+						ActionInstruction: "Produce one exact terminal occurrence.", SourceThreadID: threadID,
+						Runs: []calendar.Run{run},
+					},
+					ScheduledResult: &calendar.ScheduledResult{
+						ID: "first-terminal-result-" + string(terminalStatus), ThreadID: threadID,
+						Body: body, CreatedAt: finished, Status: terminalStatus, Title: run.Title,
+						CalendarItemID: itemID, CalendarRunID: runID, ScheduledFor: run.ScheduledFor,
+					},
+				}
+				return store, NewService(store, nil, nil), consumer, event, calendarWorkID(itemID, runID)
+			}
+
+			t.Run("write failure exposes before-state", func(t *testing.T) {
+				store, service, consumer, event, producerWorkID := newFixture(t)
+				store.writeOrchestration = func(string, any) error { return errors.New("injected first terminal Calendar write failure") }
+				if _, err := service.RouteCalendarEvent(event); err == nil {
+					t.Fatal("first terminal Calendar persistence failure was ignored")
+				}
+				reopened, err := NewStore(store.Root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				complete, err := NewService(reopened, nil, nil).ReconcileSignalSystemStartup(nil, 8)
+				if err != nil || !complete {
+					t.Fatalf("startup complete=%v err=%v", complete, err)
+				}
+				if producer, err := reopened.Work(producerWorkID); !errors.Is(err, ErrWorkNotFound) {
+					t.Fatalf("write failure persisted intermediate producer: Work=%+v err=%v", producer, err)
+				}
+				current, err := reopened.Work(consumer.ID)
+				if err != nil || current.Status != WorkWaiting || current.Wake == nil {
+					t.Fatalf("write failure changed consumer: Work=%+v err=%v", current, err)
+				}
+				events, err := reopened.ListWorkEvents("")
+				if err != nil || len(events) != 0 {
+					t.Fatalf("write failure partial events=%+v err=%v", events, err)
+				}
+			})
+
+			t.Run("one write exposes after-state and duplicate is no-op", func(t *testing.T) {
+				store, service, consumer, event, producerWorkID := newFixture(t)
+				writes := 0
+				write := store.writeOrchestration
+				store.writeOrchestration = func(path string, value any) error {
+					writes++
+					if writes > 1 {
+						return errors.New("unexpected second first-terminal Calendar write")
+					}
+					return write(path, value)
+				}
+				if woke, err := service.RouteCalendarEvent(event); err != nil || !woke {
+					t.Fatalf("first terminal Calendar wake=%v err=%v", woke, err)
+				}
+				if writes != 1 {
+					t.Fatalf("first terminal Calendar writes=%d want 1", writes)
+				}
+				reopened, err := NewStore(store.Root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				complete, err := NewService(reopened, nil, nil).ReconcileSignalSystemStartup(nil, 8)
+				if err != nil || !complete {
+					t.Fatalf("startup complete=%v err=%v", complete, err)
+				}
+				producer, err := reopened.Work(producerWorkID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantProducerStatus := WorkDone
+				if terminalStatus == calendar.StatusFailed {
+					wantProducerStatus = WorkNeedsInput
+				}
+				if producer.Status != wantProducerStatus || producer.Wake != nil {
+					t.Fatalf("terminal producer=%+v want status=%s without wake", producer, wantProducerStatus)
+				}
+				current, err := reopened.Work(consumer.ID)
+				if err != nil || current.Wake != nil {
+					t.Fatalf("terminal occurrence did not wake consumer: Work=%+v err=%v", current, err)
+				}
+				kind := "calendar.result"
+				if terminalStatus == calendar.StatusFailed {
+					kind = "calendar.failure"
+				}
+				events, err := reopened.ListWorkEvents("")
+				if err != nil || len(events) != 2 || countUnhandledEventKind(events, kind) != 2 {
+					t.Fatalf("terminal producer plus consumer events=%+v err=%v", events, err)
+				}
+
+				duplicateWrites := 0
+				reopened.writeOrchestration = func(string, any) error {
+					duplicateWrites++
+					return errors.New("duplicate attempted persistence")
+				}
+				if woke, err := NewService(reopened, nil, nil).RouteCalendarEvent(event); err != nil || woke {
+					t.Fatalf("duplicate terminal Calendar wake=%v err=%v", woke, err)
+				}
+				if duplicateWrites != 0 {
+					t.Fatalf("duplicate terminal Calendar writes=%d want 0", duplicateWrites)
+				}
+			})
+		})
+	}
+}
+
 func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinalization(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

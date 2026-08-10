@@ -28,6 +28,9 @@ type Store struct {
 	now     func() time.Time
 
 	writeOrchestration func(string, any) error
+	// projectBrainInputAdmission is an optional Store-scoped fault seam for the
+	// recoverable messages.jsonl projection. Nil uses the production append.
+	projectBrainInputAdmission func(BrainInputAdmission) error
 	// replaceHostBindingWrite is an optional Store-scoped seam used only by
 	// ReplaceHostSessionBinding. Nil means writeJSONFile (production default).
 	replaceHostBindingWrite func(path string, value any) error

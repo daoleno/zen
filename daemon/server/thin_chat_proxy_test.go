@@ -184,7 +184,7 @@ func TestInboundSendInputProjectsAmbiguousOutcomeAsPending(t *testing.T) {
 	}
 }
 
-func TestBrainAdmissionFailureAfterProviderAcceptEmitsPending(t *testing.T) {
+func TestBrainAdmissionIntentFailurePreventsProviderMutation(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -217,16 +217,13 @@ func TestBrainAdmissionFailureAfterProviderAcceptEmitsPending(t *testing.T) {
 		DisplayBody:          "persist me",
 		ConversationScopeKey: "brain-thread:unknown-thread",
 	})
-	if response.Type == "input_sent" {
-		t.Fatalf("admission failure must not emit input_sent: %#v", response)
-	}
-	if response.Type != "input_pending" ||
+	if response.Type != "input_failed" ||
 		response.RequestID != "request-admit-fail" ||
-		response.FieldCount != 2 {
-		t.Fatalf("pending response = %#v", response)
+		response.Code != "send_input_failed" || response.FieldCount != 4 {
+		t.Fatalf("intent failure response = %#v", response)
 	}
-	if got := providerCalls.Load(); got != 1 {
-		t.Fatalf("provider calls = %d, want exactly 1", got)
+	if got := providerCalls.Load(); got != 0 {
+		t.Fatalf("provider calls = %d, want 0 before durable intent", got)
 	}
 	items, err := store.ThreadTimeline("known-thread", 0)
 	if err != nil {
@@ -234,6 +231,106 @@ func TestBrainAdmissionFailureAfterProviderAcceptEmitsPending(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("failed admission must not invent durable rows: %#v", items)
+	}
+}
+
+func TestBrainAdmissionProvedNonSubmissionAbortsIntent(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@not-submitted"
+	threadID := "thread-not-submitted"
+	requestID := "request-not-submitted"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: brain.NewService(store, nil, nil),
+		sendInputWithReceiptOverride: func(_, _, receipt string) error {
+			providerCalls.Add(1)
+			return &watcher.InputSubmissionError{
+				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt},
+				Cause:  errors.New("provider rejected before mutation"),
+			}
+		},
+	}
+	response := sendThinProxyRequest(t, openThinProxyTestSocket(t, srv), clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "do not submit",
+		ConversationScopeKey: "brain-thread:" + threadID,
+	})
+	if response.Type != "input_failed" || response.Code != "send_input_failed" {
+		t.Fatalf("not-submitted response=%#v", response)
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider calls=%d want 1", providerCalls.Load())
+	}
+	if admission, found, err := store.BrainInputAdmission(requestID, threadID); err != nil || found {
+		t.Fatalf("proved not-submitted intent found=%v admission=%+v err=%v", found, admission, err)
+	}
+}
+
+func TestBrainAdmissionAmbiguousAndAcceptedDuplicatesNeverReplayProviderInput(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		providerErr  error
+		wantResponse string
+		wantState    brain.BrainInputAdmissionState
+	}{
+		{
+			name: "ambiguous pending", wantResponse: "input_pending", wantState: brain.BrainInputAdmissionPending,
+			providerErr: &watcher.InputSubmissionError{
+				Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
+				Cause:  errors.New("provider acceptance unknown"),
+			},
+		},
+		{name: "accepted", wantResponse: "input_sent", wantState: brain.BrainInputAdmissionAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := brain.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostID := "brain-host:@duplicate"
+			threadID := "thread-duplicate"
+			requestID := "request-duplicate"
+			if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetHostSession(hostID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			var providerCalls atomic.Int32
+			srv := &Server{
+				brain: brain.NewService(store, nil, nil),
+				sendInputWithReceiptOverride: func(_, _, _ string) error {
+					providerCalls.Add(1)
+					return test.providerErr
+				},
+			}
+			conn := openThinProxyTestSocket(t, srv)
+			request := clientMessage{
+				Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "submit exactly once",
+				ConversationScopeKey: "brain-thread:" + threadID,
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				response := sendThinProxyRequest(t, conn, request)
+				if response.Type != test.wantResponse {
+					t.Fatalf("attempt %d response=%#v want=%s", attempt+1, response, test.wantResponse)
+				}
+			}
+			if providerCalls.Load() != 1 {
+				t.Fatalf("duplicate provider calls=%d want 1", providerCalls.Load())
+			}
+			admission, found, err := store.BrainInputAdmission(requestID, threadID)
+			if err != nil || !found || admission.State != test.wantState {
+				t.Fatalf("admission found=%v row=%+v err=%v want state=%s", found, admission, err, test.wantState)
+			}
+		})
 	}
 }
 

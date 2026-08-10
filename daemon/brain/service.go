@@ -237,6 +237,15 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 	if s == nil || s.store == nil {
 		return true, nil
 	}
+	admissions, admissionMore, err := s.store.UnprojectedBrainInputAdmissions(limit)
+	if err != nil {
+		return false, err
+	}
+	for _, admission := range admissions {
+		if err := s.store.ProjectBrainInputAdmission(admission); err != nil {
+			return false, err
+		}
+	}
 	byID := make(map[string]*classifier.Agent, len(agents))
 	for _, agent := range agents {
 		if agent != nil {
@@ -282,7 +291,7 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 		}
 	}
 	_, dispatchErr := s.DispatchPendingEvent()
-	return !handlingMore && !more, dispatchErr
+	return !admissionMore && !handlingMore && !more, dispatchErr
 }
 
 func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
@@ -1398,48 +1407,76 @@ func (s *Service) MaterializeProviderConversation(threadID string, conversation 
 	return s.store.MaterializeProviderConversation(threadID, conversation)
 }
 
-// AdmitHostUserInput durably appends the exact admitted display body to the
-// Brain thread identified by conversation_scope_key when Session Input accepts
-// a host receipt. request_id is the canonical durable user-row identity.
-func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
+func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
 	if s == nil || s.store == nil {
-		return nil
+		return BrainInputAdmission{}, false, nil
 	}
 	host, err := s.store.HostSession()
 	if err != nil {
-		return err
+		return BrainInputAdmission{}, false, err
 	}
 	if strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != strings.TrimSpace(agentID) {
-		return nil
+		return BrainInputAdmission{}, false, nil
 	}
 	threadID := threadIDFromConversationScopeKey(conversationScopeKey)
 	if threadID == "" {
 		threadID, err = s.store.ChatThreadID()
 		if err != nil {
-			return err
+			return BrainInputAdmission{}, false, err
 		}
 	}
 	known, err := s.store.HasChatThread(threadID)
 	if err != nil {
-		return err
+		return BrainInputAdmission{}, false, err
 	}
 	if !known {
-		return fmt.Errorf("brain thread %q is unknown", threadID)
+		return BrainInputAdmission{}, false, fmt.Errorf("brain thread %q is unknown", threadID)
 	}
 	sessionID := strings.TrimSpace(host.ProviderSessionID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(host.ID)
 	}
-	if _, err = s.store.AdmitUserMessage(threadID, sessionID, receipt, displayBody); err != nil {
+	return BrainInputAdmission{
+		RequestID: strings.TrimSpace(receipt), ThreadID: threadID,
+		HostSessionID: strings.TrimSpace(host.ID), SessionID: sessionID,
+		DisplayBody: strings.TrimSpace(displayBody),
+	}, true, nil
+}
+
+// PrepareHostUserInput persists the one exact no-replay intent before Session
+// Input may mutate the provider. created=false means this request/thread was
+// already pending or accepted and must not be submitted again.
+func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
+	if err != nil || !hostInput {
+		return admission, false, err
+	}
+	return s.store.PrepareBrainInputAdmission(admission)
+}
+
+// AbortHostUserInput removes only a pending intent after Session Input proves
+// no provider mutation began. Ambiguous outcomes deliberately retain it.
+func (s *Service) AbortHostUserInput(requestID, threadID string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.AbortBrainInputAdmission(requestID, threadID)
+}
+
+// AdmitHostUserInput makes provider acceptance and every matching user_input
+// Attention authoritative in one orchestration replacement, then attempts the
+// idempotent messages.jsonl projection. request_id + thread_id is the exact
+// durable admission identity.
+func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
+	if err != nil || !hostInput {
 		return err
 	}
-	_, err = s.store.WakeWaitingWork(
-		WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + threadID},
-		"user.input",
-		strings.TrimSpace(receipt),
-		"User input arrived on the waiting Brain thread.",
-	)
-	return err
+	accepted, _, _, err := s.store.AcceptBrainInputAdmission(admission)
+	if err != nil {
+		return err
+	}
+	return s.store.ProjectBrainInputAdmission(accepted)
 }
 
 func threadIDFromConversationScopeKey(scopeKey string) string {
@@ -1541,7 +1578,7 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 	if sourceThreadID == "" {
 		sourceThreadID = strings.TrimSpace(event.Item.SourceThreadID)
 	}
-	item, _, err := s.store.EnsureWork(Work{
+	candidate := Work{
 		ID:               calendarWorkID(event.Item.ID, run.ID),
 		Title:            firstNonEmpty(run.Title, event.Item.Title),
 		Objective:        strings.TrimSpace(event.Item.ActionInstruction),
@@ -1554,13 +1591,11 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		WaitFor:          calendarWaitCondition(run),
 		Wake:             calendarRunWake(run, contextRef),
 		ContextRef:       contextRef,
-	})
-	if err != nil {
-		return false, err
 	}
 
 	kind := "calendar.due"
 	actionable := false
+	terminal := false
 	payloadRef := contextRef
 	update := WorkUpdate{}
 	switch run.Status {
@@ -1587,6 +1622,7 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		update = WorkUpdate{Status: &status, NextAction: &empty, WaitFor: &empty, Wake: &noWake}
 		kind = "calendar.result"
 		actionable = true
+		terminal = true
 		if event.ScheduledResult != nil {
 			payloadRef = event.ScheduledResult.ID
 		}
@@ -1598,6 +1634,7 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		update = WorkUpdate{Status: &status, NextAction: &next, WaitFor: &empty, Wake: &noWake}
 		kind = "calendar.failure"
 		actionable = true
+		terminal = true
 		if event.ScheduledResult != nil {
 			payloadRef = event.ScheduledResult.ID
 		}
@@ -1605,24 +1642,23 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		return false, nil
 	}
 	producerEvent := WorkEvent{
-		WorkID:     item.ID,
+		WorkID:     candidate.ID,
 		Kind:       kind,
 		DedupeKey:  fmt.Sprintf("calendar:%s:%s:%s", event.Item.ID, run.ID, kind),
 		PayloadRef: payloadRef,
 		SourceName: contextRef,
 		Actionable: actionable,
 	}
+	var err error
 	var recorded WorkEvent
+	var item Work
 	created := false
 	producerWoke := false
-	if kind == "calendar.result" || kind == "calendar.failure" {
-		var updatePtr *WorkUpdate
-		if workUpdateChanges(item, update) {
-			updatePtr = &update
-		}
+	if terminal {
 		wakes := []WorkEvent{}
 		item, recorded, created, wakes, err = s.store.ApplyProducerTransition(
-			updatePtr,
+			&candidate,
+			&update,
 			producerEvent,
 			&WorkWake{Kind: WorkWakeCalendarResult, Ref: contextRef},
 			event.Item.ID+":"+run.ID+":"+kind,
@@ -1632,6 +1668,10 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		}
 		producerWoke = len(wakes) > 0
 	} else {
+		item, _, err = s.store.EnsureWork(candidate)
+		if err != nil {
+			return false, err
+		}
 		if workUpdateChanges(item, update) {
 			item, err = s.store.UpdateWork(item.ID, update)
 			if err != nil {

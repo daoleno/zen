@@ -58,6 +58,29 @@ type WorkWake struct {
 	Ref  string       `json:"ref"`
 }
 
+type BrainInputAdmissionState string
+
+const (
+	BrainInputAdmissionPending  BrainInputAdmissionState = "pending"
+	BrainInputAdmissionAccepted BrainInputAdmissionState = "accepted"
+)
+
+// BrainInputAdmission is the restart-enumerable authority for one foreground
+// Brain input. Pending is persisted before provider mutation and is a no-replay
+// hold. Accepted is committed with every matching user-input Attention in the
+// same orchestration replacement. messages.jsonl is only its projection.
+type BrainInputAdmission struct {
+	RequestID     string                   `json:"request_id"`
+	ThreadID      string                   `json:"thread_id"`
+	HostSessionID string                   `json:"host_session_id"`
+	SessionID     string                   `json:"session_id"`
+	DisplayBody   string                   `json:"display_body"`
+	BodySHA256    string                   `json:"body_sha256"`
+	State         BrainInputAdmissionState `json:"state"`
+	CreatedAt     time.Time                `json:"created_at"`
+	AcceptedAt    *time.Time               `json:"accepted_at,omitempty"`
+}
+
 type WorkProgressMode string
 
 const (
@@ -241,6 +264,7 @@ type orchestrationDatabase struct {
 	SchemaVersion        int                     `json:"schema_version"`
 	NextEventSequence    uint64                  `json:"next_event_sequence"`
 	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
 	BrainWork            []Work                  `json:"brain_work"`
 	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
 	BrainTurns           []TurnRecord            `json:"brain_turns"`
@@ -275,6 +299,7 @@ type orchestrationDatabaseRecord struct {
 	SchemaVersion        int                     `json:"schema_version"`
 	NextEventSequence    uint64                  `json:"next_event_sequence"`
 	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
 	BrainWork            []workRecord            `json:"brain_work"`
 	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
 	BrainTurns           []TurnRecord            `json:"brain_turns"`
@@ -347,6 +372,7 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	if errors.Is(err, os.ErrNotExist) {
 		return s.persistOrchestrationLocked(orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            []Work{},
 			BrainWorkEvents:      []WorkEvent{},
 			BrainTurns:           []TurnRecord{},
@@ -408,6 +434,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		return orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           orchestrationMigrations{},
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            []Work{},
 			BrainWorkEvents:      []WorkEvent{},
 			BrainTurns:           []TurnRecord{},
@@ -429,6 +456,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           legacy.Migrations,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            worksFromRecords(legacy.BrainWork),
 			BrainWorkEvents:      make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
 			BrainTurns:           []TurnRecord{},
@@ -469,6 +497,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           record.Migrations,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           []TurnRecord{},
@@ -490,6 +519,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           record.Migrations,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           []TurnRecord{},
@@ -511,6 +541,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           record.Migrations,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           record.BrainTurns,
@@ -532,6 +563,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			Migrations:           record.Migrations,
+			BrainInputAdmissions: []BrainInputAdmission{},
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           record.BrainTurns,
@@ -555,6 +587,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			SchemaVersion:        orchestrationSchemaVersion,
 			NextEventSequence:    record.NextEventSequence,
 			Migrations:           record.Migrations,
+			BrainInputAdmissions: record.BrainInputAdmissions,
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           record.BrainTurns,
@@ -587,6 +620,9 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 func upgradeSignalSchema(database *orchestrationDatabase) {
 	if database == nil {
 		return
+	}
+	if database.BrainInputAdmissions == nil {
+		database.BrainInputAdmissions = []BrainInputAdmission{}
 	}
 	for index := range database.BrainWork {
 		if database.BrainWork[index].Revision == 0 {
@@ -745,6 +781,46 @@ func ensureSingleJSONValue(decoder *json.Decoder, raw []byte) error {
 	return nil
 }
 
+func validateBrainInputAdmissions(admissions []BrainInputAdmission) error {
+	identities := make(map[string]struct{}, len(admissions))
+	for index, admission := range admissions {
+		admission.RequestID = strings.TrimSpace(admission.RequestID)
+		admission.ThreadID = strings.TrimSpace(admission.ThreadID)
+		admission.HostSessionID = strings.TrimSpace(admission.HostSessionID)
+		admission.SessionID = strings.TrimSpace(admission.SessionID)
+		admission.DisplayBody = strings.TrimSpace(admission.DisplayBody)
+		admission.BodySHA256 = strings.TrimSpace(admission.BodySHA256)
+		if admission.RequestID == "" || admission.ThreadID == "" || admission.HostSessionID == "" ||
+			admission.SessionID == "" || admission.DisplayBody == "" {
+			return fmt.Errorf("brain_input_admissions[%d]: request, thread, host, session, and display body are required", index)
+		}
+		if admission.BodySHA256 != AdmissionDigest(admission.DisplayBody) {
+			return fmt.Errorf("brain_input_admissions[%d]: display body digest mismatch", index)
+		}
+		if admission.CreatedAt.IsZero() {
+			return fmt.Errorf("brain_input_admissions[%d]: created_at is required", index)
+		}
+		switch admission.State {
+		case BrainInputAdmissionPending:
+			if admission.AcceptedAt != nil {
+				return fmt.Errorf("brain_input_admissions[%d]: pending admission cannot have accepted_at", index)
+			}
+		case BrainInputAdmissionAccepted:
+			if admission.AcceptedAt == nil || admission.AcceptedAt.IsZero() {
+				return fmt.Errorf("brain_input_admissions[%d]: accepted admission requires accepted_at", index)
+			}
+		default:
+			return fmt.Errorf("brain_input_admissions[%d]: invalid state %q", index, admission.State)
+		}
+		identity := admission.RequestID + "\x00" + admission.ThreadID
+		if _, exists := identities[identity]; exists {
+			return fmt.Errorf("brain_input_admissions[%d]: duplicate request_id/thread_id", index)
+		}
+		identities[identity] = struct{}{}
+	}
+	return nil
+}
+
 func validateOrchestrationDatabase(database orchestrationDatabase) error {
 	return validateOrchestrationDatabaseWithSourceThread(database, true)
 }
@@ -754,6 +830,9 @@ func validateOrchestrationDatabaseLoose(database orchestrationDatabase) error {
 }
 
 func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabase, requireSourceThread bool) error {
+	if err := validateBrainInputAdmissions(database.BrainInputAdmissions); err != nil {
+		return err
+	}
 	workIDs := make(map[string]struct{}, len(database.BrainWork))
 	activeOwners := make(map[string]string, len(database.BrainWork))
 	for index, item := range database.BrainWork {
@@ -1312,6 +1391,9 @@ func (s *Store) loadOrchestrationLocked() (orchestrationDatabase, error) {
 
 func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error {
 	database.SchemaVersion = orchestrationSchemaVersion
+	if database.BrainInputAdmissions == nil {
+		database.BrainInputAdmissions = []BrainInputAdmission{}
+	}
 	if database.BrainWork == nil {
 		database.BrainWork = []Work{}
 	}
@@ -1330,6 +1412,15 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 			return database.BrainWork[left].ID < database.BrainWork[right].ID
 		}
 		return database.BrainWork[left].CreatedAt.Before(database.BrainWork[right].CreatedAt)
+	})
+	sort.Slice(database.BrainInputAdmissions, func(left, right int) bool {
+		if database.BrainInputAdmissions[left].CreatedAt.Equal(database.BrainInputAdmissions[right].CreatedAt) {
+			if database.BrainInputAdmissions[left].RequestID == database.BrainInputAdmissions[right].RequestID {
+				return database.BrainInputAdmissions[left].ThreadID < database.BrainInputAdmissions[right].ThreadID
+			}
+			return database.BrainInputAdmissions[left].RequestID < database.BrainInputAdmissions[right].RequestID
+		}
+		return database.BrainInputAdmissions[left].CreatedAt.Before(database.BrainInputAdmissions[right].CreatedAt)
 	})
 	sort.Slice(database.BrainWorkEvents, func(left, right int) bool {
 		if database.BrainWorkEvents[left].CreatedAt.Equal(database.BrainWorkEvents[right].CreatedAt) {
@@ -2039,6 +2130,206 @@ func (s *Store) WorkByContextRef(contextRef string) (Work, bool, error) {
 	return Work{}, false, nil
 }
 
+func normalizeBrainInputAdmission(admission BrainInputAdmission, now time.Time) (BrainInputAdmission, error) {
+	admission.RequestID = strings.TrimSpace(admission.RequestID)
+	admission.ThreadID = strings.TrimSpace(admission.ThreadID)
+	admission.HostSessionID = strings.TrimSpace(admission.HostSessionID)
+	admission.SessionID = strings.TrimSpace(admission.SessionID)
+	admission.DisplayBody = strings.TrimSpace(admission.DisplayBody)
+	admission.BodySHA256 = AdmissionDigest(admission.DisplayBody)
+	admission.State = BrainInputAdmissionPending
+	admission.AcceptedAt = nil
+	if admission.CreatedAt.IsZero() {
+		admission.CreatedAt = now.UTC()
+	} else {
+		admission.CreatedAt = admission.CreatedAt.UTC()
+	}
+	if err := validateBrainInputAdmissions([]BrainInputAdmission{admission}); err != nil {
+		return BrainInputAdmission{}, err
+	}
+	return admission, nil
+}
+
+func brainInputAdmissionIndex(admissions []BrainInputAdmission, requestID, threadID string) int {
+	requestID = strings.TrimSpace(requestID)
+	threadID = strings.TrimSpace(threadID)
+	for index := range admissions {
+		if admissions[index].RequestID == requestID && admissions[index].ThreadID == threadID {
+			return index
+		}
+	}
+	return -1
+}
+
+func sameBrainInputAdmission(left, right BrainInputAdmission) bool {
+	return left.RequestID == right.RequestID && left.ThreadID == right.ThreadID &&
+		left.HostSessionID == right.HostSessionID && left.SessionID == right.SessionID &&
+		left.DisplayBody == right.DisplayBody && left.BodySHA256 == right.BodySHA256
+}
+
+// PrepareBrainInputAdmission persists the exact no-replay intent before the
+// provider mutation boundary. Duplicate request/thread identities are returned
+// without another write and must never cause another provider submission.
+func (s *Store) PrepareBrainInputAdmission(candidate BrainInputAdmission) (BrainInputAdmission, bool, error) {
+	var err error
+	candidate, err = normalizeBrainInputAdmission(candidate, s.nowUTC())
+	if err != nil {
+		return BrainInputAdmission{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return BrainInputAdmission{}, false, err
+	}
+	if index := brainInputAdmissionIndex(database.BrainInputAdmissions, candidate.RequestID, candidate.ThreadID); index >= 0 {
+		existing := database.BrainInputAdmissions[index]
+		if !sameBrainInputAdmission(existing, candidate) {
+			return BrainInputAdmission{}, false, fmt.Errorf("Brain input admission identity belongs to different input")
+		}
+		return existing, false, nil
+	}
+	database.BrainInputAdmissions = append(database.BrainInputAdmissions, candidate)
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return BrainInputAdmission{}, false, err
+	}
+	return candidate, true, nil
+}
+
+// AcceptBrainInputAdmission commits provider acceptance and all matching
+// user_input Attentions in one orchestration replacement. If an older direct
+// caller has no prepared row, the accepted row is still created atomically
+// with its Attentions; the live server always prepares before mutation.
+func (s *Store) AcceptBrainInputAdmission(candidate BrainInputAdmission) (BrainInputAdmission, []WorkEvent, bool, error) {
+	now := s.nowUTC()
+	var err error
+	candidate, err = normalizeBrainInputAdmission(candidate, now)
+	if err != nil {
+		return BrainInputAdmission{}, nil, false, err
+	}
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, nil, false, err
+	}
+	index := brainInputAdmissionIndex(database.BrainInputAdmissions, candidate.RequestID, candidate.ThreadID)
+	if index < 0 {
+		database.BrainInputAdmissions = append(database.BrainInputAdmissions, candidate)
+		index = len(database.BrainInputAdmissions) - 1
+	} else if !sameBrainInputAdmission(database.BrainInputAdmissions[index], candidate) {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, nil, false, fmt.Errorf("Brain input admission identity belongs to different input")
+	} else if database.BrainInputAdmissions[index].State == BrainInputAdmissionAccepted {
+		existing := database.BrainInputAdmissions[index]
+		s.mu.Unlock()
+		return existing, nil, false, nil
+	}
+	acceptedAt := now.UTC()
+	candidate.CreatedAt = database.BrainInputAdmissions[index].CreatedAt
+	candidate.State = BrainInputAdmissionAccepted
+	candidate.AcceptedAt = &acceptedAt
+	database.BrainInputAdmissions[index] = candidate
+	woken, changedIDs, err := wakeWaitingWorkLocked(
+		&database,
+		WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + candidate.ThreadID},
+		"user.input",
+		candidate.RequestID,
+		"User input arrived on the waiting Brain thread.",
+		now,
+	)
+	if err != nil {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, nil, false, err
+	}
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, nil, false, err
+	}
+	s.mu.Unlock()
+	for _, workID := range changedIDs {
+		s.broadcastWorkChange(workID)
+	}
+	return candidate, woken, true, nil
+}
+
+// AbortBrainInputAdmission removes only a pending intent after the provider
+// owner proved mutation did not begin. Accepted admission is monotonic.
+func (s *Store) AbortBrainInputAdmission(requestID, threadID string) error {
+	requestID = strings.TrimSpace(requestID)
+	threadID = strings.TrimSpace(threadID)
+	if requestID == "" || threadID == "" {
+		return fmt.Errorf("Brain input admission request and thread are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return err
+	}
+	index := brainInputAdmissionIndex(database.BrainInputAdmissions, requestID, threadID)
+	if index < 0 {
+		return nil
+	}
+	if database.BrainInputAdmissions[index].State == BrainInputAdmissionAccepted {
+		return fmt.Errorf("accepted Brain input admission cannot be aborted")
+	}
+	database.BrainInputAdmissions = append(database.BrainInputAdmissions[:index], database.BrainInputAdmissions[index+1:]...)
+	return s.persistOrchestrationLocked(database)
+}
+
+func (s *Store) BrainInputAdmission(requestID, threadID string) (BrainInputAdmission, bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	threadID = strings.TrimSpace(threadID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return BrainInputAdmission{}, false, err
+	}
+	index := brainInputAdmissionIndex(database.BrainInputAdmissions, requestID, threadID)
+	if index < 0 {
+		return BrainInputAdmission{}, false, nil
+	}
+	return database.BrainInputAdmissions[index], true, nil
+}
+
+// UnprojectedBrainInputAdmissions returns a bounded restart batch. Projection
+// membership is derived from the idempotent timeline identity, so no second
+// durable acknowledgement field or repair queue is needed.
+func (s *Store) UnprojectedBrainInputAdmissions(limit int) ([]BrainInputAdmission, bool, error) {
+	if limit <= 0 {
+		return nil, false, fmt.Errorf("positive Brain input admission limit required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]BrainInputAdmission, 0, limit)
+	for _, admission := range database.BrainInputAdmissions {
+		if admission.State != BrainInputAdmissionAccepted {
+			continue
+		}
+		existing, found, err := s.timelineItemByIDLocked(AdmissionTimelineItemID(admission.RequestID))
+		if err != nil {
+			return nil, false, err
+		}
+		if found {
+			if !timelineItemMatchesBrainInputAdmission(existing, admission) {
+				return nil, false, fmt.Errorf("timeline identity %q belongs to different Brain input admission", existing.ID)
+			}
+			continue
+		}
+		if len(out) == limit {
+			return out, true, nil
+		}
+		out = append(out, admission)
+	}
+	return out, false, nil
+}
+
 func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 	var err error
 	event, err = normalizeWorkEventForAppend(event, s.nowUTC())
@@ -2120,11 +2411,12 @@ func normalizeWorkEventForAppend(event WorkEvent, now time.Time) (WorkEvent, err
 	return event, nil
 }
 
-// ApplyProducerTransition commits one producer state change, its canonical
-// event, and every exact typed consumer wake in one orchestration replacement.
-// The producer dedupe key is the transaction identity: once present, the
-// transition and all matching wakes are already durable and replay is a no-op.
+// ApplyProducerTransition ensures or loads a deterministic producer Work and
+// commits its state change, canonical event, and every exact typed consumer
+// wake in one orchestration replacement. The producer dedupe key is the
+// transaction identity: once present, the full transition is a replay no-op.
 func (s *Store) ApplyProducerTransition(
+	candidate *Work,
 	update *WorkUpdate,
 	event WorkEvent,
 	wake *WorkWake,
@@ -2135,6 +2427,20 @@ func (s *Store) ApplyProducerTransition(
 	event, err = normalizeWorkEventForAppend(event, now)
 	if err != nil {
 		return Work{}, WorkEvent{}, false, nil, err
+	}
+	var normalizedCandidate Work
+	if candidate != nil {
+		normalizedCandidate, err = s.resolveSourceThreadID(*candidate)
+		if err != nil {
+			return Work{}, WorkEvent{}, false, nil, err
+		}
+		normalizedCandidate, err = normalizeWorkForCreate(normalizedCandidate, now)
+		if err != nil {
+			return Work{}, WorkEvent{}, false, nil, err
+		}
+		if normalizedCandidate.ID != event.WorkID {
+			return Work{}, WorkEvent{}, false, nil, fmt.Errorf("producer candidate work_id does not match event")
+		}
 	}
 	occurrenceID = strings.TrimSpace(occurrenceID)
 	if wake != nil {
@@ -2158,8 +2464,15 @@ func (s *Store) ApplyProducerTransition(
 	}
 	itemIndex := workIndex(database.BrainWork, event.WorkID)
 	if itemIndex < 0 {
+		if candidate == nil {
+			s.mu.Unlock()
+			return Work{}, WorkEvent{}, false, nil, ErrWorkNotFound
+		}
+		database.BrainWork = append(database.BrainWork, normalizedCandidate)
+		itemIndex = len(database.BrainWork) - 1
+	} else if candidate != nil && strings.TrimSpace(database.BrainWork[itemIndex].ContextRef) != strings.TrimSpace(normalizedCandidate.ContextRef) {
 		s.mu.Unlock()
-		return Work{}, WorkEvent{}, false, nil, ErrWorkNotFound
+		return Work{}, WorkEvent{}, false, nil, fmt.Errorf("%w: producer Work context does not match deterministic candidate", ErrWorkConflict)
 	}
 	for _, current := range database.BrainWorkEvents {
 		if current.WorkID == event.WorkID && current.DedupeKey == event.DedupeKey {

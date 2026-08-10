@@ -61,6 +61,49 @@ func (s *Store) AdmitUserMessage(threadID, sessionID, receipt, body string) (Tim
 	})
 }
 
+func timelineItemMatchesBrainInputAdmission(item TimelineItem, admission BrainInputAdmission) bool {
+	return strings.TrimSpace(item.ID) == AdmissionTimelineItemID(admission.RequestID) &&
+		strings.TrimSpace(item.ThreadID) == admission.ThreadID &&
+		strings.TrimSpace(item.SessionID) == admission.SessionID &&
+		strings.TrimSpace(item.Role) == "user" && strings.TrimSpace(item.Body) == admission.DisplayBody &&
+		strings.TrimSpace(item.Kind) == timelineKindUserMessage && item.BrainAdmission &&
+		strings.TrimSpace(item.AdmissionSHA256) == admission.BodySHA256
+}
+
+// ProjectBrainInputAdmission idempotently materializes the presentation row
+// from accepted orchestration authority. Failure never rolls back acceptance
+// or Attention; the existing bounded startup pass retries this projection.
+func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error {
+	if admission.State != BrainInputAdmissionAccepted || admission.AcceptedAt == nil {
+		return fmt.Errorf("only accepted Brain input admission can be projected")
+	}
+	if err := validateBrainInputAdmissions([]BrainInputAdmission{admission}); err != nil {
+		return err
+	}
+	if s.projectBrainInputAdmission != nil {
+		return s.projectBrainInputAdmission(admission)
+	}
+	item := TimelineItem{
+		ID:              AdmissionTimelineItemID(admission.RequestID),
+		ThreadID:        admission.ThreadID,
+		SessionID:       admission.SessionID,
+		Role:            "user",
+		Body:            admission.DisplayBody,
+		CreatedAt:       admission.AcceptedAt.UTC(),
+		Kind:            timelineKindUserMessage,
+		BrainAdmission:  true,
+		AdmissionSHA256: admission.BodySHA256,
+	}
+	recorded, err := s.AppendTimelineItem(item)
+	if err != nil {
+		return err
+	}
+	if !timelineItemMatchesBrainInputAdmission(recorded, admission) {
+		return fmt.Errorf("timeline identity %q belongs to different Brain input admission", recorded.ID)
+	}
+	return nil
+}
+
 // TimelineItem is one durable Brain-thread timeline row. The append-only
 // messages.jsonl ledger is the sole presentation truth for Brain chat history
 // and Work cards. Work Events remain the scheduler audit log and are never

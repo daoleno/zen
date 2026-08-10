@@ -818,6 +818,44 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "send_input":
 		brainSteering := s.brain != nil && s.brain.NoteUserSteering(raw.AgentID)
+		displayBody := strings.TrimSpace(raw.DisplayBody)
+		if displayBody == "" {
+			displayBody = strings.TrimSpace(raw.Text)
+		}
+		var brainAdmission brain.BrainInputAdmission
+		if brainSteering {
+			prepared, created, prepareErr := s.brain.PrepareHostUserInput(
+				raw.AgentID,
+				raw.RequestID,
+				displayBody,
+				raw.ConversationScopeKey,
+			)
+			if prepareErr != nil {
+				s.brain.CancelUserSteering(raw.AgentID)
+				log.Printf("brain prepare user input error: %v", prepareErr)
+				s.sendJSON(conn, map[string]any{
+					"type":       "input_failed",
+					"request_id": raw.RequestID,
+					"code":       "send_input_failed",
+					"message":    prepareErr.Error(),
+				})
+				break
+			}
+			brainAdmission = prepared
+			if !created {
+				// Pending is an ambiguous no-replay hold. Accepted is an
+				// idempotent duplicate that may still need timeline projection.
+				s.brain.CancelUserSteering(raw.AgentID)
+				if prepared.State == brain.BrainInputAdmissionAccepted {
+					if admitErr := s.brain.AdmitHostUserInput(raw.AgentID, raw.RequestID, displayBody, raw.ConversationScopeKey); admitErr == nil {
+						s.sendJSON(conn, map[string]any{"type": "input_sent", "request_id": raw.RequestID})
+						break
+					}
+				}
+				s.sendJSON(conn, map[string]any{"type": "input_pending", "request_id": raw.RequestID})
+				break
+			}
+		}
 		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
 		if err != nil {
 			if watcher.InputOutcomeFromError(err) == watcher.InputAmbiguous {
@@ -828,6 +866,14 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				break
 			}
 			if brainSteering {
+				if abortErr := s.brain.AbortHostUserInput(brainAdmission.RequestID, brainAdmission.ThreadID); abortErr != nil {
+					// The provider proved non-submission, but failure to durably
+					// remove the intent must remain a no-replay pending outcome.
+					log.Printf("brain abort user input error: %v", abortErr)
+					s.brain.CancelUserSteering(raw.AgentID)
+					s.sendJSON(conn, map[string]any{"type": "input_pending", "request_id": raw.RequestID})
+					break
+				}
 				s.brain.CancelUserSteering(raw.AgentID)
 			}
 			log.Printf("send_input error: %v", err)
@@ -838,11 +884,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"message":    err.Error(),
 			})
 		} else {
-			if s.brain != nil {
-				displayBody := strings.TrimSpace(raw.DisplayBody)
-				if displayBody == "" {
-					displayBody = strings.TrimSpace(raw.Text)
-				}
+			if brainSteering {
 				if admitErr := s.brain.AdmitHostUserInput(
 					raw.AgentID,
 					raw.RequestID,
