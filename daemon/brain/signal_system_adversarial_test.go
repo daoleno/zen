@@ -254,6 +254,379 @@ func resolveDelegatedSubmission(t *testing.T, store *Store, pending watcher.Turn
 	return resolved
 }
 
+func seedContinueAuthorityTurn(
+	t *testing.T,
+	store *Store,
+	workID, sessionID, turnID string,
+	status watcher.TurnStatus,
+	admission watcher.TurnAdmission,
+	acceptedAt time.Time,
+) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range database.BrainTurns {
+		if turn.SessionID == sessionID && turn.TurnID == turnID {
+			t.Fatalf("continue authority Turn %s/%s already exists", sessionID, turnID)
+		}
+	}
+	payloadDigest := pendingSubmissionDigest("continue authority " + turnID)
+	record := TurnRecord{
+		SessionID: sessionID, TurnID: turnID, WorkID: workID,
+		Status: status, Receipt: "receipt-" + turnID,
+		PayloadSHA256: payloadDigest, Admission: admission,
+		AcceptedAt: acceptedAt.UTC(), LeaseDeadline: acceptedAt.Add(turnLeaseGrace).UTC(),
+		UpdatedAt: store.nowUTC(), Facts: []TurnFactRecord{},
+	}
+	if !admission.Empty() {
+		record.ActivityID = "activity-" + turnID
+		record.Facts = append(record.Facts, TurnFactRecord{
+			FactID: "acceptance-" + turnID, Kind: "admission", Class: watcher.EvidenceReceipt,
+			At: admission.At.UTC(), Summary: "Provider accepted the exact input",
+		})
+	} else {
+		switch status {
+		case watcher.TurnBlocked:
+			record.Attention = "user_input"
+			record.Facts = append(record.Facts, TurnFactRecord{
+				FactID: "control-attention-" + turnID, Kind: "attention", Class: watcher.EvidenceControl,
+				At: acceptedAt.Add(time.Second), Summary: "Blocked without provider acceptance",
+			})
+		case watcher.TurnRunning:
+			record.ActivityID = "unaccepted-activity-" + turnID
+			record.Facts = append(record.Facts, TurnFactRecord{
+				FactID: "provider-running-" + turnID, Kind: "running", Class: watcher.EvidenceProvider,
+				At: acceptedAt.Add(time.Second), Summary: "Running derived without provider admission",
+			})
+		}
+	}
+	if watcher.TurnTerminal(status) {
+		settledAt := acceptedAt.Add(time.Minute).UTC()
+		record.SettledAt = &settledAt
+	}
+	database.BrainTurns = append(database.BrainTurns, record)
+	if err := store.persistOrchestrationLocked(database); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func bindContinueAuthorityReservation(t *testing.T, store *Store, workID, sessionID, providerTurnID string) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := workIndex(database.BrainWork, workID)
+	if index < 0 {
+		t.Fatalf("continue authority Work %s not found", workID)
+	}
+	reservation := database.BrainWork[index].SuccessorReservation
+	if reservation == nil || reservation.SessionID != sessionID {
+		t.Fatalf("continue authority reservation=%+v, want Session %s", reservation, sessionID)
+	}
+	reservation.ProviderTurnID = providerTurnID
+	database.BrainWork[index].SuccessorReservation = reservation
+	if err := store.persistOrchestrationLocked(database); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func continueAuthorityDurableBytes(t *testing.T, store *Store, workID, eventID string) (string, string, string) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workIndex := workIndex(database.BrainWork, workID)
+	eventIndex := workEventIndex(database.BrainWorkEvents, eventID)
+	if workIndex < 0 || eventIndex < 0 {
+		t.Fatalf("continue authority state missing Work=%s Event=%s", workID, eventID)
+	}
+	workBytes, err := json.Marshal(database.BrainWork[workIndex])
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventBytes, err := json.Marshal(database.BrainWorkEvents[eventIndex])
+	if err != nil {
+		t.Fatal(err)
+	}
+	submissionBytes, err := json.Marshal(database.BrainTurnSubmissions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(workBytes), string(eventBytes), string(submissionBytes)
+}
+
+// Continue may promote only the requested Session's current canonical
+// provider-accepted Turn. Status alone is not acceptance authority: a
+// pre-receipt Admitted row can derive Blocked from Control attention or
+// Running from provider activity while its canonical admission tuple remains
+// empty. Every rejection must precede Event, Work, submission, and persistence
+// mutation and remain byte-equivalent after reopen.
+func TestSignalAdversarialContinueRequiresCurrentCanonicalProviderAcceptance(t *testing.T) {
+	type setupCandidate func(
+		t *testing.T,
+		store *Store,
+		item Work,
+		delivered WorkEvent,
+		sessionID string,
+		acceptedAt time.Time,
+	)
+
+	completeAdmission := func(turnID string, acceptedAt time.Time) watcher.TurnAdmission {
+		return watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-" + turnID, Cursor: 1,
+			SHA256: pendingSubmissionDigest("continue authority " + turnID),
+			At:     acceptedAt.Add(time.Second).UTC(),
+		}
+	}
+	runRejected := func(t *testing.T, reserved bool, successorSessionID string, setup setupCandidate) {
+		t.Helper()
+		root := t.TempDir()
+		store, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := createSignalTestWork(t, store, "Continue authority", successorSessionID)
+		appendSignalTestEvent(t, store, item, "continue-authority")
+		delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+		if reserved {
+			if _, err := store.ReserveWorkSuccessor(item.ID, successorSessionID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		acceptedAt := time.Date(2026, 8, 10, 7, 0, 0, 0, time.UTC)
+		setup(t, store, item, delivered, successorSessionID, acceptedAt)
+
+		beforeWork, beforeEvent, beforeSubmissions := continueAuthorityDurableBytes(t, store, item.ID, delivered.ID)
+		writes := 0
+		originalWrite := store.writeOrchestration
+		store.writeOrchestration = func(path string, value any) error {
+			writes++
+			return originalWrite(path, value)
+		}
+		_, _, err = store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			ProviderTurnID:       delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+			Disposition:          WorkDispositionContinue,
+			SuccessorSessionID:   successorSessionID,
+		})
+		store.writeOrchestration = originalWrite
+		if err == nil {
+			t.Fatal("continue promoted a Turn without exact current provider-acceptance authority")
+		}
+		if writes != 0 {
+			t.Fatalf("rejected continue attempted %d persistence writes", writes)
+		}
+		afterWork, afterEvent, afterSubmissions := continueAuthorityDurableBytes(t, store, item.ID, delivered.ID)
+		if afterWork != beforeWork {
+			t.Fatalf("rejected continue mutated Work\nbefore=%s\nafter=%s", beforeWork, afterWork)
+		}
+		if afterEvent != beforeEvent {
+			t.Fatalf("rejected continue mutated Event\nbefore=%s\nafter=%s", beforeEvent, afterEvent)
+		}
+		if afterSubmissions != beforeSubmissions {
+			t.Fatalf("rejected continue changed provider submission authority\nbefore=%s\nafter=%s", beforeSubmissions, afterSubmissions)
+		}
+
+		reopened, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reopenedWork, reopenedEvent, reopenedSubmissions := continueAuthorityDurableBytes(t, reopened, item.ID, delivered.ID)
+		if reopenedWork != beforeWork || reopenedEvent != beforeEvent || reopenedSubmissions != beforeSubmissions {
+			t.Fatalf(
+				"reopen changed rejected authority state\nWork before=%s after=%s\nEvent before=%s after=%s\nsubmissions before=%s after=%s",
+				beforeWork, reopenedWork, beforeEvent, reopenedEvent, beforeSubmissions, reopenedSubmissions,
+			)
+		}
+	}
+
+	for _, reserved := range []bool{false, true} {
+		pathName := "current"
+		if reserved {
+			pathName = "reserved"
+		}
+		for _, candidate := range []struct {
+			name   string
+			status watcher.TurnStatus
+		}{
+			{name: "pre-receipt-admitted", status: watcher.TurnAdmitted},
+			{name: "blocked-without-provider-admission", status: watcher.TurnBlocked},
+			{name: "running-without-provider-admission", status: watcher.TurnRunning},
+		} {
+			reserved := reserved
+			candidate := candidate
+			t.Run(pathName+"/"+candidate.name, func(t *testing.T) {
+				runRejected(t, reserved, "brain-agent-unaccepted:@1", func(
+					t *testing.T, store *Store, item Work, _ WorkEvent, sessionID string, acceptedAt time.Time,
+				) {
+					turnID := sessionID + ":turn:1"
+					seedContinueAuthorityTurn(t, store, item.ID, sessionID, turnID, candidate.status, watcher.TurnAdmission{}, acceptedAt)
+					if reserved {
+						bindContinueAuthorityReservation(t, store, item.ID, sessionID, turnID)
+					}
+				})
+			})
+		}
+	}
+
+	t.Run("reserved/incomplete-provider-admission", func(t *testing.T) {
+		runRejected(t, true, "brain-agent-partial-admission:@1", func(
+			t *testing.T, store *Store, item Work, _ WorkEvent, sessionID string, acceptedAt time.Time,
+		) {
+			turnID := sessionID + ":turn:1"
+			partial := watcher.TurnAdmission{Stream: "provider", ID: "provider-row-without-cursor", At: acceptedAt.Add(time.Second)}
+			seedContinueAuthorityTurn(t, store, item.ID, sessionID, turnID, watcher.TurnRunning, partial, acceptedAt)
+			bindContinueAuthorityReservation(t, store, item.ID, sessionID, turnID)
+		})
+	})
+
+	t.Run("reserved/older-provider-turn", func(t *testing.T) {
+		runRejected(t, true, "brain-agent-older-turn:@1", func(
+			t *testing.T, store *Store, item Work, _ WorkEvent, sessionID string, acceptedAt time.Time,
+		) {
+			olderTurnID := sessionID + ":turn:1"
+			newerTurnID := sessionID + ":turn:2"
+			seedContinueAuthorityTurn(
+				t, store, item.ID, sessionID, olderTurnID, watcher.TurnRunning,
+				completeAdmission(olderTurnID, acceptedAt), acceptedAt,
+			)
+			seedContinueAuthorityTurn(
+				t, store, item.ID, sessionID, newerTurnID, watcher.TurnRunning,
+				completeAdmission(newerTurnID, acceptedAt.Add(time.Minute)), acceptedAt.Add(time.Minute),
+			)
+			bindContinueAuthorityReservation(t, store, item.ID, sessionID, olderTurnID)
+		})
+	})
+
+	t.Run("current/wrong-work", func(t *testing.T) {
+		runRejected(t, false, "brain-agent-wrong-work:@1", func(
+			t *testing.T, store *Store, item Work, _ WorkEvent, sessionID string, acceptedAt time.Time,
+		) {
+			store.mu.Lock()
+			database, err := store.loadOrchestrationLocked()
+			if err != nil {
+				store.mu.Unlock()
+				t.Fatal(err)
+			}
+			index := workIndex(database.BrainWork, item.ID)
+			if index < 0 {
+				store.mu.Unlock()
+				t.Fatal("continue authority target Work disappeared")
+			}
+			database.BrainWork[index].OwnerSessionID = ""
+			database.BrainWork[index].OwnerDelegated = false
+			if err := store.persistOrchestrationLocked(database); err != nil {
+				store.mu.Unlock()
+				t.Fatal(err)
+			}
+			store.mu.Unlock()
+			distractor := createSignalTestWork(t, store, "Wrong Work", sessionID)
+			turnID := sessionID + ":turn:1"
+			seedContinueAuthorityTurn(
+				t, store, distractor.ID, sessionID, turnID, watcher.TurnRunning,
+				completeAdmission(turnID, acceptedAt), acceptedAt,
+			)
+		})
+	})
+
+	t.Run("current/host-handling-turn", func(t *testing.T) {
+		runRejected(t, false, "brain-agent-brain-hidden:@1", func(
+			_ *testing.T, _ *Store, _ Work, _ WorkEvent, _ string, _ time.Time,
+		) {
+		})
+	})
+
+	for _, candidate := range []struct {
+		name   string
+		status watcher.TurnStatus
+	}{
+		{name: "admitted-even-with-tuple", status: watcher.TurnAdmitted},
+		{name: "done", status: watcher.TurnDone},
+		{name: "failed", status: watcher.TurnFailed},
+		{name: "unknown", status: watcher.TurnUnknown},
+	} {
+		candidate := candidate
+		t.Run("current/inactive-"+candidate.name, func(t *testing.T) {
+			runRejected(t, false, "brain-agent-inactive:@1", func(
+				t *testing.T, store *Store, item Work, _ WorkEvent, sessionID string, acceptedAt time.Time,
+			) {
+				turnID := sessionID + ":turn:1"
+				seedContinueAuthorityTurn(
+					t, store, item.ID, sessionID, turnID, candidate.status,
+					completeAdmission(turnID, acceptedAt), acceptedAt,
+				)
+			})
+		})
+	}
+}
+
+func TestSignalAdversarialContinueAcceptsExactCurrentProviderAdmission(t *testing.T) {
+	for _, reserved := range []bool{false, true} {
+		reserved := reserved
+		name := "current"
+		if reserved {
+			name = "reserved"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID := "brain-agent-accepted:@1"
+			item := createSignalTestWork(t, store, "Accepted continuation", sessionID)
+			appendSignalTestEvent(t, store, item, "accepted-continuation")
+			delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+			if reserved {
+				if _, err := store.ReserveWorkSuccessor(item.ID, sessionID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			acceptedAt := time.Date(2026, 8, 10, 7, 30, 0, 0, time.UTC)
+			turnID := sessionID + ":turn:1"
+			seedContinueAuthorityTurn(t, store, item.ID, sessionID, turnID, watcher.TurnAccepted, watcher.TurnAdmission{
+				Stream: "provider", ID: "admission-" + turnID, Cursor: 1,
+				SHA256: pendingSubmissionDigest("continue authority " + turnID), At: acceptedAt.Add(time.Second),
+			}, acceptedAt)
+			if reserved {
+				bindContinueAuthorityReservation(t, store, item.ID, sessionID, turnID)
+			}
+			resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+				ProviderTurnID:       delivered.ProviderTurnID,
+				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+				Disposition:          WorkDispositionContinue,
+				SuccessorSessionID:   sessionID,
+			})
+			if err != nil {
+				t.Fatalf("exact provider-accepted continue rejected: %v", err)
+			}
+			if resolvedEvent.HandledAt == nil || resolvedWork.OwnerSessionID != sessionID || resolvedWork.SuccessorReservation != nil {
+				t.Fatalf("exact provider-accepted continue Event=%+v Work=%+v", resolvedEvent, resolvedWork)
+			}
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			durableWork, err := reopened.Work(item.ID)
+			if err != nil || durableWork.OwnerSessionID != sessionID {
+				t.Fatalf("accepted continuation did not survive reopen: Work=%+v err=%v", durableWork, err)
+			}
+		})
+	}
+}
+
 // canonicalHostDeliveryWatcher exercises the same prepare/provider/resolve
 // transaction owned by Watcher.SubmitBrainHostInput. It deliberately does not
 // bootstrap an Admitted Turn: product-path Host delivery evidence must come
@@ -1306,9 +1679,12 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatal(err)
 	}
 	turnID := owner + ":turn:1"
-	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
-		SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC(),
-	})
+	acceptedAt := time.Now().UTC()
+	seedContinueAuthorityTurn(t, store, item.ID, owner, turnID, watcher.TurnAccepted, watcher.TurnAdmission{
+		Stream: "provider", ID: "admission-" + turnID, Cursor: 1,
+		SHA256: pendingSubmissionDigest("continue authority " + turnID), At: acceptedAt.Add(time.Second),
+	}, acceptedAt)
+	bindContinueAuthorityReservation(t, store, item.ID, owner, turnID)
 	_, owned := resolveAdversarialEvent(t, store, next, WorkDispositionContinue, nil, owner)
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending || projected.Wake != nil {
 		t.Fatalf("continue mode projection=%+v Work=%+v", projected, owned)
@@ -1383,9 +1759,10 @@ func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner
 	}
 	acceptedAt := time.Now().UTC().Add(-time.Second)
 	turnID := owner + ":turn:1"
-	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
-		SessionID: owner, TurnID: turnID, AcceptedAt: acceptedAt,
-	})
+	seedContinueAuthorityTurn(t, store, item.ID, owner, turnID, watcher.TurnAccepted, watcher.TurnAdmission{
+		Stream: "provider", ID: "admission-" + turnID, Cursor: 1,
+		SHA256: pendingSubmissionDigest("continue authority " + turnID), At: acceptedAt.Add(time.Second),
+	}, acceptedAt)
 	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
 		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
 	}
@@ -2026,9 +2403,12 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	}
 	s1Turn := s1 + ":turn:1"
 	s1AcceptedAt := time.Now().UTC()
-	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
-		SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt,
-	})
+	s1Admission := watcher.TurnAdmission{
+		Stream: "provider", ID: "admission-" + s1Turn, Cursor: 1,
+		SHA256: pendingSubmissionDigest("continue authority " + s1Turn), At: s1AcceptedAt.Add(time.Second),
+	}
+	seedContinueAuthorityTurn(t, store, item.ID, s1, s1Turn, watcher.TurnAccepted, s1Admission, s1AcceptedAt)
+	bindContinueAuthorityReservation(t, store, item.ID, s1, s1Turn)
 	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}
@@ -2059,7 +2439,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	if _, changed, err := restarted.ApplyTurnFact(watcher.TurnFact{
 		SessionID: s1, TurnID: s1Turn,
 		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider-s1-done",
-		ActivityID: "activity-s1", StartedAt: s1AcceptedAt.Add(time.Second),
+		Admission: s1Admission, ActivityID: "activity-s1", StartedAt: s1AcceptedAt.Add(time.Second),
 		SettledAt: s1AcceptedAt.Add(2 * time.Second), At: s1AcceptedAt.Add(2 * time.Second),
 	}); err != nil || !changed {
 		t.Fatalf("terminalize promoted S1 changed=%v err=%v", changed, err)

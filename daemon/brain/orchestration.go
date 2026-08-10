@@ -3087,7 +3087,7 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 			// this transaction; consume never binds it to a coincident Host ID.
 			successorTurnID = reservation.ProviderTurnID
 		}
-		if !databaseHasActiveSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
+		if !databaseHasCanonicalProviderAcceptedSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, fmt.Errorf("successor Session is not an accepted active non-Host owner of Work")
 		}
@@ -3149,15 +3149,19 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	return resolvedEvent, item, nil
 }
 
-func databaseHasActiveSuccessor(database orchestrationDatabase, workID, sessionID, providerTurnID string) bool {
-	for _, turn := range database.BrainTurns {
-		if turn.WorkID == workID && turn.SessionID == sessionID &&
-			(providerTurnID == "" || turn.TurnID == providerTurnID) && !isHostHandlingTurn(database, turn) &&
-			turn.Status != watcher.TurnDone && turn.Status != watcher.TurnFailed && turn.Status != watcher.TurnUnknown {
-			return true
-		}
+func databaseHasCanonicalProviderAcceptedSuccessor(database orchestrationDatabase, workID, sessionID, providerTurnID string) bool {
+	turn, found := currentTurnForSession(database, sessionID)
+	if !found || turn.WorkID != workID ||
+		(providerTurnID != "" && turn.TurnID != providerTurnID) ||
+		isHostHandlingTurn(database, turn) || turn.Admission.Empty() {
+		return false
 	}
-	return false
+	switch turn.Status {
+	case watcher.TurnAccepted, watcher.TurnRunning, watcher.TurnBlocked:
+		return true
+	default:
+		return false
+	}
 }
 
 func terminalSessionFinalizations(database orchestrationDatabase, item Work, now time.Time) []SessionFinalization {

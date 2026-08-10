@@ -1105,6 +1105,7 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	store, sessionID, turnID := ledgerTestStore(t)
 	acceptedAt := time.Date(2026, 8, 9, 21, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return acceptedAt }
+	admittedAcceptedTurn(t, store, sessionID, turnID, acceptedAt)
 	// Old turn's own lease expires and stales once.
 	oldStaleAt := acceptedAt.Add(turnLeaseGrace).Add(time.Second)
 	store.now = func() time.Time { return oldStaleAt }
@@ -1231,9 +1232,13 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	if _, err := store.ReserveWorkSuccessor(workItem.ID, sessionID); err != nil {
 		t.Fatalf("reserve replacement Turn: %v", err)
 	}
-	bootstrapAdmittedTurnFixture(t, store, workItem.ID, watcher.AdmittedTurn{
-		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: at.Add(2 * time.Minute),
-	})
+	newAcceptedAt := at.Add(2 * time.Minute)
+	newAdmission := watcher.TurnAdmission{
+		Stream: "provider", ID: "admission-" + newTurnID, Cursor: 1,
+		SHA256: pendingSubmissionDigest("continue authority " + newTurnID), At: newAcceptedAt.Add(time.Second),
+	}
+	seedContinueAuthorityTurn(t, store, workItem.ID, sessionID, newTurnID, watcher.TurnAccepted, newAdmission, newAcceptedAt)
+	bindContinueAuthorityReservation(t, store, workItem.ID, sessionID, newTurnID)
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
