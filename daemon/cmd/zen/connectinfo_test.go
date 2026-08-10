@@ -434,6 +434,7 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 	req := runProgressCLIAndCaptureRequest(t,
 		"brain-agent-env:@1",
 		[]string{
+			"--turn-id", "turn:cli-current",
 			"--status", "running",
 			"--phase", "working",
 			"--attention", "none",
@@ -446,7 +447,7 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 		},
 	)
 
-	if req.Type != "agent_progress" || req.AgentID != "brain-agent-env:@1" {
+	if req.Type != "agent_progress" || req.AgentID != "brain-agent-env:@1" || req.TurnID != "turn:cli-current" {
 		t.Fatalf("request identity = %#v", req)
 	}
 	if req.Status != "running" || req.Phase != "working" || req.Attention != "none" {
@@ -465,6 +466,7 @@ func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
 		"brain-agent-env:@1",
 		[]string{
 			"-id", "brain-agent-explicit:@2",
+			"--turn-id", "turn:explicit",
 			"--status", "done",
 			"--phase", "reporting",
 			"--attention", "done",
@@ -473,8 +475,8 @@ func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
 		},
 	)
 
-	if req.AgentID != "brain-agent-explicit:@2" {
-		t.Fatalf("request agent id = %q", req.AgentID)
+	if req.AgentID != "brain-agent-explicit:@2" || req.TurnID != "turn:explicit" {
+		t.Fatalf("request identity = %#v", req)
 	}
 	if req.Status != "done" || req.Phase != "reporting" || req.Attention != "done" {
 		t.Fatalf("request progress = %#v", req)

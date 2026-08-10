@@ -172,28 +172,6 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 		t.Fatalf("canonical pending submission = %+v found=%v", pending, found)
 	}
 
-	// A stale failed progress report must never terminalize the turn: the
-	// canonical projection stays running.
-	if _, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
-		Status:    "failed",
-		Phase:     "starting",
-		Attention: "failed",
-		Summary:   "Initial delegated prompt was not submitted: Session input outcome is unknown and will not be replayed",
-		TaskClass: "lasting_design",
-		EventKind: "risk",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	agent := w.GetAgent(sessionID)
-	if agent == nil || agent.State != classifier.StateRunning || agent.Attention != "none" ||
-		agent.NeedsAttention || agent.Phase != "" || agent.TaskClass != "" ||
-		agent.EventKind != "" || agent.LeaseSeconds != 0 {
-		t.Fatalf("stale failed attempt survived a live canonical turn: %+v", agent)
-	}
-	if _, found, _ := ledger.Turn(sessionID); found {
-		t.Fatal("control failed report promoted pending submission")
-	}
-
 	// The poll resolves the exact pending admission first, then the normal
 	// reducer advances Accepted → Running; input is never replayed.
 	pending, found, pendingErr := w.pendingTurnSubmission(sessionID)
@@ -215,7 +193,7 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	if turn.Status != TurnRunning {
 		t.Fatalf("provider-native running did not promote the turn: %+v", turn)
 	}
-	agent = w.GetAgent(sessionID)
+	agent := w.GetAgent(sessionID)
 	state, _ := projectDelegatedTurn(agent, turn)
 	if state != classifier.StateRunning {
 		t.Fatalf("poll projection = %s", state)
@@ -241,11 +219,11 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	}
 }
 
-// TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn
+// TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionStartsSignalTurn
 // verifies that a confirmed follow-up after an ambiguous admission establishes
 // observable activity on the existing nonterminal turn (steering), does not
 // replay, and the same turn settles exactly once.
-func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *testing.T) {
+func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionOwnsNewSignalTurn(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
@@ -314,19 +292,19 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionSteersExistingTurn(t *t
 		t.Fatalf("pending first admission reconciliation = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 
-	// A confirmed follow-up steers into the existing nonterminal turn; the
-	// same canonical turn settles exactly once.
+	// A confirmed follow-up may reuse the same native provider activity, but
+	// its prompt-carried signal identity owns a new canonical Turn.
 	followTurn := "opencode-followup:@2:turn:2"
 	result, err = w.SubmitDelegatedInput(sessionID, "follow-up", followTurn, now.Add(time.Minute))
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != firstTurn {
-		t.Fatalf("follow-up admission = (%+v, %v), want steering into %s", result, err, firstTurn)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != followTurn {
+		t.Fatalf("follow-up admission = (%+v, %v), want signal Turn %s", result, err, followTurn)
 	}
 	if len(io.queues) != 2 {
 		t.Fatalf("follow-up replayed: queues=%d", len(io.queues))
 	}
 	turn, _, _ := ledger.Turn(sessionID)
-	if turn.TurnID != firstTurn {
-		t.Fatalf("follow-up created a competing lifecycle: %+v", turn)
+	if turn.TurnID != followTurn {
+		t.Fatalf("follow-up did not become the current lifecycle: %+v", turn)
 	}
 
 	turn = w.applyPollFacts(sessionID, true, -1, now.Add(3*time.Second), turn, probe.next())

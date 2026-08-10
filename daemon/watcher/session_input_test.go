@@ -473,7 +473,7 @@ func (l *fakeTurnLedger) ResolveTurnSubmission(resolution TurnSubmissionResoluti
 		resolution.Admission.SHA256 != submission.PayloadSHA256 {
 		return TurnSubmission{}, fmt.Errorf("provider admission digest mismatch")
 	}
-	if submission.Mode == TurnSubmissionConditionalSteer && resolution.ActivityID == submission.BaselineActivityID {
+	if !submission.SignalProtocol && submission.Mode == TurnSubmissionConditionalSteer && resolution.ActivityID == submission.BaselineActivityID {
 		submission.ResolvedTurnID = submission.ExistingTurnID
 	} else {
 		submission.ResolvedTurnID = submission.ProposedTurnID
@@ -482,6 +482,7 @@ func (l *fakeTurnLedger) ResolveTurnSubmission(resolution TurnSubmissionResoluti
 			Status: TurnAccepted, AcceptedAt: submission.AcceptedAt,
 			ActivityID: resolution.ActivityID, Admission: resolution.Admission,
 			HasAdmission: true, PaneGeneration: submission.PaneGeneration,
+			SignalProtocol: submission.SignalProtocol,
 		}
 	}
 	submission.State = TurnSubmissionResolved
@@ -575,6 +576,20 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 				}
 				changed = true
 			}
+		case "attention":
+			if turn.SignalProtocol {
+				turn.Status = TurnBlocked
+				turn.Attention = "user_input"
+				changed = true
+			}
+		case "done", "failed":
+			if turn.SignalProtocol {
+				turn.Status = TurnDone
+				if fact.Kind == "failed" {
+					turn.Status = TurnFailed
+				}
+				changed = true
+			}
 		}
 	case EvidenceProvider:
 		switch fact.Kind {
@@ -632,6 +647,46 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 		l.turns[fact.SessionID] = turn
 	}
 	return turn, changed, nil
+}
+
+func (l *fakeTurnLedger) ApplyDelegatedTurnProgress(fact TurnFact) (TurnProgressResult, error) {
+	if l == nil {
+		return TurnProgressResult{}, fmt.Errorf("ledger unavailable")
+	}
+	l.mu.Lock()
+	for key, submission := range l.submissions {
+		if submission.SessionID != fact.SessionID || submission.State != TurnSubmissionPending {
+			continue
+		}
+		if !submission.SignalProtocol {
+			l.mu.Unlock()
+			return TurnProgressResult{}, nil
+		}
+		if strings.TrimSpace(fact.TurnID) == "" || submission.ProposedTurnID != fact.TurnID {
+			l.mu.Unlock()
+			return TurnProgressResult{Owned: true}, nil
+		}
+		submission.State = TurnSubmissionResolved
+		submission.ResolvedTurnID = submission.ProposedTurnID
+		l.submissions[key] = submission
+		l.turns[fact.SessionID] = TurnSnapshot{
+			SessionID: fact.SessionID, TurnID: fact.TurnID, Status: TurnAccepted,
+			AcceptedAt: submission.AcceptedAt, SignalProtocol: true,
+		}
+		break
+	}
+	turn, found := l.turns[fact.SessionID]
+	owned := found && turn.SignalProtocol
+	matched := owned && strings.TrimSpace(fact.TurnID) != "" && turn.TurnID == fact.TurnID
+	l.mu.Unlock()
+	if !owned {
+		return TurnProgressResult{}, nil
+	}
+	if !matched {
+		return TurnProgressResult{Owned: true}, nil
+	}
+	snapshot, changed, err := l.ApplyTurnFact(fact)
+	return TurnProgressResult{Turn: snapshot, Owned: true, Matched: true, Changed: changed}, err
 }
 
 func (l *fakeTurnLedger) snapshot(sessionID string) TurnSnapshot {
@@ -1056,6 +1111,49 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	if turn.TurnID != second.ID || turn.Status != TurnAccepted ||
 		len(io.submissions) != 2 {
 		t.Fatalf("follow-up canonical turn=%+v submissions=%#v", turn, io.submissions)
+	}
+}
+
+func TestSessionInputMatchingSignalCompletesWhenProviderEvidenceIsUnavailable(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	owner := newLedgerSessionInputOwner(io, ledger)
+	turn := testTurnDraft("turn:control-only", time.Now().UTC(), identity)
+	turn.SignalProtocol = true
+	payload := "control-only delegated prompt"
+	confirmer := delegatedInputConfirmer{
+		baseline: func() (delegatedInputBaseline, error) {
+			return delegatedInputBaseline{Provider: ProviderActivityObservation{
+				ID: "provider-opaque", Status: "running", Structured: true,
+			}}, nil
+		},
+		confirm: func(delegatedAdmissionEvidence, time.Time, string) (delegatedInputConfirmation, error) {
+			result, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+				SessionID: "agent:@1", TurnID: turn.ID, Class: EvidenceControl, Kind: "done",
+				SourceID: "control\x00provider-unavailable", At: time.Now().UTC(),
+				Summary: "REVIEW_READY without provider evidence",
+			})
+			if err != nil || !result.Owned || !result.Matched || result.Turn.Status != TurnDone {
+				return delegatedInputConfirmation{}, fmt.Errorf("matching signal did not settle: result=%+v err=%v", result, err)
+			}
+			return delegatedInputConfirmation{Outcome: InputAmbiguous}, errors.New("provider evidence intentionally unavailable")
+		},
+	}
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		payload, turn, confirmer,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID || len(io.queues) != 1 {
+		t.Fatalf("control-only admission = (%+v, %v), queues=%d", result, err, len(io.queues))
+	}
+	submission, found, err := ledger.TurnSubmission("agent:@1", turn.ID)
+	if err != nil || !found || submission.State != TurnSubmissionResolved ||
+		submission.ResolvedTurnID != turn.ID || !submission.ResolvedAdmission.Empty() {
+		t.Fatalf("control-only submission = (%+v, %v, %v)", submission, found, err)
+	}
+	if current, found, err := ledger.Turn("agent:@1"); err != nil || !found || current.Status != TurnDone {
+		t.Fatalf("control-only Turn = (%+v, %v, %v)", current, found, err)
 	}
 }
 

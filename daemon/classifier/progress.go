@@ -8,6 +8,10 @@ import (
 )
 
 type AgentProgress struct {
+	// TurnID is the random identity printed in one delegated prompt. It is
+	// empty for ordinary/provider-native Sessions that do not participate in
+	// the delegated signal contract.
+	TurnID       string
 	Status       string
 	Phase        string
 	Attention    string
@@ -25,6 +29,7 @@ type AgentProgress struct {
 }
 
 func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
+	progress.TurnID = strings.TrimSpace(progress.TurnID)
 	progress.Status = strings.TrimSpace(progress.Status)
 	progress.Phase = strings.TrimSpace(progress.Phase)
 	progress.Attention = strings.TrimSpace(progress.Attention)

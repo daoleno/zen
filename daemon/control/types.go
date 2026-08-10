@@ -40,6 +40,7 @@ type Request struct {
 	DetailsJSON          string                                 `json:"details_json,omitempty"`
 	LeaseSeconds         int                                    `json:"lease_seconds,omitempty"`
 	ProgressEventID      string                                 `json:"progress_event_id,omitempty"`
+	TurnID               string                                 `json:"turn_id,omitempty"`
 	Text                 string                                 `json:"text,omitempty"`
 	Submit               bool                                   `json:"submit,omitempty"`
 	Hidden               bool                                   `json:"hidden,omitempty"`

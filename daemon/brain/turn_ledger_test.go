@@ -150,6 +150,52 @@ func TestTurnFactIDReplayIsNoOp(t *testing.T) {
 	}
 }
 
+func TestMatchingControlSignalsOwnCanonicalTerminalAndAttentionStates(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		factKind   string
+		wantStatus watcher.TurnStatus
+		wantEvent  string
+		wantWork   WorkStatus
+	}{
+		{name: "done", factKind: "done", wantStatus: watcher.TurnDone, wantEvent: "session.done", wantWork: WorkWaiting},
+		{name: "failed", factKind: "failed", wantStatus: watcher.TurnFailed, wantEvent: "session.failed", wantWork: WorkWaiting},
+		{name: "blocked", factKind: "attention", wantStatus: watcher.TurnBlocked, wantEvent: "session.needs_input", wantWork: WorkNeedsInput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, sessionID, at := pendingSubmissionTestStore(t)
+			store.now = func() time.Time { return at }
+			turnID := "turn:control-" + test.name
+			pending := prepareSignalSubmission(t, store, sessionID, turnID, test.name+" prompt", at)
+			result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+				SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+				Kind: test.factKind, SourceID: "control\x00" + test.name,
+				At: at.Add(time.Second), Summary: "matching " + test.name,
+			})
+			if err != nil || !result.Owned || !result.Matched || !result.Changed || result.Turn.Status != test.wantStatus {
+				t.Fatalf("matching signal = (%+v, %v)", result, err)
+			}
+			item, err := store.Work(pending.WorkID)
+			if err != nil || item.Status != test.wantWork {
+				t.Fatalf("derived Work = %+v err=%v", item, err)
+			}
+			events, err := store.ListWorkEvents(pending.WorkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, event := range events {
+				if event.Kind == test.wantEvent && event.Actionable {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("actionable %s events = %+v", test.wantEvent, events)
+			}
+		})
+	}
+}
+
 // TestTurnAmbiguousAdmissionNeverFailedAndAdoptsProviderActivity covers C.6
 // and the live OpenCode/Research-B incidents: an ambiguous byte-admission can
 // never become false failed while the provider works; the poll adopts the
@@ -158,8 +204,10 @@ func TestTurnAmbiguousAdmissionNeverFailedAndAdoptsProviderActivity(t *testing.T
 	store, sessionID, turnID := ledgerTestStore(t)
 	acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 
-	// A control failed hint on an Admitted turn is denied outright (C.2.3):
-	// canonical status stays Admitted, no row, no wake.
+	// This legacy Admitted row has no prompt-carried signal contract. A direct
+	// Control write therefore cannot establish admission, move canonical state,
+	// or wake Brain; the identity-gated entry point promotes a matching pending
+	// submission before invoking the shared reducer.
 	hint := watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,
 		Class: watcher.EvidenceControl, Kind: "failed",
@@ -169,7 +217,7 @@ func TestTurnAmbiguousAdmissionNeverFailedAndAdoptsProviderActivity(t *testing.T
 	}
 	snapshot, changed, err := store.ApplyTurnFact(hint)
 	if err != nil || changed || snapshot.Status != watcher.TurnAdmitted {
-		t.Fatalf("control failed hint = (%+v, %v, %v), want denied", snapshot, changed, err)
+		t.Fatalf("uncontracted control failed = (%+v, %v, %v), want denied", snapshot, changed, err)
 	}
 	workItem, _, _ := store.WorkByOwnerSession(sessionID)
 	if workItem.Status != WorkRunning {
@@ -324,29 +372,12 @@ func TestExactActivityProviderTerminalConvergesAtomicallyAndNeverReopens(t *test
 		t.Fatal(err)
 	}
 
-	// Control done remains fail-closed: it may attach one audit hint but
-	// cannot settle the turn, wake Brain, or move Work to review-ready.
-	controlDone := watcher.TurnFact{
-		SessionID: sessionID, TurnID: turnID,
-		Class:    watcher.EvidenceControl,
-		Kind:     "done",
-		SourceID: "control\x00done-report",
-		At:       acceptedAt.Add(3 * time.Second),
-	}
-	snapshot, changed, err := store.ApplyTurnFact(controlDone)
-	if err != nil || !changed || snapshot.Status != watcher.TurnAccepted {
-		t.Fatalf("Control done = (%+v, %v, %v), want hint-only Accepted", snapshot, changed, err)
-	}
 	workItem, _, _ := store.WorkByOwnerSession(sessionID)
 	dedupeKey := "session:" + sessionID + ":turn:" + turnID + ":session.done"
-	row, found := turnEvent(t, store, workItem.ID, dedupeKey)
-	if !found || row.Actionable {
-		t.Fatalf("Control done row = %+v found=%v, want non-actionable", row, found)
-	}
 
 	// The authoritative terminal intentionally carries no admission tuple:
 	// exact ActivityID identity alone must bind and atomically converge the
-	// turn, Work review state, and the existing exactly-once outbox row.
+	// turn, Work review state, and exactly-once outbox row.
 	terminal := watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,
 		Class:      watcher.EvidenceProvider,
@@ -357,7 +388,7 @@ func TestExactActivityProviderTerminalConvergesAtomicallyAndNeverReopens(t *test
 		SettledAt:  acceptedAt.Add(10 * time.Second),
 		At:         acceptedAt.Add(11 * time.Second),
 	}
-	snapshot, changed, err = store.ApplyTurnFact(terminal)
+	snapshot, changed, err := store.ApplyTurnFact(terminal)
 	if err != nil || !changed || snapshot.Status != watcher.TurnDone || snapshot.SettledAt == nil {
 		t.Fatalf("exact Activity terminal = (%+v, %v, %v), want settled Done", snapshot, changed, err)
 	}
@@ -366,7 +397,7 @@ func TestExactActivityProviderTerminalConvergesAtomicallyAndNeverReopens(t *test
 		workItem.NextAction != "Review the delegated Session result." || workItem.WaitFor != "" {
 		t.Fatalf("Work did not converge to review-ready waiting: %+v err=%v", workItem, err)
 	}
-	row, found = turnEvent(t, store, workItem.ID, dedupeKey)
+	row, found := turnEvent(t, store, workItem.ID, dedupeKey)
 	if !found || !row.Actionable {
 		t.Fatalf("provider terminal did not flip the same row actionable: %+v found=%v", row, found)
 	}
@@ -843,10 +874,10 @@ func TestTurnControlRunningNeverPromotesAdmitted(t *testing.T) {
 	}
 }
 
-// TestTurnControlDoneHintDeniedBeforeAcceptance covers the C.2.3 gate:
-// control terminal reports are hints only for Accepted+ turns at/after
-// AcceptedAt; from Admitted they are denied outright.
-func TestTurnControlDoneHintDeniedBeforeAcceptance(t *testing.T) {
+// TestUncontractedControlDoneCannotAdmitTurn verifies that the reducer alone
+// cannot turn an old/provider-native Admitted row into an accepted prompt.
+// Signal-owned progress enters through ApplyDelegatedTurnProgress instead.
+func TestUncontractedControlDoneCannotAdmitTurn(t *testing.T) {
 	store, sessionID, turnID := ledgerTestStore(t)
 	acceptedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{

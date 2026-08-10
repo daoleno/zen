@@ -1044,6 +1044,7 @@ func runAgentProgress(args []string, stderr io.Writer) error {
 	fs.StringVar(&cfg.stateDir, "state-dir", cfg.stateDir, "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.StringVar(&req.AgentID, "id", req.AgentID, "agent session id; defaults to ZEN_AGENT_ID")
+	fs.StringVar(&req.TurnID, "turn-id", "", "exact delegated prompt turn identity")
 	fs.StringVar(&req.Status, "status", "", "progress status: running, done, failed, or blocked")
 	fs.StringVar(&req.Phase, "phase", "", "progress phase: starting, reading, planning, working, verifying, or reporting")
 	fs.StringVar(&req.Attention, "attention", "", "attention state: none, done, blocked, failed, user_input, or stale")

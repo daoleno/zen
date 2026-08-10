@@ -38,6 +38,9 @@ type TurnRecord struct {
 	// at admission (Pi owned session flag/path), restored on rediscovery;
 	// the equivalent tmux option is only an advisory cache.
 	TranscriptBinding watcher.TranscriptBinding `json:"transcript_binding,omitempty"`
+	// SignalProtocol is true only when this Turn's random identity was carried
+	// in its delegated prompt. It is an authority marker, not another identity.
+	SignalProtocol bool `json:"signal_protocol,omitempty"`
 	// LeaseDeadline is the turn's own expected-next-check time (per-turn
 	// liveness): minted fresh at admission, extended only by this turn's
 	// Control lease facts, and the sole basis for session.stale. An old turn's
@@ -65,6 +68,7 @@ type TurnSubmissionRecord struct {
 	Mode               watcher.TurnSubmissionMode  `json:"mode"`
 	ExistingTurnID     string                      `json:"existing_turn_id,omitempty"`
 	BaselineActivityID string                      `json:"baseline_activity_id,omitempty"`
+	SignalProtocol     bool                        `json:"signal_protocol,omitempty"`
 	State              watcher.TurnSubmissionState `json:"state"`
 	ResolvedTurnID     string                      `json:"resolved_turn_id,omitempty"`
 	ResolvedActivityID string                      `json:"resolved_activity_id,omitempty"`
@@ -81,7 +85,7 @@ func (r TurnSubmissionRecord) snapshot() watcher.TurnSubmission {
 		ProcessIdentity: r.ProcessIdentity, PaneGeneration: r.PaneGeneration,
 		AcceptedAt: r.AcceptedAt, TranscriptBinding: r.TranscriptBinding,
 		Mode: r.Mode, ExistingTurnID: r.ExistingTurnID,
-		BaselineActivityID: r.BaselineActivityID, State: r.State,
+		BaselineActivityID: r.BaselineActivityID, SignalProtocol: r.SignalProtocol, State: r.State,
 		ResolvedTurnID: r.ResolvedTurnID, ResolvedActivityID: r.ResolvedActivityID,
 		ResolvedAdmission: r.ResolvedAdmission,
 	}
@@ -193,6 +197,9 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 			return fmt.Errorf("%s: receipt, payload_sha256, process_identity, and pane_generation are required", prefix)
 		}
 		hostClaimSubmission := strings.TrimSpace(submission.ClaimToken) != ""
+		if submission.SignalProtocol && hostClaimSubmission {
+			return fmt.Errorf("%s: Host submission cannot use the delegated signal protocol", prefix)
+		}
 		if hostClaimSubmission == (submission.Receipt == submission.ProposedTurnID) {
 			return fmt.Errorf("%s: Host submission requires a distinct receipt and claim token", prefix)
 		}
@@ -228,10 +235,15 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 			}
 			pendingSessions[submission.SessionID] = struct{}{}
 		case watcher.TurnSubmissionResolved:
-			if submission.ResolvedAt == nil || submission.AbortedAt != nil || strings.TrimSpace(submission.ResolvedTurnID) == "" ||
-				strings.TrimSpace(submission.ResolvedActivityID) == "" || submission.ResolvedAdmission.Empty() ||
-				submission.ResolvedAdmission.SHA256 != submission.PayloadSHA256 {
-				return fmt.Errorf("%s: resolved submission requires exact activity and matching admission", prefix)
+			providerResolved := strings.TrimSpace(submission.ResolvedActivityID) != "" &&
+				!submission.ResolvedAdmission.Empty() &&
+				submission.ResolvedAdmission.SHA256 == submission.PayloadSHA256
+			controlResolved := submission.SignalProtocol &&
+				submission.ResolvedTurnID == submission.ProposedTurnID &&
+				strings.TrimSpace(submission.ResolvedActivityID) == "" && submission.ResolvedAdmission.Empty()
+			if submission.ResolvedAt == nil || submission.AbortedAt != nil ||
+				strings.TrimSpace(submission.ResolvedTurnID) == "" || (!providerResolved && !controlResolved) {
+				return fmt.Errorf("%s: resolved submission requires matching provider admission or exact signal admission", prefix)
 			}
 		case watcher.TurnSubmissionAborted:
 			if submission.AbortedAt == nil || submission.ResolvedAt != nil || submission.ResolvedTurnID != "" ||
@@ -275,6 +287,14 @@ func validateTurnRecord(turn TurnRecord) error {
 	if !validTurnStatus(turn.Status) {
 		return fmt.Errorf("invalid status %q", turn.Status)
 	}
+	if turn.SignalProtocol {
+		if turn.Receipt != turn.TurnID || len(turn.PayloadSHA256) != sha256.Size*2 {
+			return fmt.Errorf("signal-protocol Turn requires its exact receipt identity and payload digest")
+		}
+		if _, err := hex.DecodeString(turn.PayloadSHA256); err != nil {
+			return fmt.Errorf("signal-protocol Turn requires a SHA-256 payload digest")
+		}
+	}
 	if turn.AcceptedAt.IsZero() || turn.UpdatedAt.IsZero() {
 		return fmt.Errorf("accepted_at and updated_at are required")
 	}
@@ -316,6 +336,7 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 		ProcessIdentity:   t.ProcessIdentity,
 		TranscriptBinding: t.TranscriptBinding,
 		LeaseDeadline:     t.LeaseDeadline,
+		SignalProtocol:    t.SignalProtocol,
 		UpdatedAt:         t.UpdatedAt,
 	}
 	return snapshot
@@ -479,6 +500,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		AcceptedAt: candidate.AcceptedAt.UTC(), TranscriptBinding: candidate.TranscriptBinding,
 		Mode: candidate.Mode, ExistingTurnID: candidate.ExistingTurnID,
 		BaselineActivityID: candidate.BaselineActivityID,
+		SignalProtocol:     candidate.SignalProtocol,
 		State:              watcher.TurnSubmissionPending, CreatedAt: now,
 	}
 	database.BrainTurnSubmissions = append(database.BrainTurnSubmissions, record)
@@ -514,7 +536,8 @@ func sameTurnSubmissionIdentity(record TurnSubmissionRecord, candidate watcher.T
 		record.TranscriptBinding == candidate.TranscriptBinding &&
 		record.Mode == candidate.Mode &&
 		record.ExistingTurnID == candidate.ExistingTurnID &&
-		record.BaselineActivityID == candidate.BaselineActivityID
+		record.BaselineActivityID == candidate.BaselineActivityID &&
+		record.SignalProtocol == candidate.SignalProtocol
 }
 
 // TurnSubmission reads one exact ledger-owned submission transaction.
@@ -708,6 +731,31 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 	case watcher.TurnSubmissionAborted:
 		return watcher.TurnSubmission{}, fmt.Errorf("aborted submission can never be adopted")
 	case watcher.TurnSubmissionResolved:
+		// A matching Control signal may win the admission race before the
+		// provider adapter reports its tuple. Exact later provider evidence
+		// enriches that same Turn and submission; it never creates another Turn
+		// or lifecycle Event.
+		if record.SignalProtocol && record.ResolvedTurnID == record.ProposedTurnID &&
+			record.ResolvedActivityID == "" && record.ResolvedAdmission.Empty() {
+			for turnIndex := range database.BrainTurns {
+				turn := &database.BrainTurns[turnIndex]
+				if turn.SessionID != record.SessionID || turn.TurnID != record.ProposedTurnID {
+					continue
+				}
+				turn.Admission = resolution.Admission
+				turn.ActivityID = resolution.ActivityID
+				turn.UpdatedAt = now
+				record.ResolvedActivityID = resolution.ActivityID
+				record.ResolvedAdmission = resolution.Admission
+				database.BrainTurnSubmissions[index] = record
+				if err := s.persistOrchestrationLocked(database); err != nil {
+					return watcher.TurnSubmission{}, err
+				}
+				s.broadcastWorkChange(record.WorkID)
+				return record.snapshot(), nil
+			}
+			return watcher.TurnSubmission{}, fmt.Errorf("resolved signal submission has no canonical Turn")
+		}
 		return record.snapshot(), nil
 	case watcher.TurnSubmissionPending:
 	default:
@@ -725,7 +773,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 		return watcher.TurnSubmission{}, fmt.Errorf("canonical steering activity changed before resolution")
 	}
 	resultTurnID := ""
-	if record.Mode == watcher.TurnSubmissionConditionalSteer && resolution.ActivityID == record.BaselineActivityID {
+	if !record.SignalProtocol && record.Mode == watcher.TurnSubmissionConditionalSteer && resolution.ActivityID == record.BaselineActivityID {
 		resultTurnID = record.ExistingTurnID
 		for index := range database.BrainTurns {
 			turn := &database.BrainTurns[index]
@@ -762,6 +810,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 				At: resolution.ResolvedAt.UTC(), Summary: "Delegated input accepted",
 			}},
 			TranscriptBinding: record.TranscriptBinding,
+			SignalProtocol:    record.SignalProtocol,
 			LeaseDeadline:     resolution.ResolvedAt.Add(turnLeaseGrace).UTC(), UpdatedAt: now,
 		})
 		if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
@@ -1225,14 +1274,33 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			if fact.Kind == "failed" {
 				kind = "session.failed"
 			}
-			// Control terminal self-report: hint only, never canonical, and
-			// only for turns whose admission has been correlated (at >=
-			// AcceptedAt). Admitted stays Admitted.
+			// A Turn whose random identity was carried in the delegated prompt
+			// has already passed exact identity admission before reaching this
+			// reducer. Its terminal Control fact is canonical without provider
+			// confirmation. Pre-upgrade/provider-native Turns retain their
+			// historical hint behavior because they never received that contract.
 			if status == watcher.TurnAdmitted || fact.At.Before(turn.AcceptedAt) {
 				return mutation, nil
 			}
-			hintOnly(kind, "Delegated Session reported "+fact.Kind+"; awaiting provider confirmation")
+			if !turn.SignalProtocol {
+				hintOnly(kind, "Delegated Session reported "+fact.Kind+"; awaiting provider confirmation")
+				mutation.changed = true
+				return mutation, nil
+			}
+			status = watcher.TurnDone
+			attention = ""
+			if fact.Kind == "failed" {
+				status = watcher.TurnFailed
+			}
+			settled := now
+			if !fact.SettledAt.IsZero() {
+				settled = fact.SettledAt.UTC()
+			}
+			settledAt = &settled
+			summary = firstNonEmpty(fact.Summary, kind)
 			mutation.changed = true
+			applyEvent(kind, true, summary)
+			mutation.dropHintKind = firstNonEmpty(mutation.dropHintKind, kind)
 		case "stale":
 			// Lease expiry: no canonical change; one actionable session.stale
 			// per turn wakes Brain. The current turn must have exceeded its own
@@ -1441,6 +1509,89 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	return WorkUpdate{Status: &waiting}
 }
 
+// prepareDelegatedSignalTurnLocked validates the one prompt-carried identity
+// against authoritative orchestration state. If it names the current pending
+// delegated submission, this promotes that exact candidate to Accepted and
+// resolves the submission in memory. The caller immediately feeds the same
+// Control fact through reduceTurnFact and persists both decisions together.
+func prepareDelegatedSignalTurnLocked(database *orchestrationDatabase, fact watcher.TurnFact, now time.Time) error {
+	if database == nil {
+		return errNoDelegatedSignalContract
+	}
+	pendingIndex := -1
+	for index := range database.BrainTurnSubmissions {
+		submission := database.BrainTurnSubmissions[index]
+		if submission.SessionID == fact.SessionID && submission.State == watcher.TurnSubmissionPending {
+			pendingIndex = index
+			break
+		}
+	}
+	if pendingIndex < 0 {
+		current, found := currentTurnForSession(*database, fact.SessionID)
+		if !found || !current.SignalProtocol {
+			return errNoDelegatedSignalContract
+		}
+		if fact.TurnID == "" || current.TurnID != fact.TurnID {
+			return errDelegatedTurnMismatch
+		}
+		return nil
+	}
+
+	record := database.BrainTurnSubmissions[pendingIndex]
+	if !record.SignalProtocol || strings.TrimSpace(record.ClaimToken) != "" {
+		return errNoDelegatedSignalContract
+	}
+	if fact.TurnID == "" || fact.TurnID != record.ProposedTurnID || fact.At.Before(record.CreatedAt) {
+		return errDelegatedTurnMismatch
+	}
+	current, hasCurrent := currentTurnForSession(*database, record.SessionID)
+	if record.ExistingTurnID == "" {
+		if hasCurrent {
+			return errDelegatedTurnMismatch
+		}
+	} else if !hasCurrent || current.TurnID != record.ExistingTurnID {
+		return errDelegatedTurnMismatch
+	}
+	for _, turn := range database.BrainTurns {
+		if turn.SessionID == record.SessionID && turn.TurnID == record.ProposedTurnID {
+			return fmt.Errorf("proposed delegated signal Turn already exists outside its pending submission")
+		}
+	}
+
+	database.BrainTurns = append(database.BrainTurns, TurnRecord{
+		SessionID: record.SessionID, TurnID: record.ProposedTurnID, WorkID: record.WorkID,
+		Status: watcher.TurnAccepted, Receipt: record.Receipt,
+		PaneGeneration: record.PaneGeneration, ProcessIdentity: record.ProcessIdentity,
+		PayloadSHA256: record.PayloadSHA256, AcceptedAt: record.AcceptedAt,
+		Summary: "Delegated input admitted by matching control signal",
+		Facts:   []TurnFactRecord{}, TranscriptBinding: record.TranscriptBinding,
+		SignalProtocol: true, LeaseDeadline: now.Add(turnLeaseGrace).UTC(), UpdatedAt: now,
+	})
+	if index := workIndex(database.BrainWork, record.WorkID); index >= 0 {
+		item := database.BrainWork[index]
+		if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == record.SessionID {
+			reservation.ProviderTurnID = record.ProposedTurnID
+			item.SuccessorReservation = reservation
+			database.BrainWork[index] = item
+		}
+		if item.Status != WorkDone && item.Status != WorkCancelled && !workHasInFlightHandling(*database, record.WorkID) {
+			update := derivedWorkUpdate(watcher.TurnAccepted, record.SessionID, "")
+			if workUpdateChanges(item, update) {
+				applyWorkUpdate(&item, update)
+				item.UpdatedAt = now
+				item.Revision++
+				database.BrainWork[index] = item
+			}
+		}
+	}
+	resolvedAt := fact.At.UTC()
+	record.State = watcher.TurnSubmissionResolved
+	record.ResolvedTurnID = record.ProposedTurnID
+	record.ResolvedAt = &resolvedAt
+	database.BrainTurnSubmissions[pendingIndex] = record
+	return nil
+}
+
 // ApplyTurnFact is the single canonical reducer. Under one lock and one
 // persist it: dedupes the deterministic FactID, validates the transition,
 // mutates the turn, derives the Work update, and appends or upgrades the
@@ -1451,7 +1602,36 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 // fact may advance the turn row and is retained as non-actionable outbox
 // audit, but it never moves Work status/next_action/wait_for and never
 // creates or flips an actionable wake (C.2.9).
+var (
+	errNoDelegatedSignalContract = errors.New("Session has no delegated signal contract")
+	errDelegatedTurnMismatch     = errors.New("delegated turn identity does not match the current prompt")
+)
+
 func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool, error) {
+	return s.applyTurnFact(fact, false)
+}
+
+// ApplyDelegatedTurnProgress is the identity-gated Control entry point. It
+// shares ApplyTurnFact's reducer and persistence transaction; when the first
+// matching signal races provider confirmation, the pending submission is
+// promoted and the fact is reduced in that same write.
+func (s *Store) ApplyDelegatedTurnProgress(fact watcher.TurnFact) (watcher.TurnProgressResult, error) {
+	snapshot, changed, err := s.applyTurnFact(fact, true)
+	switch {
+	case errors.Is(err, errNoDelegatedSignalContract):
+		return watcher.TurnProgressResult{}, nil
+	case errors.Is(err, errDelegatedTurnMismatch):
+		return watcher.TurnProgressResult{Owned: true}, nil
+	case err != nil:
+		return watcher.TurnProgressResult{}, err
+	default:
+		return watcher.TurnProgressResult{
+			Turn: snapshot, Owned: true, Matched: true, Changed: changed,
+		}, nil
+	}
+}
+
+func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watcher.TurnSnapshot, bool, error) {
 	if s == nil {
 		return watcher.TurnSnapshot{}, false, fmt.Errorf("brain store is not configured")
 	}
@@ -1459,7 +1639,7 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	fact.TurnID = strings.TrimSpace(fact.TurnID)
 	fact.Kind = strings.TrimSpace(fact.Kind)
 	fact.SourceID = strings.TrimSpace(fact.SourceID)
-	if fact.SessionID == "" || fact.TurnID == "" {
+	if fact.SessionID == "" || (!delegatedSignal && fact.TurnID == "") {
 		return watcher.TurnSnapshot{}, false, fmt.Errorf("fact session_id and turn_id are required")
 	}
 	if fact.Kind == "" || fact.SourceID == "" {
@@ -1477,6 +1657,14 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 	if err != nil {
 		return watcher.TurnSnapshot{}, false, err
 	}
+	if delegatedSignal {
+		if fact.Class != watcher.EvidenceControl {
+			return watcher.TurnSnapshot{}, false, fmt.Errorf("delegated progress requires Control evidence")
+		}
+		if err := prepareDelegatedSignalTurnLocked(&database, fact, now); err != nil {
+			return watcher.TurnSnapshot{}, false, err
+		}
+	}
 	turnIndex := -1
 	for index := range database.BrainTurns {
 		turn := &database.BrainTurns[index]
@@ -1491,18 +1679,11 @@ func (s *Store) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool
 		// different turn.
 		return watcher.TurnSnapshot{}, false, nil
 	}
-	if fact.Class == watcher.EvidenceControl {
-		// All Control facts come from the current Session progress channel.
-		// The watcher may hold a two-second projection cache across Session
-		// reuse; reject any cached fact that targets a superseded turn before
-		// it can renew or mutate the old row.
-		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
-			return watcher.TurnSnapshot{}, false, nil
-		}
-	}
-	if fact.Class == watcher.EvidenceProvider && fact.Kind == "uncertain" {
-		// Provider-evidence loss is a property of the CURRENT turn: a loss
-		// fact for an older turn record cannot wake a newer turn.
+	if fact.Class == watcher.EvidenceControl || fact.Class == watcher.EvidenceProvider {
+		// Control and provider lifecycle facts may affect only the current
+		// prompt Turn. A late previous-turn completion after Session reuse is
+		// retained by its provider transcript, but cannot terminate the newer
+		// canonical Turn, mutate Work, or wake Brain.
 		if current, currentSet := currentTurnForSession(database, fact.SessionID); currentSet && current.TurnID != fact.TurnID {
 			return watcher.TurnSnapshot{}, false, nil
 		}

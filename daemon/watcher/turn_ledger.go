@@ -121,7 +121,11 @@ type TurnSnapshot struct {
 	// the sole basis for session.stale, so an old turn's expired lease can
 	// never make a newer turn stale.
 	LeaseDeadline time.Time
-	UpdatedAt     time.Time
+	// SignalProtocol marks a Turn whose exact random identity was carried in
+	// its delegated prompt. Only these Turns accept lifecycle authority from
+	// matching Control progress; pre-upgrade/provider-native Turns do not.
+	SignalProtocol bool
+	UpdatedAt      time.Time
 }
 
 // TurnFact is one provider-neutral observation applied to the canonical turn
@@ -201,6 +205,20 @@ type TurnLedger interface {
 	// reducer and persists turn + derived Work + outbox event atomically.
 	// A replayed or reordered fact (same deterministic FactID) is a no-op.
 	ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error)
+	// ApplyDelegatedTurnProgress atomically matches one Control fact to the
+	// signal identity carried by the current delegated prompt. A match may
+	// promote the exact pending submission and reduce the fact in the same
+	// persistence transaction. Owned distinguishes a delegated signal
+	// contract from an ordinary/provider-native Session; Matched is false for
+	// missing, mismatched, stale, or previous-turn identities.
+	ApplyDelegatedTurnProgress(fact TurnFact) (TurnProgressResult, error)
+}
+
+type TurnProgressResult struct {
+	Turn    TurnSnapshot
+	Owned   bool
+	Matched bool
+	Changed bool
 }
 
 // TurnSubmissionState is the durable state of one delegated input
@@ -243,6 +261,9 @@ type TurnSubmission struct {
 	Mode               TurnSubmissionMode
 	ExistingTurnID     string
 	BaselineActivityID string
+	// SignalProtocol is persisted before provider mutation only when this
+	// submission's ProposedTurnID was included in the delegated prompt.
+	SignalProtocol     bool
 	State              TurnSubmissionState
 	ResolvedTurnID     string
 	ResolvedActivityID string

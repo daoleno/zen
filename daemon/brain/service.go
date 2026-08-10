@@ -341,6 +341,13 @@ func (s *Service) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bo
 	return s.store.ApplyTurnFact(fact)
 }
 
+func (s *Service) ApplyDelegatedTurnProgress(fact watcher.TurnFact) (watcher.TurnProgressResult, error) {
+	if s == nil || s.store == nil {
+		return watcher.TurnProgressResult{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.ApplyDelegatedTurnProgress(fact)
+}
+
 func (s *Service) PrepareTurnSubmission(submission watcher.TurnSubmission) (watcher.TurnSubmission, bool, error) {
 	if s == nil || s.store == nil {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")

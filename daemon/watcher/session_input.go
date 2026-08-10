@@ -48,6 +48,7 @@ type delegatedTurnDraft struct {
 	ProcessIdentity   string
 	PaneGeneration    string
 	TranscriptBinding TranscriptBinding
+	SignalProtocol    bool
 }
 
 // delegatedAdmissionEvidence is the provider-native admission tuple observed
@@ -630,6 +631,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				AcceptedAt:     turn.AcceptedAt, TranscriptBinding: turn.TranscriptBinding,
 				Mode: mode, ExistingTurnID: existingTurnID,
 				BaselineActivityID: baselineActivityID,
+				SignalProtocol:     turn.SignalProtocol,
 			})
 			if prepareErr != nil {
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("persist pending delegated submission: %w", prepareErr))
@@ -699,6 +701,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				fmt.Errorf("start target-bound tmux command queue: %w", queueErr))
 		}
 		var confirmation delegatedInputConfirmation
+		resolvedBySignal := false
 		if requiresConfirmation {
 			var confirmErr error
 			confirmation, confirmErr = confirm.confirm(
@@ -707,10 +710,16 @@ func (owner *sessionInputOwner) submitWithTurn(
 				payloadDigest,
 			)
 			if confirmErr != nil {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(result.Receipt, confirmErr)
+				submission, found, submissionErr := owner.turnSubmission(sessionID, turn.ID)
+				resolvedBySignal = submissionErr == nil && found && submission.SignalProtocol &&
+					submission.State == TurnSubmissionResolved && submission.ResolvedTurnID == turn.ID
+				if !resolvedBySignal {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(result.Receipt, errors.Join(confirmErr, submissionErr))
+				}
+				result.TurnID = submission.ResolvedTurnID
 			}
-			if confirmation.Outcome != InputAccepted {
+			if !resolvedBySignal && confirmation.Outcome != InputAccepted {
 				result.Outcome = InputAmbiguous
 				return ambiguousSubmission(
 					result.Receipt,
@@ -731,7 +740,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 		}
 
-		if turn != nil {
+		if turn != nil && !resolvedBySignal {
 			resolved, resolveErr := owner.resolveTurnSubmission(TurnSubmissionResolution{
 				SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
 				PayloadSHA256: payloadDigest,

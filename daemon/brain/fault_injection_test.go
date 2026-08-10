@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,30 @@ func prepareInitialSubmission(t *testing.T, store *Store, sessionID, turnID, pay
 	})
 	if err != nil || !created {
 		t.Fatalf("prepare submission = (%+v, %v, %v)", submission, created, err)
+	}
+	return submission
+}
+
+func prepareSignalSubmission(t *testing.T, store *Store, sessionID, turnID, payload string, at time.Time) watcher.TurnSubmission {
+	t.Helper()
+	workID := ""
+	if item, found, err := store.WorkByOwnerSession(sessionID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		workID = item.ID
+	} else if items, err := store.ListWork(); err != nil {
+		t.Fatal(err)
+	} else if len(items) == 1 {
+		workID = items[0].ID
+	}
+	submission, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pendingSubmissionDigest(payload), ProcessIdentity: "process-identity",
+		PaneGeneration: "pane-generation", AcceptedAt: at, Mode: watcher.TurnSubmissionFresh,
+		SignalProtocol: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare signal submission = (%+v, %v, %v)", submission, created, err)
 	}
 	return submission
 }
@@ -252,39 +277,259 @@ func TestFaultFalseTerminalThenTrueCompletion(t *testing.T) {
 	}
 }
 
-// TestFaultControlDoneWithoutProviderConfirmation: canonical stays Running,
-// and lease expiry wakes Brain instead of the hint.
-func TestFaultControlDoneWithoutProviderConfirmation(t *testing.T) {
-	store, sessionID, turnID := ledgerTestStore(t)
-	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	admittedAcceptedTurn(t, store, sessionID, turnID, at)
-	if snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+func TestFaultMatchingControlDoneAtomicallyAdmitsAndSettlesAcrossRestart(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	turnID := "turn:signal-fault"
+	pending := prepareSignalSubmission(t, store, sessionID, turnID, "signal payload", at)
+	fact := watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID,
 		Class: watcher.EvidenceControl, Kind: "done",
-		SourceID: "control\x00progress-event-99",
-		At:       at.Add(5 * time.Second),
-		Summary:  "agent progress --status done",
-	}); err != nil || !changed || snapshot.Status != watcher.TurnAccepted {
-		t.Fatalf("control done moved canonical status: %+v changed=%v err=%v", snapshot, changed, err)
+		SourceID: "control\x00progress-event-99", At: at.Add(5 * time.Second),
+		Summary: "REVIEW_READY: control-only completion",
 	}
-	workItem, _, _ := store.WorkByOwnerSession(sessionID)
-	row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.done")
-	if !found || row.Actionable {
-		t.Fatalf("control done row = %+v found=%v, want non-actionable hint", row, found)
+
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error { return errors.New("injected signal commit failure") }
+	if _, err := store.ApplyDelegatedTurnProgress(fact); err == nil {
+		t.Fatal("signal persistence failure was reported successful")
 	}
-	// Lease expiry (not the hint) wakes Brain.
-	now := at.Add(time.Hour)
-	store.now = func() time.Time { return now }
-	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID: sessionID, TurnID: turnID,
-		Class: watcher.EvidenceControl, Kind: "stale",
-		SourceID: "lease:expiry:" + turnID,
-		At:       now,
-	}); err != nil {
+	store.writeOrchestration = originalWrite
+	restarted, err := NewStore(store.Root)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if workItem, _, _ = store.WorkByOwnerSession(sessionID); workItem.Status != WorkNeedsInput {
-		t.Fatalf("Work after control-done + stale = %v", workItem)
+	if _, found, err := restarted.Turn(sessionID); err != nil || found {
+		t.Fatalf("failed atomic signal exposed Turn: found=%v err=%v", found, err)
+	}
+	stillPending, found, err := restarted.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || stillPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed atomic signal lost pending row: submission=%+v found=%v err=%v", stillPending, found, err)
+	}
+	if stillPending.PayloadSHA256 != pending.PayloadSHA256 {
+		t.Fatalf("failed atomic signal changed pending identity: %+v", stillPending)
+	}
+
+	restarted.now = func() time.Time { return at.Add(5 * time.Second) }
+	result, err := restarted.ApplyDelegatedTurnProgress(fact)
+	if err != nil || !result.Owned || !result.Matched || !result.Changed || result.Turn.Status != watcher.TurnDone {
+		t.Fatalf("restart matching done = (%+v, %v)", result, err)
+	}
+	resolved, found, err := restarted.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || resolved.State != watcher.TurnSubmissionResolved ||
+		resolved.ResolvedTurnID != turnID || resolved.ResolvedActivityID != "" || !resolved.ResolvedAdmission.Empty() {
+		t.Fatalf("control resolution = (%+v, %v, %v)", resolved, found, err)
+	}
+	workItem, err := restarted.Work(pending.WorkID)
+	if err != nil || workItem.Status != WorkWaiting || workItem.NextAction != "Review the delegated Session result." {
+		t.Fatalf("control terminal Work = %+v err=%v", workItem, err)
+	}
+	row, found := turnEvent(t, restarted, pending.WorkID, "session:"+sessionID+":turn:"+turnID+":session.done")
+	if !found || !row.Actionable || row.Summary != fact.Summary {
+		t.Fatalf("control terminal event = %+v found=%v", row, found)
+	}
+	provider := watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "provider-late",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "provider-late-admission", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: at.Add(6 * time.Second),
+		}, ResolvedAt: at.Add(6 * time.Second),
+	}
+	if converged, err := restarted.ResolveTurnSubmission(provider); err != nil ||
+		converged.ResolvedActivityID != provider.ActivityID {
+		t.Fatalf("late provider convergence = (%+v, %v)", converged, err)
+	}
+	if _, changed, err := restarted.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceProvider, Kind: "done",
+		SourceID: "provider\x00late-terminal", Admission: provider.Admission,
+		ActivityID: provider.ActivityID, StartedAt: at.Add(6 * time.Second),
+		SettledAt: at.Add(7 * time.Second), At: at.Add(7 * time.Second),
+	}); err != nil || changed {
+		t.Fatalf("late provider terminal duplicated control outcome: changed=%v err=%v", changed, err)
+	}
+	if replay, err := restarted.ApplyDelegatedTurnProgress(fact); err != nil ||
+		!replay.Owned || !replay.Matched || replay.Changed || replay.Turn.Status != watcher.TurnDone {
+		t.Fatalf("restart replay = (%+v, %v)", replay, err)
+	}
+	claimed, ok, err := restarted.ClaimNextActionableEvent("brain-agent-brain-hidden:@signal")
+	if err != nil || !ok || claimed.ID != row.ID {
+		t.Fatalf("canonical Brain wake = event=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	if duplicate, ok, err := restarted.ClaimNextActionableEvent("brain-agent-brain-hidden:@signal"); err != nil || ok {
+		t.Fatalf("duplicate Brain wake = event=%+v ok=%v err=%v", duplicate, ok, err)
+	}
+}
+
+func TestFaultDelegatedSignalRejectsMissingMismatchedAndPrePreparationIdentities(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	turnID := "turn:identity-gate"
+	pending := prepareSignalSubmission(t, store, sessionID, turnID, "identity payload", at)
+
+	writes := 0
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(path string, value any) error {
+		writes++
+		return originalWrite(path, value)
+	}
+	for _, test := range []struct {
+		name   string
+		turnID string
+		at     time.Time
+	}{
+		{name: "missing", at: at.Add(time.Second)},
+		{name: "mismatched", turnID: "turn:forged", at: at.Add(time.Second)},
+		{name: "before preparation", turnID: turnID, at: at.Add(-time.Nanosecond)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+				SessionID: sessionID, TurnID: test.turnID, Class: watcher.EvidenceControl,
+				Kind: "done", SourceID: "control\x00rejected-" + test.name, At: test.at,
+			})
+			if err != nil || !result.Owned || result.Matched || result.Changed {
+				t.Fatalf("rejected identity = (%+v, %v)", result, err)
+			}
+		})
+	}
+	store.writeOrchestration = originalWrite
+	if writes != 0 {
+		t.Fatalf("rejected identities attempted %d durable writes", writes)
+	}
+	if _, found, err := store.Turn(sessionID); err != nil || found {
+		t.Fatalf("rejected identities promoted a Turn: found=%v err=%v", found, err)
+	}
+	stillPending, found, err := store.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || stillPending.State != watcher.TurnSubmissionPending ||
+		stillPending.PayloadSHA256 != pending.PayloadSHA256 {
+		t.Fatalf("rejected identities mutated pending: (%+v, %v, %v)", stillPending, found, err)
+	}
+	events, err := store.ListWorkEvents(pending.WorkID)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("rejected identities emitted events: %+v err=%v", events, err)
+	}
+}
+
+func TestFaultConcurrentMatchingTerminalRetriesReduceExactlyOnce(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	turnID := "turn:terminal-race"
+	pending := prepareSignalSubmission(t, store, sessionID, turnID, "race payload", at)
+	fact := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl, Kind: "done",
+		SourceID: "control\x00same-logical-terminal", At: at.Add(time.Second), Summary: "race done",
+	}
+	const attempts = 24
+	results := make(chan watcher.TurnProgressResult, attempts)
+	errors := make(chan error, attempts)
+	var group sync.WaitGroup
+	for index := 0; index < attempts; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result, err := store.ApplyDelegatedTurnProgress(fact)
+			results <- result
+			errors <- err
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := 0
+	for result := range results {
+		if !result.Owned || !result.Matched || result.Turn.Status != watcher.TurnDone {
+			t.Fatalf("racing terminal result = %+v", result)
+		}
+		if result.Changed {
+			changed++
+		}
+	}
+	if changed != 1 {
+		t.Fatalf("racing terminal durable changes = %d, want one", changed)
+	}
+	events, err := store.ListWorkEvents(pending.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, event := range events {
+		if event.Kind == "session.done" && event.Actionable {
+			done++
+		}
+	}
+	if done != 1 {
+		t.Fatalf("racing terminal events = %+v", events)
+	}
+}
+
+func TestFaultReusedSessionRejectsPreviousTurnAndConvergesProviderEvidence(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	firstTurnID := "turn:reuse-first"
+	first := prepareSignalSubmission(t, store, sessionID, firstTurnID, "first prompt", at)
+	if result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: firstTurnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00first-running", At: at.Add(time.Second),
+	}); err != nil || !result.Matched || result.Turn.Status != watcher.TurnRunning {
+		t.Fatalf("first signal admission = (%+v, %v)", result, err)
+	}
+	providerAdmission := watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: firstTurnID, Receipt: firstTurnID,
+		PayloadSHA256: first.PayloadSHA256, ActivityID: "native-reused-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "provider-first", Cursor: 1,
+			SHA256: first.PayloadSHA256, At: at.Add(2 * time.Second),
+		}, ResolvedAt: at.Add(2 * time.Second),
+	}
+	if resolved, err := store.ResolveTurnSubmission(providerAdmission); err != nil ||
+		resolved.ResolvedActivityID != providerAdmission.ActivityID {
+		t.Fatalf("provider convergence = (%+v, %v)", resolved, err)
+	}
+
+	secondAt := at.Add(time.Minute)
+	store.now = func() time.Time { return secondAt }
+	secondTurnID := "turn:reuse-second"
+	second, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: first.WorkID, SessionID: sessionID, ProposedTurnID: secondTurnID, Receipt: secondTurnID,
+		PayloadSHA256: pendingSubmissionDigest("second prompt"), ProcessIdentity: "process-identity",
+		PaneGeneration: "pane-generation", AcceptedAt: secondAt,
+		Mode: watcher.TurnSubmissionConditionalSteer, ExistingTurnID: firstTurnID,
+		BaselineActivityID: providerAdmission.ActivityID, SignalProtocol: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare reused Session = (%+v, %v, %v)", second, created, err)
+	}
+	if stale, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: firstTurnID, Class: watcher.EvidenceControl,
+		Kind: "done", SourceID: "control\x00late-first", At: secondAt.Add(time.Second),
+	}); err != nil || !stale.Owned || stale.Matched || stale.Changed {
+		t.Fatalf("previous-turn signal = (%+v, %v)", stale, err)
+	}
+	if current, _, _ := store.Turn(sessionID); current.TurnID != firstTurnID || current.Status != watcher.TurnRunning {
+		t.Fatalf("previous-turn signal mutated current before admission: %+v", current)
+	}
+	if admitted, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: secondTurnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00second-running", At: secondAt.Add(2 * time.Second),
+	}); err != nil || !admitted.Matched || admitted.Turn.TurnID != secondTurnID || admitted.Turn.Status != watcher.TurnRunning {
+		t.Fatalf("second signal admission = (%+v, %v)", admitted, err)
+	}
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: firstTurnID, Class: watcher.EvidenceProvider,
+		Kind: "done", SourceID: "provider\x00late-first", Admission: providerAdmission.Admission,
+		ActivityID: providerAdmission.ActivityID, StartedAt: at, SettledAt: secondAt,
+		At: secondAt.Add(3 * time.Second),
+	}); err != nil || changed {
+		t.Fatalf("late provider terminal changed newer Turn: changed=%v err=%v", changed, err)
+	}
+	current, found, err := store.Turn(sessionID)
+	if err != nil || !found || current.TurnID != secondTurnID || current.Status != watcher.TurnRunning {
+		t.Fatalf("current reused Turn = (%+v, %v, %v)", current, found, err)
 	}
 }
 

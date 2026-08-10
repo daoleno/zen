@@ -3087,7 +3087,7 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 			// this transaction; consume never binds it to a coincident Host ID.
 			successorTurnID = reservation.ProviderTurnID
 		}
-		if !databaseHasCanonicalProviderAcceptedSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
+		if !databaseHasCanonicalAcceptedSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, fmt.Errorf("successor Session is not an accepted active non-Host owner of Work")
 		}
@@ -3149,11 +3149,11 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	return resolvedEvent, item, nil
 }
 
-func databaseHasCanonicalProviderAcceptedSuccessor(database orchestrationDatabase, workID, sessionID, providerTurnID string) bool {
+func databaseHasCanonicalAcceptedSuccessor(database orchestrationDatabase, workID, sessionID, providerTurnID string) bool {
 	turn, found := currentTurnForSession(database, sessionID)
 	if !found || turn.WorkID != workID ||
 		(providerTurnID != "" && turn.TurnID != providerTurnID) ||
-		isHostHandlingTurn(database, turn) || turn.Admission.Empty() {
+		isHostHandlingTurn(database, turn) || !turnHasAdmissionAuthority(turn) {
 		return false
 	}
 	switch turn.Status {
@@ -3162,6 +3162,25 @@ func databaseHasCanonicalProviderAcceptedSuccessor(database orchestrationDatabas
 	default:
 		return false
 	}
+}
+
+// turnHasAdmissionAuthority accepts either provider correlation or a Control
+// fact that could only have been written after matching the random identity
+// carried by this Turn's delegated prompt. SignalProtocol alone is only a
+// marker and never sufficient authority.
+func turnHasAdmissionAuthority(turn TurnRecord) bool {
+	if !turn.Admission.Empty() {
+		return true
+	}
+	if !turn.SignalProtocol {
+		return false
+	}
+	for _, fact := range turn.Facts {
+		if fact.Class == watcher.EvidenceControl {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalSessionFinalizations(database orchestrationDatabase, item Work, now time.Time) []SessionFinalization {

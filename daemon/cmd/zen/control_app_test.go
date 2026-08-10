@@ -47,6 +47,23 @@ type fakeControlProgress struct {
 	progress classifier.AgentProgress
 }
 
+func assertDelegatedLifecyclePayload(t *testing.T, payload, original string) string {
+	t.Helper()
+	prefix := original + "\n\nZen delegated turn contract:\n- This prompt's turn identity is "
+	if !strings.HasPrefix(payload, prefix) {
+		t.Fatalf("delegated payload did not preserve original bytes or append the contract:\n%q", payload)
+	}
+	remainder := strings.TrimPrefix(payload, prefix)
+	identity, _, found := strings.Cut(remainder, ".\n")
+	if !found || !strings.HasPrefix(identity, "turn:") || strings.Count(payload, identity) < 3 {
+		t.Fatalf("delegated payload lacks one repeated random turn identity: %q", payload)
+	}
+	if !strings.Contains(payload, "--turn-id "+identity) {
+		t.Fatalf("delegated payload does not carry identity in command contract: %q", payload)
+	}
+	return identity
+}
+
 func newFakeControlWatcher() *fakeControlWatcher {
 	return &fakeControlWatcher{
 		agents:   map[string]*classifier.Agent{},
@@ -510,6 +527,8 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 		`event-kind "needs_judgment"`,
 		"ZEN_AGENT_ID is already set for this session.",
 		"Valid status values: running, done, failed, blocked.",
+		"Zen delegated turn contract:",
+		"--turn-id turn:",
 	} {
 		if !strings.Contains(fw.sent[0].text, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, fw.sent[0].text)
@@ -1035,11 +1054,15 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	if !sendResp.OK {
 		t.Fatalf("send response = %#v", sendResp)
 	}
-	if len(fw.sent) != 1 || fw.sent[0].text != "continue" {
+	if len(fw.sent) != 1 {
 		t.Fatalf("sent calls = %#v", fw.sent)
 	}
-	if len(fw.submitted) != 1 || fw.submitted[0].text != "continue" || len(fw.ready) != 0 {
+	identity := assertDelegatedLifecyclePayload(t, fw.sent[0].text, "continue")
+	if len(fw.submitted) != 1 || fw.submitted[0].text != fw.sent[0].text || len(fw.ready) != 0 {
 		t.Fatalf("structured submits = %#v ready sends = %#v", fw.submitted, fw.ready)
+	}
+	if !strings.Contains(fw.submitted[0].text, "--turn-id "+identity) {
+		t.Fatalf("structured submit lost turn identity: %q", fw.submitted[0].text)
 	}
 
 	captureResp := app.HandleControlRequest(control.Request{Type: "agent_capture", AgentID: "brain-agent-worker:@1"})
@@ -1092,10 +1115,10 @@ func TestControlAppAgentSendUsesStructuredSubmitForEveryProvider(t *testing.T) {
 			if !resp.OK {
 				t.Fatalf("response = %#v", resp)
 			}
-			if len(fw.submitted) != 1 || fw.submitted[0].text != "provider follow-up" ||
-				len(fw.ready) != 0 {
+			if len(fw.submitted) != 1 || len(fw.ready) != 0 {
 				t.Fatalf("submitted=%#v ready=%#v; provider bypassed structured submit", fw.submitted, fw.ready)
 			}
+			assertDelegatedLifecyclePayload(t, fw.submitted[0].text, "provider follow-up")
 		})
 	}
 }
@@ -1200,7 +1223,7 @@ func TestControlAppConfirmedProviderSendClearsStickyLaunchFailure(t *testing.T) 
 	}
 }
 
-func TestControlAppStructuredSubmitPreservesFinalLineEnding(t *testing.T) {
+func TestControlAppStructuredSubmitPreservesOriginalBytesBeforeTurnContract(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
 		ID:        "brain-agent-worker:@1",
@@ -1219,9 +1242,10 @@ func TestControlAppStructuredSubmitPreservesFinalLineEnding(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("response = %#v", resp)
 	}
-	if len(fw.submitted) != 1 || fw.submitted[0].text != "alpha\r\nβ\n" {
+	if len(fw.submitted) != 1 {
 		t.Fatalf("structured payload = %#v", fw.submitted)
 	}
+	assertDelegatedLifecyclePayload(t, fw.submitted[0].text, "alpha\r\nβ\n")
 }
 
 func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testing.T) {
@@ -1435,6 +1459,7 @@ func TestControlAppAgentProgressUpdatesAgent(t *testing.T) {
 	resp := app.HandleControlRequest(control.Request{
 		Type:         "agent_progress",
 		AgentID:      "brain-agent-worker:@1",
+		TurnID:       "turn:control-app",
 		Status:       "blocked",
 		Phase:        "working",
 		Attention:    "user_input",
@@ -1465,6 +1490,9 @@ func TestControlAppAgentProgressUpdatesAgent(t *testing.T) {
 	}
 	if fw.progress[0].progress.TaskClass != "lasting_design" || fw.progress[0].progress.EventKind != "needs_judgment" {
 		t.Fatalf("watcher progress semantic fields = %#v", fw.progress[0].progress)
+	}
+	if fw.progress[0].progress.TurnID != "turn:control-app" {
+		t.Fatalf("watcher progress turn identity = %#v", fw.progress[0].progress)
 	}
 }
 

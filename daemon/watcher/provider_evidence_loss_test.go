@@ -303,6 +303,10 @@ func (l *bindingBackfillLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool
 	return l.inner.ApplyTurnFact(fact)
 }
 
+func (l *bindingBackfillLedger) ApplyDelegatedTurnProgress(fact TurnFact) (TurnProgressResult, error) {
+	return l.inner.ApplyDelegatedTurnProgress(fact)
+}
+
 func (l *bindingBackfillLedger) BackfillTurnTranscriptBinding(sessionID string, binding TranscriptBinding) (bool, error) {
 	l.backfilled = append(l.backfilled, binding)
 	return true, nil

@@ -360,6 +360,76 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 	})
 }
 
+func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	threadID := "brain_thread_control_signal_card"
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-signal-card:@1"
+	item, err := store.CreateWork(Work{
+		Title: "Signal card", Objective: "Project the canonical control result",
+		Status: WorkRunning, OwnerSessionID: sessionID, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := "turn:signal-card"
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pendingSubmissionDigest("card prompt"), ProcessIdentity: "process",
+		PaneGeneration: "pane", AcceptedAt: now, Mode: watcher.TurnSubmissionFresh,
+		SignalProtocol: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare card signal = (%+v, %v, %v)", pending, created, err)
+	}
+	fact := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl, Kind: "done",
+		SourceID: "control\x00card-done", At: now.Add(time.Second), Summary: "REVIEW_READY: card",
+	}
+	if result, err := store.ApplyDelegatedTurnProgress(fact); err != nil || !result.Changed || result.Turn.Status != watcher.TurnDone {
+		t.Fatalf("control card result = (%+v, %v)", result, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done WorkEvent
+	for _, event := range events {
+		if event.Kind == "session.done" {
+			done = event
+		}
+	}
+	if done.ID == "" || !done.Actionable {
+		t.Fatalf("canonical done event = %+v", events)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != done.ID || items[0].Kind != timelineKindWorkCard ||
+		items[0].EventKind != "session.done" || items[0].Summary != fact.Summary {
+		t.Fatalf("control result card = %+v event=%+v", items, done)
+	}
+	restarted, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := restarted.ApplyDelegatedTurnProgress(fact); err != nil || replay.Changed {
+		t.Fatalf("card replay = (%+v, %v)", replay, err)
+	}
+	items, err = restarted.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != done.ID {
+		t.Fatalf("replayed control cards = %+v err=%v", items, err)
+	}
+}
+
 func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.EvidenceClass, factKind string) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())

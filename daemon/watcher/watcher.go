@@ -568,11 +568,11 @@ func (w *Watcher) GetAgent(id string) *classifier.Agent {
 // UpdateAgentProgress applies a control-plane lifecycle progress update to a
 // known agent and emits the same state/metadata events used by watcher polling.
 //
-// For canonical-turn sessions the progress is a Control-class fact applied
-// through the single reducer: running/attention renew or block the turn,
-// done/failed are provisional hints that never change canonical status, and
-// the lease fields refresh the projection only. For markerless sessions the
-// legacy projection behavior is preserved.
+// For delegated signal sessions the prompt-carried TurnID is matched by the
+// ledger before any Session projection changes. The first matching signal may
+// atomically admit its pending submission; matching running/attention and
+// terminal states then share the one canonical reducer. Markerless and
+// pre-contract Sessions retain their existing projection behavior.
 func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -584,28 +584,57 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 
 	now := time.Now().UTC()
-	// A progress heartbeat can race the post-confirmation fresh-Turn commit.
-	// Classify it from an authoritative read, refreshing the two-second poll
-	// cache before deriving its TurnID, so the first heartbeat can never target
-	// the superseded Turn.
-	turn, hasCurrentTurn, turnErr := w.ledgerTurnAuthoritative(id, now)
-	if turnErr != nil {
-		return nil, turnErr
-	}
-	_, hasPendingSubmission, pendingErr := w.pendingTurnSubmission(id)
-	if pendingErr != nil {
-		return nil, pendingErr
-	}
+	var turn TurnSnapshot
+	hasCurrentTurn := false
+	hasPendingSubmission := false
+	signalOwned := false
 	appliedFact := false
-	if hasCurrentTurn && !hasPendingSubmission && w.turnLedger != nil {
-		if fact := controlFactFromProgress(id, turn.TurnID, progress, now); fact != nil {
-			snapshot, changed, applyErr := w.turnLedger.ApplyTurnFact(*fact)
+	if w.turnLedger != nil {
+		if fact := controlFactFromProgress(id, progress.TurnID, progress, now); fact != nil {
+			result, applyErr := w.turnLedger.ApplyDelegatedTurnProgress(*fact)
 			if applyErr != nil {
 				return nil, applyErr
 			}
-			appliedFact = changed
-			if changed {
-				turn = snapshot
+			if result.Owned {
+				signalOwned = true
+				if !result.Matched {
+					if strings.TrimSpace(progress.TurnID) == "" {
+						return nil, fmt.Errorf("turn identity is required for delegated progress")
+					}
+					return nil, fmt.Errorf("turn identity does not match the current delegated prompt")
+				}
+				turn = result.Turn
+				hasCurrentTurn = true
+				appliedFact = result.Changed
+			}
+		}
+	}
+	if !signalOwned {
+		if strings.TrimSpace(progress.TurnID) != "" {
+			return nil, fmt.Errorf("turn identity does not match a delegated signal contract")
+		}
+		// Pre-contract/provider-native behavior reads the authoritative current
+		// Turn and pending transaction exactly as before. This path can never
+		// consume a prompt-carried identity.
+		var turnErr error
+		turn, hasCurrentTurn, turnErr = w.ledgerTurnAuthoritative(id, now)
+		if turnErr != nil {
+			return nil, turnErr
+		}
+		_, hasPendingSubmission, turnErr = w.pendingTurnSubmission(id)
+		if turnErr != nil {
+			return nil, turnErr
+		}
+		if hasCurrentTurn && !hasPendingSubmission && w.turnLedger != nil {
+			if fact := controlFactFromProgress(id, turn.TurnID, progress, now); fact != nil {
+				snapshot, changed, applyErr := w.turnLedger.ApplyTurnFact(*fact)
+				if applyErr != nil {
+					return nil, applyErr
+				}
+				appliedFact = changed
+				if changed {
+					turn = snapshot
+				}
 			}
 		}
 	}
@@ -681,6 +710,9 @@ func controlFactFromProgress(id, turnID string, progress classifier.AgentProgres
 		LeaseSeconds: progress.LeaseSeconds,
 	}
 	progressState := classifier.ProgressState(progress)
+	if progress.Attention == "user_input" || progress.Attention == "blocked" {
+		progressState = classifier.StateBlocked
+	}
 	switch progressState {
 	case classifier.StateRunning:
 		base.Kind = "running"
@@ -2411,6 +2443,7 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 			AcceptedAt:        acceptedAt.UTC(),
 			ProcessIdentity:   delegatedTurnIdentity(identity),
 			TranscriptBinding: transcriptBindingForCommand(identity.Command),
+			SignalProtocol:    true,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,
@@ -2461,6 +2494,7 @@ func (w *Watcher) SubmitDelegatedInput(
 			AcceptedAt:        acceptedAt.UTC(),
 			ProcessIdentity:   delegatedTurnIdentity(identity),
 			TranscriptBinding: transcriptBindingForCommand(identity.Command),
+			SignalProtocol:    true,
 		},
 		w.delegatedInputConfirmer(
 			sessionID,

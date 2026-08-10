@@ -220,64 +220,6 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	}
 }
 
-// TestControlFailedHintsDedupeToOneNonActionableRow verifies the frozen
-// provisional-terminal rule: repeated control failed self-reports on a live
-// canonical turn collapse to one non-actionable row (per (session, turn,
-// kind)), canonical status never moves, and no wake is possible.
-func TestControlFailedHintsDedupeToOneNonActionableRow(t *testing.T) {
-	store, sessionID, turnID := ledgerTestStore(t)
-	acceptedAt := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
-	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt)
-	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID: sessionID, TurnID: turnID,
-		Class: watcher.EvidenceReceipt, Kind: "admission",
-		SourceID:   "receipt\x00" + turnID + "\x00accepted\x00payload-digest",
-		Admission:  admission,
-		ActivityID: "activity-1",
-		At:         acceptedAt.Add(time.Second),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for index := 0; index < 3; index++ {
-		// Distinct progress_event_id per attempt: each is a distinct fact, but
-		// the dedupe key per (session, turn, kind) keeps exactly one row.
-		snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
-			SessionID: sessionID, TurnID: turnID,
-			Class: watcher.EvidenceControl, Kind: "failed",
-			SourceID: "control\x00attempt-" + string(rune('a'+index)),
-			At:       acceptedAt.Add(time.Duration(index+2) * time.Second),
-			Summary:  "Delegated Session reported failed; awaiting provider confirmation",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !changed && index == 0 {
-			t.Fatalf("first hint did not change the row")
-		}
-		if snapshot.Status != watcher.TurnAccepted {
-			t.Fatalf("control hint moved canonical status: %+v", snapshot)
-		}
-	}
-	workItem, _, _ := store.WorkByOwnerSession(sessionID)
-	events, err := store.ListWorkEvents(workItem.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed := 0
-	actionable := 0
-	for _, recorded := range events {
-		if recorded.Kind == "session.failed" {
-			failed++
-			if recorded.Actionable {
-				actionable++
-			}
-		}
-	}
-	if failed != 1 || actionable != 0 {
-		t.Fatalf("control failed hints = %d rows (%d actionable), want one non-actionable: %#v", failed, actionable, events)
-	}
-}
-
 // TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce verifies the
 // reusable-Session contract: a follow-up submitted after the previous turn
 // settled done establishes a new turn epoch, its authoritative completion

@@ -486,6 +486,83 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentProgressRequiresExactDelegatedSignalIdentity(t *testing.T) {
+	w := New(time.Second)
+	const sessionID = "brain-agent-signal:@1"
+	const turnID = "turn:signal-current"
+	w.registerCreatedSession("", sessionID, "/repo/zen", CreateSessionOptions{
+		Command: "codex", Name: "Signal", Delegated: true,
+	}, time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC))
+	<-w.Events()
+	ledger := newFakeTurnLedger()
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: turnID, Status: TurnAccepted,
+		AcceptedAt: time.Now().UTC().Add(-time.Second), SignalProtocol: true,
+	})
+	w.turnLedger = ledger
+
+	for _, test := range []struct {
+		name   string
+		turnID string
+		want   string
+	}{
+		{name: "missing", want: "turn identity is required"},
+		{name: "mismatched", turnID: "turn:previous", want: "does not match"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+				TurnID: test.turnID, Status: "done", Phase: "reporting", Attention: "done",
+				Summary: "must not apply", ProgressEventID: "rejected-" + test.name,
+			}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("identity rejection error = %v", err)
+			}
+		})
+	}
+	if agent := w.GetAgent(sessionID); agent.State == classifier.StateDone || agent.Summary == "must not apply" {
+		t.Fatalf("rejected signal mutated Session projection: %+v", agent)
+	}
+	if turn, _, _ := ledger.Turn(sessionID); turn.Status != TurnAccepted {
+		t.Fatalf("rejected signal mutated canonical Turn: %+v", turn)
+	}
+
+	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+		TurnID: turnID, Status: "done", Phase: "reporting", Attention: "done",
+		Summary: "REVIEW_READY", ProgressEventID: "matching-done",
+	})
+	if err != nil || agent.State != classifier.StateDone || agent.Summary != "REVIEW_READY" {
+		t.Fatalf("matching signal projection = %+v err=%v", agent, err)
+	}
+	<-w.Events()
+}
+
+func TestUpdateAgentProgressMapsMatchingUserInputAttentionToBlockedTurn(t *testing.T) {
+	w := New(time.Second)
+	const sessionID = "brain-agent-user-input:@1"
+	const turnID = "turn:user-input"
+	w.registerCreatedSession("", sessionID, "/repo/zen", CreateSessionOptions{
+		Command: "pi", Name: "User input", Delegated: true,
+	}, time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC))
+	<-w.Events()
+	ledger := newFakeTurnLedger()
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: turnID, Status: TurnRunning,
+		AcceptedAt: time.Now().UTC().Add(-time.Second), SignalProtocol: true,
+	})
+	w.turnLedger = ledger
+	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+		TurnID: turnID, Status: "running", Phase: "working", Attention: "user_input",
+		Summary: "Need exact input", ProgressEventID: "matching-user-input",
+	})
+	if err != nil || agent.State != classifier.StateBlocked || agent.Attention != "user_input" || agent.Summary != "Need exact input" {
+		t.Fatalf("user_input projection = %+v err=%v", agent, err)
+	}
+	turn, _, _ := ledger.Turn(sessionID)
+	if turn.Status != TurnBlocked || turn.Attention != "user_input" {
+		t.Fatalf("user_input canonical Turn = %+v", turn)
+	}
+	<-w.Events()
+}
+
 func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
@@ -494,8 +571,9 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
 	<-w.Events()
 
-	// A stale failed progress report never changes canonical status; the
-	// canonical Admitted turn keeps the Session projection running.
+	// This pre-contract fixture has no prompt-carried identity. Its unscoped
+	// failed progress cannot change canonical status, so the Admitted turn keeps
+	// the Session projection running.
 	ledger := newFakeTurnLedger()
 	acceptedAt := time.Now().UTC()
 	if err := ledger.AdmitTurn(AdmittedTurn{
@@ -519,8 +597,8 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-w.Events()
-	// A control failed report is a hint: the canonical Admitted turn keeps the
-	// Session projection running and no stale failure metadata survives.
+	// The unscoped pre-contract report leaves the canonical Admitted Turn and
+	// Session projection running, with no sticky failure metadata.
 	if failed.State != classifier.StateRunning || failed.Attention != "none" ||
 		failed.NeedsAttention || failed.LastProgressAt != nil ||
 		failed.TaskClass != "" || failed.EventKind != "" {
@@ -627,7 +705,7 @@ func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T
 	}
 }
 
-func TestCanonicalTurnProjectionClearsControlDoneMetadata(t *testing.T) {
+func TestPreContractTurnProjectionIgnoresUnscopedControlDoneMetadata(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("", "brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",

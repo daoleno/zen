@@ -18,6 +18,7 @@ import (
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
+	"github.com/google/uuid"
 )
 
 type controlWatcher interface {
@@ -842,6 +843,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
 	turnID := delegatedTurnID(agentID, handoffStartedAt)
+	payload = delegatedLifecyclePayload(payload, turnID)
 	var result watcher.InputResult
 	var err error
 	if initial {
@@ -883,8 +885,24 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string
 	return nil
 }
 
-func delegatedTurnID(agentID string, acceptedAt time.Time) string {
-	return fmt.Sprintf("%s:turn:%d", strings.TrimSpace(agentID), acceptedAt.UnixNano())
+func delegatedTurnID(_ string, _ time.Time) string {
+	return "turn:" + uuid.NewString()
+}
+
+// delegatedLifecyclePayload exposes the pending submission's sole random
+// identity to the Agent in the prompt that identity owns. The literal flag is
+// intentionally turn-scoped rather than process environment: a reusable
+// Session receives a different identity with every admitted prompt.
+func delegatedLifecyclePayload(payload, turnID string) string {
+	turnID = strings.TrimSpace(turnID)
+	contract := fmt.Sprintf(`Zen delegated turn contract:
+- This prompt's turn identity is %s.
+- Include --turn-id %s in every zen agent progress command for this prompt.
+- This identity supersedes every identity from an earlier prompt in this Session.
+- A missing or different identity cannot admit, renew, block, fail, or finish this turn.
+- Turn-scoped command shape:
+  "$ZEN_AGENT_PROGRESS_CMD" agent progress --turn-id %s --status running --phase working --attention none --summary "Short current work" --lease 300`, turnID, turnID, turnID)
+	return payload + "\n\n" + contract
 }
 
 // recordSubmissionFailure rebinds the Session projection from the canonical
@@ -955,6 +973,7 @@ func (a *controlApp) handleAgentProgress(req control.Request) control.Response {
 		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
 	}
 	progress, err := classifier.ValidateProgress(classifier.AgentProgress{
+		TurnID:          req.TurnID,
 		Status:          req.Status,
 		Phase:           req.Phase,
 		Attention:       req.Attention,
@@ -1471,6 +1490,7 @@ func lifecycleProtocol(profile string) string {
 - Report progress through the Zen control plane only when your phase changes, when you take a meaningful long-running step, when you need attention, and when you finish.
 - ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD is the absolute path to the currently running zen daemon executable (a single token, no spaces; may be named zen, zen-dev, or similar).
 - Always invoke it as a quoted single token followed by the "agent progress" subcommand. Do not rely on shell word splitting of the variable.
+- A Brain-delegated prompt ends with its exact random turn contract. Include that literal --turn-id in every progress command for that prompt; do not reuse a previous prompt's identity. Sessions without a turn contract omit the flag.
 - Command shape:
   "$ZEN_AGENT_PROGRESS_CMD" agent progress --status running --phase working --attention none --summary "Short current work" --lease 300
 - Semantic event shape:
