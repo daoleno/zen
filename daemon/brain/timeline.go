@@ -70,6 +70,36 @@ func timelineItemMatchesBrainInputAdmission(item TimelineItem, admission BrainIn
 		strings.TrimSpace(item.AdmissionSHA256) == admission.BodySHA256
 }
 
+func brainInputAdmissionTimelineItem(admission BrainInputAdmission) TimelineItem {
+	return TimelineItem{
+		ID:              AdmissionTimelineItemID(admission.RequestID),
+		ThreadID:        admission.ThreadID,
+		SessionID:       admission.SessionID,
+		Role:            "user",
+		Body:            admission.DisplayBody,
+		CreatedAt:       admission.AcceptedAt.UTC(),
+		Kind:            timelineKindUserMessage,
+		BrainAdmission:  true,
+		AdmissionSHA256: admission.BodySHA256,
+	}
+}
+
+func providerRowMatchesAdmissionWindow(item TimelineItem, admission BrainInputAdmission) bool {
+	if item.BrainAdmission || strings.TrimSpace(item.Kind) != timelineKindUserMessage ||
+		!strings.EqualFold(strings.TrimSpace(item.Role), "user") {
+		return false
+	}
+	if strings.TrimSpace(item.ThreadID) != admission.ThreadID ||
+		strings.TrimSpace(item.SessionID) != admission.SessionID {
+		return false
+	}
+	if AdmissionDigest(strings.TrimSpace(item.Body)) != admission.BodySHA256 {
+		return false
+	}
+	createdAt := item.CreatedAt.UTC()
+	return !createdAt.Before(admission.CreatedAt.UTC()) && !createdAt.After(admission.AcceptedAt.UTC())
+}
+
 // ProjectBrainInputAdmission idempotently materializes the presentation row
 // from accepted orchestration authority. Failure never rolls back acceptance
 // or Attention; the existing bounded startup pass retries this projection.
@@ -83,25 +113,87 @@ func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error 
 	if s.projectBrainInputAdmission != nil {
 		return s.projectBrainInputAdmission(admission)
 	}
-	item := TimelineItem{
-		ID:              AdmissionTimelineItemID(admission.RequestID),
-		ThreadID:        admission.ThreadID,
-		SessionID:       admission.SessionID,
-		Role:            "user",
-		Body:            admission.DisplayBody,
-		CreatedAt:       admission.AcceptedAt.UTC(),
-		Kind:            timelineKindUserMessage,
-		BrainAdmission:  true,
-		AdmissionSHA256: admission.BodySHA256,
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
+		return formatAdmissionProvenanceError(err)
 	}
-	recorded, err := s.AppendTimelineItem(item)
+	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return err
 	}
-	if !timelineItemMatchesBrainInputAdmission(recorded, admission) {
-		return fmt.Errorf("timeline identity %q belongs to different Brain input admission", recorded.ID)
+	item := brainInputAdmissionTimelineItem(admission)
+	canonicalIndex := -1
+	for index, existing := range allItems {
+		if strings.TrimSpace(existing.ID) != item.ID {
+			continue
+		}
+		if !timelineItemMatchesBrainInputAdmission(existing, admission) {
+			return fmt.Errorf("timeline identity %q belongs to different Brain input admission", existing.ID)
+		}
+		canonicalIndex = index
+		item = existing
+		break
 	}
-	return nil
+	if canonicalIndex >= 0 && strings.TrimSpace(item.AdmissionEchoEventID) != "" {
+		return nil
+	}
+
+	// A provider transcript snapshot can race between immutable admission
+	// preparation and acceptance. Reconcile only the exact provider-native row
+	// from that closed interval. This is deliberately narrower than ordinary
+	// echo suppression: exact thread, provider Session, digest, and timestamp
+	// are all required, and one admission may consume only one provider row.
+	claimedProviderIDs := make(map[string]bool, len(allItems))
+	for _, existing := range allItems {
+		if IsBrainInputAdmission(existing) {
+			if echoID := strings.TrimSpace(existing.AdmissionEchoEventID); echoID != "" {
+				claimedProviderIDs[echoID] = true
+			}
+		}
+	}
+	candidates := make([]int, 0, 1)
+	for index, existing := range allItems {
+		if claimedProviderIDs[strings.TrimSpace(existing.ID)] {
+			continue
+		}
+		if providerRowMatchesAdmissionWindow(existing, admission) {
+			candidates = append(candidates, index)
+		}
+	}
+	if len(candidates) > 1 {
+		return fmt.Errorf(
+			"Brain input admission %q has %d provider echoes in its acceptance window",
+			admission.RequestID,
+			len(candidates),
+		)
+	}
+	if len(candidates) == 0 {
+		if canonicalIndex >= 0 {
+			return nil
+		}
+		_, err := s.appendTimelineItemLocked(item)
+		return err
+	}
+
+	candidateIndex := candidates[0]
+	item.AdmissionEchoEventID = strings.TrimSpace(allItems[candidateIndex].ID)
+	reconciled := make([]TimelineItem, 0, len(allItems))
+	for index, existing := range allItems {
+		switch index {
+		case candidateIndex:
+			continue
+		case canonicalIndex:
+			reconciled = append(reconciled, item)
+		default:
+			reconciled = append(reconciled, existing)
+		}
+	}
+	if canonicalIndex < 0 {
+		reconciled = append(reconciled, item)
+	}
+	return s.rewriteTimelineLocked(reconciled)
 }
 
 // TimelineItem is one durable Brain-thread timeline row. The append-only

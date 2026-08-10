@@ -2,13 +2,222 @@ package brain
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/work"
 )
+
+func TestProviderEchoMaterializedDuringAdmissionWindowReconcilesAtProjection(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-raced-provider-echo"
+	sessionID := "019fec64-raced-provider-session"
+	body := "continue through the exact admission window"
+	providerID := sessionID + ":19020607"
+	createdAt := time.Date(2026, 8, 11, 13, 27, 27, 110000000, time.UTC)
+	providerAt := createdAt.Add(531 * time.Millisecond)
+	acceptedAt := createdAt.Add(1285 * time.Millisecond)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+
+	store.now = func() time.Time { return createdAt }
+	candidate := BrainInputAdmission{
+		RequestID: "receipt-raced-provider-echo", ThreadID: threadID,
+		HostSessionID: "brain-host:@admission-window", SessionID: sessionID, DisplayBody: body,
+	}
+	prepared, created, err := store.PrepareBrainInputAdmission(candidate)
+	if err != nil || !created {
+		t.Fatalf("prepare admission created=%v row=%+v err=%v", created, prepared, err)
+	}
+	conversation := work.CodexConversation{
+		Available: true,
+		SessionID: sessionID,
+		Events: []work.CodexConversationEvent{{
+			ID: providerID, Timestamp: providerAt.Format(time.RFC3339Nano), Kind: timelineKindUserMessage,
+			Role: "user", Body: body, AdmissionSHA256: AdmissionDigest(body),
+		}},
+	}
+	if err := store.MaterializeProviderConversation(threadID, conversation); err != nil {
+		t.Fatal(err)
+	}
+	premature, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(premature) != 1 || premature[0].ID != providerID || premature[0].BrainAdmission {
+		t.Fatalf("premature provider row=%+v err=%v", premature, err)
+	}
+
+	store.now = func() time.Time { return acceptedAt }
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept admission changed=%v row=%+v err=%v", changed, accepted, err)
+	}
+	// Simulate an upgrade from the former projection path, which appended the
+	// canonical receipt after the premature provider row but could not remove
+	// the already-durable echo. A startup/idempotent retry must repair it too.
+	if _, err := store.AppendTimelineItem(brainInputAdmissionTimelineItem(accepted)); err != nil {
+		t.Fatal(err)
+	}
+	beforeRetry, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(beforeRetry) != 2 {
+		t.Fatalf("pre-upgrade duplicate timeline=%+v err=%v", beforeRetry, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatal(err)
+	}
+	assertRacedAdmissionTimeline := func(t *testing.T, current *Store) {
+		t.Helper()
+		items, err := current.ThreadTimeline(threadID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].ID != candidate.RequestID || !items[0].BrainAdmission ||
+			items[0].AdmissionSHA256 != AdmissionDigest(body) || items[0].AdmissionEchoEventID != providerID {
+			t.Fatalf("reconciled timeline=%+v", items)
+		}
+	}
+	assertRacedAdmissionTimeline(t, store)
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatalf("idempotent projection after reopen: %v", err)
+	}
+	if err := reopened.MaterializeProviderConversation(threadID, conversation); err != nil {
+		t.Fatalf("provider replay after reopen: %v", err)
+	}
+	assertRacedAdmissionTimeline(t, reopened)
+}
+
+func TestProviderRowsOutsideExactAdmissionWindowRemainIndependent(t *testing.T) {
+	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		providerSession string
+		providerAt      time.Time
+	}{
+		{name: "before prepare", providerSession: "provider-session", providerAt: base.Add(-time.Nanosecond)},
+		{name: "after accept", providerSession: "provider-session", providerAt: base.Add(time.Second + time.Nanosecond)},
+		{name: "other provider session", providerSession: "other-session", providerAt: base.Add(500 * time.Millisecond)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			threadID := "thread-window-safety"
+			body := "same body but independent input"
+			if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+				t.Fatal(err)
+			}
+			store.now = func() time.Time { return base }
+			candidate := BrainInputAdmission{
+				RequestID: "receipt-window-safety", ThreadID: threadID,
+				HostSessionID: "brain-host:@window-safety", SessionID: "provider-session", DisplayBody: body,
+			}
+			if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+				t.Fatalf("prepare created=%v err=%v", created, err)
+			}
+			providerID := test.providerSession + ":user"
+			conversation := work.CodexConversation{
+				Available: true, SessionID: test.providerSession,
+				Events: []work.CodexConversationEvent{{
+					ID: providerID, Timestamp: test.providerAt.Format(time.RFC3339Nano),
+					Kind: timelineKindUserMessage, Role: "user", Body: body,
+				}},
+			}
+			if err := store.MaterializeProviderConversation(threadID, conversation); err != nil {
+				t.Fatal(err)
+			}
+			store.now = func() time.Time { return base.Add(time.Second) }
+			accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+			if err != nil || !changed {
+				t.Fatalf("accept changed=%v err=%v", changed, err)
+			}
+			if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+				t.Fatal(err)
+			}
+			items, err := store.ThreadTimeline(threadID, 0)
+			if err != nil || len(items) != 2 {
+				t.Fatalf("timeline=%+v err=%v", items, err)
+			}
+			byID := map[string]TimelineItem{}
+			for _, item := range items {
+				byID[item.ID] = item
+			}
+			if provider := byID[providerID]; provider.ID == "" || provider.BrainAdmission {
+				t.Fatalf("independent provider row changed: %+v", items)
+			}
+			if admission := byID[candidate.RequestID]; admission.ID == "" || !admission.BrainAdmission ||
+				admission.AdmissionEchoEventID != "" {
+				t.Fatalf("admission consumed independent row: %+v", items)
+			}
+		})
+	}
+}
+
+func TestProviderEchoAdmissionWindowAmbiguityFailsClosed(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-window-ambiguity"
+	sessionID := "provider-session-ambiguity"
+	body := "ambiguous duplicate body"
+	createdAt := time.Date(2026, 8, 11, 14, 30, 0, 0, time.UTC)
+	acceptedAt := createdAt.Add(time.Second)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return createdAt }
+	candidate := BrainInputAdmission{
+		RequestID: "receipt-window-ambiguity", ThreadID: threadID,
+		HostSessionID: "brain-host:@window-ambiguity", SessionID: sessionID, DisplayBody: body,
+	}
+	if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	events := make([]work.CodexConversationEvent, 0, 2)
+	for index := 0; index < 2; index++ {
+		events = append(events, work.CodexConversationEvent{
+			ID:        fmt.Sprintf("%s:%d", sessionID, index+1),
+			Timestamp: createdAt.Add(time.Duration(index+1) * 250 * time.Millisecond).Format(time.RFC3339Nano),
+			Kind:      timelineKindUserMessage, Role: "user", Body: body,
+		})
+	}
+	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+		Available: true, SessionID: sessionID, Events: events,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return acceptedAt }
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v err=%v", changed, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err == nil || !strings.Contains(err.Error(), "2 provider echoes") {
+		t.Fatalf("ambiguous projection err=%v", err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("fail-closed timeline=%+v err=%v", items, err)
+	}
+	for _, item := range items {
+		if item.BrainAdmission || item.ID == candidate.RequestID {
+			t.Fatalf("ambiguous projection mutated timeline: %+v", items)
+		}
+	}
+}
 
 func TestTwoIdenticalAdmissionsKeepTwoRowsAndEchoesAddZero(t *testing.T) {
 	store, err := NewStore(t.TempDir())

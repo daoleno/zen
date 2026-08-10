@@ -558,6 +558,60 @@ func TestBrainScopedConversationEmptyProviderHostWithoutTimelineStaysEmpty(t *te
 	}
 }
 
+func TestBrainScopedConversationShowsOneBubbleWhenProviderEchoPrecedesAdmissionProjection(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-provider-before-admission"
+	sessionID := "provider-session-before-admission"
+	requestID := "receipt-provider-before-admission"
+	body := "继续？"
+	createdAt := time.Now().UTC().Add(-2 * time.Second)
+	providerAt := createdAt.Add(time.Second)
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := brain.BrainInputAdmission{
+		RequestID: requestID, ThreadID: threadID, HostSessionID: "brain-host:@provider-before-admission",
+		SessionID: sessionID, DisplayBody: body, CreatedAt: createdAt,
+	}
+	if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	providerID := sessionID + ":19020607"
+	conversation := work.CodexConversation{
+		Available: true, SessionID: sessionID,
+		Events: []work.CodexConversationEvent{{
+			ID: providerID, Timestamp: providerAt.Format(time.RFC3339Nano),
+			Kind: "user_message", Role: "user", Body: body,
+		}},
+	}
+	if err := store.MaterializeProviderConversation(threadID, conversation); err != nil {
+		t.Fatal(err)
+	}
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v row=%+v err=%v", changed, accepted, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{brain: brain.NewService(store, nil, nil)}
+	got := srv.brainScopedConversation("brain-thread:"+threadID, conversation, time.Now().UTC())
+	userEvents := make([]work.CodexConversationEvent, 0, 1)
+	for _, event := range got.Events {
+		if event.Kind == "user_message" {
+			userEvents = append(userEvents, event)
+		}
+	}
+	if len(userEvents) != 1 || userEvents[0].ID != requestID || userEvents[0].Body != body ||
+		userEvents[0].Source != "brain_timeline" {
+		t.Fatalf("Brain App snapshot user bubbles=%+v full=%+v", userEvents, got.Events)
+	}
+}
+
 func TestBrainScopedConversationPreservesPartialProviderEventWithCalendar(t *testing.T) {
 	service, calendarStore := newBrainCalendarFixture(t, "thread-1")
 	result := finishScheduledResult(t, calendarStore, "item", "Daily papers", "thread-1", "Three papers.", "")

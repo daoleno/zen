@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -941,6 +942,134 @@ func TestLongForegroundTurnPersistsFutureAttentionAcrossReopenAndConsumesAtBound
 	if _, reservation, err := reopened.HostForegroundState(); err != nil || reservation != nil {
 		t.Fatalf("terminal boundary did not consume reservation=%+v err=%v", reservation, err)
 	}
+}
+
+func TestAcceptedForegroundInputReservesAttentionBeforeTimelineProjection(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@projection-reservation"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "projection-independent reservation", "brain-agent-worker:@projection")
+	event := appendSignalTestEvent(t, store, item, "projection-independent")
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true}
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-projection"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
+			ID: "host-activity-projection", Status: "running", StartedAt: time.Now().Add(-time.Second),
+		}},
+	}
+	service := NewService(store, watcherFixture, nil)
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
+		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
+	}
+	requestID := "foreground-projection-failure"
+	if _, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", ""); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	projectionErr := errors.New("injected timeline projection failure")
+	store.projectBrainInputAdmission = func(BrainInputAdmission) error { return projectionErr }
+	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); !errors.Is(err, projectionErr) {
+		t.Fatalf("projection failure err=%v, want %v", err, projectionErr)
+	}
+	active, reservation, err := store.HostForegroundState()
+	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
+		reservation.HostGeneration != "host-generation-projection" ||
+		active.ProviderActivityID != "host-activity-projection" {
+		t.Fatalf("accepted foreground state active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, activeHostThreadID(t, store))
+	if err != nil || !found || admission.State != BrainInputAdmissionAccepted {
+		t.Fatalf("accepted admission found=%v admission=%+v err=%v", found, admission, err)
+	}
+	items, err := store.ThreadTimeline(admission.ThreadID, 0)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("failed projection materialized timeline=%+v err=%v", items, err)
+	}
+
+	store.projectBrainInputAdmission = nil
+	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); err != nil {
+		t.Fatalf("idempotent projection retry: %v", err)
+	}
+	_, repeated, err := store.HostForegroundState()
+	if err != nil || repeated == nil || repeated.EventID != reservation.EventID ||
+		repeated.HandlingID != reservation.HandlingID || len(watcherFixture.sentCalls) != 0 {
+		t.Fatalf("projection retry changed reservation=%+v sent=%+v err=%v", repeated, watcherFixture.sentCalls, err)
+	}
+	items, err = store.ThreadTimeline(admission.ThreadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != requestID {
+		t.Fatalf("projection retry timeline=%+v err=%v", items, err)
+	}
+}
+
+type changingHostGenerationWatcher struct {
+	*fakeWatcher
+	calls int
+}
+
+func (w *changingHostGenerationWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	w.calls++
+	generation := "host-generation-prepared"
+	if w.calls >= 3 {
+		generation = "host-generation-replaced"
+	}
+	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
+}
+
+func TestAcceptedForegroundInputGenerationMismatchStillPersistsExactReservation(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@generation-reservation"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "generation-bound reservation", "brain-agent-worker:@generation")
+	event := appendSignalTestEvent(t, store, item, "generation-bound")
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true}
+	base := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
+			ID: "replacement-generation-activity", Status: "running", StartedAt: time.Now(),
+		}},
+	}
+	watcherFixture := &changingHostGenerationWatcher{fakeWatcher: base}
+	service := NewService(store, watcherFixture, nil)
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
+		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
+	}
+	requestID := "foreground-generation-mismatch"
+	if _, created, err := service.PrepareHostUserInput(hostID, requestID, "continue", ""); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(hostID, requestID, "continue", ""); err == nil ||
+		!strings.Contains(err.Error(), "generation") {
+		t.Fatalf("generation mismatch was not surfaced: %v", err)
+	}
+	active, reservation, err := store.HostForegroundState()
+	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
+		active.HostGeneration != "host-generation-prepared" ||
+		reservation.HostGeneration != active.HostGeneration {
+		t.Fatalf("generation-bound state active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	if active.ProviderActivityID != "" {
+		t.Fatalf("replacement generation activity was ambiently adopted: %+v", active)
+	}
+}
+
+func activeHostThreadID(t *testing.T, store *Store) string {
+	t.Helper()
+	threadID, err := store.ChatThreadID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return threadID
 }
 
 func TestHostForegroundLateBindsNewActivityAfterPriorTerminal(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"github.com/gorilla/websocket"
@@ -267,6 +268,85 @@ func TestBrainAdmissionProvedNonSubmissionAbortsIntent(t *testing.T) {
 	}
 	if admission, found, err := store.BrainInputAdmission(requestID, threadID); err != nil || found {
 		t.Fatalf("proved not-submitted intent found=%v admission=%+v err=%v", found, admission, err)
+	}
+}
+
+func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@projection-reservation"
+	threadID := "thread-projection-reservation"
+	requestID := "request-projection-reservation"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(brain.Work{
+		Title: "Queued review", Objective: "Reserve this review behind the accepted foreground response.",
+		Status: brain.WorkWaiting, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, created, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "review.ready", DedupeKey: "review:projection-reservation",
+		Summary: "A queued result is ready.", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
+	}
+	// Occupy the deterministic presentation identity with incompatible bytes.
+	// Orchestration acceptance must remain authoritative and reserve Attention;
+	// the existing startup projection retry continues to own this conflict.
+	if _, err := store.AdmitUserMessage(threadID, hostID, requestID, "conflicting presentation body"); err != nil {
+		t.Fatal(err)
+	}
+	watcherFixture := &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+	}}
+	service := brain.NewService(store, watcherFixture, nil)
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: service,
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != hostID || text != "continue" || receipt != requestID {
+				t.Fatalf("provider call=%q %q %q", agentID, text, receipt)
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
+		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		response := sendThinProxyRequest(t, conn, request)
+		if response.Type != "input_pending" || response.RequestID != requestID {
+			t.Fatalf("attempt %d response=%#v", attempt+1, response)
+		}
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("projection retry replayed provider input: calls=%d", providerCalls.Load())
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionAccepted {
+		t.Fatalf("accepted admission found=%v row=%+v err=%v", found, admission, err)
+	}
+	active, reservation, err := store.HostForegroundState()
+	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
+		reservation.HostGeneration != "test-owned-generation" ||
+		reservation.HostTurnID != active.HostTurnID {
+		t.Fatalf("foreground reservation active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	claims, err := store.ClaimedActionableEvents()
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("future reservation became a delivered/held claim: claims=%+v err=%v", claims, err)
 	}
 }
 

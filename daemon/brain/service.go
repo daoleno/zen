@@ -1159,18 +1159,34 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 	if activeForeground != nil && activeForeground.HostSessionID == hostID {
 		if reservation == nil && (s.foregroundInput || host != nil &&
 			(host.State == classifier.StateRunning || host.State == classifier.StateBlocked)) {
-			generation, generationErr := s.hostOwnedGeneration(hostID)
-			if generationErr != nil {
-				return false, generationErr
+			// The accepted foreground admission owns its prepared generation.
+			// A later ambient pane/process generation may be useful evidence for
+			// binding provider Activity, but it cannot replace that authority or
+			// prevent the future Attention reservation from becoming durable.
+			generation := activeForeground.HostGeneration
+			currentGeneration, generationErr := s.hostOwnedGeneration(hostID)
+			if generationErr == nil && currentGeneration != generation {
+				generationErr = fmt.Errorf(
+					"foreground Host generation changed after accepted input: accepted %s, current %s",
+					generation,
+					currentGeneration,
+				)
 			}
 			activityID := ""
-			if observation, found, probeErr := s.watcher.ProbeProviderEvidence(hostID); probeErr != nil {
-				return false, probeErr
-			} else if found && strings.TrimSpace(observation.Status) == "running" {
-				activityID = strings.TrimSpace(observation.ID)
+			var probeErr error
+			if generationErr == nil {
+				var observation watcher.ProviderActivityObservation
+				var found bool
+				observation, found, probeErr = s.watcher.ProbeProviderEvidence(hostID)
+				if probeErr == nil && found && strings.TrimSpace(observation.Status) == "running" {
+					activityID = strings.TrimSpace(observation.ID)
+				}
 			}
 			if _, _, reserveErr := s.store.ReserveHostAttention(hostID, generation, activityID); reserveErr != nil {
-				return false, reserveErr
+				return false, errors.Join(generationErr, probeErr, reserveErr)
+			}
+			if generationErr != nil || probeErr != nil {
+				return false, errors.Join(generationErr, probeErr)
 			}
 		}
 		// Reopen derives foreground exclusion from the durable turn, not the
@@ -1719,9 +1735,11 @@ func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 }
 
 // AdmitHostUserInput makes provider acceptance and every matching user_input
-// Attention authoritative in one orchestration replacement, then attempts the
-// idempotent messages.jsonl projection. request_id + thread_id is the exact
-// durable admission identity.
+// Attention authoritative in one orchestration replacement, reserves any
+// queued future Attention behind that accepted foreground turn, then attempts
+// the idempotent messages.jsonl projection. Projection remains independently
+// retryable and cannot strand the scheduler gate. request_id + thread_id is
+// the exact durable admission identity.
 func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
 	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
 	if err != nil || !hostInput {
@@ -1731,11 +1749,9 @@ func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversation
 	if err != nil {
 		return err
 	}
-	if err := s.store.ProjectBrainInputAdmission(accepted); err != nil {
-		return err
-	}
 	_, dispatchErr := s.DispatchPendingEvent()
-	return dispatchErr
+	projectionErr := s.store.ProjectBrainInputAdmission(accepted)
+	return errors.Join(dispatchErr, projectionErr)
 }
 
 func threadIDFromConversationScopeKey(scopeKey string) string {
