@@ -15,6 +15,7 @@ import {
   isMeaningfulActivityBody,
 } from "./InterfaceTimelineActivityBody";
 import { InterfaceTimelineExpandedBlock } from "./InterfaceTimelineExpandedBlock";
+import { expandedActivityStatusLine } from "./InterfaceTimelineActivityModel";
 import type {
   PatchFileSummary,
   ZenActivityChild,
@@ -40,7 +41,8 @@ export function InterfaceTimelineActivityDetails({
   formatPatchPath,
   truncateBody,
 }: InterfaceTimelineActivityDetailsProps) {
-  const showStatus = Boolean(item.statusLine?.trim());
+  const statusLine = expandedActivityStatusLine(item);
+  const showStatus = Boolean(statusLine);
   const showQuery = Boolean(item.queryText?.trim());
   const showCommand = Boolean(item.commandText?.trim());
   const showBody = isMeaningfulActivityBody(item.body, item.tone);
@@ -61,7 +63,7 @@ export function InterfaceTimelineActivityDetails({
           style={[styles.statusLine, { color: chrome.text }]}
           numberOfLines={2}
         >
-          {item.statusLine}
+          {statusLine}
         </Text>
       ) : null}
 

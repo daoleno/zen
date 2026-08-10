@@ -27,10 +27,20 @@ export function shouldAutoExpandActivity(item: ZenActivityTimelineItem) {
   return item.tone === "failed";
 }
 
+export function expandedActivityStatusLine(
+  item: ZenActivityTimelineItem,
+): string | undefined {
+  const status = item.statusLine?.trim();
+  if (!status || status === item.detail?.trim()) {
+    return undefined;
+  }
+  return item.statusLine;
+}
+
 function canExpandActivity(item: ZenActivityTimelineItem) {
   return Boolean(
     item.body ||
-    item.statusLine ||
+    expandedActivityStatusLine(item) ||
     item.commandText ||
     item.queryText ||
     item.fileSummaries?.length ||

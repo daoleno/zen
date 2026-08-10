@@ -4,6 +4,7 @@
  */
 
 import {
+  distinctivePath,
   isExecWrapperToolName,
   parseExecWrapperCalls,
   stripToolNamespace,
@@ -47,14 +48,26 @@ export interface ToolCallDetailsInput {
 }
 
 const TRANSPORT_KEYS = new Set([
-  "chunk_id", "wall_time", "wall_time_seconds", "session_id",
-  "original_token_count", "token_count", "yield_time_ms", "call_id", "exit_code",
+  "chunk_id",
+  "wall_time",
+  "wall_time_seconds",
+  "session_id",
+  "original_token_count",
+  "token_count",
+  "yield_time_ms",
+  "call_id",
+  "exit_code",
 ]);
 
 export function isWaitLikeToolName(name?: string): boolean {
   const n = stripToolNamespace(name || "").toLowerCase();
-  return n === "wait" || n === "write_stdin" || n === "await"
-    || n === "awaitshell" || n === "await_shell";
+  return (
+    n === "wait" ||
+    n === "write_stdin" ||
+    n === "await" ||
+    n === "awaitshell" ||
+    n === "await_shell"
+  );
 }
 
 /** Empty-chars / session-only poll used by Codex long-running exec. */
@@ -62,22 +75,37 @@ export function isWaitSessionPoll(toolName?: string, input?: string): boolean {
   if (!isWaitLikeToolName(toolName)) return false;
   const parsed = parseJson(input);
   if (!parsed) return false;
-  if (Object.prototype.hasOwnProperty.call(parsed, "chars") && parsed.chars === "") {
+  if (
+    Object.prototype.hasOwnProperty.call(parsed, "chars") &&
+    parsed.chars === ""
+  ) {
     return true;
   }
   const keys = Object.keys(parsed);
-  const onlyTransport = keys.length > 0 && keys.every((k) =>
-    ["session_id", "sessionid", "yield_time_ms", "yieldtimems", "chars"].includes(k.toLowerCase())
-  );
+  const onlyTransport =
+    keys.length > 0 &&
+    keys.every((k) =>
+      [
+        "session_id",
+        "sessionid",
+        "yield_time_ms",
+        "yieldtimems",
+        "chars",
+      ].includes(k.toLowerCase()),
+    );
   return onlyTransport && !String(parsed.chars || "");
 }
 
-export function buildExpandedToolDetails(input: ToolCallDetailsInput): ExpandedToolDetails {
+export function buildExpandedToolDetails(
+  input: ToolCallDetailsInput,
+): ExpandedToolDetails {
   const toolName = stripToolNamespace(input.toolName || input.title || "");
-  const status = normalizeStatus(input.status, input.exitCode);
   const parsedInput = parseJson(input.input);
   const rawOutput = input.output || input.body || "";
   const transport = extractTransport(input.input, rawOutput);
+  const transportExitCode = numericExitCode(transport.exit_code);
+  const exitCode = input.exitCode ?? transportExitCode;
+  const status = normalizeStatus(input.status, exitCode);
   const kind = input.semanticKind || classifyName(toolName);
   const result = cleanOutput(rawOutput);
 
@@ -86,13 +114,18 @@ export function buildExpandedToolDetails(input: ToolCallDetailsInput): ExpandedT
       return {
         kind: "wait",
         hideCard: true,
-        mergeIntoCommand: Boolean(input.command?.trim() || transport.session_id),
+        mergeIntoCommand: Boolean(
+          input.command?.trim() || transport.session_id,
+        ),
         statusLine: waitStatusLine(status, transport.wall_time),
         developer: developerFor(toolName, input.input, transport, kind),
       };
     }
     const running = status === "running" || /process running/i.test(rawOutput);
-    const statusLine = waitStatusLine(running ? "running" : status, transport.wall_time);
+    const statusLine = waitStatusLine(
+      running ? "running" : status,
+      transport.wall_time,
+    );
     return {
       kind: "wait",
       hideCard: false,
@@ -105,18 +138,17 @@ export function buildExpandedToolDetails(input: ToolCallDetailsInput): ExpandedT
     };
   }
 
-  const nestedCommand = commandFromNestedExec(toolName, input.input)
-    || input.command
-    || cmdFrom(parsedInput);
+  const nestedCommand =
+    commandFromNestedExec(toolName, input.input) ||
+    input.command ||
+    cmdFrom(parsedInput);
   const files = unique([
     ...(input.files || []),
     ...pathsFromInput(toolName, parsedInput, input.input),
     ...pathsFromCommand(nestedCommand),
   ]).slice(0, 12);
   const query = queryFromInput(parsedInput) || queryFromCommand(nestedCommand);
-  const command = kind === "run_command" || kind === "test_app" || kind === "update_files"
-    ? (nestedCommand || undefined)
-    : undefined;
+  const command = nestedCommand || undefined;
 
   return {
     kind,
@@ -124,9 +156,12 @@ export function buildExpandedToolDetails(input: ToolCallDetailsInput): ExpandedT
     files: files.length ? files : undefined,
     query: query || undefined,
     command: command || undefined,
-    statusLine: status === "failed" || (input.exitCode != null && input.exitCode !== 0)
-      ? (input.exitCode != null ? `Exit ${input.exitCode}` : "Failed")
-      : undefined,
+    statusLine: toolResultStatusLine(
+      kind,
+      status,
+      exitCode,
+      transport.wall_time,
+    ),
     result: result || undefined,
     developer: developerFor(toolName, input.input, transport, kind),
   };
@@ -142,17 +177,54 @@ export function isTransportOnlyPayload(value: string): boolean {
   const json = parseJson(trimmed);
   if (json) {
     const keys = Object.keys(json);
-    return keys.length > 0 && keys.every((k) => TRANSPORT_KEYS.has(k.toLowerCase()));
+    return (
+      keys.length > 0 && keys.every((k) => TRANSPORT_KEYS.has(k.toLowerCase()))
+    );
   }
-  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
-  return lines.length > 0 && lines.every((l) => isMetaLine(l) || l === "Output:");
+  const lines = trimmed
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return (
+    lines.length > 0 && lines.every((l) => isMetaLine(l) || l === "Output:")
+  );
 }
 
-export function extractTransportMetadata(input?: string, output?: string): Record<string, string> {
+export function extractTransportMetadata(
+  input?: string,
+  output?: string,
+): Record<string, string> {
   return extractTransport(input, output);
 }
 
-function waitStatusLine(status: SemanticActionStatus | "running" | string, wall?: string): string {
+export function toolResultStatusLine(
+  kind: SemanticActionKind | "wait",
+  status: SemanticActionStatus,
+  exitCode?: number,
+  wallTime?: string,
+): string {
+  const duration = formatDuration(wallTime);
+  let result: string;
+  if (status === "running") {
+    result = "Running";
+  } else if (status === "blocked") {
+    result = "Blocked";
+  } else if (status === "failed") {
+    result = exitCode != null ? `Failed · exit ${exitCode}` : "Failed";
+  } else if (kind === "test_app") {
+    result = "Passed";
+  } else if (kind === "run_command") {
+    result = "Succeeded";
+  } else {
+    result = "Done";
+  }
+  return duration ? `${result} · ${duration}` : result;
+}
+
+function waitStatusLine(
+  status: SemanticActionStatus | "running" | string,
+  wall?: string,
+): string {
   const dur = formatDuration(wall);
   if (status === "running") return dur ? `Waiting · ${dur}` : "Waiting";
   return dur ? `Finished · ${dur}` : "Finished";
@@ -165,24 +237,31 @@ function developerFor(
   kind: SemanticActionKind | "wait",
 ): ToolDeveloperDetails | undefined {
   // Read/search cards must not advertise exec_command as primary technical identity.
-  if ((kind === "read_files" || kind === "search_code") && isExecLike(toolName)) {
-    return Object.keys(transport).length
-      ? { transport }
-      : undefined;
+  if (
+    (kind === "read_files" || kind === "search_code") &&
+    isExecLike(toolName)
+  ) {
+    return Object.keys(transport).length ? { transport } : undefined;
   }
   const out: ToolDeveloperDetails = {};
   if (toolName && !isExecLike(toolName)) out.providerToolId = toolName;
-  else if (toolName && kind !== "read_files" && kind !== "search_code") out.providerToolId = toolName;
-  if (rawInput?.trim() && kind === "wait") out.rawInput = rawInput.trim().slice(0, 2000);
+  else if (toolName && kind !== "read_files" && kind !== "search_code")
+    out.providerToolId = toolName;
+  if (rawInput?.trim() && kind === "wait")
+    out.rawInput = rawInput.trim().slice(0, 2000);
   if (Object.keys(transport).length) out.transport = transport;
   return out.providerToolId || out.rawInput || out.transport ? out : undefined;
 }
 
 function isExecLike(name: string): boolean {
   const n = name.toLowerCase();
-  return n === "exec" || n === "exec_command" || n === "shell_command" || n.startsWith("multi:");
+  return (
+    n === "exec" ||
+    n === "exec_command" ||
+    n === "shell_command" ||
+    n.startsWith("multi:")
+  );
 }
-
 
 function commandFromNestedExec(toolName: string, raw?: string): string {
   if (!(isExecWrapperToolName(toolName) || toolName.startsWith("multi:"))) {
@@ -207,7 +286,12 @@ function pathsFromInput(
   if (isExecWrapperToolName(toolName) || toolName.startsWith("multi:")) {
     return parseExecWrapperCalls(raw).flatMap((call) => {
       if (call.name === "exec_command" || call.name === "shell_command") {
-        return pathsFromCommand(str(call.object || {}, "cmd") || str(call.object || {}, "command"));
+        return pathsFromCommand(
+          str(call.object || {}, "cmd") || str(call.object || {}, "command"),
+        );
+      }
+      if (call.name === "apply_patch") {
+        return pathsFromPatch(call.text || str(call.object || {}, "patch"));
       }
       return call.object ? pathsFromRecord(call.object) : [];
     });
@@ -217,7 +301,15 @@ function pathsFromInput(
 
 function pathsFromRecord(record: Record<string, unknown>): string[] {
   const out: string[] = [];
-  for (const key of ["path", "file_path", "filePath", "filename", "file", "target_file", "targetFile"]) {
+  for (const key of [
+    "path",
+    "file_path",
+    "filePath",
+    "filename",
+    "file",
+    "target_file",
+    "targetFile",
+  ]) {
     const v = record[key];
     if (typeof v === "string" && looksPath(v)) out.push(v.trim());
   }
@@ -248,7 +340,12 @@ function pathsFromCommand(command?: string): string[] {
 
 function queryFromInput(parsed: Record<string, unknown> | null): string {
   if (!parsed) return "";
-  return str(parsed, "pattern") || str(parsed, "query") || str(parsed, "glob_pattern") || str(parsed, "glob");
+  return (
+    str(parsed, "pattern") ||
+    str(parsed, "query") ||
+    str(parsed, "glob_pattern") ||
+    str(parsed, "glob")
+  );
 }
 
 function queryFromCommand(command?: string): string {
@@ -258,8 +355,12 @@ function queryFromCommand(command?: string): string {
   if (!["rg", "grep", "ag", "ack"].includes(exe)) return "";
   let i = 1;
   while (i < tokens.length && tokens[i].startsWith("-")) {
-    if (["-e", "--regexp"].includes(tokens[i]) && tokens[i + 1]) return tokens[i + 1];
-    if (["-g", "-t", "--glob", "--type", "--max-count"].includes(tokens[i])) { i += 2; continue; }
+    if (["-e", "--regexp"].includes(tokens[i]) && tokens[i + 1])
+      return tokens[i + 1];
+    if (["-g", "-t", "--glob", "--type", "--max-count"].includes(tokens[i])) {
+      i += 2;
+      continue;
+    }
     i += 1;
   }
   return tokens[i] || "";
@@ -271,7 +372,7 @@ function quietDetail(
   query: string,
   command?: string,
 ): string | undefined {
-  if (files.length === 1) return trunc(base(files[0]), 42);
+  if (files.length === 1) return distinctivePath(files[0]);
   if (files.length > 1) return `${files.length} files`;
   if (query) return trunc(query, 42);
   if (kind === "run_command" && command) return trunc(command, 42);
@@ -281,10 +382,19 @@ function quietDetail(
 function classifyName(name: string): SemanticActionKind | "wait" {
   const l = name.toLowerCase();
   if (isWaitLikeToolName(l)) return "wait";
-  if (l === "apply_patch" || l === "edit" || l === "write" || l === "multiedit") return "update_files";
+  if (l === "apply_patch" || l === "edit" || l === "write" || l === "multiedit")
+    return "update_files";
   if (l === "grep" || l === "rg" || l.includes("search")) return "search_code";
-  if (l === "read" || l === "read_file" || l === "glob" || l === "list_files" || l === "ls") return "read_files";
-  if (l === "shell" || l === "bash" || l === "exec_command") return "run_command";
+  if (
+    l === "read" ||
+    l === "read_file" ||
+    l === "glob" ||
+    l === "list_files" ||
+    l === "ls"
+  )
+    return "read_files";
+  if (l === "shell" || l === "bash" || l === "exec_command")
+    return "run_command";
   return "use_tool";
 }
 
@@ -300,16 +410,27 @@ function cleanOutput(value: string): string {
     }
     if (!Object.keys(cleaned).length) return "";
     if (typeof cleaned.output === "string") return cleanOutput(cleaned.output);
-    if (typeof cleaned.content === "string") return cleanOutput(cleaned.content);
-    try { return JSON.stringify(cleaned); } catch { return trimmed; }
+    if (typeof cleaned.content === "string")
+      return cleanOutput(cleaned.content);
+    try {
+      return JSON.stringify(cleaned);
+    } catch {
+      return trimmed;
+    }
   }
   const lines = trimmed.split("\n");
   const idx = lines.findIndex((l) => l.trim() === "Output:");
   const body = idx >= 0 ? lines.slice(idx + 1) : lines;
-  return body.filter((l) => !isMetaLine(l)).join("\n").trim();
+  return body
+    .filter((l) => !isMetaLine(l))
+    .join("\n")
+    .trim();
 }
 
-function extractTransport(input?: string, output?: string): Record<string, string> {
+function extractTransport(
+  input?: string,
+  output?: string,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const source of [input, output]) {
     if (!source) continue;
@@ -317,8 +438,14 @@ function extractTransport(input?: string, output?: string): Record<string, strin
     if (json) {
       for (const [k, v] of Object.entries(json)) {
         if (!TRANSPORT_KEYS.has(k.toLowerCase())) continue;
-        const text = typeof v === "string" || typeof v === "number" ? String(v) : "";
-        if (text) out[k.toLowerCase() === "wall_time_seconds" ? "wall_time" : k.toLowerCase()] = text;
+        const text =
+          typeof v === "string" || typeof v === "number" ? String(v) : "";
+        if (text)
+          out[
+            k.toLowerCase() === "wall_time_seconds"
+              ? "wall_time"
+              : k.toLowerCase()
+          ] = text;
       }
     }
     for (const line of source.split("\n")) {
@@ -326,9 +453,14 @@ function extractTransport(input?: string, output?: string): Record<string, strin
       let m;
       if ((m = /^Chunk ID:\s*(.+)$/i.exec(t))) out.chunk_id = m[1].trim();
       if ((m = /^Wall time:\s*([0-9.]+)/i.exec(t))) out.wall_time = m[1].trim();
-      if ((m = /^Process running with session ID\s+(\S+)/i.exec(t))) out.session_id = m[1].trim();
-      if ((m = /^Original token count:\s*(\S+)/i.exec(t))) out.original_token_count = m[1].trim();
-      if ((m = /^Process exited with code\s+(\S+)/i.exec(t)) || (m = /^Exit code:\s*(\S+)/i.exec(t))) {
+      if ((m = /^Process running with session ID\s+(\S+)/i.exec(t)))
+        out.session_id = m[1].trim();
+      if ((m = /^Original token count:\s*(\S+)/i.exec(t)))
+        out.original_token_count = m[1].trim();
+      if (
+        (m = /^Process exited with code\s+(\S+)/i.exec(t)) ||
+        (m = /^Exit code:\s*(\S+)/i.exec(t))
+      ) {
         out.exit_code = m[1].trim();
       }
     }
@@ -338,24 +470,43 @@ function extractTransport(input?: string, output?: string): Record<string, strin
 
 function isMetaLine(line: string): boolean {
   const t = line.trim();
-  return t.startsWith("Chunk ID:") || t.startsWith("Wall time:") || t.startsWith("Exit code:")
-    || t.startsWith("Process exited with code ") || t.startsWith("Process running with session ID ")
-    || t.startsWith("Original token count:") || t.startsWith("Total output lines:");
+  return (
+    t.startsWith("Chunk ID:") ||
+    t.startsWith("Wall time:") ||
+    t.startsWith("Exit code:") ||
+    t.startsWith("Process exited with code ") ||
+    t.startsWith("Process running with session ID ") ||
+    t.startsWith("Original token count:") ||
+    t.startsWith("Total output lines:")
+  );
 }
 
-function normalizeStatus(status?: string, exitCode?: number): SemanticActionStatus {
+function normalizeStatus(
+  status?: string,
+  exitCode?: number,
+): SemanticActionStatus {
   const n = (status || "").trim().toLowerCase();
   if (n === "running" || n === "in_progress") return "running";
   if (n === "blocked") return "blocked";
-  if (n === "failed" || n === "error" || (exitCode != null && exitCode !== 0)) return "failed";
+  if (n === "failed" || n === "error") return "failed";
+  if (["done", "completed", "success", "succeeded", "passed"].includes(n))
+    return "done";
+  if (exitCode != null && exitCode !== 0) return "failed";
   return "done";
+}
+
+function numericExitCode(value?: string): number | undefined {
+  if (value == null || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
 }
 
 function formatDuration(value?: string): string | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) return undefined;
-  if (seconds < 10) return `${seconds.toFixed(seconds < 1 ? 2 : 1).replace(/\.0$/, "")}s`;
+  if (seconds < 10)
+    return `${seconds.toFixed(seconds < 1 ? 2 : 1).replace(/\.0$/, "")}s`;
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const m = Math.floor(seconds / 60);
   const r = Math.round(seconds % 60);
@@ -366,13 +517,16 @@ function parseJson(value?: string): Record<string, unknown> | null {
   if (!value?.trim()) return null;
   try {
     const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
-  } catch { /* ignore */ }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
 function cmdFrom(parsed: Record<string, unknown> | null): string {
-  return parsed ? (str(parsed, "cmd") || str(parsed, "command")) : "";
+  return parsed ? str(parsed, "cmd") || str(parsed, "command") : "";
 }
 
 function str(record: Record<string, unknown>, key: string): string {
@@ -382,9 +536,16 @@ function str(record: Record<string, unknown>, key: string): string {
 
 function looksPath(value: string): boolean {
   const t = value.trim();
-  if (!t || t.length > 400 || t.startsWith("{") || t.startsWith("[")) return false;
-  return t.startsWith("/") || t.startsWith("./") || t.startsWith("../") || t.startsWith("~/")
-    || t.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(t);
+  if (!t || t.length > 400 || t.startsWith("{") || t.startsWith("["))
+    return false;
+  return (
+    t.startsWith("/") ||
+    t.startsWith("./") ||
+    t.startsWith("../") ||
+    t.startsWith("~/") ||
+    t.includes("/") ||
+    /\.[A-Za-z0-9]{1,8}$/.test(t)
+  );
 }
 
 function unique(values: string[]): string[] {
@@ -399,6 +560,12 @@ function unique(values: string[]): string[] {
   return out;
 }
 
+function pathsFromPatch(value: string): string[] {
+  return [...value.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/gm)]
+    .map((match) => match[1]?.trim() || "")
+    .filter(Boolean);
+}
+
 function base(value: string): string {
   const parts = value.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || value;
@@ -406,7 +573,9 @@ function base(value: string): string {
 
 function trunc(value: string, limit: number): string {
   const chars = Array.from(value);
-  return chars.length <= limit ? value : `${chars.slice(0, limit - 1).join("")}…`;
+  return chars.length <= limit
+    ? value
+    : `${chars.slice(0, limit - 1).join("")}…`;
 }
 
 function tokenize(value: string): string[] {
@@ -415,16 +584,29 @@ function tokenize(value: string): string[] {
   let quote: "'" | '"' | "" = "";
   let esc = false;
   for (const ch of value) {
-    if (esc) { cur += ch; esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
+    if (esc) {
+      cur += ch;
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      esc = true;
+      continue;
+    }
     if (quote) {
       if (ch === quote) quote = "";
       else cur += ch;
       continue;
     }
-    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
     if (/\s/.test(ch)) {
-      if (cur) { tokens.push(cur); cur = ""; }
+      if (cur) {
+        tokens.push(cur);
+        cur = "";
+      }
       continue;
     }
     cur += ch;

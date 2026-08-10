@@ -98,7 +98,8 @@ export const SCREENSHOT_CHAT_EVENTS: CodexConversationEvent[] = [
     seq: 2,
     kind: "plan",
     timestamp: DEMO_TIMESTAMP,
-    explanation: "I’ll keep the agent running here while you continue from your phone.",
+    explanation:
+      "I’ll keep the agent running here while you continue from your phone.",
     plan: [
       { step: "Tighten the handoff layout", status: "completed" },
       { step: "Run focused UI checks", status: "completed" },
@@ -116,7 +117,7 @@ export const SCREENSHOT_CHAT_EVENTS: CodexConversationEvent[] = [
 
 /**
  * Collapsed Tool activity headers for screenshot/demo and geometry coverage:
- * Run + short command, Search with no detail, Run + long ellipsized path.
+ * Run + short command, Search + query, Run + long ellipsized path.
  */
 export const SCREENSHOT_ACTIVITY_HEADER_EVENTS: CodexConversationEvent[] = [
   {
@@ -135,7 +136,7 @@ export const SCREENSHOT_ACTIVITY_HEADER_EVENTS: CodexConversationEvent[] = [
     kind: "tool",
     timestamp: DEMO_TIMESTAMP,
     tool_name: "Grep",
-    input: "{}",
+    input: '{"pattern":"daemonSocketPath","path":"daemon"}',
     status: "completed",
   },
   {
@@ -163,7 +164,8 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
     seq: 2,
     kind: "plan",
     timestamp: DEMO_TIMESTAMP,
-    explanation: "Brain is carrying the release context and coordinating focused work.",
+    explanation:
+      "Brain is carrying the release context and coordinating focused work.",
     plan: [
       { step: "Audit the onboarding flow", status: "completed" },
       { step: "Delegate mobile regression checks", status: "in_progress" },
@@ -347,7 +349,12 @@ export const SCREENSHOT_STATS_FIXTURE = {
       projects: [
         { name: "atlas-notes", totalTokens: 980_000, sessions: 17, cost: 7.24 },
         { name: "weather-kit", totalTokens: 760_000, sessions: 13, cost: 5.83 },
-        { name: "garden-journal", totalTokens: 740_000, sessions: 12, cost: 5.35 },
+        {
+          name: "garden-journal",
+          totalTokens: 740_000,
+          sessions: 12,
+          cost: 5.35,
+        },
       ],
       skills: [
         { name: "mobile-qa", calls: 18, projects: ["atlas-notes"] },

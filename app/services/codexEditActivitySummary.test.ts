@@ -51,11 +51,11 @@ describe("Codex edit activity summaries", () => {
     ]);
     expect(activity).toMatchObject({
       id: "synthetic-patch-event",
-      title: "Edited src/ledger/quote.ts (+9 -5)",
+      title: "Edit src/ledger/quote.ts",
+      detail: "+9 −5",
       files: ["src/ledger/quote.ts"],
       defaultExpanded: false,
     });
-    expect(activity.detail).toBeUndefined();
     expect(activity.fileSummaries).toEqual([
       {
         path: "src/ledger/quote.ts",
@@ -100,7 +100,8 @@ describe("Codex edit activity summaries", () => {
       ],
     });
 
-    expect(activity.title).toBe("Edited 2 files in src/portfolio (+12 -4)");
+    expect(activity.title).toBe("Edit src/portfolio/chart.tsx + 1");
+    expect(activity.detail).toBe("+12 −4");
     expect(activity.files).toEqual([
       "src/portfolio/chart.tsx",
       "src/portfolio/summary.ts",
@@ -117,7 +118,8 @@ describe("Codex edit activity summaries", () => {
       ],
     });
 
-    expect(activity.title).toBe("Edited 2 files · src/cache.ts + 1 more");
+    expect(activity.title).toBe("Edit src/cache.ts + 1");
+    expect(activity.detail).toBe("Done");
     expect(activity.title).not.toContain("+0");
     expect(activity.fileSummaries).toEqual([
       {
@@ -142,7 +144,8 @@ describe("Codex edit activity summaries", () => {
       files: ["src/legacy/cache.ts"],
     });
 
-    expect(activity.title).toBe("Edited src/legacy/cache.ts");
+    expect(activity.title).toBe("Edit src/legacy/cache.ts");
+    expect(activity.detail).toBe("Done");
     expect(activity.title).not.toMatch(/\(\+\d+ -\d+\)/);
   });
 });
