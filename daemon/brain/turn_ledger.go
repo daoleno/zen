@@ -122,8 +122,7 @@ type TurnLedgerImport struct {
 func validTurnStatus(status watcher.TurnStatus) bool {
 	switch status {
 	case watcher.TurnAdmitted, watcher.TurnAccepted, watcher.TurnRunning,
-		watcher.TurnBlocked, watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown,
-		watcher.TurnOwnershipLost:
+		watcher.TurnBlocked, watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown:
 		return true
 	default:
 		return false
@@ -305,7 +304,7 @@ func validateTurnRecord(turn TurnRecord) error {
 		return fmt.Errorf("accepted_at and updated_at are required")
 	}
 	switch turn.Status {
-	case watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown, watcher.TurnOwnershipLost:
+	case watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown:
 		if turn.SettledAt == nil {
 			return fmt.Errorf("terminal turn requires settled_at")
 		}
@@ -485,6 +484,10 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s already reserved successor %s", ErrWorkOwnerConflict, item.ID, reservation.SessionID)
 		}
 	case handlingIndex >= 0:
+		// A delivered review handling awaits its exact typed disposition. A
+		// correction admission is staged under that handling (same or new
+		// Session) and takes ownership only when the exact continue
+		// disposition commits; a queued head never stages or blocks.
 		handling := database.BrainWorkEvents[handlingIndex]
 		item.SuccessorReservation = &WorkSuccessorReservation{
 			SessionID: candidate.SessionID, EventID: handling.ID, HandlingID: handling.HandlingID,
@@ -498,8 +501,6 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		initialOwnerAdmission = true
 	case ownerID != candidate.SessionID:
 		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, ownerID)
-	case workHasUnhandledAttention(database, item.ID):
-		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s review Attention must be delivered before correction input", ErrWorkOwnerConflict, item.ID)
 	}
 
 	record := TurnSubmissionRecord{
@@ -875,7 +876,7 @@ func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID st
 			reservationMatches := item.SuccessorReservation != nil && item.SuccessorReservation.SessionID == sessionID
 			if item.Status != WorkDone && item.Status != WorkCancelled &&
 				(item.OwnerSessionID == sessionID || reservationMatches ||
-					(strings.TrimSpace(item.OwnerSessionID) == "" && (workHasUnhandledAttention(database, item.ID) || item.Wake != nil))) {
+					(strings.TrimSpace(item.OwnerSessionID) == "" && (workHasAttentionObligation(database, item.ID) || item.Wake != nil))) {
 				return item.ID
 			}
 		}
@@ -1054,18 +1055,21 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		if !controlOwnershipLoss {
 			return mutation, nil
 		}
-	case watcher.TurnUnknown, watcher.TurnOwnershipLost:
+	case watcher.TurnUnknown:
 		if controlOwnershipLoss {
 			break
 		}
 		// Unknown is final for scheduling until a later authoritative Provider
-		// terminal upgrades it (C.2.4). A terminal may use the recorded tuple
-		// or ActivityID, OR it may safely adopt a previously unbound terminal
-		// whose non-empty tuple/ActivityID and StartedAt prove it belongs to
-		// this turn's admission window. Running, attention, control, liveness,
-		// pane, stale, blind and replay-only facts remain ignored.
+		// terminal upgrades it (C.2.4) — except for signal-protocol Turns,
+		// whose semantic terminal authority is exact Control done/failed only
+		// (C.2.10). A terminal may use the recorded tuple or ActivityID, OR it
+		// may safely adopt a previously unbound terminal whose non-empty
+		// tuple/ActivityID and StartedAt prove it belongs to this turn's
+		// admission window. Running, attention, control, liveness, pane,
+		// stale, blind and replay-only facts remain ignored.
 		if fact.Class != watcher.EvidenceProvider ||
 			(fact.Kind != "done" && fact.Kind != "failed") ||
+			turn.SignalProtocol ||
 			(!providerFactBinds(turn, fact) && !providerRecoverableAdopts(turn, fact)) {
 			return mutation, nil
 		}
@@ -1207,11 +1211,21 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				mutation.changed = true
 				return mutation, nil
 			}
+			if turn.SignalProtocol {
+				// Signal-protocol terminal authority (C.2.10): only exact
+				// Control done/failed is semantic. A bound provider terminal
+				// is transport/liveness evidence: it attaches as a provisional
+				// hint and never moves canonical status. A later exact Control
+				// terminal flips the same dedupe-keyed row actionable.
+				hintOnly(kind, "Delegated provider reported "+fact.Kind+"; awaiting exact control completion")
+				mutation.changed = true
+				return mutation, nil
+			}
 			if adopts {
 				admission = fact.Admission
 				mutation.recordAdmission = true
 			}
-			if status == watcher.TurnUnknown || status == watcher.TurnOwnershipLost {
+			if status == watcher.TurnUnknown {
 				// C.2.4: a later bound Provider terminal upgrades canonical
 				// status and derived Work; the uncertain row stays as audit.
 			}
@@ -1349,19 +1363,29 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.EvidenceLiveness:
 		switch fact.Kind {
 		case "ownership_lost":
+			// Ownership loss is a control capability state only: it never
+			// fabricates a terminal outcome. The canonical status becomes
+			// Unknown (terminal for scheduling) and the review fact is
+			// session.uncertain; only exact Control done/failed (signal
+			// turns) or a bound Provider terminal (pre-contract turns) may
+			// resolve it later.
 			controlState = watcher.TurnControlOwnershipLost
-			if !watcher.TurnImmutable(status) && status != watcher.TurnOwnershipLost {
-				status = watcher.TurnOwnershipLost
-			}
-			attention = "ownership_lost"
-			summary = "Delegated Session control ownership was lost; inspect and recover"
-			settled := now
 			if !watcher.TurnImmutable(status) {
-				settledAt = &settled
+				status = watcher.TurnUnknown
+				attention = ""
+				summary = "Delegated Session control ownership was lost; outcome is unknown"
+				settledAt = &now
 			}
 			mutation.changed = true
-			applyEvent("session.ownership_lost", true, summary)
-			mutation.workUpdate = derivedWorkUpdate(watcher.TurnOwnershipLost, turn.SessionID, "session.ownership_lost")
+			applyEvent("session.uncertain", true, summary)
+			needsInput := WorkNeedsInput
+			next := "Recover or replace the delegated Session ownership before sending more control input."
+			sessionWait := "Session " + turn.SessionID
+			var noWake *WorkWake
+			mutation.workUpdate = WorkUpdate{
+				Status: &needsInput, NextAction: &next,
+				WaitFor: &sessionWait, Wake: &noWake,
+			}
 		case "failed":
 			// Liveness-derived Failed is removed entirely (Round 4): no
 			// production primitive can prove a dead pane's exit status
@@ -1506,7 +1530,8 @@ func providerFactAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 func providerRecoverableAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 	if fact.Class != watcher.EvidenceProvider ||
 		(fact.Kind != "done" && fact.Kind != "failed") ||
-		(turn.Status != watcher.TurnUnknown && turn.Status != watcher.TurnOwnershipLost) ||
+		turn.Status != watcher.TurnUnknown ||
+		turn.SignalProtocol ||
 		!turn.Admission.Empty() || strings.TrimSpace(turn.ActivityID) != "" {
 		return false
 	}
@@ -1541,9 +1566,6 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 		return terminalSessionWorkUpdate("session.failed")
 	case watcher.TurnUnknown:
 		next := "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
-	case watcher.TurnOwnershipLost:
-		next := "Recover or replace the delegated Session ownership before sending more control input."
 		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	}
 	return WorkUpdate{Status: &waiting}
@@ -1893,8 +1915,8 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		(turn.ControlState == watcher.TurnControlOwnershipLost ||
 			watcher.TurnTerminal(turn.Status) && !watcher.TurnImmutable(turn.Status)) &&
 		workIndex >= 0 && strings.TrimSpace(workItem.OwnerSessionID) == turn.SessionID {
-		// A recoverable terminal (Unknown/ownership_lost) or orthogonal control
-		// loss deprojects exact execution ownership. An immutable provider result
+		// A recoverable terminal (Unknown) or orthogonal control loss deprojects
+		// exact execution ownership. An immutable provider result
 		// remains Done/Failed even when its control target is no longer safe.
 		// Blocked and lease-overdue live turns retain their owner while Attention
 		// remains an orthogonal Brain obligation.
@@ -1985,8 +2007,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	// terminal without the consumer attention, and FactID makes replay a no-op.
 	wokenWorkIDs := []string{}
 	if mutation.eventActionable && (mutation.eventKind == "session.done" ||
-		mutation.eventKind == "session.failed" || mutation.eventKind == "session.uncertain" ||
-		mutation.eventKind == "session.ownership_lost") {
+		mutation.eventKind == "session.failed" || mutation.eventKind == "session.uncertain") {
 		_, wokenWorkIDs, err = wakeWaitingWorkLocked(
 			&database,
 			WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(turn.SessionID, turn.TurnID)},

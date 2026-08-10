@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,7 +18,8 @@ import (
 )
 
 type brainServiceTestWatcher struct {
-	sessions map[string]*classifier.Agent
+	sessions  map[string]*classifier.Agent
+	turnStore *brain.Store
 }
 
 func (w *brainServiceTestWatcher) Agents() []*classifier.Agent {
@@ -61,8 +63,56 @@ func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) err
 func (w *brainServiceTestWatcher) SendInputWithReceiptResult(_, _, receipt string) (watcher.InputResult, error) {
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
-func (w *brainServiceTestWatcher) SubmitBrainHostInput(_, _, eventID, _, _, providerTurnID string, _ time.Time) (watcher.InputResult, error) {
-	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: providerTurnID}, nil
+func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error) {
+	if w.turnStore == nil {
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: providerTurnID}, nil
+	}
+	existingTurnID := ""
+	if current, found, err := w.turnStore.Turn(sessionID); err != nil {
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+	} else if found {
+		existingTurnID = current.TurnID
+		if !watcher.TurnImmutable(current.Status) {
+			settledAt := time.Now().UTC()
+			if _, _, err := w.turnStore.ApplyTurnFact(watcher.TurnFact{
+				SessionID: current.SessionID, TurnID: current.TurnID,
+				Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+				SourceID:  "provider\x00test-host\x00" + current.TurnID + "\x00done",
+				Admission: current.Admission, ActivityID: current.ActivityID,
+				StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
+			}); err != nil {
+				return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+			}
+		}
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
+		Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
+	})
+	if err != nil {
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+	}
+	if !created {
+		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID},
+			fmt.Errorf("Host submission was not freshly prepared")
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
+	resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	})
+	if err != nil {
+		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+	}
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID}, nil
 }
 func (w *brainServiceTestWatcher) InputReceiptResult(_, receipt string) (watcher.InputResult, bool, error) {
 	return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt}, false, nil

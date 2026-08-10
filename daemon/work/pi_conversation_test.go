@@ -275,6 +275,28 @@ func TestPiToolLifecycleConvergesOnAbortAndError(t *testing.T) {
 	if got.Activity == nil || got.Activity.Status != ProviderActivityFailed {
 		t.Fatalf("activity = %+v", got.Activity)
 	}
+
+	// Recoverable error with a descendant on the active parent chain: the
+	// provider resumed inside the same user turn. The error record is an
+	// intermediate response and must never terminalize the Activity.
+	recoveredPath := filepath.Join(t.TempDir(), "session.jsonl")
+	recoveredContent := strings.Join([]string{
+		`{"type":"session","version":3,"id":"sess-3","timestamp":"2026-08-06T00:00:00.000Z","cwd":"/repo"}`,
+		`{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-06T00:00:01.000Z","message":{"role":"user","content":"run it"}}`,
+		`{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-06T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_3","name":"bash","arguments":{"command":"boom"}}],"stopReason":"toolUse"}}`,
+		`{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-08-06T00:00:03.000Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"upstream HTTP 503"}}`,
+		`{"type":"message","id":"a3","parentId":"a2","timestamp":"2026-08-06T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"retried and finished"}],"stopReason":"stop"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(recoveredPath, []byte(recoveredContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = parsePiConversation(recoveredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("recoverable error terminalized the Activity: %+v", got.Activity)
+	}
 }
 
 func TestPiSharedDirSessionSwitchCannotLeak(t *testing.T) {

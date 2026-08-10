@@ -740,7 +740,7 @@ func assertCanonicalHostEventHandledOnce(
 	if err != nil {
 		t.Fatal(err)
 	}
-	woke, err := service.DispatchPendingEvent()
+	woke, err := service.ReconcileHostLane()
 	if err != nil || !woke {
 		t.Fatalf("canonical Host delivery woke=%v err=%v", woke, err)
 	}
@@ -803,7 +803,7 @@ func assertCanonicalHostEventHandledOnce(
 		t.Fatal(err)
 	}
 	restartedDelivery := newCanonicalHostDeliveryWatcher(reopened, hostID)
-	if woke, err := NewService(reopened, restartedDelivery, nil).DispatchPendingEvent(); err != nil || woke {
+	if woke, err := NewService(reopened, restartedDelivery, nil).ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("restart replayed resolved signal: woke=%v err=%v", woke, err)
 	}
 	if restartedDelivery.prepareCount != 0 || restartedDelivery.resolveCount != 0 || len(restartedDelivery.sentCalls) != 0 {
@@ -1086,7 +1086,7 @@ func TestSignalAdversarialProvedUnsentHostSubmissionAndClaimAbortAtomicallyAcros
 		delivery := &fakeWatcher{sessions: map[string]*classifier.Agent{
 			claimed.DeliveryHostSessionID: {ID: claimed.DeliveryHostSessionID, Hidden: true, State: classifier.StateRunning},
 		}}
-		if woke, err := NewService(reopened, delivery, nil).DispatchPendingEvent(); err != nil || woke {
+		if woke, err := NewService(reopened, delivery, nil).ReconcileHostLane(); err != nil || woke {
 			t.Fatalf("reopen proved-unsent recovery woke=%v err=%v", woke, err)
 		}
 		if writes != 1 {
@@ -1139,7 +1139,7 @@ func TestSignalAdversarialProvedUnsentHostSubmissionAndClaimAbortAtomicallyAcros
 		delivery := &fakeWatcher{sessions: map[string]*classifier.Agent{
 			claimed.DeliveryHostSessionID: {ID: claimed.DeliveryHostSessionID, Hidden: true, State: classifier.StateRunning},
 		}}
-		if woke, err := NewService(store, delivery, nil).DispatchPendingEvent(); err != nil || woke {
+		if woke, err := NewService(store, delivery, nil).ReconcileHostLane(); err != nil || woke {
 			t.Fatalf("ambiguous resolved recovery woke=%v err=%v", woke, err)
 		}
 		if len(delivery.sentCalls) != 0 || writes != 0 {

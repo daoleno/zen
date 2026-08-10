@@ -78,6 +78,71 @@ func TestOrchestrationSchemaV5AddsEmptyPendingSubmissionTable(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSchemaV7DropsReservationSchedulerState(t *testing.T) {
+	// Schema 7 carried the rejected HostAttentionReservation scheduler
+	// (attention_reservation, attention_admissions, last_attention_work_id).
+	// The Host-lane reducer replaces all of it: decode must drop the
+	// reservation and its counters, keep every durable gate, and persist at
+	// the current schema version on the next write.
+	raw := []byte(`{
+		"schema_version": 7,
+		"next_event_sequence": 42,
+		"attention_admissions": 7,
+		"last_attention_work_id": "work-v7",
+		"migrations": {},
+		"brain_input_admissions": [{
+			"request_id": "r1", "thread_id": "t1", "host_session_id": "brain-host:@1",
+			"host_generation": "g1", "host_turn_id": "h:foreground:1", "session_id": "s1",
+			"display_body": "continue", "body_sha256": "e256ee8e7aff6957a781d8328f0f68e26996564c81fa458da59fbca2305138ad", "state": "accepted",
+			"created_at": "2026-08-11T00:00:00Z", "accepted_at": "2026-08-11T00:00:01Z"
+		}],
+		"host_foreground_turn": {
+			"host_session_id": "brain-host:@1", "host_generation": "g1",
+			"host_turn_id": "h:foreground:1", "started_at": "2026-08-11T00:00:01Z"
+		},
+		"attention_reservation": {
+			"host_session_id": "brain-host:@1", "host_generation": "g1",
+			"host_turn_id": "h:foreground:1", "work_id": "work-v7", "event_id": "e1",
+			"handling_id": "h1", "provider_turn_id": "p1", "work_revision": 3,
+			"sequence_fence": 9, "reserved_at": "2026-08-11T00:00:02Z"
+		},
+		"brain_work": [{
+			"work_id": "work-v7", "title": "v7 work", "objective": "o",
+			"status": "waiting", "completion_policy": "bounded",
+			"created_at": "2026-08-11T00:00:00Z", "updated_at": "2026-08-11T00:00:00Z",
+			"revision": 3, "owner_delegated": true,
+			"owner_session_id": "brain-agent-worker:@1"
+		}],
+		"brain_work_events": [{
+			"event_id": "e1", "work_id": "work-v7", "kind": "session.done",
+			"dedupe_key": "session:brain-agent-worker:@1:turn:one:session.done",
+			"actionable": true, "created_at": "2026-08-11T00:00:00Z", "sequence": 9,
+			"work_revision": 3, "read_at": "2026-08-11T00:00:03Z"
+		}],
+		"brain_turns": [],
+		"brain_turn_submissions": []
+	}`)
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || database.SchemaVersion != orchestrationSchemaVersion {
+		t.Fatalf("v7 migration = migrated=%v schema=%d", migrated, database.SchemaVersion)
+	}
+	if database.NextEventSequence != 42 || len(database.BrainInputAdmissions) != 1 ||
+		database.HostForegroundTurn == nil || database.HostForegroundTurn.HostTurnID != "h:foreground:1" {
+		t.Fatalf("v7 durable gates were not preserved: %+v", database)
+	}
+	// The reservation, its counters, and the Event read_at mirror are gone:
+	// the append-only Event fact and the Host lane are the only authorities.
+	if len(database.BrainWorkEvents) != 1 {
+		t.Fatalf("v7 events = %+v", database.BrainWorkEvents)
+	}
+	if database.BrainWorkEvents[0].ID != "e1" || database.BrainWorkEvents[0].ClaimedAt != nil {
+		t.Fatalf("v7 event was rewritten: %+v", database.BrainWorkEvents[0])
+	}
+}
+
 func TestOrchestrationSchemaV2DropsDeliveryCeremonyDeterministically(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state", "orchestration.json")
@@ -368,12 +433,18 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 			t.Fatal(err)
 		}
 		now = base.Add(10 * time.Minute)
-		if _, _, err := store.AppendWorkEvent(WorkEvent{
+		terminalEvent, _, err := store.AppendWorkEvent(WorkEvent{
 			WorkID:     item.ID,
 			Kind:       "session.stale",
 			DedupeKey:  "session:terminal:" + string(status) + ":turn:one:session.stale",
 			Actionable: true,
-		}); err != nil {
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The unread projection is the materialized timeline work card; the
+		// append-only Event fact never carries read state.
+		if _, _, err := store.MaterializeWorkCard(item, terminalEvent); err != nil {
 			t.Fatal(err)
 		}
 		now = base.Add(3*time.Hour + 34*time.Minute)
@@ -405,6 +476,9 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		Actionable: true,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MaterializeWorkCard(terminal, terminalEvent); err != nil {
 		t.Fatal(err)
 	}
 	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
@@ -525,6 +599,9 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.MaterializeWorkCard(readWork, readEvent); err != nil {
+		t.Fatal(err)
+	}
 	readClaim, ok, err := store.ClaimNextActionableEvent(hostID)
 	if err != nil || !ok {
 		t.Fatalf("Event to acknowledge was not claimed: ok=%v err=%v", ok, err)
@@ -546,8 +623,18 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(readEvents) != 1 || readEvents[0].ID != readEvent.ID || readEvents[0].ReadAt == nil {
-		t.Fatalf("read Event acknowledgement was not preserved: %#v", readEvents)
+	if len(readEvents) != 1 || readEvents[0].ID != readEvent.ID ||
+		readEvents[0].ClaimedAt == nil || readEvents[0].DeliveredAt == nil {
+		t.Fatalf("card acknowledgement mutated the exact delivery claim: %#v", readEvents)
+	}
+	projectedAfterRead, err := store.ActiveWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range projectedAfterRead {
+		if item.ID == readWork.ID && item.UnreadResult {
+			t.Fatalf("card acknowledgement did not clear the read projection: %+v", item)
+		}
 	}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: consumedRead.ID, HandlingID: consumedRead.HandlingID, ProviderTurnID: consumedRead.ProviderTurnID,
@@ -564,9 +651,13 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AppendWorkEvent(WorkEvent{
+	readBeforeEvent, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID: unclaimedReadWork.ID, Kind: "session.done", DedupeKey: "session:read-before:turn:one:session.done", Actionable: true,
-	}); err != nil {
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MaterializeWorkCard(unclaimedReadWork, readBeforeEvent); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkWorkRead(unclaimedReadWork.ID); err != nil {
@@ -586,8 +677,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	if len(terminalEvents) != 1 || terminalEvents[0].ID != terminalEvent.ID ||
-		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil ||
-		terminalEvents[0].ReadAt != nil {
+		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil {
 		t.Fatalf("terminal Event history changed: %#v", terminalEvents)
 	}
 	projected, err := store.ActiveWork()
@@ -603,8 +693,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 || events[0].ReadAt != nil {
-			t.Fatalf("terminal Work Event was not preserved unread: work=%s events=%#v", item.ID, events)
+		if len(events) != 1 {
+			t.Fatalf("terminal Work Event history changed: work=%s events=%#v", item.ID, events)
 		}
 		if !projectedByID[item.ID].UnreadResult {
 			t.Fatalf("terminal Work lost unread projection: work=%s projection=%#v", item.ID, projected)
@@ -643,12 +733,17 @@ func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
 	if !reflect.DeepEqual(firstAfterStartingSecond, first) {
 		t.Fatalf("starting Work C mutated Work A:\nbefore=%#v\nafter=%#v", first, firstAfterStartingSecond)
 	}
-	if _, _, err := store.AppendWorkEvent(WorkEvent{
+	secondEvent, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     second.ID,
 		Kind:       "session.done",
 		DedupeKey:  "session:c:turn:one:session.done",
 		Actionable: true,
-	}); err != nil {
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The unread projection is the materialized timeline work card.
+	if _, _, err := store.MaterializeWorkCard(second, secondEvent); err != nil {
 		t.Fatal(err)
 	}
 
@@ -818,7 +913,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}
 
 	for range 20 {
-		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		if woke, err := service.ReconcileHostLane(); err != nil || woke {
 			t.Fatalf("idle until_done Work woke: woke=%v err=%v", woke, err)
 		}
 	}
@@ -830,7 +925,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("passive event woke: woke=%v err=%v", woke, err)
 	}
 	if len(fw.sentCalls) != 0 {
@@ -849,10 +944,10 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
 		t.Fatalf("actionable event did not wake: woke=%v err=%v", woke, err)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("consumed event replayed: woke=%v err=%v", woke, err)
 	}
 	if len(fw.sentCalls) != 1 {
@@ -922,7 +1017,7 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if woke, err := service.DispatchPendingEvent(); err == nil || woke {
+	if woke, err := service.ReconcileHostLane(); err == nil || woke {
 		t.Fatalf("failed send woke=%v err=%v", woke, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
@@ -936,13 +1031,13 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	// is held forever, never released by elapsed time, never replayed.
 	fw.setReceiptOutcome(events[0].ID, watcher.InputAmbiguous)
 	fw.sendErr = nil
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("uncertain delivery retried: woke=%v err=%v", woke, err)
 	}
 	retryAt := now.Add(24 * time.Hour)
 	store.now = func() time.Time { return retryAt }
 	service.now = func() time.Time { return retryAt }
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("elapsed time caused an ambiguous retry: woke=%v err=%v", woke, err)
 	}
 	events, err = store.ListWorkEvents(item.ID)
@@ -1014,7 +1109,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 		return writeOrchestration(path, value)
 	}
 
-	if woke, dispatchErr := NewService(store, fw, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+	if woke, dispatchErr := NewService(store, fw, nil).ReconcileHostLane(); dispatchErr == nil || woke {
 		t.Fatalf("persistence failure woke=%v err=%v", woke, dispatchErr)
 	}
 	events, err := store.ListWorkEvents(item.ID)
@@ -1031,7 +1126,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if woke, dispatchErr := NewService(restarted, fw, nil).DispatchPendingEvent(); dispatchErr != nil || woke {
+	if woke, dispatchErr := NewService(restarted, fw, nil).ReconcileHostLane(); dispatchErr != nil || woke {
 		t.Fatalf("accepted receipt finalization woke=%v err=%v", woke, dispatchErr)
 	}
 	events, err = restarted.ListWorkEvents(item.ID)
@@ -1042,7 +1137,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 		len(fw.sentCalls) != 1 {
 		t.Fatalf("restart did not finalize without resend: events=%#v sends=%#v", events, fw.sentCalls)
 	}
-	if woke, dispatchErr := NewService(restarted, fw, nil).DispatchPendingEvent(); dispatchErr != nil || woke ||
+	if woke, dispatchErr := NewService(restarted, fw, nil).ReconcileHostLane(); dispatchErr != nil || woke ||
 		len(fw.sentCalls) != 1 {
 		t.Fatalf("finalized Event replayed: woke=%v err=%v sends=%#v", woke, dispatchErr, fw.sentCalls)
 	}
@@ -1087,7 +1182,7 @@ func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *tes
 					Cause:  errors.New("target generation changed before queue start"),
 				},
 			}
-			if woke, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+			if woke, dispatchErr := NewService(store, failedWatcher, nil).ReconcileHostLane(); dispatchErr == nil || woke {
 				t.Fatalf("definite failure woke=%v err=%v", woke, dispatchErr)
 			}
 			events, err := store.ListWorkEvents(item.ID)
@@ -1105,7 +1200,7 @@ func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *tes
 			restartedWatcher := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 			}}
-			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
+			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).ReconcileHostLane(); dispatchErr != nil || !woke {
 				t.Fatalf("restart dispatch woke=%v err=%v", woke, dispatchErr)
 			}
 			if len(restartedWatcher.sentCalls) != 1 ||
@@ -1156,7 +1251,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 					Cause:  errors.New("tmux queue started before connection loss"),
 				},
 			}
-			if woke, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+			if woke, dispatchErr := NewService(store, failedWatcher, nil).ReconcileHostLane(); dispatchErr == nil || woke {
 				t.Fatalf("ambiguous dispatch woke=%v err=%v", woke, dispatchErr)
 			}
 
@@ -1174,7 +1269,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 				},
 			}
 			restartedWatcher.setReceiptOutcome(event.ID, watcher.InputAmbiguous)
-			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || woke {
+			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).ReconcileHostLane(); dispatchErr != nil || woke {
 				t.Fatalf("restart replayed ambiguity: woke=%v err=%v", woke, dispatchErr)
 			}
 			events, err := restarted.ListWorkEvents(item.ID)
@@ -1233,7 +1328,7 @@ func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
 		},
 		sendErr: errors.New("tmux queue did not start"),
 	}
-	if _, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil {
+	if _, dispatchErr := NewService(store, failedWatcher, nil).ReconcileHostLane(); dispatchErr == nil {
 		t.Fatal("failed dispatch did not error")
 	}
 	restarted, err := NewStore(root)
@@ -1243,7 +1338,7 @@ func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
 	restartedWatcher := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
-	if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
+	if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).ReconcileHostLane(); dispatchErr != nil || !woke {
 		t.Fatalf("absent-receipt restart dispatch woke=%v err=%v", woke, dispatchErr)
 	}
 	if len(restartedWatcher.sentCalls) != 1 ||
@@ -1253,7 +1348,7 @@ func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
 	}
 }
 
-func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
+func TestUserSteeringCannotOvertakeIdleBoundaryEvent(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1268,7 +1363,7 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 	service := NewService(store, fw, nil)
 	item, err := store.CreateWork(Work{
 		Title:            "Background result",
-		Objective:        "Preserve the result while the user is steering.",
+		Objective:        "Deliver the Event before the user message mutates the provider.",
 		Status:           WorkWaiting,
 		CompletionPolicy: CompletionBounded,
 	})
@@ -1284,20 +1379,32 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Steering enters the lane before the user message is prepared: the
+	// pending internal Event is admitted at the idle boundary exactly once
+	// and cannot be overtaken by the user's input.
 	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
 		t.Fatal("host user input was not recognized")
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-		t.Fatalf("internal event preempted foreground: woke=%v err=%v", woke, err)
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("idle-boundary delivery=%d, want exact-once: %#v", len(fw.sentCalls), fw.sentCalls)
 	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
-		t.Fatalf("preempted event was not preserved unclaimed: %#v", events)
+	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveredAt == nil {
+		t.Fatalf("idle-boundary Event was not delivered exactly once: %#v", events)
 	}
 
+	// The prepared user message becomes the durable pending admission; the
+	// delivered Event awaits its typed disposition, so the lane stops and
+	// never replays it.
+	if _, created, err := service.PrepareHostUserInput(hostID, "foreground-user-1", "continue", ""); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("in-flight user message or delivered handling woke the lane: woke=%v err=%v", woke, err)
+	}
 	woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type:     "agent_state_change",
 		AgentID:  hostID,
@@ -1306,8 +1413,8 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 		TurnID:   "foreground-provider-turn",
 		Agent:    &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
 	})
-	if err != nil || !woke {
-		t.Fatalf("queued event did not run after foreground turn: woke=%v err=%v", woke, err)
+	if err != nil || woke {
+		t.Fatalf("terminal edge replayed the delivered Event: woke=%v err=%v", woke, err)
 	}
 	if len(fw.sentCalls) != 1 {
 		t.Fatalf("sends = %#v", fw.sentCalls)

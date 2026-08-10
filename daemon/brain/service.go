@@ -60,8 +60,7 @@ type Service struct {
 	execs   *work.ExecutorConfig
 	now     func() time.Time
 
-	dispatchMu      sync.Mutex
-	foregroundInput bool
+	dispatchMu sync.Mutex
 
 	reconcileMu sync.Mutex
 
@@ -291,7 +290,7 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 			log.Printf("Brain terminal Session finalization failed for Work %s: %v", item.WorkID, finalizeErr)
 		}
 	}
-	_, dispatchErr := s.DispatchPendingEvent()
+	_, dispatchErr := s.ReconcileHostLane()
 	return !admissionMore && !handlingMore && !more, dispatchErr
 }
 
@@ -334,7 +333,7 @@ func (s *Service) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 // ApplyTurnFact applies one observation through the single canonical reducer.
 // It implements watcher.TurnLedger; the store persists turn + derived Work +
 // outbox event atomically, so this method never dispatches directly — the
-// resulting Session event / reconcile loop re-drives DispatchPendingEvent.
+// resulting Session event / reconcile loop re-drives the Host lane.
 func (s *Service) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool, error) {
 	if s == nil || s.store == nil {
 		return watcher.TurnSnapshot{}, false, fmt.Errorf("brain store is not configured")
@@ -714,7 +713,7 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		// route only re-drives delivery of newly actionable rows. Liveness on
 		// agent_removed was applied by the watcher before the removal event;
 		// ownership stays attached until Brain resolves session.uncertain.
-		return s.DispatchPendingEvent()
+		return s.ReconcileHostLane()
 	}
 	// No canonical current TurnID: no delegated lifecycle event exists. The
 	// legacy raw-state projection (sessionEventProjection), occurrence
@@ -751,8 +750,7 @@ func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
 func isSessionLifecycleKind(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "session.running", "session.waiting", "session.needs_input",
-		"session.done", "session.failed", "session.stale", "session.uncertain",
-		"session.ownership_lost":
+		"session.done", "session.failed", "session.stale", "session.uncertain":
 		return true
 	default:
 		return false
@@ -1033,38 +1031,160 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 	}
 }
 
-// DispatchPendingEvent is the complete automatic scheduler: resolve every held
-// claim it can, claim one durable actionable Event, send its compact complete
-// delta, and consume that exact claim after Session Input accepts it.
+// ReconcileHostLane is the single serialized Host-lane reducer. Every
+// trigger — Work Event append, Host provider state change, startup
+// reconciliation, and new Brain user input — enters this same reducer under
+// one mutex; trigger identity never changes semantics. It derives the next
+// action entirely from persisted state and current strong evidence:
 //
-// Claim recovery is four-state with no time-based release (C.2.7): a provably
-// absent receipt releases the claim immediately; an accepted receipt consumes
-// it; an ambiguous receipt or an inaccessible host holds the claim forever and
-// surfaces a deduped delivery diagnostic (`delivery.ambiguous` note,
-// `delivery.uncertain` actionable) while unrelated events keep dispatching.
-// Held claims close only via explicit MarkDeliveredClaim/DiscardClaim/
-// ReplayEvent or a receipt-state change — never by elapsed time.
-func (s *Service) DispatchPendingEvent() (bool, error) {
+//  1. reconcile every existing delivery receipt (exact-once submission ledger)
+//  2. one delivered Event awaiting its typed disposition: stop
+//  3. pending Brain user admission: stop (durable user-steering gate)
+//  4. a Host foreground turn: stop unless strong exact terminal evidence
+//     closes that exact turn
+//  5. select one fair pending Work key at the boundary
+//  6. atomically claim its current Event head
+//  7. submit once with the existing receipt ledger
+//  8. mark delivered only from the accepted receipt
+func (s *Service) ReconcileHostLane() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	return s.dispatchPendingEventLocked()
+	return s.reconcileHostLaneLocked()
 }
 
-// dispatchPendingEventLocked owns the admission checkpoint. Callers that end
-// an exact foreground Host turn keep dispatchMu held while clearing the
-// foreground gate and reserving the next Work admission, so another foreground
-// send cannot overtake the checkpoint. The current response is never
-// interrupted: this path is entered only after its terminal Turn fact.
-func (s *Service) dispatchPendingEventLocked() (bool, error) {
+// reconcileHostLaneLocked is the reducer body; the caller holds dispatchMu.
+// Delivery receipt recovery is four-state with no time-based release (C.2.7):
+// a provably absent receipt releases the claim immediately; an accepted
+// receipt consumes it; an ambiguous receipt or an inaccessible host holds the
+// claim forever and surfaces a deduped delivery diagnostic while unrelated
+// events keep dispatching. Held claims close only via explicit
+// MarkDeliveredClaim/DiscardClaim/ReplayEvent or a receipt-state change —
+// never by elapsed time.
+func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
-	claimedEvents, err := s.store.ClaimedActionableEvents()
+	if err := s.reconcileDeliveryReceiptsLocked(); err != nil {
+		return false, err
+	}
+	hostSession, err := s.store.HostSession()
 	if err != nil {
 		return false, err
+	}
+	hostID := strings.TrimSpace(hostSession.ID)
+	if hostID == "" || !s.watcher.HasSession(hostID) {
+		return false, nil
+	}
+	// Step 2: one delivered Event awaits its typed disposition. The Host is
+	// mid-review; no new admission may overtake it.
+	if delivered, err := s.store.HasLiveDeliveredHandling(); err != nil {
+		return false, err
+	} else if delivered {
+		return false, nil
+	}
+	// Step 3: a pending Brain user admission is the durable user-steering
+	// gate. Pending is persisted before provider mutation, so while it exists
+	// the lane must not admit an internal Event ahead of the user's message.
+	if pending, err := s.store.PendingHostInputAdmission(hostID); err != nil {
+		return false, err
+	} else if pending {
+		return false, nil
+	}
+	// Step 4: the accepted foreground Host turn owns the checkpoint until
+	// strong exact terminal evidence closes it. Ambient Agent state is never
+	// authority; only the exact bound provider activity's terminal status (or
+	// the current observation's terminal status for an unbound turn) closes
+	// it. A running observation binds the durable activity identity once.
+	active, err := s.store.CurrentHostForegroundTurn()
+	if err != nil {
+		return false, err
+	}
+	if active != nil && active.HostSessionID == hostID {
+		generation := active.HostGeneration
+		currentGeneration, generationErr := s.hostOwnedGeneration(hostID)
+		if generationErr == nil && currentGeneration != generation {
+			generationErr = fmt.Errorf(
+				"foreground Host generation changed after accepted input: accepted %s, current %s",
+				generation,
+				currentGeneration,
+			)
+		}
+		activityID := ""
+		bindActivity := ""
+		exactTerminal := false
+		var probeErr error
+		if generationErr == nil {
+			var observation watcher.ProviderActivityObservation
+			var found bool
+			observation, found, probeErr = s.watcher.ProbeProviderEvidence(hostID)
+			if probeErr == nil && found {
+				observedID := strings.TrimSpace(observation.ID)
+				bound := strings.TrimSpace(active.ProviderActivityID)
+				if bound != "" {
+					// Terminal evidence is exact only when it names the durable
+					// turn's bound Activity — either as the current observation
+					// or from the same source's bounded terminal history. A
+					// delayed terminal observation for a replaced Activity is
+					// never adopted and never closes this turn.
+					activityID, exactTerminal = hostForegroundTerminalEvidence(observation, bound)
+				} else {
+					status := strings.TrimSpace(observation.Status)
+					if providerStatusRunning(status) {
+						bindActivity = observedID
+					} else if providerStatusTerminal(status) &&
+						!observation.StartedAt.IsZero() && !observation.StartedAt.Before(active.StartedAt) {
+						// The turn's response already ended (for example while
+						// the daemon was down) before any running observation
+						// could bind it. The current activity ending is adopted
+						// only when it began inside this turn's admission
+						// window: a stale terminal that settled before acceptance
+						// is never a boundary for the new turn and never closes
+						// it.
+						activityID = observedID
+						exactTerminal = true
+					}
+				}
+			} else if probeErr == nil && strings.TrimSpace(active.ProviderActivityID) == "" {
+				agent := s.watcher.GetAgent(hostID)
+				if agent != nil && (agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateUnknown) {
+					exactTerminal = true
+				}
+			}
+		}
+		if generationErr != nil || probeErr != nil {
+			return false, errors.Join(generationErr, probeErr)
+		}
+		if bindActivity != "" {
+			if bindErr := s.store.BindHostForegroundActivity(hostID, generation, active.HostTurnID, bindActivity); bindErr != nil {
+				return false, bindErr
+			}
+		}
+		if !exactTerminal {
+			return false, nil
+		}
+		if closeErr := s.store.CloseHostForegroundTurn(hostID, generation, active.HostTurnID, activityID); closeErr != nil {
+			return false, closeErr
+		}
+	}
+	// Steps 5-8: at the boundary, select one fair pending Work key, claim its
+	// current Event head atomically, submit once through the receipt ledger,
+	// and mark delivered only from the accepted receipt.
+	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed {
+		return false, err
+	}
+	return s.deliverClaimedEventLocked(event)
+}
+
+// reconcileDeliveryReceiptsLocked is reducer step 1: every dispatching Event's
+// provider submission receipt is reconciled against the exact claim identity.
+func (s *Service) reconcileDeliveryReceiptsLocked() error {
+	claimedEvents, err := s.store.ClaimedActionableEvents()
+	if err != nil {
+		return err
 	}
 	for _, claimed := range claimedEvents {
 		if claimed.DeliveryHostSessionID == "" {
@@ -1093,7 +1213,7 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 				continue
 			}
 			if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return false, turnErr
+				return turnErr
 			} else if providerMutated {
 				// Canonical provider admission dominates an absent transport
 				// receipt. Mutation began, so hold both authorities without
@@ -1105,14 +1225,14 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return false, fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 			continue
 		}
 		switch result.Outcome {
 		case watcher.InputAccepted:
 			if _, found, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return false, turnErr
+				return turnErr
 			} else if !found {
 				// The transport receipt alone is not a provider Turn. Hold the
 				// claim without replay until canonical admission is recoverable.
@@ -1121,7 +1241,7 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 			if _, _, err := s.store.ConsumeClaimedWorkEvent(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); err != nil {
-				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+				return fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
 			}
 		case watcher.InputAmbiguous:
 			// Mutation may have begun: hold forever; never release, never
@@ -1139,72 +1259,44 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 		}
 	}
-	hostSession, err := s.store.HostSession()
-	if err != nil {
-		return false, err
+	return nil
+}
+
+// hostForegroundTerminalEvidence resolves strong exact terminal evidence for
+// the foreground turn's bound provider activity. The current observation
+// counts when it names the bound activity with a terminal status; otherwise
+// the bounded terminal history from the same durable source is consulted (a
+// reusable provider session may have advanced to a newer activity).
+func hostForegroundTerminalEvidence(observation watcher.ProviderActivityObservation, boundActivityID string) (string, bool) {
+	observedID := strings.TrimSpace(observation.ID)
+	status := strings.TrimSpace(observation.Status)
+	if observedID == boundActivityID && providerStatusTerminal(status) {
+		return observedID, true
 	}
-	hostID := strings.TrimSpace(hostSession.ID)
-	if hostID == "" || !s.watcher.HasSession(hostID) {
-		return false, nil
-	}
-	host := s.watcher.GetAgent(hostID)
-	activeForeground, reservation, foregroundErr := s.store.HostForegroundState()
-	if foregroundErr != nil {
-		return false, foregroundErr
-	}
-	if activeForeground != nil && activeForeground.HostSessionID == hostID {
-		if reservation == nil && (s.foregroundInput || host != nil &&
-			(host.State == classifier.StateRunning || host.State == classifier.StateBlocked)) {
-			// The accepted foreground admission owns its prepared generation.
-			// A later ambient pane/process generation may be useful evidence for
-			// binding provider Activity, but it cannot replace that authority or
-			// prevent the future Attention reservation from becoming durable.
-			generation := activeForeground.HostGeneration
-			currentGeneration, generationErr := s.hostOwnedGeneration(hostID)
-			if generationErr == nil && currentGeneration != generation {
-				generationErr = fmt.Errorf(
-					"foreground Host generation changed after accepted input: accepted %s, current %s",
-					generation,
-					currentGeneration,
-				)
-			}
-			activityID := ""
-			var probeErr error
-			if generationErr == nil {
-				var observation watcher.ProviderActivityObservation
-				var found bool
-				observation, found, probeErr = s.watcher.ProbeProviderEvidence(hostID)
-				if probeErr == nil && found && strings.TrimSpace(observation.Status) == "running" {
-					activityID = strings.TrimSpace(observation.ID)
-				}
-			}
-			if _, _, reserveErr := s.store.ReserveHostAttention(hostID, generation, activityID); reserveErr != nil {
-				return false, errors.Join(generationErr, probeErr, reserveErr)
-			}
-			if generationErr != nil || probeErr != nil {
-				return false, errors.Join(generationErr, probeErr)
-			}
+	for index := len(observation.TerminalActivities) - 1; index >= 0; index-- {
+		terminal := observation.TerminalActivities[index]
+		if strings.TrimSpace(terminal.ID) == boundActivityID && providerStatusTerminal(strings.TrimSpace(terminal.Status)) {
+			return boundActivityID, true
 		}
-		// Reopen derives foreground exclusion from the durable turn, not the
-		// process-local foregroundInput hint. Its reservation is consumed only
-		// by the exact terminal-boundary path below.
-		return false, nil
 	}
-	if s.foregroundInput {
-		return false, nil
+	return "", false
+}
+
+func providerStatusRunning(status string) bool {
+	return strings.TrimSpace(status) == "running"
+}
+
+func providerStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "interrupted", "cancelled":
+		return true
+	default:
+		return false
 	}
-	if host != nil && (host.State == classifier.StateRunning || host.State == classifier.StateBlocked) {
-		return false, nil
-	}
-	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)
-	if err != nil || !claimed {
-		return false, err
-	}
-	return s.deliverClaimedEventLocked(event)
 }
 
 func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
@@ -1263,6 +1355,12 @@ func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
 	return true, nil
 }
 
+// NoteUserSteering recognizes the Host agent and enters the lane for
+// reconciliation. It never sets process-local scheduling state: the durable
+// user-steering gate is the pending Brain input admission persisted by
+// PrepareHostUserInput before provider mutation. Reconciling here first means
+// an internal Event admitted at an idle boundary is delivered before this
+// message can overtake it.
 func (s *Service) NoteUserSteering(agentID string) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, nil
@@ -1273,48 +1371,17 @@ func (s *Service) NoteUserSteering(agentID string) (bool, error) {
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	active, _, err := s.store.HostForegroundState()
-	if err != nil {
-		return false, err
+	_, reconcileErr := s.reconcileHostLaneLocked()
+	if reconcileErr != nil {
+		return false, reconcileErr
 	}
-	if active != nil && active.HostSessionID == strings.TrimSpace(agentID) {
-		generation, generationErr := s.hostOwnedGeneration(active.HostSessionID)
-		if generationErr != nil {
-			return false, generationErr
-		}
-		activityID := ""
-		terminal := false
-		if observation, found, probeErr := s.watcher.ProbeProviderEvidence(active.HostSessionID); probeErr != nil {
-			return false, probeErr
-		} else if found {
-			activityID = strings.TrimSpace(observation.ID)
-			status := strings.TrimSpace(observation.Status)
-			terminal = status == "completed" || status == "failed" || status == "interrupted" || status == "cancelled"
-			if active.ProviderActivityID != "" && activityID != active.ProviderActivityID {
-				terminal = false
-			}
-		} else if active.ProviderActivityID == "" {
-			agent := s.watcher.GetAgent(active.HostSessionID)
-			terminal = agent != nil && (agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateUnknown)
-		}
-		if terminal {
-			claimed, consumed, consumeErr := s.store.ConsumeHostAttentionReservation(
-				active.HostSessionID, generation, active.HostTurnID, activityID,
-			)
-			if consumeErr != nil {
-				return false, consumeErr
-			}
-			if consumed {
-				if _, deliveryErr := s.deliverClaimedEventLocked(claimed); deliveryErr != nil {
-					return false, deliveryErr
-				}
-			}
-		}
-	}
-	s.foregroundInput = true
 	return true, nil
 }
 
+// CancelUserSteering is an idempotent lane trigger used when a prepared user
+// input was proved not submitted. Nothing process-local is cleared: the
+// pending admission is removed by AbortHostUserInput, and this method merely
+// re-runs reconciliation at the freed boundary.
 func (s *Service) CancelUserSteering(agentID string) {
 	if s == nil || s.store == nil {
 		return
@@ -1325,8 +1392,7 @@ func (s *Service) CancelUserSteering(agentID string) {
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	s.foregroundInput = false
-	_, _ = s.dispatchPendingEventLocked()
+	_, _ = s.reconcileHostLaneLocked()
 }
 
 // CurrentHostSessionID returns the recorded Brain host Session id, or empty
@@ -1373,48 +1439,18 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 			break
 		}
 	}
-	wasForeground := false
+	// Host terminal boundary: this event is a trigger only. The reducer
+	// probes the exact foreground turn and closes it exclusively on strong
+	// exact terminal evidence; ambient Agent state can never clear the
+	// durable turn or fabricate a boundary.
 	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == strings.TrimSpace(event.Agent.ID) {
 		s.dispatchMu.Lock()
 		defer s.dispatchMu.Unlock()
-		wasForeground = s.foregroundInput
-		s.foregroundInput = false
-		active, _, foregroundErr := s.store.HostForegroundState()
-		if foregroundErr != nil {
-			return false, foregroundErr
-		}
-		if active != nil && active.HostSessionID == strings.TrimSpace(event.Agent.ID) {
-			generation, generationErr := s.hostOwnedGeneration(active.HostSessionID)
-			if generationErr != nil {
-				return false, generationErr
-			}
-			activityID := ""
-			if observation, found, probeErr := s.watcher.ProbeProviderEvidence(active.HostSessionID); probeErr != nil {
-				return false, probeErr
-			} else if found {
-				activityID = strings.TrimSpace(observation.ID)
-				status := strings.TrimSpace(observation.Status)
-				terminal := status == "completed" || status == "failed" || status == "interrupted" || status == "cancelled"
-				if !terminal || active.ProviderActivityID != "" && activityID != active.ProviderActivityID {
-					return false, fmt.Errorf("Host terminal observation does not match the reserved foreground provider turn")
-				}
-			}
-			claimed, consumed, consumeErr := s.store.ConsumeHostAttentionReservation(
-				active.HostSessionID, generation, active.HostTurnID, activityID,
-			)
-			if consumeErr != nil {
-				return false, consumeErr
-			}
-			if consumed {
-				return s.deliverClaimedEventLocked(claimed)
-			}
-		}
-		if wasForeground || requeued {
-			return s.dispatchPendingEventLocked()
-		}
+		woke, reconcileErr := s.reconcileHostLaneLocked()
+		return requeued || woke, reconcileErr
 	}
 	if requeued {
-		return s.DispatchPendingEvent()
+		return s.ReconcileHostLane()
 	}
 	return false, nil
 }
@@ -1554,7 +1590,7 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			Summary:   "Delegated Session progress lease expired",
 		})
 	}
-	_, _ = s.DispatchPendingEvent()
+	_, _ = s.ReconcileHostLane()
 }
 
 func providerObservationOwnsTurn(turn watcher.TurnSnapshot, observation watcher.ProviderActivityObservation) bool {
@@ -1613,7 +1649,7 @@ func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 	if !created || !recorded.Actionable {
 		return recorded, created, nil
 	}
-	_, dispatchErr := s.DispatchPendingEvent()
+	_, dispatchErr := s.ReconcileHostLane()
 	return recorded, created, dispatchErr
 }
 
@@ -1742,6 +1778,16 @@ func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversati
 	if err != nil || !hostInput {
 		return admission, false, err
 	}
+	// Enter the lane mutex before this message may mutate the provider:
+	// reconciliation runs first (an internal Event admitted at an idle
+	// boundary cannot be overtaken), then the pending admission is persisted
+	// as the durable user-steering gate that blocks further lane admissions
+	// while the user's input is in flight.
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if _, reconcileErr := s.reconcileHostLaneLocked(); reconcileErr != nil {
+		return admission, false, reconcileErr
+	}
 	return s.store.PrepareBrainInputAdmission(admission)
 }
 
@@ -1774,11 +1820,17 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 	if !samePreparedBrainInputAdmission(persisted, prepared) {
 		return fmt.Errorf("Brain input admission identity changed after provider acceptance")
 	}
+	// Provider acceptance is durable before the lane runs; the accepted
+	// admission creates the foreground Host turn, which stops the reducer
+	// until strong exact terminal evidence closes it.
+	s.dispatchMu.Lock()
 	accepted, _, _, err := s.store.AcceptBrainInputAdmission(persisted)
 	if err != nil {
+		s.dispatchMu.Unlock()
 		return err
 	}
-	_, dispatchErr := s.DispatchPendingEvent()
+	_, dispatchErr := s.reconcileHostLaneLocked()
+	s.dispatchMu.Unlock()
 	projectionErr := s.store.ProjectBrainInputAdmission(accepted)
 	return errors.Join(dispatchErr, projectionErr)
 }
@@ -1994,7 +2046,7 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 	if hasPendingSessionFinalization(item) {
 		_, finalizeErr = s.RetryTerminalFinalization(item.ID)
 	}
-	woke, dispatchErr := s.DispatchPendingEvent()
+	woke, dispatchErr := s.ReconcileHostLane()
 	return woke || producerWoke || recorded.Actionable, errors.Join(finalizeErr, dispatchErr)
 }
 

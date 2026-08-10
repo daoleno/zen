@@ -682,7 +682,9 @@ func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (Timel
 		EventKind:   event.Kind,
 		Summary:     summary,
 		SessionName: strings.TrimSpace(event.SourceName),
-		Unread:      event.ReadAt == nil,
+		// Read state lives in the timeline projection. A freshly materialized
+		// card is unread; MarkWorkRead clears it without touching the Event.
+		Unread: true,
 	})
 	if err != nil {
 		return TimelineItem{}, false, err
@@ -691,7 +693,8 @@ func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (Timel
 }
 
 // MarkTimelineWorkCardsRead clears unread emphasis on materialized work cards
-// for one Work. Work Event ReadAt remains the scheduler ack owner.
+// for one Work. It is the only read-state owner; Work Events never carry
+// read_at.
 func (s *Store) MarkTimelineWorkCardsRead(workID string) error {
 	workID = strings.TrimSpace(workID)
 	if workID == "" {

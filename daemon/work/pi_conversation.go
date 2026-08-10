@@ -580,10 +580,14 @@ func (b *piConversationBuilder) result() CodexConversation {
 	events := make([]CodexConversationEvent, 0, len(chain))
 	eventByCall := map[string]int{}
 	seq := 0
-	for _, entry := range chain {
+	for index, entry := range chain {
+		// An entry with a descendant on the active parent chain is an
+		// intermediate response: the provider recovered and continued after
+		// it. Terminal interpretation belongs only to the chain leaf.
+		hasDescendant := index < len(chain)-1
 		switch entry.Type {
 		case "message":
-			seq = b.projectMessage(entry, &events, eventByCall, seq)
+			seq = b.projectMessage(entry, &events, eventByCall, seq, hasDescendant)
 		case "custom_message":
 			// Extension messages participate in LLM context; skip from chat body.
 		default:
@@ -628,6 +632,7 @@ func (b *piConversationBuilder) projectMessage(
 	events *[]CodexConversationEvent,
 	eventByCall map[string]int,
 	seq int,
+	hasDescendant bool,
 ) int {
 	var envelope struct {
 		Message struct {
@@ -677,7 +682,7 @@ func (b *piConversationBuilder) projectMessage(
 			)
 		}
 	case "assistant":
-		seq = b.projectAssistant(entry, envelope.Message.Content, envelope.Message.StopReason, envelope.Message.ErrorMessage, timestamp, events, eventByCall, seq)
+		seq = b.projectAssistant(entry, envelope.Message.Content, envelope.Message.StopReason, envelope.Message.ErrorMessage, timestamp, events, eventByCall, seq, hasDescendant)
 	case "toolresult":
 		seq++
 		callID := strings.TrimSpace(envelope.Message.ToolCallID)
@@ -730,6 +735,7 @@ func (b *piConversationBuilder) projectAssistant(
 	events *[]CodexConversationEvent,
 	eventByCall map[string]int,
 	seq int,
+	hasDescendant bool,
 ) int {
 	blocks := piContentBlocks(raw)
 	for _, block := range blocks {
@@ -807,7 +813,15 @@ func (b *piConversationBuilder) projectAssistant(
 			})
 		}
 		settleRunningPiTools(events, "failed")
-		b.activityLifecycle.settle("", ProviderActivityFailed, timestamp)
+		if hasDescendant {
+			// The error record has a descendant on the active parent chain: the
+			// provider recovered and continued (for example an upstream HTTP
+			// error that Pi retried inside the same user turn). This is a
+			// recoverable intermediate response, never a terminal Activity —
+			// the current Activity stays live until a real terminal boundary.
+		} else {
+			b.activityLifecycle.settle("", ProviderActivityFailed, timestamp)
+		}
 	case "aborted":
 		settleRunningPiTools(events, "cancelled")
 		b.activityLifecycle.settle("", ProviderActivityInterrupted, timestamp)

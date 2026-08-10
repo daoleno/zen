@@ -46,7 +46,7 @@ func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing
 		t.Fatal("mismatched live generation was authorized")
 	}
 	turn := ledger.snapshot(sessionID)
-	if turn.Status != TurnOwnershipLost || turn.Attention != "ownership_lost" {
+	if turn.Status != TurnUnknown || turn.ControlState != TurnControlOwnershipLost {
 		t.Fatalf("ownership loss was not durably reduced before rejection: %+v", turn)
 	}
 	projected := w.GetAgent(sessionID)

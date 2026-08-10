@@ -132,7 +132,7 @@ func TestMigrateTurnLedgerV1ReconcilesFalseDoneHint(t *testing.T) {
 	// the same canonical reducer (the marker was false — A.4.1 class).
 	admission := providerAdmission("stream", "msg-1", 1, "sha", acceptedAt.Add(2*time.Second))
 	snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID:  sessionID, TurnID: sessionID + ":turn:1",
+		SessionID: sessionID, TurnID: sessionID + ":turn:1",
 		Class:      watcher.EvidenceProvider,
 		Kind:       "running",
 		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
@@ -225,7 +225,7 @@ func TestMigrateTurnLedgerV1CrashBetweenPhasesResumes(t *testing.T) {
 		Status:          watcher.TurnRunning,
 		AcceptedAt:      acceptedAt,
 		ProcessIdentity: "legacy-proc",
-		Hint: &watcher.TurnHint{Kind: "session.done", Class: watcher.EvidenceLegacy, At: acceptedAt.Add(time.Minute)},
+		Hint:            &watcher.TurnHint{Kind: "session.done", Class: watcher.EvidenceLegacy, At: acceptedAt.Add(time.Minute)},
 	}}
 	// Phase 1 only — the daemon crashes before Phase 1b/completion.
 	if imported, err := store.MigrateTurnLedgerV1(imports); err != nil || !imported {

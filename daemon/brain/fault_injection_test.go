@@ -277,6 +277,106 @@ func TestFaultFalseTerminalThenTrueCompletion(t *testing.T) {
 	}
 }
 
+func TestFaultSignalTurnProviderTerminalNeverTerminalizes(t *testing.T) {
+	// C.2.10 required regression: for a signal-protocol Turn, provider
+	// completed/error observations are transport/liveness evidence only.
+	// Even a bound provider failure (the recoverable Pi error shape) must not
+	// move canonical status or create an actionable terminal; only exact
+	// Control done/failed is semantic terminal authority.
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	turnID := "turn:signal-provider-terminal"
+	pending := prepareSignalSubmission(t, store, sessionID, turnID, "signal payload", at)
+
+	// The exact Control running signal creates the canonical turn from the
+	// pending submission; only then can provider evidence attach to it.
+	admitted, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "running",
+		SourceID: "control\x00progress-event-1", At: at.Add(time.Second),
+		Summary:      "worker accepted",
+		LeaseSeconds: 300,
+	})
+	if err != nil || !admitted.Owned || !admitted.Matched || !admitted.Changed ||
+		admitted.Turn.Status != watcher.TurnRunning {
+		t.Fatalf("control running admission = (%+v, %v)", admitted, err)
+	}
+	// The provider adapter enriches the same Turn with its exact tuple; the
+	// later provider terminal fact is therefore BOUND to the turn.
+	tuple := watcher.TurnAdmission{
+		Stream: "provider", ID: "admission-activity-1", Cursor: 1,
+		SHA256: pending.PayloadSHA256, At: at.Add(2 * time.Second),
+	}
+	enriched, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: pending.Receipt,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-1",
+		Admission: tuple, ResolvedAt: at.Add(2 * time.Second),
+	})
+	if err != nil || enriched.ResolvedActivityID != "activity-1" {
+		t.Fatalf("provider tuple enrichment = (%+v, %v)", enriched, err)
+	}
+
+	// The BOUND provider failure attaches as a provisional hint: canonical
+	// status stays Running, Work stays owned, and no actionable terminal
+	// Event exists.
+	snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "failed",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x001",
+		Admission:  tuple,
+		ActivityID: "activity-1",
+		StartedAt:  at.Add(3 * time.Second),
+		SettledAt:  at.Add(4 * time.Second),
+		At:         at.Add(5 * time.Second),
+		Summary:    "upstream HTTP 503",
+	})
+	if err != nil || !changed || snapshot.Status != watcher.TurnRunning {
+		t.Fatalf("bound provider failure moved signal canonical status: %+v changed=%v err=%v", snapshot, changed, err)
+	}
+	workItem, err := store.Work(pending.WorkID)
+	if err != nil || workItem.OwnerSessionID != sessionID || workItem.Status != WorkRunning {
+		t.Fatalf("provider failure deprojected signal Work: %+v err=%v", workItem, err)
+	}
+	row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.failed")
+	if !found || row.Actionable {
+		t.Fatalf("provider failure created an actionable terminal: %+v found=%v", row, found)
+	}
+
+	// The provider recovers and continues inside the same user turn: running
+	// evidence refreshes the exact turn without any terminal.
+	recovered, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "running",
+		SourceID:   "provider\x00" + sessionID + "\x00stream\x00activity-1\x002",
+		Admission:  tuple,
+		ActivityID: "activity-1",
+		StartedAt:  at.Add(3 * time.Second),
+		At:         at.Add(6 * time.Second),
+		Summary:    "provider resumed tool calls",
+	})
+	if err != nil || !changed || recovered.Status != watcher.TurnRunning {
+		t.Fatalf("recovered provider running moved signal canonical status: %+v changed=%v err=%v", recovered, changed, err)
+	}
+
+	// Only the exact Control terminal is semantic.
+	result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceControl, Kind: "done",
+		SourceID: "control\x00progress-event-100", At: at.Add(7 * time.Second),
+		Summary: "REVIEW_READY: exact control completion",
+	})
+	if err != nil || !result.Owned || !result.Matched || !result.Changed || result.Turn.Status != watcher.TurnDone {
+		t.Fatalf("exact control done = (%+v, %v)", result, err)
+	}
+	doneRow, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.done")
+	if !found || !doneRow.Actionable {
+		t.Fatalf("control done event = %+v found=%v", doneRow, found)
+	}
+	if _, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.failed"); !found {
+		t.Fatal("provider failure audit hint disappeared")
+	}
+}
+
 func TestFaultMatchingControlDoneAtomicallyAdmitsAndSettlesAcrossRestart(t *testing.T) {
 	store, sessionID, at := pendingSubmissionTestStore(t)
 	store.now = func() time.Time { return at }

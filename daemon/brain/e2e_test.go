@@ -87,7 +87,7 @@ func TestE2EWakeExactlyOnceOnRealCompletion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("quiet frame woke Brain: woke=%v err=%v", woke, err)
 	}
 
@@ -104,7 +104,7 @@ func TestE2EWakeExactlyOnceOnRealCompletion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("running fact woke Brain: woke=%v err=%v", woke, err)
 	}
 

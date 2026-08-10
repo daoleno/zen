@@ -271,9 +271,10 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}
-	// The fair scheduler alternates newest/oldest after excluding the Work
-	// that just yielded the Host, so the dirty key stays behind both peers.
-	for index, wantWorkID := range []string{c.ID, b.ID, a.ID} {
+	// FIFO by append sequence: B and C (older heads) discharge before the
+	// requeued dirty key A, whose new head was appended after them. The
+	// requeue never jumps the fair tail.
+	for index, wantWorkID := range []string{b.ID, c.ID, a.ID} {
 		claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
 		if err != nil || !ok || claimed.WorkID != wantWorkID {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Work %s", index, claimed, ok, err, wantWorkID)

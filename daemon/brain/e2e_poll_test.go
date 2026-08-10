@@ -156,7 +156,7 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	// delivered, while the later done fact dirties that in-flight key instead
 	// of delivering a second input into the same Host turn.
 	for range 4 {
-		woke, err := service.DispatchPendingEvent()
+		woke, err := service.ReconcileHostLane()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +188,7 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 		t.Fatalf("Work key was not reconciled exactly once: %#v", hostWatcher.sentCalls)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("duplicate dispatch woke=%v err=%v", woke, err)
 	}
 	if len(hostWatcher.sentCalls) != 2 {
@@ -247,7 +247,7 @@ func TestE2ERealPollPiBlockedFrameNeverWakes(t *testing.T) {
 			t.Fatalf("Pi blocked frame produced an actionable needs_input wake: %#v", events)
 		}
 	}
-	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("Pi blocked frame woke Brain: woke=%v err=%v", woke, err)
 	}
 	if len(hostWatcher.sentCalls) != 0 {
@@ -317,7 +317,7 @@ func TestE2ERealPollSamePaneReplacementNeverFails(t *testing.T) {
 	}
 	// Dispatch delivers exactly the one uncertain wake, nothing failed.
 	for range 2 {
-		_, _ = service.DispatchPendingEvent()
+		_, _ = service.ReconcileHostLane()
 	}
 	for _, call := range hostWatcher.sentCalls {
 		if strings.Contains(call.text, `"kind":"session.failed"`) {
@@ -377,7 +377,7 @@ func TestE2ERealPollDeadPaneWithMatchedIdentityNeverFails(t *testing.T) {
 		t.Fatalf("wake counts: uncertain=%d failed=%d events=%#v", uncertain, failed, events)
 	}
 	for range 2 {
-		_, _ = service.DispatchPendingEvent()
+		_, _ = service.ReconcileHostLane()
 	}
 	for _, call := range hostWatcher.sentCalls {
 		if strings.Contains(call.text, `"kind":"session.failed"`) {

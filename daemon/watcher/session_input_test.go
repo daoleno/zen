@@ -640,15 +640,13 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 			}
 		}
 	case EvidenceLiveness:
+		// Ownership loss is a control capability state only (C.2.10): it
+		// never fabricates a terminal outcome. Canonical status becomes
+		// Unknown; the watcher projects agent.Attention=ownership_lost from
+		// ControlState alone.
 		turn.ControlState = TurnControlOwnershipLost
 		if !TurnImmutable(turn.Status) {
 			turn.Status = TurnUnknown
-		}
-		if fact.Kind == "ownership_lost" {
-			if !TurnImmutable(turn.Status) {
-				turn.Status = TurnOwnershipLost
-			}
-			turn.Attention = "ownership_lost"
 		}
 		changed = true
 	}

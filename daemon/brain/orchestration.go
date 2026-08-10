@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 7
+const orchestrationSchemaVersion = 8
 
 var (
 	ErrWorkNotFound         = errors.New("Brain Work not found")
@@ -87,30 +87,15 @@ type BrainInputAdmission struct {
 // HostForegroundTurn is the durable admission epoch for one foreground Brain
 // response. Multiple accepted steering inputs may share the same provider
 // activity, but a terminal boundary closes this exact Host generation and
-// turn once. It is not a provider input queue.
+// turn once. It is not a provider input queue. It is closed only by strong
+// exact terminal evidence (matching provider activity identity) inside the
+// single Host-lane reducer.
 type HostForegroundTurn struct {
 	HostSessionID      string    `json:"host_session_id"`
 	HostGeneration     string    `json:"host_generation"`
 	HostTurnID         string    `json:"host_turn_id"`
 	ProviderActivityID string    `json:"provider_activity_id,omitempty"`
 	StartedAt          time.Time `json:"started_at"`
-}
-
-// HostAttentionReservation is one future claim selected by the existing fair
-// Attention scheduler while a foreground Host turn is still active. It binds
-// every identity the eventual claim will use and is consumed, never replayed,
-// at that exact turn's terminal boundary.
-type HostAttentionReservation struct {
-	HostSessionID  string    `json:"host_session_id"`
-	HostGeneration string    `json:"host_generation"`
-	HostTurnID     string    `json:"host_turn_id"`
-	WorkID         string    `json:"work_id"`
-	EventID        string    `json:"event_id"`
-	HandlingID     string    `json:"handling_id"`
-	ProviderTurnID string    `json:"provider_turn_id"`
-	WorkRevision   uint64    `json:"work_revision"`
-	SequenceFence  uint64    `json:"sequence_fence"`
-	ReservedAt     time.Time `json:"reserved_at"`
 }
 
 type WorkProgressMode string
@@ -201,7 +186,8 @@ type Work struct {
 // Resolution/ResolvedBy/ResolvedAt/DiscardedAt/ReplayOf are the durable
 // actor-recorded audit trail for held delivery claims (C.2.6); they are set
 // only by explicit MarkDeliveredClaim/DiscardClaim/ReplayEvent operations,
-// never by elapsed time.
+// never by elapsed time. Read state lives in the timeline projection, never
+// on the scheduling fact.
 type WorkEvent struct {
 	ID                    string          `json:"event_id"`
 	WorkID                string          `json:"work_id"`
@@ -227,7 +213,6 @@ type WorkEvent struct {
 	DispositionSummary    string          `json:"disposition_summary,omitempty"`
 	CoalescedInto         string          `json:"coalesced_into,omitempty"`
 	HistoricalDelivery    bool            `json:"historical_delivery,omitempty"`
-	ReadAt                *time.Time      `json:"read_at,omitempty"`
 	Resolution            string          `json:"resolution,omitempty"`
 	ResolvedBy            string          `json:"resolved_by,omitempty"`
 	ResolvedAt            *time.Time      `json:"resolved_at,omitempty"`
@@ -298,7 +283,6 @@ type WorkAttentionState string
 
 const (
 	WorkAttentionQueued    WorkAttentionState = "queued"
-	WorkAttentionReserved  WorkAttentionState = "reserved"
 	WorkAttentionReviewing WorkAttentionState = "reviewing"
 )
 
@@ -340,7 +324,6 @@ type WorkReviewState string
 
 const (
 	WorkReviewQueued    WorkReviewState = "queued"
-	WorkReviewReserved  WorkReviewState = "reserved"
 	WorkReviewReviewing WorkReviewState = "reviewing"
 	WorkReviewResolved  WorkReviewState = "resolved"
 )
@@ -369,18 +352,15 @@ type WorkChange struct {
 const workResultSummaryRuneLimit = 360
 
 type orchestrationDatabase struct {
-	SchemaVersion        int                       `json:"schema_version"`
-	NextEventSequence    uint64                    `json:"next_event_sequence"`
-	AttentionAdmissions  uint64                    `json:"attention_admissions"`
-	LastAttentionWorkID  string                    `json:"last_attention_work_id,omitempty"`
-	Migrations           orchestrationMigrations   `json:"migrations"`
-	BrainInputAdmissions []BrainInputAdmission     `json:"brain_input_admissions"`
-	HostForegroundTurn   *HostForegroundTurn       `json:"host_foreground_turn,omitempty"`
-	AttentionReservation *HostAttentionReservation `json:"attention_reservation,omitempty"`
-	BrainWork            []Work                    `json:"brain_work"`
-	BrainWorkEvents      []WorkEvent               `json:"brain_work_events"`
-	BrainTurns           []TurnRecord              `json:"brain_turns"`
-	BrainTurnSubmissions []TurnSubmissionRecord    `json:"brain_turn_submissions"`
+	SchemaVersion        int                     `json:"schema_version"`
+	NextEventSequence    uint64                  `json:"next_event_sequence"`
+	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
+	HostForegroundTurn   *HostForegroundTurn     `json:"host_foreground_turn,omitempty"`
+	BrainWork            []Work                  `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
+	BrainTurns           []TurnRecord            `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
 }
 
 // workRecord is the on-disk Work shape during decode. Unknown never-released
@@ -408,18 +388,15 @@ type workRecord struct {
 }
 
 type orchestrationDatabaseRecord struct {
-	SchemaVersion        int                       `json:"schema_version"`
-	NextEventSequence    uint64                    `json:"next_event_sequence"`
-	AttentionAdmissions  uint64                    `json:"attention_admissions"`
-	LastAttentionWorkID  string                    `json:"last_attention_work_id,omitempty"`
-	Migrations           orchestrationMigrations   `json:"migrations"`
-	BrainInputAdmissions []BrainInputAdmission     `json:"brain_input_admissions"`
-	HostForegroundTurn   *HostForegroundTurn       `json:"host_foreground_turn,omitempty"`
-	AttentionReservation *HostAttentionReservation `json:"attention_reservation,omitempty"`
-	BrainWork            []workRecord              `json:"brain_work"`
-	BrainWorkEvents      []WorkEvent               `json:"brain_work_events"`
-	BrainTurns           []TurnRecord              `json:"brain_turns"`
-	BrainTurnSubmissions []TurnSubmissionRecord    `json:"brain_turn_submissions"`
+	SchemaVersion        int                     `json:"schema_version"`
+	NextEventSequence    uint64                  `json:"next_event_sequence"`
+	Migrations           orchestrationMigrations `json:"migrations"`
+	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
+	HostForegroundTurn   *HostForegroundTurn     `json:"host_foreground_turn,omitempty"`
+	BrainWork            []workRecord            `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
+	BrainTurns           []TurnRecord            `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
 }
 
 type orchestrationMigrations struct {
@@ -454,7 +431,6 @@ type legacyWorkEvent struct {
 	DeliveryHostSessionID  string     `json:"delivery_host_session_id,omitempty"`
 	DeliveryAcknowledgedAt *time.Time `json:"delivery_acknowledged_at,omitempty"`
 	ConsumedAt             *time.Time `json:"consumed_at,omitempty"`
-	ReadAt                 *time.Time `json:"read_at,omitempty"`
 }
 
 // UnmarshalJSON accepts consumed_at only as a pre-v7 migration input. The
@@ -584,7 +560,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 				DedupeKey: old.DedupeKey, PayloadRef: old.PayloadRef,
 				Actionable: old.Actionable, CreatedAt: old.CreatedAt,
 				ClaimedAt: old.ClaimedAt, DeliveryHostSessionID: old.DeliveryHostSessionID,
-				DeliveredAt: old.ConsumedAt, ReadAt: old.ReadAt,
+				DeliveredAt: old.ConsumedAt,
 			}
 			if old.DeliveryAcknowledgedAt != nil && event.DeliveredAt == nil {
 				event.DeliveredAt = old.DeliveryAcknowledgedAt
@@ -690,6 +666,43 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			return orchestrationDatabase{}, false, err
 		}
 		return database, true, nil
+	case 7:
+		// Schema 7 carried the rejected HostAttentionReservation scheduler
+		// (attention_reservation, attention_admissions, last_attention_work_id)
+		// plus the process-local foreground gate. The Host-lane reducer
+		// replaces all of it: the reservation is dropped on decode and the
+		// durable gates are the pending Brain input admission and the accepted
+		// foreground Host turn. Unknown never-released fields are ignored.
+		var record orchestrationDatabaseRecord
+		if err := json.Unmarshal(trimmed, &record); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
+		}
+		database := orchestrationDatabase{
+			SchemaVersion:        orchestrationSchemaVersion,
+			NextEventSequence:    record.NextEventSequence,
+			Migrations:           record.Migrations,
+			BrainInputAdmissions: record.BrainInputAdmissions,
+			HostForegroundTurn:   record.HostForegroundTurn,
+			BrainWork:            worksFromRecords(record.BrainWork),
+			BrainWorkEvents:      record.BrainWorkEvents,
+			BrainTurns:           record.BrainTurns,
+			BrainTurnSubmissions: record.BrainTurnSubmissions,
+		}
+		upgradeSignalSchema(&database)
+		if err := validateOrchestrationDatabaseLoose(database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		needsBind := false
+		for _, item := range database.BrainWork {
+			if strings.TrimSpace(item.SourceThreadID) == "" {
+				needsBind = true
+				break
+			}
+		}
+		return database, needsBind, nil
 	case orchestrationSchemaVersion:
 		var record orchestrationDatabaseRecord
 		// Ignore unknown never-released fields; bind missing source threads in ensure.
@@ -702,12 +715,9 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		database := orchestrationDatabase{
 			SchemaVersion:        orchestrationSchemaVersion,
 			NextEventSequence:    record.NextEventSequence,
-			AttentionAdmissions:  record.AttentionAdmissions,
-			LastAttentionWorkID:  strings.TrimSpace(record.LastAttentionWorkID),
 			Migrations:           record.Migrations,
 			BrainInputAdmissions: record.BrainInputAdmissions,
 			HostForegroundTurn:   record.HostForegroundTurn,
-			AttentionReservation: record.AttentionReservation,
 			BrainWork:            worksFromRecords(record.BrainWork),
 			BrainWorkEvents:      record.BrainWorkEvents,
 			BrainTurns:           record.BrainTurns,
@@ -1094,29 +1104,6 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 			return fmt.Errorf("host_foreground_turn requires host session, generation, turn, and started_at")
 		}
 	}
-	if reservation := database.AttentionReservation; reservation != nil {
-		active := database.HostForegroundTurn
-		if active == nil || reservation.HostSessionID != active.HostSessionID ||
-			reservation.HostGeneration != active.HostGeneration || reservation.HostTurnID != active.HostTurnID {
-			return fmt.Errorf("attention_reservation requires the exact active foreground Host turn")
-		}
-		if strings.TrimSpace(reservation.WorkID) == "" || strings.TrimSpace(reservation.EventID) == "" ||
-			strings.TrimSpace(reservation.HandlingID) == "" || strings.TrimSpace(reservation.ProviderTurnID) == "" ||
-			reservation.HandlingID == reservation.ProviderTurnID || reservation.WorkRevision == 0 ||
-			reservation.SequenceFence == 0 || reservation.ReservedAt.IsZero() {
-			return fmt.Errorf("attention_reservation requires Work, Event, handling, future Turn, revision, fence, and time")
-		}
-		eventIndex := workEventIndex(database.BrainWorkEvents, reservation.EventID)
-		if eventIndex < 0 || database.BrainWorkEvents[eventIndex].WorkID != reservation.WorkID ||
-			!attentionEventCanObligate(database, database.BrainWorkEvents[eventIndex]) {
-			return fmt.Errorf("attention_reservation does not bind a current Attention obligation")
-		}
-		obligation := reduceAttentionObligation(database, reservation.WorkID)
-		if !obligation.exists() || obligation.State != attentionObligationReserved ||
-			database.BrainWorkEvents[obligation.HeadIndex].ID != reservation.EventID {
-			return fmt.Errorf("attention_reservation does not bind the authoritative Attention head")
-		}
-	}
 	if err := validateActiveExecutionOwners(database); err != nil {
 		return err
 	}
@@ -1405,30 +1392,32 @@ type workProgressState struct {
 	OwnerAdmission    bool
 }
 
-// attentionObligationState is the one durable interpretation of append-only
-// Work Event rows. Audit eligibility, coalescing, reservation/claim state,
-// lifecycle projection, repair, and backlog counts must all consume this
-// reducer rather than reinterpreting Actionable/HandledAt independently.
-type attentionObligationState uint8
+// eventDeliveryState is the one derived delivery state of the append-only
+// Work Event head. It collapses the former attentionObligationState,
+// WorkAttentionState, and WorkReviewState mirrors into a single scheduler
+// fact: pending (queued for the Host lane), dispatching (claimed, delivery
+// receipt outstanding), delivered (awaiting the exact typed disposition), and
+// handled (terminal; no longer a head). Fewer than ten persisted transition
+// states exist across the lane in total.
+type eventDeliveryState uint8
 
 const (
-	attentionObligationNone attentionObligationState = iota
-	attentionObligationQueued
-	attentionObligationReserved
-	attentionObligationClaimed
-	attentionObligationReviewing
+	deliveryNone eventDeliveryState = iota
+	deliveryPending
+	deliveryDispatching
+	deliveryDelivered
 )
 
 type attentionObligation struct {
 	WorkID      string
 	HeadIndex   int
 	LatestIndex int
-	State       attentionObligationState
+	State       eventDeliveryState
 	NeedsRepair bool
 }
 
 func (obligation attentionObligation) exists() bool {
-	return obligation.HeadIndex >= 0 && obligation.State != attentionObligationNone
+	return obligation.HeadIndex >= 0 && obligation.State != deliveryNone
 }
 
 func attentionEventOutstanding(event WorkEvent) bool {
@@ -1536,13 +1525,11 @@ func reduceAttentionObligations(database orchestrationDatabase) map[string]atten
 		head := database.BrainWorkEvents[obligation.HeadIndex]
 		switch {
 		case head.DeliveredAt != nil && head.HandlingEndedAt == nil:
-			obligation.State = attentionObligationReviewing
+			obligation.State = deliveryDelivered
 		case head.ClaimedAt != nil:
-			obligation.State = attentionObligationClaimed
-		case database.AttentionReservation != nil && database.AttentionReservation.EventID == head.ID:
-			obligation.State = attentionObligationReserved
+			obligation.State = deliveryDispatching
 		default:
-			obligation.State = attentionObligationQueued
+			obligation.State = deliveryPending
 		}
 		out[workID] = obligation
 	}
@@ -1677,7 +1664,14 @@ func mustDeriveWorkProgressMode(database orchestrationDatabase, item Work) WorkP
 	return mode
 }
 
-func workHasUnhandledAttention(database orchestrationDatabase, workID string) bool {
+// workHasAttentionObligation reports any outstanding or repair-needing
+// attention head for the Work, regardless of delivery stage. It drives the
+// wire AttentionPending flag only; it never gates scheduling. A delivered
+// handling awaiting its typed disposition is the Host lane's stop gate
+// (HasLiveDeliveredHandling); worker-side correction admissions stage under
+// that exact handling instead of being rejected, and a queued (pending) head
+// never gates either path.
+func workHasAttentionObligation(database orchestrationDatabase, workID string) bool {
 	obligation := reduceAttentionObligation(database, workID)
 	return obligation.exists() || obligation.NeedsRepair
 }
@@ -1734,7 +1728,6 @@ func (s *Store) loadOrchestrationLocked() (orchestrationDatabase, error) {
 
 func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error {
 	database.SchemaVersion = orchestrationSchemaVersion
-	refreshHostAttentionReservation(&database)
 	if database.BrainInputAdmissions == nil {
 		database.BrainInputAdmissions = []BrainInputAdmission{}
 	}
@@ -1788,22 +1781,6 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 		return err
 	}
 	return s.writeOrchestration(s.orchestrationPath(), database)
-}
-
-// refreshHostAttentionReservation keeps the future claim's optimistic
-// revision and fence aligned with every atomic database replacement. This is
-// deliberately centralized: Work mutations that do not append an actionable
-// Event must not leave a durable reservation guaranteed to conflict later.
-func refreshHostAttentionReservation(database *orchestrationDatabase) {
-	if database == nil || database.AttentionReservation == nil {
-		return
-	}
-	index := workIndex(database.BrainWork, database.AttentionReservation.WorkID)
-	if index < 0 {
-		return
-	}
-	database.AttentionReservation.WorkRevision = database.BrainWork[index].Revision
-	database.AttentionReservation.SequenceFence = database.NextEventSequence
 }
 
 func (s *Store) nowUTC() time.Time {
@@ -2810,7 +2787,6 @@ func normalizeWorkEventForAppend(event WorkEvent, now time.Time) (WorkEvent, err
 	event.DispositionSummary = ""
 	event.CoalescedInto = ""
 	event.HistoricalDelivery = false
-	event.ReadAt = nil
 	if isSessionLifecycleKind(event.Kind) && !isTurnScopedSessionDedupeKey(event.DedupeKey) {
 		// A delegated lifecycle Event is unrepresentable without the
 		// canonical current TurnID: the dedupe key must be turn-scoped
@@ -2979,17 +2955,12 @@ func appendWorkEventWithCoalescingLocked(
 		return WorkEvent{}, err
 	}
 	database.BrainWorkEvents = append(database.BrainWorkEvents, event)
-	if reservation := database.AttentionReservation; reservation != nil && reservation.WorkID == event.WorkID &&
-		attentionEventCanObligate(*database, event) {
-		reservation.WorkRevision = item.Revision
-		reservation.SequenceFence = event.Sequence
-	}
 	return event, nil
 }
 
 func readyAttentionEventID(database orchestrationDatabase, workID string) string {
 	obligation := reduceAttentionObligation(database, workID)
-	if obligation.exists() && obligation.State == attentionObligationQueued {
+	if obligation.exists() && obligation.State == deliveryPending {
 		return database.BrainWorkEvents[obligation.HeadIndex].ID
 	}
 	return ""
@@ -3064,15 +3035,19 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 	if err != nil {
 		return WorkEvent{}, false, err
 	}
-	if database.AttentionReservation != nil {
-		return WorkEvent{}, false, nil
-	}
+	// The Host lane owns at most one live delivered handling. A delivered
+	// Event awaiting its typed disposition stops every further claim; the
+	// same gate lives in the lane reducer and is rechecked here for direct
+	// callers.
 	for _, event := range database.BrainWorkEvents {
 		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
 			return WorkEvent{}, false, nil
 		}
 	}
-	index := nextAttentionCandidateIndex(database, database.AttentionAdmissions)
+	// Fair selection at the boundary: the oldest pending head across Work
+	// keys. No counter and no last-admitted mirror are persisted; FIFO by
+	// append sequence is the whole fairness contract.
+	index := oldestPendingAttentionHeadIndex(database)
 	if index < 0 {
 		return WorkEvent{}, false, nil
 	}
@@ -3084,167 +3059,150 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 	itemIndex := workIndex(database.BrainWork, database.BrainWorkEvents[index].WorkID)
 	database.BrainWorkEvents[index].DeliveryWorkRevision = database.BrainWork[itemIndex].Revision
 	database.BrainWorkEvents[index].DeliverySequenceFence = database.NextEventSequence
-	database.AttentionAdmissions++
-	database.LastAttentionWorkID = database.BrainWorkEvents[index].WorkID
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return WorkEvent{}, false, err
 	}
 	return authoritativeReviewEvent(database, database.BrainWorkEvents[index]), true, nil
 }
 
-// HostForegroundState returns the one durable foreground response epoch and
-// its optional future Attention claim. Callers use it to recover the same
-// admission boundary after daemon reopen; neither value authorizes replay.
-func (s *Store) HostForegroundState() (*HostForegroundTurn, *HostAttentionReservation, error) {
-	if s == nil {
-		return nil, nil, nil
-	}
+// HasLiveDeliveredHandling reports whether one delivered Event still awaits
+// its exact typed disposition. The Host lane stops while it is true: the Host
+// is mid-review and no new admission may overtake the disposition.
+func (s *Store) HasLiveDeliveredHandling() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
-		return nil, nil, err
-	}
-	var active *HostForegroundTurn
-	if database.HostForegroundTurn != nil {
-		copy := *database.HostForegroundTurn
-		active = &copy
-	}
-	var reservation *HostAttentionReservation
-	if database.AttentionReservation != nil {
-		copy := *database.AttentionReservation
-		reservation = &copy
-	}
-	return active, reservation, nil
-}
-
-// ReserveHostAttention persists the fair next Attention admission while the
-// exact foreground Host turn is still active. Repeated calls and reopen return
-// the same identity; no Event claim or provider mutation occurs here.
-func (s *Store) ReserveHostAttention(hostSessionID, hostGeneration, providerActivityID string) (HostAttentionReservation, bool, error) {
-	hostSessionID = strings.TrimSpace(hostSessionID)
-	hostGeneration = strings.TrimSpace(hostGeneration)
-	providerActivityID = strings.TrimSpace(providerActivityID)
-	if hostSessionID == "" || hostGeneration == "" {
-		return HostAttentionReservation{}, false, fmt.Errorf("foreground Host session and generation are required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return HostAttentionReservation{}, false, err
-	}
-	active := database.HostForegroundTurn
-	if active == nil || active.HostSessionID != hostSessionID || active.HostGeneration != hostGeneration {
-		return HostAttentionReservation{}, false, fmt.Errorf("foreground Host generation is no longer current")
-	}
-	if active.ProviderActivityID != "" && providerActivityID != "" && active.ProviderActivityID != providerActivityID {
-		return HostAttentionReservation{}, false, fmt.Errorf("foreground Host provider turn is no longer current")
-	}
-	bindingChanged := false
-	if active.ProviderActivityID == "" && providerActivityID != "" {
-		active.ProviderActivityID = providerActivityID
-		bindingChanged = true
-	}
-	if database.AttentionReservation != nil {
-		if bindingChanged {
-			if err := s.persistOrchestrationLocked(database); err != nil {
-				return HostAttentionReservation{}, false, err
-			}
-		}
-		return *database.AttentionReservation, false, nil
+		return false, err
 	}
 	for _, event := range database.BrainWorkEvents {
 		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
-			if bindingChanged {
-				if err := s.persistOrchestrationLocked(database); err != nil {
-					return HostAttentionReservation{}, false, err
-				}
-			}
-			return HostAttentionReservation{}, false, nil
+			return true, nil
 		}
 	}
-	index := nextAttentionCandidateIndex(database, database.AttentionAdmissions)
-	if index < 0 {
-		if bindingChanged {
-			if err := s.persistOrchestrationLocked(database); err != nil {
-				return HostAttentionReservation{}, false, err
-			}
-		}
-		return HostAttentionReservation{}, false, nil
-	}
-	event := database.BrainWorkEvents[index]
-	itemIndex := workIndex(database.BrainWork, event.WorkID)
-	now := s.nowUTC()
-	reservation := HostAttentionReservation{
-		HostSessionID: hostSessionID, HostGeneration: hostGeneration, HostTurnID: active.HostTurnID,
-		WorkID: event.WorkID, EventID: event.ID, HandlingID: uuid.NewString(),
-		ProviderTurnID: hostSessionID + ":turn:" + uuid.NewString(),
-		WorkRevision:   database.BrainWork[itemIndex].Revision, SequenceFence: database.NextEventSequence,
-		ReservedAt: now,
-	}
-	database.AttentionReservation = &reservation
-	database.AttentionAdmissions++
-	database.LastAttentionWorkID = event.WorkID
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return HostAttentionReservation{}, false, err
-	}
-	return reservation, true, nil
+	return false, nil
 }
 
-// ConsumeHostAttentionReservation atomically closes the exact foreground Host
-// turn and promotes its future reservation to the ordinary Event claim fields.
-// A later foreground admission cannot observe the turn closed without also
-// observing the claim. If no reservation exists, it only closes the turn.
-func (s *Store) ConsumeHostAttentionReservation(hostSessionID, hostGeneration, hostTurnID, providerActivityID string) (WorkEvent, bool, error) {
+// BindHostForegroundActivity persists the exact provider activity identity of
+// the accepted foreground Host turn once it is first observed running. The
+// binding is the identity anchor for later strong exact terminal evidence; it
+// is never overwritten and never inferred from ambient state.
+func (s *Store) BindHostForegroundActivity(hostSessionID, hostGeneration, hostTurnID, providerActivityID string) error {
 	hostSessionID = strings.TrimSpace(hostSessionID)
 	hostGeneration = strings.TrimSpace(hostGeneration)
 	hostTurnID = strings.TrimSpace(hostTurnID)
 	providerActivityID = strings.TrimSpace(providerActivityID)
+	if hostSessionID == "" || hostGeneration == "" || hostTurnID == "" || providerActivityID == "" {
+		return fmt.Errorf("foreground Host identity and provider activity are required")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
-		return WorkEvent{}, false, err
+		return err
 	}
 	active := database.HostForegroundTurn
 	if active == nil {
-		return WorkEvent{}, false, nil
+		return nil
+	}
+	if active.HostSessionID != hostSessionID || active.HostGeneration != hostGeneration || active.HostTurnID != hostTurnID {
+		return fmt.Errorf("foreground Host turn identity changed before activity binding")
+	}
+	if active.ProviderActivityID == providerActivityID {
+		return nil
+	}
+	if active.ProviderActivityID != "" {
+		return fmt.Errorf("foreground Host provider activity is already bound")
+	}
+	active.ProviderActivityID = providerActivityID
+	return s.persistOrchestrationLocked(database)
+}
+
+// CurrentHostForegroundTurn returns the one durable foreground response epoch,
+// or nil when the Host lane is idle. The reducer uses it to recover the same
+// admission boundary after daemon reopen; the record itself never authorizes
+// replay and is closed only by strong exact terminal evidence.
+func (s *Store) CurrentHostForegroundTurn() (*HostForegroundTurn, error) {
+	if s == nil {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, err
+	}
+	if database.HostForegroundTurn == nil {
+		return nil, nil
+	}
+	copy := *database.HostForegroundTurn
+	return &copy, nil
+}
+
+// PendingHostInputAdmission reports whether any Brain input admission for the
+// Host is still pending. Pending is persisted before provider mutation and is
+// the durable user-steering gate that replaced the process-local
+// foregroundInput flag: while it exists, the Host lane must not admit an
+// internal Event ahead of the user's message.
+func (s *Store) PendingHostInputAdmission(hostSessionID string) (bool, error) {
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	if hostSessionID == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return false, err
+	}
+	for _, admission := range database.BrainInputAdmissions {
+		if admission.State == BrainInputAdmissionPending && admission.HostSessionID == hostSessionID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// CloseHostForegroundTurn atomically closes the exact accepted foreground Host
+// turn at its terminal boundary. The caller (the serialized Host-lane reducer)
+// must already hold strong exact terminal evidence; this method validates the
+// exact durable identity so a second close, a late edge, or a mismatched
+// generation can never clear a newer turn.
+func (s *Store) CloseHostForegroundTurn(hostSessionID, hostGeneration, hostTurnID, providerActivityID string) error {
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	hostGeneration = strings.TrimSpace(hostGeneration)
+	hostTurnID = strings.TrimSpace(hostTurnID)
+	providerActivityID = strings.TrimSpace(providerActivityID)
+	if hostSessionID == "" || hostGeneration == "" || hostTurnID == "" {
+		return fmt.Errorf("foreground Host session, generation, and turn are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return err
+	}
+	active := database.HostForegroundTurn
+	if active == nil {
+		return nil
 	}
 	if active.HostSessionID != hostSessionID || active.HostGeneration != hostGeneration || active.HostTurnID != hostTurnID ||
-		(active.ProviderActivityID != "" && active.ProviderActivityID != providerActivityID) {
-		return WorkEvent{}, false, fmt.Errorf("foreground Host terminal boundary does not match the durable active turn")
+		(active.ProviderActivityID != "" && providerActivityID != "" && active.ProviderActivityID != providerActivityID) {
+		return fmt.Errorf("foreground Host terminal boundary does not match the durable active turn")
 	}
-	reservation := database.AttentionReservation
-	if reservation == nil {
-		database.HostForegroundTurn = nil
-		if err := s.persistOrchestrationLocked(database); err != nil {
-			return WorkEvent{}, false, err
-		}
-		return WorkEvent{}, false, nil
-	}
-	if reservation.HostSessionID != hostSessionID || reservation.HostGeneration != hostGeneration || reservation.HostTurnID != hostTurnID {
-		return WorkEvent{}, false, fmt.Errorf("future Attention reservation belongs to a different foreground Host turn")
-	}
-	obligation := reduceAttentionObligation(database, reservation.WorkID)
-	if !obligation.exists() || database.BrainWorkEvents[obligation.HeadIndex].ID != reservation.EventID ||
-		obligation.State != attentionObligationReserved {
-		return WorkEvent{}, false, fmt.Errorf("future Attention reservation is no longer the authoritative obligation")
-	}
-	index := obligation.HeadIndex
-	now := s.nowUTC()
-	database.BrainWorkEvents[index].ClaimedAt = &now
-	database.BrainWorkEvents[index].DeliveryHostSessionID = hostSessionID
-	database.BrainWorkEvents[index].HandlingID = reservation.HandlingID
-	database.BrainWorkEvents[index].ProviderTurnID = reservation.ProviderTurnID
-	database.BrainWorkEvents[index].DeliveryWorkRevision = reservation.WorkRevision
-	database.BrainWorkEvents[index].DeliverySequenceFence = reservation.SequenceFence
-	database.AttentionReservation = nil
 	database.HostForegroundTurn = nil
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return WorkEvent{}, false, err
+	return s.persistOrchestrationLocked(database)
+}
+
+// oldestPendingAttentionHeadIndex selects the one fair pending Work key at the
+// admission boundary: the oldest ready head by append sequence. One head per
+// Work key, deterministic, and replay-free after reopen.
+func oldestPendingAttentionHeadIndex(database orchestrationDatabase) int {
+	candidates := attentionCandidateIndexes(database)
+	if len(candidates) == 0 {
+		return -1
 	}
-	return authoritativeReviewEvent(database, database.BrainWorkEvents[index]), true, nil
+	return candidates[0]
 }
 
 // attentionCandidateIndexes returns at most one ready head per Work key. This
@@ -3254,7 +3212,7 @@ func attentionCandidateIndexes(database orchestrationDatabase) []int {
 	obligations := reduceAttentionObligations(database)
 	out := make([]int, 0, len(obligations))
 	for _, obligation := range obligations {
-		if obligation.exists() && obligation.State == attentionObligationQueued {
+		if obligation.exists() && obligation.State == deliveryPending {
 			out = append(out, obligation.HeadIndex)
 		}
 	}
@@ -3267,31 +3225,6 @@ func attentionCandidateIndexes(database orchestrationDatabase) []int {
 		return leftEvent.Sequence < rightEvent.Sequence
 	})
 	return out
-}
-
-// nextAttentionCandidateIndex alternates the oldest and newest unique ready
-// Work keys. A current completion is admitted within two claims, while every
-// fixed older key advances on every other claim; neither edge can starve.
-func nextAttentionCandidateIndex(database orchestrationDatabase, admissions uint64) int {
-	candidates := attentionCandidateIndexes(database)
-	if len(candidates) == 0 {
-		return -1
-	}
-	if len(candidates) > 1 && strings.TrimSpace(database.LastAttentionWorkID) != "" {
-		filtered := candidates[:0]
-		for _, index := range candidates {
-			if database.BrainWorkEvents[index].WorkID != database.LastAttentionWorkID {
-				filtered = append(filtered, index)
-			}
-		}
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
-	}
-	if admissions%2 == 0 {
-		return candidates[0]
-	}
-	return candidates[len(candidates)-1]
 }
 
 func authoritativeReviewEvent(database orchestrationDatabase, claimed WorkEvent) WorkEvent {
@@ -3362,7 +3295,7 @@ func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent)
 		return attentionEventCanObligate(database, event) && strings.TrimSpace(event.CoalescedInto) == ""
 	}
 	obligation := reduceAttentionObligation(database, event.WorkID)
-	return obligation.exists() && obligation.State != attentionObligationReviewing &&
+	return obligation.exists() && obligation.State != deliveryDelivered &&
 		database.BrainWorkEvents[obligation.HeadIndex].ID == event.ID
 }
 
@@ -3630,9 +3563,9 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 		reviewState := WorkReviewResolved
 		if outstanding {
 			reviewState = WorkReviewQueued
-			if obligation.State == attentionObligationReserved {
-				reviewState = WorkReviewReserved
-			} else if obligation.State == attentionObligationReviewing &&
+			// One derived delivery state feeds every presentation label:
+			// pending/dispatching stay queued, delivered becomes reviewing.
+			if obligation.State == deliveryDelivered &&
 				event.Sequence <= database.BrainWorkEvents[obligation.HeadIndex].DeliverySequenceFence {
 				reviewState = WorkReviewReviewing
 			}
@@ -4038,8 +3971,8 @@ func (s *Store) ReconcileAbsentWorkOwner(workID, sessionID string) (Work, bool, 
 		return item, false, nil
 	}
 	obligation := reduceAttentionObligation(database, workID)
-	if obligation.exists() && (obligation.State == attentionObligationClaimed ||
-		obligation.State == attentionObligationReviewing) {
+	if obligation.exists() && (obligation.State == deliveryDispatching ||
+		obligation.State == deliveryDelivered) {
 		// Do not invalidate the immutable Work revision already carried by an
 		// admitted or admitting Host turn. Attention, not the absent owner
 		// string, is operational during this bounded deferral.
@@ -4097,9 +4030,9 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 		return nil, err
 	}
 	unread := map[string]bool{}
-	for _, event := range database.BrainWorkEvents {
-		if event.Actionable && event.ReadAt == nil && isResultEvent(event.Kind) {
-			unread[event.WorkID] = true
+	for _, item := range s.readTimelineWorkCardsLocked() {
+		if item.Unread {
+			unread[item.WorkID] = true
 		}
 	}
 	out := []ActiveWork{}
@@ -4118,7 +4051,7 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 			WaitFor:              item.WaitFor,
 			Wake:                 cloneWorkWake(item.Wake),
 			ProgressMode:         mustDeriveWorkProgressMode(database, item),
-			AttentionPending:     workHasUnhandledAttention(database, item.ID),
+			AttentionPending:     workHasAttentionObligation(database, item.ID),
 			SuccessorReservation: cloneSuccessorReservation(item.SuccessorReservation),
 			SessionFinalizations: cloneSessionFinalizations(item.SessionFinalizations),
 			UnreadResult:         hasUnread,
@@ -4162,15 +4095,17 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 	for _, event := range database.BrainWorkEvents {
 		if isResultEvent(event.Kind) {
 			hasResult[event.WorkID] = true
-			if event.Actionable && event.ReadAt == nil {
-				unread[event.WorkID] = true
-			}
+		}
+	}
+	for _, item := range s.readTimelineWorkCardsLocked() {
+		if item.Unread {
+			unread[item.WorkID] = true
 		}
 	}
 	obligations := reduceAttentionObligations(database)
 	reviewing := map[string]bool{}
 	for workID, obligation := range obligations {
-		reviewing[workID] = obligation.exists() && obligation.State == attentionObligationReviewing
+		reviewing[workID] = obligation.exists() && obligation.State == deliveryDelivered
 	}
 	queued := projectedAttentionWork(database, currentWorkQueuedAttentionLimit)
 	queueRank := map[string]int{}
@@ -4187,8 +4122,6 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 		attentionState := WorkAttentionState("")
 		if reviewing[item.ID] {
 			attentionState = WorkAttentionReviewing
-		} else if obligation.exists() && obligation.State == attentionObligationReserved {
-			attentionState = WorkAttentionReserved
 		} else if _, selected := queueRank[item.ID]; selected {
 			attentionState = WorkAttentionQueued
 		}
@@ -4296,7 +4229,7 @@ func projectedAttentionWork(database orchestrationDatabase, limit int) []string 
 	projection := database
 	projection.BrainWorkEvents = append([]WorkEvent(nil), database.BrainWorkEvents...)
 	for len(out) < limit {
-		index := nextAttentionCandidateIndex(projection, projection.AttentionAdmissions)
+		index := oldestPendingAttentionHeadIndex(projection)
 		if index < 0 {
 			break
 		}
@@ -4305,8 +4238,6 @@ func projectedAttentionWork(database orchestrationDatabase, limit int) []string 
 		claimed := time.Unix(1, int64(len(out))).UTC()
 		projection.BrainWorkEvents[index].ClaimedAt = &claimed
 		projection.BrainWorkEvents[index].DeliveryHostSessionID = "projection"
-		projection.LastAttentionWorkID = workID
-		projection.AttentionAdmissions++
 	}
 	return out
 }
@@ -4367,8 +4298,7 @@ func compactWorkResultText(value string) string {
 
 func isProjectedWorkResultEvent(kind string) bool {
 	switch strings.TrimSpace(kind) {
-	case "session.done", "session.failed", "session.needs_input", "session.stale", "session.uncertain",
-		"session.ownership_lost":
+	case "session.done", "session.failed", "session.needs_input", "session.stale", "session.uncertain":
 		return true
 	default:
 		return false
@@ -4378,7 +4308,7 @@ func isProjectedWorkResultEvent(kind string) bool {
 func isResultEvent(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "session.done", "session.failed", "session.needs_input", "session.stale",
-		"session.uncertain", "session.ownership_lost", "delivery.uncertain",
+		"session.uncertain", "delivery.uncertain",
 		"calendar.result", "calendar.failure":
 		return true
 	default:
@@ -4386,35 +4316,28 @@ func isResultEvent(kind string) bool {
 	}
 }
 
+// MarkWorkRead clears the presentation read state for one Work. Read state
+// lives only in the timeline work-card projection; the append-only Event
+// fact never carries it, so reading can never mutate scheduler state.
 func (s *Store) MarkWorkRead(workID string) error {
-	workID = strings.TrimSpace(workID)
-	s.mu.Lock()
-	database, err := s.loadOrchestrationLocked()
-	changed := false
-	if err == nil && workIndex(database.BrainWork, workID) < 0 {
-		err = ErrWorkNotFound
-	}
-	if err == nil {
-		now := s.nowUTC()
-		for index := range database.BrainWorkEvents {
-			event := &database.BrainWorkEvents[index]
-			if event.WorkID == workID && event.ReadAt == nil && isResultEvent(event.Kind) {
-				event.ReadAt = &now
-				changed = true
-			}
-		}
-		if changed {
-			err = s.persistOrchestrationLocked(database)
-		}
-	}
-	s.mu.Unlock()
+	return s.MarkTimelineWorkCardsRead(workID)
+}
+
+// readTimelineWorkCardsLocked returns every materialized work card. It is the
+// read projection consumed by ActiveWork/ProjectWorkInventory unread labels.
+// The caller must hold s.mu.
+func (s *Store) readTimelineWorkCardsLocked() []TimelineItem {
+	items, err := s.readAllTimelineItemsLocked()
 	if err != nil {
-		return err
+		return nil
 	}
-	if changed {
-		s.broadcastWorkChange(workID)
+	out := make([]TimelineItem, 0, len(items))
+	for _, item := range items {
+		if item.Kind == timelineKindWorkCard {
+			out = append(out, item)
+		}
 	}
-	return nil
+	return out
 }
 
 func (s *Store) SubscribeWork() (int, <-chan WorkChange) {

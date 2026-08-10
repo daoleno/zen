@@ -99,7 +99,7 @@ func TestSubmitDelegatedInputActivityMismatchDeprojectsBeforeRejecting(t *testin
 		t.Fatalf("activity mismatch crossed provider mutation boundary: queues=%d", len(io.queues))
 	}
 	turn := ledger.snapshot(sessionID)
-	if turn.Status != TurnOwnershipLost || turn.Attention != "ownership_lost" {
+	if turn.Status != TurnUnknown || turn.ControlState != TurnControlOwnershipLost {
 		t.Fatalf("mismatch rejection preceded durable ownership-loss state: %+v", turn)
 	}
 	projected := w.GetAgent(sessionID)
@@ -150,8 +150,7 @@ func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testin
 		t.Fatalf("completed mismatch = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 	turn := ledger.snapshot(sessionID)
-	if turn.Status != TurnDone || turn.ControlState != TurnControlOwnershipLost ||
-		turn.Attention != "ownership_lost" {
+	if turn.Status != TurnDone || turn.ControlState != TurnControlOwnershipLost {
 		t.Fatalf("control loss rewrote completed provider outcome: %+v", turn)
 	}
 	projected := w.GetAgent(sessionID)

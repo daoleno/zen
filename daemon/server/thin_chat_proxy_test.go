@@ -306,9 +306,12 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 	if _, err := store.AdmitUserMessage(threadID, hostID, requestID, "conflicting presentation body"); err != nil {
 		t.Fatal(err)
 	}
-	watcherFixture := &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
-		hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
-	}}
+	watcherFixture := &brainServiceTestWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+		},
+		turnStore: store,
+	}
 	service := brain.NewService(store, watcherFixture, nil)
 	var providerCalls atomic.Int32
 	srv := &Server{
@@ -326,6 +329,9 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
 		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
 	}
+	// The queued internal Event is admitted at the idle boundary BEFORE the
+	// user's message is prepared: steering can never overtake it. The
+	// projection failure then keeps every retry pending without replay.
 	for attempt := 0; attempt < 2; attempt++ {
 		response := sendThinProxyRequest(t, conn, request)
 		if response.Type != "input_pending" || response.RequestID != requestID {
@@ -339,15 +345,18 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 	if err != nil || !found || admission.State != brain.BrainInputAdmissionAccepted {
 		t.Fatalf("accepted admission found=%v row=%+v err=%v", found, admission, err)
 	}
-	active, reservation, err := store.HostForegroundState()
-	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
-		reservation.HostGeneration != "test-owned-generation" ||
-		reservation.HostTurnID != active.HostTurnID {
-		t.Fatalf("foreground reservation active=%+v reservation=%+v err=%v", active, reservation, err)
+	active, err := store.CurrentHostForegroundTurn()
+	if err != nil || active == nil || active.HostGeneration != "test-owned-generation" ||
+		active.HostTurnID == "" {
+		t.Fatalf("foreground turn active=%+v err=%v", active, err)
 	}
 	claims, err := store.ClaimedActionableEvents()
 	if err != nil || len(claims) != 0 {
-		t.Fatalf("future reservation became a delivered/held claim: claims=%+v err=%v", claims, err)
+		t.Fatalf("idle-boundary Event left a dispatching claim: claims=%+v err=%v", claims, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", events, err)
 	}
 }
 
@@ -398,9 +407,12 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
 	}
 	watcherFixture := &changingProxyGenerationWatcher{
-		brainServiceTestWatcher: &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
-			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
-		}},
+		brainServiceTestWatcher: &brainServiceTestWatcher{
+			sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+			},
+			turnStore: store,
+		},
 		generation: "host-generation-g1",
 	}
 	service := brain.NewService(store, watcherFixture, nil)
@@ -423,9 +435,13 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
 		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
 	}
+	// The queued internal Event is delivered at the idle boundary before the
+	// user message, so the accepted lane is stopped by the delivered handling
+	// before any generation probe: both attempts acknowledge the user input
+	// without ever adopting the ambient G2 Activity.
 	first := sendThinProxyRequest(t, conn, request)
-	if first.Type != "input_pending" || first.RequestID != requestID {
-		t.Fatalf("generation mismatch response=%#v", first)
+	if first.Type != "input_sent" || first.RequestID != requestID {
+		t.Fatalf("first response=%#v", first)
 	}
 	second := sendThinProxyRequest(t, conn, request)
 	if second.Type != "input_sent" || second.RequestID != requestID {
@@ -439,13 +455,20 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		admission.HostGeneration != "host-generation-g1" {
 		t.Fatalf("accepted prepared admission found=%v row=%+v err=%v", found, admission, err)
 	}
-	active, reservation, err := store.HostForegroundState()
-	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID ||
-		active.HostGeneration != "host-generation-g1" || reservation.HostGeneration != "host-generation-g1" {
-		t.Fatalf("prepared generation state active=%+v reservation=%+v err=%v", active, reservation, err)
+	active, err := store.CurrentHostForegroundTurn()
+	if err != nil || active == nil || active.HostGeneration != "host-generation-g1" {
+		t.Fatalf("prepared generation state active=%+v err=%v", active, err)
 	}
 	if active.ProviderActivityID != "" {
 		t.Fatalf("ambient G2 Activity was adopted: %+v", active)
+	}
+	claims, err := store.ClaimedActionableEvents()
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("idle-boundary Event left a dispatching claim: claims=%+v err=%v", claims, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", events, err)
 	}
 }
 

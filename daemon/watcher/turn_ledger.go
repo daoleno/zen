@@ -35,7 +35,9 @@ const (
 
 // TurnStatus is the canonical per-turn lifecycle status. Done, Failed, and
 // Unknown are terminal for scheduling; Done/Failed are immutable, Unknown may
-// be upgraded by a later turn-bound Provider terminal (C.2.4).
+// be upgraded by a later turn-bound Provider terminal (C.2.4). Ownership loss
+// is deliberately NOT a status: it is only TurnControlState=ownership_lost, a
+// control capability state orthogonal to the provider outcome.
 type TurnStatus string
 
 const (
@@ -46,11 +48,6 @@ const (
 	TurnDone     TurnStatus = "done"
 	TurnFailed   TurnStatus = "failed"
 	TurnUnknown  TurnStatus = "unknown"
-	// TurnOwnershipLost is a named recoverable terminal state: the exact
-	// provider/pane generation can no longer be controlled. A later bound
-	// provider terminal may still resolve its outcome, but commands reject only
-	// after this state is durably projected.
-	TurnOwnershipLost TurnStatus = "ownership_lost"
 )
 
 // TurnControlState is orthogonal to provider lifecycle outcome. A completed
@@ -67,7 +64,7 @@ const (
 // scheduling (immutable Done/Failed, or Unknown awaiting a bound fact).
 func TurnTerminal(status TurnStatus) bool {
 	switch status {
-	case TurnDone, TurnFailed, TurnUnknown, TurnOwnershipLost:
+	case TurnDone, TurnFailed, TurnUnknown:
 		return true
 	default:
 		return false

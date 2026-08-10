@@ -465,8 +465,8 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 			}
 		}
 		expectedProcess, expectedPane := "", ""
-		if err == nil && hasTurn && (turn.Status == TurnOwnershipLost ||
-			turn.ControlState == TurnControlOwnershipLost) {
+		if err == nil && hasTurn &&
+			turn.ControlState == TurnControlOwnershipLost {
 			err = fmt.Errorf("delegated Session control ownership was lost")
 		} else if err == nil && hasPending {
 			expectedProcess, expectedPane = pending.ProcessIdentity, pending.PaneGeneration
@@ -557,7 +557,7 @@ func (w *Watcher) deprojectOwnershipLoss(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if !found || turn.ControlState == TurnControlOwnershipLost || turn.Status == TurnOwnershipLost {
+	if !found || turn.ControlState == TurnControlOwnershipLost {
 		return nil
 	}
 	_, _, err = w.turnLedger.ApplyTurnFact(TurnFact{
@@ -1535,19 +1535,11 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 		if summary == "" {
 			summary = "Delegated Session outcome is unknown; inspect and reconcile"
 		}
-	case TurnOwnershipLost:
-		state = classifier.StateUnknown
-		if summary == "" {
-			summary = "Delegated Session ownership was lost; inspect and recover"
-		}
 	default:
 		state = classifier.StateUnknown
 	}
 	if agent != nil && turn.Status == TurnBlocked {
 		agent.Attention = "user_input"
-		agent.NeedsAttention = true
-	} else if agent != nil && turn.Status == TurnOwnershipLost {
-		agent.Attention = "ownership_lost"
 		agent.NeedsAttention = true
 	} else if agent != nil {
 		agent.Attention = "none"
