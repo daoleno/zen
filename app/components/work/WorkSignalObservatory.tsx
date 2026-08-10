@@ -38,16 +38,21 @@ import {
   buildWorkRelationshipGraphProjection,
   layoutWorkRelationshipGraph,
   resolveWorkGraphSelection,
+  workGraphOpenSessionAccessibilityLabel,
   type WorkGraphEdgeKind,
   type WorkGraphNode,
   type WorkGraphNodeLayout,
   type WorkGraphOwner,
   type WorkGraphSelection,
+  type WorkGraphSessionTarget,
   type WorkGraphState,
   type WorkRelationshipGraphLayout,
   type WorkRelationshipGraphModel,
 } from "./workRelationshipGraphModel";
-import { resolveWorkObservatoryMotion } from "./workSignalObservatoryInteraction";
+import {
+  resolveWorkObservatoryMotion,
+  WORK_GRAPH_CONTROL_TOUCH_REGIONS,
+} from "./workSignalObservatoryInteraction";
 
 type WorkSignalObservatoryProps = {
   visible: boolean;
@@ -183,22 +188,28 @@ export function WorkSignalObservatory({
     [],
   );
   const openSelectedSession = useCallback(() => {
-    const sessionId = selection?.detail.sessionId;
+    const sessionId = selection?.detail.sessionTarget?.sessionId;
     const agent = sessionId ? agentById.get(sessionId) : undefined;
     if (!agent) return;
     onClose();
     onOpenSession(agent);
-  }, [agentById, onClose, onOpenSession, selection?.detail.sessionId]);
+  }, [
+    agentById,
+    onClose,
+    onOpenSession,
+    selection?.detail.sessionTarget?.sessionId,
+  ]);
   const emptyState = resolveEmptyState({
     currentServerHydrated,
     hasServer: Boolean(currentServer),
     projectionState: projection.state,
     connected,
   });
-  const canOpenSelectedSession = Boolean(
-    selection?.detail.sessionId &&
-      agentById.has(selection.detail.sessionId),
-  );
+  const openSessionTarget =
+    selection?.detail.sessionTarget &&
+    agentById.has(selection.detail.sessionTarget.sessionId)
+      ? selection.detail.sessionTarget
+      : null;
 
   return (
     <Modal
@@ -259,7 +270,7 @@ export function WorkSignalObservatory({
 
         <GraphDetailDock
           selection={selection}
-          canOpenSession={canOpenSelectedSession}
+          openSessionTarget={openSessionTarget}
           animateGraph={motion.animateGraph}
           onOpenSession={openSelectedSession}
           styles={styles}
@@ -562,13 +573,13 @@ function StateLabel({
 
 function GraphDetailDock({
   selection,
-  canOpenSession,
+  openSessionTarget,
   animateGraph,
   onOpenSession,
   styles,
 }: {
   selection: WorkGraphSelection | null;
-  canOpenSession: boolean;
+  openSessionTarget: WorkGraphSessionTarget | null;
   animateGraph: boolean;
   onOpenSession(): void;
   styles: ReturnType<typeof createStyles>;
@@ -603,14 +614,16 @@ function GraphDetailDock({
             >
               {selection.detail.relationshipLabel}
             </Text>
-            {canOpenSession ? (
+            {openSessionTarget ? (
               <AnimatedPressable
                 style={styles.openSessionButton}
                 preset="press"
                 scale={0.95}
                 onPress={onOpenSession}
                 accessibilityRole="button"
-                accessibilityLabel={`Open ${selection.detail.title} Session`}
+                accessibilityLabel={workGraphOpenSessionAccessibilityLabel(
+                  openSessionTarget,
+                )}
               >
                 <Ionicons
                   name="arrow-forward"
@@ -1057,7 +1070,7 @@ function createStyles(theme: ResolvedZenTheme) {
         minWidth: 0,
       },
       openSessionButton: {
-        minHeight: 32,
+        minHeight: WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
         paddingHorizontal: 10,
         borderRadius: 16,
         flexDirection: "row",

@@ -15,6 +15,11 @@ export const WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS = [
   WORK_OBSERVATORY_ACCESSIBILITY_ACTION,
 ] as const;
 
+export const WORK_GRAPH_CONTROL_TOUCH_REGIONS = {
+  aggregateHeight: 44,
+  openSessionMinHeight: 44,
+} as const;
+
 export type WorkObservatoryPullIntent = "pending" | "activate" | "fail";
 
 export function dispatchWorkObservatoryAccessibilityAction(

@@ -1,5 +1,6 @@
 import type { AgentStatus } from "../../constants/tokens";
 import type { BrainActiveWork, BrainSessionFinalization } from "../../store/brain";
+import { WORK_GRAPH_CONTROL_TOUCH_REGIONS } from "./workSignalObservatoryInteraction";
 
 export const WORK_GRAPH_VISIBLE_WORK_LIMIT = 4;
 
@@ -32,7 +33,6 @@ export type WorkGraphWorkNode = WorkGraphNodeBase & {
   relationshipLabel: string;
   workId: string;
   endpointId?: string;
-  sessionId?: string;
   contradiction: boolean;
 };
 
@@ -122,7 +122,12 @@ export type WorkGraphSelectionDetail = {
   state: WorkGraphState;
   stateLabel: string;
   relationshipLabel: string;
-  sessionId?: string;
+  sessionTarget?: WorkGraphSessionTarget;
+};
+
+export type WorkGraphSessionTarget = {
+  sessionId: string;
+  title: string;
 };
 
 export type WorkGraphSelection = {
@@ -139,6 +144,8 @@ type EndpointProjection = {
   sessionId?: string;
 };
 
+type WorkGraphEndpointSeed = Omit<WorkGraphEndpointNode, "accessibilityLabel">;
+
 type MeaningfulWork = {
   workId: string;
   title: string;
@@ -147,7 +154,6 @@ type MeaningfulWork = {
   relationshipLabel: string;
   endpoint?: EndpointProjection;
   endpointEdgeKind?: WorkGraphEdgeKind;
-  sessionId?: string;
   contradiction: boolean;
 };
 
@@ -234,17 +240,11 @@ export function buildWorkRelationshipGraphModel(
         : `Brain. Coordinates ${countLabel(meaningful.length, "Work item")}.`,
   };
   const workNodes = visible.map(workNodeFromProjection);
-  const endpoints = endpointNodes(visible);
+  const projectedEndpoints = endpointNodes(visible);
   const aggregate =
     hiddenWorkCount > 0
       ? aggregateNode(hiddenWorkCount, page, pageCount)
       : null;
-  const nodes: WorkGraphNode[] = [
-    brainNode,
-    ...workNodes,
-    ...endpoints,
-    ...(aggregate ? [aggregate] : []),
-  ];
   const edges = workNodes.flatMap((node) => {
     const brainEdge: WorkGraphEdge = {
       id: `brain-to-${node.id}`,
@@ -269,9 +269,18 @@ export function buildWorkRelationshipGraphModel(
       : null;
     return endpointEdge ? [brainEdge, endpointEdge] : [brainEdge];
   });
+  const endpoints = projectedEndpoints.map((node) => ({
+    ...node,
+    accessibilityLabel: endpointAccessibilityLabel(node, edges),
+  }));
 
   return {
-    nodes,
+    nodes: [
+      brainNode,
+      ...workNodes,
+      ...endpoints,
+      ...(aggregate ? [aggregate] : []),
+    ],
     edges,
     visibleWorkNodeIds: workNodes.map((node) => node.id),
     totalWorkCount: meaningful.length,
@@ -319,7 +328,10 @@ export function layoutWorkRelationshipGraph(
   const slotCenters = verticalSlotCenters(height, slotCount, 62);
   const middlePosition = new Map<string, WorkGraphNodeLayout>();
   middleNodes.forEach((node, index) => {
-    const nodeHeight = node.kind === "aggregate" ? 42 : 62;
+    const nodeHeight =
+      node.kind === "aggregate"
+        ? WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight
+        : 62;
     middlePosition.set(
       node.id,
       nodeLayout(
@@ -424,10 +436,16 @@ export function resolveWorkGraphSelection(
             state: node.state,
             stateLabel: node.stateLabel,
             relationshipLabel: node.relationshipLabel,
-            sessionId: node.sessionId,
+            sessionTarget: workNodeSessionTarget(node, model.nodes),
           }
         : endpointSelectionDetail(node, model.edges),
   };
+}
+
+export function workGraphOpenSessionAccessibilityLabel(
+  target: WorkGraphSessionTarget,
+): string {
+  return `Open ${target.title} Session`;
 }
 
 /** Returns only strings that a person can see or hear, never action identities. */
@@ -518,7 +536,6 @@ function projectOwnedWork(
       relationshipLabel: `${owner.label} stopped`,
       endpoint,
       endpointEdgeKind: "ownership",
-      sessionId,
       contradiction: false,
     };
   }
@@ -532,7 +549,6 @@ function projectOwnedWork(
           : `${owner.label} is unavailable`,
       endpoint,
       endpointEdgeKind: "ownership",
-      sessionId,
       contradiction: owner.status === "unknown",
     };
   }
@@ -543,7 +559,6 @@ function projectOwnedWork(
       relationshipLabel: `${owner.label} needs review`,
       endpoint,
       endpointEdgeKind: "ownership",
-      sessionId,
       contradiction: false,
     };
   }
@@ -553,7 +568,6 @@ function projectOwnedWork(
     relationshipLabel: `${owner.label} owns this`,
     endpoint,
     endpointEdgeKind: "ownership",
-    sessionId,
     contradiction: false,
   };
 }
@@ -594,12 +608,7 @@ function projectWaitingWork(
       "wait",
     );
   }
-  return waitingWork(
-    work,
-    `Waiting for ${owner.label}`,
-    agentEndpoint(owner),
-    owner.sessionId,
-  );
+  return waitingWork(work, `Waiting for ${owner.label}`, agentEndpoint(owner));
 }
 
 function projectTerminalWork(
@@ -619,7 +628,6 @@ function projectTerminalWork(
           : "Session could not close",
       endpoint,
       endpointEdgeKind: "blocked",
-      sessionId: endpoint.sessionId,
       contradiction: false,
     };
   }
@@ -635,7 +643,6 @@ function projectTerminalWork(
           : "Session is closing",
       endpoint,
       endpointEdgeKind: "ownership",
-      sessionId: endpoint.sessionId,
       contradiction: false,
     };
   }
@@ -654,7 +661,6 @@ function waitingWork(
   work: BrainActiveWork,
   relationshipLabel: string,
   endpoint: EndpointProjection,
-  sessionId?: string,
 ): MeaningfulWork {
   return {
     ...workBase(work),
@@ -662,7 +668,6 @@ function waitingWork(
     relationshipLabel,
     endpoint,
     endpointEdgeKind: "wait",
-    sessionId,
     contradiction: false,
   };
 }
@@ -764,14 +769,13 @@ function workNodeFromProjection(work: MeaningfulWork): WorkGraphWorkNode {
     relationshipLabel: work.relationshipLabel,
     workId: work.workId,
     endpointId,
-    sessionId: work.sessionId,
     contradiction: work.contradiction,
     accessibilityLabel: `${work.title}. ${stateLabel}. ${work.relationshipLabel}.`,
   };
 }
 
-function endpointNodes(work: readonly MeaningfulWork[]): WorkGraphEndpointNode[] {
-  const byId = new Map<string, WorkGraphEndpointNode>();
+function endpointNodes(work: readonly MeaningfulWork[]): WorkGraphEndpointSeed[] {
+  const byId = new Map<string, WorkGraphEndpointSeed>();
   work.forEach((item) => {
     const endpoint = item.endpoint;
     if (!endpoint) return;
@@ -786,10 +790,6 @@ function endpointNodes(work: readonly MeaningfulWork[]): WorkGraphEndpointNode[]
       state: endpoint.state,
       stateLabel,
       sessionId: endpoint.sessionId,
-      accessibilityLabel:
-        endpoint.kind === "agent"
-          ? `${endpoint.title}. Session. ${stateLabel}.`
-          : `${endpoint.title}. ${stateLabel}.`,
     });
   });
   return Array.from(byId.values()).sort((left, right) => compareText(left.id, right.id));
@@ -928,7 +928,32 @@ function endpointSelectionDetail(
   node: WorkGraphEndpointNode,
   edges: readonly WorkGraphEdge[],
 ): WorkGraphSelectionDetail {
-  const connected = edges.filter((edge) => edge.to === node.id);
+  return {
+    nodeId: node.id,
+    title: node.title,
+    state: node.state,
+    stateLabel: node.stateLabel,
+    relationshipLabel: endpointRelationshipLabel(node.id, edges),
+    sessionTarget: node.sessionId
+      ? { sessionId: node.sessionId, title: node.title }
+      : undefined,
+  };
+}
+
+function endpointAccessibilityLabel(
+  node: WorkGraphEndpointSeed,
+  edges: readonly WorkGraphEdge[],
+): string {
+  const relationship = endpointRelationshipLabel(node.id, edges);
+  const kindLabel = node.endpointKind === "agent" ? " Session." : "";
+  return `${node.title}.${kindLabel} ${node.stateLabel}. ${relationship}.`;
+}
+
+function endpointRelationshipLabel(
+  nodeId: string,
+  edges: readonly WorkGraphEdge[],
+): string {
+  const connected = edges.filter((edge) => edge.to === nodeId);
   const ownedCount = connected.filter((edge) => edge.kind === "ownership").length;
   const waitingCount = connected.filter((edge) => edge.kind === "wait").length;
   const blockedCount = connected.filter((edge) => edge.kind === "blocked").length;
@@ -939,12 +964,19 @@ function endpointSelectionDetail(
       : null,
     blockedCount > 0 ? `${countLabel(blockedCount, "blocked item")}` : null,
   ].filter((part): part is string => Boolean(part));
-  return {
-    nodeId: node.id,
-    title: node.title,
-    state: node.state,
-    stateLabel: node.stateLabel,
-    relationshipLabel: parts.join(" · ") || "Connected to Work",
-    sessionId: node.sessionId,
-  };
+  return parts.join(" · ") || "Connected to Work";
+}
+
+function workNodeSessionTarget(
+  node: WorkGraphWorkNode,
+  nodes: readonly WorkGraphNode[],
+): WorkGraphSessionTarget | undefined {
+  if (!node.endpointId) return undefined;
+  const endpoint = nodes.find(
+    (candidate): candidate is WorkGraphEndpointNode =>
+      candidate.kind === "endpoint" && candidate.id === node.endpointId,
+  );
+  return endpoint?.sessionId
+    ? { sessionId: endpoint.sessionId, title: endpoint.title }
+    : undefined;
 }

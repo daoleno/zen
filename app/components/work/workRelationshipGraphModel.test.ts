@@ -10,6 +10,7 @@ import {
   buildWorkRelationshipGraphProjection,
   layoutWorkRelationshipGraph,
   resolveWorkGraphSelection,
+  workGraphOpenSessionAccessibilityLabel,
   workRelationshipGraphVisibleText,
   type WorkGraphOwner,
   type WorkGraphWorkNode,
@@ -21,7 +22,9 @@ import {
   GRAPH_PRODUCTION_OWNERS,
   GRAPH_PRODUCTION_WORK,
   GRAPH_RAW_SESSION_WAKE_REF,
+  graphWork,
 } from "./workRelationshipGraphFixtures";
+import { WORK_GRAPH_CONTROL_TOUCH_REGIONS } from "./workSignalObservatoryInteraction";
 
 describe("Work relationship graph projection", () => {
   test("projects Brain to running Work to its delegated Session", () => {
@@ -43,6 +46,38 @@ describe("Work relationship graph projection", () => {
     ]);
     expect(work.accessibilityLabel).toBe(
       "Prepare the mobile release candidate. Running. Release review owns this.",
+    );
+  });
+
+  test("initial Agent labels include every owned, waiting, and blocked relationship", () => {
+    const failedSessionWait = graphWork({
+      work_id: "failed-session-wait",
+      title: "Wait for export checks",
+      status: "waiting",
+      progress_mode: "waiting",
+      wake: {
+        kind: "session_terminal",
+        ref: `session:${GRAPH_OWNER_FAILED.sessionId}:turn:provider-turn-10`,
+      },
+    });
+    const model = buildWorkRelationshipGraphModel(
+      [
+        GRAPH_PRODUCTION_WORK.find((item) => item.work_id === "failed-owner")!,
+        failedSessionWait,
+        GRAPH_PRODUCTION_WORK.find(
+          (item) => item.work_id === "failed-finalization",
+        )!,
+      ],
+      [GRAPH_OWNER_FAILED],
+    );
+    const endpoint = model.nodes.find(
+      (node) =>
+        node.kind === "endpoint" &&
+        node.sessionId === GRAPH_OWNER_FAILED.sessionId,
+    );
+
+    expect(endpoint?.accessibilityLabel).toBe(
+      "Export checks. Session. Blocked. Owns 1 Work item · 1 Work item waiting here · 1 blocked item.",
     );
   });
 
@@ -349,6 +384,9 @@ describe("Work relationship graph freshness and layout", () => {
         middle[index]!.y + middle[index]!.height,
       );
     });
+    expect(
+      middle.find(({ node }) => node.kind === "aggregate")?.height,
+    ).toBe(WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight);
     expect(layout.edges).toHaveLength(model.edges.length);
   });
 });
@@ -374,8 +412,17 @@ describe("Work relationship graph selection", () => {
       state: "running",
       stateLabel: "Running",
       relationshipLabel: "Release review owns this",
-      sessionId: GRAPH_OWNER_RUNNING.sessionId,
+      sessionTarget: {
+        sessionId: GRAPH_OWNER_RUNNING.sessionId,
+        title: "Release review",
+      },
     });
+    expect(
+      workGraphOpenSessionAccessibilityLabel(selection!.detail.sessionTarget!),
+    ).toBe("Open Release review Session");
+    expect(
+      workGraphOpenSessionAccessibilityLabel(selection!.detail.sessionTarget!),
+    ).not.toContain("Prepare the mobile release candidate");
   });
 
   test("selecting an Agent highlights every owned or waiting Work path to Brain", () => {
@@ -395,7 +442,10 @@ describe("Work relationship graph selection", () => {
     expect(selection?.detail.relationshipLabel).toBe(
       "Owns 1 Work item · 1 Work item waiting here",
     );
-    expect(selection?.detail.sessionId).toBe(GRAPH_OWNER_RUNNING.sessionId);
+    expect(selection?.detail.sessionTarget).toEqual({
+      sessionId: GRAPH_OWNER_RUNNING.sessionId,
+      title: "Release review",
+    });
   });
 });
 

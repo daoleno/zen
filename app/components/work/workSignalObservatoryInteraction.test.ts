@@ -5,6 +5,7 @@ import {
   resolveWorkObservatoryMotion,
   shouldRevealWorkObservatory,
   WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS,
+  WORK_GRAPH_CONTROL_TOUCH_REGIONS,
 } from "./workSignalObservatoryInteraction";
 
 const pull = (overrides: Partial<Parameters<typeof resolveWorkObservatoryPullIntent>[0]> = {}) =>
@@ -68,5 +69,20 @@ describe("Work observatory accessible interaction", () => {
       modalAnimationType: "none",
       animateGraph: false,
     });
+  });
+
+  test("keeps aggregate and Open Session controls within mobile touch bounds", () => {
+    expect(
+      WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight,
+    ).toBeGreaterThanOrEqual(44);
+    expect(
+      WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight,
+    ).toBeLessThanOrEqual(48);
+    expect(
+      WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
+    ).toBeGreaterThanOrEqual(44);
+    expect(
+      WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
+    ).toBeLessThanOrEqual(48);
   });
 });
