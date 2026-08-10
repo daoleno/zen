@@ -1393,10 +1393,12 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 // clearStaleAttemptMetadata removes terminal-attempt projection residue (a
 // sticky done/failed attention, phase, event kind, or lease from a
 // non-canonical Control report) while a canonical turn owns the Session.
-// Control terminal reports are hints only; leaving their metadata attached to
-// an Admitted/Accepted/Running turn would expose the impossible combination
-// event_kind=done with canonical status=running. A live running/blocked lease
-// is never cleared: it drives session.stale.
+// Control terminal reports are hints only for pre-contract/provider-native
+// Turns, while exact matching SignalProtocol terminal facts are canonical.
+// Leaving hint metadata attached to an Admitted/Accepted/Running turn would
+// expose the impossible combination event_kind=done with canonical
+// status=running. A live running/blocked lease is never cleared: it drives
+// session.stale.
 func clearStaleAttemptMetadata(agent *classifier.Agent) {
 	if agent == nil {
 		return

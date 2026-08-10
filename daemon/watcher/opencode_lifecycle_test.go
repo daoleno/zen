@@ -220,9 +220,8 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 }
 
 // TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionStartsSignalTurn
-// verifies that a confirmed follow-up after an ambiguous admission establishes
-// observable activity on the existing nonterminal turn (steering), does not
-// replay, and the same turn settles exactly once.
+// verifies that a confirmed follow-up after an ambiguous admission creates and
+// settles a new signal-owned Turn exactly once without replaying input.
 func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionOwnsNewSignalTurn(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
