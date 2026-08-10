@@ -640,6 +640,10 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 		}
 	case EvidenceLiveness:
 		turn.Status = TurnUnknown
+		if fact.Kind == "ownership_lost" {
+			turn.Status = TurnOwnershipLost
+			turn.Attention = "ownership_lost"
+		}
 		changed = true
 	}
 	if changed {

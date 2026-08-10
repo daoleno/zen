@@ -1742,7 +1742,7 @@ func TestSignalAdversarialWaitRejectsLiveCanonicalOwner(t *testing.T) {
 	}
 }
 
-func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner(t *testing.T) {
+func TestSignalAdversarialCanonicalAttentionIsOrthogonalToLiveOwner(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1780,11 +1780,11 @@ func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ready.OwnerSessionID != "" || ready.OwnerDelegated {
-		t.Fatalf("canonical attention retained a second execution owner: %+v", ready)
+	if ready.OwnerSessionID != owner || !ready.OwnerDelegated {
+		t.Fatalf("canonical attention deprojected the exact live execution owner: %+v", ready)
 	}
-	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
-		t.Fatalf("canonical attention did not become singular ready progress: %+v", projected)
+	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || !projected.AttentionPending {
+		t.Fatalf("canonical attention was not orthogonal to owned execution: %+v", projected)
 	}
 	turn, found, err := store.TurnByID(owner, turnID)
 	if err != nil || !found || watcher.TurnImmutable(turn.Status) {
@@ -1794,7 +1794,7 @@ func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner
 	handling, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 	_, continued := resolveAdversarialEvent(t, store, handling, WorkDispositionContinue, nil, owner)
 	if continued.OwnerSessionID != owner || !continued.OwnerDelegated {
-		t.Fatalf("exact continue did not restore canonical owner: %+v", continued)
+		t.Fatalf("exact continue did not preserve canonical owner: %+v", continued)
 	}
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending {
 		t.Fatalf("continued canonical owner did not become singular owned progress: %+v", projected)

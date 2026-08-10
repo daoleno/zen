@@ -4,7 +4,8 @@ export type BrainWorkEventKind =
   | "session.failed"
   | "session.needs_input"
   | "session.stale"
-  | "session.uncertain";
+  | "session.uncertain"
+  | "session.ownership_lost";
 
 export type BrainWorkResultEvent = {
   event_id: string;
@@ -16,7 +17,7 @@ export type BrainWorkResultEvent = {
   session_name?: string;
   occurred_at: string;
   unread: boolean;
-  review_state: "queued" | "reviewing" | "resolved";
+  review_state: "queued" | "reserved" | "reviewing" | "resolved";
   session_state:
     | "open"
     | "closing"

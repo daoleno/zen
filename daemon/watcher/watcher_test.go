@@ -20,6 +20,52 @@ func TestBuildWindowCommandForShellStartsInteractiveLoginShell(t *testing.T) {
 	}
 }
 
+func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing.T) {
+	w := New(time.Second)
+	sessionID := "brain-agent-ownership-loss:@1"
+	identity := testSessionInputIdentity("codex")
+	w.agents[sessionID] = &classifier.Agent{
+		ID: sessionID, Delegated: true, State: classifier.StateRunning,
+		Command: "codex", Attention: "none",
+	}
+	w.agentOrder = append(w.agentOrder, sessionID)
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
+	w.targetProcessResolver = fixedSessionInputResolver(identity)
+	input := newFakeSessionInputIO()
+	input.paneValue.generation = "pane-current"
+	w.sessionInput = newSessionInputOwner(input)
+
+	ledger := newFakeTurnLedger()
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnRunning,
+		ProcessIdentity: "different-process-generation", PaneGeneration: "pane-current",
+	})
+	w.SetTurnLedger(ledger)
+
+	if _, err := w.ResolveOwnedGeneration(sessionID); err == nil {
+		t.Fatal("mismatched live generation was authorized")
+	}
+	turn := ledger.snapshot(sessionID)
+	if turn.Status != TurnOwnershipLost || turn.Attention != "ownership_lost" {
+		t.Fatalf("ownership loss was not durably reduced before rejection: %+v", turn)
+	}
+	projected := w.GetAgent(sessionID)
+	if projected == nil || projected.State != classifier.StateUnknown ||
+		projected.Attention != "ownership_lost" || !projected.NeedsAttention {
+		t.Fatalf("ownership loss was not synchronously deprojected: agent=%+v", projected)
+	}
+	if len(ledger.applied) != 1 || ledger.applied[0].Kind != "ownership_lost" ||
+		ledger.applied[0].Class != EvidenceLiveness {
+		t.Fatalf("ownership resolver emitted facts = %+v", ledger.applied)
+	}
+	if _, err := w.ResolveOwnedGeneration(sessionID); err == nil {
+		t.Fatal("named ownership-loss state silently reauthorized a replacement generation")
+	}
+	if len(ledger.applied) != 1 {
+		t.Fatalf("repeated rejection emitted another ownership-loss fact: %+v", ledger.applied)
+	}
+}
+
 func TestBuildWindowCommandForShellWrapsCommandInInteractiveLoginShell(t *testing.T) {
 	got := buildWindowCommandForShell("/bin/zsh", "codex --dangerously-bypass-approvals-and-sandbox")
 	want := "exec '/bin/zsh' -i -l -c 'codex --dangerously-bypass-approvals-and-sandbox'"

@@ -17,7 +17,8 @@ The complete automatic scheduling rule is:
 
 ```text
 if the exact foreground Host turn is still running:
-    preserve queued Attention without interrupting or replaying that turn
+    durably reserve the fair next Attention for that Host generation/turn
+    preserve and refresh that same reservation without claiming or sending it
 else if a unique ready Work key can be atomically claimed:
     alternate the oldest and newest ready Work keys
     admit one exact Brain handling turn for that Work
@@ -25,15 +26,29 @@ else:
     wait
 ```
 
-The scheduler keeps at most one in-flight handling per Work key and one
-delivered handling globally. Repeated facts for a ready Work coalesce behind
-its scheduler head. A claim carries a sequence fence and presents the latest
+The scheduler keeps at most one future foreground reservation, one in-flight
+handling per Work key, and one delivered handling globally. The reservation
+persists the Host Session generation, foreground turn, Work/Event, future
+provider turn, handling identity, Work revision, and sequence fence. Reopening
+the daemon recovers those exact bytes. The foreground turn's exact terminal
+boundary atomically consumes the reservation into the ordinary Event claim
+before any later steering may be admitted; it never preempts the running turn,
+creates another queue, or replays input.
+
+One Attention-obligation reducer owns coalescing, scheduling, progress,
+repair, lifecycle labels, and backlog counts. It excludes audit-only legacy
+Session lifecycle rows that lack a canonical Turn scope, so an unscoped stale
+audit can never become the coalescing head for a later scoped done fact.
+Repeated eligible facts for a ready Work coalesce behind its scheduler head. A
+claim or reservation carries a sequence fence and presents the latest
 authoritative fact through that fence, so `session.stale` followed by
 `session.done` asks Brain to review `done` without rewriting either audit row.
-The oldest/newest alternation is persisted only on successful claims, excludes
-the Work that just yielded when peers are ready, and is bounded in both
-directions: a fresh completion gets an admission opportunity within two
-claims, while every fixed backlog key advances on every other claim.
+The oldest/newest alternation is persisted only on successful reservations or
+claims, excludes the Work that just yielded when peers are ready, and is
+bounded in both directions: a fresh completion gets an admission opportunity
+within two admissions, while every fixed backlog key advances on every other
+admission. Continuous foreground steering reuses one reservation and therefore
+cannot consume extra fairness positions.
 
 Open, running, or waiting Work does not poll Brain. The `until_done` completion
 policy requires an explicit done-criteria reference and changes only when Work
@@ -46,10 +61,14 @@ projections.
 
 Brain stores a versioned atomic JSON database at
 `~/.zen/brain/state/orchestration.json`. Work, append-only Events, canonical
-Turns, input admissions, and pending Turn submissions are replaced atomically.
+Turns, foreground Host turn/reservation, input admissions, and pending Turn
+submissions are replaced atomically.
 Work carries only title, objective,
 status, optional owner Session, completion policy, next action, wait condition,
 and a context reference. Long plans and evidence stay in `workspace/worklog/`.
+The foreground fields are optional current-state members: absence means no
+active foreground turn or reservation. This correction adds no compatibility
+reader, migration pass, replay log, or fallback owner.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
 claimed for one Brain host Session before input is sent. Zen deterministically
@@ -84,6 +103,16 @@ elapsed time are never send authorization. There is no transaction journal,
 spool, background resume loop, second scheduler, replacement Event, ordinary
 Event pull, or provider Goal delivery path.
 
+List, status, capture, and delegated follow-up authorization all call the same
+owned-generation resolver. It proves the durable window marker, live provider
+process identity, pane generation, and current canonical Turn or pending
+submission tuple. Cached Session fields never authorize control. If proof is
+lost, the canonical Turn and its Work/Event projection atomically move to the
+named recoverable `ownership_lost` state before capture or input is rejected;
+status/list then show that state instead of stale Running. A later correlated
+provider terminal may still resolve the result. There is no fallback target,
+compatibility owner, or migration layer.
+
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
 one-way schema-1 migration binds an unresolved claim to the persisted host when
 available. A migrated unresolved claim remains closed; the migration does not
@@ -109,17 +138,21 @@ does not add a migration, compatibility channel, or second scheduler.
 Watcher transitions are projected only when the Session already owns Work.
 Ordinary progress is passive. Done, failed, blocked, and needs-input facts append
 deduplicated actionable Events. Lease expiry requests authoritative
-reconciliation; it is not itself a stale fact. A present live delegated Session
-remains non-actionable even when progress is overdue. A missing, dead, or
-irreconcilable delegated Session produces one deduplicated actionable stale
-Event, while present `delegated=false` Sessions remain unmanaged. Within one
+reconciliation; it is not itself a stale fact. A correlated live
+`ProviderActivity` reasserts the exact current execution owner even after the
+Control lease is overdue, without clearing or consuming orthogonal Attention.
+A present live delegated Session remains non-actionable when progress is
+overdue. A missing, dead, ownership-lost, or irreconcilable delegated Session
+produces one deduplicated actionable Event, while present `delegated=false`
+Sessions remain unmanaged. Within one
 running phase, routine progress cannot move an active lease deadline backward;
 a phase transition may establish a shorter lease. User input to the Brain host
-has foreground priority, so an internal Event remains queued until that exact
-user Turn reaches a terminal transition. The turn-end observer clears the
-foreground gate and reserves the next Attention claim while holding the same
-admission mutex. A following user send cannot overtake that checkpoint, but
-the current response is never preempted and its input is never replayed.
+has foreground priority. While that exact Host generation/turn remains live,
+the daemon creates or recovers one future Attention reservation and refreshes
+its revision/fence as eligible facts coalesce. The turn-end observer consumes
+that reservation into its exact claim while holding the same admission mutex.
+A following user send cannot overtake that terminal checkpoint, but the current
+response is never preempted and its input is never replayed.
 
 Delegated input carries one durable turn marker on the existing Session input
 receipt boundary. A successful tmux submit queue records only dispatched input;
@@ -137,15 +170,18 @@ checks the current status and next action, and takes the next useful
 orchestration step. This is prompt policy, not automatic daemon workflow. Raw
 direct Event input is removed at the user-facing conversation projection only
 when it exactly matches Zen's canonical typed input. Malformed, partial,
-reordered, padded, or otherwise noncanonical user text remains visible. A typed
+reordered, padded, or otherwise noncanonical user text remains visible.
+Attention is orthogonal to execution ownership: a blocked or lease-overdue live
+Turn may remain the one exact Work owner while its review obligation is queued,
+reserved, or reviewing. A typed
 disposition is the only operation that marks every applicable fact through the
 delivery fence handled and changes Work. Terminal Work can additionally create
 an idempotent Session-finalization obligation. Result fact, queued Attention,
-admitted handling, handled disposition, and Session finalization are therefore
-five observable and non-interchangeable states.
+future reservation, admitted/reviewing handling, handled disposition, and
+Session finalization are observable and non-interchangeable states.
 
 Durable Work result cards remain chronological facts. Their wire projection
-adds `work_review_state` (`queued`, `reviewing`, or `resolved`),
+adds `work_review_state` (`queued`, `reserved`, `reviewing`, or `resolved`),
 `work_session_state` (`open`, `closing`, `finalized`, `close_failed`, or
 `not_required`), and `work_result_current`. A historical stale card can remain
 visible while a later done card is current; neither card is relabeled as the
@@ -184,15 +220,16 @@ The Brain snapshot exposes two different read models for the current server:
 
 - `current_work` is a bounded operational relationship projection: present
   delegated owners, present typed Session waits, user/Calendar waits, the live
-  handling, the fair next queued Attention window, and present terminal
+  handling, the durable reserved/queued Attention window, and present terminal
   finalization obligations.
 - `work_backlog` summarizes durable rows excluded from current relationships,
   including queued Attention, historical results, and relationship repair.
 
 Unread terminal history alone is never current execution. Stored owner or wait
 strings cannot manufacture an unavailable Session endpoint. The mobile graph
-renders `current_work`, labels queued and reviewing truth separately, and shows
-the backlog as a compact summary instead of paging through historical
+renders `current_work`, labels queued, reserved, and reviewing truth separately
+without hiding a present exact owner, and shows the backlog as a compact
+summary instead of paging through historical
 `Blocked -> Unavailable` relationships. Marking a card read changes only its
 presentation; it does not handle Attention, change Work completion, or finalize
 a Session.

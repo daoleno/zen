@@ -817,7 +817,18 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.mu.Unlock()
 
 	case "send_input":
-		brainSteering := s.brain != nil && s.brain.NoteUserSteering(raw.AgentID)
+		brainSteering := false
+		if s.brain != nil {
+			var steeringErr error
+			brainSteering, steeringErr = s.brain.NoteUserSteering(raw.AgentID)
+			if steeringErr != nil {
+				s.sendJSON(conn, map[string]any{
+					"type": "input_failed", "request_id": raw.RequestID,
+					"code": "send_input_failed", "message": steeringErr.Error(),
+				})
+				break
+			}
+		}
 		displayBody := strings.TrimSpace(raw.DisplayBody)
 		if displayBody == "" {
 			displayBody = strings.TrimSpace(raw.Text)

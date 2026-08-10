@@ -16,22 +16,24 @@ import (
 )
 
 type fakeWatcher struct {
-	agents         []*classifier.Agent
-	sessions       map[string]*classifier.Agent
-	created        []createdCall
-	sentCalls      []sentCall
-	killed         []string
-	sendErr        error
-	createErr      error
-	killErr        error
-	killLeavesLive bool
-	probeErr       error
-	probeErrByID   map[string]error
-	createHook     func()
-	captures       map[string]string
-	receipts       map[string]string
-	outcomes       map[string]watcher.InputOutcome
-	turnStore      *Store
+	agents           []*classifier.Agent
+	sessions         map[string]*classifier.Agent
+	created          []createdCall
+	sentCalls        []sentCall
+	killed           []string
+	sendErr          error
+	createErr        error
+	killErr          error
+	killLeavesLive   bool
+	probeErr         error
+	probeErrByID     map[string]error
+	createHook       func()
+	captures         map[string]string
+	receipts         map[string]string
+	outcomes         map[string]watcher.InputOutcome
+	turnStore        *Store
+	providerEvidence map[string]watcher.ProviderActivityObservation
+	ownedGenerations map[string]string
 }
 
 type createdCall struct {
@@ -491,8 +493,21 @@ func (w *fakeWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurn
 
 func (w *fakeWatcher) ClearDelegatedTurnMarkers([]string) {}
 
-func (w *fakeWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
-	return watcher.ProviderActivityObservation{}, false, nil
+func (w *fakeWatcher) ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error) {
+	observation, found := w.providerEvidence[sessionID]
+	return observation, found, nil
+}
+
+func (w *fakeWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	if generation := strings.TrimSpace(w.ownedGenerations[sessionID]); generation != "" {
+		return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
+	}
+	agent := w.GetAgent(sessionID)
+	if agent == nil {
+		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
+	}
+	generation := AdmissionDigest(fmt.Sprintf("%s\x00%d\x00%d", sessionID, agent.ProcessID, agent.StartedAt.UnixNano()))
+	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
 }
 
 func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {

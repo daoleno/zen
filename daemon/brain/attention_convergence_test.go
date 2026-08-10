@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,77 @@ func TestAttentionSchedulerAdmitsFreshCompletionWithinTwoClaims(t *testing.T) {
 	}
 }
 
+func TestContinuousForegroundSteeringKeepsOneReservationAndFairSuccessor(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@continuous-steering"
+	hostGeneration := "host-generation-continuous"
+	hostActivity := "host-activity-continuous"
+	items := make([]Work, 3)
+	for index, name := range []string{"old-a", "old-b", "old-c"} {
+		items[index] = createSignalTestWork(t, store, name, "brain-agent-"+name+":@1")
+		appendSignalTestEvent(t, store, items[index], name)
+	}
+	acceptSteering := func(requestID string) {
+		t.Helper()
+		candidate := BrainInputAdmission{
+			RequestID: requestID, ThreadID: "brain-thread-continuous", HostSessionID: hostID,
+			HostGeneration: hostGeneration, ProviderActivityID: hostActivity,
+			SessionID: "brain-session-continuous", DisplayBody: "continue " + requestID,
+		}
+		if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+			t.Fatalf("prepare %s created=%v err=%v", requestID, created, err)
+		}
+		if _, _, accepted, err := store.AcceptBrainInputAdmission(candidate); err != nil || !accepted {
+			t.Fatalf("accept %s accepted=%v err=%v", requestID, accepted, err)
+		}
+	}
+
+	acceptSteering("steer-1")
+	firstReservation, created, err := store.ReserveHostAttention(hostID, hostGeneration, hostActivity)
+	if err != nil || !created || firstReservation.WorkID != items[0].ID {
+		t.Fatalf("first reservation=%+v created=%v err=%v", firstReservation, created, err)
+	}
+	acceptSteering("steer-2")
+	repeated, created, err := store.ReserveHostAttention(hostID, hostGeneration, hostActivity)
+	if err != nil || created || repeated != firstReservation {
+		t.Fatalf("continuous steering replaced reservation: first=%+v repeated=%+v created=%v err=%v", firstReservation, repeated, created, err)
+	}
+
+	fresh := createSignalTestWork(t, store, "fresh-d", "brain-agent-fresh-d:@1")
+	appendSignalTestEvent(t, store, fresh, "fresh-d")
+	active, _, err := store.HostForegroundState()
+	if err != nil || active == nil {
+		t.Fatalf("foreground state active=%+v err=%v", active, err)
+	}
+	claimed, ok, err := store.ConsumeHostAttentionReservation(
+		hostID, hostGeneration, active.HostTurnID, hostActivity,
+	)
+	if err != nil || !ok || claimed.ID != firstReservation.EventID {
+		t.Fatalf("consume reservation claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition: WorkDispositionComplete,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || next.WorkID != fresh.ID {
+		t.Fatalf("fair successor after continuous steering=%+v ok=%v err=%v, want fresh Work %s", next, ok, err, fresh.ID)
+	}
+}
+
 func TestClaimPresentsLatestAuthoritativeFactWithoutRewritingAudit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -155,6 +227,86 @@ func TestClaimPresentsLatestAuthoritativeFactWithoutRewritingAudit(t *testing.T)
 	}
 }
 
+func TestLegacyUnscopedAuditCannotCaptureScopedTerminalObligationAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-legacy-head:@1"
+	item, err := store.CreateWork(Work{
+		Title: "legacy audit then current done", Objective: "Review the scoped terminal result.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	database, err := store.loadOrchestrationLocked()
+	if err == nil {
+		workIndex := workIndex(database.BrainWork, item.ID)
+		database.BrainWork[workIndex].OwnerSessionID = sessionID
+		database.BrainWork[workIndex].OwnerDelegated = true
+		database.NextEventSequence++
+		database.BrainWorkEvents = append(database.BrainWorkEvents, WorkEvent{
+			ID: "legacy-unscoped-stale", WorkID: item.ID, Kind: "session.stale",
+			DedupeKey:  "session:" + sessionID + ":session.stale:1",
+			SourceName: sessionID, PayloadRef: "session:" + sessionID,
+			Summary: "legacy lease audit", Actionable: true, CreatedAt: time.Now().Add(-time.Hour),
+			Sequence: database.NextEventSequence, WorkRevision: item.Revision,
+		})
+		err = store.persistOrchestrationLocked(database)
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.done",
+		DedupeKey:  "session:" + sessionID + ":turn:turn-current:session.done",
+		SourceName: sessionID, PayloadRef: "session:" + sessionID,
+		Summary: "current scoped completion", Actionable: true,
+	})
+	if err != nil || !created || done.CoalescedInto != "" {
+		t.Fatalf("scoped done coalesced behind legacy audit: done=%+v created=%v err=%v", done, created, err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@legacy-repair")
+	if err != nil || !ok || claimed.ID != done.ID || claimed.ReviewKind != "session.done" {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveClaimedHostTurnForTest(t, reopened, claimed)
+	delivered, _, err := reopened.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, completed, err := reopened.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+	})
+	if err != nil || resolved.ID != done.ID || completed.Status != WorkDone || len(completed.SessionFinalizations) != 1 ||
+		completed.SessionFinalizations[0].SessionID != sessionID {
+		t.Fatalf("terminal disposition/finalization resolved=%+v Work=%+v err=%v", resolved, completed, err)
+	}
+	finalized, err := reopened.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
+	if err != nil || len(finalized.SessionFinalizations) != 1 ||
+		finalized.SessionFinalizations[0].State != SessionFinalizationComplete {
+		t.Fatalf("legacy repair finalization Work=%+v err=%v", finalized, err)
+	}
+	audit, err := reopened.ListWorkEvents(item.ID)
+	if err != nil || len(audit) != 2 || audit[0].HandledAt != nil || audit[1].HandledAt == nil {
+		t.Fatalf("legacy/current audit disposition=%+v err=%v", audit, err)
+	}
+	if next, ok, err := reopened.ClaimNextActionableEvent("brain-agent-brain-hidden:@legacy-repair"); err != nil || ok {
+		t.Fatalf("disposed obligation replayed: next=%+v ok=%v err=%v", next, ok, err)
+	}
+}
+
 func TestFreshInventoryRetiresAbsentPendingOwnerExactlyOnceWithoutReplay(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
@@ -200,6 +352,137 @@ func TestFreshInventoryRetiresAbsentPendingOwnerExactlyOnceWithoutReplay(t *test
 	events, _ = reopened.ListWorkEvents(item.ID)
 	if len(events) != 1 {
 		t.Fatalf("restart duplicated absent-owner attention: %+v", events)
+	}
+}
+
+func TestExpiredProgressLeaseWithExactLiveProviderActivityKeepsExecutionOwned(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	acceptedAt := now.Add(-20 * time.Minute)
+	store.now = func() time.Time { return now }
+	sessionID := "brain-agent-live-overdue:@1"
+	turnID := "turn-live-overdue"
+	item, err := store.CreateWork(Work{
+		Title: "live overdue owner", Objective: "Keep exact live execution controllable.",
+		Status: WorkRunning, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+		ProcessIdentity: "process-live", PaneGeneration: "pane-live",
+	})
+	observation := watcher.ProviderActivityObservation{
+		ID: "activity-live", Status: "running", StartedAt: acceptedAt.Add(time.Second),
+		AdmissionStream: "codex", AdmissionID: "admission-live", AdmissionCursor: 7,
+		AdmissionAt: acceptedAt.Add(time.Second), InputSHA256: strings.Repeat("a", 64),
+	}
+	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceProvider, Kind: "running",
+		SourceID: providerFactSourceID(sessionID, observation), Cursor: observation.AdmissionCursor,
+		Admission: admissionFromObservation(observation), ActivityID: observation.ID,
+		StartedAt: observation.StartedAt, At: acceptedAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &classifier.Agent{
+		ID: sessionID, State: classifier.StateDone, Delegated: true,
+		PaneAlive: true, ProcessID: 42,
+	}
+	service := NewService(store, &fakeWatcher{
+		sessions:         map[string]*classifier.Agent{sessionID: agent},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{sessionID: observation},
+	}, nil)
+	service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+	current, err := store.Work(item.ID)
+	if err != nil || current.OwnerSessionID != sessionID || !current.OwnerDelegated || current.Status != WorkRunning {
+		t.Fatalf("live overdue Work lost owner: Work=%+v err=%v", current, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "session.stale" {
+			t.Fatalf("exact live provider activity emitted stale Attention: %+v", events)
+		}
+	}
+}
+
+func TestOwnershipLossAtomicallyDeprojectsAndRemainsProviderRecoverable(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-ownership-loss:@1"
+	turnID := "turn-ownership-loss"
+	acceptedAt := time.Date(2026, 8, 11, 13, 0, 0, 0, time.UTC)
+	item, err := store.CreateWork(Work{
+		Title: "recover ownership loss", Objective: "Reject control without losing provider truth.",
+		Status: WorkRunning, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+		ProcessIdentity: "process-owned", PaneGeneration: "pane-owned",
+	})
+	fact := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceLiveness,
+		Kind: "ownership_lost", SourceID: "liveness-owned-generation-lost",
+		SessionReplaced: true, At: acceptedAt.Add(time.Minute),
+	}
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error { return fmt.Errorf("injected ownership-loss persistence failure") }
+	if _, _, err := store.ApplyTurnFact(fact); err == nil {
+		t.Fatal("ownership loss was reported before durable deprojection")
+	}
+	store.writeOrchestration = originalWrite
+	before, err := store.Work(item.ID)
+	if err != nil || before.OwnerSessionID != sessionID {
+		t.Fatalf("failed atomic deprojection mutated Work=%+v err=%v", before, err)
+	}
+	if turn, found, err := store.TurnByID(sessionID, turnID); err != nil || !found || turn.Status != watcher.TurnAdmitted {
+		t.Fatalf("failed atomic deprojection mutated Turn=%+v found=%v err=%v", turn, found, err)
+	}
+
+	turn, changed, err := store.ApplyTurnFact(fact)
+	if err != nil || !changed || turn.Status != watcher.TurnOwnershipLost {
+		t.Fatalf("ownership loss Turn=%+v changed=%v err=%v", turn, changed, err)
+	}
+	deprojected, err := store.Work(item.ID)
+	if err != nil || deprojected.OwnerSessionID != "" || deprojected.OwnerDelegated || deprojected.Status != WorkNeedsInput {
+		t.Fatalf("ownership loss Work=%+v err=%v", deprojected, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 1 || events[0].Kind != "session.ownership_lost" || !events[0].Actionable {
+		t.Fatalf("ownership loss obligation=%+v err=%v", events, err)
+	}
+
+	doneFact := watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceProvider,
+		Kind: "done", SourceID: "provider-owned-generation-done", ActivityID: "activity-recovered",
+		StartedAt: acceptedAt.Add(time.Second), SettledAt: acceptedAt.Add(2 * time.Minute),
+		At: acceptedAt.Add(2 * time.Minute), Summary: "Provider completed after control ownership was lost",
+	}
+	recovered, changed, err := store.ApplyTurnFact(doneFact)
+	if err != nil || !changed || recovered.Status != watcher.TurnDone {
+		t.Fatalf("provider recovery Turn=%+v changed=%v err=%v", recovered, changed, err)
+	}
+	events, err = store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 2 || events[1].Kind != "session.done" ||
+		events[1].CoalescedInto != events[0].ID {
+		t.Fatalf("provider recovery obligations=%+v err=%v", events, err)
+	}
+	if _, changed, err := store.ApplyTurnFact(doneFact); err != nil || changed {
+		t.Fatalf("provider recovery replay changed=%v err=%v", changed, err)
 	}
 }
 
@@ -417,7 +700,7 @@ func TestForegroundTurnEndReservesAttentionBeforeNextUserAdmission(t *testing.T)
 		entered: make(chan struct{}), release: make(chan struct{}),
 	}
 	service := NewService(store, watcherFixture, nil)
-	if !service.NoteUserSteering(hostID) {
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
 		t.Fatal("foreground input was not recognized")
 	}
 	dispatched := make(chan error, 1)
@@ -431,7 +714,10 @@ func TestForegroundTurnEndReservesAttentionBeforeNextUserAdmission(t *testing.T)
 	}()
 	<-watcherFixture.entered
 	steered := make(chan bool, 1)
-	go func() { steered <- service.NoteUserSteering(hostID) }()
+	go func() {
+		recognized, _ := service.NoteUserSteering(hostID)
+		steered <- recognized
+	}()
 	select {
 	case <-steered:
 		t.Fatal("new foreground admission overtook the exact turn-end checkpoint")
@@ -446,5 +732,149 @@ func TestForegroundTurnEndReservesAttentionBeforeNextUserAdmission(t *testing.T)
 	}
 	if len(watcherFixture.sentCalls) != 1 {
 		t.Fatalf("checkpoint sent=%d Work inputs, want exact-once", len(watcherFixture.sentCalls))
+	}
+}
+
+func TestLongForegroundTurnPersistsFutureAttentionAcrossReopenAndConsumesAtBoundary(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@durable-reservation"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true}
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-1"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
+			ID: "host-activity-1", Status: "running", StartedAt: time.Now().Add(-time.Minute),
+		}},
+	}
+	service := NewService(store, watcherFixture, nil)
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
+		t.Fatalf("note foreground recognized=%v err=%v", recognized, err)
+	}
+	prepared, created, err := service.PrepareHostUserInput(hostID, "foreground-request-1", "keep working", "")
+	if err != nil || !created {
+		t.Fatalf("prepare foreground admission=%+v created=%v err=%v", prepared, created, err)
+	}
+	if err := service.AdmitHostUserInput(hostID, "foreground-request-1", "keep working", ""); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "durable future review", "brain-agent-worker:@reservation")
+	stale, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.stale",
+		DedupeKey: "session:brain-agent-worker:@reservation:turn:one:session.stale",
+		Summary:   "lease overdue", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append stale=%+v created=%v err=%v", stale, created, err)
+	}
+	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("foreground dispatch woke=%v err=%v", woke, err)
+	}
+	active, reserved, err := store.HostForegroundState()
+	if err != nil || active == nil || reserved == nil || reserved.EventID != stale.ID ||
+		reserved.HostTurnID != active.HostTurnID || reserved.ProviderTurnID == "" {
+		t.Fatalf("durable foreground state active=%+v reservation=%+v err=%v", active, reserved, err)
+	}
+	lifecycles, err := store.WorkResultLifecycles([]string{stale.ID})
+	if err != nil || lifecycles[stale.ID].ReviewState != WorkReviewReserved {
+		t.Fatalf("future reservation lifecycle=%+v err=%v", lifecycles, err)
+	}
+	reservedTurnID := reserved.ProviderTurnID
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watcherFixture.turnStore = reopened
+	restarted := NewService(reopened, watcherFixture, nil)
+	if woke, err := restarted.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("reopen dispatch woke=%v err=%v", woke, err)
+	}
+	_, afterReopen, err := reopened.HostForegroundState()
+	if err != nil || afterReopen == nil || afterReopen.ProviderTurnID != reservedTurnID {
+		t.Fatalf("reopen replaced reservation=%+v err=%v", afterReopen, err)
+	}
+	nextAction := "Review the latest durable worker state."
+	updated, err := reopened.UpdateWork(item.ID, WorkUpdate{NextAction: &nextAction})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, afterUpdate, err := reopened.HostForegroundState()
+	if err != nil || afterUpdate == nil || afterUpdate.WorkRevision != updated.Revision ||
+		afterUpdate.ProviderTurnID != reservedTurnID {
+		t.Fatalf("Work update did not refresh durable reservation=%+v Work=%+v err=%v", afterUpdate, updated, err)
+	}
+	done, created, err := reopened.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "session:brain-agent-worker:@reservation:turn:one:session.done",
+		Summary:   "worker completed", Actionable: true,
+	})
+	if err != nil || !created || done.CoalescedInto != stale.ID {
+		t.Fatalf("append terminal done=%+v created=%v err=%v", done, created, err)
+	}
+	_, refreshed, _ := reopened.HostForegroundState()
+	if refreshed == nil || refreshed.ProviderTurnID != reservedTurnID ||
+		refreshed.SequenceFence != done.Sequence || refreshed.WorkRevision != done.WorkRevision {
+		t.Fatalf("coalesced terminal fact did not refresh reservation: %+v done=%+v", refreshed, done)
+	}
+	if _, _, err := reopened.ConsumeHostAttentionReservation(
+		hostID, "host-generation-1", active.HostTurnID, "",
+	); err == nil {
+		t.Fatal("a terminal boundary without the bound provider activity consumed the reservation")
+	}
+
+	checkpoint := &checkpointWatcher{fakeWatcher: watcherFixture, entered: make(chan struct{}), release: make(chan struct{})}
+	checkpoint.turnStore = reopened
+	checkpoint.sessions[hostID].State = classifier.StateDone
+	checkpoint.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "host-activity-1", Status: "completed", StartedAt: time.Now().Add(-time.Minute), SettledAt: time.Now(),
+	}
+	restarted.watcher = checkpoint
+	boundary := make(chan error, 1)
+	go func() {
+		_, boundaryErr := restarted.ObserveHostSessionEvent(watcher.SessionEvent{
+			Type: "agent_state_change", AgentID: hostID,
+			OldState: string(classifier.StateRunning), NewState: string(classifier.StateDone),
+			TurnID: "foreground-provider-turn",
+			Agent:  &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
+		})
+		boundary <- boundaryErr
+	}()
+	select {
+	case <-checkpoint.entered:
+	case err := <-boundary:
+		t.Fatalf("terminal boundary failed before reserved delivery: %v", err)
+	}
+	laterSteering := make(chan error, 1)
+	go func() {
+		recognized, steeringErr := restarted.NoteUserSteering(hostID)
+		if steeringErr == nil && !recognized {
+			steeringErr = fmt.Errorf("later foreground steering was not recognized")
+		}
+		laterSteering <- steeringErr
+	}()
+	select {
+	case err := <-laterSteering:
+		t.Fatalf("later steering overtook reserved boundary: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(checkpoint.release)
+	if err := <-boundary; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-laterSteering; err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoint.sentCalls) != 1 || !strings.Contains(checkpoint.sentCalls[0].text, `"kind":"session.done"`) {
+		t.Fatalf("reserved boundary delivery=%+v", checkpoint.sentCalls)
+	}
+	if _, reservation, err := reopened.HostForegroundState(); err != nil || reservation != nil {
+		t.Fatalf("terminal boundary did not consume reservation=%+v err=%v", reservation, err)
 	}
 }

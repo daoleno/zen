@@ -438,7 +438,10 @@ function brainWorkEventTimelineItemFromConversationEvent(
 function normalizeBrainWorkReviewState(
   value: string | undefined,
 ): BrainWorkResultEvent["review_state"] | null {
-  return value === "queued" || value === "reviewing" || value === "resolved"
+  return value === "queued" ||
+    value === "reserved" ||
+    value === "reviewing" ||
+    value === "resolved"
     ? value
     : null;
 }
@@ -467,6 +470,7 @@ function normalizeBrainWorkResultKind(
     case "session.needs_input":
     case "session.stale":
     case "session.uncertain":
+    case "session.ownership_lost":
       return value;
     default:
       return null;

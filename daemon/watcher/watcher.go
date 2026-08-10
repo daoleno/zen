@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -89,6 +90,16 @@ type targetProcessIdentity struct {
 	ForegroundStart int64
 	ProcessID       int
 	ProcessStart    int64
+}
+
+// OwnedGeneration is the exact durable-marker, pane, and provider-process
+// generation shared by list/status/capture/follow-up authorization and Brain
+// foreground Attention reservations.
+type OwnedGeneration struct {
+	SessionID       string
+	Generation      string
+	ProcessIdentity string
+	PaneGeneration  string
 }
 
 func (identity targetProcessIdentity) valid() bool {
@@ -422,6 +433,91 @@ func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, boo
 		return w.resolveTargetProcessIdentity(sessionID)
 	}
 	return targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+}
+
+// ResolveOwnedGeneration proves one current Zen-owned target generation. It
+// fails closed when the durable marker, pane generation, or provider process
+// identity cannot be read; callers must never substitute cached Agent fields.
+func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return OwnedGeneration{}, fmt.Errorf("missing session id")
+	}
+	owned, err := w.resolveOwnedGeneration(sessionID)
+	if err == nil {
+		turn, hasTurn, turnErr := w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+		if turnErr != nil {
+			err = turnErr
+		}
+		var pending TurnSubmission
+		var hasPending bool
+		if err == nil {
+			var pendingErr error
+			pending, hasPending, pendingErr = w.pendingTurnSubmission(sessionID)
+			if pendingErr != nil {
+				err = pendingErr
+			}
+		}
+		expectedProcess, expectedPane := "", ""
+		if err == nil && hasTurn && turn.Status == TurnOwnershipLost {
+			err = fmt.Errorf("delegated Session control ownership was lost")
+		} else if err == nil && hasPending {
+			expectedProcess, expectedPane = pending.ProcessIdentity, pending.PaneGeneration
+		} else if err == nil && hasTurn && !TurnTerminal(turn.Status) {
+			expectedProcess, expectedPane = turn.ProcessIdentity, turn.PaneGeneration
+		}
+		if err == nil && expectedProcess != "" && (owned.ProcessIdentity != expectedProcess || owned.PaneGeneration != expectedPane) {
+			err = fmt.Errorf("owned Session generation no longer matches its canonical turn")
+		}
+	}
+	if err == nil {
+		return owned, nil
+	}
+	if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
+		err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+	}
+	return OwnedGeneration{}, err
+}
+
+func (w *Watcher) resolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return OwnedGeneration{}, fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+	}
+	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
+	if paneGeneration == "" {
+		return OwnedGeneration{}, fmt.Errorf("owned tmux pane generation is unavailable: %s", sessionID)
+	}
+	processIdentity := delegatedTurnIdentity(identity)
+	sum := sha256.Sum256([]byte(processIdentity + "\x00" + paneGeneration))
+	return OwnedGeneration{
+		SessionID: sessionID, Generation: fmt.Sprintf("%x", sum[:]),
+		ProcessIdentity: processIdentity, PaneGeneration: paneGeneration,
+	}, nil
+}
+
+func (w *Watcher) deprojectOwnershipLoss(sessionID string) error {
+	if w == nil || w.turnLedger == nil {
+		return fmt.Errorf("canonical turn ledger is unavailable")
+	}
+	turn, found, err := w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !found || TurnTerminal(turn.Status) {
+		return nil
+	}
+	_, _, err = w.turnLedger.ApplyTurnFact(TurnFact{
+		SessionID: sessionID, TurnID: turn.TurnID,
+		Class: EvidenceLiveness, Kind: "ownership_lost", SessionReplaced: true,
+		SourceID: "liveness\x00" + turn.ProcessIdentity + "\x00ownership-lost",
+		At:       time.Now().UTC(), Summary: "Delegated Session control ownership was lost",
+	})
+	if err != nil {
+		return err
+	}
+	_, err = w.RebindDelegatedTurnProjection(sessionID)
+	return err
 }
 
 // resolveTargetProcessIdentity resolves the exact pane/process identity on
@@ -1379,11 +1475,19 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 		if summary == "" {
 			summary = "Delegated Session outcome is unknown; inspect and reconcile"
 		}
+	case TurnOwnershipLost:
+		state = classifier.StateUnknown
+		if summary == "" {
+			summary = "Delegated Session ownership was lost; inspect and recover"
+		}
 	default:
 		state = classifier.StateUnknown
 	}
 	if agent != nil && turn.Status == TurnBlocked {
 		agent.Attention = "user_input"
+		agent.NeedsAttention = true
+	} else if agent != nil && turn.Status == TurnOwnershipLost {
+		agent.Attention = "ownership_lost"
 		agent.NeedsAttention = true
 	} else if agent != nil {
 		agent.Attention = "none"
@@ -2202,15 +2306,8 @@ func (w *Watcher) CapturePaneContent(sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("missing session id")
 	}
-	if !w.ownsTarget(sessionID) {
-		return "", fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
-	}
-	owned, ownershipErr := w.targetIsDurablyOwned(sessionID)
-	if ownershipErr != nil {
+	if _, ownershipErr := w.ResolveOwnedGeneration(sessionID); ownershipErr != nil {
 		return "", ownershipErr
-	}
-	if !owned {
-		return "", fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
 	}
 	out, err := tmuxCommand(w.socketPathFor(sessionID), "capture-pane", "-t", sessionID, "-p", "-S", "-200").Output()
 	if err != nil {
@@ -2516,6 +2613,10 @@ func (w *Watcher) SubmitDelegatedInput(
 	sessionID, payload, turnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
+	if _, ownershipErr := w.ResolveOwnedGeneration(sessionID); ownershipErr != nil {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, ownershipErr)
+	}
 	identity, known := w.targetForSession(sessionID)
 	if !known {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
@@ -2539,6 +2640,9 @@ func (w *Watcher) SubmitDelegatedInput(
 			identity.Command,
 		),
 	)
+	if err != nil {
+		_, _ = w.ResolveOwnedGeneration(sessionID)
+	}
 	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
 	return result, err
 }

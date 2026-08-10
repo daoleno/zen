@@ -49,6 +49,32 @@ describe("Work relationship graph projection", () => {
     );
   });
 
+  test("shows durable Attention reservation without hiding exact live ownership", () => {
+    const workWithReservation = graphWork({
+      work_id: "owned-reserved-review",
+      title: "Finish the active provider turn",
+      status: "running",
+      progress_mode: "owned",
+      owner_session_id: GRAPH_OWNER_RUNNING.sessionId,
+      owner_delegated: true,
+      attention_state: "reserved",
+    });
+    const model = buildWorkRelationshipGraphModel(
+      [workWithReservation],
+      [GRAPH_OWNER_RUNNING],
+    );
+    const work = onlyWork(model);
+
+    expect(work.stateLabel).toBe("Review");
+    expect(work.relationshipLabel).toBe(
+      "Release review owns this · Reserved for next Brain turn",
+    );
+    expect(model.edges.map((edge) => edge.kind)).toEqual([
+      "review",
+      "ownership",
+    ]);
+  });
+
   test("initial Agent labels include every owned, waiting, and blocked relationship", () => {
     const failedSessionWait = graphWork({
       work_id: "failed-session-wait",

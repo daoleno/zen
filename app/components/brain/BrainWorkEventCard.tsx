@@ -93,6 +93,8 @@ export function BrainWorkEventCard({
             name={
               item.event.review_state === "queued"
                 ? "time-outline"
+                : item.event.review_state === "reserved"
+                  ? "bookmark-outline"
                 : item.event.review_state === "reviewing"
                   ? "eye-outline"
                   : "checkmark-done-outline"
@@ -160,6 +162,12 @@ function resultPresentation(kind: BrainWorkResultEvent["kind"]) {
         label: "Outcome uncertain",
         icon: "help-circle-outline" as const,
         colorKey: "textMuted" as const,
+      };
+    case "session.ownership_lost":
+      return {
+        label: "Ownership lost",
+        icon: "unlink-outline" as const,
+        colorKey: "danger" as const,
       };
   }
 }

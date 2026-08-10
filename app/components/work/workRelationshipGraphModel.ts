@@ -486,22 +486,28 @@ function projectMeaningfulWork(
   if (work.status === "done" || work.status === "cancelled") {
     return projectTerminalWork(work, ownerById);
   }
+  if (work.progress_mode === "owned") {
+    const owned = projectOwnedWork(work, ownerById);
+    if (owned && work.attention_state) {
+      return {
+        ...owned,
+        state: owned.state === "running" ? "review" : owned.state,
+        relationshipLabel: `${owned.relationshipLabel} · ${attentionRelationshipLabel(work.attention_state)}`,
+      };
+    }
+    if (owned) return owned;
+    if (!work.attention_state) return null;
+  }
+  if (work.progress_mode === "waiting") {
+    return projectWaitingWork(work, ownerById);
+  }
   if (work.attention_state) {
     return {
       ...workBase(work),
       state: "review",
-      relationshipLabel:
-        work.attention_state === "reviewing"
-          ? "Brain is reviewing"
-          : "Queued for Brain review",
+      relationshipLabel: attentionRelationshipLabel(work.attention_state),
       contradiction: false,
     };
-  }
-  if (work.progress_mode === "owned") {
-    return projectOwnedWork(work, ownerById);
-  }
-  if (work.progress_mode === "waiting") {
-    return projectWaitingWork(work, ownerById);
   }
   if (work.progress_mode === "ready") {
     return blockedWork(work, "Next step unavailable");
@@ -636,14 +642,24 @@ function projectTerminalWork(
     return {
       ...workBase(work),
       state: "review",
-      relationshipLabel:
-        work.attention_state === "reviewing"
-          ? "Brain is reviewing"
-          : "Queued for Brain review",
+      relationshipLabel: attentionRelationshipLabel(work.attention_state),
       contradiction: false,
     };
   }
   return null;
+}
+
+function attentionRelationshipLabel(
+  state: NonNullable<BrainCurrentWork["attention_state"]>,
+): string {
+  switch (state) {
+    case "queued":
+      return "Queued for Brain review";
+    case "reserved":
+      return "Reserved for next Brain turn";
+    case "reviewing":
+      return "Brain is reviewing";
+  }
 }
 
 function waitingWork(

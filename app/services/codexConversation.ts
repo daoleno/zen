@@ -14,7 +14,11 @@ export type CodexPlanStepStatus = "pending" | "in_progress" | "completed";
 
 export type ProviderActivityStatus =
   "running" | "completed" | "failed" | "interrupted" | "cancelled";
-export type WorkReviewState = "queued" | "reviewing" | "resolved";
+export type WorkReviewState =
+  | "queued"
+  | "reserved"
+  | "reviewing"
+  | "resolved";
 export type WorkSessionState =
   | "open"
   | "closing"
@@ -278,7 +282,10 @@ function normalizeCodexConversationEvent(
 }
 
 function normalizeWorkReviewState(value: unknown): WorkReviewState | undefined {
-  return value === "queued" || value === "reviewing" || value === "resolved"
+  return value === "queued" ||
+    value === "reserved" ||
+    value === "reviewing" ||
+    value === "resolved"
     ? value
     : undefined;
 }

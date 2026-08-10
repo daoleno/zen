@@ -15,6 +15,7 @@ const PROJECTED_KINDS = [
   "session.needs_input",
   "session.stale",
   "session.uncertain",
+  "session.ownership_lost",
 ] as const;
 
 function workResultEvent(
@@ -77,12 +78,15 @@ describe("Brain Work Event dedicated card projection", () => {
       "brain-work-event",
       "brain-work-event",
       "brain-work-event",
+      "brain-work-event",
     ]);
     for (const item of initial.items) {
       if (item.type !== "brain-work-event") {
         throw new Error("expected work card");
       }
-      expect(item.event.kind).toMatch(/^session\.(done|failed|needs_input|stale|uncertain)$/);
+      expect(item.event.kind).toMatch(
+        /^session\.(done|failed|needs_input|stale|uncertain|ownership_lost)$/,
+      );
     }
 
     const withAssistant: CodexConversationEvent[] = [

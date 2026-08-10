@@ -46,13 +46,18 @@ const (
 	TurnDone     TurnStatus = "done"
 	TurnFailed   TurnStatus = "failed"
 	TurnUnknown  TurnStatus = "unknown"
+	// TurnOwnershipLost is a named recoverable terminal state: the exact
+	// provider/pane generation can no longer be controlled. A later bound
+	// provider terminal may still resolve its outcome, but commands reject only
+	// after this state is durably projected.
+	TurnOwnershipLost TurnStatus = "ownership_lost"
 )
 
 // TurnTerminal reports whether the canonical status is terminal for
 // scheduling (immutable Done/Failed, or Unknown awaiting a bound fact).
 func TurnTerminal(status TurnStatus) bool {
 	switch status {
-	case TurnDone, TurnFailed, TurnUnknown:
+	case TurnDone, TurnFailed, TurnUnknown, TurnOwnershipLost:
 		return true
 	default:
 		return false

@@ -43,6 +43,7 @@ type controlWatcher interface {
 	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
 	ClearDelegatedTurnMarkers(targets []string)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
+	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
 }
 
 type controlApp struct {
@@ -354,6 +355,11 @@ func calendarControlError(err error) control.Response {
 func (a *controlApp) handleAgentList() control.Response {
 	if a == nil || a.watcher == nil {
 		return control.ErrorResponse("watcher_unavailable", "Agent watcher is not running.")
+	}
+	for _, agent := range a.watcher.Agents() {
+		if agent != nil && !agent.Hidden {
+			_, _ = a.resolveOwnedAgent(agent.ID)
+		}
 	}
 	agents := visibleControlAgents(a.watcher.Agents())
 	sort.Slice(agents, func(i, j int) bool {
@@ -840,7 +846,10 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agentID == "" {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
-	agent := a.watcher.GetAgent(agentID)
+	agent, ownershipErr := a.resolveOwnedAgent(agentID)
+	if ownershipErr != nil {
+		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+	}
 	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
 	}
@@ -966,6 +975,9 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 	if agentID == "" {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
+	if _, ownershipErr := a.resolveOwnedAgent(agentID); ownershipErr != nil {
+		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+	}
 	if agent := a.watcher.GetAgent(agentID); agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
@@ -990,12 +1002,36 @@ func (a *controlApp) handleAgentStatus(req control.Request) control.Response {
 	if agentID == "" {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
-	agent := a.watcher.GetAgent(agentID)
+	agent, ownershipErr := a.resolveOwnedAgent(agentID)
+	if ownershipErr != nil {
+		// ResolveOwnedGeneration has already durably deprojected a live
+		// canonical turn before this rejection. Re-read the named recoverable
+		// projection so status never reports the cached Running state.
+		if projected := a.watcher.GetAgent(agentID); projected != nil {
+			out := controlAgent(projected)
+			return control.Response{OK: true, Agent: &out, Confirmation: ownershipErr.Error()}
+		}
+		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+	}
 	if agent == nil {
 		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
 	}
 	out := controlAgent(agent)
 	return control.Response{OK: true, Agent: &out}
+}
+
+func (a *controlApp) resolveOwnedAgent(agentID string) (*classifier.Agent, error) {
+	if a == nil || a.watcher == nil {
+		return nil, fmt.Errorf("Agent watcher is not running")
+	}
+	agent := a.watcher.GetAgent(agentID)
+	if agent == nil {
+		return nil, nil
+	}
+	if _, err := a.watcher.ResolveOwnedGeneration(agentID); err != nil {
+		return a.watcher.GetAgent(agentID), err
+	}
+	return a.watcher.GetAgent(agentID), nil
 }
 
 func (a *controlApp) handleAgentProgress(req control.Request) control.Response {

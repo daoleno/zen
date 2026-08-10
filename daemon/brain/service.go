@@ -51,6 +51,7 @@ type Watcher interface {
 	// ProbeProviderEvidence returns the current provider-native observation
 	// for a session, used by the legacy-marker reconciliation sweep.
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
+	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
 }
 
 type Service struct {
@@ -750,7 +751,8 @@ func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
 func isSessionLifecycleKind(kind string) bool {
 	switch strings.TrimSpace(kind) {
 	case "session.running", "session.waiting", "session.needs_input",
-		"session.done", "session.failed", "session.stale", "session.uncertain":
+		"session.done", "session.failed", "session.stale", "session.uncertain",
+		"session.ownership_lost":
 		return true
 	default:
 		return false
@@ -766,6 +768,16 @@ func isSessionLifecycleKind(kind string) bool {
 // sessionID+":turn:N"), so no further structure is validated.
 func isTurnScopedSessionDedupeKey(dedupeKey string) bool {
 	return strings.HasPrefix(strings.TrimSpace(dedupeKey), "session:") &&
+		strings.Contains(dedupeKey, ":turn:")
+}
+
+// isCanonicalSessionWakeDedupeKey is the durable shape produced only by
+// wakeWaitingWorkLocked after the exact Session Turn terminalizes in the same
+// transaction. Generic Event append rejects unscoped lifecycle keys, while
+// legacy occurrence-counted rows never have this typed wake prefix.
+func isCanonicalSessionWakeDedupeKey(dedupeKey string) bool {
+	dedupeKey = strings.TrimSpace(dedupeKey)
+	return strings.HasPrefix(dedupeKey, "wake:session_terminal:session:") &&
 		strings.Contains(dedupeKey, ":turn:")
 }
 
@@ -1139,10 +1151,36 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 	if hostID == "" || !s.watcher.HasSession(hostID) {
 		return false, nil
 	}
+	host := s.watcher.GetAgent(hostID)
+	activeForeground, reservation, foregroundErr := s.store.HostForegroundState()
+	if foregroundErr != nil {
+		return false, foregroundErr
+	}
+	if activeForeground != nil && activeForeground.HostSessionID == hostID {
+		if reservation == nil && (s.foregroundInput || host != nil &&
+			(host.State == classifier.StateRunning || host.State == classifier.StateBlocked)) {
+			generation, generationErr := s.hostOwnedGeneration(hostID)
+			if generationErr != nil {
+				return false, generationErr
+			}
+			activityID := ""
+			if observation, found, probeErr := s.watcher.ProbeProviderEvidence(hostID); probeErr != nil {
+				return false, probeErr
+			} else if found && strings.TrimSpace(observation.Status) == "running" {
+				activityID = strings.TrimSpace(observation.ID)
+			}
+			if _, _, reserveErr := s.store.ReserveHostAttention(hostID, generation, activityID); reserveErr != nil {
+				return false, reserveErr
+			}
+		}
+		// Reopen derives foreground exclusion from the durable turn, not the
+		// process-local foregroundInput hint. Its reservation is consumed only
+		// by the exact terminal-boundary path below.
+		return false, nil
+	}
 	if s.foregroundInput {
 		return false, nil
 	}
-	host := s.watcher.GetAgent(hostID)
 	if host != nil && (host.State == classifier.StateRunning || host.State == classifier.StateBlocked) {
 		return false, nil
 	}
@@ -1150,6 +1188,11 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 	if err != nil || !claimed {
 		return false, err
 	}
+	return s.deliverClaimedEventLocked(event)
+}
+
+func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
+	hostID := strings.TrimSpace(event.DeliveryHostSessionID)
 	item, err := s.store.Work(event.WorkID)
 	if err != nil {
 		if releaseErr := s.store.ReleaseEventClaim(
@@ -1204,18 +1247,56 @@ func (s *Service) dispatchPendingEventLocked() (bool, error) {
 	return true, nil
 }
 
-func (s *Service) NoteUserSteering(agentID string) bool {
+func (s *Service) NoteUserSteering(agentID string) (bool, error) {
 	if s == nil || s.store == nil {
-		return false
+		return false, nil
 	}
 	host, err := s.store.HostSession()
 	if err != nil || strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != strings.TrimSpace(agentID) {
-		return false
+		return false, err
 	}
 	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	active, _, err := s.store.HostForegroundState()
+	if err != nil {
+		return false, err
+	}
+	if active != nil && active.HostSessionID == strings.TrimSpace(agentID) {
+		generation, generationErr := s.hostOwnedGeneration(active.HostSessionID)
+		if generationErr != nil {
+			return false, generationErr
+		}
+		activityID := ""
+		terminal := false
+		if observation, found, probeErr := s.watcher.ProbeProviderEvidence(active.HostSessionID); probeErr != nil {
+			return false, probeErr
+		} else if found {
+			activityID = strings.TrimSpace(observation.ID)
+			status := strings.TrimSpace(observation.Status)
+			terminal = status == "completed" || status == "failed" || status == "interrupted" || status == "cancelled"
+			if active.ProviderActivityID != "" && activityID != active.ProviderActivityID {
+				terminal = false
+			}
+		} else if active.ProviderActivityID == "" {
+			agent := s.watcher.GetAgent(active.HostSessionID)
+			terminal = agent != nil && (agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateUnknown)
+		}
+		if terminal {
+			claimed, consumed, consumeErr := s.store.ConsumeHostAttentionReservation(
+				active.HostSessionID, generation, active.HostTurnID, activityID,
+			)
+			if consumeErr != nil {
+				return false, consumeErr
+			}
+			if consumed {
+				if _, deliveryErr := s.deliverClaimedEventLocked(claimed); deliveryErr != nil {
+					return false, deliveryErr
+				}
+			}
+		}
+	}
 	s.foregroundInput = true
-	s.dispatchMu.Unlock()
-	return true
+	return true, nil
 }
 
 func (s *Service) CancelUserSteering(agentID string) {
@@ -1282,6 +1363,36 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 		defer s.dispatchMu.Unlock()
 		wasForeground = s.foregroundInput
 		s.foregroundInput = false
+		active, _, foregroundErr := s.store.HostForegroundState()
+		if foregroundErr != nil {
+			return false, foregroundErr
+		}
+		if active != nil && active.HostSessionID == strings.TrimSpace(event.Agent.ID) {
+			generation, generationErr := s.hostOwnedGeneration(active.HostSessionID)
+			if generationErr != nil {
+				return false, generationErr
+			}
+			activityID := ""
+			if observation, found, probeErr := s.watcher.ProbeProviderEvidence(active.HostSessionID); probeErr != nil {
+				return false, probeErr
+			} else if found {
+				activityID = strings.TrimSpace(observation.ID)
+				status := strings.TrimSpace(observation.Status)
+				terminal := status == "completed" || status == "failed" || status == "interrupted" || status == "cancelled"
+				if !terminal || active.ProviderActivityID != "" && activityID != active.ProviderActivityID {
+					return false, fmt.Errorf("Host terminal observation does not match the reserved foreground provider turn")
+				}
+			}
+			claimed, consumed, consumeErr := s.store.ConsumeHostAttentionReservation(
+				active.HostSessionID, generation, active.HostTurnID, activityID,
+			)
+			if consumeErr != nil {
+				return false, consumeErr
+			}
+			if consumed {
+				return s.deliverClaimedEventLocked(claimed)
+			}
+		}
 		if wasForeground || requeued {
 			return s.dispatchPendingEventLocked()
 		}
@@ -1363,9 +1474,6 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		if watcher.TurnImmutable(turn.Status) {
 			continue
 		}
-		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
-			continue
-		}
 		// session.stale reads the current turn's OWN expected-next-check
 		// time only: the agent's lease fields are a cross-turn projection
 		// and cannot stale a newer turn (the false-stale incident). A dead
@@ -1375,6 +1483,45 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			continue
 		}
 		if !agent.PaneAlive && agent.ProcessID <= 0 {
+			continue
+		}
+		// Progress lease time and live execution ownership are orthogonal. An
+		// exact provider-native running Activity keeps this Turn/Work owned even
+		// when the Agent missed its expected progress check; stale Attention must
+		// not make a demonstrably live Session uncontrollable.
+		if s.watcher != nil {
+			observation, found, probeErr := s.watcher.ProbeProviderEvidence(item.OwnerSessionID)
+			if probeErr == nil && found {
+				switch strings.TrimSpace(observation.Status) {
+				case "running":
+					snapshot, _, applyErr := s.store.ApplyTurnFact(watcher.TurnFact{
+						SessionID: item.OwnerSessionID, TurnID: turn.TurnID,
+						Class: watcher.EvidenceProvider, Kind: "running",
+						SourceID: providerFactSourceID(item.OwnerSessionID, observation),
+						Cursor:   observation.AdmissionCursor, Admission: admissionFromObservation(observation),
+						ActivityID: strings.TrimSpace(observation.ID), StartedAt: observation.StartedAt,
+						At: now, Summary: "Delegated turn running",
+					})
+					if applyErr == nil && providerObservationOwnsTurn(snapshot, observation) {
+						if _, _, ownerErr := s.store.ReassertLiveTurnOwnership(item.ID, item.OwnerSessionID, turn.TurnID); ownerErr != nil {
+							log.Printf("brain live Work ownership repair failed for %s: %v", item.ID, ownerErr)
+						}
+						continue
+					}
+				case "completed":
+					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.OwnerSessionID, turn.TurnID, observation, "done"))
+					if applyErr == nil && watcher.TurnTerminal(snapshot.Status) {
+						continue
+					}
+				case "failed", "interrupted", "cancelled":
+					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.OwnerSessionID, turn.TurnID, observation, "failed"))
+					if applyErr == nil && watcher.TurnTerminal(snapshot.Status) {
+						continue
+					}
+				}
+			}
+		}
+		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 			continue
 		}
 		// Lease expired with a live nonterminal turn: one actionable
@@ -1392,6 +1539,21 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		})
 	}
 	_, _ = s.DispatchPendingEvent()
+}
+
+func providerObservationOwnsTurn(turn watcher.TurnSnapshot, observation watcher.ProviderActivityObservation) bool {
+	activityID := strings.TrimSpace(observation.ID)
+	if strings.TrimSpace(turn.ActivityID) != "" && activityID == strings.TrimSpace(turn.ActivityID) {
+		return true
+	}
+	admission := admissionFromObservation(observation)
+	if turn.HasAdmission && !admission.Empty() && admission.Stream == turn.Admission.Stream &&
+		admission.ID != "" && admission.Cursor >= turn.Admission.Cursor &&
+		(strings.TrimSpace(turn.Admission.SHA256) == "" || turn.Admission.SHA256 == admission.SHA256) {
+		return true
+	}
+	return !turn.HasAdmission && strings.TrimSpace(turn.ActivityID) == "" && activityID != "" &&
+		!observation.StartedAt.IsZero() && !observation.StartedAt.Before(turn.AcceptedAt)
 }
 
 func (s *Service) SubscribeWork() (int, <-chan WorkChange) {
@@ -1481,7 +1643,7 @@ func (s *Service) AnnotateWorkResultEvents(events []work.CodexConversationEvent)
 	return nil
 }
 
-func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
+func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string, bindActivity bool) (BrainInputAdmission, bool, error) {
 	if s == nil || s.store == nil {
 		return BrainInputAdmission{}, false, nil
 	}
@@ -1510,18 +1672,45 @@ func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversa
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(host.ID)
 	}
+	generation := ""
+	if s.watcher != nil {
+		generation, err = s.hostOwnedGeneration(strings.TrimSpace(host.ID))
+		if err != nil {
+			return BrainInputAdmission{}, false, err
+		}
+	}
+	activityID := ""
+	if bindActivity && s.watcher != nil {
+		if observation, found, probeErr := s.watcher.ProbeProviderEvidence(strings.TrimSpace(host.ID)); probeErr != nil {
+			return BrainInputAdmission{}, false, probeErr
+		} else if found {
+			activityID = strings.TrimSpace(observation.ID)
+		}
+	}
 	return BrainInputAdmission{
 		RequestID: strings.TrimSpace(receipt), ThreadID: threadID,
 		HostSessionID: strings.TrimSpace(host.ID), SessionID: sessionID,
+		HostGeneration: generation, ProviderActivityID: activityID,
 		DisplayBody: strings.TrimSpace(displayBody),
 	}, true, nil
+}
+
+func (s *Service) hostOwnedGeneration(hostSessionID string) (string, error) {
+	if s == nil || s.watcher == nil {
+		return "", fmt.Errorf("Brain Host watcher is unavailable")
+	}
+	owned, err := s.watcher.ResolveOwnedGeneration(hostSessionID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(owned.Generation), nil
 }
 
 // PrepareHostUserInput persists the one exact no-replay intent before Session
 // Input may mutate the provider. created=false means this request/thread was
 // already pending or accepted and must not be submitted again.
 func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
-	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey, false)
 	if err != nil || !hostInput {
 		return admission, false, err
 	}
@@ -1542,7 +1731,7 @@ func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 // idempotent messages.jsonl projection. request_id + thread_id is the exact
 // durable admission identity.
 func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
-	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey, true)
 	if err != nil || !hostInput {
 		return err
 	}
@@ -1550,7 +1739,11 @@ func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversation
 	if err != nil {
 		return err
 	}
-	return s.store.ProjectBrainInputAdmission(accepted)
+	if err := s.store.ProjectBrainInputAdmission(accepted); err != nil {
+		return err
+	}
+	_, dispatchErr := s.DispatchPendingEvent()
+	return dispatchErr
 }
 
 func threadIDFromConversationScopeKey(scopeKey string) string {

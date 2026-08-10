@@ -25,6 +25,8 @@ export function brainWorkEventReviewLabel(
   switch (event.review_state) {
     case "queued":
       return "Queued for Brain review";
+    case "reserved":
+      return "Reserved for next Brain turn";
     case "reviewing":
       return "Brain is reviewing";
     case "resolved":

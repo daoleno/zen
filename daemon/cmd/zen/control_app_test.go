@@ -37,6 +37,8 @@ type fakeControlWatcher struct {
 	submitted         []fakeControlSend
 	onCreate          func(string)
 	turnStore         *brain.Store
+	ownershipErr      error
+	ownershipCalls    []string
 }
 
 type fakeControlSend struct {
@@ -436,6 +438,19 @@ func (w *fakeControlWatcher) ClearDelegatedTurnMarkers([]string) {}
 
 func (w *fakeControlWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
 	return watcher.ProviderActivityObservation{}, false, nil
+}
+
+func (w *fakeControlWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	w.ownershipCalls = append(w.ownershipCalls, sessionID)
+	if w.ownershipErr != nil {
+		if agent := w.agents[sessionID]; agent != nil {
+			agent.State = classifier.StateUnknown
+			agent.Attention = "ownership_lost"
+			agent.NeedsAttention = true
+		}
+		return watcher.OwnedGeneration{}, w.ownershipErr
+	}
+	return watcher.OwnedGeneration{SessionID: sessionID, Generation: "owned-generation"}, nil
 }
 
 func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
@@ -955,6 +970,60 @@ func TestControlAppAgentListFiltersHiddenAgents(t *testing.T) {
 
 	if !resp.OK || len(resp.Agents) != 1 || resp.Agents[0].ID != "main:@1" {
 		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestControlAppOwnedSurfacesShareGenerationResolverAndDeprojectBeforeRejecting(t *testing.T) {
+	sessionID := "brain-agent-ownership-loss:@1"
+	for _, test := range []struct {
+		name      string
+		request   control.Request
+		wantOK    bool
+		wantError string
+	}{
+		{name: "list", request: control.Request{Type: "agent_list"}, wantOK: true},
+		{name: "status", request: control.Request{Type: "agent_status", AgentID: sessionID}, wantOK: true},
+		{name: "capture", request: control.Request{Type: "agent_capture", AgentID: sessionID}, wantError: "agent_ownership_lost"},
+		{name: "follow-up", request: control.Request{Type: "agent_send", AgentID: sessionID, Text: "continue", Submit: true}, wantError: "agent_ownership_lost"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fw := newFakeControlWatcher()
+			fw.agents[sessionID] = &classifier.Agent{
+				ID: sessionID, State: classifier.StateRunning, Delegated: true,
+				Command: "codex", Attention: "none",
+			}
+			fw.ownershipErr = errors.New("owned generation no longer matches canonical turn")
+			app := &controlApp{watcher: fw}
+
+			response := app.HandleControlRequest(test.request)
+			if response.OK != test.wantOK {
+				t.Fatalf("response = %#v, want ok=%v", response, test.wantOK)
+			}
+			if test.wantError != "" && (response.Error == nil || response.Error.Code != test.wantError) {
+				t.Fatalf("response = %#v, want error %q", response, test.wantError)
+			}
+			if len(fw.ownershipCalls) != 1 || fw.ownershipCalls[0] != sessionID {
+				t.Fatalf("owned-generation resolutions = %#v", fw.ownershipCalls)
+			}
+			projected := fw.agents[sessionID]
+			if projected.State != classifier.StateUnknown || projected.Attention != "ownership_lost" ||
+				!projected.NeedsAttention {
+				t.Fatalf("surface returned before ownership-loss deprojection: %+v", projected)
+			}
+			if test.name == "list" {
+				if len(response.Agents) != 1 || response.Agents[0].Status != "unknown" ||
+					response.Agents[0].Attention != "ownership_lost" {
+					t.Fatalf("list projection = %#v", response.Agents)
+				}
+			}
+			if test.name == "status" && (response.Agent == nil || response.Agent.Status != "unknown" ||
+				response.Agent.Attention != "ownership_lost") {
+				t.Fatalf("status projection = %#v", response)
+			}
+			if len(fw.sent) != 0 || len(fw.submitted) != 0 {
+				t.Fatalf("rejected surface mutated provider: sent=%#v submitted=%#v", fw.sent, fw.submitted)
+			}
+		})
 	}
 }
 

@@ -121,6 +121,11 @@ describe("Brain Work event source presentation", () => {
     expect(brainWorkEventReviewLabel(queued)).toBe("Queued for Brain review");
     expect(brainWorkEventSessionLabel(queued)).toBe("Session open");
 
+    const reserved = resultEvent({ review_state: "reserved" });
+    expect(brainWorkEventReviewLabel(reserved)).toBe(
+      "Reserved for next Brain turn",
+    );
+
     const resolved = resultEvent({
       review_state: "resolved",
       session_state: "finalized",

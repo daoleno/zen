@@ -121,7 +121,8 @@ type TurnLedgerImport struct {
 func validTurnStatus(status watcher.TurnStatus) bool {
 	switch status {
 	case watcher.TurnAdmitted, watcher.TurnAccepted, watcher.TurnRunning,
-		watcher.TurnBlocked, watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown:
+		watcher.TurnBlocked, watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown,
+		watcher.TurnOwnershipLost:
 		return true
 	default:
 		return false
@@ -299,7 +300,7 @@ func validateTurnRecord(turn TurnRecord) error {
 		return fmt.Errorf("accepted_at and updated_at are required")
 	}
 	switch turn.Status {
-	case watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown:
+	case watcher.TurnDone, watcher.TurnFailed, watcher.TurnUnknown, watcher.TurnOwnershipLost:
 		if turn.SettledAt == nil {
 			return fmt.Errorf("terminal turn requires settled_at")
 		}
@@ -1038,7 +1039,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.TurnDone, watcher.TurnFailed:
 		// Globally final and immutable: nothing can mutate a terminal turn.
 		return mutation, nil
-	case watcher.TurnUnknown:
+	case watcher.TurnUnknown, watcher.TurnOwnershipLost:
 		// Unknown is final for scheduling until a later authoritative Provider
 		// terminal upgrades it (C.2.4). A terminal may use the recorded tuple
 		// or ActivityID, OR it may safely adopt a previously unbound terminal
@@ -1047,7 +1048,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		// pane, stale, blind and replay-only facts remain ignored.
 		if fact.Class != watcher.EvidenceProvider ||
 			(fact.Kind != "done" && fact.Kind != "failed") ||
-			(!providerFactBinds(turn, fact) && !providerUnknownAdopts(turn, fact)) {
+			(!providerFactBinds(turn, fact) && !providerRecoverableAdopts(turn, fact)) {
 			return mutation, nil
 		}
 	}
@@ -1064,7 +1065,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	// no recorded tuple adopts the provider's newest observation that started
 	// inside its admission window (C.6 poll-time adoption).
 	binding := providerFactBinds(turn, fact)
-	adopts := !binding && (providerFactAdopts(turn, fact) || providerUnknownAdopts(turn, fact))
+	adopts := !binding && (providerFactAdopts(turn, fact) || providerRecoverableAdopts(turn, fact))
 
 	applyEvent := func(kind string, actionable bool, eventSummary string) {
 		mutation.eventKind = kind
@@ -1191,7 +1192,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				admission = fact.Admission
 				mutation.recordAdmission = true
 			}
-			if status == watcher.TurnUnknown {
+			if status == watcher.TurnUnknown || status == watcher.TurnOwnershipLost {
 				// C.2.4: a later bound Provider terminal upgrades canonical
 				// status and derived Work; the uncertain row stays as audit.
 			}
@@ -1328,6 +1329,16 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		}
 	case watcher.EvidenceLiveness:
 		switch fact.Kind {
+		case "ownership_lost":
+			if status != watcher.TurnOwnershipLost {
+				status = watcher.TurnOwnershipLost
+				attention = "ownership_lost"
+				summary = "Delegated Session control ownership was lost; inspect and recover"
+			}
+			settled := now
+			settledAt = &settled
+			mutation.changed = true
+			applyEvent("session.ownership_lost", true, summary)
 		case "failed":
 			// Liveness-derived Failed is removed entirely (Round 4): no
 			// production primitive can prove a dead pane's exit status
@@ -1460,16 +1471,17 @@ func providerFactAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 	return !fact.Admission.Empty() || strings.TrimSpace(fact.ActivityID) != ""
 }
 
-// providerUnknownAdopts is the one-way Unknown recovery gate. Evidence loss
+// providerRecoverableAdopts is the one-way Unknown/ownership-loss recovery
+// gate. Evidence loss
 // may occur before a receipt/admission tuple or ActivityID is recorded. A
 // later Provider terminal can still resolve the turn, but only when it carries
 // a non-empty tuple or ActivityID and its StartedAt is within this turn's
 // admission window. Running, attention, stale, liveness, blind and replay
 // facts cannot adopt Unknown.
-func providerUnknownAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
+func providerRecoverableAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 	if fact.Class != watcher.EvidenceProvider ||
 		(fact.Kind != "done" && fact.Kind != "failed") ||
-		turn.Status != watcher.TurnUnknown ||
+		(turn.Status != watcher.TurnUnknown && turn.Status != watcher.TurnOwnershipLost) ||
 		!turn.Admission.Empty() || strings.TrimSpace(turn.ActivityID) != "" {
 		return false
 	}
@@ -1505,8 +1517,62 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	case watcher.TurnUnknown:
 		next := "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
 		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
+	case watcher.TurnOwnershipLost:
+		next := "Recover or replace the delegated Session ownership before sending more control input."
+		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
 	}
 	return WorkUpdate{Status: &waiting}
+}
+
+// ReassertLiveTurnOwnership repairs only the exact current nonterminal Turn's
+// execution projection. It is used when authoritative provider activity stays
+// live after a progress lease expires; Attention rows remain untouched and
+// orthogonal.
+func (s *Store) ReassertLiveTurnOwnership(workID, sessionID, turnID string) (Work, bool, error) {
+	workID = strings.TrimSpace(workID)
+	sessionID = strings.TrimSpace(sessionID)
+	turnID = strings.TrimSpace(turnID)
+	if workID == "" || sessionID == "" || turnID == "" {
+		return Work{}, false, fmt.Errorf("Work, Session, and Turn identities are required")
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return Work{}, false, err
+	}
+	turn, found := currentTurnForSession(database, sessionID)
+	if !found || turn.TurnID != turnID || turn.WorkID != workID || watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(database, turn) {
+		return Work{}, false, nil
+	}
+	index := workIndex(database.BrainWork, workID)
+	if index < 0 {
+		return Work{}, false, ErrWorkNotFound
+	}
+	item := database.BrainWork[index]
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		return item, false, nil
+	}
+	if item.OwnerSessionID != "" && item.OwnerSessionID != sessionID {
+		return Work{}, false, fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, workID, item.OwnerSessionID)
+	}
+	update := derivedWorkUpdate(turn.Status, sessionID, "")
+	changed := item.OwnerSessionID != sessionID || !item.OwnerDelegated || workUpdateChanges(item, update)
+	if !changed {
+		return item, false, nil
+	}
+	item.OwnerSessionID = sessionID
+	item.OwnerDelegated = true
+	applyWorkUpdate(&item, update)
+	item.Revision++
+	item.UpdatedAt = now
+	database.BrainWork[index] = item
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return Work{}, false, err
+	}
+	s.broadcastWorkChange(workID)
+	return item, true, nil
 }
 
 // prepareDelegatedSignalTurnLocked validates the one prompt-carried identity
@@ -1797,12 +1863,12 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			workChanged = true
 		}
 	}
-	if !terminalWork && mutation.eventActionable && !watcher.TurnImmutable(turn.Status) &&
+	if !terminalWork && mutation.eventActionable && watcher.TurnTerminal(turn.Status) &&
+		!watcher.TurnImmutable(turn.Status) &&
 		workIndex >= 0 && strings.TrimSpace(workItem.OwnerSessionID) == turn.SessionID {
-		// A canonical blocked/stale Turn may transfer progress back to Brain,
-		// but it cannot remain a second execution owner hidden behind ready.
-		// Retain the exact Turn for lifecycle/finalization and allow an exact
-		// continue disposition to promote the same Session again.
+		// Only a recoverable terminal (Unknown/ownership_lost) deprojects exact
+		// execution ownership. Blocked and lease-overdue live turns retain their
+		// owner while Attention remains an orthogonal Brain obligation.
 		workItem.OwnerSessionID = ""
 		workItem.OwnerDelegated = false
 		workItem.UpdatedAt = now
@@ -1890,7 +1956,8 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	// terminal without the consumer attention, and FactID makes replay a no-op.
 	wokenWorkIDs := []string{}
 	if mutation.eventActionable && (mutation.eventKind == "session.done" ||
-		mutation.eventKind == "session.failed" || mutation.eventKind == "session.uncertain") {
+		mutation.eventKind == "session.failed" || mutation.eventKind == "session.uncertain" ||
+		mutation.eventKind == "session.ownership_lost") {
 		_, wokenWorkIDs, err = wakeWaitingWorkLocked(
 			&database,
 			WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(turn.SessionID, turn.TurnID)},

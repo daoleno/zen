@@ -1284,7 +1284,7 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !service.NoteUserSteering(hostID) {
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
 		t.Fatal("host user input was not recognized")
 	}
 	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
@@ -1335,7 +1335,7 @@ func TestConversationOnlyUserSteeringDoesNotCreateOrPauseWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !service.NoteUserSteering(hostID) {
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
 		t.Fatal("conversation-only Brain input was not recognized")
 	}
 	service.CancelUserSteering(hostID)

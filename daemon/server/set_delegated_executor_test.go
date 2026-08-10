@@ -86,6 +86,16 @@ func (w *brainServiceTestWatcher) ProbeProviderEvidence(string) (watcher.Provide
 	return watcher.ProviderActivityObservation{}, false, nil
 }
 
+func (w *brainServiceTestWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	if w.GetAgent(sessionID) == nil {
+		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
+	}
+	return watcher.OwnedGeneration{
+		SessionID:  sessionID,
+		Generation: "test-owned-generation",
+	}, nil
+}
+
 // killTrackingWatcher adds CreateSession and KillSession tracking needed for
 // snapshot/live delegated coverage.
 type killTrackingWatcher struct {

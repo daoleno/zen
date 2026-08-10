@@ -45,7 +45,7 @@ export type BrainSessionFinalization = {
   updated_at: string;
 };
 
-export type BrainWorkAttentionState = "queued" | "reviewing";
+export type BrainWorkAttentionState = "queued" | "reserved" | "reviewing";
 
 export type BrainCurrentWork = {
   work_id: string;
@@ -257,7 +257,9 @@ function normalizeCurrentWork(raw: unknown[]): BrainCurrentWork[] {
 function normalizeWorkAttentionState(
   value: unknown,
 ): BrainWorkAttentionState | undefined {
-  return value === "queued" || value === "reviewing" ? value : undefined;
+  return value === "queued" || value === "reserved" || value === "reviewing"
+    ? value
+    : undefined;
 }
 
 function normalizeWorkBacklog(value: unknown): BrainWorkBacklog {
