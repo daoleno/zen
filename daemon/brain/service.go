@@ -1058,6 +1058,14 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 				// wake; never release by elapsed time.
 				continue
 			}
+			if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
+				return false, turnErr
+			} else if providerMutated {
+				// Canonical provider admission dominates an absent transport
+				// receipt. Mutation began, so hold both authorities without
+				// replay and let ordinary admission/receipt recovery converge.
+				continue
+			}
 			// Receipt absent: host receipts are written before the host
 			// mutates, so the mutation provably never began. Release.
 			if releaseErr := s.store.ReleaseEventClaim(

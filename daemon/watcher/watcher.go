@@ -2257,8 +2257,10 @@ func (w *Watcher) SendInputWithReceiptResult(sessionID, text, receipt string) (I
 }
 
 // InputReceiptResult reads the existing Session Input receipt ledger without
-// submitting or reconstructing the original payload. A missing receipt is not
-// proof that a prior provider mutation was definitely unsent.
+// submitting or reconstructing the original payload. For a canonical pending
+// submission, a missing receipt proves non-submission only when its frozen
+// process and pane generation still match the current target; replacement is
+// returned as an error so callers hold without replay.
 func (w *Watcher) InputReceiptResult(sessionID, receipt string) (InputResult, bool, error) {
 	receipt = strings.TrimSpace(receipt)
 	if receipt == "" {

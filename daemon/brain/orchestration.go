@@ -2764,6 +2764,9 @@ func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent)
 
 // ReleaseEventClaim atomically makes the exact identity-bound Event claimable
 // again only when Session Input proved that provider mutation never started.
+// If canonical Host preparation already persisted the exact five-part pending
+// submission, that submission is aborted in this same replacement. A resolved
+// provider admission is ambiguous and keeps both authorities held.
 func (s *Store) ReleaseEventClaim(
 	eventID, claimToken, workID, hostSessionID, providerTurnID string,
 ) error {
@@ -2790,6 +2793,41 @@ func (s *Store) ReleaseEventClaim(
 			event.HandlingID != claimToken || event.WorkID != workID ||
 			event.DeliveryHostSessionID != hostSessionID || event.ProviderTurnID != providerTurnID {
 			return ErrEventClaim
+		}
+		submissionIndex := -1
+		conflictingPending := false
+		for candidate := range database.BrainTurnSubmissions {
+			submission := database.BrainTurnSubmissions[candidate]
+			exact := submission.Receipt == eventID && submission.ClaimToken == claimToken &&
+				submission.WorkID == workID && submission.SessionID == hostSessionID &&
+				submission.ProposedTurnID == providerTurnID
+			if exact {
+				submissionIndex = candidate
+				break
+			}
+			if submission.SessionID == hostSessionID && submission.State == watcher.TurnSubmissionPending {
+				conflictingPending = true
+			}
+		}
+		if submissionIndex < 0 && conflictingPending {
+			return ErrEventClaim
+		}
+		if submissionIndex >= 0 {
+			submission := &database.BrainTurnSubmissions[submissionIndex]
+			switch submission.State {
+			case watcher.TurnSubmissionPending:
+				abortedAt := s.nowUTC()
+				submission.State = watcher.TurnSubmissionAborted
+				submission.AbortedAt = &abortedAt
+			case watcher.TurnSubmissionAborted:
+				// A pre-mutation live attempt may already have persisted its
+				// canonical abort before returning InputNotSubmitted. Releasing
+				// the still-claimed Event completes that safe held state.
+			case watcher.TurnSubmissionResolved:
+				return ErrEventClaim
+			default:
+				return ErrEventClaim
+			}
 		}
 		event.ClaimedAt = nil
 		event.DeliveryHostSessionID = ""
@@ -2855,13 +2893,6 @@ func (s *Store) ConsumeClaimedWorkEvent(
 			now := s.nowUTC()
 			deliveredAt := now.UTC()
 			event.DeliveredAt = &deliveredAt
-			if reservation := database.BrainWork[workIndex].SuccessorReservation; reservation != nil &&
-				strings.TrimSpace(reservation.EventID) == "" && strings.TrimSpace(reservation.HandlingID) == "" {
-				reservation = cloneSuccessorReservation(reservation)
-				reservation.EventID = event.ID
-				reservation.HandlingID = event.HandlingID
-				database.BrainWork[workIndex].SuccessorReservation = reservation
-			}
 			claimed = *event
 			item = database.BrainWork[workIndex]
 			err = s.persistOrchestrationLocked(database)
@@ -3041,15 +3072,24 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, fmt.Errorf("continue disposition requires successor_session_id")
 		}
-		if !databaseHasActiveSuccessor(database, item.ID, request.SuccessorSessionID) {
-			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("successor Session is not an accepted active owner of Work")
+		successorTurnID := ""
+		if reservation := item.SuccessorReservation; reservation != nil {
+			boundToDisposition := reservation.EventID == event.ID && reservation.HandlingID == event.HandlingID
+			unboundAfterRequeue := strings.TrimSpace(reservation.EventID) == "" && strings.TrimSpace(reservation.HandlingID) == ""
+			if reservation.SessionID != request.SuccessorSessionID || reservation.ProviderTurnID == "" ||
+				(!boundToDisposition && !unboundAfterRequeue) {
+				s.mu.Unlock()
+				return WorkEvent{}, Work{}, fmt.Errorf("continue successor does not match the Session reserved for this disposition")
+			}
+			// Requeue intentionally removes the old Host handling binding while
+			// preserving the exclusive accepted successor. The new exact
+			// disposition validates that unbound reservation and promotes it in
+			// this transaction; consume never binds it to a coincident Host ID.
+			successorTurnID = reservation.ProviderTurnID
 		}
-		if reservation := item.SuccessorReservation; reservation != nil &&
-			(reservation.SessionID != request.SuccessorSessionID || reservation.EventID != event.ID ||
-				reservation.HandlingID != event.HandlingID || reservation.ProviderTurnID == "") {
+		if !databaseHasActiveSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
 			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("continue successor does not match the Session staged for this Host turn")
+			return WorkEvent{}, Work{}, fmt.Errorf("successor Session is not an accepted active non-Host owner of Work")
 		}
 		item.Status = WorkRunning
 		item.OwnerSessionID = request.SuccessorSessionID
@@ -3109,9 +3149,10 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	return resolvedEvent, item, nil
 }
 
-func databaseHasActiveSuccessor(database orchestrationDatabase, workID, sessionID string) bool {
+func databaseHasActiveSuccessor(database orchestrationDatabase, workID, sessionID, providerTurnID string) bool {
 	for _, turn := range database.BrainTurns {
 		if turn.WorkID == workID && turn.SessionID == sessionID &&
+			(providerTurnID == "" || turn.TurnID == providerTurnID) && !isHostHandlingTurn(database, turn) &&
 			turn.Status != watcher.TurnDone && turn.Status != watcher.TurnFailed && turn.Status != watcher.TurnUnknown {
 			return true
 		}

@@ -1255,6 +1255,54 @@ func TestSessionInputPostMutationIdentityReplacementCannotResolvePending(t *test
 	}
 }
 
+// A missing transport receipt proves non-submission only while the durable
+// pending transaction still names the current process and pane generation.
+// Reading a replacement target's empty receipt ledger must stay ambiguous so
+// the caller holds both the pending submission and its owning Event claim.
+func TestSessionInputPendingTargetReplacementCannotProveMissingReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		replace func(*fakeSessionInputIO, *targetProcessIdentity)
+	}{
+		{name: "process", replace: func(_ *fakeSessionInputIO, identity *targetProcessIdentity) {
+			identity.ProcessStart++
+		}},
+		{name: "pane generation", replace: func(io *fakeSessionInputIO, _ *targetProcessIdentity) {
+			io.paneValue.generation = "replacement-generation"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			io := newFakeSessionInputIO()
+			ledger := newFakeTurnLedger()
+			original := testSessionInputIdentity("codex")
+			payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host Event payload")))
+			pending, created, err := ledger.PrepareTurnSubmission(TurnSubmission{
+				WorkID: "work-host-event", SessionID: "agent:@1", ProposedTurnID: "provider-turn-host-event",
+				Receipt: "event-host-event", ClaimToken: "claim-host-event",
+				PayloadSHA256: payloadDigest, ProcessIdentity: delegatedTurnIdentity(original),
+				PaneGeneration: io.paneValue.generation, AcceptedAt: time.Now().UTC(), Mode: TurnSubmissionFresh,
+			})
+			if err != nil || !created || pending.State != TurnSubmissionPending {
+				t.Fatalf("prepare Host pending submission=(%+v, %v, %v)", pending, created, err)
+			}
+
+			replacement := original
+			test.replace(io, &replacement)
+			owner := newLedgerSessionInputOwner(io, ledger)
+			result, found, err := owner.receiptOutcome(
+				"agent:@1", replacement, fixedSessionInputResolver(replacement), pending.Receipt,
+			)
+			if err == nil || found || result.Outcome != InputNotSubmitted {
+				t.Fatalf("replacement missing receipt=(%+v, found=%v, err=%v), want ambiguous hold evidence", result, found, err)
+			}
+			retained, retainedFound, retainedErr := ledger.PendingTurnSubmission("agent:@1")
+			if retainedErr != nil || !retainedFound || retained.State != TurnSubmissionPending || retained.Receipt != pending.Receipt {
+				t.Fatalf("replacement receipt probe changed pending owner=(%+v, %v, %v)", retained, retainedFound, retainedErr)
+			}
+		})
+	}
+}
+
 func TestSessionInputTerminalOrUnknownReuseRejectsMismatchedProviderBaseline(t *testing.T) {
 	for _, status := range []TurnStatus{TurnDone, TurnUnknown} {
 		t.Run(string(status), func(t *testing.T) {

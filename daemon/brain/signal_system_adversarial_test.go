@@ -550,6 +550,240 @@ func TestSignalAdversarialHostProductPathAdmitsClaimedOwnerlessMigrationAttentio
 	)
 }
 
+// Host transport admission owns only Event delivery. Even when the Host
+// Session string happens to equal an exclusive delegated successor Session,
+// prepare, provider resolution, and consume must leave every Work byte
+// unchanged until the exact typed disposition promotes that successor.
+func TestSignalAdversarialHostConsumeNeverBindsCoincidentSuccessorReservation(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "Coincident Host and successor identity", "brain-agent-incumbent:@1")
+	appendSignalTestEvent(t, store, item, "coincident-reservation")
+	firstHandling, _ := deliverSignalTestEvent(t, store, "brain-agent-setup-host:@1")
+	coincidentID := "brain-agent-coincident:@1"
+	if _, err := store.ReserveWorkSuccessor(item.ID, coincidentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := store.RequeueUnhandledHostAttention(
+		firstHandling.ID, firstHandling.HandlingID, firstHandling.ProviderTurnID,
+	); err != nil || !created {
+		t.Fatalf("requeue reserved handling created=%v err=%v", created, err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent(coincidentID)
+	if err != nil || !ok {
+		t.Fatalf("claim coincident Host event ok=%v err=%v", ok, err)
+	}
+	before, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.SuccessorReservation == nil || before.SuccessorReservation.SessionID != coincidentID ||
+		before.SuccessorReservation.EventID != "" || before.SuccessorReservation.HandlingID != "" {
+		t.Fatalf("fixture did not retain one unbound successor reservation: %+v", before)
+	}
+	beforeBytes, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWorkBytes := func(boundary string) {
+		t.Helper()
+		current, readErr := store.Work(item.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		currentBytes, marshalErr := json.Marshal(current)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if string(currentBytes) != string(beforeBytes) {
+			t.Fatalf("%s mutated Work before disposition:\nbefore=%s\nafter=%s", boundary, beforeBytes, currentBytes)
+		}
+	}
+
+	acceptedAt := time.Date(2026, 8, 10, 7, 0, 0, 0, time.UTC)
+	payloadDigest := pendingSubmissionDigest("coincident Host claim")
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: coincidentID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, ClaimToken: claimed.HandlingID, PayloadSHA256: payloadDigest,
+		ProcessIdentity: "coincident-host-process", PaneGeneration: "coincident-host-pane",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare coincident Host submission pending=%+v created=%v err=%v", pending, created, err)
+	}
+	assertWorkBytes("Host prepare")
+	resolvedAt := acceptedAt.Add(time.Second)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: coincidentID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, PayloadSHA256: pending.PayloadSHA256,
+		ActivityID: "coincident-host-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "coincident-host-admission", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatalf("resolve coincident Host submission: %v", err)
+	}
+	assertWorkBytes("provider resolve")
+	if _, _, err := store.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID, coincidentID, claimed.ProviderTurnID,
+	); err != nil {
+		t.Fatalf("consume coincident Host claim: %v", err)
+	}
+	assertWorkBytes("Host consume")
+}
+
+func preparePendingClaimedHostSubmission(t *testing.T) (string, *Store, WorkEvent, watcher.TurnSubmission) {
+	t.Helper()
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "Pending Host claim", "brain-agent-worker:@1")
+	appendSignalTestEvent(t, store, item, "pending-host-claim")
+	hostID := "brain-agent-brain-hidden:@pending-host"
+	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok {
+		t.Fatalf("claim pending Host event ok=%v err=%v", ok, err)
+	}
+	acceptedAt := time.Date(2026, 8, 10, 7, 5, 0, 0, time.UTC)
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: hostID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, ClaimToken: claimed.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("pending claimed Host payload"),
+		ProcessIdentity: "pending-host-process", PaneGeneration: "pending-host-pane",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created || pending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("prepare pending Host claim pending=%+v created=%v err=%v", pending, created, err)
+	}
+	return root, store, claimed, pending
+}
+
+// Missing transport receipt plus the unchanged frozen target proves that the
+// provider mutation never began. The exact pending Host submission abort and
+// exact Event-claim release must therefore be one orchestration replacement:
+// reopen may expose only the complete held-before or complete released-after
+// state. A resolved submission is ambiguous and remains held without replay.
+func TestSignalAdversarialProvedUnsentHostSubmissionAndClaimAbortAtomicallyAcrossReopen(t *testing.T) {
+	t.Run("write failure keeps complete held before-state", func(t *testing.T) {
+		root, store, claimed, _ := preparePendingClaimedHostSubmission(t)
+		store.writeOrchestration = func(string, any) error { return errors.New("injected Host abort-release failure") }
+		if err := store.ReleaseEventClaim(
+			claimed.ID, claimed.HandlingID, claimed.WorkID,
+			claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+		); err == nil {
+			t.Fatal("injected Host abort-release failure was ignored")
+		}
+		reopened, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, found, err := reopened.WorkEvent(claimed.ID)
+		if err != nil || !found || event.ClaimedAt == nil || event.HandlingID != claimed.HandlingID ||
+			event.DeliveryHostSessionID != claimed.DeliveryHostSessionID || event.ProviderTurnID != claimed.ProviderTurnID {
+			t.Fatalf("write failure did not retain exact held Event: event=%+v found=%v err=%v", event, found, err)
+		}
+		submission, found, err := reopened.TurnSubmission(claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+		if err != nil || !found || submission.State != watcher.TurnSubmissionPending ||
+			submission.Receipt != claimed.ID || submission.ClaimToken != claimed.HandlingID || submission.WorkID != claimed.WorkID {
+			t.Fatalf("write failure did not retain exact pending Host submission: submission=%+v found=%v err=%v", submission, found, err)
+		}
+	})
+
+	t.Run("one write commits complete aborted released after-state", func(t *testing.T) {
+		root, _, claimed, _ := preparePendingClaimedHostSubmission(t)
+		reopened, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writes := 0
+		write := reopened.writeOrchestration
+		reopened.writeOrchestration = func(path string, value any) error {
+			writes++
+			if writes > 1 {
+				return errors.New("Host abort-release attempted split persistence")
+			}
+			return write(path, value)
+		}
+		delivery := &fakeWatcher{sessions: map[string]*classifier.Agent{
+			claimed.DeliveryHostSessionID: {ID: claimed.DeliveryHostSessionID, Hidden: true, State: classifier.StateRunning},
+		}}
+		if woke, err := NewService(reopened, delivery, nil).DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("reopen proved-unsent recovery woke=%v err=%v", woke, err)
+		}
+		if writes != 1 {
+			t.Fatalf("Host abort-release writes=%d want 1", writes)
+		}
+		if len(delivery.sentCalls) != 0 {
+			t.Fatalf("reopen replayed pending Host input: %+v", delivery.sentCalls)
+		}
+		reopenedAgain, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, found, err := reopenedAgain.WorkEvent(claimed.ID)
+		if err != nil || !found || event.ClaimedAt != nil || event.HandlingID != "" ||
+			event.DeliveryHostSessionID != "" || event.ProviderTurnID != "" {
+			t.Fatalf("atomic after-state did not release exact Event: event=%+v found=%v err=%v", event, found, err)
+		}
+		submission, found, err := reopenedAgain.TurnSubmission(claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+		if err != nil || !found || submission.State != watcher.TurnSubmissionAborted {
+			t.Fatalf("atomic after-state did not abort exact Host submission: submission=%+v found=%v err=%v", submission, found, err)
+		}
+		retry, ok, err := reopenedAgain.ClaimNextActionableEvent(claimed.DeliveryHostSessionID)
+		if err != nil || !ok || retry.ID != claimed.ID || retry.HandlingID == claimed.HandlingID ||
+			retry.ProviderTurnID == claimed.ProviderTurnID {
+			t.Fatalf("released Event did not mint one fresh exact retry: retry=%+v ok=%v err=%v", retry, ok, err)
+		}
+	})
+
+	t.Run("resolved provider admission remains held", func(t *testing.T) {
+		root, store, claimed, pending := preparePendingClaimedHostSubmission(t)
+		resolveDelegatedSubmission(
+			t, store, pending, "ambiguous-host-activity",
+			time.Date(2026, 8, 10, 7, 5, 1, 0, time.UTC),
+		)
+		writes := 0
+		write := store.writeOrchestration
+		store.writeOrchestration = func(path string, value any) error {
+			writes++
+			return write(path, value)
+		}
+		if err := store.ReleaseEventClaim(
+			claimed.ID, claimed.HandlingID, claimed.WorkID,
+			claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+		); !errors.Is(err, ErrEventClaim) {
+			t.Fatalf("resolved provider admission release err=%v want ErrEventClaim", err)
+		}
+		if writes != 0 {
+			t.Fatalf("ambiguous resolved admission attempted %d persistence writes", writes)
+		}
+		delivery := &fakeWatcher{sessions: map[string]*classifier.Agent{
+			claimed.DeliveryHostSessionID: {ID: claimed.DeliveryHostSessionID, Hidden: true, State: classifier.StateRunning},
+		}}
+		if woke, err := NewService(store, delivery, nil).DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("ambiguous resolved recovery woke=%v err=%v", woke, err)
+		}
+		if len(delivery.sentCalls) != 0 || writes != 0 {
+			t.Fatalf("ambiguous resolved recovery replayed or wrote: sends=%+v writes=%d", delivery.sentCalls, writes)
+		}
+		reopened, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, _, _ := reopened.WorkEvent(claimed.ID)
+		submission, found, err := reopened.TurnSubmission(claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+		if err != nil || !found || event.ClaimedAt == nil || submission.State != watcher.TurnSubmissionResolved {
+			t.Fatalf("ambiguous provider admission was not held: event=%+v submission=%+v found=%v err=%v", event, submission, found, err)
+		}
+	})
+}
+
 // A retained owner link is never admission authority by itself. Admission
 // requires exact canonical submission/Turn evidence, and reopening must not
 // promote the same bare owner string into authority.
