@@ -1366,6 +1366,119 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	}
 }
 
+func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAndRestart(t *testing.T) {
+	for _, test := range []struct {
+		name                   string
+		migrationCompleteFirst bool
+	}{
+		{name: "migration complete", migrationCompleteFirst: true},
+		{name: "migration incomplete", migrationCompleteFirst: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := brain.NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.migrationCompleteFirst {
+				complete, processed, err := store.MigrateSignalSystemV1(8)
+				if err != nil || !complete || processed != 0 {
+					t.Fatalf("complete empty migration=%v processed=%d err=%v", complete, processed, err)
+				}
+			}
+
+			fw := newFakeControlWatcher()
+			fw.sendErr = &watcher.InputSubmissionError{
+				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
+				Cause:  errors.New("provider composer was not ready"),
+			}
+			app := &controlApp{
+				watcher: fw, brainStore: store,
+				execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+					"codex": {Name: "codex", Command: "codex"},
+				}),
+			}
+			resp := app.HandleControlRequest(control.Request{
+				Type: "agent_spawn", Name: "Failed admission", Cwd: "/repo/zen",
+				Prompt: "must execute exactly once",
+			})
+			if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+				t.Fatalf("spawn failure response=%#v", resp)
+			}
+			items, err := store.ListWork()
+			if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+				t.Fatalf("failed spawn Work=%+v err=%v", items, err)
+			}
+			if len(fw.sent) != 1 || len(fw.created) != 1 {
+				t.Fatalf("provider effects sent=%d created=%d, want one each", len(fw.sent), len(fw.created))
+			}
+
+			reopened, err := brain.NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.migrationCompleteFirst {
+				complete, processed, err := reopened.MigrateSignalSystemV1(8)
+				if err != nil || complete || processed != 1 {
+					t.Fatalf("incomplete migration pass=%v processed=%d err=%v", complete, processed, err)
+				}
+				complete, processed, err = reopened.MigrateSignalSystemV1(8)
+				if err != nil || !complete || processed != 0 {
+					t.Fatalf("migration completion=%v processed=%d err=%v", complete, processed, err)
+				}
+			}
+			events, err := reopened.ListWorkEvents(items[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reconciles := 0
+			for _, event := range events {
+				if event.Kind == "brain.reconcile_required" && event.HandledAt == nil {
+					reconciles++
+				}
+				if strings.HasPrefix(event.Kind, "session.") {
+					t.Fatalf("definite non-submission projected a Session result: %+v", events)
+				}
+			}
+			if reconciles != 1 {
+				t.Fatalf("reconcile obligations=%d, want one: %+v", reconciles, events)
+			}
+
+			hostID := "brain-agent-brain-hidden:@spawn-failure"
+			claimed, ok, err := reopened.ClaimNextActionableEvent(hostID)
+			if err != nil || !ok || claimed.Kind != "brain.reconcile_required" {
+				t.Fatalf("reconcile claim=%+v ok=%v err=%v", claimed, ok, err)
+			}
+			resolveControlHostClaim(t, reopened, claimed)
+			delivered, _, err := reopened.ConsumeClaimedWorkEvent(
+				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, resolved, err := reopened.ResolveWorkEvent(brain.WorkEventDispositionRequest{
+				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+				ProviderTurnID:       delivered.ProviderTurnID,
+				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+				Disposition:          brain.WorkDispositionCancel,
+			}); err != nil || resolved.Status != brain.WorkCancelled {
+				t.Fatalf("typed reconcile resolution Work=%+v err=%v", resolved, err)
+			}
+
+			reopenedAgain, err := brain.NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
+				t.Fatalf("resolved spawn failure replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
+			}
+			if len(fw.sent) != 1 || len(fw.created) != 1 {
+				t.Fatalf("restart replayed Session effect: sent=%d created=%d", len(fw.sent), len(fw.created))
+			}
+		})
+	}
+}
+
 func TestControlAppAmbiguousLiveSpawnReturnsPendingAndExactProgressConvergesAfterRestart(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.sendErr = &watcher.InputSubmissionError{

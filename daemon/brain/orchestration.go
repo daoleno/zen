@@ -1456,9 +1456,38 @@ func attentionEventCanObligate(database orchestrationDatabase, event WorkEvent) 
 	if item.Status != WorkDone && item.Status != WorkCancelled {
 		return true
 	}
+	// A finalization retry is born only after the Work is terminal. Its
+	// immutable Session/attempt identity, not the Work's mutable metadata
+	// timestamp, is the causality fence. A later title, context, or other
+	// terminal metadata update therefore cannot turn the current failed
+	// teardown obligation into audit-only history.
+	if terminalFinalizationFailureOwnsAttention(item, event) {
+		return true
+	}
 	// Strictly earlier Events are historical backlog; equality stays eligible
 	// for serialized terminal update-then-append under coarse clocks.
 	return !event.CreatedAt.Before(item.UpdatedAt)
+}
+
+func terminalFinalizationFailureOwnsAttention(item Work, event WorkEvent) bool {
+	if event.Kind != "brain.finalization_failed" {
+		return false
+	}
+	sessionID := strings.TrimSpace(event.SourceName)
+	if sessionID == "" || event.PayloadRef != "session:"+sessionID {
+		return false
+	}
+	for _, finalization := range item.SessionFinalizations {
+		if finalization.SessionID == sessionID && finalization.State == SessionFinalizationFailed &&
+			event.DedupeKey == finalizationFailureDedupeKey(sessionID, finalization.Attempts) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalizationFailureDedupeKey(sessionID string, attempt uint32) string {
+	return fmt.Sprintf("brain:finalization:%s:attempt:%d", strings.TrimSpace(sessionID), attempt)
 }
 
 func reduceAttentionObligations(database orchestrationDatabase) map[string]attentionObligation {
@@ -3901,7 +3930,7 @@ func (s *Store) RecordSessionFinalization(workID, sessionID string, state Sessio
 	if state == SessionFinalizationFailed {
 		event := WorkEvent{
 			ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.finalization_failed",
-			DedupeKey:  fmt.Sprintf("brain:finalization:%s:attempt:%d", finalization.SessionID, finalization.Attempts),
+			DedupeKey:  finalizationFailureDedupeKey(finalization.SessionID, finalization.Attempts),
 			PayloadRef: "session:" + finalization.SessionID, SourceName: finalization.SessionID,
 			Summary:    "Delegated Session finalization failed: " + finalization.LastError,
 			Actionable: true, CreatedAt: now,

@@ -508,6 +508,126 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	}
 }
 
+func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		claimBeforeMetadata bool
+	}{
+		{name: "queued retry", claimBeforeMetadata: false},
+		{name: "claimed but not delivered retry", claimBeforeMetadata: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := time.Date(2026, 8, 11, 3, 0, 0, 0, time.UTC)
+			now := base
+			store.now = func() time.Time { return now }
+			delegatedID := "brain-agent-finalization-fence:@1"
+			hostID := "brain-agent-brain-hidden:@finalization-fence"
+			item := createSignalTestWork(t, store, "Finalization retry fence", delegatedID)
+			now = base.Add(time.Minute)
+			appendSignalTestEvent(t, store, item, "finalization-fence")
+			delivered, _ := deliverSignalTestEvent(t, store, hostID)
+
+			fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+				delegatedID: {ID: delegatedID, Delegated: true},
+			}, killErr: errors.New("injected teardown failure"), killLeavesLive: true}
+			service := NewService(store, fw, nil)
+			_, failed, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
+				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+				ProviderTurnID:       delivered.ProviderTurnID,
+				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+				Disposition:          WorkDispositionComplete,
+			})
+			if err == nil || len(failed.SessionFinalizations) != 1 ||
+				failed.SessionFinalizations[0].State != SessionFinalizationFailed {
+				t.Fatalf("failed finalization Work=%+v err=%v", failed, err)
+			}
+			events, err := store.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if countUnhandledEventKind(events, "brain.finalization_failed") != 1 {
+				t.Fatalf("finalization retry was not exactly one durable obligation: %+v", events)
+			}
+
+			var claim WorkEvent
+			if test.claimBeforeMetadata {
+				var ok bool
+				claim, ok, err = store.ClaimNextActionableEvent(hostID)
+				if err != nil || !ok || claim.Kind != "brain.finalization_failed" {
+					t.Fatalf("pre-metadata claim=%+v ok=%v err=%v", claim, ok, err)
+				}
+			}
+
+			now = base.Add(2 * time.Minute)
+			contextRef := "worklog/finalization-retry-after-terminal-metadata.md"
+			if _, err := store.UpdateWork(item.ID, WorkUpdate{ContextRef: &contextRef}); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.claimBeforeMetadata {
+				blockers, err := reopened.ClaimedActionableEvents()
+				if err != nil || len(blockers) != 1 || blockers[0].ID != claim.ID {
+					t.Fatalf("reopened held claim=%+v err=%v", blockers, err)
+				}
+				if err := reopened.ReleaseEventClaim(
+					claim.ID, claim.HandlingID, claim.WorkID, hostID, claim.ProviderTurnID,
+				); err != nil {
+					t.Fatalf("release proved-undelivered retry claim: %v", err)
+				}
+			}
+			claim, ok, err := reopened.ClaimNextActionableEvent(hostID)
+			if err != nil || !ok || claim.Kind != "brain.finalization_failed" {
+				t.Fatalf("post-metadata retry claim=%+v ok=%v err=%v", claim, ok, err)
+			}
+			resolveClaimedHostTurnForTest(t, reopened, claim)
+			retry, _, err := reopened.ConsumeClaimedWorkEvent(
+				claim.ID, claim.HandlingID, claim.WorkID, hostID, claim.ProviderTurnID,
+			)
+			if err != nil {
+				t.Fatalf("deliver finalization retry: %v", err)
+			}
+
+			fw.killErr = nil
+			fw.killLeavesLive = false
+			reopenedService := NewService(reopened, fw, nil)
+			_, finalized, err := reopenedService.ResolveWorkEvent(WorkEventDispositionRequest{
+				EventID: retry.ID, HandlingID: retry.HandlingID,
+				ProviderTurnID:       retry.ProviderTurnID,
+				ExpectedWorkRevision: retry.DeliveryWorkRevision,
+				Disposition:          WorkDispositionComplete,
+			})
+			if err != nil || len(finalized.SessionFinalizations) != 1 ||
+				finalized.SessionFinalizations[0].State != SessionFinalizationComplete || len(fw.killed) != 2 {
+				t.Fatalf("finalized Work=%+v killed=%v err=%v", finalized, fw.killed, err)
+			}
+
+			reopenedAgain, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
+				t.Fatalf("finalization retry replayed after completion: event=%+v claimed=%v err=%v", replay, claimed, err)
+			}
+			events, err = reopenedAgain.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if countUnhandledEventKind(events, "brain.finalization_failed") != 0 {
+				t.Fatalf("handled finalization retry remained actionable: %+v", events)
+			}
+		})
+	}
+}
+
 func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
