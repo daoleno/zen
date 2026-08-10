@@ -113,7 +113,7 @@ describe("semantic action model", () => {
         input: FIXTURES.codexExecCommand,
         status: "done",
       }).title,
-    ).toBe("Search");
+    ).toBe("Search SemanticAction");
 
     expect(
       collapsedToolLabel({
@@ -121,7 +121,7 @@ describe("semantic action model", () => {
         input: FIXTURES.codexApplyPatch,
         status: "done",
       }).title,
-    ).toBe("Edit");
+    ).toBe("Edit app/services/toolCallSemantics.ts");
 
     expect(
       collapsedToolLabel({
@@ -137,21 +137,18 @@ describe("semantic action model", () => {
         input: FIXTURES.codexViewImage,
         status: "done",
       }).title,
-    ).toBe("Open");
+    ).toBe("Open fixture-preview.png");
 
     const multi = collapsedToolLabel({
       toolName: "exec",
       input: FIXTURES.codexMulti,
       status: "done",
     });
-    expect(multi.title).toBe("Run");
+    expect(multi.title).toBe("Run go test ./work + 1");
     expect(multi.detail).toBeUndefined();
     expect(multi.children?.length).toBe(2);
     expect(multi.providerToolId).toBe("exec_command");
-    expect(multi.children?.map((child) => child.label)).toEqual([
-      "Test",
-      "Run",
-    ]);
+    expect(multi.children?.map((child) => child.label)).toEqual(["Run", "Run"]);
   });
 
   test("keeps direct legacy and provider shapes working", () => {
@@ -265,16 +262,16 @@ describe("timeline presentation", () => {
       (item): item is ZenActivityTimelineItem => item.type === "activity",
     );
     expect(activities.map((item) => item.title)).toEqual([
-      "Search",
-      "Run",
-      "Search",
-      "Test",
-      "Open",
-      "Open",
+      "Search SemanticAction",
+      "Run go test ./work + 1",
+      "Search codex",
+      "Run go test ./work",
+      "Open legacy.png",
+      "Open fixture-preview.png",
     ]);
-    expect(activities[0]?.detail).toBe("SemanticAction");
+    expect(activities[0]?.detail).toBe("Done");
     expect(activities[0]?.providerToolId).toBeUndefined();
-    expect(activities[1]?.detail).toBeUndefined();
+    expect(activities[1]?.detail).toBe("Succeeded");
     expect(activities[1]?.children?.length).toBe(2);
     expect(activities[1]?.providerToolId).toBe("exec_command");
     expect(activities[1]?.developerDetails?.providerToolId).toBe(

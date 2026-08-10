@@ -77,9 +77,18 @@ export function InterfaceTimelineActivityHeader({
   if (detail) {
     labelParts.push(detail);
   }
-  if (tone === "failed") {
+  const normalizedDetail = detail?.toLowerCase() || "";
+  if (
+    tone === "failed" &&
+    !normalizedDetail.includes("failed") &&
+    !normalizedDetail.includes("blocked")
+  ) {
     labelParts.push("failed");
-  } else if (tone === "running") {
+  } else if (
+    tone === "running" &&
+    !normalizedDetail.includes("running") &&
+    !normalizedDetail.includes("waiting")
+  ) {
     labelParts.push("in progress");
   }
   if (canExpand) {
@@ -178,11 +187,7 @@ export function InterfaceTimelineActivityHeader({
       />
       <View style={styles.copy} pointerEvents="none">
         <Text
-          style={[
-            styles.title,
-            detail ? null : styles.titleOnly,
-            { color: chrome.textMuted },
-          ]}
+          style={[styles.title, { color: chrome.textMuted }]}
           numberOfLines={1}
           ellipsizeMode="tail"
         >
@@ -233,19 +238,16 @@ const styles = StyleSheet.create({
   },
   title: {
     ...activityHeaderSharedTextStyle,
-    flexShrink: 0,
-    fontFamily: ACTIVITY_HEADER_TITLE_FONT,
-    fontWeight: "500",
-  },
-  titleOnly: {
     flex: 1,
     minWidth: 0,
     flexShrink: 1,
+    fontFamily: ACTIVITY_HEADER_TITLE_FONT,
+    fontWeight: "500",
   },
   detail: {
     ...activityHeaderSharedTextStyle,
-    flex: 1,
-    flexShrink: 1,
+    maxWidth: "46%",
+    flexShrink: 0,
     minWidth: 0,
     marginLeft: ACTIVITY_HEADER_DETAIL_GAP,
     fontFamily: ACTIVITY_HEADER_DETAIL_FONT,

@@ -7,13 +7,16 @@ import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
 import {
   buildExpandedToolDetails,
   isWaitSessionPoll,
+  toolResultStatusLine,
 } from "../../services/toolCallDetails";
 import {
   collapsedToolLabel,
+  distinctivePath,
   isExecWrapperToolName,
   isUnsafeCollapsedDetail,
   parseExecWrapperCalls,
   primarySemanticAction,
+  semanticActionTitle,
   type SemanticAction,
   type SemanticActionKind,
 } from "../../services/toolCallSemantics";
@@ -82,6 +85,7 @@ type ExplorationEntry = {
 
 type PatchSummary = {
   title: string;
+  detail?: string;
   files: PatchFileSummary[];
   totalAdded?: number;
   totalRemoved?: number;
@@ -439,10 +443,7 @@ function normalizeBrainWorkResultKind(
 
 export function attachBrainWorkEventActions(
   items: ZenTimelineItem[],
-  onActivate?: (
-    event: BrainWorkResultEvent,
-    canOpenSession: boolean,
-  ) => void,
+  onActivate?: (event: BrainWorkResultEvent, canOpenSession: boolean) => void,
   openSessionIds?: ReadonlySet<string>,
 ): ZenTimelineItem[] {
   if (!onActivate) {
@@ -519,7 +520,7 @@ function activityFromEvent(
           : failed
             ? "alert-circle-outline"
             : presentation.icon,
-        detail: safeCollapsedDetail(details.quietDetail || semantic.detail),
+        detail: safeCollapsedDetail(details.statusLine || semantic.detail),
         body: output.text || undefined,
         bodyKind: output.text
           ? commandOutputBodyKind(command, output.text)
@@ -542,24 +543,44 @@ function activityFromEvent(
     }
     case "patch": {
       const summary = patchSummaryFromEvent(event);
+      const failed =
+        isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
+      const running = isEventRunning(event);
+      const status = running ? "running" : failed ? "failed" : "done";
       const semantic = collapsedToolLabel({
         kind: "patch",
         toolName: "apply_patch",
         files: summary.files.map((file) => file.path),
-        status: "done",
+        status,
+        exitCode: event.exit_code,
       });
+      const result = toolResultStatusLine(
+        "update_files",
+        status,
+        event.exit_code,
+      );
+      const detail =
+        status === "done"
+          ? summary.detail || result
+          : [result, summary.detail].filter(Boolean).join(" · ");
       return {
         type: "activity",
         id: event.id || `patch:${event.seq}`,
         timestamp: event.timestamp,
+        statusKey: status,
         title: summary.title,
-        tone: "success",
-        icon: "git-compare-outline",
+        tone: running ? "running" : failed ? "failed" : "success",
+        icon: running
+          ? "time-outline"
+          : failed
+            ? "alert-circle-outline"
+            : "git-compare-outline",
+        detail,
         fileSummaries: summary.files,
         files: summary.files.map((file) => file.path),
         body: summary.files.length > 0 ? undefined : event.body,
-        defaultExpanded: false,
-        accessibilityLabel: summary.title,
+        defaultExpanded: failed,
+        accessibilityLabel: semantic.accessibilityLabel,
         providerToolId: semantic.providerToolId,
         developerDetails: semantic.providerToolId
           ? { providerToolId: semantic.providerToolId }
@@ -571,8 +592,19 @@ function activityFromEvent(
       if (isLowSignalToolEvent(name, event.input || "")) {
         return null;
       }
+      const preliminaryAction = primarySemanticAction({
+        kind: "tool",
+        toolName: name,
+        title: event.title,
+        input: event.input,
+        command: event.command,
+        status: event.status,
+        exitCode: event.exit_code,
+        files: event.files,
+      });
       const failed =
-        isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
+        isFailureLikeStatus(event.status) ||
+        isSemanticToolExitFailure(event, preliminaryAction.kind);
       const running = isEventRunning(event);
       const status = running
         ? "running"
@@ -648,9 +680,8 @@ function activityFromEvent(
           failed,
         ),
         detail: safeCollapsedDetail(
-          isWait
-            ? details.statusLine || details.quietDetail
-            : details.quietDetail || semantic.detail,
+          details.statusLine ||
+            (isWait ? details.quietDetail : semantic.detail),
         ),
         body: isWait ? undefined : result.text || undefined,
         bodyKind:
@@ -803,22 +834,24 @@ function explorationActivityFromEntries(
     failedOutputs.length > 0
       ? cleanTerminalDisplayText([...commandLines, ...failedOutputs].join("\n"))
       : "";
-  const semantic = collapsedToolLabel({
+  const semantic = primarySemanticAction({
     kind: "command",
     command: first?.event.command,
     toolName: "exec_command",
     status: running ? "running" : failed ? "failed" : "done",
   });
+  const resultStatus = running ? "running" : failed ? "failed" : "done";
   const title =
-    entries.length > 1 ? (running ? "Exploring" : "Explored") : semantic.title;
-  const quietDetail =
     entries.length > 1
-      ? `${entries.length} lookups`
-      : files.length === 1
-        ? basename(files[0])
-        : files.length > 1
-          ? `${files.length} files`
-          : undefined;
+      ? semantic.target
+        ? `${semantic.label} ${semantic.target} + ${entries.length - 1}`
+        : `Explore ${entries.length} lookups`
+      : semanticActionTitle(semantic);
+  const quietDetail = toolResultStatusLine(
+    semantic.kind,
+    resultStatus,
+    entries.find((entry) => entry.failed)?.event.exit_code,
+  );
 
   return {
     type: "activity",
@@ -838,7 +871,7 @@ function explorationActivityFromEntries(
     defaultExpanded: false,
     accessibilityLabel:
       entries.length > 1
-        ? `${title}, ${entries.length} lookups`
+        ? `${title}, ${quietDetail}`
         : semantic.accessibilityLabel,
     providerToolId: undefined,
     developerDetails: undefined,
@@ -966,9 +999,7 @@ function cleanTerminalDisplayText(value: string) {
 }
 
 function finishDisplayText(value: string) {
-  return value
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return value.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /**
@@ -1003,10 +1034,7 @@ function stripTerminalControlSequences(value: string) {
 }
 
 function stripProgressSpinnerPrefix(line: string) {
-  return line.replace(
-    /^[ \t]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]+[ \t]*(?=\S)/,
-    "",
-  );
+  return line.replace(/^[ \t]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]+[ \t]*(?=\S)/, "");
 }
 
 function patchSummaryFromEvent(event: CodexConversationEvent): PatchSummary {
@@ -1031,8 +1059,14 @@ function patchSummaryFromEvent(event: CodexConversationEvent): PatchSummary {
     left.path.localeCompare(right.path),
   );
   const { totalAdded, totalRemoved } = knownPatchTotals(files);
-  const title = patchSummaryTitle(files, totalAdded, totalRemoved);
-  return { title, files, totalAdded, totalRemoved };
+  const title = patchSummaryTitle(files);
+  return {
+    title,
+    detail: patchLineTotals(totalAdded, totalRemoved),
+    files,
+    totalAdded,
+    totalRemoved,
+  };
 }
 
 function parseApplyPatchSummary(patch: string): PatchSummary {
@@ -1108,46 +1142,36 @@ function parseApplyPatchSummary(patch: string): PatchSummary {
 
   const { totalAdded, totalRemoved } = knownPatchTotals(files);
   return {
-    title: patchSummaryTitle(files, totalAdded, totalRemoved),
+    title: patchSummaryTitle(files),
+    detail: patchLineTotals(totalAdded, totalRemoved),
     files,
     totalAdded,
     totalRemoved,
   };
 }
 
-function patchSummaryTitle(
-  files: PatchFileSummary[],
-  totalAdded?: number,
-  totalRemoved?: number,
-) {
+function patchSummaryTitle(files: PatchFileSummary[]) {
   if (files.length === 0) {
-    return "Edited files";
+    return "Edit files";
   }
   if (files.length === 1) {
     const file = files[0];
     const verb =
       file.operation === "add"
-        ? "Added"
+        ? "Add"
         : file.operation === "delete"
-          ? "Deleted"
-          : "Edited";
+          ? "Delete"
+          : "Edit";
     const target = safePatchDisplayPath(file) || "1 file";
-    return `${verb} ${target}${lineCountSummary(file.added, file.removed)}`;
+    return `${verb} ${target}`;
   }
 
-  let title = `Edited ${files.length} files`;
-  const commonDirectory = commonPatchDirectory(files);
-  if (commonDirectory) {
-    title += ` in ${commonDirectory}`;
-  } else {
-    const firstTarget = files
-      .map(safePatchDisplayPath)
-      .find((path): path is string => Boolean(path));
-    if (firstTarget) {
-      title += ` · ${firstTarget} + ${files.length - 1} more`;
-    }
-  }
-  return title + lineCountSummary(totalAdded, totalRemoved);
+  const firstTarget = files
+    .map(safePatchDisplayPath)
+    .find((path): path is string => Boolean(path));
+  return firstTarget
+    ? `Edit ${firstTarget} + ${files.length - 1}`
+    : `Edit ${files.length} files`;
 }
 
 export function patchDisplayPath(file: PatchFileSummary) {
@@ -1171,38 +1195,19 @@ function knownPatchTotals(files: PatchFileSummary[]): {
 }
 
 function safePatchDisplayPath(file: PatchFileSummary): string | undefined {
-  const path = patchDisplayPath(file);
-  return isUnsafeCollapsedDetail(path) ? undefined : path;
-}
-
-function commonPatchDirectory(files: PatchFileSummary[]): string | undefined {
-  const directories = files.map((file) => {
-    const path = (file.movePath || file.path).replace(/\\/g, "/");
-    const separator = path.lastIndexOf("/");
-    return separator > 0 ? path.slice(0, separator) : "";
-  });
-  if (directories.some((directory) => !directory)) {
+  const from = distinctivePath(file.path);
+  if (!from) {
     return undefined;
   }
-  const segments = directories.map((directory) => directory.split("/"));
-  const common = [...segments[0]];
-  for (const parts of segments.slice(1)) {
-    while (
-      common.length > 0 &&
-      common.some((segment, index) => segment !== parts[index])
-    ) {
-      common.pop();
-    }
+  if (!file.movePath) {
+    return from;
   }
-  const directory = common.join("/");
-  if (!directory || directory === "/" || isUnsafeCollapsedDetail(directory)) {
-    return undefined;
-  }
-  return directory;
+  const to = distinctivePath(file.movePath);
+  return to ? `${from} → ${to}` : from;
 }
 
-function lineCountSummary(added?: number, removed?: number) {
-  return added == null || removed == null ? "" : ` (+${added} -${removed})`;
+function patchLineTotals(added?: number, removed?: number) {
+  return added == null || removed == null ? undefined : `+${added} −${removed}`;
 }
 
 export function truncateRunes(value: string, limit: number) {
@@ -1748,6 +1753,23 @@ function isCommandFailed(
   return false;
 }
 
+function isSemanticToolExitFailure(
+  event: CodexConversationEvent,
+  kind: SemanticActionKind,
+) {
+  if ((event.exit_code ?? 0) === 0) {
+    return false;
+  }
+  if (
+    kind === "search_code" &&
+    event.exit_code === 1 &&
+    !cleanToolOutput(event.output || event.body || "")
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function cleanToolOutput(value: string) {
   value = cleanTerminalDisplayText(value);
   if (!value) {
@@ -2053,7 +2075,7 @@ function semanticChildren(
   }
   return children.map((child, index) => ({
     id: `${parentId}:action:${index}`,
-    title: child.label,
+    title: semanticActionTitle(child),
     tone:
       child.status === "running"
         ? "running"
@@ -2094,6 +2116,9 @@ function semanticActivityIcon(
   }
   if (lower.includes("test")) {
     return "checkmark-done-outline";
+  }
+  if (lower.includes("build")) {
+    return "construct-outline";
   }
   if (lower.includes("wait")) {
     return "time-outline";

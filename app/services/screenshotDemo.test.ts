@@ -29,38 +29,50 @@ const demoRouteSource = readFileSync(
 describe("screenshot demo isolation", () => {
   test("requires both a development bundle and an explicit opt-in", () => {
     expect(screenshotDemoEnabled({ dev: true, enabled: "1" })).toBe(true);
-    expect(screenshotDemoEnabled({ dev: true, enabled: undefined })).toBe(false);
+    expect(screenshotDemoEnabled({ dev: true, enabled: undefined })).toBe(
+      false,
+    );
     expect(screenshotDemoEnabled({ dev: false, enabled: "1" })).toBe(false);
   });
 
   test("never lets the environment gate hijack ordinary startup", () => {
     const enabled = screenshotDemoEnabled({ dev: true, enabled: "1" });
 
-    expect(shouldUseScreenshotDemoRuntime({
-      demo: undefined,
-      enabled,
-      rootSegment: undefined,
-    })).toBe(false);
-    expect(shouldUseScreenshotDemoRuntime({
-      demo: "1",
-      enabled,
-      rootSegment: "(primary)",
-    })).toBe(false);
-    expect(shouldUseScreenshotDemoRuntime({
-      demo: "1",
-      enabled,
-      rootSegment: "terminal",
-    })).toBe(false);
-    expect(shouldUseScreenshotDemoRuntime({
-      demo: undefined,
-      enabled,
-      rootSegment: "screenshot-demo",
-    })).toBe(false);
-    expect(shouldUseScreenshotDemoRuntime({
-      demo: "1",
-      enabled,
-      rootSegment: "screenshot-demo",
-    })).toBe(true);
+    expect(
+      shouldUseScreenshotDemoRuntime({
+        demo: undefined,
+        enabled,
+        rootSegment: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseScreenshotDemoRuntime({
+        demo: "1",
+        enabled,
+        rootSegment: "(primary)",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseScreenshotDemoRuntime({
+        demo: "1",
+        enabled,
+        rootSegment: "terminal",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseScreenshotDemoRuntime({
+        demo: undefined,
+        enabled,
+        rootSegment: "screenshot-demo",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseScreenshotDemoRuntime({
+        demo: "1",
+        enabled,
+        rootSegment: "screenshot-demo",
+      }),
+    ).toBe(true);
   });
 
   test("requires demo=1 on the screenshot route", () => {
@@ -155,12 +167,12 @@ describe("screenshot demo isolation", () => {
       lifecycle: "failed",
       failureMessage: "Provider unavailable",
     });
-    expect(screenshotChatPendingUserMessages("long")[0]?.body.length).toBeGreaterThan(
-      80,
-    );
+    expect(
+      screenshotChatPendingUserMessages("long")[0]?.body.length,
+    ).toBeGreaterThan(80);
   });
 
-  test("activity header fixtures cover Run/Search with and without detail", () => {
+  test("activity header fixtures cover actionable targets and results", () => {
     const projected = buildZenTimeline(SCREENSHOT_ACTIVITY_HEADER_EVENTS)
       .filter((item) => item.type === "activity")
       .map((item) =>
@@ -169,18 +181,18 @@ describe("screenshot demo isolation", () => {
           : null,
       );
     expect(projected).toEqual([
-      { title: "Run", detail: "sleep 45" },
-      { title: "Search", detail: null },
+      { title: "Run sleep 45", detail: "Succeeded" },
+      { title: "Search daemonSocketPath", detail: "Done" },
       {
-        title: "Run",
-        detail: "/home/daoleno/workspace/zen/daemon/brain/…",
+        title: "Run daemon/brain/timeline_test.go",
+        detail: "Succeeded",
       },
     ]);
     const brainTitles = buildZenTimeline(SCREENSHOT_BRAIN_EVENTS)
       .filter((item) => item.type === "activity")
       .map((item) => (item.type === "activity" ? item.title : null));
-    expect(brainTitles).toContain("Run");
-    expect(brainTitles).toContain("Search");
+    expect(brainTitles.some((title) => title?.startsWith("Run "))).toBe(true);
+    expect(brainTitles).toContain("Search daemonSocketPath");
   });
 
   test("bypasses the live connection lifecycle and imports no live data clients", () => {

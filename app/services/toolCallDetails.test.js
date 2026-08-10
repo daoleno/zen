@@ -20,9 +20,12 @@ describe("toolCallDetails", () => {
       semanticKind: "read_files",
     });
     expect(details.files).toEqual(["app/services/toolCallSemantics.ts"]);
-    expect(details.command).toBeUndefined();
+    expect(details.command).toBe(
+      'sed -n "1,40p" app/services/toolCallSemantics.ts',
+    );
     expect(details.result).toContain("SemanticActionKind");
-    expect(details.quietDetail).toBe("toolCallSemantics.ts");
+    expect(details.quietDetail).toBe("app/services/toolCallSemantics.ts");
+    expect(details.statusLine).toBe("Done");
     expect(details.developer?.providerToolId).toBeUndefined();
   });
 
@@ -171,19 +174,22 @@ describe("timeline wait/read presentation", () => {
       (item) => item.type === "activity",
     );
     expect(activities.map((item) => item.title)).toEqual([
-      "Read",
-      "Run",
+      "Read app/foo.ts",
+      "Build assembleDebug",
       "Finished",
-      "Read",
+      "Read app/bar.ts",
     ]);
 
     expect(activities[0].files).toEqual(["app/foo.ts"]);
     expect(activities[0].body).toContain("foo");
+    expect(activities[0].commandText).toBe('sed -n "1,20p" app/foo.ts');
+    expect(activities[0].detail).toBe("Done");
     expect(activities[0].providerToolId).toBeUndefined();
     expect(activities[0].developerDetails?.providerToolId).toBeUndefined();
 
     // Poll merged into previous command — no raw wait card with chunk_id body
     expect(activities[1].statusLine || activities[1].detail).toBeTruthy();
+    expect(activities[1].detail).toBe("Running");
     expect(JSON.stringify(activities[1])).not.toContain("chunk_id");
 
     expect(activities[2].title).toBe("Finished");
