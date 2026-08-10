@@ -2566,50 +2566,6 @@ func readyAttentionEventID(database orchestrationDatabase, workID string) string
 	return ""
 }
 
-// WakeWaitingWork atomically projects one external producer fact to every Work
-// waiting on that exact typed reference. It is idempotent per Work and source
-// occurrence; unrelated waits remain untouched.
-func (s *Store) WakeWaitingWork(wake WorkWake, kind, occurrenceID, summary string) ([]WorkEvent, error) {
-	wake.Ref = strings.TrimSpace(wake.Ref)
-	kind = strings.TrimSpace(kind)
-	occurrenceID = strings.TrimSpace(occurrenceID)
-	summary = strings.TrimSpace(summary)
-	if err := validateWorkWake(&wake); err != nil {
-		return nil, err
-	}
-	if wake.Kind == WorkWakeSessionTerminal {
-		return nil, fmt.Errorf("session_terminal producer authority belongs to the canonical Turn reducer")
-	}
-	if kind == "" || occurrenceID == "" {
-		return nil, fmt.Errorf("wake fact requires kind and occurrence identity")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	recorded, changedIDs, err := wakeWaitingWorkLocked(&database, wake, kind, occurrenceID, summary, now)
-	if err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	if len(recorded) == 0 {
-		s.mu.Unlock()
-		return recorded, nil
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	s.mu.Unlock()
-	for _, workID := range changedIDs {
-		s.broadcastWorkChange(workID)
-	}
-	return recorded, nil
-}
-
 func wakeWaitingWorkLocked(database *orchestrationDatabase, wake WorkWake, kind, occurrenceID, summary string, now time.Time) ([]WorkEvent, []string, error) {
 	recorded := []WorkEvent{}
 	changedIDs := []string{}

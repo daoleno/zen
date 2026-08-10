@@ -50,9 +50,18 @@ func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEven
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
+	if claimed.HandlingID == "" || claimed.ProviderTurnID == "" || claimed.HandlingID == claimed.ProviderTurnID {
+		t.Fatalf("claim did not separate handling and provider turn identities: %+v", claimed)
+	}
+	if err := store.AdmitTurn(watcher.AdmittedTurn{
+		SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID,
+		AcceptedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("admit Host provider turn: %v", err)
+	}
 	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("consume claimed event: %v", err)
 	}
 	return delivered, item
 }
@@ -136,9 +145,13 @@ func TestSignalResolutionCASConflictLeavesAttentionDurable(t *testing.T) {
 	}
 }
 
-func TestTypedWaitOnlyProvenanceBearingExactProducerWakesWork(t *testing.T) {
+func TestAdmittedHostUserInputIsOnlyTypedThreadWakeAuthority(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	threadID, err := store.ChatThreadID()
@@ -154,25 +167,15 @@ func TestTypedWaitOnlyProvenanceBearingExactProducerWakesWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonmatch, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: item.ID, Kind: "user.input", DedupeKey: "user:thread-2:input:1",
-		SourceName: "brain-thread:thread-2", Actionable: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if nonmatch.Actionable {
-		t.Fatalf("wrong producer woke typed wait: %+v", nonmatch)
-	}
-	match, _, err := store.AppendWorkEvent(WorkEvent{
+	forged, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID: item.ID, Kind: "user.input", DedupeKey: "user:" + threadID + ":input:forged",
 		SourceName: wake.Ref, Actionable: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if match.Actionable {
-		t.Fatalf("generic matching strings acquired producer authority: %+v", match)
+	if forged.Actionable {
+		t.Fatalf("generic matching strings acquired producer authority: %+v", forged)
 	}
 	current, err := store.Work(item.ID)
 	if err != nil {
@@ -181,9 +184,9 @@ func TestTypedWaitOnlyProvenanceBearingExactProducerWakesWork(t *testing.T) {
 	if !workWakeEqual(current.Wake, &wake) {
 		t.Fatalf("generic matching strings cleared typed wait: %+v", current)
 	}
-	woken, err := store.WakeWaitingWork(wake, "user.input", "admitted-input-1", "continue")
-	if err != nil || len(woken) != 1 || !woken[0].Actionable {
-		t.Fatalf("provenance-bearing exact producer wake=%+v err=%v", woken, err)
+	service := NewService(store, nil, nil)
+	if err := service.AdmitHostUserInput(hostID, "admitted-input-1", "continue", wake.Ref); err != nil {
+		t.Fatal(err)
 	}
 	current, err = store.Work(item.ID)
 	if err != nil {
@@ -192,39 +195,12 @@ func TestTypedWaitOnlyProvenanceBearingExactProducerWakesWork(t *testing.T) {
 	if current.Wake != nil {
 		t.Fatalf("satisfied wake remained attached: %+v", current.Wake)
 	}
-}
-
-func TestAdmittedHostUserInputProducesTypedThreadWake(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostID := "brain-agent-brain-hidden:@1"
-	if err := store.SetHostSession(hostID, "codex"); err != nil {
-		t.Fatal(err)
-	}
-	threadID, err := store.ChatThreadID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, err := store.CreateWork(Work{
-		Title: "User wake producer", Objective: "Wake from admitted input on one exact thread.",
-		Status: WorkWaiting, CompletionPolicy: CompletionBounded,
-		Wake: &WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + threadID},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(store, nil, nil)
-	if err := service.AdmitHostUserInput(hostID, "request-user-wake-1", "continue", "brain-thread:"+threadID); err != nil {
-		t.Fatal(err)
-	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != "user.input" || !events[0].Actionable ||
-		events[0].SourceName != "brain-thread:"+threadID {
+	if len(events) != 2 || events[0].Actionable || events[1].Kind != "user.input" || !events[1].Actionable ||
+		events[1].SourceName != "brain-thread:"+threadID {
 		t.Fatalf("admitted user wake = %+v", events)
 	}
 }

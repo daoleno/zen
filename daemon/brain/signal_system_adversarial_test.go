@@ -15,28 +15,6 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func deliverAdversarialHostEvent(t *testing.T, store *Store, hostID string) (WorkEvent, Work) {
-	t.Helper()
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-	if err != nil || !ok {
-		t.Fatalf("claim ok=%v err=%v", ok, err)
-	}
-	if claimed.HandlingID == "" || claimed.ProviderTurnID == "" || claimed.HandlingID == claimed.ProviderTurnID {
-		t.Fatalf("claim did not separate handling and provider turn identities: %+v", claimed)
-	}
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
-		SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID,
-		AcceptedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("admit Host provider turn: %v", err)
-	}
-	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID)
-	if err != nil {
-		t.Fatalf("consume claimed event: %v", err)
-	}
-	return delivered, item
-}
-
 func TestSignalAdversarialSchemasTwoThroughSixMigrateBoundedlyWithoutReplay(t *testing.T) {
 	for schema := 2; schema <= 6; schema++ {
 		t.Run(fmt.Sprintf("schema-%d", schema), func(t *testing.T) {
@@ -260,7 +238,7 @@ func TestSignalAdversarialWatcherOutputThenStateChangeClosesOnlyExactHandling(t 
 	b := createSignalTestWork(t, store, "Watcher B", "brain-agent-b:@1")
 	appendSignalTestEvent(t, store, a, "watcher-a")
 	appendSignalTestEvent(t, store, b, "watcher-b")
-	deliveredA, _ := deliverAdversarialHostEvent(t, store, hostID)
+	deliveredA, _ := deliverSignalTestEvent(t, store, hostID)
 	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
 	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{hostID: host}}
 	service := NewService(store, fw, nil)
@@ -314,7 +292,7 @@ func TestSignalAdversarialOnlyOneDeliveredHostHandlingGlobally(t *testing.T) {
 	b := createSignalTestWork(t, store, "Global B", "brain-agent-b:@1")
 	appendSignalTestEvent(t, store, a, "global-a")
 	appendSignalTestEvent(t, store, b, "global-b")
-	deliverAdversarialHostEvent(t, store, "brain-agent-brain-hidden:@1")
+	deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 	if event, claimed, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1"); err != nil || claimed {
 		t.Fatalf("second Work entered Host admission window: event=%+v claimed=%v err=%v", event, claimed, err)
 	}
@@ -330,7 +308,7 @@ func TestSignalAdversarialStartupRecoversOldHostDeliveryAfterBindingReplacement(
 	newHost := "brain-agent-brain-hidden:@2"
 	item := createSignalTestWork(t, store, "Old Host delivery", "brain-agent-worker:@1")
 	appendSignalTestEvent(t, store, item, "old-host")
-	delivered, _ := deliverAdversarialHostEvent(t, store, oldHost)
+	delivered, _ := deliverSignalTestEvent(t, store, oldHost)
 	if err := store.SetHostSession(newHost, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +346,7 @@ func TestSignalAdversarialWrongReorderedAndDuplicateProviderTurnsAreIgnored(t *t
 	hostID := "brain-agent-brain-hidden:@1"
 	item := createSignalTestWork(t, store, "Provider turn CAS", "brain-agent-worker:@1")
 	appendSignalTestEvent(t, store, item, "provider-cas")
-	delivered, _ := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, _ := deliverSignalTestEvent(t, store, hostID)
 	if delivered.HandlingID == delivered.ProviderTurnID {
 		t.Fatalf("random handling token aliased provider Turn: %+v", delivered)
 	}
@@ -404,7 +382,7 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, item, "progress-ready")
-	delivered, current := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, current := deliverSignalTestEvent(t, store, hostID)
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady {
 		t.Fatalf("delivered attention mode=%q projection=%+v", projected.ProgressMode, projected)
 	}
@@ -413,13 +391,18 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressWaiting || projected.AttentionPending {
 		t.Fatalf("wait mode projection=%+v Work=%+v", projected, waiting)
 	}
-	if _, err := store.WakeWaitingWork(*wake, "user.input", "input-1", "continue"); err != nil {
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewService(store, nil, nil).AdmitHostUserInput(
+		hostID, "progress-input-1", "continue", wake.Ref,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
 		t.Fatalf("wake mode projection=%+v", projected)
 	}
-	next, _ := deliverAdversarialHostEvent(t, store, hostID)
+	next, _ := deliverSignalTestEvent(t, store, hostID)
 	if _, err := store.AttachWorkOwner(item.ID, owner); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +435,7 @@ func TestSignalAdversarialWaitRejectsLiveCanonicalOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, item, "live-owner-review")
-	delivered, current := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, current := deliverSignalTestEvent(t, store, hostID)
 	ownerTurnID := owner + ":turn:1"
 	if err := store.AdmitTurn(watcher.AdmittedTurn{
 		SessionID: owner, TurnID: ownerTurnID, AcceptedAt: time.Now().UTC(),
@@ -536,7 +519,7 @@ func TestSignalAdversarialCanonicalAttentionRelinquishesAndContinueRestoresOwner
 		t.Fatalf("owner transition lost canonical lifecycle Turn: turn=%+v found=%v err=%v", turn, found, err)
 	}
 
-	handling, _ := deliverAdversarialHostEvent(t, store, "brain-agent-brain-hidden:@1")
+	handling, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 	_, continued := resolveAdversarialEvent(t, store, handling, WorkDispositionContinue, nil, owner)
 	if continued.OwnerSessionID != owner || !continued.OwnerDelegated {
 		t.Fatalf("exact continue did not restore canonical owner: %+v", continued)
@@ -572,7 +555,7 @@ func TestSignalAdversarialGenericSessionDoneCannotForgeProducerAuthority(t *test
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, consumer, "forge-consumer-wait")
-	delivered, _ := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, _ := deliverSignalTestEvent(t, store, hostID)
 	wake := &WorkWake{
 		Kind: WorkWakeSessionTerminal,
 		Ref:  SessionTerminalWakeRef(producerSession, producerTurnID),
@@ -600,9 +583,6 @@ func TestSignalAdversarialGenericSessionDoneCannotForgeProducerAuthority(t *test
 	}
 	if projected := activeWorkByID(t, store, consumer.ID); projected.ProgressMode != WorkProgressWaiting || projected.AttentionPending {
 		t.Fatalf("forged terminal changed consumer progress: %+v", projected)
-	}
-	if _, err := store.WakeWaitingWork(*wake, "session.done", "forged-direct-wake", "forged"); err == nil {
-		t.Fatal("generic wake operation acquired Session terminal producer authority")
 	}
 	turn, found, err := store.TurnByID(producerSession, producerTurnID)
 	if err != nil || !found || watcher.TurnImmutable(turn.Status) {
@@ -692,7 +672,7 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 				t.Fatal(err)
 			}
 			appendSignalTestEvent(t, store, consumer, "wait-"+strings.ReplaceAll(test.name, " ", "-"))
-			delivered, current := deliverAdversarialHostEvent(t, store, hostID)
+			delivered, current := deliverSignalTestEvent(t, store, hostID)
 			wake := test.wake
 			if wake.Kind == WorkWakeUserInput && wake.Ref == "" {
 				wake.Ref = "brain-thread:" + current.SourceThreadID
@@ -713,7 +693,7 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 				if _, _, endErr := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); endErr != nil {
 					t.Fatal(endErr)
 				}
-				reconcile, _ := deliverAdversarialHostEvent(t, store, hostID)
+				reconcile, _ := deliverSignalTestEvent(t, store, hostID)
 				resolveAdversarialEvent(t, store, reconcile, WorkDispositionComplete, nil, "")
 			}
 		})
@@ -727,7 +707,7 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, consumer, "cross-work-session")
-	delivered, _ := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, _ := deliverSignalTestEvent(t, store, hostID)
 	sessionWake := &WorkWake{Kind: WorkWakeSessionTerminal, Ref: SessionTerminalWakeRef(producerSession, producerTurn)}
 	resolveAdversarialEvent(t, store, delivered, WorkDispositionWait, sessionWake, "")
 	fact := watcher.TurnFact{
@@ -777,7 +757,7 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 		t.Fatal(err)
 	}
 	appendSignalTestEvent(t, store, calendarConsumer, "cross-work-calendar")
-	calendarHandling, _ := deliverAdversarialHostEvent(t, store, hostID)
+	calendarHandling, _ := deliverSignalTestEvent(t, store, hostID)
 	calendarWake := &WorkWake{Kind: WorkWakeCalendarResult, Ref: calendarProducer.ContextRef}
 	resolveAdversarialEvent(t, store, calendarHandling, WorkDispositionWait, calendarWake, "")
 	finished := time.Now().UTC()
@@ -1150,7 +1130,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	s2 := "brain-agent-successor:@3"
 	item := createSignalTestWork(t, store, "Exclusive successor", incumbent)
 	appendSignalTestEvent(t, store, item, "reserve-s1")
-	delivered, _ := deliverAdversarialHostEvent(t, store, hostID)
+	delivered, _ := deliverSignalTestEvent(t, store, hostID)
 	if _, err := store.AttachWorkOwner(item.ID, s1); err != nil {
 		t.Fatal(err)
 	}
@@ -1178,7 +1158,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 		projected.SuccessorReservation == nil || projected.SuccessorReservation.SessionID != s1 {
 		t.Fatalf("requeued disposition did not remain the singular ready mode with exclusive S1: %+v", projected)
 	}
-	reconcile, _ := deliverAdversarialHostEvent(t, restarted, hostID)
+	reconcile, _ := deliverSignalTestEvent(t, restarted, hostID)
 	_, continued := resolveAdversarialEvent(t, restarted, reconcile, WorkDispositionContinue, nil, s1)
 	if continued.OwnerSessionID != s1 || continued.SuccessorReservation != nil {
 		t.Fatalf("requeued S1 did not promote through exact continue: %+v", continued)
@@ -1194,7 +1174,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	}); err != nil || !changed {
 		t.Fatalf("terminalize promoted S1 changed=%v err=%v", changed, err)
 	}
-	cancelHandling, _ := deliverAdversarialHostEvent(t, restarted, hostID)
+	cancelHandling, _ := deliverSignalTestEvent(t, restarted, hostID)
 	_, terminal := resolveAdversarialEvent(t, restarted, cancelHandling, WorkDispositionCancel, nil, "")
 	foundS1 := false
 	for _, finalization := range terminal.SessionFinalizations {
@@ -1223,7 +1203,7 @@ func TestSignalAdversarialSuccessorReleaseRequiresProvedNonAdmission(t *testing.
 			}
 			item := createSignalTestWork(t, store, "Successor failure", "brain-agent-incumbent:@1")
 			appendSignalTestEvent(t, store, item, "successor-failure")
-			handling, _ := deliverAdversarialHostEvent(t, store, "brain-agent-brain-hidden:@1")
+			handling, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 			s1 := "brain-agent-successor:@1"
 			if _, err := store.AttachWorkOwner(item.ID, s1); err != nil {
 				t.Fatal(err)
