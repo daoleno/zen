@@ -490,10 +490,11 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		}
 	}
 
+	admissionPending := false
 	if prompt != "" {
 		var sendErr error
 		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
-		if sendErr != nil {
+		if sendErr != nil && !a.keepSpawnAdmissionPending(agentID, sendErr) {
 			if reservation := ownedWork.SuccessorReservation; reservation != nil && reservation.SessionID == agentID {
 				provedNonAdmission := watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted
 				var cleanupErr error
@@ -533,6 +534,10 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			a.recordSpawnWorkFailure(ownedWork, sendErr)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
 		}
+		if sendErr != nil {
+			admissionPending = true
+			log.Printf("delegated Session %s remains pending after ambiguous initial submission: %v", agentID, sendErr)
+		}
 		if ownedWork.ID != "" {
 			ownedWork, err = a.brainStore.Work(ownedWork.ID)
 			if err != nil {
@@ -544,7 +549,8 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	agent := a.watcher.GetAgent(agentID)
 	if agent == nil {
 		response := control.Response{
-			OK: true,
+			OK:           true,
+			Confirmation: spawnAdmissionConfirmation(admissionPending),
 			Agent: &control.Agent{
 				ID:        agentID,
 				Name:      name,
@@ -568,7 +574,12 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		return response
 	}
 	out := controlAgent(agent)
-	response := control.Response{OK: true, Agent: &out, SessionRoute: routeSnap}
+	response := control.Response{
+		OK:           true,
+		Agent:        &out,
+		SessionRoute: routeSnap,
+		Confirmation: spawnAdmissionConfirmation(admissionPending),
+	}
 	if routeSnap != nil {
 		if outcome, durable := modelprofiles.WirePersistFields(routePersist); outcome != "" {
 			response.PersistenceOutcome = control.PersistenceOutcome(outcome)
@@ -579,6 +590,32 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		response.BrainWork = &ownedWork
 	}
 	return response
+}
+
+func spawnAdmissionConfirmation(pending bool) string {
+	if !pending {
+		return ""
+	}
+	return "Delegated Session created; prompt submission is awaiting exact turn-scoped admission."
+}
+
+// keepSpawnAdmissionPending owns only the initial spawn response boundary.
+// Once the non-replayable input owner reports an ambiguous mutation, a live
+// Zen-owned tmux Session means the canonical pending submission is still the
+// truthful result. Exact turn-scoped progress or the existing provider/liveness
+// reconciliation paths will settle that transaction; this owner must neither
+// report a definitive launch failure nor replay the prompt. Proved absence and
+// probe failure retain the existing failure path.
+func (a *controlApp) keepSpawnAdmissionPending(agentID string, sendErr error) bool {
+	if a == nil || a.watcher == nil || watcher.InputOutcomeFromError(sendErr) != watcher.InputAmbiguous {
+		return false
+	}
+	presence, err := a.watcher.ProbeSession(agentID)
+	if err != nil {
+		log.Printf("delegated Session %s liveness probe failed after ambiguous initial submission: %v", agentID, err)
+		return false
+	}
+	return presence == watcher.SessionPresencePresent
 }
 
 func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) (brain.Work, error) {

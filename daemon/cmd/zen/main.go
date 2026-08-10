@@ -852,12 +852,21 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 		return err
 	}
 	req.AgentID = currentAgentID()
-	resp, err := callControl(cfg, req)
+	socketPath, err := control.DefaultSocketPath(cfg.stateDir)
+	if err != nil {
+		return err
+	}
+	resp, err := control.CallWithTimeout(socketPath, req, agentSpawnControlTimeout)
 	if err != nil {
 		return err
 	}
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
+
+// agentSpawnControlTimeout only contains the server's existing bounded
+// startup-readiness and provider-admission work. It is a transport deadline,
+// not another lifecycle timer or a license to retry non-replayable input.
+const agentSpawnControlTimeout = 2 * time.Minute
 
 // parseAgentSpawnArgs binds zen agent spawn flags. -profile is the Work
 // lifecycle profile; -model-profile is the optional Model Profile override

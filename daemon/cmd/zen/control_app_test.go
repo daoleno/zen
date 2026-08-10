@@ -31,6 +31,8 @@ type fakeControlWatcher struct {
 	killLeavesLive    bool
 	reportKillMissing bool
 	probeErr          error
+	probePresence     *watcher.SessionPresence
+	dropAgentOnSend   bool
 	ready             []fakeControlSend
 	submitted         []fakeControlSend
 	onCreate          func(string)
@@ -166,6 +168,9 @@ func (w *fakeControlWatcher) ProbeSession(target string) (watcher.SessionPresenc
 	if w.probeErr != nil {
 		return watcher.SessionPresenceUnknown, w.probeErr
 	}
+	if w.probePresence != nil {
+		return *w.probePresence, nil
+	}
 	if _, ok := w.agents[target]; ok {
 		return watcher.SessionPresencePresent, nil
 	}
@@ -255,6 +260,9 @@ func (w *fakeControlWatcher) RecordAgentInputDispatched(id, turnID string, hando
 
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
+	if w.dropAgentOnSend {
+		delete(w.agents, sessionID)
+	}
 	return w.sendErr
 }
 
@@ -313,7 +321,7 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 		pending, created, prepareErr := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 			PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
-			AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+			AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh, SignalProtocol: true,
 		})
 		if prepareErr != nil {
 			result := watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: turnID, TurnID: turnID}
@@ -1285,15 +1293,24 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	}
 }
 
-func TestControlAppAmbiguousSpawnFailureProjectsNonterminalAttempt(t *testing.T) {
+func TestControlAppAmbiguousLiveSpawnReturnsPendingAndExactProgressConvergesAfterRestart(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.sendErr = &watcher.InputSubmissionError{
 		Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
-		Cause:  fmt.Errorf("provider admitted input bytes that did not match the submitted UTF-8 payload"),
+		Cause:  fmt.Errorf("provider Session disappeared"),
 	}
+	fw.dropAgentOnSend = true
+	present := watcher.SessionPresencePresent
+	fw.probePresence = &present
+	store := newControlBrainStore(t)
+	const threadID = "brain_thread_spawn_admission_pending"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
-		brainStore: newControlBrainStore(t),
+		brainStore: store,
 		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
 		}),
@@ -1306,31 +1323,153 @@ func TestControlAppAmbiguousSpawnFailureProjectsNonterminalAttempt(t *testing.T)
 		Prompt: "must not be replayed",
 	})
 
-	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+	if !resp.OK || resp.Error != nil || resp.Agent == nil || resp.Agent.Status != string(classifier.StateRunning) {
 		t.Fatalf("response = %#v", resp)
 	}
-	agent := fw.agents["brain-agent-ambiguous:@1"]
-	if agent == nil {
-		t.Fatal("ambiguous spawn created no agent")
+	if !strings.Contains(resp.Confirmation, "awaiting exact turn-scoped admission") {
+		t.Fatalf("pending confirmation = %q", resp.Confirmation)
 	}
-	if agent.State != classifier.StateRunning {
-		t.Fatalf("ambiguous spawn terminalized the Session: %#v", agent)
-	}
-	if agent.NeedsAttention || agent.EventKind != "" || agent.TaskClass != "" || agent.Phase != "" {
-		t.Fatalf("ambiguous spawn retained failed-attempt attention: %#v", agent)
+	if resp.BrainWork == nil || resp.BrainWork.Status != brain.WorkRunning ||
+		resp.BrainWork.OwnerSessionID != resp.Agent.ID ||
+		!strings.Contains(resp.BrainWork.NextAction, "Wait for the delegated Session") {
+		t.Fatalf("pending spawn Work = %#v", resp.BrainWork)
 	}
 	if len(fw.sent) != 1 {
 		t.Fatalf("ambiguous spawn submitted the prompt %d times, want exactly once", len(fw.sent))
 	}
-	items, err := app.brainStore.ListWork()
+	pending, found, err := store.PendingTurnSubmission(resp.Agent.ID)
+	if err != nil || !found || pending.State != watcher.TurnSubmissionPending ||
+		!pending.SignalProtocol || pending.ProposedTurnID == "" {
+		t.Fatalf("pending submission = %+v found=%v err=%v", pending, found, err)
+	}
+	if !strings.Contains(fw.sent[0].text, "--turn-id "+pending.ProposedTurnID) {
+		t.Fatalf("submitted prompt lacks pending identity %q", pending.ProposedTurnID)
+	}
+	if turn, found, err := store.Turn(resp.Agent.ID); err != nil || found {
+		t.Fatalf("ambiguous submission created a Turn: %+v found=%v err=%v", turn, found, err)
+	}
+	if events, err := store.ListWorkEvents(resp.BrainWork.ID); err != nil || len(events) != 0 {
+		t.Fatalf("pending spawn events = %+v err=%v", events, err)
+	}
+
+	// The durable pending row is the restart owner. A stale/mismatched signal
+	// cannot claim it; the exact prompt-carried identity admits the existing
+	// transaction without replay, and terminal progress settles it once.
+	restarted, err := brain.NewStore(store.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Status == brain.WorkDone || items[0].Status == brain.WorkCancelled {
-		t.Fatalf("Work after ambiguous spawn = %#v", items)
+	factAt := time.Now().UTC().Add(time.Second)
+	mismatched, err := restarted.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: resp.Agent.ID, TurnID: "turn:stale", Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00stale-progress", At: factAt,
+	})
+	if err != nil || !mismatched.Owned || mismatched.Matched || mismatched.Changed {
+		t.Fatalf("mismatched progress = (%+v, %v)", mismatched, err)
 	}
-	if !strings.Contains(items[0].NextAction, "Confirm whether the delegated Session received the prompt") {
-		t.Fatalf("Work next action = %q", items[0].NextAction)
+	runningFact := watcher.TurnFact{
+		SessionID: resp.Agent.ID, TurnID: pending.ProposedTurnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00exact-running", At: factAt,
+		Summary: "Exact signal admitted the existing prompt",
+	}
+	running, err := restarted.ApplyDelegatedTurnProgress(runningFact)
+	if err != nil || !running.Owned || !running.Matched || !running.Changed ||
+		running.Turn.Status != watcher.TurnRunning {
+		t.Fatalf("exact running progress = (%+v, %v)", running, err)
+	}
+	doneFact := watcher.TurnFact{
+		SessionID: resp.Agent.ID, TurnID: pending.ProposedTurnID, Class: watcher.EvidenceControl,
+		Kind: "done", SourceID: "control\x00exact-done", At: factAt.Add(time.Second),
+		Summary: "REVIEW_READY: exact signal completion",
+	}
+	done, err := restarted.ApplyDelegatedTurnProgress(doneFact)
+	if err != nil || !done.Owned || !done.Matched || !done.Changed || done.Turn.Status != watcher.TurnDone {
+		t.Fatalf("exact done progress = (%+v, %v)", done, err)
+	}
+	if replay, err := restarted.ApplyDelegatedTurnProgress(doneFact); err != nil || replay.Changed ||
+		!replay.Owned || !replay.Matched || replay.Turn.Status != watcher.TurnDone {
+		t.Fatalf("replayed done progress = (%+v, %v)", replay, err)
+	}
+	if len(fw.sent) != 1 {
+		t.Fatalf("progress convergence replayed provider input: sent=%#v", fw.sent)
+	}
+	events, err := restarted.ListWorkEvents(resp.BrainWork.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneEvents := 0
+	for _, event := range events {
+		if event.Kind == "session.done" {
+			doneEvents++
+		}
+		if event.Kind == "session.failed" || event.Kind == "brain.successor_launch_failed" {
+			t.Fatalf("ambiguous admission projected failure Event: %+v", events)
+		}
+	}
+	if doneEvents != 1 {
+		t.Fatalf("session.done Events = %d, want one: %+v", doneEvents, events)
+	}
+	cards, err := restarted.ThreadTimeline(threadID, 0)
+	if err != nil || len(cards) != 1 || cards[0].EventKind != "session.done" || cards[0].ID != events[0].ID {
+		t.Fatalf("completion cards = %+v events=%+v err=%v", cards, events, err)
+	}
+}
+
+func TestControlAppAmbiguousSpawnWithVanishedOwnedSessionStillReturnsFailure(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.sendErr = &watcher.InputSubmissionError{
+		Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
+		Cause:  fmt.Errorf("provider Session disappeared"),
+	}
+	fw.dropAgentOnSend = true
+	store := newControlBrainStore(t)
+	fw.turnStore = store
+	app := &controlApp{
+		watcher: fw, brainStore: store,
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type: "agent_spawn", Name: "Vanished", Cwd: "/repo/zen", Prompt: "cannot remain live",
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+		t.Fatalf("vanished response = %#v", resp)
+	}
+	items, err := store.ListWork()
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+		t.Fatalf("vanished Work = %+v err=%v", items, err)
+	}
+	if len(fw.sent) != 1 {
+		t.Fatalf("vanished submission calls = %d, want one", len(fw.sent))
+	}
+}
+
+func TestControlAppPreSubmitLaunchFailureRemainsDefinitive(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.createErr = errors.New("injected tmux launch failure")
+	store := newControlBrainStore(t)
+	app := &controlApp{
+		watcher: fw, brainStore: store,
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type: "agent_spawn", Name: "Never launched", Cwd: "/repo/zen", Prompt: "must not submit",
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "spawn_failed" ||
+		!strings.Contains(resp.Error.Message, fw.createErr.Error()) {
+		t.Fatalf("pre-submit response = %#v", resp)
+	}
+	if len(fw.sent) != 0 {
+		t.Fatalf("pre-submit failure sent input: %#v", fw.sent)
+	}
+	items, err := store.ListWork()
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+		t.Fatalf("pre-submit Work = %+v err=%v", items, err)
 	}
 }
 
