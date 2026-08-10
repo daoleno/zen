@@ -2764,10 +2764,15 @@ func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent)
 
 // ReleaseEventClaim atomically makes the exact identity-bound Event claimable
 // again only when Session Input proved that provider mutation never started.
-func (s *Store) ReleaseEventClaim(eventID, hostSessionID string) error {
+func (s *Store) ReleaseEventClaim(
+	eventID, claimToken, workID, hostSessionID, providerTurnID string,
+) error {
 	eventID = strings.TrimSpace(eventID)
+	claimToken = strings.TrimSpace(claimToken)
+	workID = strings.TrimSpace(workID)
 	hostSessionID = strings.TrimSpace(hostSessionID)
-	if eventID == "" || hostSessionID == "" {
+	providerTurnID = strings.TrimSpace(providerTurnID)
+	if eventID == "" || claimToken == "" || workID == "" || hostSessionID == "" || providerTurnID == "" {
 		return ErrEventClaim
 	}
 	s.mu.Lock()
@@ -2782,7 +2787,8 @@ func (s *Store) ReleaseEventClaim(eventID, hostSessionID string) error {
 			continue
 		}
 		if !event.Actionable || event.ClaimedAt == nil || event.DeliveredAt != nil ||
-			event.DeliveryHostSessionID != hostSessionID {
+			event.HandlingID != claimToken || event.WorkID != workID ||
+			event.DeliveryHostSessionID != hostSessionID || event.ProviderTurnID != providerTurnID {
 			return ErrEventClaim
 		}
 		event.ClaimedAt = nil
@@ -2797,18 +2803,23 @@ func (s *Store) ReleaseEventClaim(eventID, hostSessionID string) error {
 }
 
 // ConsumeClaimedWorkEvent atomically consumes the exact Event assigned to the
-// Host after Session Input accepts that Event.ID receipt. Event and Host
-// identity together are the authorization boundary.
-func (s *Store) ConsumeClaimedWorkEvent(eventID, hostSessionID, providerTurnID string) (WorkEvent, Work, error) {
+// Host after canonical provider admission accepts that Event.ID receipt. The
+// complete claimed Event capability is the authorization boundary; no Work,
+// owner, receipt, or provider Turn lookup may substitute for it.
+func (s *Store) ConsumeClaimedWorkEvent(
+	eventID, claimToken, workID, hostSessionID, providerTurnID string,
+) (WorkEvent, Work, error) {
 	eventID = strings.TrimSpace(eventID)
+	claimToken = strings.TrimSpace(claimToken)
+	workID = strings.TrimSpace(workID)
 	hostSessionID = strings.TrimSpace(hostSessionID)
 	providerTurnID = strings.TrimSpace(providerTurnID)
-	if eventID == "" || hostSessionID == "" || providerTurnID == "" {
+	if eventID == "" || claimToken == "" || workID == "" || hostSessionID == "" || providerTurnID == "" {
 		return WorkEvent{}, Work{}, ErrEventClaim
 	}
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
-	workID := ""
+	claimedWorkID := ""
 	var claimed WorkEvent
 	var item Work
 	if err == nil {
@@ -2818,14 +2829,21 @@ func (s *Store) ConsumeClaimedWorkEvent(eventID, hostSessionID, providerTurnID s
 				continue
 			}
 			if !event.Actionable || event.ClaimedAt == nil || event.DeliveredAt != nil ||
+				event.HandlingID != claimToken || event.WorkID != workID ||
 				event.DeliveryHostSessionID != hostSessionID || event.ProviderTurnID != providerTurnID {
 				err = ErrEventClaim
 				break
 			}
-			workID = database.BrainWorkEvents[index].WorkID
+			if !databaseHasResolvedHostEventAdmission(
+				database, eventID, claimToken, workID, hostSessionID, providerTurnID,
+			) {
+				err = ErrEventClaim
+				break
+			}
+			claimedWorkID = database.BrainWorkEvents[index].WorkID
 			workIndex := -1
 			for candidate := range database.BrainWork {
-				if database.BrainWork[candidate].ID == workID {
+				if database.BrainWork[candidate].ID == claimedWorkID {
 					workIndex = candidate
 					break
 				}
@@ -2849,13 +2867,13 @@ func (s *Store) ConsumeClaimedWorkEvent(eventID, hostSessionID, providerTurnID s
 			err = s.persistOrchestrationLocked(database)
 			break
 		}
-		if workID == "" && err == nil {
+		if claimedWorkID == "" && err == nil {
 			err = ErrEventClaim
 		}
 	}
 	s.mu.Unlock()
-	if err == nil && workID != "" {
-		s.broadcastWorkChange(workID)
+	if err == nil && claimedWorkID != "" {
+		s.broadcastWorkChange(claimedWorkID)
 	}
 	return claimed, item, err
 }

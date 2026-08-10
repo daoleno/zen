@@ -2474,7 +2474,7 @@ func (w *Watcher) SubmitDelegatedInput(
 // provider Turn identity distinct. It reuses the sole Session Input owner and
 // provider-neutral admission confirmer; there is no second scheduler.
 func (w *Watcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, providerTurnID string,
+	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
 	identity, known := w.targetForSession(sessionID)
@@ -2489,8 +2489,10 @@ func (w *Watcher) SubmitBrainHostInput(
 		identity.Command,
 		payload,
 		delegatedTurnDraft{
+			WorkID:            strings.TrimSpace(workID),
 			ID:                strings.TrimSpace(providerTurnID),
 			Receipt:           strings.TrimSpace(eventID),
+			ClaimToken:        strings.TrimSpace(claimToken),
 			AcceptedAt:        acceptedAt.UTC(),
 			ProcessIdentity:   delegatedTurnIdentity(identity),
 			TranscriptBinding: transcriptBindingForCommand(identity.Command),

@@ -312,14 +312,29 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 	if err != nil || !ok || claimed.ID != event.ID {
 		t.Fatalf("claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, "different-host:@1", claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, "different-host:@1", claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
 		t.Fatalf("different Host consumed assigned Event: err=%v", err)
 	}
-	gotEvent, gotWork, err := store.ConsumeClaimedWorkEvent(event.ID, hostID, claimed.ProviderTurnID)
+	for name, claim := range map[string]struct {
+		eventID, token, workID, providerTurnID string
+	}{
+		"event":         {eventID: "different-event", token: claimed.HandlingID, workID: claimed.WorkID, providerTurnID: claimed.ProviderTurnID},
+		"claim token":   {eventID: event.ID, token: "different-claim-token", workID: claimed.WorkID, providerTurnID: claimed.ProviderTurnID},
+		"Work":          {eventID: event.ID, token: claimed.HandlingID, workID: "different-work", providerTurnID: claimed.ProviderTurnID},
+		"provider Turn": {eventID: event.ID, token: claimed.HandlingID, workID: claimed.WorkID, providerTurnID: "different-provider-turn"},
+	} {
+		if _, _, err := store.ConsumeClaimedWorkEvent(
+			claim.eventID, claim.token, claim.workID, hostID, claim.providerTurnID,
+		); !errors.Is(err, ErrEventClaim) {
+			t.Fatalf("different %s consumed assigned Event: err=%v", name, err)
+		}
+	}
+	gotEvent, gotWork, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
 	if err != nil || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", gotEvent, gotWork, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
+	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
 		t.Fatalf("consumed Event replayed: err=%v", err)
 	}
 	reopened, err := NewStore(store.Root)
@@ -434,12 +449,13 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil || !ok || claimed.ID != activeEvent.ID {
 		t.Fatalf("later active Event claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
-	consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID, claimed.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
 	if err != nil || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
 		consumed.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", consumed, consumedWork, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
+	if _, _, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
 		t.Fatalf("active Event was consumed more than once: err=%v", err)
 	}
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
@@ -479,7 +495,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if err != nil || !ok || claimed.ID != event.ID {
 			t.Fatalf("terminal result offset=%s claim=%#v ok=%v err=%v", offset, claimed, ok, err)
 		}
-		consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(event.ID, hostID, claimed.ProviderTurnID)
+		resolveClaimedHostTurnForTest(t, store, claimed)
+		consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
 		if err != nil || consumed.ID != event.ID || consumedWork.ID != item.ID {
 			t.Fatalf("terminal result offset=%s consume=%#v work=%#v err=%v",
 				offset, consumed, consumedWork, err)
@@ -520,7 +537,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		blockers[0].ID != readEvent.ID {
 		t.Fatalf("card acknowledgement changed the exact delivery claim: blockers=%#v err=%v", blockers, err)
 	}
-	consumedRead, _, err := store.ConsumeClaimedWorkEvent(readEvent.ID, hostID, readClaim.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, readClaim)
+	consumedRead, _, err := store.ConsumeClaimedWorkEvent(readEvent.ID, readClaim.HandlingID, readClaim.WorkID, hostID, readClaim.ProviderTurnID)
 	if err != nil || consumedRead.DeliveredAt == nil {
 		t.Fatalf("exact accepted claim was not consumable after card acknowledgement: event=%#v err=%v", consumedRead, err)
 	}
@@ -558,7 +576,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil || !wasClaimed || readBeforeClaim.WorkID != unclaimedReadWork.ID {
 		t.Fatalf("card acknowledgement suppressed Event delivery: event=%#v claimed=%v err=%v", readBeforeClaim, wasClaimed, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(readBeforeClaim.ID, hostID, readBeforeClaim.ProviderTurnID); err != nil {
+	resolveClaimedHostTurnForTest(t, store, readBeforeClaim)
+	if _, _, err := store.ConsumeClaimedWorkEvent(readBeforeClaim.ID, readBeforeClaim.HandlingID, readBeforeClaim.WorkID, hostID, readBeforeClaim.ProviderTurnID); err != nil {
 		t.Fatalf("consume card-acknowledged Event: %v", err)
 	}
 
@@ -782,7 +801,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(store, fw, nil)
@@ -874,6 +893,7 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
+		turnStore: store,
 		sessions: map[string]*classifier.Agent{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		},
@@ -981,14 +1001,14 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	writeOrchestration := store.writeOrchestration
 	writes := 0
 	store.writeOrchestration = func(path string, value any) error {
 		writes++
-		if writes == 3 {
+		if writes == 4 {
 			return errors.New("injected consumed_at persistence failure")
 		}
 		return writeOrchestration(path, value)
@@ -1082,7 +1102,7 @@ func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
+			restartedWatcher := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 			}}
 			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
@@ -1148,6 +1168,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 			// the claim is held forever, surfaced as a deduped
 			// delivery.ambiguous note, and never replayed (C.2.7).
 			restartedWatcher := &fakeWatcher{
+				turnStore: restarted,
 				sessions: map[string]*classifier.Agent{
 					hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 				},
@@ -1219,7 +1240,7 @@ func TestDispatchClaimWithAbsentReceiptReleasesAndRedispatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	restartedWatcher := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
@@ -1241,7 +1262,7 @@ func TestUserSteeringPreemptsUnclaimedWorkEvent(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(store, fw, nil)
@@ -1535,7 +1556,7 @@ func TestReconcileStaleUsesPerTurnLeaseNotAgentLease(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	store.now = func() time.Time { return now }
@@ -2059,7 +2080,7 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(store, fw, nil)

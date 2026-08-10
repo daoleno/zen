@@ -61,7 +61,7 @@ func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) err
 func (w *brainServiceTestWatcher) SendInputWithReceiptResult(_, _, receipt string) (watcher.InputResult, error) {
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
-func (w *brainServiceTestWatcher) SubmitBrainHostInput(_, _, eventID, providerTurnID string, _ time.Time) (watcher.InputResult, error) {
+func (w *brainServiceTestWatcher) SubmitBrainHostInput(_, _, eventID, _, _, providerTurnID string, _ time.Time) (watcher.InputResult, error) {
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: providerTurnID}, nil
 }
 func (w *brainServiceTestWatcher) InputReceiptResult(_, receipt string) (watcher.InputResult, bool, error) {

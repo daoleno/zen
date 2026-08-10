@@ -23,6 +23,7 @@ func e2eStore(t *testing.T) (*Store, *Service, *fakeWatcher, string, string) {
 		t.Fatal(err)
 	}
 	hostWatcher := &fakeWatcher{
+		turnStore: store,
 		sessions: map[string]*classifier.Agent{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		},
@@ -147,6 +148,7 @@ func TestE2EWakeExactlyOnceOnRealCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	restartedWatcher := &fakeWatcher{
+		turnStore: restarted,
 		sessions: map[string]*classifier.Agent{
 			"brain-agent-brain-hidden:@1": {ID: "brain-agent-brain-hidden:@1", Hidden: true, State: classifier.StateDone},
 		},

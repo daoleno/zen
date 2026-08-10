@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -88,6 +89,37 @@ func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID s
 		t.Fatalf("resolve fixture owner: %v", err)
 	}
 	return turnID
+}
+
+func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.WorkEvent) {
+	t.Helper()
+	acceptedAt := time.Now().UTC()
+	if claimed.ClaimedAt != nil {
+		acceptedAt = claimed.ClaimedAt.UTC()
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.ID)))
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ID, ClaimToken: claimed.HandlingID,
+		PayloadSHA256: digest, ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare Host claim created=%v err=%v", created, err)
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, PayloadSHA256: pending.PayloadSHA256,
+		ActivityID: "host-activity-" + claimed.ProviderTurnID,
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatalf("resolve Host claim: %v", err)
+	}
 }
 
 func (w *fakeControlWatcher) Agents() []*classifier.Agent {
@@ -307,9 +339,43 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 }
 
 func (w *fakeControlWatcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, providerTurnID string,
-	_ time.Time,
+	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
+	if w.turnStore != nil {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+		pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
+			Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
+			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+			AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+		})
+		if err != nil {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+				err
+		}
+		if !created {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+				errors.New("Host submission was not freshly prepared")
+		}
+		if err := w.SubmitInput(sessionID, payload); err != nil {
+			return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID}, err
+		}
+		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
+		resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
+			Admission: watcher.TurnAdmission{
+				Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
+				SHA256: pending.PayloadSHA256, At: resolvedAt,
+			},
+			ResolvedAt: resolvedAt,
+		})
+		if err != nil {
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+		}
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID}, nil
+	}
 	err := w.SubmitInput(sessionID, payload)
 	return watcher.InputResult{
 		Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID,
@@ -564,7 +630,8 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	if err != nil || !ok {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID); err != nil {
+	resolveControlHostClaim(t, store, claimed)
+	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); err != nil {
@@ -1550,7 +1617,8 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	resolveControlHostClaim(t, store, claimed)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}

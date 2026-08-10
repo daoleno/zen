@@ -227,10 +227,14 @@ const (
 // pending submission row. It is deliberately separate from TurnSnapshot: a
 // pending candidate is never the current canonical Turn.
 type TurnSubmission struct {
-	WorkID             string
-	SessionID          string
-	ProposedTurnID     string
-	Receipt            string
+	WorkID         string
+	SessionID      string
+	ProposedTurnID string
+	Receipt        string
+	// ClaimToken is the exact Brain Work Event claim capability for a Host
+	// submission. It is empty for delegated submissions. Receipt, WorkID,
+	// SessionID, ProposedTurnID, and ClaimToken must match one claimed Event.
+	ClaimToken         string
 	PayloadSHA256      string
 	ProcessIdentity    string
 	PaneGeneration     string

@@ -39,7 +39,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
-	SubmitBrainHostInput(sessionID, payload, eventID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
 	// LegacyDelegatedTurnMarkers returns the raw pre-protocol tmux
@@ -1060,7 +1060,9 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 			}
 			// Receipt absent: host receipts are written before the host
 			// mutates, so the mutation provably never began. Release.
-			if releaseErr := s.store.ReleaseEventClaim(claimed.ID, hostID); releaseErr != nil {
+			if releaseErr := s.store.ReleaseEventClaim(
+				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			); releaseErr != nil {
 				return false, fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 			continue
@@ -1074,7 +1076,9 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 				// claim without replay until canonical admission is recoverable.
 				continue
 			}
-			if _, _, err := s.store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID); err != nil {
+			if _, _, err := s.store.ConsumeClaimedWorkEvent(
+				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			); err != nil {
 				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
 			}
 		case watcher.InputAmbiguous:
@@ -1090,7 +1094,9 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 			)
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.
-			if releaseErr := s.store.ReleaseEventClaim(claimed.ID, hostID); releaseErr != nil {
+			if releaseErr := s.store.ReleaseEventClaim(
+				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			); releaseErr != nil {
 				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 		}
@@ -1116,14 +1122,18 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	}
 	item, err := s.store.Work(event.WorkID)
 	if err != nil {
-		if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+		if releaseErr := s.store.ReleaseEventClaim(
+			event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+		); releaseErr != nil {
 			return false, fmt.Errorf("release undeliverable Work Event %s: %w", event.ID, releaseErr)
 		}
 		return false, err
 	}
 	payload, err := marshalDirectWorkEventInput(event, item)
 	if err != nil {
-		if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+		if releaseErr := s.store.ReleaseEventClaim(
+			event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+		); releaseErr != nil {
 			return false, fmt.Errorf("release invalid Work Event input %s: %w", event.ID, releaseErr)
 		}
 		return false, err
@@ -1132,10 +1142,14 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if event.ClaimedAt != nil {
 		acceptedAt = event.ClaimedAt.UTC()
 	}
-	result, sendErr := s.watcher.SubmitBrainHostInput(hostID, payload, event.ID, event.ProviderTurnID, acceptedAt)
+	result, sendErr := s.watcher.SubmitBrainHostInput(
+		hostID, payload, event.ID, event.HandlingID, event.WorkID, event.ProviderTurnID, acceptedAt,
+	)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {
-			if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+			if releaseErr := s.store.ReleaseEventClaim(
+				event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+			); releaseErr != nil {
 				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", event.ID, releaseErr)
 			}
 		}
@@ -1147,12 +1161,14 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if result.TurnID != event.ProviderTurnID {
 		return false, fmt.Errorf("Work Event %s admitted provider Turn %q, want %q", event.ID, result.TurnID, event.ProviderTurnID)
 	}
-	if err := s.store.admitTurn(watcher.AdmittedTurn{
-		SessionID: hostID, TurnID: result.TurnID, Receipt: event.ID, AcceptedAt: acceptedAt,
-	}); err != nil {
-		return false, fmt.Errorf("record accepted Host provider Turn %s: %w", result.TurnID, err)
+	if _, found, err := s.store.TurnByID(hostID, result.TurnID); err != nil {
+		return false, fmt.Errorf("read accepted Host provider Turn %s: %w", result.TurnID, err)
+	} else if !found {
+		return false, fmt.Errorf("accepted Host provider Turn %s lacks canonical prepare/resolve evidence", result.TurnID)
 	}
-	if _, _, err := s.store.ConsumeClaimedWorkEvent(event.ID, hostID, event.ProviderTurnID); err != nil {
+	if _, _, err := s.store.ConsumeClaimedWorkEvent(
+		event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+	); err != nil {
 		return false, fmt.Errorf("consume accepted Work Event %s: %w", event.ID, err)
 	}
 	return true, nil

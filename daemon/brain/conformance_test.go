@@ -270,16 +270,14 @@ func TestAdapterConformanceReusedSessionNewTurn(t *testing.T) {
 
 			// Reused Session: a new turn admits with a fresh identity.
 			turn2 := sessionID + ":turn:2"
-			if err := store.admitTurn(watcher.AdmittedTurn{
+			bootstrapAdmittedTurnFixture(t, store, storeWorkID(t, store, sessionID), watcher.AdmittedTurn{
 				SessionID:       sessionID,
 				TurnID:          turn2,
 				AcceptedAt:      acceptedAt.Add(30 * time.Second),
 				ProcessIdentity: "proc-identity-1",
 				PaneGeneration:  "pane-gen-1",
 				PayloadSHA256:   "payload-2",
-			}); err != nil {
-				t.Fatal(err)
-			}
+			})
 			admission2 := fixture.admission
 			admission2.Cursor = fixture.admission.Cursor + 1
 			admission2.ID = fixture.admission.ID + "-2"

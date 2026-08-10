@@ -254,6 +254,302 @@ func resolveDelegatedSubmission(t *testing.T, store *Store, pending watcher.Turn
 	return resolved
 }
 
+// canonicalHostDeliveryWatcher exercises the same prepare/provider/resolve
+// transaction owned by Watcher.SubmitBrainHostInput. It deliberately does not
+// bootstrap an Admitted Turn: product-path Host delivery evidence must come
+// from the exact pending TurnSubmission and its provider admission.
+type canonicalHostDeliveryWatcher struct {
+	*fakeWatcher
+	store            *Store
+	wrongWorkID      string
+	prepareCount     int
+	resolveCount     int
+	wrongClaimChecks int
+}
+
+func newCanonicalHostDeliveryWatcher(store *Store, hostID string) *canonicalHostDeliveryWatcher {
+	return &canonicalHostDeliveryWatcher{
+		fakeWatcher: &fakeWatcher{sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		}},
+		store: store,
+	}
+}
+
+func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
+	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	acceptedAt time.Time,
+) (watcher.InputResult, error) {
+	candidate := watcher.TurnSubmission{
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+		ClaimToken:      claimToken,
+		PayloadSHA256:   pendingSubmissionDigest(payload),
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+	}
+	wrongClaims := []struct {
+		name      string
+		candidate watcher.TurnSubmission
+	}{
+		{name: "event", candidate: candidate},
+		{name: "claim token", candidate: candidate},
+		{name: "Work", candidate: candidate},
+		{name: "Host Session", candidate: candidate},
+		{name: "provider Turn", candidate: candidate},
+	}
+	wrongClaims[0].candidate.Receipt = "wrong-event-id"
+	wrongClaims[1].candidate.ClaimToken = "wrong-claim-token"
+	wrongClaims[2].candidate.WorkID = w.wrongWorkID
+	wrongClaims[3].candidate.SessionID = "brain-agent-wrong-host:@1"
+	wrongClaims[4].candidate.ProposedTurnID = "wrong-provider-turn"
+	for _, probe := range wrongClaims {
+		w.wrongClaimChecks++
+		if _, created, err := w.store.PrepareTurnSubmission(probe.candidate); err == nil || created {
+			return watcher.InputResult{
+				Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID,
+			}, fmt.Errorf("wrong %s acquired Host admission: created=%v err=%v", probe.name, created, err)
+		}
+	}
+
+	w.prepareCount++
+	pending, created, err := w.store.PrepareTurnSubmission(candidate)
+	if err != nil {
+		return watcher.InputResult{
+			Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID,
+		}, err
+	}
+	if !created || pending.State != watcher.TurnSubmissionPending {
+		return watcher.InputResult{
+			Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID,
+		}, fmt.Errorf("Host Turn submission was not freshly prepared")
+	}
+	if pending.WorkID != workID || pending.Receipt != eventID || pending.ClaimToken != claimToken ||
+		pending.SessionID != sessionID || pending.ProposedTurnID != providerTurnID {
+		return watcher.InputResult{
+			Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID,
+		}, fmt.Errorf("prepared Host capability changed identity: %+v", pending)
+	}
+	result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
+	result.TurnID = providerTurnID
+	if err != nil {
+		return result, err
+	}
+	w.resolveCount++
+	resolvedAt := acceptedAt.Add(time.Second).UTC()
+	resolved, err := w.store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	})
+	if err != nil {
+		result.Outcome = watcher.InputAmbiguous
+		return result, err
+	}
+	result.Outcome = watcher.InputAccepted
+	result.TurnID = resolved.ResolvedTurnID
+	return result, nil
+}
+
+func assertCanonicalHostEventHandledOnce(
+	t *testing.T,
+	root string,
+	store *Store,
+	service *Service,
+	delivery *canonicalHostDeliveryWatcher,
+	hostID, workID string,
+) {
+	t.Helper()
+	before, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	woke, err := service.DispatchPendingEvent()
+	if err != nil || !woke {
+		t.Fatalf("canonical Host delivery woke=%v err=%v", woke, err)
+	}
+	events, err := store.ListWorkEvents(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered WorkEvent
+	for _, event := range events {
+		if event.DeliveredAt != nil && event.HandledAt == nil {
+			if delivered.ID != "" {
+				t.Fatalf("more than one live delivered handling: %+v", events)
+			}
+			delivered = event
+		}
+	}
+	if delivered.ID == "" || delivered.DeliveryHostSessionID != hostID ||
+		delivered.HandlingID == "" || delivered.ProviderTurnID == "" ||
+		delivered.HandlingID == delivered.ProviderTurnID {
+		t.Fatalf("exact Host delivery identity missing: %+v", delivered)
+	}
+	turn, found, err := store.TurnByID(hostID, delivered.ProviderTurnID)
+	if err != nil || !found || turn.Status != watcher.TurnAccepted {
+		t.Fatalf("canonical Host provider Turn=%+v found=%v err=%v", turn, found, err)
+	}
+	if delivery.wrongClaimChecks != 5 || delivery.prepareCount != 1 || delivery.resolveCount != 1 || len(delivery.sentCalls) != 1 {
+		t.Fatalf("wrong-claim checks=%d prepare=%d resolve=%d sends=%d",
+			delivery.wrongClaimChecks, delivery.prepareCount, delivery.resolveCount, len(delivery.sentCalls))
+	}
+	afterDelivery, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterDelivery.Revision != before.Revision || afterDelivery.Status != before.Status ||
+		afterDelivery.OwnerSessionID != before.OwnerSessionID || afterDelivery.OwnerDelegated != before.OwnerDelegated ||
+		afterDelivery.SuccessorReservation != nil {
+		t.Fatalf("Host admission mutated Work before disposition: before=%+v after=%+v", before, afterDelivery)
+	}
+	resolved, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionComplete,
+		Summary:              "Handled the exact claimed signal.",
+	})
+	if err != nil || resolved.HandledAt == nil {
+		t.Fatalf("resolve exact Host handling: event=%+v err=%v", resolved, err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionComplete,
+	}); !errors.Is(err, ErrEventHandled) {
+		t.Fatalf("duplicate resolution err=%v, want ErrEventHandled", err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedDelivery := newCanonicalHostDeliveryWatcher(reopened, hostID)
+	if woke, err := NewService(reopened, restartedDelivery, nil).DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("restart replayed resolved signal: woke=%v err=%v", woke, err)
+	}
+	if restartedDelivery.prepareCount != 0 || restartedDelivery.resolveCount != 0 || len(restartedDelivery.sentCalls) != 0 {
+		t.Fatalf("restart replayed provider input: prepare=%d resolve=%d sends=%d",
+			restartedDelivery.prepareCount, restartedDelivery.resolveCount, len(restartedDelivery.sentCalls))
+	}
+	events, err = reopened.ListWorkEvents(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handled := 0
+	for _, event := range events {
+		if event.ID == delivered.ID && event.DeliveredAt != nil && event.HandledAt != nil {
+			handled++
+		}
+	}
+	if handled != 1 {
+		t.Fatalf("resolved signal count=%d events=%+v", handled, events)
+	}
+	submission, found, err := reopened.TurnSubmission(hostID, delivered.ProviderTurnID)
+	if err != nil || !found || submission.WorkID != workID || submission.Receipt != delivered.ID ||
+		submission.ClaimToken != delivered.HandlingID || submission.State != watcher.TurnSubmissionResolved {
+		t.Fatalf("reopened Host admission capability=%+v found=%v err=%v", submission, found, err)
+	}
+}
+
+func createHostAuthorityDistractorWork(t *testing.T, store *Store) Work {
+	t.Helper()
+	item, err := store.CreateWork(Work{
+		Title: "Host authority distractor", Objective: "Never receive another Event's Host Turn.",
+		Status: WorkDone, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func TestSignalAdversarialHostProductPathAdmitsClaimedTerminalWorkWithHistoricalOwner(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@host-authority-terminal"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Terminal delegated result", Objective: "Handle the exact completion Event.",
+		Status: WorkDone, OwnerSessionID: "brain-agent-historical-worker:@1", OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.done",
+		DedupeKey:  "session:historical-worker:turn:terminal:session.done",
+		PayloadRef: "session:brain-agent-historical-worker:@1",
+		SourceName: "brain-agent-historical-worker:@1",
+		Summary:    "The delegated result is ready for Host review.", Actionable: true,
+	}); err != nil || !created {
+		t.Fatalf("append terminal signal created=%v err=%v", created, err)
+	}
+	distractor := createHostAuthorityDistractorWork(t, store)
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.wrongWorkID = distractor.ID
+	assertCanonicalHostEventHandledOnce(t, root, store, NewService(store, delivery, nil), delivery, hostID, item.ID)
+}
+
+func TestSignalAdversarialHostProductPathAdmitsClaimedOwnerlessMigrationAttention(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	document := map[string]any{
+		"schema_version": 6,
+		"migrations":     map[string]any{},
+		"brain_work": []any{map[string]any{
+			"work_id": "ownerless-migration-work", "title": "Ownerless migration Work",
+			"objective": "Reconcile through the real Host delivery path.", "status": "waiting",
+			"completion_policy": "bounded", "created_at": at, "updated_at": at,
+		}},
+		"brain_work_events":      []any{},
+		"brain_turns":            []any{},
+		"brain_turn_submissions": []any{},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(1); err != nil || complete || processed != 1 {
+		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(1); err != nil || !complete || processed != 0 {
+		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
+	}
+	hostID := "brain-agent-brain-hidden:@host-authority-migration"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	distractor := createHostAuthorityDistractorWork(t, store)
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.wrongWorkID = distractor.ID
+	assertCanonicalHostEventHandledOnce(
+		t, root, store, NewService(store, delivery, nil), delivery, hostID, "ownerless-migration-work",
+	)
+}
+
 // A retained owner link is never admission authority by itself. Admission
 // requires exact canonical submission/Turn evidence, and reopening must not
 // promote the same bare owner string into authority.
@@ -272,11 +568,12 @@ func TestSignalAdversarialBareOwnerCannotAdmitTurnAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admitted := watcher.AdmittedTurn{
-		SessionID: sessionID, TurnID: sessionID + ":turn:1",
-		AcceptedAt: time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC),
-	}
-	if err := store.admitTurn(admitted); err == nil {
+	bareAcceptedAt := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)
+	candidate := delegatedSubmissionCandidate(
+		"", sessionID, sessionID+":turn:1", "bare owner input",
+		bareAcceptedAt,
+	)
+	if _, _, err := store.PrepareTurnSubmission(candidate); err == nil {
 		t.Fatal("bare owner_session_id admitted a canonical Turn")
 	}
 	if _, found, err := store.Turn(sessionID); err != nil || found {
@@ -287,7 +584,7 @@ func TestSignalAdversarialBareOwnerCannotAdmitTurnAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reopened.admitTurn(admitted); err == nil {
+	if _, _, err := reopened.PrepareTurnSubmission(candidate); err == nil {
 		t.Fatal("reopen promoted bare owner_session_id into admission authority")
 	}
 	if _, found, err := reopened.Turn(sessionID); err != nil || found {
@@ -318,12 +615,12 @@ func TestSignalAdversarialBareOwnerCannotAdmitTurnAcrossReopen(t *testing.T) {
 		canonicalSessionID,
 		canonicalSessionID+":turn:1",
 		"canonical admission payload",
-		admitted.AcceptedAt,
+		bareAcceptedAt,
 	))
 	if err != nil || !created {
 		t.Fatalf("prepare canonical submission: pending=%+v created=%v err=%v", pending, created, err)
 	}
-	resolved := resolveDelegatedSubmission(t, canonicalStore, pending, "canonical-activity", admitted.AcceptedAt.Add(time.Second))
+	resolved := resolveDelegatedSubmission(t, canonicalStore, pending, "canonical-activity", bareAcceptedAt.Add(time.Second))
 	turn, found, err := canonicalStore.Turn(canonicalSessionID)
 	if err != nil || !found || turn.TurnID != resolved.ResolvedTurnID || !turn.HasAdmission {
 		t.Fatalf("canonical pending/resolved path did not admit exact Turn: turn=%+v found=%v resolved=%+v err=%v", turn, found, resolved, err)
@@ -608,7 +905,7 @@ func TestSignalAdversarialWatcherOutputThenStateChangeClosesOnlyExactHandling(t 
 	appendSignalTestEvent(t, store, b, "watcher-b")
 	deliveredA, _ := deliverSignalTestEvent(t, store, hostID)
 	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{hostID: host}}
+	fw := &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Agent{hostID: host}}
 	service := NewService(store, fw, nil)
 
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
@@ -685,7 +982,7 @@ func TestSignalAdversarialStartupRecoversOldHostDeliveryAfterBindingReplacement(
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 		newHost: {ID: newHost, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(restarted, fw, nil)
@@ -775,9 +1072,9 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatal(err)
 	}
 	turnID := owner + ":turn:1"
-	if err := store.admitTurn(watcher.AdmittedTurn{SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
+		SessionID: owner, TurnID: turnID, AcceptedAt: time.Now().UTC(),
+	})
 	_, owned := resolveAdversarialEvent(t, store, next, WorkDispositionContinue, nil, owner)
 	if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending || projected.Wake != nil {
 		t.Fatalf("continue mode projection=%+v Work=%+v", projected, owned)
@@ -1100,12 +1397,8 @@ func TestSignalAdversarialTypedWaitsRequireCanonicalExactProducers(t *testing.T)
 		if !ok {
 			break
 		}
-		if err := store.admitTurn(watcher.AdmittedTurn{
-			SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID, AcceptedAt: time.Now().UTC(),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		ready, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID)
+		resolveClaimedHostTurnForTest(t, store, claimed)
+		ready, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1499,9 +1792,9 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	}
 	s1Turn := s1 + ":turn:1"
 	s1AcceptedAt := time.Now().UTC()
-	if err := store.admitTurn(watcher.AdmittedTurn{SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
+		SessionID: s1, TurnID: s1Turn, AcceptedAt: s1AcceptedAt,
+	})
 	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}

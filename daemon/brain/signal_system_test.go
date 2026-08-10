@@ -53,17 +53,59 @@ func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEven
 	if claimed.HandlingID == "" || claimed.ProviderTurnID == "" || claimed.HandlingID == claimed.ProviderTurnID {
 		t.Fatalf("claim did not separate handling and provider turn identities: %+v", claimed)
 	}
-	if err := store.admitTurn(watcher.AdmittedTurn{
-		SessionID: hostID, TurnID: claimed.ProviderTurnID, Receipt: claimed.ID,
-		AcceptedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("admit Host provider turn: %v", err)
-	}
-	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, hostID, claimed.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatalf("consume claimed event: %v", err)
 	}
 	return delivered, item
+}
+
+func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent) {
+	t.Helper()
+	existingTurnID := ""
+	if current, found, err := store.Turn(claimed.DeliveryHostSessionID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		existingTurnID = current.TurnID
+		if !watcher.TurnImmutable(current.Status) {
+			settledAt := time.Now().UTC()
+			settled, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+				SessionID: current.SessionID, TurnID: current.TurnID,
+				Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+				SourceID:  "provider\x00test-host\x00" + current.TurnID + "\x00done",
+				Admission: current.Admission, ActivityID: current.ActivityID,
+				StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
+			})
+			if err != nil || !changed || !watcher.TurnImmutable(settled.Status) {
+				t.Fatalf("settle previous Host provider turn: turn=%+v changed=%v err=%v", settled, changed, err)
+			}
+		}
+	}
+	acceptedAt := time.Now().UTC()
+	payloadDigest := pendingSubmissionDigest("claimed Host Event " + claimed.ID)
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, ClaimToken: claimed.HandlingID, PayloadSHA256: payloadDigest,
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare Host provider turn created=%v err=%v", created, err)
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, PayloadSHA256: pending.PayloadSHA256,
+		ActivityID: "host-activity-" + claimed.ProviderTurnID,
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatalf("resolve Host provider turn: %v", err)
+	}
 }
 
 func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testing.T) {
@@ -231,7 +273,8 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Work %s", index, claimed, ok, err, wantWorkID)
 		}
 		if index < 2 {
-			delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+			resolveClaimedHostTurnForTest(t, store, claimed)
+			delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -389,7 +432,7 @@ func TestSignalRestartRequeuesWorkKeyWithoutReplayingDeliveredFact(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{turnStore: restarted, sessions: map[string]*classifier.Agent{
 		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 	}}
 	service := NewService(restarted, fw, nil)

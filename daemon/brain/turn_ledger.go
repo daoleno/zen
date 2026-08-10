@@ -56,6 +56,7 @@ type TurnSubmissionRecord struct {
 	ProposedTurnID     string                      `json:"proposed_turn_id"`
 	WorkID             string                      `json:"work_id"`
 	Receipt            string                      `json:"receipt"`
+	ClaimToken         string                      `json:"claim_token,omitempty"`
 	PayloadSHA256      string                      `json:"payload_sha256"`
 	ProcessIdentity    string                      `json:"process_identity"`
 	PaneGeneration     string                      `json:"pane_generation"`
@@ -76,7 +77,7 @@ type TurnSubmissionRecord struct {
 func (r TurnSubmissionRecord) snapshot() watcher.TurnSubmission {
 	return watcher.TurnSubmission{
 		WorkID: r.WorkID, SessionID: r.SessionID, ProposedTurnID: r.ProposedTurnID,
-		Receipt: r.Receipt, PayloadSHA256: r.PayloadSHA256,
+		Receipt: r.Receipt, ClaimToken: r.ClaimToken, PayloadSHA256: r.PayloadSHA256,
 		ProcessIdentity: r.ProcessIdentity, PaneGeneration: r.PaneGeneration,
 		AcceptedAt: r.AcceptedAt, TranscriptBinding: r.TranscriptBinding,
 		Mode: r.Mode, ExistingTurnID: r.ExistingTurnID,
@@ -191,6 +192,10 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 			strings.TrimSpace(submission.ProcessIdentity) == "" || strings.TrimSpace(submission.PaneGeneration) == "" {
 			return fmt.Errorf("%s: receipt, payload_sha256, process_identity, and pane_generation are required", prefix)
 		}
+		hostClaimSubmission := strings.TrimSpace(submission.ClaimToken) != ""
+		if hostClaimSubmission == (submission.Receipt == submission.ProposedTurnID) {
+			return fmt.Errorf("%s: Host submission requires a distinct receipt and claim token", prefix)
+		}
 		if len(submission.PayloadSHA256) != sha256.Size*2 {
 			return fmt.Errorf("%s: payload_sha256 must be a SHA-256 hex digest", prefix)
 		}
@@ -241,7 +246,7 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 			return fmt.Errorf("%s: duplicate session/proposed turn", prefix)
 		}
 		keys[key] = struct{}{}
-		receiptKey := submission.SessionID + "\x00" + submission.Receipt
+		receiptKey := submission.SessionID + "\x00" + submission.Receipt + "\x00" + submission.ClaimToken
 		if _, exists := receipts[receiptKey]; exists {
 			return fmt.Errorf("%s: duplicate session/receipt", prefix)
 		}
@@ -334,6 +339,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	candidate.SessionID = strings.TrimSpace(candidate.SessionID)
 	candidate.ProposedTurnID = strings.TrimSpace(candidate.ProposedTurnID)
 	candidate.Receipt = strings.TrimSpace(candidate.Receipt)
+	candidate.ClaimToken = strings.TrimSpace(candidate.ClaimToken)
 	candidate.PayloadSHA256 = strings.TrimSpace(candidate.PayloadSHA256)
 	candidate.ProcessIdentity = strings.TrimSpace(candidate.ProcessIdentity)
 	candidate.PaneGeneration = strings.TrimSpace(candidate.PaneGeneration)
@@ -352,6 +358,10 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if _, err := hex.DecodeString(candidate.PayloadSHA256); err != nil {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("payload_sha256 must be a SHA-256 hex digest")
 	}
+	hostClaimSubmission := candidate.Receipt != candidate.ProposedTurnID || candidate.ClaimToken != ""
+	if hostClaimSubmission && (candidate.WorkID == "" || candidate.ClaimToken == "") {
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Host submission requires exact Work and claim token", ErrEventClaim)
+	}
 	now := s.nowUTC()
 	s.mu.Lock()
 	changedWorkID := ""
@@ -369,7 +379,8 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		if record.SessionID != candidate.SessionID {
 			continue
 		}
-		if record.ProposedTurnID == candidate.ProposedTurnID || record.Receipt == candidate.Receipt {
+		sameClaimAttempt := record.Receipt == candidate.Receipt && record.ClaimToken == candidate.ClaimToken
+		if record.ProposedTurnID == candidate.ProposedTurnID || sameClaimAttempt {
 			if candidate.WorkID != "" && record.WorkID != candidate.WorkID {
 				return watcher.TurnSubmission{}, false, fmt.Errorf("submission identity already belongs to different Work")
 			}
@@ -383,8 +394,12 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		}
 	}
 	workID := candidate.WorkID
-	if workID == "" {
-		workID = databaseWorkIDForTurnAdmission(database, candidate.SessionID, candidate.ProposedTurnID, candidate.Receipt)
+	if hostClaimSubmission {
+		if !databaseHasExactHostEventClaim(database, candidate) {
+			return watcher.TurnSubmission{}, false, ErrEventClaim
+		}
+	} else if workID == "" {
+		workID = databaseWorkIDForTurnAdmission(database, candidate.SessionID)
 	}
 	if workID == "" {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", candidate.SessionID)
@@ -394,7 +409,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		return watcher.TurnSubmission{}, false, ErrWorkNotFound
 	}
 	item := database.BrainWork[workIndex]
-	if item.Status == WorkDone || item.Status == WorkCancelled {
+	if !hostClaimSubmission && (item.Status == WorkDone || item.Status == WorkCancelled) {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s is %s", ErrWorkOwnerConflict, item.ID, item.Status)
 	}
 	if executionWorkID := databaseActiveWorkIDForExecutionSession(database, candidate.SessionID); executionWorkID != "" && executionWorkID != item.ID {
@@ -430,6 +445,10 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	handlingIndex := inFlightHandlingEventIndex(database, item.ID)
 	initialOwnerAdmission := false
 	switch {
+	case hostClaimSubmission:
+		// The exact claimed Event owns this Host provider Turn. Worker
+		// ownership and successor reservation remain untouched; Work changes
+		// only when the delivered handling commits its typed disposition.
 	case reservation != nil:
 		if strings.TrimSpace(reservation.SessionID) != candidate.SessionID {
 			return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s already reserved successor %s", ErrWorkOwnerConflict, item.ID, reservation.SessionID)
@@ -454,7 +473,8 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 
 	record := TurnSubmissionRecord{
 		SessionID: candidate.SessionID, ProposedTurnID: candidate.ProposedTurnID,
-		WorkID: workID, Receipt: candidate.Receipt, PayloadSHA256: candidate.PayloadSHA256,
+		WorkID: workID, Receipt: candidate.Receipt, ClaimToken: candidate.ClaimToken,
+		PayloadSHA256:   candidate.PayloadSHA256,
 		ProcessIdentity: candidate.ProcessIdentity, PaneGeneration: candidate.PaneGeneration,
 		AcceptedAt: candidate.AcceptedAt.UTC(), TranscriptBinding: candidate.TranscriptBinding,
 		Mode: candidate.Mode, ExistingTurnID: candidate.ExistingTurnID,
@@ -486,6 +506,7 @@ func sameTurnSubmissionIdentity(record TurnSubmissionRecord, candidate watcher.T
 	return record.SessionID == candidate.SessionID &&
 		record.ProposedTurnID == candidate.ProposedTurnID &&
 		record.Receipt == candidate.Receipt &&
+		record.ClaimToken == candidate.ClaimToken &&
 		record.PayloadSHA256 == candidate.PayloadSHA256 &&
 		record.ProcessIdentity == candidate.ProcessIdentity &&
 		record.PaneGeneration == candidate.PaneGeneration &&
@@ -597,7 +618,7 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 			// admission. Proved non-submission releases that authority and restores
 			// one actionable Work obligation in this same replacement; a crash
 			// cannot expose an aborted submission beside a naked owner string.
-			if record.ExistingTurnID == "" {
+			if record.ClaimToken == "" && record.ExistingTurnID == "" {
 				if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
 					item := database.BrainWork[workIndex]
 					_, hasCurrent := currentTurnForSession(database, record.SessionID)
@@ -745,7 +766,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 		})
 		if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
 			item := database.BrainWork[workIndex]
-			if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == record.SessionID {
+			if reservation := item.SuccessorReservation; record.ClaimToken == "" && reservation != nil && reservation.SessionID == record.SessionID {
 				reservation.ProviderTurnID = record.ProposedTurnID
 				item.SuccessorReservation = reservation
 				database.BrainWork[workIndex] = item
@@ -754,7 +775,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 			// durable in the Turn Ledger, but attachment to Work belongs to the
 			// exact continue disposition. Updating Work here would invalidate the
 			// delivered revision before Brain could commit that disposition.
-			if item.Status != WorkDone && item.Status != WorkCancelled &&
+			if record.ClaimToken == "" && item.Status != WorkDone && item.Status != WorkCancelled &&
 				!workHasInFlightHandling(database, record.WorkID) {
 				update := derivedWorkUpdate(watcher.TurnAccepted, record.SessionID, "")
 				if workUpdateChanges(item, update) {
@@ -781,65 +802,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 	return record.snapshot(), nil
 }
 
-// admitTurn records an Admitted row only when the database already contains
-// exact canonical Work/Turn evidence for it. Live delegated input uses
-// Prepare/Resolve/AbortTurnSubmission; Host signal delivery is admitted from
-// its exact claimed Event identity. Idempotent per (session, turn).
-func (s *Store) admitTurn(admitted watcher.AdmittedTurn) error {
-	if s == nil {
-		return fmt.Errorf("brain store is not configured")
-	}
-	admitted.SessionID = strings.TrimSpace(admitted.SessionID)
-	admitted.TurnID = strings.TrimSpace(admitted.TurnID)
-	if admitted.SessionID == "" || admitted.TurnID == "" {
-		return fmt.Errorf("session_id and turn_id are required")
-	}
-	if admitted.AcceptedAt.IsZero() {
-		return fmt.Errorf("accepted_at is required")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return err
-	}
-	workID := databaseWorkIDForTurnAdmission(database, admitted.SessionID, admitted.TurnID, admitted.Receipt)
-	if workID == "" {
-		return fmt.Errorf("no canonical Brain Work/Turn evidence admits Session %s Turn %s", admitted.SessionID, admitted.TurnID)
-	}
-	for _, turn := range database.BrainTurns {
-		if turn.SessionID == admitted.SessionID && turn.TurnID == admitted.TurnID {
-			return nil
-		}
-	}
-	database.BrainTurns = append(database.BrainTurns, TurnRecord{
-		SessionID:         admitted.SessionID,
-		TurnID:            admitted.TurnID,
-		WorkID:            workID,
-		Status:            watcher.TurnAdmitted,
-		Receipt:           strings.TrimSpace(admitted.Receipt),
-		PaneGeneration:    strings.TrimSpace(admitted.PaneGeneration),
-		ProcessIdentity:   strings.TrimSpace(admitted.ProcessIdentity),
-		PayloadSHA256:     strings.TrimSpace(admitted.PayloadSHA256),
-		AcceptedAt:        admitted.AcceptedAt.UTC(),
-		Facts:             []TurnFactRecord{},
-		TranscriptBinding: admitted.TranscriptBinding,
-		LeaseDeadline:     admitted.AcceptedAt.Add(turnLeaseGrace).UTC(),
-		UpdatedAt:         now,
-	})
-	if index := workIndex(database.BrainWork, workID); index >= 0 {
-		item := database.BrainWork[index]
-		if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == admitted.SessionID {
-			reservation.ProviderTurnID = admitted.TurnID
-			item.SuccessorReservation = reservation
-			database.BrainWork[index] = item
-		}
-	}
-	return s.persistOrchestrationLocked(database)
-}
-
-func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID, turnID, receipt string) string {
+func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID string) string {
 	if workID := databaseActiveWorkIDForExecutionSession(database, sessionID); workID != "" {
 		return workID
 	}
@@ -858,13 +821,43 @@ func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID, t
 			}
 		}
 	}
+	return ""
+}
+
+func databaseHasExactHostEventClaim(database orchestrationDatabase, submission watcher.TurnSubmission) bool {
 	for _, event := range database.BrainWorkEvents {
-		if event.ID == receipt && event.DeliveryHostSessionID == sessionID && event.ProviderTurnID == turnID &&
-			event.ClaimedAt != nil && event.DeliveredAt == nil && event.Resolution == "" {
-			return event.WorkID
+		if event.ID == submission.Receipt && event.HandlingID == submission.ClaimToken &&
+			event.WorkID == submission.WorkID && event.DeliveryHostSessionID == submission.SessionID &&
+			event.ProviderTurnID == submission.ProposedTurnID && event.Actionable &&
+			event.ClaimedAt != nil && event.DeliveredAt == nil && event.HandlingEndedAt == nil &&
+			event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" &&
+			!event.HistoricalDelivery {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+func databaseHasResolvedHostEventAdmission(
+	database orchestrationDatabase,
+	eventID, claimToken, workID, hostSessionID, providerTurnID string,
+) bool {
+	for _, submission := range database.BrainTurnSubmissions {
+		if submission.Receipt != eventID || submission.ClaimToken != claimToken ||
+			submission.WorkID != workID || submission.SessionID != hostSessionID ||
+			submission.ProposedTurnID != providerTurnID ||
+			submission.State != watcher.TurnSubmissionResolved ||
+			submission.ResolvedTurnID != providerTurnID {
+			continue
+		}
+		for _, turn := range database.BrainTurns {
+			if turn.SessionID == hostSessionID && turn.TurnID == providerTurnID &&
+				turn.WorkID == workID && turn.Receipt == eventID && !turn.Admission.Empty() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // BackfillTurnTranscriptBinding idempotently records the provider-native

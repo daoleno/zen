@@ -56,6 +56,54 @@ func lifecycleTestWatcher(io *fakeSessionInputIO, ledger *fakeTurnLedger, probe 
 	return w
 }
 
+// TestBrainHostInputCarriesExactClaimCapabilityThroughCanonicalSubmission
+// exercises the real Host entry point through Session Input's durable
+// prepare/provider/resolve transaction. The Brain Store separately proves
+// that only a matching live Event claim may prepare this tuple.
+func TestBrainHostInputCarriesExactClaimCapabilityThroughCanonicalSubmission(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Now().UTC()
+	payload := "handle the claimed Brain Work Event"
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{Structured: true, FallbackAllowed: true},
+		{
+			ID: "host-activity", Status: "running", StartedAt: now.Add(time.Second),
+			AdmissionStream: "opencode_db\x00host\x00/db", AdmissionID: "host-message",
+			AdmissionCursor: 1, AdmissionAt: now.Add(time.Second),
+			InputSHA256: payloadDigest, Structured: true,
+		},
+	}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	hostID := "brain-agent-brain-hidden:@host-capability"
+	w.agents[hostID] = &classifier.Agent{
+		ID: hostID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, State: classifier.StateDone,
+	}
+	eventID := "event-exact"
+	claimToken := "claim-exact"
+	workID := "work-exact"
+	providerTurnID := "provider-turn-exact"
+
+	result, err := w.SubmitBrainHostInput(
+		hostID, payload, eventID, claimToken, workID, providerTurnID, now,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != providerTurnID {
+		t.Fatalf("Host admission result=%+v err=%v", result, err)
+	}
+	submission, found, err := ledger.TurnSubmission(hostID, providerTurnID)
+	if err != nil || !found || submission.State != TurnSubmissionResolved ||
+		submission.Receipt != eventID || submission.ClaimToken != claimToken ||
+		submission.WorkID != workID || submission.SessionID != hostID ||
+		submission.ProposedTurnID != providerTurnID {
+		t.Fatalf("canonical Host submission=%+v found=%v err=%v", submission, found, err)
+	}
+	if len(io.queues) != 1 || len(io.submissions) != 1 {
+		t.Fatalf("Host input mutation count queues=%d submissions=%d, want one each", len(io.queues), len(io.submissions))
+	}
+}
+
 // TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce
 // reproduces the observed failure: an initial delegated spawn is judged
 // byte-mismatched (ambiguous) while OpenCode actually accepted the prompt and

@@ -347,11 +347,12 @@ func TestFaultMarkerlessAcceptedTurnUnrepresentable(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No Work owns the session: admission fails closed as not-submitted.
-	if err := store.admitTurn(watcher.AdmittedTurn{
-		SessionID:  "brain-agent-nobody:@1",
-		TurnID:     "brain-agent-nobody:@1:turn:1",
-		AcceptedAt: time.Now().UTC(),
-	}); err == nil || !strings.Contains(err.Error(), "no canonical Brain Work/Turn evidence") {
+	turnID := "brain-agent-nobody:@1:turn:1"
+	if _, _, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		SessionID: "brain-agent-nobody:@1", ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: strings.Repeat("a", 64), ProcessIdentity: "process-identity",
+		PaneGeneration: "pane-generation", AcceptedAt: time.Now().UTC(), Mode: watcher.TurnSubmissionFresh,
+	}); err == nil || !strings.Contains(err.Error(), "no active Brain Work owns delegated Session") {
 		t.Fatalf("markerless admission = %v, want fail-closed", err)
 	}
 }

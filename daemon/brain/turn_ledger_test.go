@@ -455,16 +455,14 @@ func TestTurnTerminalImmutabilityAndSessionReuse(t *testing.T) {
 
 	// Session reuse: a new turn is a new lifecycle boundary.
 	turn2 := sessionID + ":turn:2"
-	if err := store.admitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, storeWorkID(t, store, sessionID), watcher.AdmittedTurn{
 		SessionID:       sessionID,
 		TurnID:          turn2,
 		AcceptedAt:      acceptedAt.Add(30 * time.Second),
 		ProcessIdentity: "proc-identity-1",
 		PaneGeneration:  "pane-gen-1",
 		PayloadSHA256:   "payload-digest-2",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	admission2 := providerAdmission("stream", "msg-3", 3, "sha-2", acceptedAt.Add(32*time.Second))
 	if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turn2,
@@ -1123,7 +1121,8 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim stale attention=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,11 +1141,9 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	now := oldStaleAt.Add(time.Minute)
 	store.now = func() time.Time { return now }
 	newTurnID := sessionID + ":turn:2"
-	if err := store.admitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, storeWorkID(t, store, sessionID), watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	replayed := oldStale
 	replayed.At = now
 	if _, changed, err := store.ApplyTurnFact(replayed); err != nil || changed {
@@ -1226,18 +1223,17 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim uncertain attention=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ReserveWorkSuccessor(workItem.ID, sessionID); err != nil {
 		t.Fatalf("reserve replacement Turn: %v", err)
 	}
-	if err := store.admitTurn(watcher.AdmittedTurn{
+	bootstrapAdmittedTurnFixture(t, store, workItem.ID, watcher.AdmittedTurn{
 		SessionID: sessionID, TurnID: newTurnID, AcceptedAt: at.Add(2 * time.Minute),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,

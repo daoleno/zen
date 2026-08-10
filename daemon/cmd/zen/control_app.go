@@ -36,7 +36,7 @@ type controlWatcher interface {
 	SubmitInputWhenReady(sessionID, command, payload string) error
 	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
-	SubmitBrainHostInput(sessionID, payload, eventID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker

@@ -43,6 +43,7 @@ type delegatedTurnDraft struct {
 	WorkID            string
 	ID                string
 	Receipt           string
+	ClaimToken        string
 	AcceptedAt        time.Time
 	ProcessIdentity   string
 	PaneGeneration    string
@@ -612,6 +613,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 			submission, created, prepareErr := owner.prepareTurnSubmission(TurnSubmission{
 				WorkID: turn.WorkID, SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
+				ClaimToken:    turn.ClaimToken,
 				PayloadSHA256: payloadDigest, ProcessIdentity: turn.ProcessIdentity,
 				PaneGeneration: firstNonEmptyString(turn.PaneGeneration, current.generation),
 				AcceptedAt:     turn.AcceptedAt, TranscriptBinding: turn.TranscriptBinding,

@@ -31,6 +31,7 @@ type fakeWatcher struct {
 	captures       map[string]string
 	receipts       map[string]string
 	outcomes       map[string]watcher.InputOutcome
+	turnStore      *Store
 }
 
 type createdCall struct {
@@ -383,9 +384,65 @@ func (w *fakeWatcher) SendInputWithReceiptResult(sessionID, text, receipt string
 }
 
 func (w *fakeWatcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, providerTurnID string,
-	_ time.Time,
+	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
+	if w.turnStore != nil && w.sendErr == nil {
+		existingTurnID := ""
+		if current, found, err := w.turnStore.Turn(sessionID); err != nil {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+		} else if found {
+			existingTurnID = current.TurnID
+			if !watcher.TurnImmutable(current.Status) {
+				settledAt := time.Now().UTC()
+				if _, _, err := w.turnStore.ApplyTurnFact(watcher.TurnFact{
+					SessionID: current.SessionID, TurnID: current.TurnID,
+					Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+					SourceID:  "provider\x00fake-host\x00" + current.TurnID + "\x00done",
+					Admission: current.Admission, ActivityID: current.ActivityID,
+					StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
+				}); err != nil {
+					return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+				}
+			}
+		}
+		pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
+			Receipt: eventID, ClaimToken: claimToken,
+			PayloadSHA256:   pendingSubmissionDigest(payload),
+			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+			AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
+		})
+		if err != nil {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+		}
+		if !created {
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID},
+				fmt.Errorf("Host submission was not freshly prepared")
+		}
+		result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
+		result.TurnID = providerTurnID
+		if err != nil {
+			return result, err
+		}
+		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
+		resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
+			Admission: watcher.TurnAdmission{
+				Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
+				SHA256: pending.PayloadSHA256, At: resolvedAt,
+			},
+			ResolvedAt: resolvedAt,
+		})
+		if err != nil {
+			result.Outcome = watcher.InputAmbiguous
+			return result, err
+		}
+		result.Outcome = watcher.InputAccepted
+		result.TurnID = resolved.ResolvedTurnID
+		return result, nil
+	}
 	result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
 	result.TurnID = providerTurnID
 	return result, err

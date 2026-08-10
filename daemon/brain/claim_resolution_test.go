@@ -34,23 +34,11 @@ func claimResolutionStore(t *testing.T) (*Store, string, WorkEvent) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimedAt := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	store.mu.Lock()
-	database, err := store.loadOrchestrationLocked()
-	if err == nil {
-		for index := range database.BrainWorkEvents {
-			if database.BrainWorkEvents[index].ID == event.ID {
-				database.BrainWorkEvents[index].ClaimedAt = &claimedAt
-				database.BrainWorkEvents[index].DeliveryHostSessionID = "brain-agent-brain-hidden:@1"
-			}
-		}
-		err = store.persistOrchestrationLocked(database)
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok || claimed.ID != event.ID {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	store.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store, item.ID, event
+	return store, item.ID, claimed
 }
 
 // TestMarkDeliveredClaimClosesHeldClaim explicitly closes a held claim by user
@@ -169,7 +157,9 @@ func TestReplayEventIsBoundedToOneReplayOfHeldClaim(t *testing.T) {
 func TestReplayEventRequiresHeldClaim(t *testing.T) {
 	store, _, event := claimResolutionStore(t)
 	// Release the claim: an unclaimed event cannot be replayed.
-	if err := store.ReleaseEventClaim(event.ID, "brain-agent-brain-hidden:@1"); err != nil {
+	if err := store.ReleaseEventClaim(
+		event.ID, event.HandlingID, event.WorkID, event.DeliveryHostSessionID, event.ProviderTurnID,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ReplayEvent(event.ID, "user", "no held claim"); err == nil {
@@ -257,7 +247,8 @@ func TestPruneSettledTurnsKeepsHeldAndUncertainRows(t *testing.T) {
 	if err != nil || !ok || claimed.ID != terminal.ID {
 		t.Fatalf("terminal claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	resolveClaimedHostTurnForTest(t, store, claimed)
+	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
