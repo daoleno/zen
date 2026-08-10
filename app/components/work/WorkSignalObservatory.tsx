@@ -1,22 +1,20 @@
-import React, {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
-  type ListRenderItem,
+  type LayoutChangeEvent,
   Modal,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Animated, { FadeIn, useReducedMotion } from "react-native-reanimated";
+import Animated, {
+  FadeIn,
+  FadeOut,
+  LinearTransition,
+  useReducedMotion,
+} from "react-native-reanimated";
+import Svg, { Circle, Path } from "react-native-svg";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   isAgentSessionListFreshForConnection,
@@ -28,10 +26,6 @@ import { useCurrentServer } from "../../store/currentServer";
 import type { StoredAgentAliases } from "../../services/storage";
 import { presentAgent } from "../../services/agentPresentation";
 import {
-  acceptSessionResourceSnapshotResponse,
-} from "../../services/sessionResourceSnapshot";
-import { wsClient } from "../../services/websocket";
-import {
   Radii,
   TypeScale,
   UiTextMetrics,
@@ -41,17 +35,18 @@ import type { ResolvedZenTheme } from "../../theme";
 import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
-  buildWorkResourcePresentation,
-  buildWorkSignalObservatoryProjection,
-  projectWorkResourceRequest,
-  reconcileStableWorkSignalItems,
-  workResourceRequestIdentity,
-  type WorkResourcePresentation,
-  type WorkResourceRequestState,
-  type WorkSignalItem,
-  type WorkSignalOwner,
-  type WorkSignalTone,
-} from "./workSignalObservatoryModel";
+  buildWorkRelationshipGraphProjection,
+  layoutWorkRelationshipGraph,
+  resolveWorkGraphSelection,
+  type WorkGraphEdgeKind,
+  type WorkGraphNode,
+  type WorkGraphNodeLayout,
+  type WorkGraphOwner,
+  type WorkGraphSelection,
+  type WorkGraphState,
+  type WorkRelationshipGraphLayout,
+  type WorkRelationshipGraphModel,
+} from "./workRelationshipGraphModel";
 import { resolveWorkObservatoryMotion } from "./workSignalObservatoryInteraction";
 
 type WorkSignalObservatoryProps = {
@@ -61,8 +56,9 @@ type WorkSignalObservatoryProps = {
   onOpenSession(agent: Agent): void;
 };
 
-const MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 } as const;
-const EMPTY_WORK_SIGNAL_ITEMS: readonly WorkSignalItem[] = [];
+type GraphFrame = { width: number; height: number };
+
+const EMPTY_FRAME: GraphFrame = { width: 0, height: 0 };
 
 export function WorkSignalObservatory({
   visible,
@@ -81,6 +77,9 @@ export function WorkSignalObservatory({
     currentServerId,
     hydrated: currentServerHydrated,
   } = useCurrentServer();
+  const [page, setPage] = useState(0);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [graphFrame, setGraphFrame] = useState<GraphFrame>(EMPTY_FRAME);
   const serverId = currentServerId;
   const brain = serverId ? brainState.byServer[serverId] : undefined;
   const connectionState = serverId
@@ -93,7 +92,8 @@ export function WorkSignalObservatory({
   const agentListFresh = serverId
     ? isAgentSessionListFreshForConnection(agentState, serverId)
     : false;
-  const brainHydrated = currentServerHydrated && Boolean(brain?.hydrated);
+  const brainHydrated = Boolean(brain?.hydrated);
+  const graphScopeKey = `${serverId ?? ""}\u0000${connectionGeneration}`;
 
   const currentAgents = useMemo(
     () => agentState.agents.filter((agent) => agent.serverId === serverId),
@@ -103,7 +103,7 @@ export function WorkSignalObservatory({
     () => new Map(currentAgents.map((agent) => [agent.id, agent] as const)),
     [currentAgents],
   );
-  const owners = useMemo<WorkSignalOwner[]>(
+  const owners = useMemo<WorkGraphOwner[]>(
     () =>
       currentAgents.map((agent) => ({
         sessionId: agent.id,
@@ -111,83 +111,94 @@ export function WorkSignalObservatory({
         status: agent.status,
         delegated: agent.delegated === true,
         needsAttention: agent.needs_attention === true,
+        updatedAt: agent.updated_at,
       })),
     [aliases, currentAgents],
   );
   const projection = useMemo(
     () =>
-      buildWorkSignalObservatoryProjection({
+      buildWorkRelationshipGraphProjection({
+        currentServerHydrated,
+        hasCurrentServer: Boolean(currentServer),
         brainHydrated,
         agentListFresh,
         work: brain?.active_work ?? [],
         owners,
+        page,
       }),
-    [agentListFresh, brain?.active_work, brainHydrated, owners],
+    [
+      agentListFresh,
+      brain?.active_work,
+      brainHydrated,
+      currentServer,
+      currentServerHydrated,
+      owners,
+      page,
+    ],
   );
   const model = projection.state === "ready" ? projection.model : null;
-  const projectionScopeKey = `${serverId ?? ""}\u0000${connectionGeneration}`;
-  const items = useStableWorkSignalItems(
-    projectionScopeKey,
-    model?.items ?? EMPTY_WORK_SIGNAL_ITEMS,
-  );
-  const resourceSessionId = useMemo(
+  const layout = useMemo(
     () =>
-      items.find(
-        (item) => item.stage === "owned" && item.targetSessionId,
-      )?.targetSessionId ?? null,
-    [items],
+      model
+        ? layoutWorkRelationshipGraph(model, graphFrame)
+        : emptyGraphLayout(graphFrame),
+    [graphFrame, model],
   );
-  const resource = useWorkResourceSnapshot({
-    serverId,
-    sessionId: resourceSessionId,
-    connected: visible && connected,
-    connectionGeneration,
-  });
-  const resourcePresentation: WorkResourcePresentation = model
-    ? buildWorkResourcePresentation({
-        activeCount: model.activeCount,
-        ownerCount: resourceSessionId ? model.ownerCount : 0,
-        connected,
-        loading: resource.status === "loading",
-        snapshot: resource.snapshot,
-        failed: resource.status === "failed",
-      })
-    : {
-        state: connected ? "loading" : "unavailable",
-        label: connected ? "Updating" : "Resources paused",
-      };
+  const selection = useMemo(
+    () => (model ? resolveWorkGraphSelection(model, selectedNodeId) : null),
+    [model, selectedNodeId],
+  );
 
-  const openSession = useCallback(
-    (agent: Agent) => {
-      onClose();
-      onOpenSession(agent);
+  useEffect(() => {
+    if (!visible) return;
+    setPage(0);
+    setSelectedNodeId(null);
+  }, [graphScopeKey, visible]);
+
+  useEffect(() => {
+    if (selectedNodeId && !selection) setSelectedNodeId(null);
+  }, [selectedNodeId, selection]);
+
+  const handleGraphLayout = useCallback((event: LayoutChangeEvent) => {
+    const width = Math.round(event.nativeEvent.layout.width);
+    const height = Math.round(event.nativeEvent.layout.height);
+    setGraphFrame((current) =>
+      current.width === width && current.height === height
+        ? current
+        : { width, height },
+    );
+  }, []);
+  const handleNodePress = useCallback(
+    (node: WorkGraphNode) => {
+      if (node.kind === "aggregate") {
+        setSelectedNodeId(null);
+        setPage((current) =>
+          node.pageCount > 1 ? (current + 1) % node.pageCount : 0,
+        );
+        return;
+      }
+      if (node.kind === "brain") return;
+      setSelectedNodeId((current) => (current === node.id ? null : node.id));
     },
-    [onClose, onOpenSession],
+    [],
   );
-  const renderItem = useCallback<ListRenderItem<WorkSignalItem>>(
-    ({ item }) => {
-      const target = item.targetSessionId
-        ? agentById.get(item.targetSessionId)
-        : undefined;
-      return (
-        <WorkSignalRow
-          item={item}
-          onPress={target ? () => openSession(target) : undefined}
-          animateRows={motion.animateRows}
-          styles={styles}
-        />
-      );
-    },
-    [agentById, motion.animateRows, openSession, styles],
-  );
+  const openSelectedSession = useCallback(() => {
+    const sessionId = selection?.detail.sessionId;
+    const agent = sessionId ? agentById.get(sessionId) : undefined;
+    if (!agent) return;
+    onClose();
+    onOpenSession(agent);
+  }, [agentById, onClose, onOpenSession, selection?.detail.sessionId]);
   const emptyState = resolveEmptyState({
     currentServerHydrated,
     hasServer: Boolean(currentServer),
-    projectionReady: model !== null,
+    projectionState: projection.state,
     connected,
   });
-  const liveLabel = connected ? "live" : "last known";
-  const summary = model?.summaryLabel ?? "Updating";
+  const canOpenSelectedSession = Boolean(
+    selection?.detail.sessionId &&
+      agentById.has(selection.detail.sessionId),
+  );
 
   return (
     <Modal
@@ -200,9 +211,10 @@ export function WorkSignalObservatory({
         <View style={styles.topBar}>
           <View style={styles.titleCopy}>
             <Text style={styles.eyebrow} numberOfLines={1}>
-              {connected ? "CURRENT SERVER · LIVE" : "CURRENT SERVER"}
+              {currentServer?.name || "CURRENT SERVER"}
+              {connected ? " · LIVE" : ""}
             </Text>
-            <Text style={styles.title}>Work</Text>
+            <Text style={styles.title} maxFontSizeMultiplier={1.4}>Work</Text>
           </View>
           <AnimatedPressable
             style={styles.closeButton}
@@ -217,125 +229,463 @@ export function WorkSignalObservatory({
           </AnimatedPressable>
         </View>
 
-        <View
-          style={styles.summaryCard}
-          accessible
-          accessibilityRole="summary"
-          accessibilityLabel={`Work, ${liveLabel}, ${summary}, ${resourcePresentation.label}`}
-        >
-          <SignalGlyph
-            tone={headerTone(
-              model?.failureCount ?? 0,
-              model?.attentionCount ?? 0,
-            )}
-            styles={styles}
-          />
-          <View style={styles.summaryCopy}>
-            <Text style={styles.summaryLabel} numberOfLines={1}>
-              {summary}
-            </Text>
-            <Text style={styles.summaryDetail} numberOfLines={1}>
-              {currentServer?.name || "No current server"}
-            </Text>
-          </View>
-          <ResourceIndicator presentation={resourcePresentation} styles={styles} />
-        </View>
+        <GraphLegend styles={styles} />
 
-        <FlatList
-          data={items}
-          keyExtractor={workKeyExtractor}
-          renderItem={renderItem}
-          ItemSeparatorComponent={RowSeparator}
-          ListEmptyComponent={
+        <View
+          style={styles.graphFrame}
+          onLayout={handleGraphLayout}
+          accessible={Boolean(model && model.totalWorkCount === 0)}
+          accessibilityRole="summary"
+          accessibilityLabel={model?.accessibilityLabel}
+        >
+          {model && model.totalWorkCount > 0 && layout.nodes.length > 0 ? (
+            <RelationshipGraph
+              model={model}
+              layout={layout}
+              selection={selection}
+              animateGraph={motion.animateGraph}
+              styles={styles}
+              onNodePress={handleNodePress}
+            />
+          ) : (
             <ObservatoryState
               title={emptyState.title}
               detail={emptyState.detail}
               loading={emptyState.loading}
               styles={styles}
             />
-          }
-          contentContainerStyle={[
-            styles.listContent,
-            (!model || items.length === 0) && styles.emptyListContent,
-          ]}
-          initialNumToRender={10}
-          maxToRenderPerBatch={8}
-          windowSize={5}
-          removeClippedSubviews={false}
-          maintainVisibleContentPosition={MAINTAIN_VISIBLE_POSITION}
-          showsVerticalScrollIndicator={false}
+          )}
+        </View>
+
+        <GraphDetailDock
+          selection={selection}
+          canOpenSession={canOpenSelectedSession}
+          animateGraph={motion.animateGraph}
+          onOpenSession={openSelectedSession}
+          styles={styles}
         />
       </SafeAreaView>
     </Modal>
   );
 }
 
-function WorkSignalRow({
-  item,
-  animateRows,
+function RelationshipGraph({
+  model,
+  layout,
+  selection,
+  animateGraph,
+  styles,
+  onNodePress,
+}: {
+  model: WorkRelationshipGraphModel;
+  layout: WorkRelationshipGraphLayout;
+  selection: WorkGraphSelection | null;
+  animateGraph: boolean;
+  styles: ReturnType<typeof createStyles>;
+  onNodePress(node: WorkGraphNode): void;
+}) {
+  const selectedNodeIds = useMemo(
+    () => new Set(selection?.selectedNodeIds ?? []),
+    [selection?.selectedNodeIds],
+  );
+  const selectedEdgeIds = useMemo(
+    () => new Set(selection?.selectedEdgeIds ?? []),
+    [selection?.selectedEdgeIds],
+  );
+
+  return (
+    <View style={styles.graphCanvas}>
+      <Svg
+        width={layout.viewport.width}
+        height={layout.viewport.height}
+        style={StyleSheet.absoluteFill}
+        accessible={false}
+        importantForAccessibility="no-hide-descendants"
+      >
+        {layout.edges.map((edge) => (
+          <RelationshipEdge
+            key={edge.id}
+            edge={edge}
+            highlighted={!selection || selectedEdgeIds.has(edge.id)}
+            styles={styles}
+          />
+        ))}
+      </Svg>
+      {layout.nodes.map((nodeLayout) => (
+        <GraphNodeView
+          key={nodeLayout.node.id}
+          layout={nodeLayout}
+          selected={selectedNodeIds.has(nodeLayout.node.id)}
+          dimmed={Boolean(selection && !selectedNodeIds.has(nodeLayout.node.id))}
+          animateGraph={animateGraph}
+          styles={styles}
+          onPress={() => onNodePress(nodeLayout.node)}
+        />
+      ))}
+      {model.pageCount > 1 ? (
+        <View style={styles.pageBadge} pointerEvents="none">
+          <Text style={styles.pageBadgeText} maxFontSizeMultiplier={1.2}>
+            {model.page + 1}/{model.pageCount}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function RelationshipEdge({
+  edge,
+  highlighted,
+  styles,
+}: {
+  edge: WorkRelationshipGraphLayout["edges"][number];
+  highlighted: boolean;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const presentation = edgePresentation(edge.kind, styles.colors);
+  const opacity = highlighted ? presentation.opacity : 0.13;
+  return (
+    <>
+      <Path
+        d={edge.path}
+        fill="none"
+        stroke={presentation.stroke}
+        strokeWidth={presentation.strokeWidth}
+        strokeDasharray={presentation.dash}
+        strokeLinecap="round"
+        opacity={opacity}
+      />
+      {edge.kind === "review" ? (
+        <Circle
+          cx={(edge.startX + edge.endX) / 2}
+          cy={(edge.startY + edge.endY) / 2}
+          r={3.5}
+          fill={styles.colors.bgPrimary}
+          stroke={presentation.stroke}
+          strokeWidth={1.8}
+          opacity={opacity}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function GraphNodeView({
+  layout,
+  selected,
+  dimmed,
+  animateGraph,
   styles,
   onPress,
 }: {
-  item: WorkSignalItem;
-  animateRows: boolean;
+  layout: WorkGraphNodeLayout;
+  selected: boolean;
+  dimmed: boolean;
+  animateGraph: boolean;
   styles: ReturnType<typeof createStyles>;
-  onPress?: () => void;
+  onPress(): void;
 }) {
-  const colors = toneColors(item.tone, styles.colors);
-  const content = (
+  const { node } = layout;
+  const animation = animateGraph ? LinearTransition.duration(180) : undefined;
+  const frameStyle = {
+    left: layout.x,
+    top: layout.y,
+    width: layout.width,
+    height: layout.height,
+    opacity: dimmed ? 0.24 : 1,
+  };
+  const content = <GraphNodeContent node={node} selected={selected} styles={styles} />;
+
+  return (
     <Animated.View
-      key={item.transitionKey}
-      entering={animateRows ? FadeIn.duration(180) : undefined}
-      style={styles.rowContent}
+      entering={animateGraph ? FadeIn.duration(160) : undefined}
+      exiting={animateGraph ? FadeOut.duration(120) : undefined}
+      layout={animation}
+      style={[styles.nodeFrame, frameStyle]}
     >
-      <View style={styles.rail} pointerEvents="none">
-        <View style={[styles.railLine, { backgroundColor: colors.soft }]} />
-        <View style={[styles.signalHalo, { backgroundColor: colors.soft }]}>
-          <View style={[styles.signalDot, { backgroundColor: colors.strong }]} />
+      {node.kind === "brain" ? (
+        <View
+          style={[styles.nodeFill, styles.brainNode, selected && styles.nodeSelected]}
+          accessible
+          accessibilityRole="text"
+          accessibilityLabel={node.accessibilityLabel}
+        >
+          {content}
         </View>
-      </View>
-      <View style={styles.rowCopy}>
-        <Text style={styles.workTitle} numberOfLines={1}>
-          {item.title}
-        </Text>
-        <View style={styles.nextLine}>
-          <Ionicons name={signalIcon(item)} size={14} color={colors.strong} />
-          <Text style={[styles.nextLabel, { color: colors.strong }]} numberOfLines={1}>
-            {item.signalLabel}
-          </Text>
-          {item.detail ? (
-            <Text style={styles.nextDetail} numberOfLines={1}>
-              · {item.detail}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-      {onPress ? (
-        <Ionicons name="chevron-forward" size={16} color={styles.colors.textTertiary} />
-      ) : null}
+      ) : (
+        <AnimatedPressable
+          style={[
+            styles.nodeFill,
+            node.kind === "aggregate"
+              ? styles.aggregateNode
+              : styles.relationshipNode,
+            selected && styles.nodeSelected,
+          ]}
+          preset="press"
+          scale={animateGraph ? 0.96 : 1}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={node.accessibilityLabel}
+          accessibilityState={{ selected }}
+          accessibilityHint={
+            node.kind === "aggregate"
+              ? "Shows the next graph view"
+              : "Shows this relationship"
+          }
+        >
+          {content}
+        </AnimatedPressable>
+      )}
     </Animated.View>
   );
+}
 
-  return onPress ? (
-    <AnimatedPressable
-      style={styles.row}
-      preset="press"
-      scale={0.985}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={item.accessibilityLabel}
-      accessibilityHint="Opens this Session"
-    >
-      {content}
-    </AnimatedPressable>
-  ) : (
-    <View
-      style={styles.row}
-      accessible
-      accessibilityRole="text"
-      accessibilityLabel={item.accessibilityLabel}
-    >
-      {content}
+function GraphNodeContent({
+  node,
+  selected,
+  styles,
+}: {
+  node: WorkGraphNode;
+  selected: boolean;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  if (node.kind === "brain") {
+    return (
+      <>
+        <View style={styles.brainMark}>
+          <Ionicons name="git-network-outline" size={17} color={styles.colors.accentStrong} />
+        </View>
+        <Text style={styles.brainLabel} maxFontSizeMultiplier={1.25}>
+          Brain
+        </Text>
+      </>
+    );
+  }
+  if (node.kind === "aggregate") {
+    return (
+      <View style={styles.aggregateContent}>
+        <Ionicons name="sync-outline" size={13} color={styles.colors.accentStrong} />
+        <View style={styles.aggregateCopy}>
+          <Text style={styles.aggregateTitle} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+            {node.title}
+          </Text>
+          <Text style={styles.aggregateHint} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+            Next view
+          </Text>
+        </View>
+      </View>
+    );
+  }
+  const stateColors = graphStateColors(node.state, styles.colors);
+  if (node.kind === "endpoint") {
+    return (
+      <View style={styles.endpointContent}>
+        <View style={[styles.endpointIcon, { backgroundColor: stateColors.soft }]}>
+          <Ionicons
+            name={endpointIcon(node.endpointKind)}
+            size={12}
+            color={stateColors.strong}
+          />
+        </View>
+        <View style={styles.endpointCopy}>
+          <Text
+            style={styles.endpointTitle}
+            numberOfLines={2}
+            maxFontSizeMultiplier={1.35}
+          >
+            {node.title}
+          </Text>
+          <StateLabel
+            state={node.state}
+            label={node.stateLabel}
+            compact
+            styles={styles}
+          />
+        </View>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.workNodeContent}>
+      <View style={styles.workStateRow}>
+        <StateLabel
+          state={node.state}
+          label={node.stateLabel}
+          compact
+          styles={styles}
+        />
+        {selected ? (
+          <Ionicons name="locate" size={10} color={stateColors.strong} />
+        ) : null}
+      </View>
+      <Text
+        style={styles.workNodeTitle}
+        numberOfLines={2}
+        ellipsizeMode="tail"
+        maxFontSizeMultiplier={1.35}
+      >
+        {node.title}
+      </Text>
+    </View>
+  );
+}
+
+function StateLabel({
+  state,
+  label,
+  compact,
+  styles,
+}: {
+  state: WorkGraphState;
+  label: string;
+  compact?: boolean;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const colors = graphStateColors(state, styles.colors);
+  return (
+    <View style={[styles.stateLabel, compact && styles.stateLabelCompact]}>
+      <View style={[styles.stateDot, { backgroundColor: colors.strong }]} />
+      <Text
+        style={[
+          styles.stateLabelText,
+          compact && styles.stateLabelTextCompact,
+          { color: colors.strong },
+        ]}
+        numberOfLines={1}
+        maxFontSizeMultiplier={1.3}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function GraphDetailDock({
+  selection,
+  canOpenSession,
+  animateGraph,
+  onOpenSession,
+  styles,
+}: {
+  selection: WorkGraphSelection | null;
+  canOpenSession: boolean;
+  animateGraph: boolean;
+  onOpenSession(): void;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  return (
+    <View style={styles.detailDock}>
+      {selection ? (
+        <Animated.View
+          key={selection.detail.nodeId}
+          entering={animateGraph ? FadeIn.duration(140) : undefined}
+          style={styles.detailContent}
+        >
+          <View style={styles.detailHeading}>
+            <Text
+              style={styles.detailTitle}
+              numberOfLines={2}
+              maxFontSizeMultiplier={1.35}
+            >
+              {selection.detail.title}
+            </Text>
+            <StateLabel
+              state={selection.detail.state}
+              label={selection.detail.stateLabel}
+              styles={styles}
+            />
+          </View>
+          <View style={styles.detailBottomRow}>
+            <Text
+              style={styles.detailRelationship}
+              numberOfLines={2}
+              maxFontSizeMultiplier={1.35}
+            >
+              {selection.detail.relationshipLabel}
+            </Text>
+            {canOpenSession ? (
+              <AnimatedPressable
+                style={styles.openSessionButton}
+                preset="press"
+                scale={0.95}
+                onPress={onOpenSession}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${selection.detail.title} Session`}
+              >
+                <Ionicons
+                  name="arrow-forward"
+                  size={13}
+                  color={styles.colors.textOnAccent}
+                />
+                <Text style={styles.openSessionText} maxFontSizeMultiplier={1.25}>
+                  Open Session
+                </Text>
+              </AnimatedPressable>
+            ) : null}
+          </View>
+        </Animated.View>
+      ) : (
+        <View
+          style={styles.detailPrompt}
+          accessible
+          accessibilityRole="summary"
+          accessibilityLabel="Tap a Work or Session node to inspect its relationship"
+        >
+          <Ionicons name="finger-print-outline" size={18} color={styles.colors.textTertiary} />
+          <View style={styles.detailPromptCopy}>
+            <Text style={styles.detailPromptTitle} maxFontSizeMultiplier={1.35}>
+              Tap a node
+            </Text>
+            <Text style={styles.detailPromptHint} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+              See its owner or wait
+            </Text>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function GraphLegend({ styles }: { styles: ReturnType<typeof createStyles> }) {
+  return (
+    <View style={styles.legend} accessible accessibilityRole="text">
+      <LegendItem label="Owns" kind="ownership" styles={styles} />
+      <LegendItem label="Waits" kind="wait" styles={styles} />
+      <LegendItem label="Review" kind="review" styles={styles} />
+    </View>
+  );
+}
+
+function LegendItem({
+  label,
+  kind,
+  styles,
+}: {
+  label: string;
+  kind: WorkGraphEdgeKind;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const presentation = edgePresentation(kind, styles.colors);
+  return (
+    <View style={styles.legendItem}>
+      <View style={styles.legendLineWrap}>
+        <View
+          style={[
+            styles.legendLine,
+            {
+              borderTopColor: presentation.stroke,
+              borderTopWidth: presentation.strokeWidth,
+              borderStyle: presentation.dash ? "dashed" : "solid",
+            },
+          ]}
+        />
+        {kind === "review" ? (
+          <View style={[styles.legendReviewDot, { borderColor: presentation.stroke }]} />
+        ) : null}
+      </View>
+      <Text style={styles.legendLabel} maxFontSizeMultiplier={1.25}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -361,222 +711,110 @@ function ObservatoryState({
       {loading ? (
         <ActivityIndicator color={styles.colors.accentStrong} />
       ) : (
-        <SignalGlyph tone="complete" styles={styles} />
-      )}
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyDetail}>{detail}</Text>
-    </View>
-  );
-}
-
-function SignalGlyph({
-  tone,
-  styles,
-}: {
-  tone: WorkSignalTone;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const colors = toneColors(tone, styles.colors);
-  return (
-    <View style={styles.glyph} pointerEvents="none">
-      <View style={[styles.glyphLine, { backgroundColor: colors.soft }]} />
-      <View style={[styles.glyphSmall, { backgroundColor: colors.strong }]} />
-      <View style={[styles.glyphCore, { backgroundColor: colors.soft, borderColor: colors.strong }]}>
-        <View style={[styles.glyphSmall, { backgroundColor: colors.strong }]} />
-      </View>
-      <View style={[styles.glyphSmall, { backgroundColor: colors.strong }]} />
-    </View>
-  );
-}
-
-function ResourceIndicator({
-  presentation,
-  styles,
-}: {
-  presentation: WorkResourcePresentation;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const tone =
-    presentation.state === "pressure"
-      ? "failed"
-      : presentation.state === "steady"
-        ? "complete"
-        : presentation.state === "loading"
-          ? "active"
-          : "muted";
-  const colors = toneColors(tone, styles.colors);
-  return (
-    <View style={styles.resource}>
-      <View style={styles.resourceLabelRow}>
-        {presentation.state === "loading" ? (
-          <ActivityIndicator size="small" color={colors.strong} style={styles.resourceSpinner} />
-        ) : (
-          <View style={[styles.resourceDot, { backgroundColor: colors.strong }]} />
-        )}
-        <Text style={styles.resourceLabel} numberOfLines={1}>
-          {presentation.label}
-        </Text>
-      </View>
-      {presentation.level != null ? (
-        <View style={styles.resourceTrack}>
-          <View
-            style={[
-              styles.resourceFill,
-              { backgroundColor: colors.strong, width: `${presentation.level * 100}%` },
-            ]}
-          />
+        <View style={styles.emptyMark}>
+          <Ionicons name="git-network-outline" size={20} color={styles.colors.success} />
         </View>
-      ) : null}
+      )}
+      <Text style={styles.emptyTitle} maxFontSizeMultiplier={1.4}>
+        {title}
+      </Text>
+      <Text style={styles.emptyDetail} maxFontSizeMultiplier={1.4}>
+        {detail}
+      </Text>
     </View>
   );
 }
 
-function useStableWorkSignalItems(
-  scopeKey: string,
-  incoming: readonly WorkSignalItem[],
-): readonly WorkSignalItem[] {
-  const [committed, setCommitted] = useState<{
-    scopeKey: string;
-    items: readonly WorkSignalItem[];
-  }>(() => ({ scopeKey, items: incoming }));
-  const stableItems = useMemo(
-    () =>
-      committed.scopeKey === scopeKey
-        ? reconcileStableWorkSignalItems(committed.items, incoming)
-        : incoming,
-    [committed, incoming, scopeKey],
-  );
-
-  useLayoutEffect(() => {
-    setCommitted((current) =>
-      current.scopeKey === scopeKey && current.items === stableItems
-        ? current
-        : { scopeKey, items: stableItems },
-    );
-  }, [scopeKey, stableItems]);
-
-  return stableItems;
-}
-
-function useWorkResourceSnapshot({
-  serverId,
-  sessionId,
-  connected,
-  connectionGeneration,
-}: {
-  serverId: string | null;
-  sessionId: string | null;
-  connected: boolean;
-  connectionGeneration: number;
-}) {
-  const requestSeqRef = useRef(0);
-  const identity = workResourceRequestIdentity(
-    serverId,
-    sessionId,
-    connected,
-    connectionGeneration,
-  );
-  const [request, setRequest] = useState<WorkResourceRequestState | null>(null);
-  const projection = projectWorkResourceRequest(identity, request);
-
-  useEffect(() => {
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    if (!identity || !serverId || !sessionId) {
-      setRequest(null);
-      return;
-    }
-
-    setRequest({ identity, status: "loading" });
-    void wsClient
-      .getSessionResourceSnapshot(serverId, sessionId)
-      .then((next) => {
-        if (
-          !acceptSessionResourceSnapshotResponse({
-            requestSeq,
-            currentSeq: requestSeqRef.current,
-            snapshotAgentId: next.agent_id,
-            expectedAgentId: sessionId,
-          })
-        ) {
-          return;
-        }
-        setRequest({ identity, status: "ready", snapshot: next });
-      })
-      .catch(() => {
-        if (requestSeqRef.current === requestSeq) {
-          setRequest({ identity, status: "failed" });
-        }
-      });
-
-    return () => {
-      if (requestSeqRef.current === requestSeq) {
-        requestSeqRef.current += 1;
-      }
-    };
-  }, [identity, serverId, sessionId]);
-
-  return projection;
+function emptyGraphLayout(frame: GraphFrame): WorkRelationshipGraphLayout {
+  return { viewport: frame, nodes: [], edges: [] };
 }
 
 function resolveEmptyState({
   currentServerHydrated,
   hasServer,
-  projectionReady,
+  projectionState,
   connected,
 }: {
   currentServerHydrated: boolean;
   hasServer: boolean;
-  projectionReady: boolean;
+  projectionState: "updating" | "unavailable" | "ready";
   connected: boolean;
 }) {
   if (!currentServerHydrated) {
     return { title: "Finding current server", detail: "Just a moment", loading: true };
   }
-  if (!hasServer) {
+  if (!hasServer || projectionState === "unavailable") {
     return { title: "Work unavailable", detail: "Connect a current server", loading: false };
   }
-  if (!projectionReady) {
+  if (projectionState === "updating") {
     return connected
-      ? { title: "Updating", detail: "Reading the latest Work", loading: true }
+      ? { title: "Updating", detail: "Reading the latest relationships", loading: true }
       : { title: "Work unavailable", detail: "Reconnect to update", loading: false };
   }
   return {
     title: "All clear",
-    detail: connected ? "Nothing in progress" : "Last known state",
+    detail: connected ? "Nothing in progress" : "Reconnect to update",
     loading: false,
   };
 }
 
-function signalIcon(item: WorkSignalItem): React.ComponentProps<typeof Ionicons>["name"] {
-  if (item.tone === "failed") return "alert-circle-outline";
-  if (item.stage === "owned") return "person-outline";
-  if (item.stage === "waiting") return "time-outline";
-  if (item.stage === "ready") return "arrow-forward-circle-outline";
-  if (item.stage === "completed") return "checkmark-circle-outline";
-  return "remove-circle-outline";
+function endpointIcon(
+  kind: "agent" | "wake" | "placeholder",
+): React.ComponentProps<typeof Ionicons>["name"] {
+  if (kind === "agent") return "person-outline";
+  if (kind === "wake") return "notifications-outline";
+  return "alert-outline";
 }
 
-function headerTone(failures: number, attention: number): WorkSignalTone {
-  if (failures > 0) return "failed";
-  return attention > 0 ? "attention" : "active";
-}
-
-function toneColors(
-  tone: WorkSignalTone,
+function graphStateColors(
+  state: WorkGraphState,
   colors: ResolvedZenTheme["colors"],
 ) {
-  if (tone === "active") return { strong: colors.statusRunning, soft: colors.accentSoft };
-  if (tone === "waiting") return { strong: colors.statusBlocked, soft: colors.warningSoft };
-  if (tone === "attention") return { strong: colors.accentStrong, soft: colors.accentSoft };
-  if (tone === "failed") return { strong: colors.dangerText, soft: colors.dangerSoft };
-  if (tone === "complete") return { strong: colors.success, soft: colors.successSoft };
-  return { strong: colors.textTertiary, soft: colors.surfaceSubtle };
+  if (state === "running") {
+    return { strong: colors.statusRunning, soft: colors.successSoft };
+  }
+  if (state === "waiting") {
+    return { strong: colors.statusBlocked, soft: colors.warningSoft };
+  }
+  if (state === "review") {
+    return { strong: colors.accentStrong, soft: colors.accentSoft };
+  }
+  return { strong: colors.dangerText, soft: colors.dangerSoft };
 }
 
-const workKeyExtractor = (item: WorkSignalItem) => item.id;
-const RowSeparator = () => <View style={rowSeparatorStyle} />;
-const rowSeparatorStyle = { height: StyleSheet.hairlineWidth };
+function edgePresentation(
+  kind: WorkGraphEdgeKind,
+  colors: ResolvedZenTheme["colors"],
+): {
+  stroke: string;
+  strokeWidth: number;
+  dash?: string;
+  opacity: number;
+} {
+  if (kind === "ownership") {
+    return { stroke: colors.textSecondary, strokeWidth: 1.8, opacity: 0.7 };
+  }
+  if (kind === "wait") {
+    return {
+      stroke: colors.statusBlocked,
+      strokeWidth: 2.1,
+      dash: "5 5",
+      opacity: 0.9,
+    };
+  }
+  if (kind === "review") {
+    return { stroke: colors.accentStrong, strokeWidth: 2.6, opacity: 0.92 };
+  }
+  if (kind === "blocked") {
+    return {
+      stroke: colors.dangerText,
+      strokeWidth: 2,
+      dash: "2 4",
+      opacity: 0.82,
+    };
+  }
+  return { stroke: colors.borderStrong, strokeWidth: 1.25, opacity: 0.62 };
+}
 
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
@@ -585,15 +823,26 @@ function createStyles(theme: ResolvedZenTheme) {
     StyleSheet.create({
       root: { flex: 1, backgroundColor: colors.bgPrimary },
       topBar: {
-        minHeight: 64,
-        paddingHorizontal: 18,
+        minHeight: 60,
+        paddingHorizontal: 16,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
       },
       titleCopy: { flex: 1, minWidth: 0 },
-      eyebrow: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textTertiary, letterSpacing: 0.8 },
-      title: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary, marginTop: 1 },
+      eyebrow: {
+        ...UiTextMetrics,
+        ...TypeScale.micro,
+        color: colors.textTertiary,
+        letterSpacing: 0.7,
+        textTransform: "uppercase",
+      },
+      title: {
+        ...UiTextMetrics,
+        ...TypeScale.title,
+        color: colors.textPrimary,
+        marginTop: 1,
+      },
       closeButton: {
         width: 40,
         height: 40,
@@ -604,55 +853,262 @@ function createStyles(theme: ResolvedZenTheme) {
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: surfaces.border,
       },
-      summaryCard: {
-        minHeight: 76,
-        marginHorizontal: 16,
-        marginBottom: 12,
-        paddingHorizontal: 14,
-        borderRadius: Radii.lg,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: surfaces.border,
-        backgroundColor: surfaces.subtle,
+      legend: {
+        minHeight: 28,
+        paddingHorizontal: 18,
         flexDirection: "row",
         alignItems: "center",
-        gap: 11,
-      },
-      glyph: { width: 42, height: 34, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-      glyphLine: { position: "absolute", left: 7, right: 7, height: 2, borderRadius: 1 },
-      glyphSmall: { width: 6, height: 6, borderRadius: 3 },
-      glyphCore: { width: 22, height: 22, borderRadius: 11, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-      summaryCopy: { flex: 1, minWidth: 0 },
-      summaryLabel: { ...UiTextMetrics, ...TypeScale.label, color: colors.textPrimary },
-      summaryDetail: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
-      resource: { maxWidth: 120, alignItems: "flex-end", gap: 5 },
-      resourceLabelRow: { minHeight: 16, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 5 },
-      resourceLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textSecondary, flexShrink: 1 },
-      resourceDot: { width: 5, height: 5, borderRadius: 3 },
-      resourceSpinner: { width: 8, height: 8, transform: [{ scale: 0.4 }] },
-      resourceTrack: { width: 52, height: 3, borderRadius: 2, overflow: "hidden", backgroundColor: colors.borderSubtle },
-      resourceFill: { height: 3, borderRadius: 2 },
-      listContent: { paddingHorizontal: 16, paddingBottom: 24 },
-      emptyListContent: { flexGrow: 1 },
-      row: {
-        height: 76,
         justifyContent: "center",
-        borderRadius: Radii.md,
+        gap: 18,
+      },
+      legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+      legendLineWrap: {
+        width: 22,
+        height: 10,
+        alignItems: "center",
+        justifyContent: "center",
+      },
+      legendLine: { width: 22, height: 1 },
+      legendReviewDot: {
+        position: "absolute",
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        borderWidth: 1.3,
+        backgroundColor: colors.bgPrimary,
+      },
+      legendLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textTertiary },
+      graphFrame: {
+        flex: 1,
+        minHeight: 260,
+        marginHorizontal: 8,
+        marginTop: 4,
+        borderRadius: Radii.lg,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.borderSubtle,
+        backgroundColor: surfaces.subtle,
+        overflow: "hidden",
+      },
+      graphCanvas: { flex: 1 },
+      nodeFrame: { position: "absolute" },
+      nodeFill: {
+        flex: 1,
+        borderRadius: Radii.sm,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: surfaces.border,
         backgroundColor: surfaces.surface,
         overflow: "hidden",
       },
-      rowContent: { height: 76, paddingRight: 14, flexDirection: "row", alignItems: "center", gap: 10 },
-      rail: { width: 36, height: 76, alignItems: "center", justifyContent: "center" },
-      railLine: { position: "absolute", top: 0, bottom: 0, width: StyleSheet.hairlineWidth },
-      signalHalo: { width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center" },
-      signalDot: { width: 7, height: 7, borderRadius: 4 },
-      rowCopy: { flex: 1, minWidth: 0 },
-      workTitle: { ...UiTextMetrics, ...TypeScale.compact, color: colors.textPrimary },
-      nextLine: { minHeight: 20, marginTop: 3, flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 },
-      nextLabel: { ...UiTextMetrics, ...TypeScale.caption, flexShrink: 1, minWidth: 0 },
-      nextDetail: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, flex: 1, minWidth: 0 },
-      emptyState: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 32, paddingBottom: 64 },
-      emptyTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary, marginTop: 18 },
-      emptyDetail: { ...UiTextMetrics, ...TypeScale.body, color: colors.textTertiary, marginTop: 4, textAlign: "center" },
+      relationshipNode: { justifyContent: "center" },
+      nodeSelected: { borderWidth: 1.5, borderColor: colors.focusRing },
+      brainNode: { alignItems: "center", justifyContent: "center", gap: 1 },
+      brainMark: {
+        width: 25,
+        height: 24,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: colors.accentSoft,
+      },
+      brainLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textPrimary },
+      workNodeContent: { flex: 1, paddingHorizontal: 8, paddingVertical: 5 },
+      workStateRow: {
+        minHeight: 13,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+      },
+      workNodeTitle: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 11,
+        lineHeight: 14,
+        color: colors.textPrimary,
+        marginTop: 1,
+      },
+      endpointContent: {
+        flex: 1,
+        paddingHorizontal: 7,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+      },
+      endpointIcon: {
+        width: 23,
+        height: 23,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+      },
+      endpointCopy: { flex: 1, minWidth: 0 },
+      endpointTitle: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 10.5,
+        lineHeight: 14,
+        color: colors.textPrimary,
+      },
+      stateLabel: {
+        minHeight: 17,
+        paddingHorizontal: 7,
+        borderRadius: 9,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        backgroundColor: colors.surfaceSubtle,
+      },
+      stateLabelCompact: {
+        minHeight: 12,
+        paddingHorizontal: 0,
+        backgroundColor: "transparent",
+      },
+      stateDot: { width: 5, height: 5, borderRadius: 3 },
+      stateLabelText: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 10,
+        lineHeight: 13,
+      },
+      stateLabelTextCompact: { fontSize: 8.5, lineHeight: 11 },
+      aggregateNode: {
+        justifyContent: "center",
+        borderColor: colors.accentStrong,
+        backgroundColor: colors.accentSoft,
+      },
+      aggregateContent: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+      },
+      aggregateCopy: { minWidth: 0 },
+      aggregateTitle: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.label.fontFamily,
+        fontSize: 11,
+        lineHeight: 14,
+        color: colors.accentStrong,
+      },
+      aggregateHint: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 8.5,
+        lineHeight: 11,
+        color: colors.textTertiary,
+      },
+      pageBadge: {
+        position: "absolute",
+        top: 7,
+        right: 8,
+        minWidth: 30,
+        height: 18,
+        paddingHorizontal: 6,
+        borderRadius: 9,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: colors.modalSurfaceAlt,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.borderSubtle,
+      },
+      pageBadgeText: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 8.5,
+        lineHeight: 11,
+        color: colors.textTertiary,
+      },
+      detailDock: {
+        height: 124,
+        marginHorizontal: 10,
+        marginTop: 8,
+        marginBottom: 8,
+        paddingHorizontal: 12,
+        borderRadius: Radii.lg,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: surfaces.border,
+        backgroundColor: surfaces.surface,
+        justifyContent: "center",
+        overflow: "hidden",
+      },
+      detailContent: { flex: 1, paddingVertical: 10, justifyContent: "space-between" },
+      detailHeading: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 10,
+      },
+      detailTitle: {
+        ...UiTextMetrics,
+        ...TypeScale.label,
+        color: colors.textPrimary,
+        flex: 1,
+        minWidth: 0,
+      },
+      detailBottomRow: {
+        minHeight: 34,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+      },
+      detailRelationship: {
+        ...UiTextMetrics,
+        ...TypeScale.caption,
+        color: colors.textSecondary,
+        flex: 1,
+        minWidth: 0,
+      },
+      openSessionButton: {
+        minHeight: 32,
+        paddingHorizontal: 10,
+        borderRadius: 16,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 5,
+        backgroundColor: colors.accentStrong,
+      },
+      openSessionText: {
+        ...UiTextMetrics,
+        fontFamily: TypeScale.micro.fontFamily,
+        fontSize: 10,
+        lineHeight: 13,
+        color: colors.textOnAccent,
+      },
+      detailPrompt: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+      },
+      detailPromptCopy: { minWidth: 0 },
+      detailPromptTitle: { ...UiTextMetrics, ...TypeScale.label, color: colors.textSecondary },
+      detailPromptHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary },
+      emptyState: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 28,
+      },
+      emptyMark: {
+        width: 42,
+        height: 42,
+        borderRadius: 21,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: colors.successSoft,
+      },
+      emptyTitle: {
+        ...UiTextMetrics,
+        ...TypeScale.heading,
+        color: colors.textPrimary,
+        marginTop: 12,
+      },
+      emptyDetail: {
+        ...UiTextMetrics,
+        ...TypeScale.caption,
+        color: colors.textTertiary,
+        marginTop: 3,
+        textAlign: "center",
+      },
     }),
     { colors },
   );

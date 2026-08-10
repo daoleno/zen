@@ -47,11 +47,11 @@ export function createWorkObservatoryAccessibilityProps(open: () => void): {
 
 export function resolveWorkObservatoryMotion(reducedMotion: boolean): {
   modalAnimationType: "none" | "fade";
-  animateRows: boolean;
+  animateGraph: boolean;
 } {
   return reducedMotion
-    ? { modalAnimationType: "none", animateRows: false }
-    : { modalAnimationType: "fade", animateRows: true };
+    ? { modalAnimationType: "none", animateGraph: false }
+    : { modalAnimationType: "fade", animateGraph: true };
 }
 
 export function resolveWorkObservatoryPullIntent({

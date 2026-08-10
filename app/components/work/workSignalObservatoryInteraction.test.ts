@@ -59,14 +59,14 @@ describe("Work observatory accessible interaction", () => {
     expect(opens).toBe(1);
   });
 
-  test("removes modal and row transitions under reduced motion", () => {
+  test("removes modal and graph transitions under reduced motion", () => {
     expect(resolveWorkObservatoryMotion(false)).toEqual({
       modalAnimationType: "fade",
-      animateRows: true,
+      animateGraph: true,
     });
     expect(resolveWorkObservatoryMotion(true)).toEqual({
       modalAnimationType: "none",
-      animateRows: false,
+      animateGraph: false,
     });
   });
 });
