@@ -486,6 +486,70 @@ func TestOwnershipLossAtomicallyDeprojectsAndRemainsProviderRecoverable(t *testi
 	}
 }
 
+func TestOwnershipLossPreservesImmutableProviderOutcome(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-completed-control-loss:@1"
+	turnID := "turn-completed-control-loss"
+	acceptedAt := time.Date(2026, 8, 11, 13, 30, 0, 0, time.UTC)
+	item, err := store.CreateWork(Work{
+		Title: "preserve completed result", Objective: "Keep provider outcome distinct from control ownership.",
+		Status: WorkRunning, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
+		SessionID: sessionID, TurnID: turnID, AcceptedAt: acceptedAt,
+		ProcessIdentity: "process-completed", PaneGeneration: "pane-completed",
+	})
+	done, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceProvider,
+		Kind: "done", SourceID: "provider-completed-before-control-loss",
+		ActivityID: "activity-completed", StartedAt: acceptedAt.Add(time.Second),
+		SettledAt: acceptedAt.Add(time.Minute), At: acceptedAt.Add(time.Minute),
+		Summary: "Provider completed",
+	})
+	if err != nil || !changed || done.Status != watcher.TurnDone {
+		t.Fatalf("provider completion Turn=%+v changed=%v err=%v", done, changed, err)
+	}
+	lost, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceLiveness,
+		Kind: "ownership_lost", SourceID: "completed-control-generation-mismatch",
+		SessionReplaced: true, At: acceptedAt.Add(2 * time.Minute),
+	})
+	if err != nil || !changed || lost.Status != watcher.TurnDone ||
+		lost.ControlState != watcher.TurnControlOwnershipLost || lost.Attention != "ownership_lost" {
+		t.Fatalf("control loss rewrote provider outcome: Turn=%+v changed=%v err=%v", lost, changed, err)
+	}
+	current, err := store.Work(item.ID)
+	if err != nil || current.OwnerSessionID != "" || current.OwnerDelegated ||
+		current.Status != WorkNeedsInput {
+		t.Fatalf("completed control loss Work=%+v err=%v", current, err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, found, err := reopened.TurnByID(sessionID, turnID)
+	if err != nil || !found || durable.Status != watcher.TurnDone ||
+		durable.ControlState != watcher.TurnControlOwnershipLost {
+		t.Fatalf("reopened completed control loss=%+v found=%v err=%v", durable, found, err)
+	}
+	candidate := delegatedSubmissionCandidate(
+		item.ID, sessionID, sessionID+":turn:2", "must remain unsent", acceptedAt.Add(3*time.Minute),
+	)
+	candidate.ExistingTurnID = turnID
+	if _, created, err := reopened.PrepareTurnSubmission(candidate); err == nil || created {
+		t.Fatalf("control-lost Session prepared fresh input: created=%v err=%v", created, err)
+	}
+}
+
 func TestAbsentOwnerRepairCannotInvalidateAdmittedHandlingRevision(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -876,5 +940,91 @@ func TestLongForegroundTurnPersistsFutureAttentionAcrossReopenAndConsumesAtBound
 	}
 	if _, reservation, err := reopened.HostForegroundState(); err != nil || reservation != nil {
 		t.Fatalf("terminal boundary did not consume reservation=%+v err=%v", reservation, err)
+	}
+}
+
+func TestHostForegroundLateBindsNewActivityAfterPriorTerminal(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@late-bind"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	host := &classifier.Agent{
+		ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true,
+	}
+	now := time.Date(2026, 8, 11, 3, 40, 0, 0, time.UTC)
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-late-bind"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
+			ID: "prior-terminal-activity", Status: "completed",
+			StartedAt: now.Add(-time.Hour), SettledAt: now.Add(-time.Minute),
+		}},
+	}
+	service := NewService(store, watcherFixture, nil)
+	if recognized, err := service.NoteUserSteering(hostID); err != nil || !recognized {
+		t.Fatalf("foreground steering recognized=%v err=%v", recognized, err)
+	}
+	if _, created, err := service.PrepareHostUserInput(
+		hostID, "foreground-late-bind", "continue", "",
+	); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(hostID, "foreground-late-bind", "continue", ""); err != nil {
+		t.Fatal(err)
+	}
+	active, reservation, err := store.HostForegroundState()
+	if err != nil || active == nil || reservation != nil {
+		t.Fatalf("initial foreground state active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	if active.ProviderActivityID != "" {
+		t.Fatalf("prior terminal activity was bound to new foreground: %+v", active)
+	}
+
+	item := createSignalTestWork(t, store, "late-bound review", "brain-agent-worker:@late-bind")
+	event := appendSignalTestEvent(t, store, item, "late-bind")
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "new-running-activity", Status: "running", StartedAt: now.Add(time.Second),
+	}
+	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("foreground reservation dispatch woke=%v err=%v", woke, err)
+	}
+	active, reservation, err = store.HostForegroundState()
+	if err != nil || active == nil || reservation == nil || reservation.EventID != event.ID {
+		t.Fatalf("late-bound state active=%+v reservation=%+v err=%v", active, reservation, err)
+	}
+	if active.ProviderActivityID != "new-running-activity" {
+		t.Fatalf("foreground did not monotonically bind new running activity: %+v", active)
+	}
+
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "new-running-activity", Status: "completed",
+		StartedAt: now.Add(time.Second), SettledAt: now.Add(time.Minute),
+	}
+	host.State = classifier.StateDone
+	terminalEvent := watcher.SessionEvent{
+		Type: "agent_state_change", AgentID: hostID,
+		OldState: string(classifier.StateRunning), NewState: string(classifier.StateDone),
+		TurnID: "provider-terminal-boundary",
+		Agent:  &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
+	}
+	if _, err := service.ObserveHostSessionEvent(terminalEvent); err != nil {
+		t.Fatal(err)
+	}
+	if len(watcherFixture.sentCalls) != 1 {
+		t.Fatalf("terminal boundary deliveries=%d, want one", len(watcherFixture.sentCalls))
+	}
+	if _, err := service.ObserveHostSessionEvent(terminalEvent); err != nil {
+		t.Fatal(err)
+	}
+	if len(watcherFixture.sentCalls) != 1 {
+		t.Fatalf("replayed terminal boundary deliveries=%d, want one", len(watcherFixture.sentCalls))
+	}
+	active, reservation, err = store.HostForegroundState()
+	if err != nil || active != nil || reservation != nil {
+		t.Fatalf("terminal consume left foreground state active=%+v reservation=%+v err=%v", active, reservation, err)
 	}
 }

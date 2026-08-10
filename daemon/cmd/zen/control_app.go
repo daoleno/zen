@@ -44,6 +44,7 @@ type controlWatcher interface {
 	ClearDelegatedTurnMarkers(targets []string)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
+	ResolveDelegatedControl(sessionID string) (watcher.OwnedGeneration, error)
 }
 
 type controlApp struct {
@@ -1028,7 +1029,7 @@ func (a *controlApp) resolveOwnedAgent(agentID string) (*classifier.Agent, error
 	if agent == nil {
 		return nil, nil
 	}
-	if _, err := a.watcher.ResolveOwnedGeneration(agentID); err != nil {
+	if _, err := a.watcher.ResolveDelegatedControl(agentID); err != nil {
 		return a.watcher.GetAgent(agentID), err
 	}
 	return a.watcher.GetAgent(agentID), nil

@@ -35,6 +35,12 @@ const openCodeInputReadyTimeout = 15 * time.Second
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
 
+// Recent Codex panes keep the current composer and model/context footer
+// visible after the one-time banner has scrolled away. The pair is current UI
+// evidence; either shape alone is too easy to confuse with pane history.
+var codexComposerReadyRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*›(?:[\t \x{00A0}]|$)`)
+var codexFooterReadyRe = regexp.MustCompile(`(?im)^[\t \x{00A0}]*(?:model:\s*)?gpt-[a-z0-9_.-]+(?:\s+[a-z0-9_.-]+)?\s*[·•][^\n]*(?:\d+%\s*(?:context\s*)?left|context\s+left)\b`)
+
 // Claude Code TUI ready (observed on 2.1.214 / probe @224): numeric version
 // header, empty composer line (❯), plus one permission/mode footer.
 // Distinguishes ready state from startup/loading/safety screens. Version
@@ -459,7 +465,8 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 			}
 		}
 		expectedProcess, expectedPane := "", ""
-		if err == nil && hasTurn && turn.Status == TurnOwnershipLost {
+		if err == nil && hasTurn && (turn.Status == TurnOwnershipLost ||
+			turn.ControlState == TurnControlOwnershipLost) {
 			err = fmt.Errorf("delegated Session control ownership was lost")
 		} else if err == nil && hasPending {
 			expectedProcess, expectedPane = pending.ProcessIdentity, pending.PaneGeneration
@@ -477,6 +484,52 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 		err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
 	}
 	return OwnedGeneration{}, err
+}
+
+// ResolveDelegatedControl proves the exact owned pane/process generation and
+// reconciles its current provider Activity with the canonical delegated Turn.
+// It is the control-surface boundary for list/status/capture/follow-up. A
+// different idle terminal activity is safe for a fresh, digest-confirmed
+// submission; a different live activity is durably deprojected before the
+// command is rejected. Missing provider evidence is left to the bounded
+// evidence-loss reducer and never guessed from pane text.
+func (w *Watcher) ResolveDelegatedControl(sessionID string) (OwnedGeneration, error) {
+	owned, err := w.ResolveOwnedGeneration(sessionID)
+	if err != nil {
+		return OwnedGeneration{}, err
+	}
+	turn, found, err := w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	if err != nil || !found {
+		return owned, err
+	}
+	if pending, hasPending, pendingErr := w.pendingTurnSubmission(sessionID); pendingErr != nil {
+		return OwnedGeneration{}, pendingErr
+	} else if hasPending && pending.State == TurnSubmissionPending {
+		return owned, nil
+	}
+	w.mu.RLock()
+	probe := w.providerActivityProbe
+	agent := w.agents[sessionID]
+	w.mu.RUnlock()
+	if probe == nil || agent == nil {
+		return owned, nil
+	}
+	observation := probe.ObserveProviderActivity(*agent, time.Now().UTC())
+	if strings.TrimSpace(observation.ID) == "" && strings.TrimSpace(observation.Status) == "" {
+		return owned, nil
+	}
+	_, reconcileErr := w.sessionInputOwner().reconcileSubmissionActivity(sessionID, turn, observation)
+	if reconcileErr == nil {
+		_, _ = w.RebindDelegatedTurnProjection(sessionID)
+		return owned, nil
+	}
+	if !errors.Is(reconcileErr, errDelegatedProviderOwnershipMismatch) {
+		return OwnedGeneration{}, reconcileErr
+	}
+	if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
+		reconcileErr = errors.Join(reconcileErr, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+	}
+	return OwnedGeneration{}, reconcileErr
 }
 
 func (w *Watcher) resolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
@@ -504,7 +557,7 @@ func (w *Watcher) deprojectOwnershipLoss(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if !found || TurnTerminal(turn.Status) {
+	if !found || turn.ControlState == TurnControlOwnershipLost || turn.Status == TurnOwnershipLost {
 		return nil
 	}
 	_, _, err = w.turnLedger.ApplyTurnFact(TurnFact{
@@ -1441,6 +1494,13 @@ func (w *Watcher) restoreTurnTranscriptBindingLocked(agent *classifier.Agent, tu
 func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifier.AgentState, string) {
 	var state classifier.AgentState
 	summary := strings.TrimSpace(turn.Summary)
+	if turn.ControlState == TurnControlOwnershipLost {
+		if agent != nil {
+			agent.Attention = "ownership_lost"
+			agent.NeedsAttention = true
+		}
+		return classifier.StateUnknown, "Delegated Session control ownership was lost; inspect and recover"
+	}
 	switch turn.Status {
 	case TurnAdmitted:
 		state = classifier.StateRunning
@@ -2641,7 +2701,13 @@ func (w *Watcher) SubmitDelegatedInput(
 		),
 	)
 	if err != nil {
-		_, _ = w.ResolveOwnedGeneration(sessionID)
+		if errors.Is(err, errDelegatedProviderOwnershipMismatch) {
+			if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
+				err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+			}
+		} else {
+			_, _ = w.ResolveOwnedGeneration(sessionID)
+		}
 	}
 	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
 	return result, err
@@ -3043,15 +3109,34 @@ func isAgentInputReady(command, content string) bool {
 
 func isCodexStartupReady(content string) bool {
 	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 80 {
+		normalized = strings.Join(lines[len(lines)-80:], "\n")
+	}
 	lower := strings.ToLower(normalized)
 	lastHeader := strings.LastIndex(lower, "openai codex")
 	if lastHeader < 0 {
 		lastHeader = strings.LastIndex(lower, ">_ codex")
 	}
-	if lastHeader < 0 {
+	lastFooter := -1
+	if match := codexFooterReadyRe.FindAllStringIndex(normalized, -1); len(match) > 0 {
+		lastFooter = match[len(match)-1][0]
+	}
+	if lastHeader < 0 && lastFooter < 0 {
 		return false
 	}
-	normalized = normalized[lastHeader:]
+	composerIndexes := codexComposerReadyRe.FindAllStringIndex(normalized, -1)
+	if len(composerIndexes) == 0 {
+		return false
+	}
+	lastComposer := composerIndexes[len(composerIndexes)-1][0]
+	epoch := lastHeader
+	if epoch < 0 {
+		epoch = lastFooter
+		if lastComposer < epoch {
+			epoch = lastComposer
+		}
+	}
 	lower = strings.ToLower(normalized)
 	for _, blocked := range []string{
 		"select a model",
@@ -3059,18 +3144,14 @@ func isCodexStartupReady(content string) bool {
 		"loading model",
 		"starting codex",
 		"trust this folder",
+		"do you trust the contents",
 		"press enter to continue",
 	} {
-		if strings.Contains(lower, blocked) {
+		if blockedAt := strings.LastIndex(lower, blocked); blockedAt >= epoch {
 			return false
 		}
 	}
-	for _, line := range strings.Split(normalized, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "›") {
-			return true
-		}
-	}
-	return false
+	return lastComposer >= lastHeader
 }
 
 func isGrokInputReady(content string) bool {

@@ -1031,6 +1031,44 @@ func TestCodexStartupReadyIgnoresConsumedTrustPromptInScrollback(t *testing.T) {
 	}
 }
 
+func TestCodexStartupReadyRecognizesCurrentHeaderlessComposer(t *testing.T) {
+	content := strings.Repeat("older completed output that pushed the banner away\n", 90) +
+		"\n› Ask Codex to work on something\n" +
+		"  gpt-5.6-sol xhigh · 87% left · ~/workspace/zen\n"
+	if !isCodexStartupReady(content) {
+		t.Fatal("current visible Codex composer/footer should be ready without a historical banner")
+	}
+}
+
+func TestCodexStartupReadyHeaderlessComposerStillFailsClosedOnBlockingScreens(t *testing.T) {
+	idleFooter := "  gpt-5.6-sol xhigh · 87% left · ~/workspace/zen\n"
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "model selection",
+			content: idleFooter + "\nSelect a model\n" +
+				"› 1. gpt-5.6-sol\n  2. gpt-5.4\n",
+		},
+		{
+			name: "workspace trust",
+			content: idleFooter + "\nDo you trust the contents of this directory?\n" +
+				"› 1. Yes, continue\n  2. No, quit\n\nPress enter to continue\n",
+		},
+		{
+			name:    "startup",
+			content: idleFooter + "\nStarting Codex\n› loading provider state\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if isCodexStartupReady(test.content) {
+				t.Fatalf("blocking %s screen was treated as input-ready", test.name)
+			}
+		})
+	}
+}
+
 func TestCursorAgentInputReadyIgnoresStaleStartupInScrollback(t *testing.T) {
 	content := "Cursor Agent\nv2026.07.01\nTip: loading\n\n" +
 		"Cursor Agent\nv2026.07.01\n\nComposer 2.5 Fast           Run Everything\n~/workspace/zen · main\n"

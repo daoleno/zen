@@ -453,6 +453,10 @@ func (w *fakeControlWatcher) ResolveOwnedGeneration(sessionID string) (watcher.O
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: "owned-generation"}, nil
 }
 
+func (w *fakeControlWatcher) ResolveDelegatedControl(sessionID string) (watcher.OwnedGeneration, error) {
+	return w.ResolveOwnedGeneration(sessionID)
+}
+
 func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	fw := newFakeControlWatcher()
 	store := newControlBrainStore(t)

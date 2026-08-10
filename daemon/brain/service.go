@@ -1643,7 +1643,7 @@ func (s *Service) AnnotateWorkResultEvents(events []work.CodexConversationEvent)
 	return nil
 }
 
-func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string, bindActivity bool) (BrainInputAdmission, bool, error) {
+func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
 	if s == nil || s.store == nil {
 		return BrainInputAdmission{}, false, nil
 	}
@@ -1679,19 +1679,11 @@ func (s *Service) hostUserInputAdmission(agentID, receipt, displayBody, conversa
 			return BrainInputAdmission{}, false, err
 		}
 	}
-	activityID := ""
-	if bindActivity && s.watcher != nil {
-		if observation, found, probeErr := s.watcher.ProbeProviderEvidence(strings.TrimSpace(host.ID)); probeErr != nil {
-			return BrainInputAdmission{}, false, probeErr
-		} else if found {
-			activityID = strings.TrimSpace(observation.ID)
-		}
-	}
 	return BrainInputAdmission{
 		RequestID: strings.TrimSpace(receipt), ThreadID: threadID,
 		HostSessionID: strings.TrimSpace(host.ID), SessionID: sessionID,
-		HostGeneration: generation, ProviderActivityID: activityID,
-		DisplayBody: strings.TrimSpace(displayBody),
+		HostGeneration: generation,
+		DisplayBody:    strings.TrimSpace(displayBody),
 	}, true, nil
 }
 
@@ -1710,7 +1702,7 @@ func (s *Service) hostOwnedGeneration(hostSessionID string) (string, error) {
 // Input may mutate the provider. created=false means this request/thread was
 // already pending or accepted and must not be submitted again.
 func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
-	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey, false)
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
 	if err != nil || !hostInput {
 		return admission, false, err
 	}
@@ -1731,7 +1723,7 @@ func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 // idempotent messages.jsonl projection. request_id + thread_id is the exact
 // durable admission identity.
 func (s *Service) AdmitHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) error {
-	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey, true)
+	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
 	if err != nil || !hostInput {
 		return err
 	}

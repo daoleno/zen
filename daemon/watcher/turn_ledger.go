@@ -53,6 +53,16 @@ const (
 	TurnOwnershipLost TurnStatus = "ownership_lost"
 )
 
+// TurnControlState is orthogonal to provider lifecycle outcome. A completed
+// Turn remains completed if its tmux/provider control identity later becomes
+// unsafe; commands still fail closed from the durable ownership_lost state.
+type TurnControlState string
+
+const (
+	TurnControlOwned         TurnControlState = ""
+	TurnControlOwnershipLost TurnControlState = "ownership_lost"
+)
+
 // TurnTerminal reports whether the canonical status is terminal for
 // scheduling (immutable Done/Failed, or Unknown awaiting a bound fact).
 func TurnTerminal(status TurnStatus) bool {
@@ -64,9 +74,10 @@ func TurnTerminal(status TurnStatus) bool {
 	}
 }
 
-// TurnImmutable reports whether the canonical status is globally final:
-// Done and Failed can never be mutated, while Unknown is still probed so a
-// later turn-bound Provider terminal can upgrade it (C.2.4).
+// TurnImmutable reports whether the provider outcome is globally final:
+// Done and Failed can never be rewritten, while orthogonal control ownership
+// may still be lost. Unknown is still probed so a later turn-bound Provider
+// terminal can upgrade it (C.2.4).
 func TurnImmutable(status TurnStatus) bool {
 	return status == TurnDone || status == TurnFailed
 }
@@ -108,6 +119,7 @@ type TurnSnapshot struct {
 	SettledAt      *time.Time
 	Summary        string
 	Attention      string
+	ControlState   TurnControlState
 	ActivityID     string
 	Admission      TurnAdmission
 	HasAdmission   bool

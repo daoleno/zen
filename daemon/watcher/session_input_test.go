@@ -554,7 +554,8 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 	defer l.mu.Unlock()
 	l.applied = append(l.applied, fact)
 	turn, ok := l.turns[fact.SessionID]
-	if !ok || turn.TurnID != fact.TurnID || TurnImmutable(turn.Status) {
+	controlOwnershipLoss := fact.Class == EvidenceLiveness && fact.Kind == "ownership_lost"
+	if !ok || turn.TurnID != fact.TurnID || TurnImmutable(turn.Status) && !controlOwnershipLoss {
 		return turn, false, nil
 	}
 	changed := false
@@ -639,9 +640,14 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 			}
 		}
 	case EvidenceLiveness:
-		turn.Status = TurnUnknown
+		turn.ControlState = TurnControlOwnershipLost
+		if !TurnImmutable(turn.Status) {
+			turn.Status = TurnUnknown
+		}
 		if fact.Kind == "ownership_lost" {
-			turn.Status = TurnOwnershipLost
+			if !TurnImmutable(turn.Status) {
+				turn.Status = TurnOwnershipLost
+			}
 			turn.Attention = "ownership_lost"
 		}
 		changed = true
@@ -1448,6 +1454,50 @@ func TestSessionInputTerminalOrUnknownReuseRejectsMismatchedProviderBaseline(t *
 				t.Fatalf("terminal mismatch retained receipt marker: %+v", io.ledger)
 			}
 		})
+	}
+}
+
+func TestSessionInputCompletedTurnReusesDifferentIdleProviderActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	acceptedAt := time.Date(2026, 8, 11, 3, 10, 0, 0, time.UTC)
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID: "agent:@1", TurnID: "canonical-completed", Status: TurnDone,
+		AcceptedAt: acceptedAt.Add(-time.Hour), ActivityID: "activity-canonical",
+	})
+	next := delegatedTurnDraft{
+		ID: "canonical-follow-up", AcceptedAt: acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity), SignalProtocol: true,
+	}
+	confirm := scriptedActivityTransitionAdmission(
+		"follow-up",
+		ProviderActivityObservation{
+			ID: "activity-current-idle", Status: "completed",
+			StartedAt: acceptedAt.Add(-time.Minute), SettledAt: acceptedAt.Add(-time.Second),
+		},
+		"activity-follow-up",
+	)
+
+	result, err := newLedgerSessionInputOwner(io, ledger).submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"follow-up", next, confirm,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
+		t.Fatalf("completed-turn idle reuse = (%+v, %v), want accepted", result, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("completed-turn idle reuse queues=%d, want one", len(io.queues))
+	}
+	current := ledger.snapshot("agent:@1")
+	if current.TurnID != next.ID || current.Status != TurnAccepted ||
+		current.ActivityID != "activity-follow-up" {
+		t.Fatalf("fresh follow-up did not become canonical: %+v", current)
+	}
+	for _, fact := range ledger.applied {
+		if fact.TurnID == "canonical-completed" && fact.ActivityID == "activity-current-idle" {
+			t.Fatalf("different idle activity was ambiently adopted by prior turn: %+v", fact)
+		}
 	}
 }
 

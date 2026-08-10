@@ -104,13 +104,19 @@ spool, background resume loop, second scheduler, replacement Event, ordinary
 Event pull, or provider Goal delivery path.
 
 List, status, capture, and delegated follow-up authorization all call the same
-owned-generation resolver. It proves the durable window marker, live provider
-process identity, pane generation, and current canonical Turn or pending
-submission tuple. Cached Session fields never authorize control. If proof is
-lost, the canonical Turn and its Work/Event projection atomically move to the
-named recoverable `ownership_lost` state before capture or input is rejected;
-status/list then show that state instead of stale Running. A later correlated
-provider terminal may still resolve the result. There is no fallback target,
+control resolver. It proves the durable window marker, live provider process
+identity, pane generation, current canonical Turn or pending submission tuple,
+and the provider Activity relationship. A different terminal Activity may
+prove that the same owned provider generation is idle, but it is never adopted
+into the old Turn; only a post-mutation admission with the new payload digest
+may own a fresh Turn. A different live Activity is a genuine control conflict.
+Cached Session fields never authorize control. If proof is lost, control
+ownership and its Work/Event projection atomically move to the named
+recoverable `ownership_lost` state before capture or input is rejected;
+status/list then show that state instead of stale Running. Provider outcome is
+orthogonal: an already completed or failed Turn keeps that result while its
+control projection becomes unavailable. A later correlated provider terminal
+may still resolve an uncertain result. There is no fallback target,
 compatibility owner, or migration layer.
 
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
@@ -152,7 +158,11 @@ the daemon creates or recovers one future Attention reservation and refreshes
 its revision/fence as eligible facts coalesce. The turn-end observer consumes
 that reservation into its exact claim while holding the same admission mutex.
 A following user send cannot overtake that terminal checkpoint, but the current
-response is never preempted and its input is never replayed.
+response is never preempted and its input is never replayed. A newly accepted
+foreground input does not bind whichever terminal provider Activity happened
+to be visible immediately after mutation. The foreground epoch starts unbound
+and monotonically binds the subsequent running Activity before a reservation
+can consume its exact terminal boundary.
 
 Delegated input carries one durable turn marker on the existing Session input
 receipt boundary. A successful tmux submit queue records only dispatched input;

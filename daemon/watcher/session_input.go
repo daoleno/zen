@@ -89,6 +89,8 @@ type delegatedReuseDecision struct {
 	BaselineActivity string
 }
 
+var errDelegatedProviderOwnershipMismatch = errors.New("delegated provider activity ownership mismatch")
+
 type delegatedInputConfirmer struct {
 	baseline func() (delegatedInputBaseline, error)
 	confirm  func(
@@ -905,9 +907,12 @@ func (owner *sessionInputOwner) resolvePendingFromBaseline(
 //     post-mutation confirmed ActivityID;
 //   - an exact bound terminal is applied through the canonical reducer, after
 //     which a fresh candidate may be prepared without replacing that Turn.
+//   - a different current terminal Activity may prove an immutable completed
+//     Session is idle, but it is never adopted into that old Turn. Only the
+//     post-mutation digest-confirmed admission may own the fresh candidate.
 //
-// Missing, mismatched, or non-lifecycle evidence fails closed before the tmux
-// mutation boundary.
+// A different live Activity, missing binding for a mutable Turn, or
+// non-lifecycle evidence fails closed before the tmux mutation boundary.
 func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	sessionID string,
 	turn TurnSnapshot,
@@ -917,38 +922,60 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	if owner == nil || owner.ledger == nil {
 		return decision, fmt.Errorf("canonical turn ledger is unavailable")
 	}
-	// Historical terminal metadata is valid for poll-time reconciliation, but
-	// it cannot authorize a new input transaction while the provider's current
-	// projection is a different activity. Reuse must bind the baseline itself.
-	if !providerObservationCanBindTurn(turn, provider) {
+	if turn.ControlState == TurnControlOwnershipLost {
 		return decision, fmt.Errorf(
-			"current provider activity is not authoritatively bound to canonical turn %s",
-			turn.TurnID,
+			"%w: canonical turn %s has lost control ownership",
+			errDelegatedProviderOwnershipMismatch, turn.TurnID,
 		)
 	}
-	fact := activityFactFromObservation(sessionID, turn, provider)
+	currentProvider := provider
+	boundProvider := providerObservationForTurn(provider, turn)
+	historicalTerminal := strings.TrimSpace(boundProvider.ID) != "" &&
+		strings.TrimSpace(boundProvider.ID) != strings.TrimSpace(currentProvider.ID)
+	if historicalTerminal && !providerActivityTerminal(currentProvider.Status) {
+		return decision, fmt.Errorf(
+			"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
+			errDelegatedProviderOwnershipMismatch, turn.TurnID,
+		)
+	}
+	if !providerObservationCanBindTurn(turn, boundProvider) {
+		// A globally final canonical result and a different exact terminal
+		// provider activity still prove that the same owned provider generation
+		// is idle. A fresh candidate may cross the mutation boundary, but the
+		// different activity is never adopted into the prior turn: only the
+		// post-mutation admission digest may own the new candidate.
+		if TurnImmutable(turn.Status) && providerActivityTerminal(currentProvider.Status) &&
+			strings.TrimSpace(currentProvider.ID) != "" {
+			return decision, nil
+		}
+		return decision, fmt.Errorf(
+			"%w: current provider activity is not authoritatively bound to canonical turn %s",
+			errDelegatedProviderOwnershipMismatch, turn.TurnID,
+		)
+	}
+	fact := activityFactFromObservation(sessionID, turn, boundProvider)
 	if fact == nil {
 		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
 	}
-	if strings.TrimSpace(provider.Status) == "running" && TurnTerminal(turn.Status) {
+	if strings.TrimSpace(boundProvider.Status) == "running" && TurnTerminal(turn.Status) {
 		return decision, fmt.Errorf(
-			"terminal canonical turn %s cannot be reused from a running provider baseline",
-			turn.TurnID,
+			"%w: terminal canonical turn %s cannot be reused from a running provider baseline",
+			errDelegatedProviderOwnershipMismatch, turn.TurnID,
 		)
 	}
 	snapshot, _, err := owner.ledger.ApplyTurnFact(*fact)
 	if err != nil {
 		return decision, fmt.Errorf("reconcile canonical provider activity: %w", err)
 	}
-	switch strings.TrimSpace(provider.Status) {
+	switch strings.TrimSpace(boundProvider.Status) {
 	case "running":
 		if snapshot.TurnID != turn.TurnID || TurnTerminal(snapshot.Status) ||
-			strings.TrimSpace(snapshot.ActivityID) != strings.TrimSpace(provider.ID) {
+			strings.TrimSpace(snapshot.ActivityID) != strings.TrimSpace(boundProvider.ID) {
 			return decision, fmt.Errorf("provider running activity did not bind the canonical turn")
 		}
 		decision.Mode = delegatedReuseConditionalSteer
 		decision.ExistingTurn = snapshot
-		decision.BaselineActivity = strings.TrimSpace(provider.ID)
+		decision.BaselineActivity = strings.TrimSpace(boundProvider.ID)
 		return decision, nil
 	case "completed":
 		if snapshot.Status != TurnDone {
@@ -964,6 +991,15 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		return decision, nil
 	default:
 		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
+	}
+}
+
+func providerActivityTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "interrupted", "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
