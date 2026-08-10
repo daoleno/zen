@@ -421,7 +421,7 @@ func TestControlUpsertUnknownClientContractRejected(t *testing.T) {
 	app := &controlApp{profiles: owner, stateDir: t.TempDir()}
 	resp := app.HandleControlRequest(control.Request{
 		Type: "provider_upsert", Operation: "create", Revision: 0,
-	ProviderConnection: &modelprofiles.ProviderConnectionInput{
+		ProviderConnection: &modelprofiles.ProviderConnectionInput{
 			ID: "bad", Name: "Bad", Client: modelprofiles.ClientCodex,
 			PresetID: modelprofiles.ProviderPresetOpenRouter, ModelID: "totally-untrusted-model",
 		},
@@ -649,7 +649,7 @@ func TestControlSpawnCommitCleanupKillFailureSurfaced(t *testing.T) {
 	}
 }
 
-func TestControlSpawnAttachOwnerFailureReleasesCommittedRoute(t *testing.T) {
+func TestControlSpawnOwnerAdmissionFailureReleasesCommittedRoute(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -676,7 +676,7 @@ func TestControlSpawnAttachOwnerFailureReleasesCommittedRoute(t *testing.T) {
 	}
 	store := newControlBrainStore(t)
 	item, err := store.CreateWork(brain.Work{
-		Title: "Attach race", Objective: "lose CAS after commit",
+		Title: "Admission race", Objective: "lose CAS after commit",
 		Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
 	})
 	if err != nil {
@@ -684,10 +684,9 @@ func TestControlSpawnAttachOwnerFailureReleasesCommittedRoute(t *testing.T) {
 	}
 	fw := newFakeControlWatcher()
 	fw.onCreate = func(string) {
-		if _, attachErr := store.AttachWorkOwner(item.ID, "incumbent:@9"); attachErr != nil {
-			t.Fatalf("attach incumbent: %v", attachErr)
-		}
+		admitControlWorkOwner(t, store, item.ID, "incumbent:@9")
 	}
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
@@ -710,7 +709,7 @@ func TestControlSpawnAttachOwnerFailureReleasesCommittedRoute(t *testing.T) {
 	}
 }
 
-func TestControlSpawnAttachOwnerFailureSurfacesKillAndPreservesRoute(t *testing.T) {
+func TestControlSpawnOwnerAdmissionFailureSurfacesKillAndPreservesRoute(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -737,7 +736,7 @@ func TestControlSpawnAttachOwnerFailureSurfacesKillAndPreservesRoute(t *testing.
 	}
 	store := newControlBrainStore(t)
 	item, err := store.CreateWork(brain.Work{
-		Title: "Attach race", Objective: "surface kill",
+		Title: "Admission race", Objective: "surface kill",
 		Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
 	})
 	if err != nil {
@@ -747,10 +746,9 @@ func TestControlSpawnAttachOwnerFailureSurfacesKillAndPreservesRoute(t *testing.
 	fw.killErr = errors.New("injected kill failure")
 	fw.killLeavesLive = true
 	fw.onCreate = func(string) {
-		if _, attachErr := store.AttachWorkOwner(item.ID, "incumbent:@9"); attachErr != nil {
-			t.Fatalf("attach incumbent: %v", attachErr)
-		}
+		admitControlWorkOwner(t, store, item.ID, "incumbent:@9")
 	}
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
@@ -773,7 +771,7 @@ func TestControlSpawnAttachOwnerFailureSurfacesKillAndPreservesRoute(t *testing.
 	}
 }
 
-func TestControlSpawnAttachOwnerFailureReleasePersistSurfacedAfterKill(t *testing.T) {
+func TestControlSpawnOwnerAdmissionFailureReleasePersistSurfacedAfterKill(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -800,7 +798,7 @@ func TestControlSpawnAttachOwnerFailureReleasePersistSurfacedAfterKill(t *testin
 	}
 	store := newControlBrainStore(t)
 	item, err := store.CreateWork(brain.Work{
-		Title: "Attach race", Objective: "surface release",
+		Title: "Admission race", Objective: "surface release",
 		Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
 	})
 	if err != nil {
@@ -808,10 +806,9 @@ func TestControlSpawnAttachOwnerFailureReleasePersistSurfacedAfterKill(t *testin
 	}
 	fw := newFakeControlWatcher()
 	fw.onCreate = func(string) {
-		if _, attachErr := store.AttachWorkOwner(item.ID, "incumbent:@9"); attachErr != nil {
-			t.Fatalf("attach incumbent: %v", attachErr)
-		}
+		admitControlWorkOwner(t, store, item.ID, "incumbent:@9")
 	}
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,

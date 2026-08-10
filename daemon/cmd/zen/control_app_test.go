@@ -33,6 +33,7 @@ type fakeControlWatcher struct {
 	ready             []fakeControlSend
 	submitted         []fakeControlSend
 	onCreate          func(string)
+	turnStore         *brain.Store
 }
 
 type fakeControlSend struct {
@@ -60,6 +61,32 @@ func newControlBrainStore(t *testing.T) *brain.Store {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID string) {
+	t.Helper()
+	acceptedAt := time.Now().UTC().Add(-time.Second)
+	turnID := sessionID + ":turn:fixture"
+	digest := strings.Repeat("a", 64)
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare fixture owner=(%+v, %v, %v)", pending, created, err)
+	}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ActivityID: "activity-fixture",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-fixture", Cursor: 1,
+			SHA256: digest, At: acceptedAt.Add(time.Millisecond),
+		},
+		ResolvedAt: acceptedAt.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("resolve fixture owner: %v", err)
+	}
 }
 
 func (w *fakeControlWatcher) Agents() []*classifier.Agent {
@@ -228,9 +255,49 @@ func (w *fakeControlWatcher) SubmitDelegatedInput(
 }
 
 func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
-	sessionID, _ string, payload, turnID string,
-	_ time.Time,
+	sessionID, _ string, payload, workID, turnID string,
+	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
+	if w.turnStore != nil {
+		digest := strings.Repeat("b", 64)
+		pending, created, prepareErr := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+			WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+			PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+			AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+		})
+		if prepareErr != nil {
+			result := watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: turnID, TurnID: turnID}
+			return result, &watcher.InputSubmissionError{Result: result, Cause: prepareErr}
+		}
+		if !created {
+			result := watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: turnID, TurnID: turnID}
+			return result, &watcher.InputSubmissionError{Result: result, Cause: errors.New("pending submission was not freshly prepared")}
+		}
+		if err := w.SubmitInputWhenReady(sessionID, "", payload); err != nil {
+			outcome := watcher.InputOutcomeFromError(err)
+			if outcome == watcher.InputNotSubmitted {
+				if _, abortErr := w.turnStore.AbortTurnSubmission(sessionID, turnID, turnID, pending.PayloadSHA256); abortErr != nil {
+					outcome = watcher.InputAmbiguous
+					err = errors.Join(err, abortErr)
+				}
+			}
+			result := watcher.InputResult{Outcome: outcome, Receipt: turnID, TurnID: turnID}
+			return result, &watcher.InputSubmissionError{Result: result, Cause: err}
+		}
+		if _, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+			SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+			PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-accepted",
+			Admission: watcher.TurnAdmission{
+				Stream: "provider", ID: "admission-accepted", Cursor: 1,
+				SHA256: pending.PayloadSHA256, At: acceptedAt.Add(time.Millisecond),
+			},
+			ResolvedAt: acceptedAt.Add(time.Millisecond),
+		}); err != nil {
+			result := watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: turnID, TurnID: turnID}
+			return result, &watcher.InputSubmissionError{Result: result, Cause: err}
+		}
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: turnID}, nil
+	}
 	err := w.SubmitInputWhenReady(sessionID, "", payload)
 	return watcher.InputResult{
 		Outcome: watcher.InputOutcomeFromError(err),
@@ -281,9 +348,11 @@ func (w *fakeControlWatcher) ProbeProviderEvidence(string) (watcher.ProviderActi
 
 func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	fw := newFakeControlWatcher()
+	store := newControlBrainStore(t)
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
-		brainStore: newControlBrainStore(t),
+		brainStore: store,
 		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex --no-alt-screen"},
 		}),
@@ -403,10 +472,9 @@ func TestControlAppAgentSpawnWorkCASPreservesIncumbentAndKillsOnlyLoser(t *testi
 		Delegated: true,
 	}
 	fw.onCreate = func(string) {
-		if _, attachErr := store.AttachWorkOwner(item.ID, incumbentID); attachErr != nil {
-			t.Fatalf("attach incumbent: %v", attachErr)
-		}
+		admitControlWorkOwner(t, store, item.ID, incumbentID)
 	}
+	fw.turnStore = store
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
@@ -471,9 +539,7 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AttachWorkOwner(item.ID, "brain-agent-incumbent:@1"); err != nil {
-		t.Fatal(err)
-	}
+	admitControlWorkOwner(t, store, item.ID, "brain-agent-incumbent:@1")
 	app := &controlApp{brainStore: store}
 	req := control.Request{WorkID: item.ID}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkOwnerConflict) {

@@ -35,7 +35,7 @@ type controlWatcher interface {
 	SubmitInput(sessionID, payload string) error
 	SubmitInputWhenReady(sessionID, command, payload string) error
 	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
-	SubmitDelegatedInputWhenReady(sessionID, command, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitBrainHostInput(sessionID, payload, eventID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
@@ -462,7 +462,11 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		}
 	}
 	if ownedWork.ID != "" {
-		ownedWork, err = a.brainStore.AttachWorkOwner(ownedWork.ID, agentID)
+		var inFlight bool
+		inFlight, err = a.brainStore.WorkHasInFlightHandling(ownedWork.ID)
+		if err == nil && inFlight {
+			ownedWork, err = a.brainStore.ReserveWorkSuccessor(ownedWork.ID, agentID)
+		}
 		if err != nil {
 			var cleanup modelprofiles.LaunchCleanupResult
 			if a.profiles != nil && routeSnap != nil {
@@ -487,7 +491,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 
 	if prompt != "" {
 		var sendErr error
-		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, true)
+		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
 		if sendErr != nil {
 			if reservation := ownedWork.SuccessorReservation; reservation != nil && reservation.SessionID == agentID {
 				provedNonAdmission := watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted
@@ -512,8 +516,27 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				)
 				return control.ErrorResponse("send_prompt_failed", errors.Join(failure, lifecycleErr).Error())
 			}
+			if errors.Is(sendErr, brain.ErrWorkOwnerConflict) {
+				var cleanup modelprofiles.LaunchCleanupResult
+				if a.profiles != nil && routeSnap != nil {
+					cleanup = modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
+				} else {
+					cleanup.Err = a.watcher.KillSession(agentID)
+				}
+				joined := errors.Join(sendErr, cleanup.Err)
+				if cleanup.Err != nil || (routeSnap != nil && !cleanup.Persist.Applied) {
+					return control.ErrorResponse("spawn_failed", joined.Error())
+				}
+				return brainWorkControlError(sendErr)
+			}
 			a.recordSpawnWorkFailure(ownedWork, sendErr)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
+		}
+		if ownedWork.ID != "" {
+			ownedWork, err = a.brainStore.Work(ownedWork.ID)
+			if err != nil {
+				return brainWorkControlError(err)
+			}
 		}
 	}
 
@@ -792,7 +815,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	}
 	var sendErr error
 	if req.Submit && agent != nil && payload != "" {
-		sendErr = a.submitAgentHandoff(agentID, agent.Command, payload, false)
+		sendErr = a.submitAgentHandoff(agentID, agent.Command, payload, "", false)
 	} else {
 		if req.Submit {
 			payload = ensureTrailingNewline(payload)
@@ -816,14 +839,14 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 // ledger record (persisted before the submit queue runs); this owner rebinds
 // the Session projection from the canonical turn and never replays an
 // ambiguous send.
-func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initial bool) error {
+func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
 	turnID := delegatedTurnID(agentID, handoffStartedAt)
 	var result watcher.InputResult
 	var err error
 	if initial {
 		result, err = a.watcher.SubmitDelegatedInputWhenReady(
-			agentID, command, payload, turnID, handoffStartedAt,
+			agentID, command, payload, workID, turnID, handoffStartedAt,
 		)
 	} else {
 		result, err = a.watcher.SubmitDelegatedInput(

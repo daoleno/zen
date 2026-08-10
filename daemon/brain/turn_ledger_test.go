@@ -1176,7 +1176,7 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AttachWorkOwner(workItem.ID, sessionID); err != nil {
+	if _, err := store.ReserveWorkSuccessor(workItem.ID, sessionID); err != nil {
 		t.Fatalf("reserve replacement Turn: %v", err)
 	}
 	if err := store.AdmitTurn(watcher.AdmittedTurn{

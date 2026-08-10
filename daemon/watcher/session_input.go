@@ -40,6 +40,7 @@ type InputResult struct {
 // any provider mutation can begin, so a markerless accepted input is
 // unrepresentable (C.2 invariant 2).
 type delegatedTurnDraft struct {
+	WorkID            string
 	ID                string
 	Receipt           string
 	AcceptedAt        time.Time
@@ -610,7 +611,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				baselineActivityID = reuse.BaselineActivity
 			}
 			submission, created, prepareErr := owner.prepareTurnSubmission(TurnSubmission{
-				SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
+				WorkID: turn.WorkID, SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
 				PayloadSHA256: payloadDigest, ProcessIdentity: turn.ProcessIdentity,
 				PaneGeneration: firstNonEmptyString(turn.PaneGeneration, current.generation),
 				AcceptedAt:     turn.AcceptedAt, TranscriptBinding: turn.TranscriptBinding,

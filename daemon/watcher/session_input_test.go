@@ -1001,6 +1001,7 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	owner.ledger = ledger
 	acceptedAt := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
 	first := delegatedTurnDraft{
+		WorkID:          "work-initial",
 		ID:              "turn-initial",
 		AcceptedAt:      acceptedAt,
 		ProcessIdentity: delegatedTurnIdentity(identity),
@@ -1016,6 +1017,9 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	if turn.TurnID != first.ID || turn.Status != TurnAccepted || turn.ActivityID != "activity-accepted" ||
 		len(io.submissions) != 1 {
 		t.Fatalf("initial canonical turn=%+v submissions=%#v", turn, io.submissions)
+	}
+	if submission, found, err := ledger.TurnSubmission("agent:@1", first.ID); err != nil || !found || submission.WorkID != first.WorkID {
+		t.Fatalf("initial pending boundary lost Work identity: submission=%+v found=%v err=%v", submission, found, err)
 	}
 
 	settledAt := acceptedAt.Add(time.Minute)

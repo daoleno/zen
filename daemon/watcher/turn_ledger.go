@@ -227,6 +227,7 @@ const (
 // pending submission row. It is deliberately separate from TurnSnapshot: a
 // pending candidate is never the current canonical Turn.
 type TurnSubmission struct {
+	WorkID             string
 	SessionID          string
 	ProposedTurnID     string
 	Receipt            string

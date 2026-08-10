@@ -75,7 +75,7 @@ type TurnSubmissionRecord struct {
 
 func (r TurnSubmissionRecord) snapshot() watcher.TurnSubmission {
 	return watcher.TurnSubmission{
-		SessionID: r.SessionID, ProposedTurnID: r.ProposedTurnID,
+		WorkID: r.WorkID, SessionID: r.SessionID, ProposedTurnID: r.ProposedTurnID,
 		Receipt: r.Receipt, PayloadSHA256: r.PayloadSHA256,
 		ProcessIdentity: r.ProcessIdentity, PaneGeneration: r.PaneGeneration,
 		AcceptedAt: r.AcceptedAt, TranscriptBinding: r.TranscriptBinding,
@@ -330,6 +330,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if s == nil {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")
 	}
+	candidate.WorkID = strings.TrimSpace(candidate.WorkID)
 	candidate.SessionID = strings.TrimSpace(candidate.SessionID)
 	candidate.ProposedTurnID = strings.TrimSpace(candidate.ProposedTurnID)
 	candidate.Receipt = strings.TrimSpace(candidate.Receipt)
@@ -353,7 +354,13 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	}
 	now := s.nowUTC()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	changedWorkID := ""
+	defer func() {
+		s.mu.Unlock()
+		if changedWorkID != "" {
+			s.broadcastWorkChange(changedWorkID)
+		}
+	}()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
 		return watcher.TurnSubmission{}, false, err
@@ -363,6 +370,9 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			continue
 		}
 		if record.ProposedTurnID == candidate.ProposedTurnID || record.Receipt == candidate.Receipt {
+			if candidate.WorkID != "" && record.WorkID != candidate.WorkID {
+				return watcher.TurnSubmission{}, false, fmt.Errorf("submission identity already belongs to different Work")
+			}
 			if !sameTurnSubmissionIdentity(record, candidate) {
 				return watcher.TurnSubmission{}, false, fmt.Errorf("submission identity already belongs to different input")
 			}
@@ -372,9 +382,23 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			return watcher.TurnSubmission{}, false, fmt.Errorf("Session already has an unresolved pending submission")
 		}
 	}
-	workID := databaseWorkIDForTurnAdmission(database, candidate.SessionID, candidate.ProposedTurnID, candidate.Receipt)
+	workID := candidate.WorkID
+	if workID == "" {
+		workID = databaseWorkIDForTurnAdmission(database, candidate.SessionID, candidate.ProposedTurnID, candidate.Receipt)
+	}
 	if workID == "" {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", candidate.SessionID)
+	}
+	workIndex := workIndex(database.BrainWork, workID)
+	if workIndex < 0 {
+		return watcher.TurnSubmission{}, false, ErrWorkNotFound
+	}
+	item := database.BrainWork[workIndex]
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s is %s", ErrWorkOwnerConflict, item.ID, item.Status)
+	}
+	if executionWorkID := databaseActiveWorkIDForExecutionSession(database, candidate.SessionID); executionWorkID != "" && executionWorkID != item.ID {
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Session %s already executes Work %s", ErrWorkOwnerConflict, candidate.SessionID, executionWorkID)
 	}
 	current, hasCurrent := currentTurnForSession(database, candidate.SessionID)
 	if hasCurrent && !candidate.AcceptedAt.UTC().After(current.AcceptedAt) {
@@ -400,6 +424,34 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if hasCurrent && current.TurnID == candidate.ProposedTurnID {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("proposed turn is already canonical without a matching submission transaction")
 	}
+
+	ownerID := strings.TrimSpace(item.OwnerSessionID)
+	reservation := item.SuccessorReservation
+	handlingIndex := inFlightHandlingEventIndex(database, item.ID)
+	initialOwnerAdmission := false
+	switch {
+	case reservation != nil:
+		if strings.TrimSpace(reservation.SessionID) != candidate.SessionID {
+			return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s already reserved successor %s", ErrWorkOwnerConflict, item.ID, reservation.SessionID)
+		}
+	case handlingIndex >= 0:
+		handling := database.BrainWorkEvents[handlingIndex]
+		item.SuccessorReservation = &WorkSuccessorReservation{
+			SessionID: candidate.SessionID, EventID: handling.ID, HandlingID: handling.HandlingID,
+		}
+		database.BrainWork[workIndex] = item
+		changedWorkID = item.ID
+	case ownerID == "":
+		if candidate.WorkID == "" {
+			return watcher.TurnSubmission{}, false, fmt.Errorf("initial delegated submission requires exact work_id")
+		}
+		initialOwnerAdmission = true
+	case ownerID != candidate.SessionID:
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, ownerID)
+	case workHasUnhandledAttention(database, item.ID):
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s review Attention must be delivered before correction input", ErrWorkOwnerConflict, item.ID)
+	}
+
 	record := TurnSubmissionRecord{
 		SessionID: candidate.SessionID, ProposedTurnID: candidate.ProposedTurnID,
 		WorkID: workID, Receipt: candidate.Receipt, PayloadSHA256: candidate.PayloadSHA256,
@@ -410,7 +462,21 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		State:              watcher.TurnSubmissionPending, CreatedAt: now,
 	}
 	database.BrainTurnSubmissions = append(database.BrainTurnSubmissions, record)
+	if initialOwnerAdmission {
+		item.OwnerSessionID = candidate.SessionID
+		item.OwnerDelegated = true
+		item.Status = WorkRunning
+		item.NextAction = "Wait for the delegated Session."
+		item.WaitFor = "Session " + candidate.SessionID
+		item.Wake = nil
+		item.UpdatedAt = now
+		item.Revision++
+		database.BrainWork[workIndex] = item
+		settleUndeliveredAttentionForAdmission(&database, item.ID, now)
+		changedWorkID = item.ID
+	}
 	if err := s.persistOrchestrationLocked(database); err != nil {
+		changedWorkID = ""
 		return watcher.TurnSubmission{}, false, err
 	}
 	return record.snapshot(), true, nil
@@ -486,7 +552,13 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 	}
 	now := s.nowUTC()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	changedWorkID := ""
+	defer func() {
+		s.mu.Unlock()
+		if changedWorkID != "" {
+			s.broadcastWorkChange(changedWorkID)
+		}
+	}()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
 		return watcher.TurnSubmission{}, err
@@ -508,6 +580,50 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 			abortedAt := now
 			record.State = watcher.TurnSubmissionAborted
 			record.AbortedAt = &abortedAt
+			if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
+				item := database.BrainWork[workIndex]
+				if reservation := item.SuccessorReservation; record.ExistingTurnID != "" && reservation != nil &&
+					reservation.SessionID == record.SessionID && strings.TrimSpace(reservation.ProviderTurnID) == "" {
+					// Prepare stages a same-Session correction itself. Proved
+					// non-submission releases that pre-admission reservation with this
+					// same Abort. A newly spawned Session has no predecessor Turn and
+					// remains reserved until its explicit cleanup owner succeeds.
+					item.SuccessorReservation = nil
+					database.BrainWork[workIndex] = item
+					changedWorkID = item.ID
+				}
+			}
+			// A fresh submission with no predecessor is also the initial owner
+			// admission. Proved non-submission releases that authority and restores
+			// one actionable Work obligation in this same replacement; a crash
+			// cannot expose an aborted submission beside a naked owner string.
+			if record.ExistingTurnID == "" {
+				if workIndex := workIndex(database.BrainWork, record.WorkID); workIndex >= 0 {
+					item := database.BrainWork[workIndex]
+					_, hasCurrent := currentTurnForSession(database, record.SessionID)
+					if !hasCurrent && item.OwnerSessionID == record.SessionID && item.SuccessorReservation == nil {
+						item.OwnerSessionID = ""
+						item.OwnerDelegated = false
+						item.Status = WorkNeedsInput
+						item.NextAction = "Retry the delegated Session after confirmed non-submission."
+						item.WaitFor = ""
+						item.Wake = nil
+						item.UpdatedAt = now
+						database.BrainWork[workIndex] = item
+						event := WorkEvent{
+							ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.submission_not_admitted",
+							DedupeKey:  "brain:submission-abort:" + record.Receipt,
+							PayloadRef: "session:" + record.SessionID, SourceName: record.SessionID,
+							Summary:    "Delegated input was proved not submitted; choose the next disposition.",
+							Actionable: true, CreatedAt: now,
+						}
+						if _, appendErr := appendWorkEventLocked(&database, workIndex, event, true); appendErr != nil {
+							return watcher.TurnSubmission{}, appendErr
+						}
+						changedWorkID = item.ID
+					}
+				}
+			}
 			if err := s.persistOrchestrationLocked(database); err != nil {
 				return watcher.TurnSubmission{}, err
 			}
@@ -690,6 +806,17 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 	}
 	workID := databaseWorkIDForTurnAdmission(database, admitted.SessionID, admitted.TurnID, admitted.Receipt)
 	if workID == "" {
+		// Legacy/bootstrap import may start from a retained owner link. The Turn
+		// and that link become authoritative together in this one replacement;
+		// live provider mutation is stricter and must use pending submission.
+		for _, item := range database.BrainWork {
+			if item.OwnerSessionID == admitted.SessionID && item.Status != WorkDone && item.Status != WorkCancelled {
+				workID = item.ID
+				break
+			}
+		}
+	}
+	if workID == "" {
 		return fmt.Errorf("no active Brain Work owns delegated Session %s; input was not submitted", admitted.SessionID)
 	}
 	for _, turn := range database.BrainTurns {
@@ -726,6 +853,21 @@ func (s *Store) AdmitTurn(admitted watcher.AdmittedTurn) error {
 func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID, turnID, receipt string) string {
 	if workID := databaseActiveWorkIDForExecutionSession(database, sessionID); workID != "" {
 		return workID
+	}
+	// A terminal or attention-relinquished Turn remains exact lifecycle
+	// evidence for a same-Session correction. It may identify the Work for a
+	// pending successor, but it does not restore progress ownership; preparation
+	// below still requires the exact delivered handling before staging it.
+	if current, found := currentTurnForSession(database, sessionID); found {
+		if index := workIndex(database.BrainWork, current.WorkID); index >= 0 {
+			item := database.BrainWork[index]
+			reservationMatches := item.SuccessorReservation != nil && item.SuccessorReservation.SessionID == sessionID
+			if item.Status != WorkDone && item.Status != WorkCancelled &&
+				(item.OwnerSessionID == sessionID || reservationMatches ||
+					(strings.TrimSpace(item.OwnerSessionID) == "" && (workHasUnhandledAttention(database, item.ID) || item.Wake != nil))) {
+				return item.ID
+			}
+		}
 	}
 	for _, event := range database.BrainWorkEvents {
 		if event.ID == receipt && event.DeliveryHostSessionID == sessionID && event.ProviderTurnID == turnID &&

@@ -702,7 +702,7 @@ func TestOneSessionCannotOwnTwoActiveWorkRecords(t *testing.T) {
 	}
 }
 
-func TestAttachWorkOwnerCompareAndSetHasOneConcurrentWinner(t *testing.T) {
+func TestPrepareTurnSubmissionOwnerAdmissionHasOneConcurrentWinner(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -726,11 +726,22 @@ func TestAttachWorkOwnerCompareAndSetHasOneConcurrentWinner(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			sessionID := fmt.Sprintf("brain-agent-worker:@%d", index+1)
-			attached, attachErr := store.AttachWorkOwner(item.ID, sessionID)
+			turnID := sessionID + ":turn:1"
+			attached, created, attachErr := store.PrepareTurnSubmission(watcher.TurnSubmission{
+				WorkID: item.ID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+				PayloadSHA256:   pendingSubmissionDigest("concurrent owner payload"),
+				ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+				AcceptedAt: time.Date(2026, 8, 10, 7, 0, 0, 0, time.UTC),
+				Mode:       watcher.TurnSubmissionFresh,
+			})
 			if attachErr == nil {
+				if !created {
+					t.Errorf("winning owner admission was not newly created: %+v", attached)
+					return
+				}
 				winners.Add(1)
 				winnerMu.Lock()
-				winnerID = attached.OwnerSessionID
+				winnerID = attached.SessionID
 				winnerMu.Unlock()
 				return
 			}
@@ -749,6 +760,9 @@ func TestAttachWorkOwnerCompareAndSetHasOneConcurrentWinner(t *testing.T) {
 	}
 	if got.OwnerSessionID != winnerID || got.Status != WorkRunning {
 		t.Fatalf("attached Work=%#v winner=%q", got, winnerID)
+	}
+	if pending, found, err := store.PendingTurnSubmission(winnerID); err != nil || !found || pending.WorkID != item.ID {
+		t.Fatalf("winning owner lacks pending submission: submission=%+v found=%v err=%v", pending, found, err)
 	}
 }
 

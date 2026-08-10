@@ -2382,7 +2382,7 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 // SubmitDelegatedInputWhenReady submits an initial delegated turn and durably
 // binds its identity to the same Session input boundary.
 func (w *Watcher) SubmitDelegatedInputWhenReady(
-	sessionID, command, payload, turnID string,
+	sessionID, command, payload, workID, turnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
 	resolver := w.targetForSession
@@ -2404,6 +2404,7 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 		identity.Command,
 		payload,
 		delegatedTurnDraft{
+			WorkID:            strings.TrimSpace(workID),
 			ID:                strings.TrimSpace(turnID),
 			AcceptedAt:        acceptedAt.UTC(),
 			ProcessIdentity:   delegatedTurnIdentity(identity),

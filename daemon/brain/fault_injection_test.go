@@ -34,8 +34,20 @@ func pendingSubmissionTestStore(t *testing.T) (*Store, string, time.Time) {
 
 func prepareInitialSubmission(t *testing.T, store *Store, sessionID, turnID, payload string, at time.Time) watcher.TurnSubmission {
 	t.Helper()
+	workID := ""
+	if item, found, err := store.WorkByOwnerSession(sessionID); err != nil {
+		t.Fatal(err)
+	} else if found {
+		workID = item.ID
+	} else if items, err := store.ListWork(); err != nil {
+		t.Fatal(err)
+	} else if len(items) == 1 {
+		// Proved non-submission atomically releases the initial owner while the
+		// same Work remains the explicit target for a later fresh attempt.
+		workID = items[0].ID
+	}
 	submission, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
-		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256:   pendingSubmissionDigest(payload),
 		ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
 		AcceptedAt: at, Mode: watcher.TurnSubmissionFresh,
@@ -382,6 +394,18 @@ func TestFaultPendingSubmissionPrepareCrashAndAbortAreFailClosed(t *testing.T) {
 	}
 	if _, err := restarted.AbortTurnSubmission(sessionID, turnID, turnID, prepared.PayloadSHA256); err != nil {
 		t.Fatal(err)
+	}
+	restarted, err = NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAbort, err := restarted.Work(prepared.WorkID)
+	if err != nil || afterAbort.OwnerSessionID != "" || afterAbort.OwnerDelegated {
+		t.Fatalf("committed abort retained naked initial owner: Work=%+v err=%v", afterAbort, err)
+	}
+	events, err := restarted.ListWorkEvents(prepared.WorkID)
+	if err != nil || countUnhandledEventKind(events, "brain.submission_not_admitted") != 1 {
+		t.Fatalf("committed abort lost retry Attention: events=%+v err=%v", events, err)
 	}
 	resolution := watcher.TurnSubmissionResolution{
 		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,

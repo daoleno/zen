@@ -1270,21 +1270,45 @@ func workHasLiveCanonicalOwnerTurn(database orchestrationDatabase, item Work) bo
 		return false
 	}
 	turn, found := currentTurnForSession(database, ownerID)
-	return found && turn.WorkID == item.ID && !watcher.TurnImmutable(turn.Status) &&
-		!isHostHandlingTurn(database, turn)
+	if !found || turn.WorkID != item.ID || watcher.TurnImmutable(turn.Status) || isHostHandlingTurn(database, turn) {
+		return false
+	}
+	// A same-Session review correction may already have an accepted successor
+	// Turn while the delivered Attention still owns progress. The reservation
+	// identifies that exact Turn as staged lifecycle state until continue clears
+	// the reservation and transfers execution ownership.
+	if reservation := item.SuccessorReservation; reservation != nil &&
+		strings.TrimSpace(reservation.SessionID) == ownerID &&
+		strings.TrimSpace(reservation.ProviderTurnID) == turn.TurnID {
+		return false
+	}
+	return true
+}
+
+func workHasPendingOwnerAdmission(database orchestrationDatabase, item Work) bool {
+	ownerID := strings.TrimSpace(item.OwnerSessionID)
+	if ownerID == "" || item.SuccessorReservation != nil {
+		return false
+	}
+	for _, submission := range database.BrainTurnSubmissions {
+		if submission.WorkID == item.ID && submission.SessionID == ownerID &&
+			submission.State == watcher.TurnSubmissionPending && submission.ExistingTurnID == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // reduceWorkProgressState derives the three progress predicates independently.
 // OwnerSessionID text is not authority: only its current canonical nonterminal
-// execution Turn owns progress. The narrow running/no-Turn admission window is
-// retained for the existing two-phase delegated launch; migration never treats
-// that window as legacy owner authority.
+// execution Turn or its exact pending initial submission owns progress. A bare
+// owner string has no authority.
 func reduceWorkProgressState(database orchestrationDatabase, item Work) workProgressState {
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		return workProgressState{}
 	}
 	liveOwner := workHasLiveCanonicalOwnerTurn(database, item)
-	ownerAdmission := !liveOwner && strings.TrimSpace(item.OwnerSessionID) != "" && item.Status == WorkRunning
+	ownerAdmission := !liveOwner && workHasPendingOwnerAdmission(database, item)
 	state := workProgressState{
 		Owned:             liveOwner || ownerAdmission,
 		Waiting:           item.Wake != nil,
@@ -1352,7 +1376,8 @@ func workHasInFlightHandling(database orchestrationDatabase, workID string) bool
 
 // WorkHasInFlightHandling reports whether Work is currently owned by an exact
 // delivered Host handling transaction. It is a preflight hint for delegated
-// spawn; AttachWorkOwner performs the authoritative check under the Store lock.
+// spawn; ReserveWorkSuccessor performs the authoritative check under the Store
+// lock.
 func (s *Store) WorkHasInFlightHandling(workID string) (bool, error) {
 	workID = strings.TrimSpace(workID)
 	if s == nil || workID == "" {
@@ -1664,13 +1689,12 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 	return item, nil
 }
 
-// AttachWorkOwner is the only delegated-spawn ownership transition. It
-// atomically changes an active unowned Work record to one running owner. While
-// Brain is handling an exact delivered Event, it instead creates the one
-// Work-level successor reservation. The reservation survives handling requeue
-// and restart; only the exact continue disposition may promote it. A concurrent
-// incumbent or successor is never replaced.
-func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
+// ReserveWorkSuccessor binds a newly created correction Session to the exact
+// delivered handling before provider mutation. Initial ownership is never
+// reserved here: PrepareTurnSubmission persists that owner and its canonical
+// pending submission atomically. The reservation survives handling requeue and
+// restart; only the exact continue disposition may promote it.
+func (s *Store) ReserveWorkSuccessor(id, ownerSessionID string) (Work, error) {
 	id = strings.TrimSpace(id)
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
 	if ownerSessionID == "" {
@@ -1701,23 +1725,8 @@ func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
 					database.BrainWork[index] = item
 					err = s.persistOrchestrationLocked(database)
 				}
-			} else if item.SuccessorReservation != nil {
-				err = fmt.Errorf("%w: Work %s already reserved successor %s", ErrWorkOwnerConflict, item.ID, item.SuccessorReservation.SessionID)
-			} else if strings.TrimSpace(item.OwnerSessionID) != "" {
-				err = fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, item.OwnerSessionID)
 			} else {
-				now := s.nowUTC()
-				item.OwnerSessionID = ownerSessionID
-				item.OwnerDelegated = true
-				item.Status = WorkRunning
-				item.NextAction = "Wait for the delegated Session."
-				item.WaitFor = "Session " + ownerSessionID
-				item.Wake = nil
-				item.UpdatedAt = now
-				item.Revision++
-				database.BrainWork[index] = item
-				settleUndeliveredAttentionForOwner(&database, item.ID, now)
-				err = s.persistOrchestrationLocked(database)
+				err = fmt.Errorf("%w: Work %s has no delivered handling for successor %s", ErrWorkOwnerConflict, item.ID, ownerSessionID)
 			}
 		}
 	}
@@ -1851,7 +1860,7 @@ func ensureInitialAttentionLocked(database *orchestrationDatabase, itemIndex int
 	return database.BrainWork[itemIndex], nil
 }
 
-func settleUndeliveredAttentionForOwner(database *orchestrationDatabase, workID string, now time.Time) {
+func settleUndeliveredAttentionForAdmission(database *orchestrationDatabase, workID string, now time.Time) {
 	for index := range database.BrainWorkEvents {
 		event := &database.BrainWorkEvents[index]
 		if event.WorkID != workID || !event.Actionable || event.HandledAt != nil ||
@@ -1861,7 +1870,7 @@ func settleUndeliveredAttentionForOwner(database *orchestrationDatabase, workID 
 		discarded := now.UTC()
 		event.DiscardedAt = &discarded
 		event.Resolution = EventResolutionDiscard
-		event.ResolvedBy = "owner_attachment"
+		event.ResolvedBy = "owner_admission"
 		event.ResolvedAt = &discarded
 	}
 }
@@ -1942,11 +1951,12 @@ func (s *Store) WorkByOwnerSession(sessionID string) (Work, bool, error) {
 func databaseActiveWorkIDForExecutionSession(database orchestrationDatabase, sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	for _, item := range database.BrainWork {
-		if item.OwnerSessionID == sessionID && item.Status != WorkDone && item.Status != WorkCancelled {
-			return item.ID
-		}
 		if item.SuccessorReservation != nil && item.SuccessorReservation.SessionID == sessionID &&
 			item.Status != WorkDone && item.Status != WorkCancelled {
+			return item.ID
+		}
+		if item.OwnerSessionID == sessionID && item.Status != WorkDone && item.Status != WorkCancelled &&
+			(workHasLiveCanonicalOwnerTurn(database, item) || workHasPendingOwnerAdmission(database, item)) {
 			return item.ID
 		}
 	}
@@ -2056,7 +2066,7 @@ func (s *Store) MigrateSignalSystemV1(limit int) (complete bool, processed int, 
 			// current canonical non-Host Turn is still nonterminal. Missing and
 			// immutable Turns make the link historical, so retire it before
 			// deriving the single durable progress mode.
-			if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn {
+			if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn && !state.OwnerAdmission {
 				item.OwnerSessionID = ""
 				item.OwnerDelegated = false
 				item.Revision++

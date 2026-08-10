@@ -463,36 +463,6 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	}
 }
 
-func TestReviewRejectionDispositionKeepsAcceptedSuccessorOwner(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := "brain-agent-review:@1"
-	item := createSignalTestWork(t, store, "Review rejection", owner)
-	appendSignalTestEvent(t, store, item, "review-1")
-	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
-	if err := store.AdmitTurn(watcher.AdmittedTurn{
-		SessionID: owner, TurnID: owner + ":turn:2", AcceptedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
-		ProviderTurnID:       delivered.ProviderTurnID,
-		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
-		Disposition:          WorkDispositionContinue, SuccessorSessionID: owner,
-		NextAction: "Review the corrected delegated result.",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolvedEvent.Disposition != WorkDispositionContinue || resolvedWork.Status != WorkRunning ||
-		resolvedWork.OwnerSessionID != owner || resolvedWork.Wake != nil {
-		t.Fatalf("continuation did not retain successor ownership: event=%+v Work=%+v", resolvedEvent, resolvedWork)
-	}
-}
-
 func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -504,7 +474,7 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 	appendSignalTestEvent(t, store, item, "correction-1")
 	delivered, current := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 
-	stagedWork, err := store.AttachWorkOwner(item.ID, successor)
+	stagedWork, err := store.ReserveWorkSuccessor(item.ID, successor)
 	if err != nil {
 		t.Fatal(err)
 	}

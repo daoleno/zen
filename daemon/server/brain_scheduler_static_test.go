@@ -61,7 +61,8 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	for _, required := range []string{
 		"DeliveryHostSessionID",
 		"ConsumeClaimedWorkEvent",
-		"AttachWorkOwner",
+		"ReserveWorkSuccessor",
+		"PrepareTurnSubmission",
 		"isTurnScopedSessionDedupeKey",
 	} {
 		if !strings.Contains(string(brainSource), required) {

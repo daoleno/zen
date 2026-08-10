@@ -222,6 +222,298 @@ func activeWorkByID(t *testing.T, store *Store, workID string) ActiveWork {
 	return ActiveWork{}
 }
 
+func delegatedSubmissionCandidate(workID, sessionID, turnID, payload string, acceptedAt time.Time) watcher.TurnSubmission {
+	return watcher.TurnSubmission{
+		WorkID:          workID,
+		SessionID:       sessionID,
+		ProposedTurnID:  turnID,
+		Receipt:         turnID,
+		PayloadSHA256:   pendingSubmissionDigest(payload),
+		ProcessIdentity: "process-identity",
+		PaneGeneration:  "pane-generation",
+		AcceptedAt:      acceptedAt,
+		Mode:            watcher.TurnSubmissionFresh,
+	}
+}
+
+func resolveDelegatedSubmission(t *testing.T, store *Store, pending watcher.TurnSubmission, activityID string, at time.Time) watcher.TurnSubmission {
+	t.Helper()
+	resolved, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: pending.SessionID, ProposedTurnID: pending.ProposedTurnID,
+		Receipt: pending.Receipt, PayloadSHA256: pending.PayloadSHA256,
+		ActivityID: activityID,
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-" + activityID, Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: at.UTC(),
+		},
+		ResolvedAt: at.UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+// Initial delegated ownership and its pending Turn submission are one durable
+// authority transition. A failed replacement leaves the original ready Work;
+// a committed replacement reopens with both the owner link and the canonical
+// pending submission, never a naked owner string.
+func TestSignalAdversarialInitialOwnerAdmissionAndPendingSubmissionAreAtomicAcrossReopen(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Atomic initial owner admission", Objective: "Persist one authoritative launch boundary.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
+		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
+	}
+	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || !complete || processed != 0 {
+		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
+	}
+
+	sessionID := "brain-agent-atomic-owner:@1"
+	turnID := sessionID + ":turn:1"
+	acceptedAt := time.Date(2026, 8, 10, 5, 30, 0, 0, time.UTC)
+	candidate := delegatedSubmissionCandidate(item.ID, sessionID, turnID, "initial delegated payload", acceptedAt)
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error {
+		return errors.New("injected owner-admission persistence failure")
+	}
+	if _, _, err := store.PrepareTurnSubmission(candidate); err == nil {
+		t.Fatal("failed owner-admission replacement was reported successful")
+	}
+	store.writeOrchestration = originalWrite
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := reopened.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.OwnerSessionID != "" || before.OwnerDelegated || before.Status != WorkOpen {
+		t.Fatalf("failed atomic admission exposed owner state: %+v", before)
+	}
+	if _, found, err := reopened.TurnSubmission(sessionID, turnID); err != nil || found {
+		t.Fatalf("failed atomic admission exposed pending submission: found=%v err=%v", found, err)
+	}
+	if projected := activeWorkByID(t, reopened, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
+		t.Fatalf("failed atomic admission lost original ready progress: %+v", projected)
+	}
+
+	writes := 0
+	reopenWrite := reopened.writeOrchestration
+	reopened.writeOrchestration = func(path string, value any) error {
+		writes++
+		if writes > 1 {
+			return errors.New("owner admission attempted split persistence")
+		}
+		return reopenWrite(path, value)
+	}
+	pending, created, err := reopened.PrepareTurnSubmission(candidate)
+	if err != nil || !created || pending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("atomic owner admission=(%+v, %v, %v)", pending, created, err)
+	}
+	if writes != 1 {
+		t.Fatalf("owner admission writes=%d want 1", writes)
+	}
+
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := reopenedAgain.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.OwnerSessionID != sessionID || !after.OwnerDelegated || after.Status != WorkRunning {
+		t.Fatalf("committed atomic admission lost owner state: %+v", after)
+	}
+	if durable, found, err := reopenedAgain.TurnSubmission(sessionID, turnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending || durable.WorkID != item.ID {
+		t.Fatalf("committed atomic admission lost pending submission: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	if _, found, err := reopenedAgain.Turn(sessionID); err != nil || found {
+		t.Fatalf("pending admission fabricated canonical Turn: found=%v err=%v", found, err)
+	}
+	if projected := activeWorkByID(t, reopenedAgain, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending {
+		t.Fatalf("pending admission is not the singular owner: %+v", projected)
+	}
+}
+
+// A correction that reuses the retained Session stages its accepted successor
+// Turn under the delivered review Attention. Preparation and resolution may
+// each survive a crash, but neither transfers progress ownership; only the
+// exact continue disposition does so.
+func TestSignalAdversarialSameSessionCorrectionStagesAcceptedTurnUntilExactContinue(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Same-Session correction", Objective: "Transfer correction ownership only through continue.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := "brain-agent-same-session:@1"
+	firstTurnID := sessionID + ":turn:1"
+	firstAcceptedAt := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)
+	first, created, err := store.PrepareTurnSubmission(
+		delegatedSubmissionCandidate(item.ID, sessionID, firstTurnID, "initial result", firstAcceptedAt),
+	)
+	if err != nil || !created {
+		t.Fatalf("prepare initial submission created=%v err=%v", created, err)
+	}
+	resolveDelegatedSubmission(t, store, first, "initial", firstAcceptedAt.Add(time.Second))
+	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: firstTurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider-initial-done",
+		ActivityID: "initial", StartedAt: firstAcceptedAt,
+		SettledAt: firstAcceptedAt.Add(2 * time.Second), At: firstAcceptedAt.Add(2 * time.Second),
+	}); err != nil || !changed {
+		t.Fatalf("terminal initial Turn changed=%v err=%v", changed, err)
+	}
+	delivered, ready := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+	if ready.OwnerSessionID != sessionID || activeWorkByID(t, store, item.ID).ProgressMode != WorkProgressReady {
+		t.Fatalf("review Attention did not retain historical Session linkage without ownership: %+v", ready)
+	}
+
+	abortedTurnID := sessionID + ":turn:2"
+	abortedAcceptedAt := firstAcceptedAt.Add(time.Minute)
+	abortedCandidate := delegatedSubmissionCandidate(item.ID, sessionID, abortedTurnID, "aborted correction", abortedAcceptedAt)
+	abortedCandidate.ExistingTurnID = firstTurnID
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error {
+		return errors.New("injected correction prepare persistence failure")
+	}
+	if _, _, err := store.PrepareTurnSubmission(abortedCandidate); err == nil {
+		t.Fatal("failed correction prepare was reported successful")
+	}
+	store.writeOrchestration = originalWrite
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := reopened.TurnSubmission(sessionID, abortedTurnID); err != nil || found {
+		t.Fatalf("failed correction prepare survived: found=%v err=%v", found, err)
+	}
+	current, err := reopened.Work(item.ID)
+	if err != nil || current.SuccessorReservation != nil || activeWorkByID(t, reopened, item.ID).ProgressMode != WorkProgressReady {
+		t.Fatalf("failed correction prepare changed ready Work: Work=%+v err=%v", current, err)
+	}
+
+	aborted, created, err := reopened.PrepareTurnSubmission(abortedCandidate)
+	if err != nil || !created {
+		t.Fatalf("prepare same-Session correction created=%v err=%v", created, err)
+	}
+	preparedWork, err := reopened.Work(item.ID)
+	if err != nil || preparedWork.SuccessorReservation == nil ||
+		preparedWork.SuccessorReservation.SessionID != sessionID ||
+		preparedWork.SuccessorReservation.EventID != delivered.ID ||
+		preparedWork.Revision != delivered.DeliveryWorkRevision {
+		t.Fatalf("same-Session correction was not staged under exact handling: Work=%+v err=%v", preparedWork, err)
+	}
+	if _, err := reopened.AbortTurnSubmission(
+		sessionID, abortedTurnID, aborted.Receipt, aborted.PayloadSHA256,
+	); err != nil {
+		t.Fatalf("abort proved non-submission: %v", err)
+	}
+	afterAbort, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abortedWork, err := afterAbort.Work(item.ID)
+	if err != nil || abortedWork.SuccessorReservation != nil || activeWorkByID(t, afterAbort, item.ID).ProgressMode != WorkProgressReady {
+		t.Fatalf("proved non-submission did not release same-Session staging: Work=%+v err=%v", abortedWork, err)
+	}
+	if durable, found, err := afterAbort.TurnSubmission(sessionID, abortedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionAborted {
+		t.Fatalf("aborted correction did not survive reopen: submission=%+v found=%v err=%v", durable, found, err)
+	}
+
+	secondTurnID := sessionID + ":turn:3"
+	secondAcceptedAt := abortedAcceptedAt.Add(time.Minute)
+	secondCandidate := delegatedSubmissionCandidate(item.ID, sessionID, secondTurnID, "corrected result", secondAcceptedAt)
+	secondCandidate.ExistingTurnID = firstTurnID
+	second, created, err := afterAbort.PrepareTurnSubmission(secondCandidate)
+	if err != nil || !created {
+		t.Fatalf("prepare accepted same-Session correction created=%v err=%v", created, err)
+	}
+
+	reopenWrite := afterAbort.writeOrchestration
+	afterAbort.writeOrchestration = func(string, any) error {
+		return errors.New("injected accepted correction persistence failure")
+	}
+	if _, err := afterAbort.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: secondTurnID, Receipt: second.Receipt,
+		PayloadSHA256: second.PayloadSHA256, ActivityID: "correction",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-correction", Cursor: 2,
+			SHA256: second.PayloadSHA256, At: secondAcceptedAt.Add(time.Second),
+		},
+		ResolvedAt: secondAcceptedAt.Add(time.Second),
+	}); err == nil {
+		t.Fatal("failed accepted-correction replacement was reported successful")
+	}
+	afterAbort.writeOrchestration = reopenWrite
+
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, found, err := reopenedAgain.TurnSubmission(sessionID, secondTurnID); err != nil || !found || pending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed correction resolution lost pending row: submission=%+v found=%v err=%v", pending, found, err)
+	}
+	if turn, found, err := reopenedAgain.Turn(sessionID); err != nil || !found || turn.TurnID != firstTurnID {
+		t.Fatalf("failed correction resolution replaced canonical Turn: turn=%+v found=%v err=%v", turn, found, err)
+	}
+	resolved := resolveDelegatedSubmission(t, reopenedAgain, second, "correction", secondAcceptedAt.Add(time.Second))
+	if resolved.ResolvedTurnID != secondTurnID {
+		t.Fatalf("resolved correction Turn=%+v", resolved)
+	}
+	acceptedWork, err := reopenedAgain.Work(item.ID)
+	if err != nil || acceptedWork.SuccessorReservation == nil || acceptedWork.SuccessorReservation.ProviderTurnID != secondTurnID ||
+		acceptedWork.OwnerSessionID != sessionID || acceptedWork.Revision != delivered.DeliveryWorkRevision {
+		t.Fatalf("accepted correction transferred ownership before continue: Work=%+v err=%v", acceptedWork, err)
+	}
+	if projected := activeWorkByID(t, reopenedAgain, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
+		t.Fatalf("accepted correction counted as a second progress owner: %+v", projected)
+	}
+
+	_, continued, err := reopenedAgain.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionContinue, SuccessorSessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("exact continue rejected accepted same-Session correction: %v", err)
+	}
+	if continued.OwnerSessionID != sessionID || !continued.OwnerDelegated || continued.SuccessorReservation != nil {
+		t.Fatalf("exact continue did not transfer same-Session ownership: %+v", continued)
+	}
+	if projected := activeWorkByID(t, reopenedAgain, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending {
+		t.Fatalf("continued same-Session correction is not singularly owned: %+v", projected)
+	}
+}
+
 // The Watcher emits changed output before the authoritative state transition.
 // Only the latter, bound to the exact accepted provider Turn, may end A. A
 // duplicate snapshot must not end the newly delivered B handling.
@@ -403,7 +695,7 @@ func TestSignalAdversarialProgressModeIsExactlyOneAcrossReadyWaitWakeAndContinue
 		t.Fatalf("wake mode projection=%+v", projected)
 	}
 	next, _ := deliverSignalTestEvent(t, store, hostID)
-	if _, err := store.AttachWorkOwner(item.ID, owner); err != nil {
+	if _, err := store.ReserveWorkSuccessor(item.ID, owner); err != nil {
 		t.Fatal(err)
 	}
 	turnID := owner + ":turn:1"
@@ -1131,7 +1423,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	item := createSignalTestWork(t, store, "Exclusive successor", incumbent)
 	appendSignalTestEvent(t, store, item, "reserve-s1")
 	delivered, _ := deliverSignalTestEvent(t, store, hostID)
-	if _, err := store.AttachWorkOwner(item.ID, s1); err != nil {
+	if _, err := store.ReserveWorkSuccessor(item.ID, s1); err != nil {
 		t.Fatal(err)
 	}
 	s1Turn := s1 + ":turn:1"
@@ -1151,7 +1443,7 @@ func TestSignalAdversarialSuccessorReservationSurvivesRequeueRestartAndOwnsFinal
 	if err != nil || current.SuccessorReservation == nil || current.SuccessorReservation.SessionID != s1 || current.SuccessorReservation.ProviderTurnID != s1Turn {
 		t.Fatalf("S1 reservation did not survive restart: Work=%+v err=%v", current, err)
 	}
-	if _, err := restarted.AttachWorkOwner(item.ID, s2); !errors.Is(err, ErrWorkOwnerConflict) {
+	if _, err := restarted.ReserveWorkSuccessor(item.ID, s2); !errors.Is(err, ErrWorkOwnerConflict) {
 		t.Fatalf("S2 replaced admitted S1: err=%v", err)
 	}
 	if projected := activeWorkByID(t, restarted, item.ID); projected.ProgressMode != WorkProgressReady ||
@@ -1205,7 +1497,7 @@ func TestSignalAdversarialSuccessorReleaseRequiresProvedNonAdmission(t *testing.
 			appendSignalTestEvent(t, store, item, "successor-failure")
 			handling, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 			s1 := "brain-agent-successor:@1"
-			if _, err := store.AttachWorkOwner(item.ID, s1); err != nil {
+			if _, err := store.ReserveWorkSuccessor(item.ID, s1); err != nil {
 				t.Fatal(err)
 			}
 			current, err := store.RecordSuccessorLaunchFailure(item.ID, s1, "provider submission failed", test.proved)
@@ -1215,7 +1507,7 @@ func TestSignalAdversarialSuccessorReleaseRequiresProvedNonAdmission(t *testing.
 			if (current.SuccessorReservation == nil) != test.cleared {
 				t.Fatalf("reservation after failure=%+v cleared=%v", current.SuccessorReservation, test.cleared)
 			}
-			_, secondErr := store.AttachWorkOwner(item.ID, "brain-agent-successor:@2")
+			_, secondErr := store.ReserveWorkSuccessor(item.ID, "brain-agent-successor:@2")
 			if test.cleared && secondErr != nil {
 				t.Fatalf("proved release did not allow a new reservation: %v", secondErr)
 			}
