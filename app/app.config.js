@@ -43,18 +43,8 @@ module.exports = () => {
     },
     plugins: [
       ...(baseConfig.plugins || []),
-      [
-        "expo-audio",
-        {
-          // Zen only plays meditation audio; it never records from the mic.
-          microphonePermission: false,
-          recordAudioAndroid: false,
-          enableBackgroundPlayback: true,
-        },
-      ],
       "expo-font",
       "expo-status-bar",
-      "expo-video",
       // Own APS environment from the release identity so TestFlight/App Store
       // remote push is production-entitled; local notifications are unaffected.
       [
@@ -64,7 +54,7 @@ module.exports = () => {
         },
       ],
       // Keep Expo Swift modules on one source-built ABI so patch upgrades
-      // cannot mix precompiled ExpoVideo and ExpoModulesCore binaries.
+      // cannot mix precompiled modules and ExpoModulesCore binaries.
       // Also packages Ghostty MIT notice into the iOS app bundle.
       [
         "./plugins/withZenIOSBuild",

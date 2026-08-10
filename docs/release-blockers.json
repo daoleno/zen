@@ -89,35 +89,6 @@
   ],
   "resolved": [
     {
-      "id": "audio-provenance-unknown",
-      "severity": "resolved",
-      "summary": "Unknown audio removed or replaced with first-party/CC0 evidence",
-      "disposition": [
-        {
-          "path": "app/assets/audio/meditation-ambient.m4a",
-          "action": "replaced",
-          "license": "first-party procedural (Apache-2.0)"
-        },
-        {
-          "path": "app/assets/audio/meditation-focus.m4a",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/audio/meditation-unwind.m4a",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/audio/mokugyo-hit.m4a",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/audio/mokugyo-hit-jono.m4a",
-          "action": "kept",
-          "license": "CC0 1.0 (Freesound 607215)"
-        }
-      ]
-    },
-    {
       "id": "theme-image-provenance-unknown",
       "severity": "resolved",
       "summary": "Unknown theme rasters deleted; backdrop is first-party gradients",
@@ -128,22 +99,6 @@
         },
         {
           "path": "app/assets/theme/moonlit-meadow-ambient.webp",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/theme/meditation-focus-dawn.webp",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/theme/meditation-mokugyo-room.webp",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/theme/meditation-sky-garden.webp",
-          "action": "deleted"
-        },
-        {
-          "path": "app/assets/theme/meditation-unwind-aurora.webp",
           "action": "deleted"
         },
         {

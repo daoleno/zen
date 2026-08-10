@@ -82,7 +82,7 @@ describe("native platform config", () => {
     expect(resolveIOSIdentity("preview").notificationMode).toBe("production");
   });
 
-  it("does not request microphone access for playback and QR scanning", () => {
+  it("keeps QR scanning audio-disabled and omits the retired media surface", () => {
     const camera = config.plugins.find(
       (plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera",
     );
@@ -93,8 +93,8 @@ describe("native platform config", () => {
     expect(camera?.[1]?.microphonePermission).toBe(false);
     expect(camera?.[1]?.recordAudioAndroid).toBe(false);
     expect(camera?.[1]?.barcodeScannerEnabled).toBe(true);
-    expect(audio?.[1]?.microphonePermission).toBe(false);
-    expect(audio?.[1]?.recordAudioAndroid).toBe(false);
+    expect(audio).toBeUndefined();
+    expect(config.plugins).not.toContain("expo-video");
   });
 
   it("includes the tracked Android plugin that enables private-network HTTP", () => {

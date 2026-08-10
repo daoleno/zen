@@ -14,7 +14,6 @@
         "@react-native-async-storage/async-storage": "2.2.0",
         "@react-native-masked-view/masked-view": "0.3.2",
         "expo": "^57.0.0",
-        "expo-audio": "~57.0.0",
         "expo-camera": "~57.0.1",
         "expo-clipboard": "~57.0.0",
         "expo-constants": "~57.0.3",
@@ -31,7 +30,6 @@
         "expo-secure-store": "~57.0.0",
         "expo-status-bar": "~57.0.0",
         "expo-system-ui": "~57.0.0",
-        "expo-video": "~57.0.0",
         "react": "19.2.3",
         "react-dom": "19.2.3",
         "react-native": "0.86.0",
@@ -614,7 +612,6 @@
 
     "expo-asset": ["expo-asset@57.0.3", "", { "dependencies": { "@expo/image-utils": "^0.11.1", "expo-constants": "~57.0.3" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*" } }, "sha512-6E08JDuYrktY5pKNn2WiFBPBfj6bvFb++ccuBTijK8BUk/afSoy6n35h583LmC2YHgHTepWHHWNfr61nYcMd8Q=="],
 
-    "expo-audio": ["expo-audio@57.0.0", "", { "peerDependencies": { "expo": "*", "expo-asset": "*", "react": "*", "react-native": "*" } }, "sha512-4eV3rIFksVygrnm/dxdrP3Umjsn9/1Zr6cgBzoFtm43nw65g4s3WB5nkszG3JB4a2zpQ9N/IRS5EdRqXqLdbSg=="],
 
     "expo-camera": ["expo-camera@57.0.1", "", { "dependencies": { "barcode-detector": "^3.0.0" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*", "react-native-web": "*" }, "optionalPeers": ["react-native-web"] }, "sha512-OtQOOFQ8djlB/UXlETa+Agu9m88P6d1go0VIO9b/a54AFUuowUqEH9vpzkq5iJ4jVhvJSblm/II7kLtwNnxW7Q=="],
 
@@ -662,7 +659,6 @@
 
     "expo-system-ui": ["expo-system-ui@57.0.0", "", { "dependencies": { "@react-native/normalize-colors": "0.86.0", "debug": "^4.3.2" }, "peerDependencies": { "expo": "*", "react-native": "*", "react-native-web": "*" }, "optionalPeers": ["react-native-web"] }, "sha512-jkGRY0RQsncEhaCPdoiNbRCPAe8q5kFrrMbkiLr7p0oFMMY8LOviSKBpUXLnuwzM1gHC/J531tntrhj+nwpFZA=="],
 
-    "expo-video": ["expo-video@57.0.0", "", { "peerDependencies": { "expo": "*", "react": "*", "react-native": "*" } }, "sha512-beAFaVGS529ZiBM50tWr8g7ai/O/R+RGor4qG0JSskuyw5ME5ORgKfh6PRVBPAh43e+BuH7fCsPAt8KOEUi2MA=="],
 
     "exponential-backoff": ["exponential-backoff@3.1.3", "https://registry.npmmirror.com/exponential-backoff/-/exponential-backoff-3.1.3.tgz", {}, "sha512-ZgEeZXj30q+I0EN+CbSSpIyPaJ5HVQD18Z1m+u1FXbAeT94mr1zw50q4q6jiiC447Nl/YTcIYSAftiGqetwXCA=="],
 

@@ -65,6 +65,6 @@ channels. Permission, if granted, will be in writing and may include conditions.
 ## Relationship to third-party marks
 
 Third-party names and logos (for example Codex, Claude, Cursor, Grok, Ghostty,
-Mixkit, and font projects) remain the property of their owners. Inclusion or
+and font projects) remain the property of their owners. Inclusion or
 interoperability does not imply endorsement. See
 [docs/third-party-assets.md](docs/third-party-assets.md).

@@ -5,7 +5,6 @@ import {
   Linking,
   type ListRenderItem,
   SectionList,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -40,8 +39,13 @@ import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
-import { MeditationModal } from "../../components/meditation/MeditationModal";
-import { MeditationPullPreview } from "../../components/meditation/MeditationPullPreview";
+import { WorkSignalObservatory } from "../../components/work/WorkSignalObservatory";
+import { WorkSignalPullPreview } from "../../components/work/WorkSignalPullPreview";
+import {
+  resolveWorkObservatoryPullIntent,
+  shouldRevealWorkObservatory,
+  WORK_OBSERVATORY_PULL,
+} from "../../components/work/workSignalObservatoryInteraction";
 import { RisingSheet } from "../../components/ui/RisingSheet";
 import { Enter } from "../../components/ui/Enter";
 import { AgentListRowContainer } from "../../components/agents/AgentListRowContainer";
@@ -79,12 +83,6 @@ import {
   serviceProjectLabel,
   type DiscoveredSessionService,
 } from "../../services/sessionServicesPresentation";
-
-const MEDITATION_PULL_THRESHOLD = 132;
-const MEDITATION_ACTIVATION_DISTANCE = 8;
-const MEDITATION_DRAWER_EDGE_EXCLUSION = 24;
-const MEDITATION_HORIZONTAL_FAIL_DISTANCE = 12;
-const MEDITATION_AXIS_DOMINANCE = 1.25;
 
 const AnimatedSectionList = Animated.createAnimatedComponent(
   SectionList<Agent, AgentDirectorySection>,
@@ -132,12 +130,12 @@ export default function InboxScreen() {
   >([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
-  const [meditationVisible, setMeditationVisible] = useState(false);
-  const meditationPullDistance = useSharedValue(0);
-  const meditationScrollOffsetY = useSharedValue(0);
-  const meditationTouchStartX = useSharedValue(0);
-  const meditationTouchStartY = useSharedValue(0);
-  const meditationGestureActivated = useSharedValue(0);
+  const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
+  const workObservatoryPullDistance = useSharedValue(0);
+  const sessionListScrollOffsetY = useSharedValue(0);
+  const workObservatoryTouchStartX = useSharedValue(0);
+  const workObservatoryTouchStartY = useSharedValue(0);
+  const workObservatoryGestureActivated = useSharedValue(0);
   const agentsHydrated = useMemo(
     () => servers.some((server) => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -556,119 +554,113 @@ export default function InboxScreen() {
     void refreshSessionServices();
   };
 
-  const openMeditation = useCallback(() => {
+  const openWorkObservatory = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    StatusBar.setBarStyle("light-content", true);
-    setMeditationVisible(true);
+    setWorkObservatoryVisible(true);
   }, []);
 
-  const closeMeditation = useCallback(() => {
-    setMeditationVisible(false);
-    StatusBar.setBarStyle(
-      theme.isLight ? "dark-content" : "light-content",
-      true,
-    );
-  }, [theme.isLight]);
+  const closeWorkObservatory = useCallback(() => {
+    setWorkObservatoryVisible(false);
+  }, []);
 
   const handleContentScroll = useAnimatedScrollHandler({
     onScroll: (event) => {
       const nextOffset = Math.max(0, event.contentOffset.y);
-      meditationScrollOffsetY.value = nextOffset;
-      if (nextOffset > 0 && meditationPullDistance.value > 0) {
-        meditationPullDistance.value = 0;
+      sessionListScrollOffsetY.value = nextOffset;
+      if (nextOffset > 0 && workObservatoryPullDistance.value > 0) {
+        workObservatoryPullDistance.value = 0;
       }
     },
   });
 
-  const meditationPullGesture = useMemo(
+  const workObservatoryPullGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!meditationVisible)
+        .enabled(!workObservatoryVisible)
         .manualActivation(true)
         .maxPointers(1)
         .enableTrackpadTwoFingerGesture(false)
         .shouldCancelWhenOutside(false)
         .onTouchesDown((event, stateManager) => {
-          meditationPullDistance.value = 0;
-          meditationGestureActivated.value = 0;
+          workObservatoryPullDistance.value = 0;
+          workObservatoryGestureActivated.value = 0;
           const touch = event.allTouches[0];
-          if (
-            event.numberOfTouches !== 1 ||
-            !touch ||
-            touch.absoluteX <= MEDITATION_DRAWER_EDGE_EXCLUSION ||
-            meditationScrollOffsetY.value > 0
-          ) {
+          if (!touch) {
             stateManager.fail();
             return;
           }
-          meditationTouchStartX.value = touch.absoluteX;
-          meditationTouchStartY.value = touch.absoluteY;
+          const intent = resolveWorkObservatoryPullIntent({
+            touchCount: event.numberOfTouches,
+            startX: touch.absoluteX,
+            dx: 0,
+            dy: 0,
+            scrollOffsetY: sessionListScrollOffsetY.value,
+          });
+          if (intent === "fail") {
+            stateManager.fail();
+            return;
+          }
+          workObservatoryTouchStartX.value = touch.absoluteX;
+          workObservatoryTouchStartY.value = touch.absoluteY;
         })
         .onTouchesMove((event, stateManager) => {
-          if (meditationGestureActivated.value === 1) {
+          if (workObservatoryGestureActivated.value === 1) {
             return;
           }
           const touch = event.allTouches[0];
-          if (!touch || meditationScrollOffsetY.value > 0) {
-            meditationPullDistance.value = 0;
+          if (!touch) {
+            workObservatoryPullDistance.value = 0;
             stateManager.fail();
             return;
           }
-
-          const dx = touch.absoluteX - meditationTouchStartX.value;
-          const dy = touch.absoluteY - meditationTouchStartY.value;
-          const absoluteDx = Math.abs(dx);
-          const absoluteDy = Math.abs(dy);
-
-          if (dy <= -MEDITATION_ACTIVATION_DISTANCE) {
+          const intent = resolveWorkObservatoryPullIntent({
+            touchCount: event.numberOfTouches,
+            startX: workObservatoryTouchStartX.value,
+            dx: touch.absoluteX - workObservatoryTouchStartX.value,
+            dy: touch.absoluteY - workObservatoryTouchStartY.value,
+            scrollOffsetY: sessionListScrollOffsetY.value,
+          });
+          if (intent === "fail") {
+            workObservatoryPullDistance.value = 0;
             stateManager.fail();
             return;
           }
-          if (
-            absoluteDx >= MEDITATION_HORIZONTAL_FAIL_DISTANCE &&
-            absoluteDx >= MEDITATION_AXIS_DOMINANCE * absoluteDy
-          ) {
-            stateManager.fail();
-            return;
-          }
-          if (
-            dy > MEDITATION_ACTIVATION_DISTANCE &&
-            absoluteDy > MEDITATION_AXIS_DOMINANCE * absoluteDx
-          ) {
+          if (intent === "activate") {
             stateManager.activate();
           }
         })
         .onStart((event) => {
-          meditationGestureActivated.value = 1;
-          meditationPullDistance.value = Math.max(0, event.translationY);
+          workObservatoryGestureActivated.value = 1;
+          workObservatoryPullDistance.value = Math.max(0, event.translationY);
         })
         .onUpdate((event) => {
-          if (meditationScrollOffsetY.value > 0) {
-            meditationPullDistance.value = 0;
+          if (sessionListScrollOffsetY.value > 0) {
+            workObservatoryPullDistance.value = 0;
             return;
           }
-          meditationPullDistance.value = Math.max(0, event.translationY);
+          workObservatoryPullDistance.value = Math.max(0, event.translationY);
         })
         .onEnd(() => {
-          const shouldOpen =
-            meditationPullDistance.value >= MEDITATION_PULL_THRESHOLD;
-          meditationPullDistance.value = 0;
+          const shouldOpen = shouldRevealWorkObservatory(
+            workObservatoryPullDistance.value,
+          );
+          workObservatoryPullDistance.value = 0;
           if (shouldOpen) {
-            runOnJS(openMeditation)();
+            runOnJS(openWorkObservatory)();
           }
         })
         .onFinalize(() => {
-          meditationPullDistance.value = 0;
-          meditationGestureActivated.value = 0;
+          workObservatoryPullDistance.value = 0;
+          workObservatoryGestureActivated.value = 0;
         }),
     [
-      meditationGestureActivated,
-      meditationPullDistance,
-      meditationScrollOffsetY,
-      meditationTouchStartX,
-      meditationTouchStartY,
-      meditationVisible,
-      openMeditation,
+      openWorkObservatory,
+      sessionListScrollOffsetY,
+      workObservatoryGestureActivated,
+      workObservatoryPullDistance,
+      workObservatoryTouchStartX,
+      workObservatoryTouchStartY,
+      workObservatoryVisible,
     ],
   );
 
@@ -832,14 +824,14 @@ export default function InboxScreen() {
     [insets.bottom, styles],
   );
   return (
-    <GestureDetector gesture={meditationPullGesture}>
+    <GestureDetector gesture={workObservatoryPullGesture}>
       <SafeAreaView
         style={[styles.container, { marginTop: topChromeInset }]}
         edges={[]}
       >
-        <MeditationPullPreview
-          pullDistance={meditationPullDistance}
-          threshold={MEDITATION_PULL_THRESHOLD}
+        <WorkSignalPullPreview
+          pullDistance={workObservatoryPullDistance}
+          threshold={WORK_OBSERVATORY_PULL.threshold}
         />
 
         {hasConnection && !anyConnected && (
@@ -1040,11 +1032,12 @@ export default function InboxScreen() {
           </AnimatedPressable>
         ) : null}
 
-        {meditationVisible ? (
-          <MeditationModal
-            visible={meditationVisible}
-            colors={colors}
-            onClose={closeMeditation}
+        {workObservatoryVisible ? (
+          <WorkSignalObservatory
+            visible={workObservatoryVisible}
+            aliases={agentAliases}
+            onClose={closeWorkObservatory}
+            onOpenSession={openAgent}
           />
         ) : null}
 

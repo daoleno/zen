@@ -31,11 +31,6 @@
 - If iOS launches with a dyld/Swift symbol error in an Expo module, keep `EXPO_USE_PRECOMPILED_MODULES=false` through `withZenIOSBuild` and reinstall Pods. Do not mix precompiled Expo frameworks with locally resolved ExpoModulesCore sources.
 - ABI/ELF mismatches: do not drop `.so` files for `armeabi-v7a` / `x86`; only lockfile ABIs are valid.
 
-## Quiet Mode / World Window
-
-- Mokugyo hit audio is bundled.
-- World Window streams Mixkit CDN MP4s and needs network; offline will not load scenes.
-
 ## Tests fail on a clean checkout
 
 Default `go test ./...` must not require `~/.grok`. Maintainer real-session tests are opt-in:
