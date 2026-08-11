@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 9
+const orchestrationSchemaVersion = 10
 
 var (
 	ErrWorkNotFound         = errors.New("Brain Work not found")
@@ -732,12 +732,13 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			}
 		}
 		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
-	case 8:
-		// Schema 9 adds the explicit actor-retired Turn submission terminal
-		// state. The document shape is unchanged, so existing schema-8 rows are
-		// upgraded by the same deterministic whole-document conversion.
-		fallthrough
-	case orchestrationSchemaVersion:
+	case 8, 9, orchestrationSchemaVersion:
+		// Schema 9 added the actor-retired Turn submission state. Schema 10
+		// makes terminal Work the authoritative fence for delegated provider
+		// admission: a pending delegated submission owned by already-terminal
+		// Work is retired during the deterministic whole-document upgrade below.
+		// Exact Host claim submissions remain governed by their Event handling.
+		// The shape is unchanged.
 		var record orchestrationDatabaseRecord
 		// Ignore unknown never-released fields; bind missing source threads in ensure.
 		if err := json.Unmarshal(trimmed, &record); err != nil {
@@ -758,6 +759,9 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: record.BrainTurnSubmissions,
 		}
 		upgradeSignalSchema(&database)
+		if *header.SchemaVersion < orchestrationSchemaVersion {
+			retirePendingDelegatedSubmissionsForTerminalWork(&database)
+		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -1147,6 +1151,18 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 	}
 	if err := validateTurnSubmissions(database.BrainTurnSubmissions, workIDs); err != nil {
 		return err
+	}
+	for index, submission := range database.BrainTurnSubmissions {
+		if submission.State != watcher.TurnSubmissionPending || strings.TrimSpace(submission.ClaimToken) != "" {
+			continue
+		}
+		workIndex := workIndex(database.BrainWork, submission.WorkID)
+		if workIndex >= 0 {
+			status := database.BrainWork[workIndex].Status
+			if status == WorkDone || status == WorkCancelled {
+				return fmt.Errorf("brain_turn_submissions[%d]: terminal Work %q cannot retain pending delegated provider authority", index, submission.WorkID)
+			}
+		}
 	}
 	return nil
 }
@@ -2014,10 +2030,11 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 }
 
 // CloseWork terminalizes one exact current Work revision without routing an
-// artificial reconciliation turn through the Host. It is deliberately narrow:
-// only queued/unclaimed Attention is settled, while any live claim, admitted
-// Host handling, ambiguous provider mutation, or unaccepted successor keeps
-// the operation fail-closed. The terminal Work update, Attention settlement,
+// artificial reconciliation turn through the Host. A live Host claim remains
+// the one fail-closed boundary. Pending delegated provider submissions and
+// unaccepted successor reservations are subordinate to the explicit
+// actor/revision decision: they are retired atomically so late evidence can
+// never revive the Work. The terminal update, Attention settlement, retirement,
 // Session finalization obligations, and audit Event share one replacement.
 func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 	request.WorkID = strings.TrimSpace(request.WorkID)
@@ -2049,10 +2066,6 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 		s.mu.Unlock()
 		return Work{}, fmt.Errorf("%w: Work %s is already terminal", ErrWorkCloseConflict, item.ID)
 	}
-	if reservation := item.SuccessorReservation; reservation != nil && strings.TrimSpace(reservation.ProviderTurnID) == "" {
-		s.mu.Unlock()
-		return Work{}, fmt.Errorf("%w: successor admission is unresolved", ErrWorkCloseConflict)
-	}
 	for _, event := range database.BrainWorkEvents {
 		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
 			event.Resolution != "" || event.HistoricalDelivery {
@@ -2065,18 +2078,12 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 			return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkCloseConflict, event.ID)
 		}
 	}
-	for _, submission := range database.BrainTurnSubmissions {
-		if submission.WorkID == item.ID && submission.State == watcher.TurnSubmissionPending {
-			s.mu.Unlock()
-			return Work{}, fmt.Errorf("%w: provider submission %s is unresolved", ErrWorkCloseConflict, submission.ProposedTurnID)
-		}
-	}
-
 	item.Status = request.Status
 	item.Wake = nil
 	item.NextAction = ""
 	item.WaitFor = ""
 	item.SessionFinalizations = terminalSessionFinalizations(database, item, now)
+	retirePendingDelegatedSubmissionsForWork(&database, item.ID, now)
 	item.SuccessorReservation = nil
 	item.Revision++
 	item.UpdatedAt = now
@@ -2144,6 +2151,7 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 	item.SourceThreadID = original.SourceThreadID
 	if !wasTerminal && (item.Status == WorkDone || item.Status == WorkCancelled) {
 		item.SessionFinalizations = terminalSessionFinalizations(*database, item, now)
+		retirePendingDelegatedSubmissionsForWork(database, item.ID, now)
 		item.SuccessorReservation = nil
 	}
 	if err := validateWork(item); err != nil {
@@ -4050,6 +4058,7 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	}
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		item.SessionFinalizations = terminalSessionFinalizations(database, item, now)
+		retirePendingDelegatedSubmissionsForWork(&database, item.ID, now)
 		item.SuccessorReservation = nil
 	}
 	item.Revision++
@@ -4124,6 +4133,18 @@ func terminalSessionFinalizations(database orchestrationDatabase, item Work, now
 	for _, turn := range database.BrainTurns {
 		if turn.WorkID == item.ID && strings.TrimSpace(turn.SessionID) != "" && !isHostHandlingTurn(database, turn) {
 			delegated[turn.SessionID] = true
+		}
+	}
+	for _, submission := range database.BrainTurnSubmissions {
+		// ClaimToken identifies a Host claim submission. The Host is never a
+		// delegated teardown target. Only pending delegated transactions add a
+		// finalization here: resolved Sessions already appear in BrainTurns, while
+		// aborted/previously-retired history carries no live provider authority.
+		if submission.WorkID == item.ID && submission.State == watcher.TurnSubmissionPending &&
+			strings.TrimSpace(submission.ClaimToken) == "" {
+			if sessionID := strings.TrimSpace(submission.SessionID); sessionID != "" {
+				delegated[sessionID] = true
+			}
 		}
 	}
 	existing := map[string]SessionFinalization{}

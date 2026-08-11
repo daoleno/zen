@@ -34,6 +34,7 @@ func TestSubmitDelegatedInputReusesCompletedSessionWithDifferentIdleActivity(t *
 		},
 	}}
 	w := lifecycleTestWatcher(io, ledger, probe)
+	w.sessionInput.now = func() time.Time { return now }
 	w.agents[sessionID] = &classifier.Agent{
 		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
 		Delegated: true, State: classifier.StateDone,

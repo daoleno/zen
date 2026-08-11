@@ -319,6 +319,7 @@ type sessionInputOwner struct {
 	sessions map[string]*sessionInputSession
 	io       sessionInputIO
 	ledger   TurnLedger
+	now      func() time.Time
 }
 
 func newSessionInputOwner(io sessionInputIO) *sessionInputOwner {
@@ -328,7 +329,15 @@ func newSessionInputOwner(io sessionInputIO) *sessionInputOwner {
 	return &sessionInputOwner{
 		sessions: make(map[string]*sessionInputSession),
 		io:       io,
+		now:      time.Now,
 	}
+}
+
+func (owner *sessionInputOwner) nowUTC() time.Time {
+	if owner != nil && owner.now != nil {
+		return owner.now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (owner *sessionInputOwner) session(sessionID string) *sessionInputSession {
@@ -692,7 +701,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 				return err
 			}
-			mutationBoundary = time.Now().UTC()
+			mutationBoundary = owner.nowUTC()
 			return nil
 		})
 		if queueErr != nil {
@@ -755,7 +764,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 					SHA256: strings.TrimSpace(confirmation.Admission.InputSHA256),
 					At:     confirmation.Admission.StartedAt.UTC(),
 				},
-				ResolvedAt: time.Now().UTC(),
+				ResolvedAt: owner.nowUTC(),
 			})
 			if resolveErr != nil {
 				result.Outcome = InputAmbiguous
@@ -896,7 +905,7 @@ func (owner *sessionInputOwner) resolvePendingFromBaseline(
 			Cursor: admission.Cursor, SHA256: strings.TrimSpace(admission.InputSHA256),
 			At: admission.StartedAt.UTC(),
 		},
-		ResolvedAt: time.Now().UTC(),
+		ResolvedAt: owner.nowUTC(),
 	})
 }
 

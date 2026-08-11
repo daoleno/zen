@@ -131,7 +131,7 @@ func TestCloseWorkRequiresExactActorRevisionAndNonterminalWork(t *testing.T) {
 	}
 }
 
-func TestCloseWorkRejectsClaimedOrProviderPendingAuthority(t *testing.T) {
+func TestCloseWorkRejectsClaimedAndRetiresProviderPendingAuthority(t *testing.T) {
 	t.Run("claimed Attention", func(t *testing.T) {
 		store, _, event := claimResolutionStore(t)
 		item, err := store.Work(event.WorkID)
@@ -176,12 +176,40 @@ func TestCloseWorkRejectsClaimedOrProviderPendingAuthority(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = store.CloseWork(WorkCloseRequest{
+		closed, err := store.CloseWork(WorkCloseRequest{
 			WorkID: item.ID, ExpectedRevision: current.Revision, Status: WorkCancelled,
-			Actor: "user", Reason: "must not guess provider admission",
+			Actor: "user", Reason: "explicitly revoke provider admission authority",
 		})
-		if !errors.Is(err, ErrWorkCloseConflict) {
-			t.Fatalf("pending submission close err=%v want ErrWorkCloseConflict", err)
+		if err != nil || closed.Status != WorkCancelled || len(closed.SessionFinalizations) != 1 ||
+			closed.SessionFinalizations[0].SessionID != "brain-agent-pending:@1" ||
+			closed.SessionFinalizations[0].State != SessionFinalizationPending {
+			t.Fatalf("pending submission close=%+v err=%v", closed, err)
+		}
+		retired, found, err := store.TurnSubmission("brain-agent-pending:@1", "turn:pending")
+		if err != nil || !found || retired.State != watcher.TurnSubmissionRetired {
+			t.Fatalf("retired submission=%+v found=%v err=%v", retired, found, err)
+		}
+		if _, found, err := store.Turn("brain-agent-pending:@1"); err != nil || found {
+			t.Fatalf("actor retirement created a canonical Turn: found=%v err=%v", found, err)
+		}
+		if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+			SessionID: "brain-agent-pending:@1", ProposedTurnID: "turn:pending", Receipt: "turn:pending",
+			PayloadSHA256: strings.Repeat("a", 64), ActivityID: "late-activity",
+			Admission: watcher.TurnAdmission{
+				Stream: "provider", ID: "late-admission", Cursor: 1,
+				SHA256: strings.Repeat("a", 64), At: time.Now().UTC(),
+			},
+			ResolvedAt: time.Now().UTC(),
+		}); err == nil || !strings.Contains(err.Error(), "never be adopted") {
+			t.Fatalf("retired submission accepted late provider evidence: %v", err)
+		}
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stable, found, err := reopened.TurnSubmission("brain-agent-pending:@1", "turn:pending")
+		if err != nil || !found || stable.State != watcher.TurnSubmissionRetired {
+			t.Fatalf("reopened retirement=%+v found=%v err=%v", stable, found, err)
 		}
 	})
 }
@@ -197,6 +225,16 @@ func TestCloseWorkPersistenceFailureExposesNoPartialTerminalState(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	pendingSessionID := "brain-agent-atomic-close:@1"
+	pendingTurnID := "turn:atomic-close"
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: pendingSessionID, ProposedTurnID: pendingTurnID,
+		Receipt: pendingTurnID, PayloadSHA256: strings.Repeat("c", 64),
+		ProcessIdentity: "atomic-process", PaneGeneration: "atomic-generation",
+		AcceptedAt: time.Now().UTC(), Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare pending created=%v err=%v", created, err)
 	}
 	event, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID: item.ID, Kind: "brain.reconcile_required", DedupeKey: "atomic-close",
@@ -235,6 +273,152 @@ func TestCloseWorkPersistenceFailureExposesNoPartialTerminalState(t *testing.T) 
 			t.Fatalf("failed close exposed audit row: %#v", events)
 		}
 	}
+	pending, found, err := store.TurnSubmission(pendingSessionID, pendingTurnID)
+	if err != nil || !found || pending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed close exposed submission retirement: pending=%+v found=%v err=%v", pending, found, err)
+	}
+}
+
+func TestUpdateWorkTerminalTransitionRetiresPendingSubmission(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "terminal update fence", Objective: "revoke pending provider authority",
+		Status: WorkRunning, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-terminal-update:@1"
+	turnID := "turn:terminal-update"
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: sessionID, ProposedTurnID: turnID,
+		Receipt: turnID, PayloadSHA256: strings.Repeat("7", 64),
+		ProcessIdentity: "terminal-update-process", PaneGeneration: "terminal-update-generation",
+		AcceptedAt: time.Now().UTC(), Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare pending created=%v err=%v", created, err)
+	}
+	done := WorkDone
+	terminal, err := store.UpdateWork(item.ID, WorkUpdate{Status: &done})
+	if err != nil || terminal.Status != WorkDone || len(terminal.SessionFinalizations) != 1 ||
+		terminal.SessionFinalizations[0].SessionID != sessionID {
+		t.Fatalf("terminal update Work=%+v err=%v", terminal, err)
+	}
+	retired, found, err := store.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || retired.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("terminal update retirement=%+v found=%v err=%v", retired, found, err)
+	}
+	reopened, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, found, err := reopened.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || stable.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("reopened terminal update retirement=%+v found=%v err=%v", stable, found, err)
+	}
+}
+
+func TestResolveWorkEventTerminalDispositionRetiresPendingSuccessor(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	acceptedAt := claimed.ClaimedAt.UTC()
+	hostDigest := strings.Repeat("d", 64)
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ID, ClaimToken: claimed.HandlingID,
+		PayloadSHA256: hostDigest, ProcessIdentity: "host-process", PaneGeneration: "host-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare Host claim created=%v err=%v", created, err)
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, PayloadSHA256: hostDigest, ActivityID: "host-terminal-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-terminal-admission", Cursor: 1,
+			SHA256: hostDigest, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, err := store.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorSessionID := "brain-agent-terminal-successor:@1"
+	successorTurnID := "turn:terminal-successor"
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: successorSessionID, ProposedTurnID: successorTurnID,
+		Receipt: successorTurnID, PayloadSHA256: strings.Repeat("e", 64),
+		ProcessIdentity: "successor-process", PaneGeneration: "successor-generation",
+		AcceptedAt: resolvedAt.Add(time.Millisecond), Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare successor created=%v err=%v", created, err)
+	}
+	item, err := store.Work(workID)
+	if err != nil || item.SuccessorReservation == nil || item.SuccessorReservation.ProviderTurnID != "" {
+		t.Fatalf("unaccepted successor reservation=%+v err=%v", item, err)
+	}
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error { return errors.New("injected terminal disposition write failure") }
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+		Summary: "failed atomic terminal disposition",
+	}); err == nil || !strings.Contains(err.Error(), "injected terminal disposition write failure") {
+		t.Fatalf("terminal disposition write failure=%v", err)
+	}
+	store.writeOrchestration = originalWrite
+	unchanged, err := store.Work(workID)
+	if err != nil || unchanged.Status == WorkDone || unchanged.SuccessorReservation == nil {
+		t.Fatalf("failed disposition exposed Work mutation=%+v err=%v", unchanged, err)
+	}
+	unchangedEvent, found, err := store.WorkEvent(delivered.ID)
+	if err != nil || !found || unchangedEvent.HandledAt != nil {
+		t.Fatalf("failed disposition exposed Event settlement=%+v found=%v err=%v", unchangedEvent, found, err)
+	}
+	unchangedSubmission, found, err := store.TurnSubmission(successorSessionID, successorTurnID)
+	if err != nil || !found || unchangedSubmission.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed disposition exposed submission retirement=%+v found=%v err=%v", unchangedSubmission, found, err)
+	}
+	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+		Summary: "terminal disposition revokes the staged successor",
+	})
+	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone || terminal.SuccessorReservation != nil {
+		t.Fatalf("terminal disposition event=%+v Work=%+v err=%v", resolved, terminal, err)
+	}
+	pending, found, err := store.TurnSubmission(successorSessionID, successorTurnID)
+	if err != nil || !found || pending.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("terminal successor retirement=%+v found=%v err=%v", pending, found, err)
+	}
+	finalized := false
+	for _, finalization := range terminal.SessionFinalizations {
+		if finalization.SessionID == successorSessionID && finalization.State == SessionFinalizationPending {
+			finalized = true
+		}
+		if finalization.SessionID == claimed.DeliveryHostSessionID {
+			t.Fatalf("Host claim Session was scheduled for delegated teardown: %+v", terminal.SessionFinalizations)
+		}
+	}
+	if !finalized {
+		t.Fatalf("pending successor has no terminal finalization: %+v", terminal.SessionFinalizations)
+	}
+	reopened, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, found, err := reopened.TurnSubmission(successorSessionID, successorTurnID)
+	if err != nil || !found || stable.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("reopened terminal retirement=%+v found=%v err=%v", stable, found, err)
+	}
 }
 
 func TestCloseWorkSettlesEndedHostHandlingWithoutReplayingIt(t *testing.T) {
@@ -266,6 +450,16 @@ func TestCloseWorkSettlesEndedHostHandlingWithoutReplayingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	successorSessionID := "brain-agent-ended-successor:@1"
+	successorTurnID := "turn:ended-successor"
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: successorSessionID, ProposedTurnID: successorTurnID,
+		Receipt: successorTurnID, PayloadSHA256: strings.Repeat("f", 64),
+		ProcessIdentity: "ended-successor-process", PaneGeneration: "ended-successor-generation",
+		AcceptedAt: resolvedAt.Add(time.Millisecond), Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare ended successor created=%v err=%v", created, err)
+	}
 	reconcile, created, err := store.RequeueUnhandledHostAttention(
 		delivered.ID, delivered.HandlingID, delivered.ProviderTurnID,
 	)
@@ -276,6 +470,11 @@ func TestCloseWorkSettlesEndedHostHandlingWithoutReplayingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if item.SuccessorReservation == nil || item.SuccessorReservation.SessionID != successorSessionID ||
+		item.SuccessorReservation.ProviderTurnID != "" ||
+		item.SuccessorReservation.EventID != "" || item.SuccessorReservation.HandlingID != "" {
+		t.Fatalf("requeued unaccepted successor=%+v", item.SuccessorReservation)
+	}
 	closed, err := store.CloseWork(WorkCloseRequest{
 		WorkID: item.ID, ExpectedRevision: item.Revision, Status: WorkDone,
 		Actor: "brain", Reason: "operator verified the ended handling outcome",
@@ -285,6 +484,13 @@ func TestCloseWorkSettlesEndedHostHandlingWithoutReplayingIt(t *testing.T) {
 	}
 	if closed.Status != WorkDone {
 		t.Fatalf("closed Work = %+v", closed)
+	}
+	retired, found, err := store.TurnSubmission(successorSessionID, successorTurnID)
+	if err != nil || !found || retired.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("ended successor retirement=%+v found=%v err=%v", retired, found, err)
+	}
+	if closed.SuccessorReservation != nil {
+		t.Fatalf("closed Work retained successor reservation=%+v", closed.SuccessorReservation)
 	}
 	original, found, err := store.WorkEvent(delivered.ID)
 	if err != nil || !found || original.HandledAt == nil || original.Disposition != WorkDispositionComplete ||

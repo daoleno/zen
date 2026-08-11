@@ -97,6 +97,116 @@ func TestOrchestrationSchemaV8MigratesToActorRetirementSchema(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSchemaV9RetiresTerminalWorkPendingSubmission(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+	workUpdatedAt := acceptedAt.Add(-time.Minute)
+	workID := "work-schema-9-terminal-pending"
+	sessionID := "brain-agent-schema-9:@1"
+	turnID := "turn:schema-9-pending"
+	digest := strings.Repeat("9", 64)
+	record := orchestrationDatabaseRecord{
+		SchemaVersion:        9,
+		BrainInputAdmissions: []BrainInputAdmission{},
+		BrainWork: []workRecord{{
+			ID: workID, Revision: 3, Title: "terminal schema-9 Work", Objective: "retire stale admission",
+			Status: WorkDone, SourceThreadID: "brain-thread-schema-9", CompletionPolicy: CompletionBounded,
+			CreatedAt: workUpdatedAt.Add(-time.Hour), UpdatedAt: workUpdatedAt,
+		}},
+		BrainWorkEvents: []WorkEvent{}, BrainTurns: []TurnRecord{},
+		BrainTurnSubmissions: []TurnSubmissionRecord{{
+			SessionID: sessionID, ProposedTurnID: turnID, WorkID: workID, Receipt: turnID,
+			PayloadSHA256: digest, ProcessIdentity: "schema-9-process", PaneGeneration: "schema-9-generation",
+			AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+			State: watcher.TurnSubmissionPending, CreatedAt: acceptedAt.Add(-time.Second),
+		}},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil || !migrated || database.SchemaVersion != orchestrationSchemaVersion {
+		t.Fatalf("schema-9 decode migrated=%v database=%+v err=%v", migrated, database, err)
+	}
+	if len(database.BrainTurnSubmissions) != 1 ||
+		database.BrainTurnSubmissions[0].State != watcher.TurnSubmissionRetired ||
+		database.BrainTurnSubmissions[0].ResolvedAt == nil ||
+		!database.BrainTurnSubmissions[0].ResolvedAt.Equal(acceptedAt) {
+		t.Fatalf("schema-9 retirement=%+v", database.BrainTurnSubmissions)
+	}
+	path := filepath.Join(root, "state", "orchestration.json")
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migratedStore, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, found, err := migratedStore.TurnSubmission(sessionID, turnID)
+	if err != nil || !found || retired.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("persisted schema-10 retirement=%+v found=%v err=%v", retired, found, err)
+	}
+	if _, err := migratedStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ActivityID: "late-schema-9-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "late-schema-9-admission", Cursor: 1,
+			SHA256: digest, At: acceptedAt.Add(time.Minute),
+		},
+		ResolvedAt: acceptedAt.Add(time.Minute),
+	}); err == nil || !strings.Contains(err.Error(), "never be adopted") {
+		t.Fatalf("migrated retirement accepted late evidence: %v", err)
+	}
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("schema-10 reopen replayed migration:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestOrchestrationSchemaV10RejectsTerminalWorkPendingSubmission(t *testing.T) {
+	at := time.Date(2026, 8, 11, 4, 15, 0, 0, time.UTC)
+	record := orchestrationDatabaseRecord{
+		SchemaVersion:        orchestrationSchemaVersion,
+		BrainInputAdmissions: []BrainInputAdmission{},
+		BrainWork: []workRecord{{
+			ID: "work-invalid-terminal-pending", Revision: 1, Title: "invalid terminal Work",
+			Objective: "reject current-schema corruption", Status: WorkCancelled,
+			SourceThreadID: "brain-thread-invalid", CompletionPolicy: CompletionBounded,
+			CreatedAt: at.Add(-time.Hour), UpdatedAt: at,
+		}},
+		BrainWorkEvents: []WorkEvent{}, BrainTurns: []TurnRecord{},
+		BrainTurnSubmissions: []TurnSubmissionRecord{{
+			SessionID: "brain-agent-invalid:@1", ProposedTurnID: "turn:invalid",
+			WorkID: "work-invalid-terminal-pending", Receipt: "turn:invalid",
+			PayloadSHA256: strings.Repeat("a", 64), ProcessIdentity: "invalid-process",
+			PaneGeneration: "invalid-generation", AcceptedAt: at, Mode: watcher.TurnSubmissionFresh,
+			State: watcher.TurnSubmissionPending, CreatedAt: at,
+		}},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := decodeOrchestrationDatabase(raw); err == nil ||
+		!strings.Contains(err.Error(), "terminal Work") {
+		t.Fatalf("current schema accepted terminal pending authority: %v", err)
+	}
+}
+
 func TestOrchestrationSchemaV7DropsReservationSchedulerState(t *testing.T) {
 	// Schema 7 carried the rejected HostAttentionReservation scheduler
 	// (attention_reservation, attention_admissions, last_attention_work_id).

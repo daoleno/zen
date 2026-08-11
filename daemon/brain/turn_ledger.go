@@ -2625,5 +2625,59 @@ func retireExactHostSubmissionForClaim(database *orchestrationDatabase, event Wo
 	return nil
 }
 
+// retirePendingDelegatedSubmissionsForWork applies the terminal Work fence to
+// every delegated pre-mutation provider transaction owned by that Work.
+// ClaimToken-bearing Host submissions remain governed by their exact Event
+// handling capability. Retired deliberately means neither "not submitted" nor
+// "provider admitted": it only records that an explicit scheduler decision
+// revoked delegated adoption authority. The retirement time is clamped to
+// AcceptedAt so imported/coarse-clock state remains valid.
+func retirePendingDelegatedSubmissionsForWork(database *orchestrationDatabase, workID string, now time.Time) int {
+	if database == nil {
+		return 0
+	}
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return 0
+	}
+	retired := 0
+	for index := range database.BrainTurnSubmissions {
+		submission := &database.BrainTurnSubmissions[index]
+		if submission.WorkID != workID || submission.State != watcher.TurnSubmissionPending ||
+			strings.TrimSpace(submission.ClaimToken) != "" {
+			continue
+		}
+		retiredAt := now.UTC()
+		if retiredAt.Before(submission.AcceptedAt.UTC()) {
+			retiredAt = submission.AcceptedAt.UTC()
+		}
+		submission.State = watcher.TurnSubmissionRetired
+		submission.ResolvedAt = &retiredAt
+		submission.AbortedAt = nil
+		submission.ResolvedTurnID = ""
+		submission.ResolvedActivityID = ""
+		submission.ResolvedAdmission = watcher.TurnAdmission{}
+		retired++
+	}
+	return retired
+}
+
+// retirePendingDelegatedSubmissionsForTerminalWork is the deterministic
+// schema-10 upgrade. Work.UpdatedAt is durable and supplies the migration
+// clock; the per-row helper clamps it to AcceptedAt. Current-schema documents
+// are never repaired on read: validation rejects future invariant violations.
+func retirePendingDelegatedSubmissionsForTerminalWork(database *orchestrationDatabase) int {
+	if database == nil {
+		return 0
+	}
+	retired := 0
+	for _, item := range database.BrainWork {
+		if item.Status == WorkDone || item.Status == WorkCancelled {
+			retired += retirePendingDelegatedSubmissionsForWork(database, item.ID, item.UpdatedAt)
+		}
+	}
+	return retired
+}
+
 // ErrNoActiveTurn is returned when a session has no canonical turn.
 var ErrNoActiveTurn = errors.New("no canonical turn for session")
