@@ -375,6 +375,9 @@ func (w *changingProxyGenerationWatcher) ResolveOwnedGeneration(sessionID string
 }
 
 func (w *changingProxyGenerationWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
+	if w.generation != "host-generation-g2" {
+		return watcher.ProviderActivityObservation{}, false, nil
+	}
 	return watcher.ProviderActivityObservation{
 		ID: "host-generation-g2-activity", Status: "running", StartedAt: time.Now().UTC(),
 	}, true, nil
