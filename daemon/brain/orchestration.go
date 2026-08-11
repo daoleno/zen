@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 10
+const orchestrationSchemaVersion = 11
 
 var (
 	ErrWorkNotFound         = errors.New("Brain Work not found")
@@ -130,7 +130,9 @@ const (
 )
 
 // SessionFinalization is the idempotent teardown obligation created by a new
-// terminal disposition. Historical terminal Work is never backfilled.
+// terminal disposition. Schema upgrades may also add an exact pending
+// obligation for delegated provider authority that an older terminal Work
+// stranded; existing failed/complete/skipped outcomes are never reset.
 type SessionFinalization struct {
 	SessionID string                   `json:"session_id"`
 	Delegated bool                     `json:"delegated"`
@@ -165,6 +167,7 @@ type WorkSuccessorReservation struct {
 type Work struct {
 	ID                   string                    `json:"work_id"`
 	Revision             uint64                    `json:"revision"`
+	TerminalRevision     uint64                    `json:"terminal_revision,omitempty"`
 	Title                string                    `json:"title"`
 	Objective            string                    `json:"objective"`
 	Status               WorkStatus                `json:"status"`
@@ -391,6 +394,7 @@ type orchestrationDatabase struct {
 type workRecord struct {
 	ID                   string                    `json:"work_id"`
 	Revision             uint64                    `json:"revision"`
+	TerminalRevision     uint64                    `json:"terminal_revision,omitempty"`
 	Title                string                    `json:"title"`
 	Objective            string                    `json:"objective"`
 	Status               WorkStatus                `json:"status"`
@@ -602,6 +606,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -625,6 +630,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -647,6 +653,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -669,6 +676,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: []TurnSubmissionRecord{},
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -691,6 +699,8 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: record.BrainTurnSubmissions,
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
+		retirePendingDelegatedSubmissionsForTerminalWork(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -721,6 +731,8 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainTurnSubmissions: record.BrainTurnSubmissions,
 		}
 		upgradeSignalSchema(&database)
+		migrateTerminalWorkRevisions(&database)
+		retirePendingDelegatedSubmissionsForTerminalWork(&database)
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
 			return orchestrationDatabase{}, false, err
 		}
@@ -732,10 +744,11 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			}
 		}
 		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
-	case 8, 9, orchestrationSchemaVersion:
+	case 8, 9, 10, orchestrationSchemaVersion:
 		// Schema 9 added the actor-retired Turn submission state. Schema 10
-		// makes terminal Work the authoritative fence for delegated provider
-		// admission: a pending delegated submission owned by already-terminal
+		// made terminal Work authoritative for delegated provider admission;
+		// schema 11 freezes its Event causality boundary as terminal_revision.
+		// A pending delegated submission owned by already-terminal
 		// Work is retired during the deterministic whole-document upgrade below.
 		// Exact Host claim submissions remain governed by their Event handling.
 		// The shape is unchanged.
@@ -760,6 +773,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 		}
 		upgradeSignalSchema(&database)
 		if *header.SchemaVersion < orchestrationSchemaVersion {
+			migrateTerminalWorkRevisions(&database)
 			retirePendingDelegatedSubmissionsForTerminalWork(&database)
 		}
 		if err := validateOrchestrationDatabaseLoose(database); err != nil {
@@ -822,6 +836,35 @@ func upgradeSignalSchema(database *orchestrationDatabase) {
 	}
 }
 
+// migrateTerminalWorkRevisions upgrades the former timestamp-based terminal
+// causality rule into one immutable Work revision fence. The migration keeps
+// exactly the outstanding Events the older document considered post-terminal,
+// then freezes that boundary so later metadata updates cannot change their
+// eligibility. Current-schema documents never pass through this repair path.
+func migrateTerminalWorkRevisions(database *orchestrationDatabase) {
+	if database == nil {
+		return
+	}
+	for workIndex := range database.BrainWork {
+		item := &database.BrainWork[workIndex]
+		if item.Status != WorkDone && item.Status != WorkCancelled {
+			item.TerminalRevision = 0
+			continue
+		}
+		terminalRevision := item.Revision
+		for _, event := range database.BrainWorkEvents {
+			if event.WorkID != item.ID || !attentionEventOutstanding(event) || event.WorkRevision == 0 ||
+				event.CreatedAt.Before(item.UpdatedAt) {
+				continue
+			}
+			if event.WorkRevision < terminalRevision {
+				terminalRevision = event.WorkRevision
+			}
+		}
+		item.TerminalRevision = terminalRevision
+	}
+}
+
 func duplicateEventSequence(events []WorkEvent, current int, sequence uint64) bool {
 	for index := range events {
 		if index != current && events[index].Sequence == sequence {
@@ -839,6 +882,7 @@ func worksFromRecords(records []workRecord) []Work {
 		out = append(out, Work{
 			ID:                   strings.TrimSpace(record.ID),
 			Revision:             record.Revision,
+			TerminalRevision:     record.TerminalRevision,
 			Title:                strings.TrimSpace(record.Title),
 			Objective:            strings.TrimSpace(record.Objective),
 			Status:               record.Status,
@@ -1250,6 +1294,14 @@ func validateWorkWithSourceThread(item Work, requireSourceThread bool) error {
 	if item.Revision == 0 {
 		return fmt.Errorf("revision is required")
 	}
+	terminal := item.Status == WorkDone || item.Status == WorkCancelled
+	if terminal {
+		if item.TerminalRevision == 0 || item.TerminalRevision > item.Revision {
+			return fmt.Errorf("terminal Work requires terminal_revision within its revision history")
+		}
+	} else if item.TerminalRevision != 0 {
+		return fmt.Errorf("nonterminal Work cannot retain terminal_revision")
+	}
 	if item.Wake != nil {
 		if err := validateWorkWake(item.Wake); err != nil {
 			return err
@@ -1507,9 +1559,10 @@ func attentionEventCanObligate(database orchestrationDatabase, event WorkEvent) 
 	if terminalFinalizationFailureOwnsAttention(item, event) {
 		return true
 	}
-	// Strictly earlier Events are historical backlog; equality stays eligible
-	// for serialized terminal update-then-append under coarse clocks.
-	return !event.CreatedAt.Before(item.UpdatedAt)
+	// TerminalRevision is the immutable causal boundary written by the
+	// transition that first terminalized the Work. Later title/context edits
+	// advance Revision but never move this fence.
+	return item.TerminalRevision != 0 && event.WorkRevision >= item.TerminalRevision
 }
 
 func terminalFinalizationFailureOwnsAttention(item Work, event WorkEvent) bool {
@@ -1869,6 +1922,11 @@ func normalizeWorkForCreate(item Work, now time.Time) (Work, error) {
 	item.CreatedAt = now
 	item.UpdatedAt = now
 	item.Revision = 1
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		item.TerminalRevision = item.Revision
+	} else {
+		item.TerminalRevision = 0
+	}
 	if err := validateWork(item); err != nil {
 		return Work{}, err
 	}
@@ -2066,17 +2124,9 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 		s.mu.Unlock()
 		return Work{}, fmt.Errorf("%w: Work %s is already terminal", ErrWorkCloseConflict, item.ID)
 	}
-	for _, event := range database.BrainWorkEvents {
-		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
-			event.Resolution != "" || event.HistoricalDelivery {
-			continue
-		}
-		claimInFlight := event.ClaimedAt != nil && event.DeliveredAt == nil
-		handlingInFlight := event.DeliveredAt != nil && event.HandlingEndedAt == nil
-		if claimInFlight || handlingInFlight {
-			s.mu.Unlock()
-			return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkCloseConflict, event.ID)
-		}
+	if eventID, owned := activeHostLaneEvent(database, item.ID); owned {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkCloseConflict, eventID)
 	}
 	item.Status = request.Status
 	item.Wake = nil
@@ -2086,6 +2136,7 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 	retirePendingDelegatedSubmissionsForWork(&database, item.ID, now)
 	item.SuccessorReservation = nil
 	item.Revision++
+	item.TerminalRevision = item.Revision
 	item.UpdatedAt = now
 	database.BrainWork[itemIndex] = item
 
@@ -2145,11 +2196,18 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 	if wasTerminal && item.Status != original.Status {
 		return Work{}, fmt.Errorf("%w: terminal Work cannot be reopened", ErrWorkConflict)
 	}
+	becomesTerminal := !wasTerminal && (item.Status == WorkDone || item.Status == WorkCancelled)
+	if becomesTerminal {
+		if eventID, owned := activeHostLaneEvent(*database, item.ID); owned {
+			return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkConflict, eventID)
+		}
+	}
 	item.UpdatedAt = now
 	item.Revision++
 	// SourceThreadID is frozen at Create and never rewritten.
 	item.SourceThreadID = original.SourceThreadID
-	if !wasTerminal && (item.Status == WorkDone || item.Status == WorkCancelled) {
+	if becomesTerminal {
+		item.TerminalRevision = item.Revision
 		item.SessionFinalizations = terminalSessionFinalizations(*database, item, now)
 		retirePendingDelegatedSubmissionsForWork(database, item.ID, now)
 		item.SuccessorReservation = nil
@@ -2159,6 +2217,26 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 	}
 	database.BrainWork[index] = item
 	return item, nil
+}
+
+// activeHostLaneEvent identifies the sole fail-closed boundary shared by
+// operator closure and internal Work updates. Once an actionable Event is
+// claimed, neither a metadata producer nor an operator may advance the Work
+// revision or terminalize it until the exact Host capability is consumed and
+// disposed (or the ended handling is explicitly recovered).
+func activeHostLaneEvent(database orchestrationDatabase, workID string) (string, bool) {
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID != workID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
+			event.Resolution != "" || event.HistoricalDelivery {
+			continue
+		}
+		claimInFlight := event.ClaimedAt != nil && event.DeliveredAt == nil
+		handlingInFlight := event.DeliveredAt != nil && event.HandlingEndedAt == nil
+		if claimInFlight || handlingInFlight {
+			return event.ID, true
+		}
+	}
+	return "", false
 }
 
 // ReserveWorkSuccessor binds a newly created correction Session to the exact
@@ -3981,8 +4059,8 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrWorkRevisionConflict
 	}
-	terminal := item.Status == WorkDone || item.Status == WorkCancelled
-	if terminal && request.Disposition != WorkDispositionComplete && request.Disposition != WorkDispositionCancel && request.Disposition != WorkDispositionSupersede {
+	wasTerminal := item.Status == WorkDone || item.Status == WorkCancelled
+	if wasTerminal && request.Disposition != WorkDispositionComplete && request.Disposition != WorkDispositionCancel && request.Disposition != WorkDispositionSupersede {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, fmt.Errorf("terminal Work cannot return to a nonterminal disposition")
 	}
@@ -4062,6 +4140,9 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		item.SuccessorReservation = nil
 	}
 	item.Revision++
+	if !wasTerminal && (item.Status == WorkDone || item.Status == WorkCancelled) {
+		item.TerminalRevision = item.Revision
+	}
 	item.UpdatedAt = now
 	handledAt := now.UTC()
 	for index := range database.BrainWorkEvents {

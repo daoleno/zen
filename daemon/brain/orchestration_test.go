@@ -97,6 +97,56 @@ func TestOrchestrationSchemaV8MigratesToActorRetirementSchema(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSchemaV6AndV7RetireTerminalWorkPendingSubmission(t *testing.T) {
+	for _, schemaVersion := range []int{6, 7} {
+		t.Run(fmt.Sprintf("schema-%d", schemaVersion), func(t *testing.T) {
+			acceptedAt := time.Date(2026, 8, 11, 0, schemaVersion, 0, 0, time.UTC)
+			workID := fmt.Sprintf("work-schema-%d-terminal-pending", schemaVersion)
+			sessionID := fmt.Sprintf("brain-agent-schema-%d:@1", schemaVersion)
+			turnID := fmt.Sprintf("turn:schema-%d-pending", schemaVersion)
+			record := orchestrationDatabaseRecord{
+				SchemaVersion:        schemaVersion,
+				BrainInputAdmissions: []BrainInputAdmission{},
+				BrainWork: []workRecord{{
+					ID: workID, Revision: 2, Title: "legacy terminal Work", Objective: "retire stale authority",
+					Status: WorkCancelled, SourceThreadID: "brain-thread-legacy", CompletionPolicy: CompletionBounded,
+					CreatedAt: acceptedAt.Add(-time.Hour), UpdatedAt: acceptedAt.Add(-time.Minute),
+				}},
+				BrainWorkEvents: []WorkEvent{}, BrainTurns: []TurnRecord{},
+				BrainTurnSubmissions: []TurnSubmissionRecord{{
+					SessionID: sessionID, ProposedTurnID: turnID, WorkID: workID, Receipt: turnID,
+					PayloadSHA256:   strings.Repeat(fmt.Sprintf("%d", schemaVersion), 64),
+					ProcessIdentity: "legacy-process", PaneGeneration: "legacy-generation",
+					AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+					State: watcher.TurnSubmissionPending, CreatedAt: acceptedAt.Add(-time.Second),
+				}},
+			}
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			database, migrated, err := decodeOrchestrationDatabase(raw)
+			if err != nil || !migrated || database.SchemaVersion != orchestrationSchemaVersion {
+				t.Fatalf("schema-%d decode migrated=%v database=%+v err=%v", schemaVersion, migrated, database, err)
+			}
+			if len(database.BrainTurnSubmissions) != 1 ||
+				database.BrainTurnSubmissions[0].State != watcher.TurnSubmissionRetired ||
+				database.BrainTurnSubmissions[0].ResolvedAt == nil ||
+				!database.BrainTurnSubmissions[0].ResolvedAt.Equal(acceptedAt) {
+				t.Fatalf("schema-%d retirement=%+v", schemaVersion, database.BrainTurnSubmissions)
+			}
+			if len(database.BrainWork) != 1 || len(database.BrainWork[0].SessionFinalizations) != 1 {
+				t.Fatalf("schema-%d finalizations=%+v", schemaVersion, database.BrainWork)
+			}
+			finalization := database.BrainWork[0].SessionFinalizations[0]
+			if finalization.SessionID != sessionID || !finalization.Delegated ||
+				finalization.State != SessionFinalizationPending || !finalization.UpdatedAt.Equal(acceptedAt) {
+				t.Fatalf("schema-%d finalization=%+v", schemaVersion, finalization)
+			}
+		})
+	}
+}
+
 func TestOrchestrationSchemaV9RetiresTerminalWorkPendingSubmission(t *testing.T) {
 	root := t.TempDir()
 	if _, err := NewStore(root); err != nil {
@@ -138,6 +188,14 @@ func TestOrchestrationSchemaV9RetiresTerminalWorkPendingSubmission(t *testing.T)
 		!database.BrainTurnSubmissions[0].ResolvedAt.Equal(acceptedAt) {
 		t.Fatalf("schema-9 retirement=%+v", database.BrainTurnSubmissions)
 	}
+	if len(database.BrainWork) != 1 || len(database.BrainWork[0].SessionFinalizations) != 1 {
+		t.Fatalf("schema-9 finalizations=%+v", database.BrainWork)
+	}
+	finalization := database.BrainWork[0].SessionFinalizations[0]
+	if finalization.SessionID != sessionID || !finalization.Delegated ||
+		finalization.State != SessionFinalizationPending || !finalization.UpdatedAt.Equal(acceptedAt) {
+		t.Fatalf("schema-9 finalization=%+v", finalization)
+	}
 	path := filepath.Join(root, "state", "orchestration.json")
 	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)
@@ -152,7 +210,7 @@ func TestOrchestrationSchemaV9RetiresTerminalWorkPendingSubmission(t *testing.T)
 	}
 	retired, found, err := migratedStore.TurnSubmission(sessionID, turnID)
 	if err != nil || !found || retired.State != watcher.TurnSubmissionRetired {
-		t.Fatalf("persisted schema-10 retirement=%+v found=%v err=%v", retired, found, err)
+		t.Fatalf("persisted schema-11 retirement=%+v found=%v err=%v", retired, found, err)
 	}
 	if _, err := migratedStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
 		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
@@ -173,17 +231,118 @@ func TestOrchestrationSchemaV9RetiresTerminalWorkPendingSubmission(t *testing.T)
 		t.Fatal(err)
 	}
 	if !bytes.Equal(first, second) {
-		t.Fatalf("schema-10 reopen replayed migration:\nfirst:\n%s\nsecond:\n%s", first, second)
+		t.Fatalf("schema-11 reopen replayed migration:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 }
 
-func TestOrchestrationSchemaV10RejectsTerminalWorkPendingSubmission(t *testing.T) {
+func TestOrchestrationSchemaV9PreservesExistingFinalizationOutcome(t *testing.T) {
+	acceptedAt := time.Date(2026, 8, 11, 2, 0, 0, 0, time.UTC)
+	workID := "work-schema-9-preserved-finalization"
+	sessionID := "brain-agent-schema-9-preserved:@1"
+	turnID := "turn:schema-9-preserved"
+	preserved := SessionFinalization{
+		SessionID: sessionID, Delegated: true, State: SessionFinalizationFailed,
+		Attempts: 3, LastError: "provider teardown needs exact retry", UpdatedAt: acceptedAt.Add(time.Minute),
+	}
+	record := orchestrationDatabaseRecord{
+		SchemaVersion: 9, BrainInputAdmissions: []BrainInputAdmission{},
+		BrainWork: []workRecord{{
+			ID: workID, Revision: 4, Title: "terminal Work with retry outcome", Objective: "preserve exact teardown state",
+			Status: WorkDone, SourceThreadID: "brain-thread-schema-9-preserved", CompletionPolicy: CompletionBounded,
+			SessionFinalizations: []SessionFinalization{preserved},
+			CreatedAt:            acceptedAt.Add(-time.Hour), UpdatedAt: acceptedAt,
+		}},
+		BrainWorkEvents: []WorkEvent{}, BrainTurns: []TurnRecord{},
+		BrainTurnSubmissions: []TurnSubmissionRecord{{
+			SessionID: sessionID, ProposedTurnID: turnID, WorkID: workID, Receipt: turnID,
+			PayloadSHA256: strings.Repeat("8", 64), ProcessIdentity: "preserved-process",
+			PaneGeneration: "preserved-generation", AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+			State: watcher.TurnSubmissionPending, CreatedAt: acceptedAt.Add(-time.Second),
+		}},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil || !migrated {
+		t.Fatalf("schema-9 preserved decode migrated=%v database=%+v err=%v", migrated, database, err)
+	}
+	if len(database.BrainTurnSubmissions) != 1 || database.BrainTurnSubmissions[0].State != watcher.TurnSubmissionRetired {
+		t.Fatalf("schema-9 preserved retirement=%+v", database.BrainTurnSubmissions)
+	}
+	if len(database.BrainWork) != 1 || len(database.BrainWork[0].SessionFinalizations) != 1 ||
+		!reflect.DeepEqual(database.BrainWork[0].SessionFinalizations[0], preserved) {
+		t.Fatalf("schema-9 existing finalization changed: got=%+v want=%+v", database.BrainWork[0].SessionFinalizations, preserved)
+	}
+}
+
+func TestOrchestrationSchemaV10MigratesImmutableTerminalRevisionFence(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	terminalAt := time.Date(2026, 8, 11, 2, 30, 0, 0, time.UTC)
+	workID := "work-schema-10-terminal-revision"
+	currentEventID := "event-schema-10-current"
+	historicalEventID := "event-schema-10-historical"
+	record := orchestrationDatabaseRecord{
+		SchemaVersion: 10, BrainInputAdmissions: []BrainInputAdmission{},
+		BrainWork: []workRecord{{
+			ID: workID, Revision: 5, Title: "terminal revision migration", Objective: "freeze exact causality",
+			Status: WorkDone, SourceThreadID: "brain-thread-schema-10", CompletionPolicy: CompletionBounded,
+			CreatedAt: terminalAt.Add(-time.Hour), UpdatedAt: terminalAt,
+		}},
+		BrainWorkEvents: []WorkEvent{
+			{
+				ID: historicalEventID, WorkID: workID, Kind: "calendar.result", DedupeKey: "schema-10-historical",
+				Actionable: true, CreatedAt: terminalAt.Add(-time.Second), Sequence: 1, WorkRevision: 2,
+			},
+			{
+				ID: currentEventID, WorkID: workID, Kind: "calendar.result", DedupeKey: "schema-10-current",
+				Actionable: true, CreatedAt: terminalAt, Sequence: 2, WorkRevision: 3,
+			},
+		},
+		BrainTurns: []TurnRecord{}, BrainTurnSubmissions: []TurnSubmissionRecord{},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil || !migrated || len(database.BrainWork) != 1 || database.BrainWork[0].TerminalRevision != 3 {
+		t.Fatalf("schema-10 terminal fence migrated=%v database=%+v err=%v", migrated, database, err)
+	}
+	if attentionEventCanObligate(database, database.BrainWorkEvents[0]) ||
+		!attentionEventCanObligate(database, database.BrainWorkEvents[1]) {
+		t.Fatalf("schema-10 terminal eligibility=%+v", database.BrainWorkEvents)
+	}
+	path := filepath.Join(root, "state", "orchestration.json")
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "metadata changed after terminal result"
+	updated, err := store.UpdateWork(workID, WorkUpdate{Title: &title})
+	if err != nil || updated.TerminalRevision != 3 || updated.Revision != 6 {
+		t.Fatalf("terminal metadata update=%+v err=%v", updated, err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@schema-10")
+	if err != nil || !ok || claimed.ID != currentEventID {
+		t.Fatalf("metadata update invalidated terminal Event: claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+}
+
+func TestOrchestrationSchemaV11RejectsTerminalWorkPendingSubmission(t *testing.T) {
 	at := time.Date(2026, 8, 11, 4, 15, 0, 0, time.UTC)
 	record := orchestrationDatabaseRecord{
 		SchemaVersion:        orchestrationSchemaVersion,
 		BrainInputAdmissions: []BrainInputAdmission{},
 		BrainWork: []workRecord{{
-			ID: "work-invalid-terminal-pending", Revision: 1, Title: "invalid terminal Work",
+			ID: "work-invalid-terminal-pending", Revision: 1, TerminalRevision: 1, Title: "invalid terminal Work",
 			Objective: "reject current-schema corruption", Status: WorkCancelled,
 			SourceThreadID: "brain-thread-invalid", CompletionPolicy: CompletionBounded,
 			CreatedAt: at.Add(-time.Hour), UpdatedAt: at,
@@ -751,6 +910,12 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	}
 	now = base.Add(3*time.Hour + 34*time.Minute)
 	status := WorkDone
+	if _, err := store.UpdateWork(terminal.ID, WorkUpdate{Status: &status}); !errors.Is(err, ErrWorkConflict) {
+		t.Fatalf("terminal update bypassed held Host claim: %v", err)
+	}
+	if err := store.DiscardClaim(claimed.ID, "test", "explicitly retire the undelivered historical claim"); err != nil {
+		t.Fatal(err)
+	}
 	terminal, err = store.UpdateWork(terminal.ID, WorkUpdate{Status: &status})
 	if err != nil {
 		t.Fatal(err)
@@ -940,8 +1105,10 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(terminalEvents) != 1 || terminalEvents[0].ID != terminalEvent.ID ||
-		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil {
+	if len(terminalEvents) != 2 || terminalEvents[0].ID != terminalEvent.ID ||
+		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil ||
+		terminalEvents[0].Resolution != EventResolutionDiscard || terminalEvents[0].DiscardedAt == nil ||
+		terminalEvents[1].Kind != "brain.reconcile_required" || terminalEvents[1].ClaimedAt != nil {
 		t.Fatalf("terminal Event history changed: %#v", terminalEvents)
 	}
 	projected, err := store.ActiveWork()
@@ -957,7 +1124,11 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 {
+		wantEvents := 1
+		if item.ID == terminal.ID {
+			wantEvents = 2
+		}
+		if len(events) != wantEvents {
 			t.Fatalf("terminal Work Event history changed: work=%s events=%#v", item.ID, events)
 		}
 		if !projectedByID[item.ID].UnreadResult {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -807,6 +808,9 @@ func (s *Store) RecordInitialSubmissionNotAdmitted(
 	}
 	item.UpdatedAt = now
 	item.Revision++
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		item.TerminalRevision = item.Revision
+	}
 	database.BrainWork[itemIndex] = item
 
 	dedupeKey := "brain:submission-abort:" + proposedTurnID
@@ -2663,16 +2667,49 @@ func retirePendingDelegatedSubmissionsForWork(database *orchestrationDatabase, w
 }
 
 // retirePendingDelegatedSubmissionsForTerminalWork is the deterministic
-// schema-10 upgrade. Work.UpdatedAt is durable and supplies the migration
-// clock; the per-row helper clamps it to AcceptedAt. Current-schema documents
-// are never repaired on read: validation rejects future invariant violations.
+// schema-10/11 upgrade. Before authority is retired, every exact delegated
+// Session receives one pending teardown obligation unless an older outcome
+// already exists. Work.UpdatedAt is durable and supplies the migration clock;
+// each finalization/retirement timestamp is clamped to AcceptedAt. Existing
+// failed, complete, skipped, and pending outcomes are preserved without reset.
+// Current-schema documents are never repaired on read: validation rejects
+// future invariant violations.
 func retirePendingDelegatedSubmissionsForTerminalWork(database *orchestrationDatabase) int {
 	if database == nil {
 		return 0
 	}
 	retired := 0
-	for _, item := range database.BrainWork {
+	for workIndex := range database.BrainWork {
+		item := &database.BrainWork[workIndex]
 		if item.Status == WorkDone || item.Status == WorkCancelled {
+			existing := make(map[string]struct{}, len(item.SessionFinalizations))
+			for _, finalization := range item.SessionFinalizations {
+				existing[finalization.SessionID] = struct{}{}
+			}
+			for _, submission := range database.BrainTurnSubmissions {
+				if submission.WorkID != item.ID || submission.State != watcher.TurnSubmissionPending ||
+					strings.TrimSpace(submission.ClaimToken) != "" {
+					continue
+				}
+				sessionID := strings.TrimSpace(submission.SessionID)
+				if sessionID == "" {
+					continue
+				}
+				if _, found := existing[sessionID]; found {
+					continue
+				}
+				updatedAt := item.UpdatedAt.UTC()
+				if updatedAt.Before(submission.AcceptedAt.UTC()) {
+					updatedAt = submission.AcceptedAt.UTC()
+				}
+				item.SessionFinalizations = append(item.SessionFinalizations, SessionFinalization{
+					SessionID: sessionID, Delegated: true, State: SessionFinalizationPending, UpdatedAt: updatedAt,
+				})
+				existing[sessionID] = struct{}{}
+			}
+			sort.SliceStable(item.SessionFinalizations, func(left, right int) bool {
+				return item.SessionFinalizations[left].SessionID < item.SessionFinalizations[right].SessionID
+			})
 			retired += retirePendingDelegatedSubmissionsForWork(database, item.ID, item.UpdatedAt)
 		}
 	}

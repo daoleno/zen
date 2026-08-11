@@ -151,6 +151,34 @@ func TestCloseWorkRejectsClaimedAndRetiresProviderPendingAuthority(t *testing.T)
 		}
 	})
 
+	t.Run("delivered Host handling", func(t *testing.T) {
+		store, _, claimed := claimResolutionStore(t)
+		delivered := admitAndConsumeHostClaim(t, store, claimed)
+		item, err := store.Work(delivered.WorkID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.CloseWork(WorkCloseRequest{
+			WorkID: item.ID, ExpectedRevision: item.Revision, Status: WorkCancelled,
+			Actor: "brain", Reason: "must not bypass admitted Host handling",
+		})
+		if !errors.Is(err, ErrWorkCloseConflict) {
+			t.Fatalf("delivered close err=%v want ErrWorkCloseConflict", err)
+		}
+		row, found, lookupErr := store.WorkEvent(delivered.ID)
+		if lookupErr != nil || !found || row.DeliveredAt == nil || row.HandlingEndedAt != nil || row.HandledAt != nil {
+			t.Fatalf("handling mutated on rejected close: row=%+v found=%v err=%v", row, found, lookupErr)
+		}
+		resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+			Summary: "exact Host handling remains authoritative",
+		})
+		if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone {
+			t.Fatalf("exact disposition after rejected close: event=%+v Work=%+v err=%v", resolved, terminal, err)
+		}
+	})
+
 	t.Run("pending provider submission", func(t *testing.T) {
 		store, err := NewStore(t.TempDir())
 		if err != nil {
@@ -212,6 +240,135 @@ func TestCloseWorkRejectsClaimedAndRetiresProviderPendingAuthority(t *testing.T)
 			t.Fatalf("reopened retirement=%+v found=%v err=%v", stable, found, err)
 		}
 	})
+}
+
+func TestUpdateWorkTerminalTransitionRejectsActiveHostLane(t *testing.T) {
+	t.Run("claimed", func(t *testing.T) {
+		store, workID, claimed := claimResolutionStore(t)
+		before, err := store.Work(workID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := WorkDone
+		if _, err := store.UpdateWork(workID, WorkUpdate{Status: &done}); !errors.Is(err, ErrWorkConflict) {
+			t.Fatalf("terminal update err=%v want ErrWorkConflict", err)
+		}
+		after, err := store.Work(workID)
+		if err != nil || after.Status != before.Status || after.Revision != before.Revision {
+			t.Fatalf("rejected update changed Work: before=%+v after=%+v err=%v", before, after, err)
+		}
+		row, found, err := store.WorkEvent(claimed.ID)
+		if err != nil || !found || row.ClaimedAt == nil || row.DeliveredAt != nil || row.Resolution != "" {
+			t.Fatalf("rejected update changed claim: row=%+v found=%v err=%v", row, found, err)
+		}
+		delivered := admitAndConsumeHostClaim(t, store, claimed)
+		resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+			Summary: "claim kept its exact revision authority",
+		})
+		if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone {
+			t.Fatalf("exact disposition after rejected update: event=%+v Work=%+v err=%v", resolved, terminal, err)
+		}
+	})
+
+	t.Run("delivered", func(t *testing.T) {
+		store, workID, claimed := claimResolutionStore(t)
+		delivered := admitAndConsumeHostClaim(t, store, claimed)
+		before, err := store.Work(workID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancelled := WorkCancelled
+		if _, err := store.UpdateWork(workID, WorkUpdate{Status: &cancelled}); !errors.Is(err, ErrWorkConflict) {
+			t.Fatalf("terminal update err=%v want ErrWorkConflict", err)
+		}
+		after, err := store.Work(workID)
+		if err != nil || after.Status != before.Status || after.Revision != before.Revision {
+			t.Fatalf("rejected update changed Work: before=%+v after=%+v err=%v", before, after, err)
+		}
+		row, found, err := store.WorkEvent(delivered.ID)
+		if err != nil || !found || row.DeliveredAt == nil || row.HandlingEndedAt != nil || row.HandledAt != nil {
+			t.Fatalf("rejected update changed handling: row=%+v found=%v err=%v", row, found, err)
+		}
+		resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionCancel,
+			Summary: "delivered handling kept its exact revision authority",
+		})
+		if err != nil || resolved.HandledAt == nil || terminal.Status != WorkCancelled {
+			t.Fatalf("exact disposition after rejected update: event=%+v Work=%+v err=%v", resolved, terminal, err)
+		}
+	})
+}
+
+func TestTerminalWorkPermitsExactHostClaimTransaction(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	store.mu.Lock()
+	database, err := store.loadOrchestrationLocked()
+	if err == nil {
+		index := workIndex(database.BrainWork, workID)
+		if index < 0 {
+			err = ErrWorkNotFound
+		} else {
+			database.BrainWork[index].Status = WorkDone
+			database.BrainWork[index].TerminalRevision = database.BrainWork[index].Revision
+			database.BrainWork[index].Wake = nil
+			database.BrainWork[index].WaitFor = ""
+			database.BrainWork[index].NextAction = ""
+			err = store.persistOrchestrationLocked(database)
+		}
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delivered := admitAndConsumeHostClaim(t, store, claimed)
+	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+		Summary: "terminal finalization retry was handled exactly once",
+	})
+	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone || terminal.Revision != claimed.DeliveryWorkRevision+1 {
+		t.Fatalf("terminal Host transaction: event=%+v Work=%+v err=%v", resolved, terminal, err)
+	}
+	hostSubmission, found, err := store.TurnSubmission(claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	if err != nil || !found || hostSubmission.State != watcher.TurnSubmissionResolved {
+		t.Fatalf("terminal Host submission=%+v found=%v err=%v", hostSubmission, found, err)
+	}
+}
+
+func admitAndConsumeHostClaim(t *testing.T, store *Store, claimed WorkEvent) WorkEvent {
+	t.Helper()
+	acceptedAt := claimed.ClaimedAt.UTC()
+	digest := strings.Repeat("6", 64)
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ID, ClaimToken: claimed.HandlingID,
+		PayloadSHA256: digest, ProcessIdentity: "host-lane-process", PaneGeneration: "host-lane-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	}); err != nil || !created {
+		t.Fatalf("prepare Host claim created=%v err=%v", created, err)
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
+		Receipt: claimed.ID, PayloadSHA256: digest, ActivityID: "host-lane-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "host-lane-admission", Cursor: 1, SHA256: digest, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, _, err := store.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return delivered
 }
 
 func TestCloseWorkPersistenceFailureExposesNoPartialTerminalState(t *testing.T) {
