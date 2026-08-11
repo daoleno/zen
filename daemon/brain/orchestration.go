@@ -61,8 +61,10 @@ type WorkWake struct {
 type BrainInputAdmissionState string
 
 const (
-	BrainInputAdmissionPending  BrainInputAdmissionState = "pending"
-	BrainInputAdmissionAccepted BrainInputAdmissionState = "accepted"
+	BrainInputAdmissionPending      BrainInputAdmissionState = "pending"
+	BrainInputAdmissionAccepted     BrainInputAdmissionState = "accepted"
+	BrainInputAdmissionNotSubmitted BrainInputAdmissionState = "not_submitted"
+	BrainInputAdmissionUncertain    BrainInputAdmissionState = "uncertain"
 )
 
 // BrainInputAdmission is the restart-enumerable authority for one foreground
@@ -82,6 +84,7 @@ type BrainInputAdmission struct {
 	State              BrainInputAdmissionState `json:"state"`
 	CreatedAt          time.Time                `json:"created_at"`
 	AcceptedAt         *time.Time               `json:"accepted_at,omitempty"`
+	SettledAt          *time.Time               `json:"settled_at,omitempty"`
 }
 
 // HostForegroundTurn is the durable admission epoch for one foreground Brain
@@ -938,12 +941,16 @@ func validateBrainInputAdmissions(admissions []BrainInputAdmission) error {
 		}
 		switch admission.State {
 		case BrainInputAdmissionPending:
-			if admission.AcceptedAt != nil {
-				return fmt.Errorf("brain_input_admissions[%d]: pending admission cannot have accepted_at", index)
+			if admission.AcceptedAt != nil || admission.SettledAt != nil {
+				return fmt.Errorf("brain_input_admissions[%d]: pending admission cannot be settled", index)
 			}
 		case BrainInputAdmissionAccepted:
-			if admission.AcceptedAt == nil || admission.AcceptedAt.IsZero() {
+			if admission.AcceptedAt == nil || admission.AcceptedAt.IsZero() || admission.SettledAt != nil {
 				return fmt.Errorf("brain_input_admissions[%d]: accepted admission requires accepted_at", index)
+			}
+		case BrainInputAdmissionNotSubmitted, BrainInputAdmissionUncertain:
+			if admission.AcceptedAt != nil || admission.SettledAt == nil || admission.SettledAt.IsZero() {
+				return fmt.Errorf("brain_input_admissions[%d]: terminal admission requires settled_at without accepted_at", index)
 			}
 		default:
 			return fmt.Errorf("brain_input_admissions[%d]: invalid state %q", index, admission.State)
@@ -2469,6 +2476,7 @@ func normalizeBrainInputAdmission(admission BrainInputAdmission, now time.Time) 
 	admission.BodySHA256 = AdmissionDigest(admission.DisplayBody)
 	admission.State = BrainInputAdmissionPending
 	admission.AcceptedAt = nil
+	admission.SettledAt = nil
 	if admission.CreatedAt.IsZero() {
 		admission.CreatedAt = now.UTC()
 	} else {
@@ -2504,10 +2512,14 @@ func samePersistedBrainInputAdmission(left, right BrainInputAdmission) bool {
 		!left.CreatedAt.Equal(right.CreatedAt) {
 		return false
 	}
-	if left.AcceptedAt == nil || right.AcceptedAt == nil {
-		return left.AcceptedAt == nil && right.AcceptedAt == nil
+	if (left.AcceptedAt == nil) != (right.AcceptedAt == nil) ||
+		(left.SettledAt == nil) != (right.SettledAt == nil) {
+		return false
 	}
-	return left.AcceptedAt.Equal(*right.AcceptedAt)
+	if left.AcceptedAt != nil && !left.AcceptedAt.Equal(*right.AcceptedAt) {
+		return false
+	}
+	return left.SettledAt == nil || left.SettledAt.Equal(*right.SettledAt)
 }
 
 func samePreparedBrainInputAdmission(left, right BrainInputAdmission) bool {
@@ -2580,12 +2592,17 @@ func (s *Store) AcceptBrainInputAdmission(candidate BrainInputAdmission) (BrainI
 		existing := database.BrainInputAdmissions[index]
 		s.mu.Unlock()
 		return existing, nil, false, nil
+	} else if database.BrainInputAdmissions[index].State != BrainInputAdmissionPending {
+		existing := database.BrainInputAdmissions[index]
+		s.mu.Unlock()
+		return BrainInputAdmission{}, nil, false, fmt.Errorf("Brain input admission is terminal with state %q", existing.State)
 	}
 	acceptedAt := now.UTC()
 	prepared := database.BrainInputAdmissions[index]
 	candidate.CreatedAt = prepared.CreatedAt
 	candidate.State = BrainInputAdmissionAccepted
 	candidate.AcceptedAt = &acceptedAt
+	candidate.SettledAt = nil
 	if candidate.HostGeneration != "" {
 		turnID := prepared.HostTurnID
 		if active := database.HostForegroundTurn; active != nil {
@@ -2634,8 +2651,9 @@ func (s *Store) AcceptBrainInputAdmission(candidate BrainInputAdmission) (BrainI
 	return candidate, woken, true, nil
 }
 
-// AbortBrainInputAdmission removes only a pending intent after the provider
-// owner proved mutation did not begin. Accepted admission is monotonic.
+// AbortBrainInputAdmission terminalizes only a pending intent after the
+// provider owner proved mutation did not begin. Terminal admission identity is
+// retained so a duplicate request cannot cross the mutation boundary again.
 func (s *Store) AbortBrainInputAdmission(requestID, threadID string) error {
 	requestID = strings.TrimSpace(requestID)
 	threadID = strings.TrimSpace(threadID)
@@ -2655,8 +2673,134 @@ func (s *Store) AbortBrainInputAdmission(requestID, threadID string) error {
 	if database.BrainInputAdmissions[index].State == BrainInputAdmissionAccepted {
 		return fmt.Errorf("accepted Brain input admission cannot be aborted")
 	}
-	database.BrainInputAdmissions = append(database.BrainInputAdmissions[:index], database.BrainInputAdmissions[index+1:]...)
+	if database.BrainInputAdmissions[index].State != BrainInputAdmissionPending {
+		return nil
+	}
+	settledAt := s.nowUTC()
+	database.BrainInputAdmissions[index].State = BrainInputAdmissionNotSubmitted
+	database.BrainInputAdmissions[index].SettledAt = &settledAt
 	return s.persistOrchestrationLocked(database)
+}
+
+// PendingBrainInputAdmissions returns the durable user-input intents whose
+// provider mutation outcome still needs exact receipt reconciliation.
+func (s *Store) PendingBrainInputAdmissions() ([]BrainInputAdmission, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BrainInputAdmission, 0)
+	for _, admission := range database.BrainInputAdmissions {
+		if admission.State == BrainInputAdmissionPending {
+			out = append(out, admission)
+		}
+	}
+	return out, nil
+}
+
+// SettleBrainInputAdmission applies one exact terminal receipt outcome. Only a
+// pending row may move; accepted/not_submitted/uncertain are monotonic. When an
+// old Host identity is already superseded, accepted evidence remains history
+// and does not recreate its foreground gate.
+func (s *Store) SettleBrainInputAdmission(
+	requestID, threadID string,
+	state BrainInputAdmissionState,
+	createForeground bool,
+) (BrainInputAdmission, bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	threadID = strings.TrimSpace(threadID)
+	if requestID == "" || threadID == "" {
+		return BrainInputAdmission{}, false, fmt.Errorf("Brain input admission request and thread are required")
+	}
+	if state != BrainInputAdmissionAccepted && state != BrainInputAdmissionNotSubmitted && state != BrainInputAdmissionUncertain {
+		return BrainInputAdmission{}, false, fmt.Errorf("invalid Brain input settlement %q", state)
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, false, err
+	}
+	index := brainInputAdmissionIndex(database.BrainInputAdmissions, requestID, threadID)
+	if index < 0 {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, false, nil
+	}
+	admission := database.BrainInputAdmissions[index]
+	if admission.State != BrainInputAdmissionPending {
+		s.mu.Unlock()
+		return admission, false, nil
+	}
+	changedWorkIDs := []string{}
+	if state == BrainInputAdmissionAccepted {
+		acceptedAt := now.UTC()
+		admission.State = state
+		admission.AcceptedAt = &acceptedAt
+		admission.SettledAt = nil
+		if createForeground && admission.HostGeneration != "" {
+			if active := database.HostForegroundTurn; active != nil {
+				if active.HostSessionID != admission.HostSessionID || active.HostGeneration != admission.HostGeneration {
+					s.mu.Unlock()
+					return BrainInputAdmission{}, false, fmt.Errorf("foreground Host generation changed before recovered input acceptance")
+				}
+				admission.HostTurnID = active.HostTurnID
+			} else {
+				database.HostForegroundTurn = &HostForegroundTurn{
+					HostSessionID:      admission.HostSessionID,
+					HostGeneration:     admission.HostGeneration,
+					HostTurnID:         admission.HostTurnID,
+					ProviderActivityID: admission.ProviderActivityID,
+					StartedAt:          acceptedAt,
+				}
+			}
+		}
+		_, changedWorkIDs, err = wakeWaitingWorkLocked(
+			&database,
+			WorkWake{Kind: WorkWakeUserInput, Ref: "brain-thread:" + admission.ThreadID},
+			"user.input",
+			admission.RequestID,
+			"User input arrived on the waiting Brain thread.",
+			now,
+		)
+		if err != nil {
+			s.mu.Unlock()
+			return BrainInputAdmission{}, false, err
+		}
+	} else {
+		settledAt := now.UTC()
+		admission.State = state
+		admission.AcceptedAt = nil
+		admission.SettledAt = &settledAt
+		if state == BrainInputAdmissionUncertain {
+			_, err = s.appendTimelineItemLocked(TimelineItem{
+				ID:        "brain-input-uncertain:" + admission.RequestID,
+				ThreadID:  admission.ThreadID,
+				SessionID: admission.SessionID,
+				Role:      "assistant",
+				Kind:      timelineKindAssistantMessage,
+				Title:     "Input delivery uncertain",
+				Body:      "Zen could not prove whether this message reached the previous Host. It was not replayed automatically.",
+				CreatedAt: settledAt,
+			})
+			if err != nil {
+				s.mu.Unlock()
+				return BrainInputAdmission{}, false, err
+			}
+		}
+	}
+	database.BrainInputAdmissions[index] = admission
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		s.mu.Unlock()
+		return BrainInputAdmission{}, false, err
+	}
+	s.mu.Unlock()
+	for _, workID := range changedWorkIDs {
+		s.broadcastWorkChange(workID)
+	}
+	return admission, true, nil
 }
 
 func (s *Store) BrainInputAdmission(requestID, threadID string) (BrainInputAdmission, bool, error) {

@@ -171,7 +171,8 @@ func TestInboundSendInputProjectsAmbiguousOutcomeAsPending(t *testing.T) {
 	})
 	if response.Type != "input_pending" ||
 		response.RequestID != "request-durable-pending" ||
-		response.FieldCount != 2 {
+		response.Code != "input_uncertain" ||
+		response.FieldCount != 4 {
 		t.Fatalf("pending response = %#v", response)
 	}
 	if got := calls.Load(); got != 1 {
@@ -261,14 +262,15 @@ func TestBrainAdmissionProvedNonSubmissionAbortsIntent(t *testing.T) {
 		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "do not submit",
 		ConversationScopeKey: "brain-thread:" + threadID,
 	})
-	if response.Type != "input_failed" || response.Code != "send_input_failed" {
+	if response.Type != "input_failed" || response.Code != "input_not_submitted" {
 		t.Fatalf("not-submitted response=%#v", response)
 	}
 	if providerCalls.Load() != 1 {
 		t.Fatalf("provider calls=%d want 1", providerCalls.Load())
 	}
-	if admission, found, err := store.BrainInputAdmission(requestID, threadID); err != nil || found {
-		t.Fatalf("proved not-submitted intent found=%v admission=%+v err=%v", found, admission, err)
+	if admission, found, err := store.BrainInputAdmission(requestID, threadID); err != nil || !found ||
+		admission.State != brain.BrainInputAdmissionNotSubmitted || admission.SettledAt == nil {
+		t.Fatalf("proved not-submitted terminal identity found=%v admission=%+v err=%v", found, admission, err)
 	}
 }
 
@@ -480,7 +482,7 @@ func TestBrainAdmissionAmbiguousAndAcceptedDuplicatesNeverReplayProviderInput(t 
 		wantState    brain.BrainInputAdmissionState
 	}{
 		{
-			name: "ambiguous pending", wantResponse: "input_pending", wantState: brain.BrainInputAdmissionPending,
+			name: "ambiguous terminal", wantResponse: "input_pending", wantState: brain.BrainInputAdmissionUncertain,
 			providerErr: &watcher.InputSubmissionError{
 				Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
 				Cause:  errors.New("provider acceptance unknown"),

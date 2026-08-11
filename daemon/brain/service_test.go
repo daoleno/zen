@@ -510,6 +510,230 @@ func (w *fakeWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGen
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
 }
 
+func TestHostInputAdmissionLiveCriticalSectionAndRestartSettlement(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID    = "brain-host:@input-critical-section"
+		threadID  = "thread-input-critical-section"
+		requestID = "request-input-critical-section"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "host-generation-one"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	prepared, created, err := service.PrepareHostUserInput(
+		hostID, requestID, "do not race the provider call", "brain-thread:"+threadID,
+	)
+	if err != nil || !created || prepared.State != BrainInputAdmissionPending {
+		t.Fatalf("prepare created=%v admission=%+v err=%v", created, prepared, err)
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("live in-flight reconcile woke=%v err=%v", woke, err)
+	}
+	if current, found, err := store.BrainInputAdmission(requestID, threadID); err != nil ||
+		!found || current.State != BrainInputAdmissionPending {
+		t.Fatalf("live attempt was prematurely settled: found=%v admission=%+v err=%v", found, current, err)
+	}
+
+	// A process restart erases only the critical-section marker. The durable
+	// intent and exact preserved generation remain, so an absent receipt proves
+	// non-submission and terminalizes the request without provider replay.
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = reopened
+	if woke, err := NewService(reopened, fw, nil).ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("restart settlement woke=%v err=%v", woke, err)
+	}
+	settled, found, err := reopened.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || settled.State != BrainInputAdmissionNotSubmitted || settled.SettledAt == nil {
+		t.Fatalf("restart settlement found=%v admission=%+v err=%v", found, settled, err)
+	}
+
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = reopenedAgain
+	if woke, err := NewService(reopenedAgain, fw, nil).ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("second restart woke=%v err=%v", woke, err)
+	}
+	duplicate, duplicateCreated, err := NewService(reopenedAgain, fw, nil).PrepareHostUserInput(
+		hostID, requestID, "do not race the provider call", "brain-thread:"+threadID,
+	)
+	if err != nil || duplicateCreated || duplicate.State != BrainInputAdmissionNotSubmitted {
+		t.Fatalf("terminal duplicate created=%v admission=%+v err=%v", duplicateCreated, duplicate, err)
+	}
+	if len(fw.sentCalls) != 0 {
+		t.Fatalf("restart settlement replayed provider input: %+v", fw.sentCalls)
+	}
+}
+
+func TestHostInputAdmissionRestartUsesExactAcceptedReceipt(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID    = "brain-host:@input-accepted"
+		threadID  = "thread-input-accepted"
+		requestID = "request-input-accepted"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "host-generation-accepted"},
+		outcomes:         map[string]watcher.InputOutcome{requestID: watcher.InputAccepted},
+	}
+	service := NewService(store, fw, nil)
+	if _, created, err := service.PrepareHostUserInput(
+		hostID, requestID, "accepted before process loss", "brain-thread:"+threadID,
+	); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = reopened
+	if woke, err := NewService(reopened, fw, nil).ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("accepted restart reconcile woke=%v err=%v", woke, err)
+	}
+	accepted, found, err := reopened.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || accepted.State != BrainInputAdmissionAccepted || accepted.AcceptedAt == nil {
+		t.Fatalf("accepted receipt found=%v admission=%+v err=%v", found, accepted, err)
+	}
+	active, err := reopened.CurrentHostForegroundTurn()
+	if err != nil || active == nil || active.HostTurnID != accepted.HostTurnID ||
+		active.HostGeneration != "host-generation-accepted" {
+		t.Fatalf("recovered foreground=%+v err=%v", active, err)
+	}
+	items, err := reopened.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].Body != "accepted before process loss" {
+		t.Fatalf("recovered timeline=%+v err=%v", items, err)
+	}
+
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = reopenedAgain
+	if woke, err := NewService(reopenedAgain, fw, nil).ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("accepted second restart woke=%v err=%v", woke, err)
+	}
+	items, err = reopenedAgain.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("accepted receipt replayed projection: items=%+v err=%v", items, err)
+	}
+	if len(fw.sentCalls) != 0 {
+		t.Fatalf("accepted receipt was replayed to provider: %+v", fw.sentCalls)
+	}
+}
+
+func TestHostInputAdmissionReplacementBecomesUncertainAndFreesLane(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID    = "brain-host:@input-replaced"
+		threadID  = "thread-input-replaced"
+		requestID = "request-input-replaced"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "host-generation-old"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	if _, created, err := service.PrepareHostUserInput(
+		hostID, requestID, "outcome lost with old pane", "brain-thread:"+threadID,
+	); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Unrelated ready Work", Objective: "Dispatch after the stale input gate converges.",
+		Status: WorkWaiting, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "review.changed", DedupeKey: "replaced-input:unrelated", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append Event created=%v err=%v", created, err)
+	}
+	fw.ownedGenerations[hostID] = "host-generation-replacement"
+	recovered, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = recovered
+	if woke, err := NewService(recovered, fw, nil).ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("replacement convergence woke=%v err=%v", woke, err)
+	}
+	settled, found, err := recovered.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || settled.State != BrainInputAdmissionUncertain || settled.SettledAt == nil {
+		t.Fatalf("uncertain settlement found=%v admission=%+v err=%v", found, settled, err)
+	}
+	events, err := recovered.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil {
+		t.Fatalf("unrelated Event did not dispatch: events=%+v err=%v", events, err)
+	}
+	items, err := recovered.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != "brain-input-uncertain:"+requestID {
+		t.Fatalf("uncertain diagnostic=%+v err=%v", items, err)
+	}
+
+	reopened, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.turnStore = reopened
+	if woke, err := NewService(reopened, fw, nil).ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("uncertain reopen woke=%v err=%v", woke, err)
+	}
+	items, err = reopened.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("uncertain diagnostic replayed: items=%+v err=%v", items, err)
+	}
+}
+
 func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

@@ -61,6 +61,10 @@ type Service struct {
 	now     func() time.Time
 
 	dispatchMu sync.Mutex
+	// inFlightHostInputs protects only the live Prepare -> provider mutation ->
+	// Admit/Abort critical section. It is deliberately process-local: durable
+	// BrainInputAdmission + watcher receipt state remain the restart authority.
+	inFlightHostInputs map[string]struct{}
 
 	reconcileMu sync.Mutex
 
@@ -314,10 +318,11 @@ func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionL
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
 	return &Service{
-		store:   store,
-		watcher: watcher,
-		execs:   execs,
-		now:     time.Now,
+		store:              store,
+		watcher:            watcher,
+		execs:              execs,
+		now:                time.Now,
+		inFlightHostInputs: map[string]struct{}{},
 	}
 }
 
@@ -1038,6 +1043,7 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 // action entirely from persisted state and current strong evidence:
 //
 //  1. reconcile every existing delivery receipt (exact-once submission ledger)
+//     and every prepared Brain input against its exact request receipt
 //  2. one delivered Event awaiting its typed disposition: stop
 //  3. pending Brain user admission: stop (durable user-steering gate)
 //  4. a Host foreground turn: stop unless strong exact terminal evidence
@@ -1075,6 +1081,9 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 		return false, err
 	}
 	hostID := strings.TrimSpace(hostSession.ID)
+	if err := s.reconcileBrainInputAdmissionsLocked(hostID); err != nil {
+		return false, err
+	}
 	if hostID == "" || !s.watcher.HasSession(hostID) {
 		return false, nil
 	}
@@ -1177,6 +1186,66 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 		return false, err
 	}
 	return s.deliverClaimedEventLocked(event)
+}
+
+// reconcileBrainInputAdmissionsLocked terminalizes every prepared user input
+// from exact receipt authority before the lane consults its steering gate. The
+// caller holds dispatchMu; no Store mutex is held across watcher probes.
+func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) error {
+	pending, err := s.store.PendingBrainInputAdmissions()
+	if err != nil {
+		return err
+	}
+	for _, admission := range pending {
+		if _, active := s.inFlightHostInputs[hostInputAttemptKey(admission.RequestID, admission.ThreadID)]; active {
+			continue
+		}
+		state := BrainInputAdmissionUncertain
+		createForeground := false
+		admissionHostID := strings.TrimSpace(admission.HostSessionID)
+		if admissionHostID != "" && s.watcher.HasSession(admissionHostID) {
+			owned, ownershipErr := s.watcher.ResolveOwnedGeneration(admissionHostID)
+			identityPreserved := ownershipErr == nil &&
+				strings.TrimSpace(owned.Generation) != "" &&
+				strings.TrimSpace(owned.Generation) == strings.TrimSpace(admission.HostGeneration)
+			if identityPreserved {
+				result, found, receiptErr := s.watcher.InputReceiptResult(admissionHostID, admission.RequestID)
+				switch {
+				case receiptErr != nil:
+					state = BrainInputAdmissionUncertain
+				case found && result.Outcome == watcher.InputAccepted:
+					state = BrainInputAdmissionAccepted
+					createForeground = admissionHostID == strings.TrimSpace(currentHostID)
+				case found && result.Outcome == watcher.InputNotSubmitted:
+					state = BrainInputAdmissionNotSubmitted
+				case found:
+					state = BrainInputAdmissionUncertain
+				default:
+					// The request ledger is written before provider mutation.
+					// Absence is proof only while the exact pane generation is
+					// still preserved.
+					state = BrainInputAdmissionNotSubmitted
+				}
+			}
+		}
+		settled, changed, err := s.store.SettleBrainInputAdmission(
+			admission.RequestID,
+			admission.ThreadID,
+			state,
+			createForeground,
+		)
+		if err != nil {
+			return err
+		}
+		if changed && settled.State == BrainInputAdmissionAccepted {
+			if err := s.store.ProjectBrainInputAdmission(settled); err != nil {
+				// Projection is independently retryable and is not scheduler
+				// authority. Never re-block the lane after exact settlement.
+				log.Printf("brain recovered input projection failed for %s: %v", settled.RequestID, err)
+			}
+		}
+	}
+	return nil
 }
 
 // reconcileDeliveryReceiptsLocked is reducer step 1: every dispatching Event's
@@ -1788,16 +1857,46 @@ func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversati
 	if _, reconcileErr := s.reconcileHostLaneLocked(); reconcileErr != nil {
 		return admission, false, reconcileErr
 	}
-	return s.store.PrepareBrainInputAdmission(admission)
+	prepared, created, err := s.store.PrepareBrainInputAdmission(admission)
+	if err == nil && created {
+		s.inFlightHostInputs[hostInputAttemptKey(prepared.RequestID, prepared.ThreadID)] = struct{}{}
+	}
+	return prepared, created, err
 }
 
-// AbortHostUserInput removes only a pending intent after Session Input proves
-// no provider mutation began. Ambiguous outcomes deliberately retain it.
+// AbortHostUserInput terminalizes only a pending intent after Session Input
+// proves no provider mutation began, then immediately re-drives the lane.
 func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
-	return s.store.AbortBrainInputAdmission(requestID, threadID)
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	delete(s.inFlightHostInputs, hostInputAttemptKey(requestID, threadID))
+	if err := s.store.AbortBrainInputAdmission(requestID, threadID); err != nil {
+		return err
+	}
+	_, err := s.reconcileHostLaneLocked()
+	return err
+}
+
+// ReleaseHostUserInputAttempt ends the live mutation critical section when the
+// provider outcome is ambiguous. The reducer reads the exact durable receipt,
+// records uncertain without replay, and frees unrelated lane work.
+func (s *Service) ReleaseHostUserInputAttempt(requestID, threadID string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	delete(s.inFlightHostInputs, hostInputAttemptKey(requestID, threadID))
+	if _, _, err := s.store.SettleBrainInputAdmission(
+		requestID, threadID, BrainInputAdmissionUncertain, false,
+	); err != nil {
+		return err
+	}
+	_, err := s.reconcileHostLaneLocked()
+	return err
 }
 
 // AdmitHostUserInput makes provider acceptance and every matching user_input
@@ -1810,20 +1909,24 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
+	s.dispatchMu.Lock()
+	delete(s.inFlightHostInputs, hostInputAttemptKey(prepared.RequestID, prepared.ThreadID))
 	persisted, found, err := s.store.BrainInputAdmission(prepared.RequestID, prepared.ThreadID)
 	if err != nil {
+		s.dispatchMu.Unlock()
 		return err
 	}
 	if !found {
+		s.dispatchMu.Unlock()
 		return fmt.Errorf("Brain input admission must be prepared before provider acceptance")
 	}
 	if !samePreparedBrainInputAdmission(persisted, prepared) {
+		s.dispatchMu.Unlock()
 		return fmt.Errorf("Brain input admission identity changed after provider acceptance")
 	}
 	// Provider acceptance is durable before the lane runs; the accepted
 	// admission creates the foreground Host turn, which stops the reducer
 	// until strong exact terminal evidence closes it.
-	s.dispatchMu.Lock()
 	accepted, _, _, err := s.store.AcceptBrainInputAdmission(persisted)
 	if err != nil {
 		s.dispatchMu.Unlock()
@@ -1833,6 +1936,10 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 	s.dispatchMu.Unlock()
 	projectionErr := s.store.ProjectBrainInputAdmission(accepted)
 	return errors.Join(dispatchErr, projectionErr)
+}
+
+func hostInputAttemptKey(requestID, threadID string) string {
+	return strings.TrimSpace(requestID) + "\x00" + strings.TrimSpace(threadID)
 }
 
 func threadIDFromConversationScopeKey(scopeKey string) string {

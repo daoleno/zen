@@ -854,8 +854,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			}
 			brainAdmission = prepared
 			if !created {
-				// Pending is an ambiguous no-replay hold. Accepted is an
-				// idempotent duplicate that may still need timeline projection.
+				// Accepted is an idempotent duplicate that may still need
+				// timeline projection. Terminal non-admission states never cross
+				// the provider mutation boundary again.
 				s.brain.CancelUserSteering(raw.AgentID)
 				if prepared.State == brain.BrainInputAdmissionAccepted {
 					if admitErr := s.brain.AdmitHostUserInput(prepared); admitErr == nil {
@@ -863,16 +864,42 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 						break
 					}
 				}
+				if prepared.State == brain.BrainInputAdmissionNotSubmitted {
+					s.sendJSON(conn, map[string]any{
+						"type":       "input_failed",
+						"request_id": raw.RequestID,
+						"code":       "input_not_submitted",
+						"message":    "This request was not submitted. Retry with a new request id.",
+					})
+					break
+				}
+				if prepared.State == brain.BrainInputAdmissionUncertain {
+					s.sendJSON(conn, map[string]any{
+						"type":       "input_pending",
+						"request_id": raw.RequestID,
+						"code":       "input_uncertain",
+						"message":    "Delivery could not be proven and was not replayed.",
+					})
+					break
+				}
 				s.sendJSON(conn, map[string]any{"type": "input_pending", "request_id": raw.RequestID})
 				break
 			}
 		}
 		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
 		if err != nil {
-			if watcher.InputOutcomeFromError(err) == watcher.InputAmbiguous {
+			inputOutcome := watcher.InputOutcomeFromError(err)
+			if inputOutcome == watcher.InputAmbiguous {
+				if brainSteering {
+					if releaseErr := s.brain.ReleaseHostUserInputAttempt(brainAdmission.RequestID, brainAdmission.ThreadID); releaseErr != nil {
+						log.Printf("brain release ambiguous user input error: %v", releaseErr)
+					}
+				}
 				s.sendJSON(conn, map[string]any{
 					"type":       "input_pending",
 					"request_id": raw.RequestID,
+					"code":       "input_uncertain",
+					"message":    "Delivery could not be proven and was not replayed.",
 				})
 				break
 			}
@@ -886,6 +913,13 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 					break
 				}
 				s.brain.CancelUserSteering(raw.AgentID)
+				s.sendJSON(conn, map[string]any{
+					"type":       "input_failed",
+					"request_id": raw.RequestID,
+					"code":       "input_not_submitted",
+					"message":    "This request was not submitted. Retry with a new request id.",
+				})
+				break
 			}
 			log.Printf("send_input error: %v", err)
 			s.sendJSON(conn, map[string]any{
