@@ -438,9 +438,9 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
 	}
 	// The queued internal Event is delivered at the idle boundary before the
-	// user message, so the accepted lane is stopped by the delivered handling
-	// before any generation probe: both attempts acknowledge the user input
-	// without ever adopting the ambient G2 Activity.
+	// user message. The accepted G1 admission remains exact history, while the
+	// reducer retires its foreground gate once G2 is observed. Both attempts
+	// acknowledge without ever adopting an ambient G2 Activity for G1.
 	first := sendThinProxyRequest(t, conn, request)
 	if first.Type != "input_sent" || first.RequestID != requestID {
 		t.Fatalf("first response=%#v", first)
@@ -458,11 +458,8 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		t.Fatalf("accepted prepared admission found=%v row=%+v err=%v", found, admission, err)
 	}
 	active, err := store.CurrentHostForegroundTurn()
-	if err != nil || active == nil || active.HostGeneration != "host-generation-g1" {
-		t.Fatalf("prepared generation state active=%+v err=%v", active, err)
-	}
-	if active.ProviderActivityID != "" {
-		t.Fatalf("ambient G2 Activity was adopted: %+v", active)
+	if err != nil || active != nil {
+		t.Fatalf("superseded prepared generation remained active=%+v err=%v", active, err)
 	}
 	claims, err := store.ClaimedActionableEvents()
 	if err != nil || len(claims) != 0 {

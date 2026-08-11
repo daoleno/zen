@@ -1084,8 +1084,54 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if err := s.reconcileBrainInputAdmissionsLocked(hostID); err != nil {
 		return false, err
 	}
-	if hostID == "" || !s.watcher.HasSession(hostID) {
+	active, err := s.store.CurrentHostForegroundTurn()
+	if err != nil {
+		return false, err
+	}
+	if hostID == "" {
+		if active != nil {
+			if err := s.retireHostForegroundLocked(*active, hostID, "", "host_binding_removed"); err != nil {
+				return false, err
+			}
+		}
 		return false, nil
+	}
+	hostPresence, presenceErr := s.watcher.ProbeSession(hostID)
+	if presenceErr != nil || hostPresence == watcher.SessionPresenceUnknown {
+		if presenceErr == nil {
+			presenceErr = fmt.Errorf("Brain Host Session %s liveness is unknown", hostID)
+		}
+		return false, presenceErr
+	}
+	if hostPresence == watcher.SessionPresenceAbsent {
+		if active != nil {
+			if err := s.retireHostForegroundLocked(*active, hostID, "", "host_session_absent"); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+	if active != nil {
+		switch {
+		case active.HostSessionID != hostID:
+			if err := s.retireHostForegroundLocked(*active, hostID, "", "host_binding_replaced"); err != nil {
+				return false, err
+			}
+			active = nil
+		default:
+			currentGeneration, generationErr := s.hostOwnedGeneration(hostID)
+			if generationErr != nil {
+				return false, generationErr
+			}
+			if currentGeneration != active.HostGeneration {
+				if err := s.retireHostForegroundLocked(
+					*active, hostID, currentGeneration, "host_generation_replaced",
+				); err != nil {
+					return false, err
+				}
+				active = nil
+			}
+		}
 	}
 	// Step 2: one delivered Event awaits its typed disposition. The Host is
 	// mid-review; no new admission may overtake it.
@@ -1107,64 +1153,50 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	// authority; only the exact bound provider activity's terminal status (or
 	// the current observation's terminal status for an unbound turn) closes
 	// it. A running observation binds the durable activity identity once.
-	active, err := s.store.CurrentHostForegroundTurn()
-	if err != nil {
-		return false, err
-	}
 	if active != nil && active.HostSessionID == hostID {
 		generation := active.HostGeneration
-		currentGeneration, generationErr := s.hostOwnedGeneration(hostID)
-		if generationErr == nil && currentGeneration != generation {
-			generationErr = fmt.Errorf(
-				"foreground Host generation changed after accepted input: accepted %s, current %s",
-				generation,
-				currentGeneration,
-			)
-		}
 		activityID := ""
 		bindActivity := ""
 		exactTerminal := false
 		var probeErr error
-		if generationErr == nil {
-			var observation watcher.ProviderActivityObservation
-			var found bool
-			observation, found, probeErr = s.watcher.ProbeProviderEvidence(hostID)
-			if probeErr == nil && found {
-				observedID := strings.TrimSpace(observation.ID)
-				bound := strings.TrimSpace(active.ProviderActivityID)
-				if bound != "" {
-					// Terminal evidence is exact only when it names the durable
-					// turn's bound Activity — either as the current observation
-					// or from the same source's bounded terminal history. A
-					// delayed terminal observation for a replaced Activity is
-					// never adopted and never closes this turn.
-					activityID, exactTerminal = hostForegroundTerminalEvidence(observation, bound)
-				} else {
-					status := strings.TrimSpace(observation.Status)
-					if providerStatusRunning(status) {
-						bindActivity = observedID
-					} else if providerStatusTerminal(status) &&
-						!observation.StartedAt.IsZero() && !observation.StartedAt.Before(active.StartedAt) {
-						// The turn's response already ended (for example while
-						// the daemon was down) before any running observation
-						// could bind it. The current activity ending is adopted
-						// only when it began inside this turn's admission
-						// window: a stale terminal that settled before acceptance
-						// is never a boundary for the new turn and never closes
-						// it.
-						activityID = observedID
-						exactTerminal = true
-					}
-				}
-			} else if probeErr == nil && strings.TrimSpace(active.ProviderActivityID) == "" {
-				agent := s.watcher.GetAgent(hostID)
-				if agent != nil && (agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateUnknown) {
+		var observation watcher.ProviderActivityObservation
+		var found bool
+		observation, found, probeErr = s.watcher.ProbeProviderEvidence(hostID)
+		if probeErr == nil && found {
+			observedID := strings.TrimSpace(observation.ID)
+			bound := strings.TrimSpace(active.ProviderActivityID)
+			if bound != "" {
+				// Terminal evidence is exact only when it names the durable
+				// turn's bound Activity — either as the current observation
+				// or from the same source's bounded terminal history. A
+				// delayed terminal observation for a replaced Activity is
+				// never adopted and never closes this turn.
+				activityID, exactTerminal = hostForegroundTerminalEvidence(observation, bound)
+			} else {
+				status := strings.TrimSpace(observation.Status)
+				if providerStatusRunning(status) {
+					bindActivity = observedID
+				} else if providerStatusTerminal(status) &&
+					!observation.StartedAt.IsZero() && !observation.StartedAt.Before(active.StartedAt) {
+					// The turn's response already ended (for example while
+					// the daemon was down) before any running observation
+					// could bind it. The current activity ending is adopted
+					// only when it began inside this turn's admission
+					// window: a stale terminal that settled before acceptance
+					// is never a boundary for the new turn and never closes
+					// it.
+					activityID = observedID
 					exactTerminal = true
 				}
 			}
+		} else if probeErr == nil && strings.TrimSpace(active.ProviderActivityID) == "" {
+			agent := s.watcher.GetAgent(hostID)
+			if agent != nil && (agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateUnknown) {
+				exactTerminal = true
+			}
 		}
-		if generationErr != nil || probeErr != nil {
-			return false, errors.Join(generationErr, probeErr)
+		if probeErr != nil {
+			return false, probeErr
 		}
 		if bindActivity != "" {
 			if bindErr := s.store.BindHostForegroundActivity(hostID, generation, active.HostTurnID, bindActivity); bindErr != nil {
@@ -1186,6 +1218,29 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 		return false, err
 	}
 	return s.deliverClaimedEventLocked(event)
+}
+
+func (s *Service) retireHostForegroundLocked(
+	active HostForegroundTurn,
+	currentHostID, currentGeneration, reason string,
+) error {
+	retired, err := s.store.RetireHostForegroundTurn(active)
+	if err != nil || !retired {
+		return err
+	}
+	s.recordHostReplacement(HostReplacementEvent{
+		Reason: reason,
+		FromID: active.HostSessionID,
+		ToID:   strings.TrimSpace(currentHostID),
+		Detail: fmt.Sprintf(
+			"retired_foreground_turn=%q old_generation=%q current_generation=%q provider_activity=%q",
+			active.HostTurnID,
+			active.HostGeneration,
+			strings.TrimSpace(currentGeneration),
+			active.ProviderActivityID,
+		),
+	})
+	return nil
 }
 
 // reconcileBrainInputAdmissionsLocked terminalizes every prepared user input

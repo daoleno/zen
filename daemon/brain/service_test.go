@@ -734,6 +734,185 @@ func TestHostInputAdmissionReplacementBecomesUncertainAndFreesLane(t *testing.T)
 	}
 }
 
+func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		oldHost  = "brain-host:@foreground-old"
+		newHost  = "brain-host:@foreground-new"
+		threadID = "thread-foreground-host-replacement"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(oldHost, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			oldHost: {ID: oldHost, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{
+			oldHost: "old-host-generation",
+			newHost: "new-host-generation",
+		},
+		outcomes:  map[string]watcher.InputOutcome{},
+		turnStore: store,
+	}
+	service := NewService(store, fw, nil)
+	oldAdmission, created, err := service.PrepareHostUserInput(
+		oldHost, "old-host-input", "finish on the old Host", "brain-thread:"+threadID,
+	)
+	if err != nil || !created {
+		t.Fatalf("old prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(oldAdmission); err != nil {
+		t.Fatal(err)
+	}
+	oldForeground, err := store.CurrentHostForegroundTurn()
+	if err != nil || oldForeground == nil || oldForeground.HostSessionID != oldHost {
+		t.Fatalf("old foreground=%+v err=%v", oldForeground, err)
+	}
+
+	item, err := store.CreateWork(Work{
+		Title: "Ready after Host replacement", Objective: "Dispatch without the old foreground wedge.",
+		Status: WorkWaiting, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "review.changed", DedupeKey: "host-replacement:ready", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append ready Event created=%v err=%v", created, err)
+	}
+	delete(fw.sessions, oldHost)
+	fw.sessions[newHost] = &classifier.Agent{ID: newHost, Hidden: true, State: classifier.StateRunning}
+	if err := store.SetHostSession(newHost, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("replacement reconcile woke=%v err=%v", woke, err)
+	}
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("old foreground survived replacement: active=%+v err=%v", active, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil ||
+		events[0].DeliveryHostSessionID != newHost {
+		t.Fatalf("replacement did not dispatch on new Host: events=%+v err=%v", events, err)
+	}
+	auditRaw, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := bytes.Count(bytes.TrimSpace(auditRaw), []byte{'\n'}) + 1; lines != 1 ||
+		!bytes.Contains(auditRaw, []byte(`"reason":"host_binding_replaced"`)) {
+		t.Fatalf("foreground retirement audit=%q", auditRaw)
+	}
+
+	// A new foreground may begin even while the newly delivered card awaits a
+	// disposition. A delayed old terminal edge and delayed old CAS are both
+	// fenced by exact Host/generation/turn identity.
+	newAdmission, created, err := service.PrepareHostUserInput(
+		newHost, "new-host-input", "continue on the replacement Host", "brain-thread:"+threadID,
+	)
+	if err != nil || !created {
+		t.Fatalf("new prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(newAdmission); err != nil {
+		t.Fatal(err)
+	}
+	newForeground, err := store.CurrentHostForegroundTurn()
+	if err != nil || newForeground == nil || newForeground.HostSessionID != newHost {
+		t.Fatalf("new foreground=%+v err=%v", newForeground, err)
+	}
+	if retired, err := store.RetireHostForegroundTurn(*oldForeground); err != nil || retired {
+		t.Fatalf("delayed old retirement retired=%v err=%v", retired, err)
+	}
+	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
+		Type: "agent_state_change", AgentID: oldHost,
+		OldState: string(classifier.StateRunning), NewState: string(classifier.StateDone),
+		TurnID: "old-provider-turn",
+		Agent:  &classifier.Agent{ID: oldHost, Hidden: true, State: classifier.StateDone},
+	}); err != nil || woke {
+		t.Fatalf("delayed old terminal woke=%v err=%v", woke, err)
+	}
+	stillActive, err := store.CurrentHostForegroundTurn()
+	if err != nil || stillActive == nil || stillActive.HostTurnID != newForeground.HostTurnID {
+		t.Fatalf("delayed old terminal cleared new foreground: active=%+v err=%v", stillActive, err)
+	}
+	auditAfter, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil || !bytes.Equal(auditRaw, auditAfter) {
+		t.Fatalf("retirement audit replayed: before=%q after=%q err=%v", auditRaw, auditAfter, err)
+	}
+}
+
+func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID   = "brain-host:@foreground-generation"
+		threadID = "thread-foreground-generation"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "generation-one"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	first, created, err := service.PrepareHostUserInput(
+		hostID, "generation-one-input", "first pane", "brain-thread:"+threadID,
+	)
+	if err != nil || !created {
+		t.Fatalf("first prepare created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(first); err != nil {
+		t.Fatal(err)
+	}
+	fw.ownedGenerations[hostID] = "generation-two"
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("generation replacement woke=%v err=%v", woke, err)
+	}
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("superseded generation remained active: active=%+v err=%v", active, err)
+	}
+
+	second, created, err := service.PrepareHostUserInput(
+		hostID, "generation-two-input", "replacement pane", "brain-thread:"+threadID,
+	)
+	if err != nil || !created || second.HostGeneration != "generation-two" {
+		t.Fatalf("second prepare created=%v admission=%+v err=%v", created, second, err)
+	}
+	if err := service.AdmitHostUserInput(second); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.CurrentHostForegroundTurn()
+	if err != nil || active == nil || active.HostTurnID != second.HostTurnID ||
+		active.HostGeneration != "generation-two" {
+		t.Fatalf("replacement generation foreground=%+v err=%v", active, err)
+	}
+	auditRaw, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil || bytes.Count(bytes.TrimSpace(auditRaw), []byte{'\n'}) != 0 ||
+		!bytes.Contains(auditRaw, []byte(`"reason":"host_generation_replaced"`)) {
+		t.Fatalf("generation retirement audit=%q err=%v", auditRaw, err)
+	}
+}
+
 func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

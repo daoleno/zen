@@ -1563,7 +1563,7 @@ func (w *changingHostGenerationWatcher) ResolveOwnedGeneration(sessionID string)
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
 }
 
-func TestAcceptedForegroundInputGenerationMismatchFailsLaneClosed(t *testing.T) {
+func TestAcceptedForegroundInputGenerationReplacementRetiresLane(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1589,31 +1589,26 @@ func TestAcceptedForegroundInputGenerationMismatchFailsLaneClosed(t *testing.T) 
 	if err != nil || !created {
 		t.Fatalf("prepare created=%v err=%v", created, err)
 	}
-	if err := service.AdmitHostUserInput(prepared); err == nil ||
-		!strings.Contains(err.Error(), "generation") {
-		t.Fatalf("generation mismatch was not surfaced: %v", err)
+	if err := service.AdmitHostUserInput(prepared); err != nil {
+		t.Fatalf("generation replacement did not converge: %v", err)
 	}
 	active, err := store.CurrentHostForegroundTurn()
-	if err != nil || active == nil || active.HostGeneration != "host-generation-prepared" {
-		t.Fatalf("generation-bound state active=%+v err=%v", active, err)
+	if err != nil || active != nil {
+		t.Fatalf("superseded generation remained active=%+v err=%v", active, err)
 	}
-	if active.ProviderActivityID != "" {
-		t.Fatalf("replacement generation activity was ambiently adopted: %+v", active)
-	}
-	// A pending Event that arrives behind the mismatched turn is safe: the
-	// lane fails closed on the same mismatch and never claims or delivers it.
+	// A pending Event that arrives after exact generation replacement is free
+	// to dispatch on the current Host generation.
 	item := createSignalTestWork(t, store, "generation-bound turn", "brain-agent-worker:@generation")
 	appendSignalTestEvent(t, store, item, "generation-bound")
-	if woke, err := service.ReconcileHostLane(); err == nil || woke ||
-		!strings.Contains(err.Error(), "generation") {
-		t.Fatalf("mismatch lane pass woke=%v err=%v", woke, err)
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("replacement lane pass woke=%v err=%v", woke, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
-		t.Fatalf("generation mismatch moved the pending Event: %+v err=%v", events, err)
+	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+		t.Fatalf("generation replacement did not deliver the pending Event: %+v err=%v", events, err)
 	}
-	if len(watcherFixture.sentCalls) != 0 {
-		t.Fatalf("generation mismatch delivered: %+v", watcherFixture.sentCalls)
+	if len(watcherFixture.sentCalls) != 1 {
+		t.Fatalf("generation replacement sends=%+v", watcherFixture.sentCalls)
 	}
 }
 

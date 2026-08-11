@@ -81,7 +81,8 @@ func (s *Store) ChatStatePath() string {
 	return filepath.Join(s.statePath(), "chat_state.json")
 }
 
-// HostReplacementEvent is a durable audit record for ensureHostAgent replacements.
+// HostReplacementEvent is a durable audit record for Host identity and
+// foreground-ownership replacement.
 type HostReplacementEvent struct {
 	At               time.Time `json:"at"`
 	Reason           string    `json:"reason"`

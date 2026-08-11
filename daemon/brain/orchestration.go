@@ -3283,6 +3283,41 @@ func (s *Store) CurrentHostForegroundTurn() (*HostForegroundTurn, error) {
 	return &copy, nil
 }
 
+// RetireHostForegroundTurn clears only the exact foreground identity observed
+// by the Host-lane reducer after the Host binding, pane, or generation was
+// proven superseded. A delayed retirement can never clear a newer turn.
+func (s *Store) RetireHostForegroundTurn(expected HostForegroundTurn) (bool, error) {
+	expected.HostSessionID = strings.TrimSpace(expected.HostSessionID)
+	expected.HostGeneration = strings.TrimSpace(expected.HostGeneration)
+	expected.HostTurnID = strings.TrimSpace(expected.HostTurnID)
+	expected.ProviderActivityID = strings.TrimSpace(expected.ProviderActivityID)
+	if expected.HostSessionID == "" || expected.HostGeneration == "" || expected.HostTurnID == "" {
+		return false, fmt.Errorf("foreground Host session, generation, and turn are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return false, err
+	}
+	active := database.HostForegroundTurn
+	if active == nil {
+		return false, nil
+	}
+	if active.HostSessionID != expected.HostSessionID ||
+		active.HostGeneration != expected.HostGeneration ||
+		active.HostTurnID != expected.HostTurnID ||
+		active.ProviderActivityID != expected.ProviderActivityID ||
+		!active.StartedAt.Equal(expected.StartedAt) {
+		return false, nil
+	}
+	database.HostForegroundTurn = nil
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // PendingHostInputAdmission reports whether any Brain input admission for the
 // Host is still pending. Pending is persisted before provider mutation and is
 // the durable user-steering gate that replaced the process-local
