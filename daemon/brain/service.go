@@ -183,8 +183,7 @@ func (s *Service) retryTerminalFinalization(item Work, finalization SessionFinal
 	if agent == nil && !s.watcher.HasSession(sessionID) {
 		if finalization.Delegated {
 			if err := s.teardownOwnedSession(sessionID); err != nil {
-				updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, err)
-				return updated, errors.Join(err, recordErr)
+				return s.recordTerminalTeardownOutcome(item, sessionID, err)
 			}
 		}
 		return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
@@ -195,10 +194,28 @@ func (s *Service) retryTerminalFinalization(item Work, finalization SessionFinal
 		return updated, errors.Join(failure, recordErr)
 	}
 	if err := s.teardownOwnedSession(sessionID); err != nil {
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, err)
-		return updated, errors.Join(err, recordErr)
+		return s.recordTerminalTeardownOutcome(item, sessionID, err)
 	}
 	return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
+}
+
+func (s *Service) recordTerminalTeardownOutcome(item Work, sessionID string, teardownErr error) (Work, error) {
+	if errors.Is(teardownErr, watcher.ErrUnownedTmuxTarget) {
+		// A stable historical Session string may now resolve to an ambient or
+		// reused tmux window after restart. The watcher has proved that Zen does
+		// not own that runtime, so safety requires leaving it untouched. It also
+		// cannot remain the finalization owner of an already-terminal Work:
+		// retries would deterministically fail forever and manufacture permanent
+		// Attention. Record the explicit skip as the terminal audit outcome.
+		return s.store.RecordSessionFinalization(
+			item.ID, sessionID, SessionFinalizationSkipped,
+			fmt.Errorf("runtime identity is not Zen-owned; teardown intentionally skipped: %w", teardownErr),
+		)
+	}
+	updated, recordErr := s.store.RecordSessionFinalization(
+		item.ID, sessionID, SessionFinalizationFailed, teardownErr,
+	)
+	return updated, errors.Join(teardownErr, recordErr)
 }
 
 func hasPendingSessionFinalization(item Work) bool {

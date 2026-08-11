@@ -2,6 +2,7 @@ package brain
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -530,6 +531,50 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	for _, killed := range fw.killed {
 		if killed == nondelegatedID {
 			t.Fatalf("delegated=false Session was killed: %v", fw.killed)
+		}
+	}
+}
+
+func TestTerminalDispositionSkipsReusedUnownedRuntimeIdentity(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-finalize-reused:@1"
+	item, err := store.CreateWork(Work{
+		Title: "Skip reused runtime identity", Objective: "Never kill an ambient replacement window.",
+		Status: WorkWaiting, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded, NextAction: "Review the delegated Session result.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendSignalTestEvent(t, store, item, "reused-unowned-runtime")
+	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{},
+		killErr:  fmt.Errorf("%w: %s", watcher.ErrUnownedTmuxTarget, sessionID),
+	}
+	_, terminal, err := NewService(store, fw, nil).ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionComplete,
+	})
+	if err != nil || terminal.Status != WorkDone || len(terminal.SessionFinalizations) != 1 ||
+		terminal.SessionFinalizations[0].State != SessionFinalizationSkipped {
+		t.Fatalf("unowned runtime finalization Work=%+v killed=%v err=%v", terminal, fw.killed, err)
+	}
+	if len(fw.killed) != 1 || fw.killed[0] != sessionID {
+		t.Fatalf("finalizer did not probe the exact historical runtime: %v", fw.killed)
+	}
+	events, listErr := store.ListWorkEvents(item.ID)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	for _, event := range events {
+		if event.Kind == "brain.finalization_failed" && event.Actionable {
+			t.Fatalf("unowned replacement created an unrecoverable retry obligation: %+v", event)
 		}
 	}
 }
