@@ -302,6 +302,58 @@ func TestUpdateWorkTerminalTransitionRejectsActiveHostLane(t *testing.T) {
 	})
 }
 
+func TestUpdateWorkMetadataRejectsActiveHostLane(t *testing.T) {
+	t.Run("claimed", func(t *testing.T) {
+		store, workID, claimed := claimResolutionStore(t)
+		before, err := store.Work(workID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		title := "must not invalidate a claimed revision"
+		if _, err := store.UpdateWork(workID, WorkUpdate{Title: &title}); !errors.Is(err, ErrWorkConflict) {
+			t.Fatalf("metadata update err=%v want ErrWorkConflict", err)
+		}
+		after, err := store.Work(workID)
+		if err != nil || after.Title != before.Title || after.Revision != before.Revision {
+			t.Fatalf("rejected update changed Work: before=%+v after=%+v err=%v", before, after, err)
+		}
+		delivered := admitAndConsumeHostClaim(t, store, claimed)
+		resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+			Summary: "claim kept its exact revision authority",
+		})
+		if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone {
+			t.Fatalf("exact disposition after rejected update: event=%+v Work=%+v err=%v", resolved, terminal, err)
+		}
+	})
+
+	t.Run("delivered", func(t *testing.T) {
+		store, workID, claimed := claimResolutionStore(t)
+		delivered := admitAndConsumeHostClaim(t, store, claimed)
+		before, err := store.Work(workID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextAction := "must not invalidate a delivered revision"
+		if _, err := store.UpdateWork(workID, WorkUpdate{NextAction: &nextAction}); !errors.Is(err, ErrWorkConflict) {
+			t.Fatalf("metadata update err=%v want ErrWorkConflict", err)
+		}
+		after, err := store.Work(workID)
+		if err != nil || after.NextAction != before.NextAction || after.Revision != before.Revision {
+			t.Fatalf("rejected update changed Work: before=%+v after=%+v err=%v", before, after, err)
+		}
+		resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+			EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+			ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionCancel,
+			Summary: "handling kept its exact revision authority",
+		})
+		if err != nil || resolved.HandledAt == nil || terminal.Status != WorkCancelled {
+			t.Fatalf("exact disposition after rejected update: event=%+v Work=%+v err=%v", resolved, terminal, err)
+		}
+	})
+}
+
 func TestTerminalWorkPermitsExactHostClaimTransaction(t *testing.T) {
 	store, workID, claimed := claimResolutionStore(t)
 	store.mu.Lock()

@@ -636,8 +636,17 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 
 			now = base.Add(2 * time.Minute)
 			contextRef := "worklog/finalization-retry-after-terminal-metadata.md"
-			if _, err := store.UpdateWork(item.ID, WorkUpdate{ContextRef: &contextRef}); err != nil {
-				t.Fatal(err)
+			updated, updateErr := store.UpdateWork(item.ID, WorkUpdate{ContextRef: &contextRef})
+			if test.claimBeforeMetadata {
+				if !errors.Is(updateErr, ErrWorkConflict) {
+					t.Fatalf("metadata update during held claim err=%v want ErrWorkConflict", updateErr)
+				}
+				current, err := store.Work(item.ID)
+				if err != nil || current.ContextRef == contextRef {
+					t.Fatalf("rejected metadata update changed Work: Work=%+v err=%v", current, err)
+				}
+			} else if updateErr != nil || updated.ContextRef != contextRef {
+				t.Fatalf("queued metadata update=%+v err=%v", updated, updateErr)
 			}
 
 			reopened, err := NewStore(root)

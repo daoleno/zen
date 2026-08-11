@@ -2191,17 +2191,15 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 	}
 	original := database.BrainWork[index]
 	item := original
+	if eventID, owned := activeHostLaneEvent(*database, item.ID); owned {
+		return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkConflict, eventID)
+	}
 	wasTerminal := item.Status == WorkDone || item.Status == WorkCancelled
 	applyWorkUpdate(&item, update)
 	if wasTerminal && item.Status != original.Status {
 		return Work{}, fmt.Errorf("%w: terminal Work cannot be reopened", ErrWorkConflict)
 	}
 	becomesTerminal := !wasTerminal && (item.Status == WorkDone || item.Status == WorkCancelled)
-	if becomesTerminal {
-		if eventID, owned := activeHostLaneEvent(*database, item.ID); owned {
-			return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkConflict, eventID)
-		}
-	}
 	item.UpdatedAt = now
 	item.Revision++
 	// SourceThreadID is frozen at Create and never rewritten.
@@ -2222,8 +2220,8 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 // activeHostLaneEvent identifies the sole fail-closed boundary shared by
 // operator closure and internal Work updates. Once an actionable Event is
 // claimed, neither a metadata producer nor an operator may advance the Work
-// revision or terminalize it until the exact Host capability is consumed and
-// disposed (or the ended handling is explicitly recovered).
+// revision until the exact Host capability is consumed and disposed (or the
+// ended handling is explicitly recovered).
 func activeHostLaneEvent(database orchestrationDatabase, workID string) (string, bool) {
 	for _, event := range database.BrainWorkEvents {
 		if event.WorkID != workID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
