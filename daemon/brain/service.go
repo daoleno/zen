@@ -144,6 +144,27 @@ func (s *Service) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEve
 	return event, item, nil
 }
 
+// CloseWork applies the explicit actor/revision-gated terminal transition,
+// then drives the same exact Session finalization path used by a Host
+// disposition. The Store refuses this path while any Host or provider
+// submission authority is still in flight.
+func (s *Service) CloseWork(request WorkCloseRequest) (Work, error) {
+	if s == nil || s.store == nil {
+		return Work{}, fmt.Errorf("brain store is not configured")
+	}
+	item, err := s.store.CloseWork(request)
+	if err != nil {
+		return item, err
+	}
+	for hasPendingSessionFinalization(item) {
+		item, err = s.RetryTerminalFinalization(item.ID)
+		if err != nil {
+			return item, err
+		}
+	}
+	return item, nil
+}
+
 // RetryTerminalFinalization retries only the exact persisted terminal owner.
 // Runtime Delegated=false evidence always wins and is recorded as skipped
 // without calling KillSession.

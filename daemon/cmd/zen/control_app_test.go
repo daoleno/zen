@@ -2121,6 +2121,87 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 	}
 }
 
+func TestControlAppBrainWorkCloseUsesAuditedRevisionGate(t *testing.T) {
+	store := newControlBrainStore(t)
+	service := brain.NewService(store, nil, nil)
+	app := &controlApp{brainStore: store, brainService: service}
+	item, err := store.CreateWork(brain.Work{
+		Title: "obsolete queued Work", Objective: "close outside the Host lane",
+		Status: brain.WorkNeedsInput, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "brain.reconcile_required", DedupeKey: "control-close",
+		Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := app.HandleControlRequest(control.Request{
+		Type: "brain_work_close", WorkID: item.ID, Revision: int64(item.Revision - 1),
+		Status: string(brain.WorkCancelled), Actor: "brain", Reason: "stale request",
+	})
+	if stale.OK || stale.Error == nil || stale.Error.Code != "brain_work_revision_conflict" {
+		t.Fatalf("stale close response = %#v", stale)
+	}
+	closed := app.HandleControlRequest(control.Request{
+		Type: "brain_work_close", WorkID: item.ID, Revision: int64(item.Revision),
+		Status: string(brain.WorkCancelled), Actor: "brain", Reason: "verified obsolete Work",
+	})
+	if !closed.OK || closed.BrainWork == nil || closed.BrainWork.Status != brain.WorkCancelled ||
+		closed.Confirmation == "" {
+		t.Fatalf("close response = %#v", closed)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Resolution != brain.EventResolutionDiscard ||
+		events[0].ResolvedBy != "brain" || events[1].Kind != "brain.work_closed" ||
+		events[1].Summary != "verified obsolete Work" {
+		t.Fatalf("closed event ledger = %#v", events)
+	}
+}
+
+func TestControlAppBrainWorkCloseRejectsClaimedAttention(t *testing.T) {
+	store := newControlBrainStore(t)
+	service := brain.NewService(store, nil, nil)
+	app := &controlApp{brainStore: store, brainService: service}
+	item, err := store.CreateWork(brain.Work{
+		Title: "claimed Work", Objective: "retain exact Host authority",
+		Status: brain.WorkNeedsInput, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "brain.reconcile_required", DedupeKey: "control-claimed",
+		Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !ok {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	item, err = store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := app.HandleControlRequest(control.Request{
+		Type: "brain_work_close", WorkID: item.ID, Revision: int64(item.Revision),
+		Status: string(brain.WorkCancelled), Actor: "user", Reason: "must not bypass claim",
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "brain_work_close_conflict" {
+		t.Fatalf("claimed close response = %#v", resp)
+	}
+}
+
 func TestControlAppBrainWorkspaceReturnsStoreWorkspace(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {

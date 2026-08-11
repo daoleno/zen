@@ -92,6 +92,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainWorkCreate(req)
 	case "brain_work_update":
 		return a.handleBrainWorkUpdate(req)
+	case "brain_work_close":
+		return a.handleBrainWorkClose(req)
 	case "brain_work_event":
 		return a.handleBrainWorkEvent(req)
 	case "brain_work_event_resolve":
@@ -799,6 +801,24 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 	return control.Response{OK: true, BrainWork: &item}
 }
 
+func (a *controlApp) handleBrainWorkClose(req control.Request) control.Response {
+	if a == nil || a.brainService == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work terminalization is not configured.")
+	}
+	if req.Revision <= 0 {
+		return control.ErrorResponse("invalid_brain_work", "A positive expected Work revision is required.")
+	}
+	item, err := a.brainService.CloseWork(brain.WorkCloseRequest{
+		WorkID: strings.TrimSpace(req.WorkID), ExpectedRevision: uint64(req.Revision),
+		Status: brain.WorkStatus(strings.TrimSpace(req.Status)),
+		Actor:  strings.TrimSpace(req.Actor), Reason: strings.TrimSpace(req.Reason),
+	})
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	return control.Response{OK: true, BrainWork: &item, Confirmation: "Brain Work closed under audited operator authority."}
+}
+
 func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response {
 	if a == nil || a.brainService == nil || req.BrainWorkEvent == nil {
 		return control.ErrorResponse("brain_unavailable", "Brain Work event routing is not configured.")
@@ -859,6 +879,8 @@ func brainWorkControlError(err error) control.Response {
 		code = "conflict"
 	case errors.Is(err, brain.ErrWorkRevisionConflict):
 		code = "brain_work_revision_conflict"
+	case errors.Is(err, brain.ErrWorkCloseConflict):
+		code = "brain_work_close_conflict"
 	case errors.Is(err, brain.ErrEventHandled):
 		code = "brain_work_event_handled"
 	case errors.Is(err, brain.ErrEventClaim):

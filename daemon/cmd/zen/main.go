@@ -1167,7 +1167,7 @@ func runBrainGC(args []string, stderr io.Writer) error {
 
 func runBrainWork(args []string, stderr io.Writer) error {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		fmt.Fprintln(stderr, "Usage: zen brain work <list|get|create|update|event|resolve> [flags]")
+		fmt.Fprintln(stderr, "Usage: zen brain work <list|get|create|update|close|event|resolve> [flags]")
 		return flag.ErrHelp
 	}
 	switch args[0] {
@@ -1177,6 +1177,8 @@ func runBrainWork(args []string, stderr io.Writer) error {
 		return runBrainWorkCreate(args[1:], stderr)
 	case "update":
 		return runBrainWorkUpdate(args[1:], stderr)
+	case "close":
+		return runBrainWorkClose(args[1:], stderr)
 	case "event":
 		return runBrainWorkEvent(args[1:], stderr)
 	case "event-resolve":
@@ -1186,6 +1188,45 @@ func runBrainWork(args []string, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown brain work command: %s", args[0])
 	}
+}
+
+func runBrainWorkClose(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work close", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	var workID string
+	var revision int64
+	var status string
+	var actor string
+	var reason string
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&workID, "id", "", "Work id")
+	fs.Int64Var(&revision, "revision", 0, "exact current Work revision")
+	fs.StringVar(&status, "status", "", "terminal status: done or cancelled")
+	fs.StringVar(&actor, "actor", "", "explicit actor recording the terminal decision")
+	fs.StringVar(&reason, "reason", "", "audited reason for terminalizing the Work")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if strings.TrimSpace(workID) == "" || revision <= 0 || strings.TrimSpace(actor) == "" || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("Work id, positive revision, actor, and reason are required")
+	}
+	status = strings.TrimSpace(status)
+	if status != string(brain.WorkDone) && status != string(brain.WorkCancelled) {
+		return fmt.Errorf("status must be done or cancelled")
+	}
+	resp, err := callControl(cfg, control.Request{
+		Type: "brain_work_close", WorkID: workID, Revision: revision,
+		Status: status, Actor: actor, Reason: reason,
+	})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
 func runBrainWorkResolve(args []string, stderr io.Writer) error {

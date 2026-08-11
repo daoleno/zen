@@ -23,6 +23,7 @@ var (
 	ErrEventClaim           = errors.New("Brain Work event claim is no longer current")
 	ErrEventHandled         = errors.New("Brain Work event is already handled")
 	ErrWorkRevisionConflict = errors.New("Brain Work revision is no longer current")
+	ErrWorkCloseConflict    = errors.New("Brain Work cannot be operator-closed while signal authority is in flight")
 )
 
 type WorkStatus string
@@ -254,6 +255,19 @@ type WorkUpdate struct {
 	WaitFor          *string
 	Wake             **WorkWake
 	ContextRef       *string
+}
+
+// WorkCloseRequest is the explicit operator path for terminalizing queued or
+// historical Work that has no in-flight Host/provider authority. It is not a
+// substitute for ResolveWorkEvent: a claimed delivery, admitted Host handling,
+// or unresolved provider submission must still finish through its exact
+// capability. Actor and reason are persisted in a non-actionable audit Event.
+type WorkCloseRequest struct {
+	WorkID           string     `json:"work_id"`
+	ExpectedRevision uint64     `json:"expected_work_revision"`
+	Status           WorkStatus `json:"status"`
+	Actor            string     `json:"actor"`
+	Reason           string     `json:"reason"`
 }
 
 // WorkEventDispositionRequest is Brain's exact handling transaction. The
@@ -1995,6 +2009,120 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 	if err != nil {
 		return Work{}, err
 	}
+	s.broadcastWorkChange(item.ID)
+	return item, nil
+}
+
+// CloseWork terminalizes one exact current Work revision without routing an
+// artificial reconciliation turn through the Host. It is deliberately narrow:
+// only queued/unclaimed Attention is settled, while any live claim, admitted
+// Host handling, ambiguous provider mutation, or unaccepted successor keeps
+// the operation fail-closed. The terminal Work update, Attention settlement,
+// Session finalization obligations, and audit Event share one replacement.
+func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
+	request.WorkID = strings.TrimSpace(request.WorkID)
+	request.Actor = strings.TrimSpace(request.Actor)
+	request.Reason = strings.TrimSpace(request.Reason)
+	if request.WorkID == "" || request.ExpectedRevision == 0 || request.Actor == "" || request.Reason == "" ||
+		(request.Status != WorkDone && request.Status != WorkCancelled) {
+		return Work{}, fmt.Errorf("work_id, expected_work_revision, terminal status, actor, and reason are required")
+	}
+
+	now := s.nowUTC()
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return Work{}, err
+	}
+	itemIndex := workIndex(database.BrainWork, request.WorkID)
+	if itemIndex < 0 {
+		s.mu.Unlock()
+		return Work{}, ErrWorkNotFound
+	}
+	item := database.BrainWork[itemIndex]
+	if item.Revision != request.ExpectedRevision {
+		s.mu.Unlock()
+		return Work{}, ErrWorkRevisionConflict
+	}
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("%w: Work %s is already terminal", ErrWorkCloseConflict, item.ID)
+	}
+	if reservation := item.SuccessorReservation; reservation != nil && strings.TrimSpace(reservation.ProviderTurnID) == "" {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("%w: successor admission is unresolved", ErrWorkCloseConflict)
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
+			event.Resolution != "" || event.HistoricalDelivery {
+			continue
+		}
+		claimInFlight := event.ClaimedAt != nil && event.DeliveredAt == nil
+		handlingInFlight := event.DeliveredAt != nil && event.HandlingEndedAt == nil
+		if claimInFlight || handlingInFlight {
+			s.mu.Unlock()
+			return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkCloseConflict, event.ID)
+		}
+	}
+	for _, submission := range database.BrainTurnSubmissions {
+		if submission.WorkID == item.ID && submission.State == watcher.TurnSubmissionPending {
+			s.mu.Unlock()
+			return Work{}, fmt.Errorf("%w: provider submission %s is unresolved", ErrWorkCloseConflict, submission.ProposedTurnID)
+		}
+	}
+
+	item.Status = request.Status
+	item.Wake = nil
+	item.NextAction = ""
+	item.WaitFor = ""
+	item.SessionFinalizations = terminalSessionFinalizations(database, item, now)
+	item.SuccessorReservation = nil
+	item.Revision++
+	item.UpdatedAt = now
+	database.BrainWork[itemIndex] = item
+
+	settledAt := now.UTC()
+	terminalDisposition := WorkDispositionCancel
+	if request.Status == WorkDone {
+		terminalDisposition = WorkDispositionComplete
+	}
+	for index := range database.BrainWorkEvents {
+		event := &database.BrainWorkEvents[index]
+		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
+			event.Resolution != "" || event.HistoricalDelivery {
+			continue
+		}
+		switch {
+		case event.DeliveredAt != nil && event.HandlingEndedAt != nil:
+			// The provider Turn already ended, so this row no longer owns an
+			// effect. The operator's exact Work revision now supplies the terminal
+			// disposition that the ended handling did not record itself.
+			event.HandledAt = &settledAt
+			event.Disposition = terminalDisposition
+			event.DispositionSummary = request.Reason
+		case event.ClaimedAt == nil && event.DeliveredAt == nil:
+			event.DiscardedAt = &settledAt
+			event.Resolution = EventResolutionDiscard
+			event.ResolvedBy = request.Actor
+			event.ResolvedAt = &settledAt
+		}
+	}
+	audit := WorkEvent{
+		ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.work_closed",
+		DedupeKey:  fmt.Sprintf("brain:work-close:%s:%d", request.Status, item.Revision),
+		SourceName: request.Actor, Summary: request.Reason, Actionable: false, CreatedAt: now,
+	}
+	if _, err := appendWorkEventLocked(&database, itemIndex, audit, false); err != nil {
+		s.mu.Unlock()
+		return Work{}, err
+	}
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		s.mu.Unlock()
+		return Work{}, err
+	}
+	item = database.BrainWork[itemIndex]
+	s.mu.Unlock()
 	s.broadcastWorkChange(item.ID)
 	return item, nil
 }

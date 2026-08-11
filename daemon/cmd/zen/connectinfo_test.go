@@ -545,6 +545,34 @@ func TestBrainResolveCLI(t *testing.T) {
 	waitForCLIControlServerShutdown(t, done)
 }
 
+func TestBrainWorkCloseCLI(t *testing.T) {
+	stateDir := t.TempDir()
+	handler, done, cancel := startCLIControlServer(t, stateDir)
+	defer cancel()
+	var stderr bytes.Buffer
+	if err := runBrainCommand([]string{
+		"work", "close", "--state-dir", stateDir, "--json=false",
+		"--id", "work-1", "--revision", "19", "--status", "cancelled",
+		"--actor", "brain", "--reason", "verified obsolete execution stage",
+	}, &stderr); err != nil {
+		t.Fatalf("runBrainCommand returned error: %v stderr=%s", err, stderr.String())
+	}
+
+	select {
+	case req := <-handler.requests:
+		if req.Type != "brain_work_close" || req.WorkID != "work-1" || req.Revision != 19 ||
+			req.Status != "cancelled" || req.Actor != "brain" ||
+			req.Reason != "verified obsolete execution stage" {
+			t.Fatalf("close request = %#v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Brain close control request")
+	}
+
+	cancel()
+	waitForCLIControlServerShutdown(t, done)
+}
+
 func TestRevokeDeviceUsesRunningDaemonControlOwner(t *testing.T) {
 	stateDir := t.TempDir()
 	handler, done, cancel := startCLIControlServer(t, stateDir)
