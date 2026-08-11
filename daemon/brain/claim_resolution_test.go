@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,192 @@ func TestClaimResolutionRequiresActorAndReason(t *testing.T) {
 	}
 	if err := store.MarkDeliveredClaim("missing-event", "user", "reason"); err == nil {
 		t.Fatal("resolution of unknown event accepted")
+	}
+}
+
+// A held Host claim may already own the Session's sole pending submission.
+// An explicit actor resolution must retire that exact transaction in the same
+// orchestration replacement; otherwise the replacement Event can be claimed
+// but can never prepare its own provider Turn. Late provider evidence for the
+// retired transaction must also remain non-adoptable.
+func TestClaimResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*Store, WorkEvent) error
+	}{
+		{name: "mark delivered", apply: func(store *Store, event WorkEvent) error {
+			return store.MarkDeliveredClaim(event.ID, "user", "visible in Host transcript")
+		}},
+		{name: "discard", apply: func(store *Store, event WorkEvent) error {
+			return store.DiscardClaim(event.ID, "user", "obsolete delivery")
+		}},
+		{name: "replay", apply: func(store *Store, event WorkEvent) error {
+			_, err := store.ReplayEvent(event.ID, "user", "explicit replay authorization")
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, store, original, pending := preparePendingClaimedHostSubmission(t)
+			if err := test.apply(store, original); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retired, found, err := reopened.TurnSubmission(original.DeliveryHostSessionID, original.ProviderTurnID)
+			if err != nil || !found || retired.State != watcher.TurnSubmissionState("retired") {
+				t.Fatalf("exact pending submission was not retired: submission=%+v found=%v err=%v", retired, found, err)
+			}
+
+			lateAt := pending.AcceptedAt.Add(time.Second)
+			if _, err := reopened.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+				SessionID: pending.SessionID, ProposedTurnID: pending.ProposedTurnID,
+				Receipt: pending.Receipt, PayloadSHA256: pending.PayloadSHA256,
+				ActivityID: "late-provider-activity",
+				Admission:  providerAdmission("stream", "late-provider-message", 1, pending.PayloadSHA256, lateAt),
+				ResolvedAt: lateAt,
+			}); err == nil {
+				t.Fatal("late provider evidence adopted an actor-retired submission")
+			}
+			if _, found, err := reopened.Turn(pending.SessionID); err != nil || found {
+				t.Fatalf("retired submission created a canonical Turn: found=%v err=%v", found, err)
+			}
+
+			next, claimed, err := reopened.ClaimNextActionableEvent(original.DeliveryHostSessionID)
+			if err != nil || !claimed || next.ID == original.ID {
+				t.Fatalf("replacement Event claim=%+v claimed=%v err=%v", next, claimed, err)
+			}
+			candidate := watcher.TurnSubmission{
+				WorkID: next.WorkID, SessionID: next.DeliveryHostSessionID,
+				ProposedTurnID: next.ProviderTurnID, Receipt: next.ID, ClaimToken: next.HandlingID,
+				PayloadSHA256:   pendingSubmissionDigest("replacement Host delivery"),
+				ProcessIdentity: "replacement-process", PaneGeneration: "replacement-pane",
+				AcceptedAt: lateAt.Add(time.Second), Mode: watcher.TurnSubmissionFresh,
+			}
+			prepared, created, err := reopened.PrepareTurnSubmission(candidate)
+			if err != nil || !created || prepared.State != watcher.TurnSubmissionPending {
+				t.Fatalf("retired transaction still gated replacement: submission=%+v created=%v err=%v", prepared, created, err)
+			}
+
+			reopenedAgain, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, found, err := reopenedAgain.TurnSubmission(original.DeliveryHostSessionID, original.ProviderTurnID)
+			if err != nil || !found || old.State != watcher.TurnSubmissionState("retired") {
+				t.Fatalf("retired terminal state did not survive second reopen: submission=%+v found=%v err=%v", old, found, err)
+			}
+			current, found, err := reopenedAgain.PendingTurnSubmission(original.DeliveryHostSessionID)
+			if err != nil || !found || current.ProposedTurnID != next.ProviderTurnID {
+				t.Fatalf("replacement pending identity after reopen=%+v found=%v err=%v", current, found, err)
+			}
+		})
+	}
+}
+
+func TestClaimResolutionRetirementIgnoresUnrelatedPendingSubmission(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@manual-isolation"
+	firstWork := createSignalTestWork(t, store, "Resolve first held claim", "brain-agent-worker:@first")
+	appendSignalTestEvent(t, store, firstWork, "manual-first")
+	secondWork := createSignalTestWork(t, store, "Preserve second pending claim", "brain-agent-worker:@second")
+	appendSignalTestEvent(t, store, secondWork, "manual-second")
+	first, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || first.WorkID != firstWork.ID {
+		t.Fatalf("first claim=%+v ok=%v err=%v", first, ok, err)
+	}
+	second, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || second.WorkID != secondWork.ID {
+		t.Fatalf("second claim=%+v ok=%v err=%v", second, ok, err)
+	}
+	unrelated, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: second.WorkID, SessionID: hostID, ProposedTurnID: second.ProviderTurnID,
+		Receipt: second.ID, ClaimToken: second.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("unrelated provider input"),
+		ProcessIdentity: "unrelated-process", PaneGeneration: "unrelated-pane",
+		AcceptedAt: time.Date(2026, 8, 11, 1, 40, 0, 0, time.UTC), Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare unrelated submission=%+v created=%v err=%v", unrelated, created, err)
+	}
+	if err := store.DiscardClaim(first.ID, "user", "retire exact delivery only"); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, found, err := store.TurnSubmission(hostID, unrelated.ProposedTurnID)
+	if err != nil || !found || unchanged.State != watcher.TurnSubmissionPending ||
+		unchanged.Receipt != unrelated.Receipt || unchanged.PayloadSHA256 != unrelated.PayloadSHA256 {
+		t.Fatalf("unrelated pending submission was mutated: submission=%+v found=%v err=%v", unchanged, found, err)
+	}
+}
+
+func TestClaimResolutionRetirementAndEventMutationShareOneCommit(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*Store, WorkEvent) error
+	}{
+		{name: "mark delivered", apply: func(store *Store, event WorkEvent) error {
+			return store.MarkDeliveredClaim(event.ID, "user", "visible in Host transcript")
+		}},
+		{name: "discard", apply: func(store *Store, event WorkEvent) error {
+			return store.DiscardClaim(event.ID, "user", "obsolete delivery")
+		}},
+		{name: "replay", apply: func(store *Store, event WorkEvent) error {
+			_, err := store.ReplayEvent(event.ID, "user", "explicit replay authorization")
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, store, event, _ := preparePendingClaimedHostSubmission(t)
+			writes := 0
+			write := store.writeOrchestration
+			store.writeOrchestration = func(path string, value any) error {
+				writes++
+				return write(path, value)
+			}
+			if err := test.apply(store, event); err != nil {
+				t.Fatal(err)
+			}
+			if writes != 1 {
+				t.Fatalf("actor resolution used %d persistence writes, want one", writes)
+			}
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, found, err := reopened.WorkEvent(event.ID)
+			if err != nil || !found || original.Resolution == "" {
+				t.Fatalf("Event resolution missing after reopen: event=%+v found=%v err=%v", original, found, err)
+			}
+			submission, found, err := reopened.TurnSubmission(event.DeliveryHostSessionID, event.ProviderTurnID)
+			if err != nil || !found || submission.State != watcher.TurnSubmissionRetired {
+				t.Fatalf("submission retirement missing after reopen: submission=%+v found=%v err=%v", submission, found, err)
+			}
+		})
+
+		t.Run(test.name+" write failure", func(t *testing.T) {
+			root, store, event, _ := preparePendingClaimedHostSubmission(t)
+			store.writeOrchestration = func(string, any) error { return errors.New("injected actor-resolution write failure") }
+			if err := test.apply(store, event); err == nil {
+				t.Fatal("injected persistence failure was ignored")
+			}
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, found, err := reopened.WorkEvent(event.ID)
+			if err != nil || !found || original.Resolution != "" || original.DeliveredAt != nil || original.DiscardedAt != nil {
+				t.Fatalf("write failure exposed partial Event resolution: event=%+v found=%v err=%v", original, found, err)
+			}
+			submission, found, err := reopened.TurnSubmission(event.DeliveryHostSessionID, event.ProviderTurnID)
+			if err != nil || !found || submission.State != watcher.TurnSubmissionPending {
+				t.Fatalf("write failure exposed partial retirement: submission=%+v found=%v err=%v", submission, found, err)
+			}
+		})
 	}
 }
 

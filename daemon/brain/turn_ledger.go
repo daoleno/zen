@@ -54,7 +54,8 @@ type TurnRecord struct {
 // row. It is intentionally stored outside brain_turns: Pending never becomes
 // the current Turn. Resolve atomically either records exact steering or adds
 // the freshly Accepted Turn; Abort is retained as a permanent non-adoptable
-// result.
+// result. Retire is the separate actor-authorized terminal result for a Host
+// delivery whose provider outcome is deliberately not adopted.
 type TurnSubmissionRecord struct {
 	SessionID          string                      `json:"session_id"`
 	ProposedTurnID     string                      `json:"proposed_turn_id"`
@@ -250,6 +251,14 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 			if submission.AbortedAt == nil || submission.ResolvedAt != nil || submission.ResolvedTurnID != "" ||
 				submission.ResolvedActivityID != "" || !submission.ResolvedAdmission.Empty() {
 				return fmt.Errorf("%s: aborted submission has invalid terminal fields", prefix)
+			}
+		case watcher.TurnSubmissionRetired:
+			if submission.ResolvedAt == nil || submission.AbortedAt != nil || submission.ResolvedTurnID != "" ||
+				submission.ResolvedActivityID != "" || !submission.ResolvedAdmission.Empty() {
+				return fmt.Errorf("%s: retired submission has invalid terminal fields", prefix)
+			}
+			if submission.ResolvedAt.Before(submission.AcceptedAt) {
+				return fmt.Errorf("%s: retired submission predates acceptance", prefix)
 			}
 		default:
 			return fmt.Errorf("%s: invalid state %q", prefix, submission.State)
@@ -631,6 +640,8 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 			return record.snapshot(), nil
 		case watcher.TurnSubmissionResolved:
 			return watcher.TurnSubmission{}, fmt.Errorf("resolved submission cannot be aborted")
+		case watcher.TurnSubmissionRetired:
+			return watcher.TurnSubmission{}, fmt.Errorf("actor-retired submission cannot be aborted")
 		case watcher.TurnSubmissionPending:
 			abortedAt := now
 			record.State = watcher.TurnSubmissionAborted
@@ -862,6 +873,8 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 	switch record.State {
 	case watcher.TurnSubmissionAborted:
 		return watcher.TurnSubmission{}, fmt.Errorf("aborted submission can never be adopted")
+	case watcher.TurnSubmissionRetired:
+		return watcher.TurnSubmission{}, fmt.Errorf("actor-retired submission can never be adopted")
 	case watcher.TurnSubmissionResolved:
 		// A matching Control signal may win the admission race before the
 		// provider adapter reports its tuple. Exact later provider evidence
@@ -2457,6 +2470,9 @@ func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
 	if original.Resolution != "" {
 		return WorkEvent{}, fmt.Errorf("event %s was already replayed; a second replay is not authorized", eventID)
 	}
+	if err := retireExactHostSubmissionForClaim(&database, original, now); err != nil {
+		return WorkEvent{}, err
+	}
 	nonce := uuid.NewString()
 	replay := WorkEvent{
 		ID:         uuid.NewString(),
@@ -2510,6 +2526,9 @@ func (s *Store) resolveClaimWithReconcile(eventID, actor, reason string, resolve
 	if event.DeliveredAt != nil || event.DiscardedAt != nil {
 		return fmt.Errorf("event %s is already resolved", eventID)
 	}
+	if err := retireExactHostSubmissionForClaim(&database, *event, now); err != nil {
+		return err
+	}
 	resolve(event, now)
 	itemIndex := workIndex(database.BrainWork, event.WorkID)
 	if itemIndex < 0 {
@@ -2528,6 +2547,39 @@ func (s *Store) resolveClaimWithReconcile(eventID, actor, reason string, resolve
 		return err
 	}
 	s.broadcastWorkChange(database.BrainWorkEvents[index].WorkID)
+	return nil
+}
+
+// retireExactHostSubmissionForClaim closes only the pre-mutation transaction
+// authorized by the held Event's complete five-part capability. Manual claim
+// resolution is neither proof of non-submission nor provider admission, so it
+// gets its own terminal state: future provider evidence cannot adopt it, and a
+// replacement Event is no longer blocked by the Session's sole-pending gate.
+// The caller persists this mutation together with the Event resolution.
+func retireExactHostSubmissionForClaim(database *orchestrationDatabase, event WorkEvent, now time.Time) error {
+	if database == nil || event.ID == "" || event.HandlingID == "" || event.WorkID == "" ||
+		event.DeliveryHostSessionID == "" || event.ProviderTurnID == "" {
+		return nil
+	}
+	for index := range database.BrainTurnSubmissions {
+		submission := &database.BrainTurnSubmissions[index]
+		if submission.Receipt != event.ID || submission.ClaimToken != event.HandlingID ||
+			submission.WorkID != event.WorkID || submission.SessionID != event.DeliveryHostSessionID ||
+			submission.ProposedTurnID != event.ProviderTurnID {
+			continue
+		}
+		switch submission.State {
+		case watcher.TurnSubmissionPending:
+			retiredAt := now.UTC()
+			submission.State = watcher.TurnSubmissionRetired
+			submission.ResolvedAt = &retiredAt
+			return nil
+		case watcher.TurnSubmissionAborted, watcher.TurnSubmissionResolved, watcher.TurnSubmissionRetired:
+			return nil
+		default:
+			return fmt.Errorf("exact Host submission has invalid state %q", submission.State)
+		}
+	}
 	return nil
 }
 

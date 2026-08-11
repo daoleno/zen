@@ -2238,6 +2238,33 @@ func TestSessionInputDuplicateNewTurnReceiptReturnsExistingLifecycleIdentity(t *
 	}
 }
 
+func TestSessionInputActorRetiredSubmissionCannotReplayOrAdopt(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	turn := testTurnDraft("actor-retired-turn", time.Now().UTC(), identity)
+	payload := "actor-retired payload"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	ledger.submissions[fakeSubmissionKey("agent:@1", turn.ID)] = TurnSubmission{
+		SessionID: "agent:@1", ProposedTurnID: turn.ID, Receipt: turn.ID,
+		PayloadSHA256: digest, State: TurnSubmissionRetired,
+	}
+
+	result, err := newLedgerSessionInputOwner(io, ledger).submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		payload, turn, scriptedCorrelatedAdmission(payload),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous || result.Outcome != InputAmbiguous || !result.Duplicate {
+		t.Fatalf("actor-retired duplicate=(%+v, %v), want ambiguous duplicate", result, err)
+	}
+	if len(io.queues) != 0 || io.startedQueues != 0 {
+		t.Fatalf("actor-retired duplicate replayed provider input: queues=%d started=%d", len(io.queues), io.startedQueues)
+	}
+	if _, found, err := ledger.Turn("agent:@1"); err != nil || found {
+		t.Fatalf("actor-retired duplicate created canonical Turn: found=%v err=%v", found, err)
+	}
+}
+
 func TestSessionInputAcceptedReceiptRestartReturnsOriginalTurnAfterSessionAdvances(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()

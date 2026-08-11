@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 8
+const orchestrationSchemaVersion = 9
 
 var (
 	ErrWorkNotFound         = errors.New("Brain Work not found")
@@ -717,7 +717,12 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 				break
 			}
 		}
-		return database, needsBind, nil
+		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
+	case 8:
+		// Schema 9 adds the explicit actor-retired Turn submission terminal
+		// state. The document shape is unchanged, so existing schema-8 rows are
+		// upgraded by the same deterministic whole-document conversion.
+		fallthrough
 	case orchestrationSchemaVersion:
 		var record orchestrationDatabaseRecord
 		// Ignore unknown never-released fields; bind missing source threads in ensure.
@@ -749,7 +754,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 				break
 			}
 		}
-		return database, needsBind, nil
+		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
 	default:
 		return orchestrationDatabase{}, false, fmt.Errorf(
 			"unsupported schema_version %d (latest %d)",
@@ -3545,6 +3550,8 @@ func (s *Store) ReleaseEventClaim(
 				// canonical abort before returning InputNotSubmitted. Releasing
 				// the still-claimed Event completes that safe held state.
 			case watcher.TurnSubmissionResolved:
+				return ErrEventClaim
+			case watcher.TurnSubmissionRetired:
 				return ErrEventClaim
 			default:
 				return ErrEventClaim

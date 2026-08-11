@@ -245,6 +245,11 @@ const (
 	TurnSubmissionPending  TurnSubmissionState = "pending"
 	TurnSubmissionResolved TurnSubmissionState = "resolved"
 	TurnSubmissionAborted  TurnSubmissionState = "aborted"
+	// TurnSubmissionRetired is an actor-authorized terminal state for a Host
+	// delivery transaction whose scheduler obligation was explicitly resolved.
+	// Unlike Aborted it does not claim that provider mutation was impossible;
+	// unlike Resolved it never authorizes a canonical Turn.
+	TurnSubmissionRetired TurnSubmissionState = "retired"
 )
 
 // TurnSubmissionMode records how a provider activity observed before

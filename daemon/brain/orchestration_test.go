@@ -78,6 +78,25 @@ func TestOrchestrationSchemaV5AddsEmptyPendingSubmissionTable(t *testing.T) {
 	}
 }
 
+func TestOrchestrationSchemaV8MigratesToActorRetirementSchema(t *testing.T) {
+	raw, err := json.Marshal(orchestrationDatabaseRecord{
+		SchemaVersion: 8, BrainInputAdmissions: []BrainInputAdmission{},
+		BrainWork: []workRecord{}, BrainWorkEvents: []WorkEvent{},
+		BrainTurns: []TurnRecord{}, BrainTurnSubmissions: []TurnSubmissionRecord{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || database.SchemaVersion != orchestrationSchemaVersion ||
+		database.BrainTurnSubmissions == nil {
+		t.Fatalf("v8 migration = migrated=%v database=%+v", migrated, database)
+	}
+}
+
 func TestOrchestrationSchemaV7DropsReservationSchedulerState(t *testing.T) {
 	// Schema 7 carried the rejected HostAttentionReservation scheduler
 	// (attention_reservation, attention_admissions, last_attention_work_id).
