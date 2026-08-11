@@ -184,9 +184,11 @@ func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error 
 
 	// A provider transcript snapshot can race between immutable admission
 	// preparation and acceptance. Reconcile only the exact provider-native row
-	// from that closed interval. This is deliberately narrower than ordinary
-	// echo suppression: exact thread, provider Session, digest, and timestamp
-	// are all required, and one admission may consume only one provider row.
+	// from the admission's causal window (same thread, provider Session,
+	// digest, recorded at or after admission creation). This is deliberately
+	// narrower than ordinary echo suppression: exact thread, provider Session,
+	// digest, and timestamp are all required, and one admission may consume
+	// only one provider row.
 	if len(candidates) > 1 {
 		return fmt.Errorf(
 			"Brain input admission %q has %d provider echoes in its acceptance window",

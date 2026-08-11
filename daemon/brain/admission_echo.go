@@ -41,8 +41,13 @@ func providerEchoMatchesAdmission(
 	if AdmissionDigest(strings.TrimSpace(body)) != admission.BodySHA256 {
 		return false
 	}
+	// No upper timestamp bound: the provider stamps its user_message row when
+	// the turn loop processes the input, which is always after the daemon's
+	// transport acceptance, so a bounded window could never match the echo it
+	// must claim. Causal credit order (one echo per admission, timeline-ordered
+	// admissions, stream-ordered events) is the only ordering authority.
 	createdAt = createdAt.UTC()
-	return !createdAt.Before(admission.CreatedAt.UTC()) && !createdAt.After(admission.AcceptedAt.UTC())
+	return !createdAt.Before(admission.CreatedAt.UTC())
 }
 
 func exactProviderEventTimestamp(event work.CodexConversationEvent) (time.Time, bool) {

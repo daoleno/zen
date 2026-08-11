@@ -125,7 +125,162 @@ func TestProviderEchoMaterializedDuringAdmissionWindowReconcilesAtProjection(t *
 	assertRacedAdmissionTimeline(t, reopened)
 }
 
-func TestProviderRowsOutsideExactAdmissionWindowRemainIndependent(t *testing.T) {
+// The provider stamps its user_message row when the turn loop processes the
+// input, always after the daemon's transport acceptance. An echo recorded
+// after AcceptedAt is therefore the admission's own echo, not an independent
+// input: materialized before acceptance it becomes a durable provider row that
+// projection must reconcile into the canonical admission row.
+func TestEchoRecordedAfterAcceptanceReconcilesAtProjection(t *testing.T) {
+	base := time.Date(2026, 8, 11, 14, 1, 0, 0, time.UTC)
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-window-safety"
+	body := "same body but independent input"
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return base }
+	candidate := BrainInputAdmission{
+		RequestID: "receipt-window-safety", ThreadID: threadID,
+		HostSessionID: "brain-host:@window-safety", SessionID: "provider-session", DisplayBody: body,
+	}
+	if _, created, err := store.PrepareBrainInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	// The provider row is recorded 1ns after the daemon would accept (accepted
+	// at base+1s): a bounded [CreatedAt, AcceptedAt] window could never match
+	// it, which is exactly the live duplicate-bubble defect.
+	providerID := "provider-session:user"
+	conversation := work.CodexConversation{
+		Available: true, SessionID: "provider-session",
+		Events: []work.CodexConversationEvent{{
+			ID: providerID, Timestamp: base.Add(time.Second + time.Nanosecond).Format(time.RFC3339Nano),
+			Kind: timelineKindUserMessage, Role: "user", Body: body,
+		}},
+	}
+	if err := store.MaterializeProviderConversation(threadID, conversation); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return base.Add(time.Second) }
+	accepted, _, changed, err := store.AcceptBrainInputAdmission(candidate)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v err=%v", changed, err)
+	}
+	if err := store.ProjectBrainInputAdmission(accepted); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("timeline=%+v err=%v", items, err)
+	}
+	if items[0].ID != candidate.RequestID || !items[0].BrainAdmission ||
+		items[0].AdmissionEchoEventID != providerID {
+		t.Fatalf("echo row was not reconciled into the admission: %+v", items)
+	}
+}
+
+// TestEchoAfterAcceptanceIsClaimedAndStartupRepairsExistingDuplicate mirrors
+// the live duplicate-bubble defect end to end: the provider records its
+// user_message echo only when the turn loop processes the input — seconds
+// after the daemon's transport acceptance — so a bounded echo window could
+// never claim it and the echo was materialized as a second durable user row.
+func TestEchoAfterAcceptanceIsClaimedAndStartupRepairsExistingDuplicate(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "thread-live-duplicate"
+	sessionID := "019fef19-live-provider-session"
+	body := "deployment message shown twice"
+	createdAt := time.Date(2026, 8, 11, 6, 0, 21, 45000000, time.UTC)
+	acceptedAt := createdAt.Add(261 * time.Millisecond)
+	accepted := acceptAndProjectEchoTestAdmission(
+		t, store, "mso94a8r_bs6v62", threadID, sessionID, body, createdAt, acceptedAt,
+	)
+	// The provider stamps the echo when the turn starts processing, 2.6s
+	// after the daemon accepted the transport write (live defect timings).
+	echoAt := acceptedAt.Add(2589 * time.Millisecond)
+	echoID := sessionID + ":7005935"
+	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+		Available: true, SessionID: sessionID,
+		Events: []work.CodexConversationEvent{{
+			ID: echoID, Timestamp: echoAt.Format(time.RFC3339Nano),
+			Kind: timelineKindUserMessage, Role: "user", Body: body,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("post-fix timeline=%+v err=%v", items, err)
+	}
+	if items[0].ID != accepted.RequestID || items[0].AdmissionEchoEventID != echoID {
+		t.Fatalf("admission did not claim its after-acceptance echo: %+v", items)
+	}
+
+	// Pre-fix live state: the echo was already materialized as a second
+	// durable user row (the bounded window never matched). The idempotent
+	// startup projection pass must repair it without any migration.
+	legacy, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	legacy.now = func() time.Time { return acceptedAt }
+	legacyPrepared, created, err := legacy.PrepareBrainInputAdmission(BrainInputAdmission{
+		RequestID: accepted.RequestID, ThreadID: threadID,
+		HostSessionID: "brain-host:@live", SessionID: sessionID, DisplayBody: body,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v err=%v", created, err)
+	}
+	legacyAccepted, _, changed, err := legacy.AcceptBrainInputAdmission(legacyPrepared)
+	if err != nil || !changed {
+		t.Fatalf("accept changed=%v err=%v", changed, err)
+	}
+	if _, err := legacy.AppendTimelineItem(brainInputAdmissionTimelineItem(legacyAccepted)); err != nil {
+		t.Fatal(err)
+	}
+	echoRow, ok := timelineItemFromProviderEvent(threadID, sessionID, work.CodexConversationEvent{
+		ID: echoID, Timestamp: echoAt.Format(time.RFC3339Nano),
+		Kind: timelineKindUserMessage, Role: "user", Body: body,
+	})
+	if !ok {
+		t.Fatal("provider echo row projection failed")
+	}
+	if _, err := legacy.AppendTimelineItem(echoRow); err != nil {
+		t.Fatal(err)
+	}
+	duplicated, err := legacy.ThreadTimeline(threadID, 0)
+	if err != nil || len(duplicated) != 2 {
+		t.Fatalf("pre-fix duplicate timeline=%+v err=%v", duplicated, err)
+	}
+
+	unprojected, more, err := legacy.UnprojectedBrainInputAdmissions(10)
+	if err != nil || more {
+		t.Fatalf("unprojected batch err=%v more=%v", err, more)
+	}
+	if len(unprojected) != 1 || unprojected[0].RequestID != accepted.RequestID {
+		t.Fatalf("startup pass did not select the unclaimed admission: %+v", unprojected)
+	}
+	if err := legacy.ProjectBrainInputAdmission(unprojected[0]); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := legacy.ThreadTimeline(threadID, 0)
+	if err != nil || len(repaired) != 1 {
+		t.Fatalf("repaired timeline=%+v err=%v", repaired, err)
+	}
+	if repaired[0].ID != accepted.RequestID || !repaired[0].BrainAdmission ||
+		repaired[0].AdmissionEchoEventID != echoID {
+		t.Fatalf("repair did not converge on the canonical admission row: %+v", repaired)
+	}
+}
+
+func TestProviderRowsBeforeAdmissionCreationOrOtherSessionRemainIndependent(t *testing.T) {
 	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name            string
@@ -133,7 +288,6 @@ func TestProviderRowsOutsideExactAdmissionWindowRemainIndependent(t *testing.T) 
 		providerAt      time.Time
 	}{
 		{name: "before prepare", providerSession: "provider-session", providerAt: base.Add(-time.Nanosecond)},
-		{name: "after accept", providerSession: "provider-session", providerAt: base.Add(time.Second + time.Nanosecond)},
 		{name: "other provider session", providerSession: "other-session", providerAt: base.Add(500 * time.Millisecond)},
 	}
 	for _, test := range tests {
@@ -193,7 +347,7 @@ func TestProviderRowsOutsideExactAdmissionWindowRemainIndependent(t *testing.T) 
 	}
 }
 
-func TestAdmissionFirstEchoMatchingRequiresExactSessionAndWindow(t *testing.T) {
+func TestAdmissionEchoMatchingRequiresExactSessionAndCreationBound(t *testing.T) {
 	base := time.Date(2026, 8, 11, 14, 15, 0, 0, time.UTC)
 	tests := []struct {
 		name            string
@@ -202,8 +356,11 @@ func TestAdmissionFirstEchoMatchingRequiresExactSessionAndWindow(t *testing.T) {
 		wantSuppressed  bool
 	}{
 		{name: "exact causal echo", providerSession: "provider-session", providerAt: base.Add(500 * time.Millisecond), wantSuppressed: true},
+		// The provider records its user_message row only when the turn starts
+		// processing, which is always after the daemon's transport acceptance;
+		// this is the admission's own echo and must be suppressed.
+		{name: "echo recorded after accept", providerSession: "provider-session", providerAt: base.Add(time.Second + time.Nanosecond), wantSuppressed: true},
 		{name: "same text before prepare", providerSession: "provider-session", providerAt: base.Add(-time.Nanosecond)},
-		{name: "same text after accept", providerSession: "provider-session", providerAt: base.Add(time.Second + time.Nanosecond)},
 		{name: "same text replacement session", providerSession: "replacement-session", providerAt: base.Add(500 * time.Millisecond)},
 	}
 	for _, test := range tests {
@@ -308,14 +465,14 @@ func TestProviderEchoAdmissionWindowAmbiguityFailsClosed(t *testing.T) {
 	}
 }
 
-func TestProjectionRejectsReconstructedAdmissionWindowAndPreservesProviderRow(t *testing.T) {
+func TestProjectionRejectsReconstructedAdmissionAndConsumesOwnEchoRow(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	threadID := "thread-reconstructed-window"
 	sessionID := "provider-reconstructed-window"
-	body := "same text outside the durable window"
+	body := "same text echoed after transport acceptance"
 	createdAt := time.Date(2026, 8, 11, 14, 45, 0, 0, time.UTC)
 	acceptedAt := createdAt.Add(time.Second)
 	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
@@ -360,16 +517,12 @@ func TestProjectionRejectsReconstructedAdmissionWindowAndPreservesProviderRow(t 
 		t.Fatal(err)
 	}
 	items, err = store.ThreadTimeline(threadID, 0)
-	if err != nil || len(items) != 2 {
+	if err != nil || len(items) != 1 {
 		t.Fatalf("durable projection timeline=%+v err=%v", items, err)
 	}
-	byID := map[string]TimelineItem{}
-	for _, item := range items {
-		byID[item.ID] = item
-	}
-	if byID[providerID].ID == "" || byID[providerID].BrainAdmission ||
-		byID[accepted.RequestID].AdmissionEchoEventID != "" {
-		t.Fatalf("durable window consumed outside provider row: %+v", items)
+	if items[0].ID != accepted.RequestID || !items[0].BrainAdmission ||
+		items[0].AdmissionEchoEventID != providerID {
+		t.Fatalf("durable projection left the echo row independent: %+v", items)
 	}
 }
 
