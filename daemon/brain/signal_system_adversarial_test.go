@@ -627,6 +627,138 @@ func TestSignalAdversarialContinueAcceptsExactCurrentProviderAdmission(t *testin
 	}
 }
 
+// A delegated successor may report ordinary progress immediately after its
+// provider admission, before Brain commits the delivered Host handling's exact
+// continue disposition. Those Turn facts and outbox rows are durable audit,
+// but they cannot advance the Work revision that is itself part of the Host
+// capability. Otherwise the frozen DeliveryWorkRevision can never match again
+// and the valid continuation is permanently wedged.
+func TestSignalAdversarialSuccessorRunningPreservesDeliveredDispositionRevision(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "Successor progress revision fence", "brain-agent-incumbent:@1")
+	appendSignalTestEvent(t, store, item, "successor-progress-fence")
+	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+	successor := "brain-agent-successor-progress:@1"
+	if _, err := store.ReserveWorkSuccessor(item.ID, successor); err != nil {
+		t.Fatal(err)
+	}
+
+	acceptedAt := time.Date(2026, 8, 11, 3, 0, 0, 0, time.UTC)
+	turnID := successor + ":turn:1"
+	digest := pendingSubmissionDigest("successor progress revision fence")
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: successor, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ProcessIdentity: "successor-process", PaneGeneration: "successor-pane",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh, SignalProtocol: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare successor=%+v created=%v err=%v", pending, created, err)
+	}
+	admission := watcher.TurnAdmission{
+		Stream: "provider", ID: "successor-admission", Cursor: 1,
+		SHA256: digest, At: acceptedAt.Add(time.Second),
+	}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: successor, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ActivityID: "successor-activity", Admission: admission,
+		ResolvedAt: acceptedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeProgress, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeProgress.Revision != delivered.DeliveryWorkRevision || beforeProgress.SuccessorReservation == nil ||
+		beforeProgress.SuccessorReservation.ProviderTurnID != turnID {
+		t.Fatalf("successor admission changed disposition authority: Work=%+v delivery=%+v", beforeProgress, delivered)
+	}
+	runningAt := acceptedAt.Add(2 * time.Second)
+	if snapshot, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: successor, TurnID: turnID, Class: watcher.EvidenceProvider,
+		Kind: "running", Bound: true, SourceID: "provider\x00successor-progress\x001",
+		Admission: admission, ActivityID: "successor-activity", StartedAt: acceptedAt,
+		At: runningAt, Summary: "Successor is running",
+	}); err != nil || !changed || snapshot.Status != watcher.TurnRunning {
+		t.Fatalf("running progress snapshot=%+v changed=%v err=%v", snapshot, changed, err)
+	}
+	afterProgress, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterProgress.Revision != delivered.DeliveryWorkRevision ||
+		!afterProgress.UpdatedAt.Equal(beforeProgress.UpdatedAt) {
+		t.Fatalf("successor progress invalidated exact disposition: before=%+v after=%+v delivery=%+v", beforeProgress, afterProgress, delivered)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID:       delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition:          WorkDispositionContinue,
+		SuccessorSessionID:   successor,
+	}
+	for name, mutate := range map[string]func(*WorkEventDispositionRequest){
+		"event":     func(candidate *WorkEventDispositionRequest) { candidate.EventID = "wrong-event" },
+		"handling":  func(candidate *WorkEventDispositionRequest) { candidate.HandlingID = "wrong-handling" },
+		"host turn": func(candidate *WorkEventDispositionRequest) { candidate.ProviderTurnID = "wrong-turn" },
+		"revision":  func(candidate *WorkEventDispositionRequest) { candidate.ExpectedWorkRevision++ },
+		"successor": func(candidate *WorkEventDispositionRequest) {
+			candidate.SuccessorSessionID = "brain-agent-coincident:@1"
+		},
+	} {
+		candidate := request
+		mutate(&candidate)
+		if _, _, err := reopened.ResolveWorkEvent(candidate); err == nil {
+			t.Fatalf("%s mismatch was accepted", name)
+		}
+	}
+	resolvedEvent, resolvedWork, err := reopened.ResolveWorkEvent(request)
+	if err != nil {
+		t.Fatalf("exact continue after running progress/reopen: %v", err)
+	}
+	if resolvedEvent.HandledAt == nil || resolvedWork.OwnerSessionID != successor ||
+		resolvedWork.SuccessorReservation != nil || resolvedWork.Revision != delivered.DeliveryWorkRevision+1 {
+		t.Fatalf("resolved Event=%+v Work=%+v", resolvedEvent, resolvedWork)
+	}
+	if _, _, err := reopened.ResolveWorkEvent(request); !errors.Is(err, ErrEventHandled) {
+		t.Fatalf("duplicate exact continue err=%v want ErrEventHandled", err)
+	}
+
+	events, err := reopened.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningRows := 0
+	for _, event := range events {
+		if event.Kind == "session.running" && event.SourceName == successor {
+			runningRows++
+			if event.Actionable || event.WorkRevision != delivered.DeliveryWorkRevision {
+				t.Fatalf("successor running outbox row = %+v", event)
+			}
+		}
+	}
+	if runningRows != 1 {
+		t.Fatalf("successor running rows=%d events=%#v", runningRows, events)
+	}
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, err := reopenedAgain.Work(item.ID)
+	if err != nil || durable.OwnerSessionID != successor || durable.Revision != resolvedWork.Revision {
+		t.Fatalf("second reopen Work=%+v err=%v", durable, err)
+	}
+}
+
 // canonicalHostDeliveryWatcher exercises the same prepare/provider/resolve
 // transaction owned by Watcher.SubmitBrainHostInput. It deliberately does not
 // bootstrap an Admitted Turn: product-path Host delivery evidence must come

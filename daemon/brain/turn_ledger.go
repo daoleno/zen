@@ -2063,11 +2063,18 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	var workItem Work
 	workChanged := false
 	terminalWork := false
+	dispositionRevisionFrozen := false
 	if workIndex >= 0 {
 		workItem = database.BrainWork[workIndex]
 		terminalWork = workItem.Status == WorkDone || workItem.Status == WorkCancelled
+		// A delivered Host handling carries the exact Work revision required
+		// for its eventual disposition. A newly admitted successor can report
+		// progress before that disposition commits; its Turn facts/outbox rows
+		// remain durable, but they cannot mutate Work or advance the capability's
+		// revision fence. ResolveWorkEvent is the sole owner of that transition.
+		dispositionRevisionFrozen = workHasInFlightHandling(database, turn.WorkID)
 	}
-	if !terminalWork && mutation.hint != nil && workIndex >= 0 {
+	if !terminalWork && !dispositionRevisionFrozen && mutation.hint != nil && workIndex >= 0 {
 		note := "Delegated Session reported " +
 			strings.TrimPrefix(mutation.hint.Kind, "session.") +
 			"; awaiting provider confirmation"
@@ -2078,7 +2085,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			workChanged = true
 		}
 	}
-	if !terminalWork && (mutation.workUpdate.Status != nil || mutation.workUpdate.NextAction != nil) {
+	if !terminalWork && !dispositionRevisionFrozen && (mutation.workUpdate.Status != nil || mutation.workUpdate.NextAction != nil) {
 		update := mutation.workUpdate
 		if workIndex >= 0 && workUpdateChanges(workItem, update) {
 			applyWorkUpdate(&workItem, update)
@@ -2087,7 +2094,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			workChanged = true
 		}
 	}
-	if !terminalWork && mutation.eventActionable &&
+	if !terminalWork && !dispositionRevisionFrozen && mutation.eventActionable &&
 		(turn.ControlState == watcher.TurnControlOwnershipLost ||
 			watcher.TurnTerminal(turn.Status) && !watcher.TurnImmutable(turn.Status)) &&
 		workIndex >= 0 && strings.TrimSpace(workItem.OwnerSessionID) == turn.SessionID {
@@ -2140,7 +2147,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 					database.BrainWork[workIndex] = workItem
 					revisionBumped = true
 				}
-				event, err = appendWorkEventLocked(&database, workIndex, event, !revisionBumped)
+				event, err = appendWorkEventLocked(&database, workIndex, event, !revisionBumped && !dispositionRevisionFrozen)
 				if err != nil {
 					return watcher.TurnSnapshot{}, false, err
 				}
@@ -2155,7 +2162,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			!database.BrainWorkEvents[eventIndex].Actionable {
 			// In-place correction flip: the same row becomes actionable; the
 			// row count never changes, so no second wake is possible.
-			if workIndex >= 0 && !revisionBumped {
+			if workIndex >= 0 && !revisionBumped && !dispositionRevisionFrozen {
 				workItem.Revision++
 				workItem.UpdatedAt = now
 				database.BrainWork[workIndex] = workItem
@@ -2173,7 +2180,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			eventCreated = true
 		}
 	}
-	if workChanged && !revisionBumped && workIndex >= 0 {
+	if workChanged && !revisionBumped && !dispositionRevisionFrozen && workIndex >= 0 {
 		workItem.Revision++
 		database.BrainWork[workIndex] = workItem
 	}
