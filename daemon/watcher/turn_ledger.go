@@ -303,14 +303,16 @@ type TurnSubmissionResolution struct {
 }
 
 // TurnSubmissionLedger is the transactional delegated-input half of the
-// canonical Turn Ledger. Prepare persists before provider mutation without
-// replacing the current Turn. Resolve atomically either records steering on
-// the existing exact activity or promotes the proposed Turn; Abort is a
-// permanent, non-adoptable terminal state.
+// canonical Turn Ledger. Prepare persists one exact input transaction before
+// provider mutation without replacing the current Turn; several distinct
+// pending transactions may coexist for one Session, and each resolves,
+// aborts, or retires only from its own exact evidence. Resolve atomically
+// either records steering on the existing exact activity or promotes the
+// proposed Turn; Abort is a permanent, non-adoptable terminal state.
 type TurnSubmissionLedger interface {
 	PrepareTurnSubmission(submission TurnSubmission) (TurnSubmission, bool, error)
 	TurnSubmission(sessionID, proposedTurnID string) (TurnSubmission, bool, error)
-	PendingTurnSubmission(sessionID string) (TurnSubmission, bool, error)
+	PendingTurnSubmissions(sessionID string) ([]TurnSubmission, error)
 	ResolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error)
 	AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (TurnSubmission, error)
 }

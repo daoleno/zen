@@ -169,19 +169,20 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	if hasTurn {
 		t.Fatalf("ambiguous admission created a phantom current Turn: %+v", turn)
 	}
-	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.State != TurnSubmissionPending {
-		t.Fatalf("canonical pending submission = %+v found=%v", pending, found)
+	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+		t.Fatalf("canonical pending submission = %+v", pendingList)
 	}
 
 	// The poll resolves the exact pending admission first, then the normal
 	// reducer advances Accepted → Running; input is never replayed.
-	pending, found, pendingErr := w.pendingTurnSubmission(sessionID)
+	pendingList, pendingErr := w.pendingTurnSubmissions(sessionID)
 	if pendingErr != nil {
 		t.Fatal(pendingErr)
 	}
-	if !found {
+	if len(pendingList) != 1 {
 		t.Fatal("pending submission disappeared before provider reconciliation")
 	}
+	pending := pendingList[0]
 	provider := probe.next()
 	if _, resolved := w.resolvePendingProviderAdmission(pending, provider, now.Add(3*time.Second)); !resolved {
 		t.Fatal("exact pending provider admission did not resolve")
@@ -345,8 +346,8 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) 
 	if turn, found, _ := ledger.Turn(sessionID); found {
 		t.Fatalf("ambiguous admission without evidence created a Turn: %+v", turn)
 	}
-	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.State != TurnSubmissionPending {
-		t.Fatalf("pending submission = %+v found=%v", pending, found)
+	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+		t.Fatalf("pending submission = %+v", pendingList)
 	}
 	if _, err := w.RebindDelegatedTurnProjection(sessionID); err != nil {
 		t.Fatal(err)
@@ -523,16 +524,20 @@ func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 	if !hasTurn || turn.TurnID != firstTurn || turn.Status != TurnDone {
 		t.Fatalf("ambiguous send replaced prior terminal Turn: %+v", turn)
 	}
-	if pending, found, _ := ledger.PendingTurnSubmission(sessionID); !found || pending.ProposedTurnID != followTurn {
-		t.Fatalf("fresh pending candidate = %+v found=%v", pending, found)
+	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn {
+		t.Fatalf("fresh pending candidate = %+v", pendingList)
 	}
 
 	// Provider evidence for normalized/different bytes cannot claim the
 	// pending payload, whether running or terminal.
-	pending, _, pendingErr := w.pendingTurnSubmission(sessionID)
+	pendingList, pendingErr := w.pendingTurnSubmissions(sessionID)
 	if pendingErr != nil {
 		t.Fatal(pendingErr)
 	}
+	if len(pendingList) != 1 {
+		t.Fatalf("pending submissions = %+v", pendingList)
+	}
+	pending := pendingList[0]
 	if _, resolved := w.resolvePendingProviderAdmission(pending, probe.next(), now.Add(3*time.Second)); resolved {
 		t.Fatal("mismatched provider digest adopted pending submission")
 	}

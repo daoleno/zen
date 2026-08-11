@@ -433,14 +433,16 @@ func (owner *sessionInputOwner) receiptOutcome(
 			return err
 		}
 		if submissions, ok := owner.ledger.(TurnSubmissionLedger); ok {
-			pending, pendingFound, pendingErr := submissions.PendingTurnSubmission(sessionID)
+			pendingList, pendingErr := submissions.PendingTurnSubmissions(sessionID)
 			if pendingErr != nil {
-				return fmt.Errorf("read canonical pending submission: %w", pendingErr)
+				return fmt.Errorf("read canonical pending submissions: %w", pendingErr)
 			}
-			if pendingFound && pending.Receipt == result.Receipt &&
-				(pending.ProcessIdentity != delegatedTurnIdentity(expected) ||
-					pending.PaneGeneration != baseline.generation) {
-				return fmt.Errorf("pending submission target identity no longer matches; receipt absence is ambiguous")
+			for _, pending := range pendingList {
+				if pending.Receipt == result.Receipt &&
+					(pending.ProcessIdentity != delegatedTurnIdentity(expected) ||
+						pending.PaneGeneration != baseline.generation) {
+					return fmt.Errorf("pending submission target identity no longer matches; receipt absence is ambiguous")
+				}
 			}
 		}
 		entry, exists := ledger.entry(result.Receipt)

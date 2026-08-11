@@ -697,8 +697,8 @@ func TestPrepareTurnSubmissionOwnerAdmissionHasOneConcurrentWinner(t *testing.T)
 	if got.OwnerSessionID != winnerID || got.Status != WorkRunning {
 		t.Fatalf("attached Work=%#v winner=%q", got, winnerID)
 	}
-	if pending, found, err := store.PendingTurnSubmission(winnerID); err != nil || !found || pending.WorkID != item.ID {
-		t.Fatalf("winning owner lacks pending submission: submission=%+v found=%v err=%v", pending, found, err)
+	if pendingList, err := store.PendingTurnSubmissions(winnerID); err != nil || len(pendingList) != 1 || pendingList[0].WorkID != item.ID {
+		t.Fatalf("winning owner lacks pending submission: submissions=%+v err=%v", pendingList, err)
 	}
 }
 

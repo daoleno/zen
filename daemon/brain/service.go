@@ -391,11 +391,11 @@ func (s *Service) TurnSubmission(sessionID, proposedTurnID string) (watcher.Turn
 	return s.store.TurnSubmission(sessionID, proposedTurnID)
 }
 
-func (s *Service) PendingTurnSubmission(sessionID string) (watcher.TurnSubmission, bool, error) {
+func (s *Service) PendingTurnSubmissions(sessionID string) ([]watcher.TurnSubmission, error) {
 	if s == nil || s.store == nil {
-		return watcher.TurnSubmission{}, false, nil
+		return nil, nil
 	}
-	return s.store.PendingTurnSubmission(sessionID)
+	return s.store.PendingTurnSubmissions(sessionID)
 }
 
 func (s *Service) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolution) (watcher.TurnSubmission, error) {

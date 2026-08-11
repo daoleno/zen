@@ -455,11 +455,10 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 		if turnErr != nil {
 			err = turnErr
 		}
-		var pending TurnSubmission
-		var hasPending bool
+		var pendingList []TurnSubmission
 		if err == nil {
 			var pendingErr error
-			pending, hasPending, pendingErr = w.pendingTurnSubmission(sessionID)
+			pendingList, pendingErr = w.pendingTurnSubmissions(sessionID)
 			if pendingErr != nil {
 				err = pendingErr
 			}
@@ -468,8 +467,12 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 		if err == nil && hasTurn &&
 			turn.ControlState == TurnControlOwnershipLost {
 			err = fmt.Errorf("delegated Session control ownership was lost")
-		} else if err == nil && hasPending {
-			expectedProcess, expectedPane = pending.ProcessIdentity, pending.PaneGeneration
+		} else if err == nil && len(pendingList) > 0 {
+			// Several distinct pending transactions may coexist; the newest
+			// one is the current mutation attempt and owns the expected
+			// generation. Older pending rows never gate the owned generation.
+			latest := pendingList[len(pendingList)-1]
+			expectedProcess, expectedPane = latest.ProcessIdentity, latest.PaneGeneration
 		} else if err == nil && hasTurn && !TurnTerminal(turn.Status) {
 			expectedProcess, expectedPane = turn.ProcessIdentity, turn.PaneGeneration
 		}
@@ -502,9 +505,9 @@ func (w *Watcher) ResolveDelegatedControl(sessionID string) (OwnedGeneration, er
 	if err != nil || !found {
 		return owned, err
 	}
-	if pending, hasPending, pendingErr := w.pendingTurnSubmission(sessionID); pendingErr != nil {
+	if pendingList, pendingErr := w.pendingTurnSubmissions(sessionID); pendingErr != nil {
 		return OwnedGeneration{}, pendingErr
-	} else if hasPending && pending.State == TurnSubmissionPending {
+	} else if len(pendingList) > 0 {
 		return owned, nil
 	}
 	w.mu.RLock()
@@ -755,6 +758,7 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	var turn TurnSnapshot
 	hasCurrentTurn := false
 	hasPendingSubmission := false
+	var pendingList []TurnSubmission
 	signalOwned := false
 	appliedFact := false
 	if w.turnLedger != nil {
@@ -782,17 +786,19 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 			return nil, fmt.Errorf("turn identity does not match a delegated signal contract")
 		}
 		// Pre-contract/provider-native behavior reads the authoritative current
-		// Turn and pending transaction exactly as before. This path can never
+		// Turn and pending transactions exactly as before. This path can never
 		// consume a prompt-carried identity.
 		var turnErr error
 		turn, hasCurrentTurn, turnErr = w.ledgerTurnAuthoritative(id, now)
 		if turnErr != nil {
 			return nil, turnErr
 		}
-		_, hasPendingSubmission, turnErr = w.pendingTurnSubmission(id)
-		if turnErr != nil {
-			return nil, turnErr
+		var pendingErr error
+		pendingList, pendingErr = w.pendingTurnSubmissions(id)
+		if pendingErr != nil {
+			return nil, pendingErr
 		}
+		hasPendingSubmission = len(pendingList) > 0
 		if hasCurrentTurn && !hasPendingSubmission && w.turnLedger != nil {
 			if fact := controlFactFromProgress(id, turn.TurnID, progress, now); fact != nil {
 				snapshot, changed, applyErr := w.turnLedger.ApplyTurnFact(*fact)
@@ -921,10 +927,11 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 	if err != nil {
 		return nil, err
 	}
-	_, hasPendingSubmission, pendingErr := w.pendingTurnSubmission(id)
+	pendingList, pendingErr := w.pendingTurnSubmissions(id)
 	if pendingErr != nil {
 		return nil, pendingErr
 	}
+	hasPendingSubmission := len(pendingList) > 0
 	if !hasTurn && !hasPendingSubmission {
 		return nil, fmt.Errorf("delegated Session %s has no canonical turn", id)
 	}
@@ -1238,7 +1245,8 @@ func (w *Watcher) poll() {
 		// a nil Provider probe: only the Provider observation is gated, so
 		// liveness facts (abnormal exit, end-of-identity) always apply.
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
-		pending, hasPending, pendingErr := w.pendingTurnSubmission(item.id)
+		pendingList, pendingErr := w.pendingTurnSubmissions(item.id)
+		hasPending := len(pendingList) > 0
 		if pendingErr != nil {
 			turnErr = pendingErr
 		}
@@ -1247,8 +1255,13 @@ func (w *Watcher) poll() {
 			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
 		}
 		if hasPending && providerFactRelevant(provider) {
-			if _, resolved := w.resolvePendingProviderAdmission(pending, provider, item.now); resolved {
-				turn, hasTurn, turnErr = w.ledgerTurnAuthoritative(item.id, item.now)
+			for _, pending := range pendingList {
+				// Each pending row is one exact input transaction: only the row
+				// whose payload digest and generation match the provider's
+				// admission tuple resolves; the others stay pending.
+				if _, resolved := w.resolvePendingProviderAdmission(pending, provider, item.now); resolved {
+					turn, hasTurn, turnErr = w.ledgerTurnAuthoritative(item.id, item.now)
+				}
 			}
 		}
 		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
@@ -1580,19 +1593,15 @@ func (w *Watcher) ledgerTurnAuthoritative(
 	return turn, hasTurn, nil
 }
 
-func (w *Watcher) pendingTurnSubmission(sessionID string) (TurnSubmission, bool, error) {
+func (w *Watcher) pendingTurnSubmissions(sessionID string) ([]TurnSubmission, error) {
 	if w == nil || w.turnLedger == nil {
-		return TurnSubmission{}, false, nil
+		return nil, nil
 	}
 	ledger, ok := w.turnLedger.(TurnSubmissionLedger)
 	if !ok {
-		return TurnSubmission{}, false, nil
+		return nil, nil
 	}
-	submission, found, err := ledger.PendingTurnSubmission(sessionID)
-	if err != nil {
-		return TurnSubmission{}, false, err
-	}
-	return submission, found, nil
+	return ledger.PendingTurnSubmissions(sessionID)
 }
 
 // resolvePendingProviderAdmission is the restart/crash recovery path for the

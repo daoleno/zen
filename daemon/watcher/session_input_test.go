@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -430,11 +431,6 @@ func (l *fakeTurnLedger) PrepareTurnSubmission(submission TurnSubmission) (TurnS
 	if existing, ok := l.submissions[key]; ok {
 		return existing, false, nil
 	}
-	for _, existing := range l.submissions {
-		if existing.SessionID == submission.SessionID && existing.State == TurnSubmissionPending {
-			return TurnSubmission{}, false, fmt.Errorf("pending submission exists")
-		}
-	}
 	submission.State = TurnSubmissionPending
 	l.submissions[key] = submission
 	return submission, true, nil
@@ -447,15 +443,22 @@ func (l *fakeTurnLedger) TurnSubmission(sessionID, proposedTurnID string) (TurnS
 	return submission, ok, nil
 }
 
-func (l *fakeTurnLedger) PendingTurnSubmission(sessionID string) (TurnSubmission, bool, error) {
+func (l *fakeTurnLedger) PendingTurnSubmissions(sessionID string) ([]TurnSubmission, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	out := []TurnSubmission{}
 	for _, submission := range l.submissions {
 		if submission.SessionID == sessionID && submission.State == TurnSubmissionPending {
-			return submission, true, nil
+			out = append(out, submission)
 		}
 	}
-	return TurnSubmission{}, false, nil
+	sort.SliceStable(out, func(left, right int) bool {
+		if out[left].AcceptedAt.Equal(out[right].AcceptedAt) {
+			return out[left].ProposedTurnID < out[right].ProposedTurnID
+		}
+		return out[left].AcceptedAt.Before(out[right].AcceptedAt)
+	})
+	return out, nil
 }
 
 func (l *fakeTurnLedger) ResolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error) {
@@ -1356,8 +1359,8 @@ func TestSessionInputPostMutationIdentityReplacementCannotResolvePending(t *test
 	if _, found, _ := ledger.Turn("agent:@1"); found {
 		t.Fatal("replacement provider admission promoted a canonical Turn")
 	}
-	if pending, found, _ := ledger.PendingTurnSubmission("agent:@1"); !found || pending.State != TurnSubmissionPending {
-		t.Fatalf("replacement lost ledger-owned pending transaction: %+v found=%v", pending, found)
+	if pendingList, _ := ledger.PendingTurnSubmissions("agent:@1"); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+		t.Fatalf("replacement lost ledger-owned pending transaction: %+v", pendingList)
 	}
 }
 
@@ -1401,9 +1404,9 @@ func TestSessionInputPendingTargetReplacementCannotProveMissingReceipt(t *testin
 			if err == nil || found || result.Outcome != InputNotSubmitted {
 				t.Fatalf("replacement missing receipt=(%+v, found=%v, err=%v), want ambiguous hold evidence", result, found, err)
 			}
-			retained, retainedFound, retainedErr := ledger.PendingTurnSubmission("agent:@1")
-			if retainedErr != nil || !retainedFound || retained.State != TurnSubmissionPending || retained.Receipt != pending.Receipt {
-				t.Fatalf("replacement receipt probe changed pending owner=(%+v, %v, %v)", retained, retainedFound, retainedErr)
+			retainedList, retainedErr := ledger.PendingTurnSubmissions("agent:@1")
+			if retainedErr != nil || len(retainedList) != 1 || retainedList[0].State != TurnSubmissionPending || retainedList[0].Receipt != pending.Receipt {
+				t.Fatalf("replacement receipt probe changed pending owner=%+v err=%v", retainedList, retainedErr)
 			}
 		})
 	}
@@ -2067,8 +2070,8 @@ func TestSessionInputCursorFollowUpIsNotAcceptedWithoutProviderStart(t *testing.
 	if _, found, _ := ledger.Turn("agent:@1"); found {
 		t.Fatalf("ambiguous follow-up created a canonical Turn: %+v", ledger.snapshot("agent:@1"))
 	}
-	if pending, found, _ := ledger.PendingTurnSubmission("agent:@1"); !found || pending.State != TurnSubmissionPending {
-		t.Fatalf("ambiguous follow-up lost pending transaction: %+v found=%v", pending, found)
+	if pendingList, _ := ledger.PendingTurnSubmissions("agent:@1"); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+		t.Fatalf("ambiguous follow-up lost pending transaction: %+v", pendingList)
 	}
 }
 
@@ -2136,9 +2139,9 @@ func TestSessionInputAbortPersistenceFailureIsAmbiguousWithoutProviderMutation(t
 	if io.startedQueues != 0 {
 		t.Fatalf("provider mutated on pre-start failure: started queues=%d", io.startedQueues)
 	}
-	pending, found, pendingErr := ledger.PendingTurnSubmission("agent:@1")
-	if pendingErr != nil || !found || pending.State != TurnSubmissionPending {
-		t.Fatalf("failed abort did not retain pending owner = (%+v, %v, %v)", pending, found, pendingErr)
+	pendingList, pendingErr := ledger.PendingTurnSubmissions("agent:@1")
+	if pendingErr != nil || len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+		t.Fatalf("failed abort did not retain pending owner = %+v err=%v", pendingList, pendingErr)
 	}
 }
 
@@ -2762,5 +2765,110 @@ func TestSessionInputProviderAdapterSurfaceStaysThin(t *testing.T) {
 	if cursor.submitKey != "Enter" || cursor.prepare != 400*time.Millisecond ||
 		cursor.settle != 2*time.Second {
 		t.Fatalf("Cursor adapter = %+v", cursor)
+	}
+}
+
+// The Session input path treats a pending row as one exact transaction, not a
+// Session mutex: while an older distinct pending row exists for the same
+// Session and provider generation, a newer input still proceeds to the
+// provider queue/mutation seam and returns accepted instead of failing closed.
+func TestSessionInputNewDistinctInputProceedsWhileOlderPendingRowExists(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	owner := newLedgerSessionInputOwner(io, ledger)
+	older := testTurnDraft("older-pending", time.Now().UTC().Add(-time.Minute), identity)
+	olderDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("older payload")))
+	olderPending, created, err := ledger.PrepareTurnSubmission(TurnSubmission{
+		WorkID: "work-older", SessionID: "agent:@1", ProposedTurnID: older.ID,
+		Receipt: older.ID, PayloadSHA256: olderDigest,
+		ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: io.paneValue.generation,
+		AcceptedAt: older.AcceptedAt, Mode: TurnSubmissionFresh,
+	})
+	if err != nil || !created || olderPending.State != TurnSubmissionPending {
+		t.Fatalf("prepare older pending=(%+v, %v, %v)", olderPending, created, err)
+	}
+
+	// A distinct input for the same Session and provider generation reaches
+	// the provider mutation seam exactly once and is accepted.
+	newer := testTurnDraft("newer-turn", time.Now().UTC(), identity)
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
+		"newer payload", newer, scriptedCorrelatedAdmission("newer payload"),
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != newer.ID {
+		t.Fatalf("newer submit = (%+v, %v), want accepted", result, err)
+	}
+	if io.startedQueues != 1 || len(io.queues) != 1 {
+		t.Fatalf("newer input did not reach the provider mutation seam: queues=%d started=%d", len(io.queues), io.startedQueues)
+	}
+	// The older row stays pending; the newer row is durably resolved.
+	pendingList, pendingErr := ledger.PendingTurnSubmissions("agent:@1")
+	if pendingErr != nil || len(pendingList) != 1 || pendingList[0].ProposedTurnID != older.ID {
+		t.Fatalf("pending rows=%+v err=%v, want only the older transaction", pendingList, pendingErr)
+	}
+	resolvedNewer, found, err := ledger.TurnSubmission("agent:@1", newer.ID)
+	if err != nil || !found || resolvedNewer.State != TurnSubmissionResolved {
+		t.Fatalf("newer transaction is not durably resolved: %+v found=%v err=%v", resolvedNewer, found, err)
+	}
+}
+
+// The provider poll iterates every pending row and resolves only the row
+// whose exact admission tuple (payload digest and generation) matches the
+// current observation; an older coexisting row stays pending.
+func TestWatcherPollResolvesOnlyExactPendingRowAmongCoexistingRows(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	probe := &fixedStateProbe{obs: ProviderActivityObservation{Structured: true, FallbackAllowed: true}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	sessionID := "opencode-coexist:@1"
+	w.agents[sessionID] = &classifier.Agent{
+		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, Delegated: true,
+	}
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		t.Fatal("target identity is unavailable")
+	}
+	processIdentity := delegatedTurnIdentity(identity)
+	now := time.Now().UTC()
+	digestA := fmt.Sprintf("%x", sha256.Sum256([]byte("payload A")))
+	digestB := fmt.Sprintf("%x", sha256.Sum256([]byte("payload B")))
+	seedPending := func(turnID, digest string, acceptedAt time.Time) {
+		t.Helper()
+		if _, created, err := ledger.PrepareTurnSubmission(TurnSubmission{
+			WorkID: "work-coexist", SessionID: sessionID, ProposedTurnID: turnID,
+			Receipt: turnID, PayloadSHA256: digest,
+			ProcessIdentity: processIdentity, PaneGeneration: io.paneValue.generation,
+			AcceptedAt: acceptedAt, Mode: TurnSubmissionFresh,
+		}); err != nil || !created {
+			t.Fatalf("seed pending %s created=%v err=%v", turnID, created, err)
+		}
+	}
+	seedPending(sessionID+":turn:A", digestA, now.Add(-time.Minute))
+	seedPending(sessionID+":turn:B", digestB, now)
+
+	// Provider evidence admits exactly B's bytes; the poll loop must resolve B
+	// while A stays pending (a first-row-only loop would never resolve B).
+	probe.obs = ProviderActivityObservation{
+		ID: "act-b", Status: "running", StartedAt: now,
+		AdmissionStream: "opencode_db\x00coexist\x00/db", AdmissionID: "msg-b",
+		AdmissionCursor: 2, AdmissionAt: now, InputSHA256: digestB, Structured: true,
+	}
+	windows := []tmuxWindow{{target: sessionID, name: "worker", cwd: "/repo/zen", command: "opencode", panePID: 333, delegated: true}}
+	restore := installFakePollSeams(windows, map[string]string{sessionID: "OpenCode\nworking\n"}, map[int]processInfo{333: fakeProcess(333, now)})
+	defer restore()
+	w.poll()
+
+	resolvedB, found, err := ledger.TurnSubmission(sessionID, sessionID+":turn:B")
+	if err != nil || !found || resolvedB.State != TurnSubmissionResolved {
+		t.Fatalf("exact B resolution = %+v found=%v err=%v", resolvedB, found, err)
+	}
+	pendingA, found, err := ledger.TurnSubmission(sessionID, sessionID+":turn:A")
+	if err != nil || !found || pendingA.State != TurnSubmissionPending {
+		t.Fatalf("coexisting A was settled by B's evidence: %+v found=%v err=%v", pendingA, found, err)
+	}
+	if turn, hasTurn, err := ledger.Turn(sessionID); err != nil || !hasTurn || turn.TurnID != sessionID+":turn:B" {
+		t.Fatalf("canonical Turn=%+v hasTurn=%v err=%v", turn, hasTurn, err)
 	}
 }

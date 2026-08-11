@@ -313,9 +313,9 @@ func TestClaimResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T
 			if err != nil || !found || old.State != watcher.TurnSubmissionState("retired") {
 				t.Fatalf("retired terminal state did not survive second reopen: submission=%+v found=%v err=%v", old, found, err)
 			}
-			current, found, err := reopenedAgain.PendingTurnSubmission(original.DeliveryHostSessionID)
-			if err != nil || !found || current.ProposedTurnID != next.ProviderTurnID {
-				t.Fatalf("replacement pending identity after reopen=%+v found=%v err=%v", current, found, err)
+			current, err := reopenedAgain.PendingTurnSubmissions(original.DeliveryHostSessionID)
+			if err != nil || len(current) != 1 || current[0].ProposedTurnID != next.ProviderTurnID {
+				t.Fatalf("replacement pending identity after reopen=%+v err=%v", current, err)
 			}
 		})
 	}

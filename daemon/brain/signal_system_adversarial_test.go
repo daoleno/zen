@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -726,8 +727,8 @@ func TestSignalAdversarialAmbiguousOldHostGenerationCannotWedgeReplacementLane(t
 		t.Fatalf("replacement delivery counts prepare=%d resolve=%d sends=%d", delivery.prepareCount, delivery.resolveCount, len(delivery.sentCalls))
 	}
 	oldDurable, found, err := store.TurnSubmission(hostID, oldClaim.ProviderTurnID)
-	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionRetired {
-		t.Fatalf("old Host authority was not retired: submission=%+v found=%v err=%v", oldDurable, found, err)
+	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("old Host authority was settled without exact evidence: submission=%+v found=%v err=%v", oldDurable, found, err)
 	}
 	oldRow, found, err := store.WorkEvent(oldClaim.ID)
 	if err != nil || !found || oldRow.ClaimedAt == nil || oldRow.DeliveredAt != nil || oldRow.Resolution != "" {
@@ -747,8 +748,8 @@ func TestSignalAdversarialAmbiguousOldHostGenerationCannotWedgeReplacementLane(t
 		t.Fatal(err)
 	}
 	oldDurable, found, err = reopened.TurnSubmission(hostID, oldClaim.ProviderTurnID)
-	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionRetired {
-		t.Fatalf("old Host retirement did not survive reopen: submission=%+v found=%v err=%v", oldDurable, found, err)
+	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("held old Host transaction did not survive reopen: submission=%+v found=%v err=%v", oldDurable, found, err)
 	}
 	newRow, found, err = reopened.WorkEvent(newEvent.ID)
 	if err != nil || !found || newRow.DeliveredAt == nil {
@@ -1949,20 +1950,18 @@ func TestSignalAdversarialInitialOwnerAdmissionAndPendingSubmissionAreAtomicAcro
 	}
 }
 
-// A stable Session name is a UI container, not provider mutation authority.
-// Once the watcher has admitted a newer exact pane/process generation, an
-// ambiguous pending transaction from the replaced generation must remain
-// non-adoptable audit without wedging the new generation forever. The
-// replacement and retirement are one durable write; a concurrent input aimed
-// at the same generation is still rejected.
-func TestSignalAdversarialReplacedProviderGenerationRetiresOldPendingAtomically(t *testing.T) {
+// A pending row is one exact input transaction, never a Session or provider
+// generation mutex. Distinct transactions coexist for the same Session and
+// generation; exact provider evidence resolves only the matching row, and an
+// older pending transaction never blocks a newer prepare, restart, or submit.
+func TestSignalAdversarialDistinctPendingTransactionsCoexistAndResolveExactly(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	item, err := store.CreateWork(Work{
-		Title: "Replaced provider generation", Objective: "Keep one mutation authority per exact provider generation.",
+		Title: "Distinct pending transactions", Objective: "Keep canonical Turn authority per exact transaction.",
 		Status: WorkOpen, CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
@@ -1980,20 +1979,29 @@ func TestSignalAdversarialReplacedProviderGenerationRetiresOldPendingAtomically(
 		t.Fatalf("prepare old generation created=%v submission=%+v err=%v", created, oldPending, err)
 	}
 
+	// A distinct input for the SAME Session and provider generation is
+	// admitted while the older transaction is still pending.
 	sameGeneration := delegatedSubmissionCandidate(
 		item.ID, sessionID, sessionID+":turn:concurrent", "concurrent same-generation input", acceptedAt.Add(time.Second),
 	)
 	sameGeneration.ProcessIdentity = oldCandidate.ProcessIdentity
 	sameGeneration.PaneGeneration = oldCandidate.PaneGeneration
-	if _, created, err := store.PrepareTurnSubmission(sameGeneration); err == nil || created {
-		t.Fatalf("same provider generation acquired concurrent authority: created=%v err=%v", created, err)
+	concurrentPending, created, err := store.PrepareTurnSubmission(sameGeneration)
+	if err != nil || !created || concurrentPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("same-generation concurrent prepare created=%v submission=%+v err=%v", created, concurrentPending, err)
 	}
 	if durable, found, err := store.TurnSubmission(sessionID, oldCandidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
-		t.Fatalf("same-generation rejection changed old authority: submission=%+v found=%v err=%v", durable, found, err)
+		t.Fatalf("concurrent prepare changed old authority: submission=%+v found=%v err=%v", durable, found, err)
 	}
 
+	// An exact duplicate is idempotent: no second row, no provider mutation.
+	if duplicate, created, err := store.PrepareTurnSubmission(sameGeneration); err != nil || created || duplicate.ProposedTurnID != sameGeneration.ProposedTurnID {
+		t.Fatalf("exact duplicate prepare created=%v submission=%+v err=%v", created, duplicate, err)
+	}
+
+	// A failed prepare write leaves every existing transaction untouched.
 	replacement := delegatedSubmissionCandidate(
-		item.ID, sessionID, sessionID+":turn:replacement", "replacement generation input", acceptedAt.Add(2*time.Second),
+		item.ID, sessionID, sessionID+":turn:replacement", "replacement input", acceptedAt.Add(2*time.Second),
 	)
 	replacement.ProcessIdentity = "replacement-process"
 	replacement.PaneGeneration = "replacement-pane"
@@ -2010,43 +2018,126 @@ func TestSignalAdversarialReplacedProviderGenerationRetiresOldPendingAtomically(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if durable, found, err := reopened.TurnSubmission(sessionID, oldCandidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
-		t.Fatalf("failed replacement retired old authority: submission=%+v found=%v err=%v", durable, found, err)
+	for _, candidate := range []watcher.TurnSubmission{oldCandidate, sameGeneration} {
+		if durable, found, err := reopened.TurnSubmission(sessionID, candidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+			t.Fatalf("failed replacement changed existing authority: submission=%+v found=%v err=%v", durable, found, err)
+		}
 	}
 	if _, found, err := reopened.TurnSubmission(sessionID, replacement.ProposedTurnID); err != nil || found {
 		t.Fatalf("failed replacement persisted new authority: found=%v err=%v", found, err)
 	}
 
-	newPending, created, err := reopened.PrepareTurnSubmission(replacement)
-	if err != nil || !created || newPending.State != watcher.TurnSubmissionPending {
-		t.Fatalf("replacement generation created=%v submission=%+v err=%v", created, newPending, err)
+	// Restart with old + concurrent pending: both survive, in preparation
+	// order, and each resolves only from its own exact provider evidence.
+	pendingList, err := reopened.PendingTurnSubmissions(sessionID)
+	if err != nil || len(pendingList) != 2 ||
+		pendingList[0].ProposedTurnID != oldCandidate.ProposedTurnID ||
+		pendingList[1].ProposedTurnID != sameGeneration.ProposedTurnID {
+		t.Fatalf("reopened pending rows=%+v err=%v", pendingList, err)
 	}
-	reopenedAgain, err := NewStore(root)
-	if err != nil {
-		t.Fatal(err)
+	// Cross-input evidence cannot resolve the wrong row: old evidence with the
+	// concurrent row's digest is a mismatch, and vice versa.
+	cross := watcher.TurnSubmissionResolution{
+		SessionID: oldCandidate.SessionID, ProposedTurnID: oldCandidate.ProposedTurnID,
+		Receipt: oldCandidate.Receipt, PayloadSHA256: sameGeneration.PayloadSHA256,
+		ActivityID: "cross-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "cross-admission", Cursor: 1,
+			SHA256: sameGeneration.PayloadSHA256, At: acceptedAt.Add(3 * time.Second),
+		},
+		ResolvedAt: acceptedAt.Add(3 * time.Second),
 	}
-	oldDurable, oldFound, err := reopenedAgain.TurnSubmission(sessionID, oldCandidate.ProposedTurnID)
-	if err != nil || !oldFound || oldDurable.State != watcher.TurnSubmissionRetired {
-		t.Fatalf("old generation was not durably retired: submission=%+v found=%v err=%v", oldDurable, oldFound, err)
+	if _, err := reopened.ResolveTurnSubmission(cross); err == nil {
+		t.Fatal("cross-payload evidence resolved the wrong pending row")
 	}
-	current, currentFound, err := reopenedAgain.PendingTurnSubmission(sessionID)
-	if err != nil || !currentFound || current.ProposedTurnID != replacement.ProposedTurnID || current.State != watcher.TurnSubmissionPending {
-		t.Fatalf("replacement is not the sole current authority: submission=%+v found=%v err=%v", current, currentFound, err)
+
+	// Exact evidence resolves ONLY the concurrent row; the old row stays
+	// pending and non-adoptable.
+	resolvedAt := acceptedAt.Add(3 * time.Second)
+	resolved, err := reopened.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sameGeneration.SessionID, ProposedTurnID: sameGeneration.ProposedTurnID,
+		Receipt: sameGeneration.Receipt, PayloadSHA256: sameGeneration.PayloadSHA256,
+		ActivityID: "concurrent-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "concurrent-admission", Cursor: 1,
+			SHA256: sameGeneration.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	})
+	if err != nil || resolved.State != watcher.TurnSubmissionResolved || resolved.ResolvedTurnID != sameGeneration.ProposedTurnID {
+		t.Fatalf("exact concurrent resolution=(%+v, %v)", resolved, err)
 	}
-	if _, err := reopenedAgain.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+	if durable, found, err := reopened.TurnSubmission(sessionID, oldCandidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("resolving one row settled the other: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	turn, found, err := reopened.Turn(sessionID)
+	if err != nil || !found || turn.TurnID != sameGeneration.ProposedTurnID || !turn.HasAdmission {
+		t.Fatalf("canonical Turn=%+v found=%v err=%v", turn, found, err)
+	}
+
+	// A late attempt to adopt the older pending row with exact-looking
+	// evidence is rejected: one canonical Turn per Session, and the older
+	// transaction must be aborted explicitly instead.
+	if _, err := reopened.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
 		SessionID: oldCandidate.SessionID, ProposedTurnID: oldCandidate.ProposedTurnID,
 		Receipt: oldCandidate.Receipt, PayloadSHA256: oldCandidate.PayloadSHA256,
 		ActivityID: "late-old-activity",
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "late-old-admission", Cursor: 1,
-			SHA256: oldCandidate.PayloadSHA256, At: acceptedAt.Add(3 * time.Second),
+			SHA256: oldCandidate.PayloadSHA256, At: acceptedAt.Add(4 * time.Second),
 		},
-		ResolvedAt: acceptedAt.Add(3 * time.Second),
+		ResolvedAt: acceptedAt.Add(4 * time.Second),
 	}); err == nil {
-		t.Fatal("late evidence adopted the replaced provider generation")
+		t.Fatal("late evidence adopted a second canonical Turn")
 	}
-	if _, found, err := reopenedAgain.Turn(sessionID); err != nil || found {
-		t.Fatalf("replaced provider generation created a canonical Turn: found=%v err=%v", found, err)
+	if current, found, err := reopened.Turn(sessionID); err != nil || !found || current.TurnID != sameGeneration.ProposedTurnID {
+		t.Fatalf("canonical Turn changed after late adoption attempt: %+v found=%v err=%v", current, found, err)
+	}
+
+	// The older pending row never blocks a NEWER prepare after the canonical
+	// Turn exists: the watcher settles the canonical Turn to its immutable
+	// boundary, names it as the fresh baseline, and the new transaction is
+	// admitted and resolved from its own exact evidence.
+	settledAt := acceptedAt.Add(4 * time.Second)
+	canonical, found, err := reopened.Turn(sessionID)
+	if err != nil || !found {
+		t.Fatalf("canonical Turn=%+v found=%v err=%v", canonical, found, err)
+	}
+	if _, changed, err := reopened.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: canonical.TurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+		SourceID:  "provider\x00test\x00" + canonical.TurnID + "\x00done",
+		Admission: canonical.Admission, ActivityID: canonical.ActivityID,
+		StartedAt: resolvedAt, SettledAt: settledAt, At: settledAt,
+	}); err != nil || !changed {
+		t.Fatalf("settle canonical Turn changed=%v err=%v", changed, err)
+	}
+	third := delegatedSubmissionCandidate(
+		item.ID, sessionID, sessionID+":turn:third", "third input", acceptedAt.Add(5*time.Second),
+	)
+	third.ProcessIdentity = "replacement-process"
+	third.PaneGeneration = "replacement-pane"
+	third.ExistingTurnID = canonical.TurnID
+	thirdPending, created, err := reopened.PrepareTurnSubmission(third)
+	if err != nil || !created || thirdPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("third prepare created=%v submission=%+v err=%v", created, thirdPending, err)
+	}
+	thirdResolvedAt := acceptedAt.Add(6 * time.Second)
+	if _, err := reopened.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: third.SessionID, ProposedTurnID: third.ProposedTurnID,
+		Receipt: third.Receipt, PayloadSHA256: third.PayloadSHA256,
+		ActivityID: "third-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "third-admission", Cursor: 1,
+			SHA256: third.PayloadSHA256, At: thirdResolvedAt,
+		},
+		ResolvedAt: thirdResolvedAt,
+	}); err != nil {
+		t.Fatalf("third exact resolution: %v", err)
+	}
+	finalPending, err := reopened.PendingTurnSubmissions(sessionID)
+	if err != nil || len(finalPending) != 1 || finalPending[0].ProposedTurnID != oldCandidate.ProposedTurnID {
+		t.Fatalf("pending rows after third resolution=%+v err=%v", finalPending, err)
 	}
 }
 
@@ -3323,4 +3414,230 @@ func countUnhandledEventKind(events []WorkEvent, kind string) int {
 		}
 	}
 	return count
+}
+
+// A pending Host claim transaction and a normal delegated input for the same
+// Session and provider generation are independent exact transactions: they
+// coexist, each resolves only from its own exact evidence, and neither can
+// steal the other's authority.
+func TestSignalAdversarialHostClaimAndDelegatedPendingInputCoexistWithoutStealingAuthority(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@claim-and-input"
+	claimWork := createSignalTestWork(t, store, "Claim Work", "brain-agent-claim-owner:@1")
+	claimEvent := appendSignalTestEvent(t, store, claimWork, "claim-and-input")
+	claim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || claim.ID != claimEvent.ID {
+		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	inputWork, err := store.CreateWork(Work{
+		Title: "Input Work", Objective: "Coexist with a held Host claim.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Date(2026, 8, 11, 7, 0, 0, 0, time.UTC)
+	// The Host claim transaction: receipt = Event ID, claim token = handling.
+	hostPending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("claimed Host Event payload"),
+		ProcessIdentity: "shared-process", PaneGeneration: "shared-pane",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare Host claim created=%v submission=%+v err=%v", created, hostPending, err)
+	}
+	// A distinct delegated input for the same Session and generation is
+	// admitted while the Host claim transaction is pending.
+	inputTurnID := hostID + ":turn:delegated-input"
+	inputPending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: inputWork.ID, SessionID: hostID, ProposedTurnID: inputTurnID,
+		Receipt: inputTurnID, PayloadSHA256: pendingSubmissionDigest("delegated input payload"),
+		ProcessIdentity: "shared-process", PaneGeneration: "shared-pane",
+		AcceptedAt: acceptedAt.Add(time.Second), Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare delegated input created=%v submission=%+v err=%v", created, inputPending, err)
+	}
+	// The claim transaction's exact identity is untouched by the coexistence.
+	durableClaim, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || durableClaim.State != watcher.TurnSubmissionPending ||
+		durableClaim.Receipt != claim.ID || durableClaim.ClaimToken != claim.HandlingID {
+		t.Fatalf("Host claim transaction drifted: submission=%+v found=%v err=%v", durableClaim, found, err)
+	}
+	// Exact evidence resolves ONLY the delegated input.
+	resolvedAt := acceptedAt.Add(2 * time.Second)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: hostID, ProposedTurnID: inputTurnID, Receipt: inputTurnID,
+		PayloadSHA256: inputPending.PayloadSHA256, ActivityID: "input-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "input-admission", Cursor: 1,
+			SHA256: inputPending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatalf("resolve delegated input: %v", err)
+	}
+	claimDurable, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || claimDurable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("input resolution settled the Host claim: submission=%+v found=%v err=%v", claimDurable, found, err)
+	}
+	// The claimed Event is still governed by its exact five-part capability:
+	// a wrong release is rejected, the exact release aborts only its own
+	// transaction.
+	if err := store.ReleaseEventClaim(
+		claim.ID, "wrong-claim-token", claim.WorkID, hostID, claim.ProviderTurnID,
+	); !errors.Is(err, ErrEventClaim) {
+		t.Fatalf("wrong-capability release err=%v, want ErrEventClaim", err)
+	}
+	if err := store.ReleaseEventClaim(
+		claim.ID, claim.HandlingID, claim.WorkID, hostID, claim.ProviderTurnID,
+	); err != nil {
+		t.Fatalf("exact capability release: %v", err)
+	}
+	released, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || released.State != watcher.TurnSubmissionAborted {
+		t.Fatalf("exact release did not abort the claim transaction: submission=%+v found=%v err=%v", released, found, err)
+	}
+}
+
+// Cross-receipt, cross-turn, cross-payload, and cross-claim evidence can never
+// resolve a different pending row: every resolution is exact on Session,
+// proposed Turn, receipt, and payload digest.
+func TestSignalAdversarialCrossIdentityEvidenceNeverResolvesAnotherPendingRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Cross identity", Objective: "Keep every pending transaction exactly resolvable.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-cross-identity:@1"
+	acceptedAt := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC)
+	first := delegatedSubmissionCandidate(item.ID, sessionID, sessionID+":turn:first", "first payload", acceptedAt)
+	second := delegatedSubmissionCandidate(item.ID, sessionID, sessionID+":turn:second", "second payload", acceptedAt.Add(time.Second))
+	first.ProcessIdentity = "cross-process"
+	first.PaneGeneration = "cross-pane"
+	second.ProcessIdentity = "cross-process"
+	second.PaneGeneration = "cross-pane"
+	firstPending, created, err := store.PrepareTurnSubmission(first)
+	if err != nil || !created {
+		t.Fatalf("prepare first created=%v err=%v", created, err)
+	}
+	secondPending, created, err := store.PrepareTurnSubmission(second)
+	if err != nil || !created {
+		t.Fatalf("prepare second created=%v err=%v", created, err)
+	}
+	resolvedAt := acceptedAt.Add(3 * time.Second)
+	cross := []struct {
+		name       string
+		session    string
+		turn       string
+		receipt    string
+		digest     string
+		claimToken string
+	}{
+		{name: "cross receipt", session: sessionID, turn: second.ProposedTurnID, receipt: first.Receipt, digest: second.PayloadSHA256},
+		{name: "cross turn", session: sessionID, turn: first.ProposedTurnID, receipt: second.Receipt, digest: second.PayloadSHA256},
+		{name: "cross payload", session: sessionID, turn: second.ProposedTurnID, receipt: second.Receipt, digest: first.PayloadSHA256},
+		{name: "cross session", session: "brain-agent-other:@1", turn: second.ProposedTurnID, receipt: second.Receipt, digest: second.PayloadSHA256},
+	}
+	for _, probe := range cross {
+		t.Run(probe.name, func(t *testing.T) {
+			if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+				SessionID: probe.session, ProposedTurnID: probe.turn, Receipt: probe.receipt,
+				PayloadSHA256: probe.digest, ActivityID: "cross-activity",
+				Admission: watcher.TurnAdmission{
+					Stream: "provider", ID: "cross-admission", Cursor: 1,
+					SHA256: probe.digest, At: resolvedAt,
+				},
+				ResolvedAt: resolvedAt,
+			}); err == nil {
+				t.Fatalf("cross evidence resolved a pending row: %+v", probe)
+			}
+		})
+	}
+	// The exact tuple still resolves only its own row.
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: second.SessionID, ProposedTurnID: second.ProposedTurnID, Receipt: second.Receipt,
+		PayloadSHA256: second.PayloadSHA256, ActivityID: "exact-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "exact-admission", Cursor: 1,
+			SHA256: second.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatalf("exact second resolution: %v", err)
+	}
+	if durable, found, err := store.TurnSubmission(sessionID, first.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("exact resolution settled the other row: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	_ = firstPending
+	_ = secondPending
+}
+
+// Concurrent preparation of distinct exact transactions is deterministic:
+// every candidate persists exactly once under the Store lock, no row is lost
+// or duplicated, and the pending listing is stable.
+func TestSignalAdversarialConcurrentDistinctPreparationsAreDeterministic(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Concurrent prepares", Objective: "Persist every distinct transaction exactly once.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-concurrent-prepare:@1"
+	acceptedAt := time.Date(2026, 8, 11, 9, 0, 0, 0, time.UTC)
+	const count = 8
+	start := make(chan struct{})
+	errs := make([]error, count)
+	createdFlags := make([]bool, count)
+	var wg sync.WaitGroup
+	for index := 0; index < count; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			candidate := delegatedSubmissionCandidate(
+				item.ID, sessionID,
+				fmt.Sprintf("%s:turn:concurrent-%d", sessionID, index),
+				fmt.Sprintf("concurrent payload %d", index),
+				acceptedAt.Add(time.Duration(index)*time.Second),
+			)
+			_, created, prepareErr := store.PrepareTurnSubmission(candidate)
+			errs[index] = prepareErr
+			createdFlags[index] = created
+		}(index)
+	}
+	close(start)
+	wg.Wait()
+	for index := 0; index < count; index++ {
+		if errs[index] != nil || !createdFlags[index] {
+			t.Fatalf("concurrent prepare %d created=%v err=%v", index, createdFlags[index], errs[index])
+		}
+	}
+	pendingList, err := store.PendingTurnSubmissions(sessionID)
+	if err != nil || len(pendingList) != count {
+		t.Fatalf("pending rows=%d err=%v, want %d", len(pendingList), err, count)
+	}
+	seen := map[string]bool{}
+	for _, pending := range pendingList {
+		if seen[pending.ProposedTurnID] {
+			t.Fatalf("duplicate pending row %q", pending.ProposedTurnID)
+		}
+		seen[pending.ProposedTurnID] = true
+	}
 }

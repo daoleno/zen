@@ -1596,11 +1596,12 @@ func TestControlAppAmbiguousLiveSpawnReturnsPendingAndExactProgressConvergesAfte
 	if len(fw.sent) != 1 {
 		t.Fatalf("ambiguous spawn submitted the prompt %d times, want exactly once", len(fw.sent))
 	}
-	pending, found, err := store.PendingTurnSubmission(resp.Agent.ID)
-	if err != nil || !found || pending.State != watcher.TurnSubmissionPending ||
-		!pending.SignalProtocol || pending.ProposedTurnID == "" {
-		t.Fatalf("pending submission = %+v found=%v err=%v", pending, found, err)
+	pendingList, err := store.PendingTurnSubmissions(resp.Agent.ID)
+	if err != nil || len(pendingList) != 1 || pendingList[0].State != watcher.TurnSubmissionPending ||
+		!pendingList[0].SignalProtocol || pendingList[0].ProposedTurnID == "" {
+		t.Fatalf("pending submission = %+v err=%v", pendingList, err)
 	}
+	pending := pendingList[0]
 	if !strings.Contains(fw.sent[0].text, "--turn-id "+pending.ProposedTurnID) {
 		t.Fatalf("submitted prompt lacks pending identity %q", pending.ProposedTurnID)
 	}

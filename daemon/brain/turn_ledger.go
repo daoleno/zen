@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -170,7 +171,6 @@ func validateTurnLedger(turns []TurnRecord, workIDs map[string]struct{}) error {
 func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[string]struct{}) error {
 	keys := make(map[string]struct{}, len(submissions))
 	receipts := make(map[string]struct{}, len(submissions))
-	pendingSessions := make(map[string]struct{}, len(submissions))
 	for index, submission := range submissions {
 		prefix := fmt.Sprintf("brain_turn_submissions[%d]", index)
 		if strings.TrimSpace(submission.SessionID) == "" || strings.TrimSpace(submission.ProposedTurnID) == "" {
@@ -217,10 +217,6 @@ func validateTurnSubmissions(submissions []TurnSubmissionRecord, workIDs map[str
 				submission.ResolvedActivityID != "" || !submission.ResolvedAdmission.Empty() {
 				return fmt.Errorf("%s: pending submission has terminal fields", prefix)
 			}
-			if _, exists := pendingSessions[submission.SessionID]; exists {
-				return fmt.Errorf("%s: session already has a pending submission", prefix)
-			}
-			pendingSessions[submission.SessionID] = struct{}{}
 		case watcher.TurnSubmissionResolved:
 			providerResolved := strings.TrimSpace(submission.ResolvedActivityID) != "" &&
 				!submission.ResolvedAdmission.Empty() &&
@@ -348,15 +344,15 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 // turn's expired lease (the false-stale incident).
 const turnLeaseGrace = 10 * time.Minute
 
-// PrepareTurnSubmission persists the sole pre-mutation transaction for the
-// exact provider pane/process generation. A stable Session ID is only a UI
-// container: when the watcher presents a causally newer, different provider
-// generation, any older pending transaction is retired atomically with the
-// replacement. It remains non-adoptable audit and can never block the new
-// provider generation. The method never appends to brain_turns and therefore
-// cannot replace the current running Turn. The provider baseline already
-// classified by the watcher is rechecked against the authoritative current row
-// under the Store lock.
+// PrepareTurnSubmission persists one exact pre-mutation input transaction
+// for the current provider pane/process generation. A pending row is a
+// transaction, not a Session or generation mutex: several distinct pending
+// transactions may coexist for the same Session and provider generation, and
+// each resolves, aborts, or retires only from its own exact evidence. An
+// ambiguous older transaction never blocks a newer one. The method never
+// appends to brain_turns and therefore cannot replace the current running
+// Turn. The provider baseline already classified by the watcher is rechecked
+// against the authoritative current row under the Store lock.
 func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher.TurnSubmission, bool, error) {
 	if s == nil {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")
@@ -409,8 +405,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if err != nil {
 		return watcher.TurnSubmission{}, false, err
 	}
-	pendingIndexes := []int{}
-	for index, record := range database.BrainTurnSubmissions {
+	for _, record := range database.BrainTurnSubmissions {
 		if record.SessionID != candidate.SessionID {
 			continue
 		}
@@ -423,9 +418,6 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 				return watcher.TurnSubmission{}, false, fmt.Errorf("submission identity already belongs to different input")
 			}
 			return record.snapshot(), false, nil
-		}
-		if record.State == watcher.TurnSubmissionPending {
-			pendingIndexes = append(pendingIndexes, index)
 		}
 	}
 	workID := candidate.WorkID
@@ -477,15 +469,10 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if hasCurrent && current.TurnID == candidate.ProposedTurnID {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("proposed turn is already canonical without a matching submission transaction")
 	}
-	for _, index := range pendingIndexes {
-		pending := database.BrainTurnSubmissions[index]
-		if pending.ProcessIdentity == candidate.ProcessIdentity && pending.PaneGeneration == candidate.PaneGeneration {
-			return watcher.TurnSubmission{}, false, fmt.Errorf("provider generation already has an unresolved pending submission")
-		}
-		if !candidate.AcceptedAt.UTC().After(pending.AcceptedAt) {
-			return watcher.TurnSubmission{}, false, fmt.Errorf("replacement provider generation must be accepted after the pending submission")
-		}
-	}
+	// A pending row is one exact input transaction, never a Session or
+	// provider-generation mutex. Distinct pending transactions may coexist for
+	// the same Session and generation; canonical Turn authority (the checks
+	// above against the current canonical Turn) is what orders them.
 
 	ownerID := strings.TrimSpace(item.OwnerSessionID)
 	reservation := item.SuccessorReservation
@@ -524,15 +511,10 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	}
 
 	// Every validation above runs before this mutation. A malformed or stale
-	// candidate therefore cannot retire existing provider authority. The old
-	// generation retirement and the new pending row share the one atomic Store
-	// replacement below, so a crash exposes either side of the transition,
-	// never a gap or two live authorities for the current generation.
-	for _, index := range pendingIndexes {
-		retiredAt := now
-		database.BrainTurnSubmissions[index].State = watcher.TurnSubmissionRetired
-		database.BrainTurnSubmissions[index].ResolvedAt = &retiredAt
-	}
+	// candidate therefore cannot retire existing provider authority. The new
+	// pending row shares the one atomic Store replacement below; older pending
+	// transactions stay pending and resolve or abort only from their own exact
+	// evidence.
 
 	record := TurnSubmissionRecord{
 		SessionID: candidate.SessionID, ProposedTurnID: candidate.ProposedTurnID,
@@ -603,26 +585,36 @@ func (s *Store) TurnSubmission(sessionID, proposedTurnID string) (watcher.TurnSu
 	return watcher.TurnSubmission{}, false, nil
 }
 
-// PendingTurnSubmission returns the sole unresolved submission for a Session.
-// It lets the normal provider poll resolve a post-mutation crash without
-// replaying input or consulting tmux for canonical ownership.
-func (s *Store) PendingTurnSubmission(sessionID string) (watcher.TurnSubmission, bool, error) {
+// PendingTurnSubmissions returns every unresolved submission for a Session in
+// deterministic preparation order (AcceptedAt, then ProposedTurnID). It lets
+// the normal provider poll resolve each post-mutation crash transaction from
+// its own exact evidence without replaying input or consulting tmux for
+// canonical ownership. Several distinct pending transactions may coexist for
+// one Session; the caller resolves each only when its exact identity matches.
+func (s *Store) PendingTurnSubmissions(sessionID string) ([]watcher.TurnSubmission, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if s == nil || sessionID == "" {
-		return watcher.TurnSubmission{}, false, nil
+		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
-		return watcher.TurnSubmission{}, false, err
+		return nil, err
 	}
+	out := make([]watcher.TurnSubmission, 0)
 	for _, record := range database.BrainTurnSubmissions {
 		if record.SessionID == sessionID && record.State == watcher.TurnSubmissionPending {
-			return record.snapshot(), true, nil
+			out = append(out, record.snapshot())
 		}
 	}
-	return watcher.TurnSubmission{}, false, nil
+	sort.SliceStable(out, func(left, right int) bool {
+		if out[left].AcceptedAt.Equal(out[right].AcceptedAt) {
+			return out[left].ProposedTurnID < out[right].ProposedTurnID
+		}
+		return out[left].AcceptedAt.Before(out[right].AcceptedAt)
+	})
+	return out, nil
 }
 
 // AbortTurnSubmission permanently closes a pre-mutation transaction without
@@ -1758,30 +1750,43 @@ func prepareDelegatedSignalTurnLocked(database *orchestrationDatabase, fact watc
 	if database == nil {
 		return errNoDelegatedSignalContract
 	}
-	pendingIndex := -1
+	// A pending row is one exact input transaction. Several may coexist for a
+	// Session; the prompt-carried random identity, never row position, selects
+	// the transaction this fact may promote.
+	record := (*TurnSubmissionRecord)(nil)
 	for index := range database.BrainTurnSubmissions {
-		submission := database.BrainTurnSubmissions[index]
-		if submission.SessionID == fact.SessionID && submission.State == watcher.TurnSubmissionPending {
-			pendingIndex = index
-			break
+		submission := &database.BrainTurnSubmissions[index]
+		if submission.SessionID != fact.SessionID || submission.State != watcher.TurnSubmissionPending {
+			continue
 		}
-	}
-	if pendingIndex < 0 {
-		current, found := currentTurnForSession(*database, fact.SessionID)
-		if !found || !current.SignalProtocol {
-			return errNoDelegatedSignalContract
+		if !submission.SignalProtocol || strings.TrimSpace(submission.ClaimToken) != "" {
+			continue
 		}
-		if fact.TurnID == "" || current.TurnID != fact.TurnID {
-			return errDelegatedTurnMismatch
+		if fact.TurnID == "" || fact.TurnID != submission.ProposedTurnID || fact.At.Before(submission.CreatedAt) {
+			continue
 		}
-		return nil
+		record = submission
+		break
 	}
-
-	record := database.BrainTurnSubmissions[pendingIndex]
-	if !record.SignalProtocol || strings.TrimSpace(record.ClaimToken) != "" {
-		return errNoDelegatedSignalContract
-	}
-	if fact.TurnID == "" || fact.TurnID != record.ProposedTurnID || fact.At.Before(record.CreatedAt) {
+	if record == nil {
+		signalContract := false
+		for _, submission := range database.BrainTurnSubmissions {
+			if submission.SessionID == fact.SessionID && submission.State == watcher.TurnSubmissionPending &&
+				submission.SignalProtocol && strings.TrimSpace(submission.ClaimToken) == "" {
+				signalContract = true
+				break
+			}
+		}
+		if !signalContract {
+			current, found := currentTurnForSession(*database, fact.SessionID)
+			if !found || !current.SignalProtocol {
+				return errNoDelegatedSignalContract
+			}
+			if fact.TurnID == "" || current.TurnID != fact.TurnID {
+				return errDelegatedTurnMismatch
+			}
+			return nil
+		}
 		return errDelegatedTurnMismatch
 	}
 	current, hasCurrent := currentTurnForSession(*database, record.SessionID)
@@ -1828,7 +1833,6 @@ func prepareDelegatedSignalTurnLocked(database *orchestrationDatabase, fact watc
 	record.State = watcher.TurnSubmissionResolved
 	record.ResolvedTurnID = record.ProposedTurnID
 	record.ResolvedAt = &resolvedAt
-	database.BrainTurnSubmissions[pendingIndex] = record
 	return nil
 }
 

@@ -271,8 +271,9 @@ func TestFreshSignalAmbiguousAdmissionNeverReplaysAndDoesNotWedgeUnrelatedWork(t
 	if err != nil || !ok || claimB.ID != eventB.ID {
 		t.Fatalf("unrelated claim while A held=%+v ok=%v err=%v", claimB, ok, err)
 	}
-	// The replacement provider generation delivers B while A stays held as
-	// non-adoptable audit.
+	// The replacement provider generation delivers B while A's ambiguous
+	// transaction stays pending: it is never replayed, never released, and
+	// never blocks the unrelated transaction.
 	delivery := newCanonicalHostDeliveryWatcher(store, freshHostID)
 	delivery.outcomes = map[string]watcher.InputOutcome{claimA.ID: watcher.InputAmbiguous}
 	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
@@ -280,8 +281,8 @@ func TestFreshSignalAmbiguousAdmissionNeverReplaysAndDoesNotWedgeUnrelatedWork(t
 		t.Fatalf("replacement lane woke=%v err=%v", woke, err)
 	}
 	oldDurable, found, err := store.TurnSubmission(freshHostID, claimA.ProviderTurnID)
-	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionRetired {
-		t.Fatalf("obsolete ambiguous authority was not retired: %+v found=%v err=%v", oldDurable, found, err)
+	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("ambiguous authority was settled without exact evidence: %+v found=%v err=%v", oldDurable, found, err)
 	}
 	heldA, found, err := store.WorkEvent(eventA.ID)
 	if err != nil || !found || heldA.ClaimedAt == nil || heldA.DeliveredAt != nil ||
