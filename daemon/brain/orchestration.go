@@ -24,6 +24,10 @@ var (
 	ErrEventHandled         = errors.New("Brain Work event is already handled")
 	ErrWorkRevisionConflict = errors.New("Brain Work revision is no longer current")
 	ErrWorkCloseConflict    = errors.New("Brain Work cannot be operator-closed while signal authority is in flight")
+	// ErrSchedulerStateReset is returned when the orchestration document is not
+	// the current scheduler schema. Scheduler state is disposable by design:
+	// no migration exists, so the state directory must be archived/reset.
+	ErrSchedulerStateReset = errors.New("Brain scheduler state requires a reset (schema is not current)")
 )
 
 type WorkStatus string
@@ -219,17 +223,11 @@ type WorkEvent struct {
 	Disposition           WorkDisposition `json:"disposition,omitempty"`
 	DispositionSummary    string          `json:"disposition_summary,omitempty"`
 	CoalescedInto         string          `json:"coalesced_into,omitempty"`
-	HistoricalDelivery    bool            `json:"historical_delivery,omitempty"`
 	Resolution            string          `json:"resolution,omitempty"`
 	ResolvedBy            string          `json:"resolved_by,omitempty"`
 	ResolvedAt            *time.Time      `json:"resolved_at,omitempty"`
 	DiscardedAt           *time.Time      `json:"discarded_at,omitempty"`
 	ReplayOf              string          `json:"replay_of,omitempty"`
-
-	// Decode-only schema <=7 input. New writes never persist presentation
-	// state in the scheduler ledger; ensure-time migration moves it into the
-	// timeline card before the old field is dropped.
-	legacyReadAt *time.Time
 
 	// Review* is a read-time delivery projection. The append-only fact named by
 	// ID never changes identity, while a coalesced newer fact can be the latest
@@ -337,7 +335,6 @@ type WorkBacklog struct {
 	Total             int `json:"total"`
 	QueuedAttention   int `json:"queued_attention"`
 	HistoricalResults int `json:"historical_results"`
-	RepairNeeded      int `json:"repair_needed"`
 }
 
 type WorkInventory struct {
@@ -377,20 +374,18 @@ type WorkChange struct {
 const workResultSummaryRuneLimit = 360
 
 type orchestrationDatabase struct {
-	SchemaVersion        int                     `json:"schema_version"`
-	NextEventSequence    uint64                  `json:"next_event_sequence"`
-	Migrations           orchestrationMigrations `json:"migrations"`
-	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
-	HostForegroundTurn   *HostForegroundTurn     `json:"host_foreground_turn,omitempty"`
-	BrainWork            []Work                  `json:"brain_work"`
-	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
-	BrainTurns           []TurnRecord            `json:"brain_turns"`
-	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
+	SchemaVersion        int                    `json:"schema_version"`
+	NextEventSequence    uint64                 `json:"next_event_sequence"`
+	BrainInputAdmissions []BrainInputAdmission  `json:"brain_input_admissions"`
+	HostForegroundTurn   *HostForegroundTurn    `json:"host_foreground_turn,omitempty"`
+	BrainWork            []Work                 `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent            `json:"brain_work_events"`
+	BrainTurns           []TurnRecord           `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord `json:"brain_turn_submissions"`
 }
 
 // workRecord is the on-disk Work shape during decode. Unknown never-released
-// fields such as terminal_at are ignored (no DisallowUnknownFields on schema
-// 3/4 upgrade). SourceThreadID is required after bind/persist to schema 4.
+// fields are ignored. SourceThreadID is required after Create/bind/persist.
 type workRecord struct {
 	ID                   string                    `json:"work_id"`
 	Revision             uint64                    `json:"revision"`
@@ -414,74 +409,14 @@ type workRecord struct {
 }
 
 type orchestrationDatabaseRecord struct {
-	SchemaVersion        int                     `json:"schema_version"`
-	NextEventSequence    uint64                  `json:"next_event_sequence"`
-	Migrations           orchestrationMigrations `json:"migrations"`
-	BrainInputAdmissions []BrainInputAdmission   `json:"brain_input_admissions"`
-	HostForegroundTurn   *HostForegroundTurn     `json:"host_foreground_turn,omitempty"`
-	BrainWork            []workRecord            `json:"brain_work"`
-	BrainWorkEvents      []WorkEvent             `json:"brain_work_events"`
-	BrainTurns           []TurnRecord            `json:"brain_turns"`
-	BrainTurnSubmissions []TurnSubmissionRecord  `json:"brain_turn_submissions"`
-}
-
-type orchestrationMigrations struct {
-	DelegatedSessionsV1At   *time.Time `json:"delegated_sessions_v1_at,omitempty"`
-	TurnLedgerV1At          *time.Time `json:"turn_ledger_v1_at,omitempty"`
-	SignalSystemV1StartedAt *time.Time `json:"signal_system_v1_started_at,omitempty"`
-	SignalSystemV1Cursor    string     `json:"signal_system_v1_cursor,omitempty"`
-	SignalSystemV1At        *time.Time `json:"signal_system_v1_at,omitempty"`
-}
-
-type orchestrationV0 struct {
-	SchemaVersion int `json:"schema_version"`
-}
-
-type legacyOrchestrationDatabase struct {
-	SchemaVersion   int                     `json:"schema_version"`
-	Migrations      orchestrationMigrations `json:"migrations"`
-	BrainWork       []workRecord            `json:"brain_work"`
-	BrainWorkEvents []legacyWorkEvent       `json:"brain_work_events"`
-}
-
-type legacyWorkEvent struct {
-	ID                     string     `json:"event_id"`
-	WorkID                 string     `json:"work_id"`
-	Kind                   string     `json:"kind"`
-	DedupeKey              string     `json:"dedupe_key"`
-	PayloadRef             string     `json:"payload_ref,omitempty"`
-	Actionable             bool       `json:"actionable"`
-	CreatedAt              time.Time  `json:"created_at"`
-	ClaimedAt              *time.Time `json:"claimed_at,omitempty"`
-	ClaimToken             string     `json:"claim_token,omitempty"`
-	DeliveryHostSessionID  string     `json:"delivery_host_session_id,omitempty"`
-	DeliveryAcknowledgedAt *time.Time `json:"delivery_acknowledged_at,omitempty"`
-	ConsumedAt             *time.Time `json:"consumed_at,omitempty"`
-	ReadAt                 *time.Time `json:"read_at,omitempty"`
-}
-
-// UnmarshalJSON accepts consumed_at only as a pre-v7 migration input. The
-// current writer omits it because delivery and handling are separate facts.
-func (event *WorkEvent) UnmarshalJSON(raw []byte) error {
-	type durableWorkEvent WorkEvent
-	decoded := struct {
-		durableWorkEvent
-		ConsumedAt *time.Time `json:"consumed_at,omitempty"`
-		ReadAt     *time.Time `json:"read_at,omitempty"`
-	}{}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return err
-	}
-	*event = WorkEvent(decoded.durableWorkEvent)
-	event.legacyReadAt = decoded.ReadAt
-	if event.DeliveredAt == nil && decoded.ConsumedAt != nil {
-		delivered := decoded.ConsumedAt.UTC()
-		event.DeliveredAt = &delivered
-		event.HistoricalDelivery = true
-		ended := delivered
-		event.HandlingEndedAt = &ended
-	}
-	return nil
+	SchemaVersion        int                    `json:"schema_version"`
+	NextEventSequence    uint64                 `json:"next_event_sequence"`
+	BrainInputAdmissions []BrainInputAdmission  `json:"brain_input_admissions"`
+	HostForegroundTurn   *HostForegroundTurn    `json:"host_foreground_turn,omitempty"`
+	BrainWork            []workRecord           `json:"brain_work"`
+	BrainWorkEvents      []WorkEvent            `json:"brain_work_events"`
+	BrainTurns           []TurnRecord           `json:"brain_turns"`
+	BrainTurnSubmissions []TurnSubmissionRecord `json:"brain_turn_submissions"`
 }
 
 func (s *Store) orchestrationPath() string {
@@ -503,379 +438,62 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	if err != nil {
 		return err
 	}
-	database, migrated, err := decodeOrchestrationDatabase(raw)
-	if err != nil {
-		return fmt.Errorf("decode Brain orchestration database: %w", err)
-	}
-	threadID, err := s.ChatThreadID()
-	if err != nil {
-		return err
-	}
-	bound := bindUnresolvedSourceThreadIDs(&database, threadID)
-	readStateMigrated, err := s.migrateLegacyEventReadStateLocked(&database)
-	if err != nil {
-		return fmt.Errorf("migrate Brain Work read state: %w", err)
-	}
-	// Per-turn liveness backfill: rows persisted before the per-turn lease
-	// existed have a zero deadline. They get a fresh lease minted from their
-	// acceptance so an upgrade can never resurrect an old turn's expired
-	// lease as an immediate session.stale. Deterministic and idempotent: a
-	// deadline already set is never rewritten.
-	leaseBackfilled := backfillTurnLeaseDeadlines(&database, s.nowUTC())
-	if migrated || bound || leaseBackfilled || readStateMigrated {
-		return s.persistOrchestrationLocked(database)
-	}
-	if err := validateOrchestrationDatabase(database); err != nil {
+	if _, err := decodeOrchestrationDatabase(raw); err != nil {
 		return fmt.Errorf("decode Brain orchestration database: %w", err)
 	}
 	return nil
 }
 
-func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error) {
+// decodeOrchestrationDatabase accepts exactly the current scheduler schema.
+// Older scheduler state has no migration path: it fails with
+// ErrSchedulerStateReset so the operator can archive/reset the disposable
+// state directory. Current-schema documents are validated, never repaired.
+func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return orchestrationDatabase{}, false, fmt.Errorf("document must be a JSON object")
+		return orchestrationDatabase{}, fmt.Errorf("document must be a JSON object")
 	}
 	var header struct {
 		SchemaVersion *int `json:"schema_version"`
 	}
 	if err := json.Unmarshal(trimmed, &header); err != nil {
-		return orchestrationDatabase{}, false, err
+		return orchestrationDatabase{}, err
 	}
 	if header.SchemaVersion == nil {
-		return orchestrationDatabase{}, false, fmt.Errorf("schema_version is required")
+		return orchestrationDatabase{}, fmt.Errorf("schema_version is required")
 	}
-	switch *header.SchemaVersion {
-	case 0:
-		var legacy orchestrationV0
-		decoder := json.NewDecoder(bytes.NewReader(trimmed))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&legacy); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           orchestrationMigrations{},
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            []Work{},
-			BrainWorkEvents:      []WorkEvent{},
-			BrainTurns:           []TurnRecord{},
-			BrainTurnSubmissions: []TurnSubmissionRecord{},
-		}, true, nil
-	case 2:
-		var legacy legacyOrchestrationDatabase
-		decoder := json.NewDecoder(bytes.NewReader(trimmed))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&legacy); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if legacy.BrainWork == nil || legacy.BrainWorkEvents == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           legacy.Migrations,
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            worksFromRecords(legacy.BrainWork),
-			BrainWorkEvents:      make([]WorkEvent, 0, len(legacy.BrainWorkEvents)),
-			BrainTurns:           []TurnRecord{},
-			BrainTurnSubmissions: []TurnSubmissionRecord{},
-		}
-		for _, old := range legacy.BrainWorkEvents {
-			event := WorkEvent{
-				ID: old.ID, WorkID: old.WorkID, Kind: old.Kind,
-				DedupeKey: old.DedupeKey, PayloadRef: old.PayloadRef,
-				Actionable: old.Actionable, CreatedAt: old.CreatedAt,
-				ClaimedAt: old.ClaimedAt, DeliveryHostSessionID: old.DeliveryHostSessionID,
-				DeliveredAt: old.ConsumedAt, legacyReadAt: old.ReadAt,
-			}
-			if old.DeliveryAcknowledgedAt != nil && event.DeliveredAt == nil {
-				event.DeliveredAt = old.DeliveryAcknowledgedAt
-			}
-			if event.DeliveredAt != nil {
-				event.HistoricalDelivery = true
-				ended := event.DeliveredAt.UTC()
-				event.HandlingEndedAt = &ended
-			}
-			database.BrainWorkEvents = append(database.BrainWorkEvents, event)
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return database, true, nil
-	case 3:
-		var record orchestrationDatabaseRecord
-		// Unknown never-released fields (e.g. terminal_at) are ignored.
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           []TurnRecord{},
-			BrainTurnSubmissions: []TurnSubmissionRecord{},
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return database, true, nil
-	case 4:
-		var record orchestrationDatabaseRecord
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           []TurnRecord{},
-			BrainTurnSubmissions: []TurnSubmissionRecord{},
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return database, true, nil
-	case 5:
-		var record orchestrationDatabaseRecord
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           record.BrainTurns,
-			BrainTurnSubmissions: []TurnSubmissionRecord{},
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return database, true, nil
-	case 6:
-		var record orchestrationDatabaseRecord
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: []BrainInputAdmission{},
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           record.BrainTurns,
-			BrainTurnSubmissions: record.BrainTurnSubmissions,
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		retirePendingDelegatedSubmissionsForTerminalWork(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		return database, true, nil
-	case 7:
-		// Schema 7 carried the rejected HostAttentionReservation scheduler
-		// (attention_reservation, attention_admissions, last_attention_work_id)
-		// plus the process-local foreground gate. The Host-lane reducer
-		// replaces all of it: the reservation is dropped on decode and the
-		// durable gates are the pending Brain input admission and the accepted
-		// foreground Host turn. Unknown never-released fields are ignored.
-		var record orchestrationDatabaseRecord
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			NextEventSequence:    record.NextEventSequence,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: record.BrainInputAdmissions,
-			HostForegroundTurn:   record.HostForegroundTurn,
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           record.BrainTurns,
-			BrainTurnSubmissions: record.BrainTurnSubmissions,
-		}
-		upgradeSignalSchema(&database)
-		migrateTerminalWorkRevisions(&database)
-		retirePendingDelegatedSubmissionsForTerminalWork(&database)
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		needsBind := false
-		for _, item := range database.BrainWork {
-			if strings.TrimSpace(item.SourceThreadID) == "" {
-				needsBind = true
-				break
-			}
-		}
-		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
-	case 8, 9, 10, orchestrationSchemaVersion:
-		// Schema 9 added the actor-retired Turn submission state. Schema 10
-		// made terminal Work authoritative for delegated provider admission;
-		// schema 11 freezes its Event causality boundary as terminal_revision.
-		// A pending delegated submission owned by already-terminal
-		// Work is retired during the deterministic whole-document upgrade below.
-		// Exact Host claim submissions remain governed by their Event handling.
-		// The shape is unchanged.
-		var record orchestrationDatabaseRecord
-		// Ignore unknown never-released fields; bind missing source threads in ensure.
-		if err := json.Unmarshal(trimmed, &record); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
-			return orchestrationDatabase{}, false, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
-		}
-		database := orchestrationDatabase{
-			SchemaVersion:        orchestrationSchemaVersion,
-			NextEventSequence:    record.NextEventSequence,
-			Migrations:           record.Migrations,
-			BrainInputAdmissions: record.BrainInputAdmissions,
-			HostForegroundTurn:   record.HostForegroundTurn,
-			BrainWork:            worksFromRecords(record.BrainWork),
-			BrainWorkEvents:      record.BrainWorkEvents,
-			BrainTurns:           record.BrainTurns,
-			BrainTurnSubmissions: record.BrainTurnSubmissions,
-		}
-		upgradeSignalSchema(&database)
-		if *header.SchemaVersion < orchestrationSchemaVersion {
-			migrateTerminalWorkRevisions(&database)
-			retirePendingDelegatedSubmissionsForTerminalWork(&database)
-		}
-		if err := validateOrchestrationDatabaseLoose(database); err != nil {
-			return orchestrationDatabase{}, false, err
-		}
-		needsBind := false
-		for _, item := range database.BrainWork {
-			if strings.TrimSpace(item.SourceThreadID) == "" {
-				needsBind = true
-				break
-			}
-		}
-		return database, needsBind || *header.SchemaVersion != orchestrationSchemaVersion, nil
-	default:
-		return orchestrationDatabase{}, false, fmt.Errorf(
-			"unsupported schema_version %d (latest %d)",
+	if *header.SchemaVersion != orchestrationSchemaVersion {
+		return orchestrationDatabase{}, fmt.Errorf(
+			"%w: schema_version %d (expected %d)",
+			ErrSchedulerStateReset,
 			*header.SchemaVersion,
 			orchestrationSchemaVersion,
 		)
 	}
+	var record orchestrationDatabaseRecord
+	if err := json.Unmarshal(trimmed, &record); err != nil {
+		return orchestrationDatabase{}, err
+	}
+	if record.BrainWork == nil || record.BrainWorkEvents == nil || record.BrainTurnSubmissions == nil {
+		return orchestrationDatabase{}, fmt.Errorf("brain_work, brain_work_events, and brain_turn_submissions are required arrays")
+	}
+	database := orchestrationDatabase{
+		SchemaVersion:        orchestrationSchemaVersion,
+		NextEventSequence:    record.NextEventSequence,
+		BrainInputAdmissions: record.BrainInputAdmissions,
+		HostForegroundTurn:   record.HostForegroundTurn,
+		BrainWork:            worksFromRecords(record.BrainWork),
+		BrainWorkEvents:      record.BrainWorkEvents,
+		BrainTurns:           record.BrainTurns,
+		BrainTurnSubmissions: record.BrainTurnSubmissions,
+	}
+	if err := validateOrchestrationDatabase(database); err != nil {
+		return orchestrationDatabase{}, err
+	}
+	return database, nil
 }
 
-// upgradeSignalSchema performs the deterministic, whole-document shape
-// conversion needed to decode old rows. The bounded semantic reconciliation
-// is separate in MigrateSignalSystemV1.
-func upgradeSignalSchema(database *orchestrationDatabase) {
-	if database == nil {
-		return
-	}
-	if database.BrainInputAdmissions == nil {
-		database.BrainInputAdmissions = []BrainInputAdmission{}
-	}
-	for index := range database.BrainWork {
-		if database.BrainWork[index].Revision == 0 {
-			database.BrainWork[index].Revision = 1
-		}
-	}
-	used := map[uint64]bool{}
-	for _, event := range database.BrainWorkEvents {
-		if event.Sequence > 0 {
-			used[event.Sequence] = true
-			if event.Sequence > database.NextEventSequence {
-				database.NextEventSequence = event.Sequence
-			}
-		}
-	}
-	for index := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[index]
-		if event.Sequence == 0 || used[event.Sequence] && duplicateEventSequence(database.BrainWorkEvents, index, event.Sequence) {
-			database.NextEventSequence++
-			event.Sequence = database.NextEventSequence
-		}
-		if event.WorkRevision == 0 {
-			if workIndex := workIndex(database.BrainWork, event.WorkID); workIndex >= 0 {
-				event.WorkRevision = database.BrainWork[workIndex].Revision
-			} else {
-				event.WorkRevision = 1
-			}
-		}
-	}
-}
-
-// migrateTerminalWorkRevisions upgrades the former timestamp-based terminal
-// causality rule into one immutable Work revision fence. The migration keeps
-// exactly the outstanding Events the older document considered post-terminal,
-// then freezes that boundary so later metadata updates cannot change their
-// eligibility. Current-schema documents never pass through this repair path.
-func migrateTerminalWorkRevisions(database *orchestrationDatabase) {
-	if database == nil {
-		return
-	}
-	for workIndex := range database.BrainWork {
-		item := &database.BrainWork[workIndex]
-		if item.Status != WorkDone && item.Status != WorkCancelled {
-			item.TerminalRevision = 0
-			continue
-		}
-		terminalRevision := item.Revision
-		for _, event := range database.BrainWorkEvents {
-			if event.WorkID != item.ID || !attentionEventOutstanding(event) || event.WorkRevision == 0 ||
-				event.CreatedAt.Before(item.UpdatedAt) {
-				continue
-			}
-			if event.WorkRevision < terminalRevision {
-				terminalRevision = event.WorkRevision
-			}
-		}
-		item.TerminalRevision = terminalRevision
-	}
-}
-
-func duplicateEventSequence(events []WorkEvent, current int, sequence uint64) bool {
-	for index := range events {
-		if index != current && events[index].Sequence == sequence {
-			return true
-		}
-	}
-	return false
-}
-
-// worksFromRecords copies durable Work fields. SourceThreadID may be empty
-// until bindUnresolvedSourceThreadIDs freezes ownership during upgrade.
+// worksFromRecords copies durable Work fields.
 func worksFromRecords(records []workRecord) []Work {
 	out := make([]Work, 0, len(records))
 	for _, record := range records {
@@ -938,61 +556,6 @@ func cloneSessionFinalizations(finalizations []SessionFinalization) []SessionFin
 	return out
 }
 
-// bindUnresolvedSourceThreadIDs freezes the current Brain chat thread onto
-// every Work that still lacks source_thread_id. Explicit SourceThreadID values
-// (including scheduled-action sources already stored on the Work) are kept.
-// Historical cards are never bulk-materialized here.
-func bindUnresolvedSourceThreadIDs(database *orchestrationDatabase, currentThreadID string) bool {
-	if database == nil {
-		return false
-	}
-	currentThreadID = strings.TrimSpace(currentThreadID)
-	if currentThreadID == "" {
-		return false
-	}
-	changed := false
-	for index := range database.BrainWork {
-		if strings.TrimSpace(database.BrainWork[index].SourceThreadID) != "" {
-			continue
-		}
-		database.BrainWork[index].SourceThreadID = currentThreadID
-		changed = true
-	}
-	return changed
-}
-
-// backfillTurnLeaseDeadlines mints one fresh upgrade grace from the current
-// load/upgrade time for ledger rows persisted before per-turn leases existed.
-// It must not derive from an old AcceptedAt: live pre-upgrade turns would
-// otherwise load already expired and emit an immediate false session.stale.
-// A non-zero deadline is never rewritten, making reload idempotent.
-func backfillTurnLeaseDeadlines(database *orchestrationDatabase, upgradeAt time.Time) bool {
-	if database == nil {
-		return false
-	}
-	changed := false
-	upgradeAt = upgradeAt.UTC()
-	if upgradeAt.IsZero() {
-		upgradeAt = time.Now().UTC()
-	}
-	for index := range database.BrainTurns {
-		turn := &database.BrainTurns[index]
-		if !turn.LeaseDeadline.IsZero() || turn.AcceptedAt.IsZero() {
-			continue
-		}
-		turn.LeaseDeadline = upgradeAt.Add(turnLeaseGrace).UTC()
-		changed = true
-	}
-	return changed
-}
-
-func ensureSingleJSONValue(decoder *json.Decoder, raw []byte) error {
-	if trailing := bytes.TrimSpace(raw[decoder.InputOffset():]); len(trailing) != 0 {
-		return fmt.Errorf("document must contain exactly one JSON value")
-	}
-	return nil
-}
-
 func validateBrainInputAdmissions(admissions []BrainInputAdmission) error {
 	identities := make(map[string]struct{}, len(admissions))
 	for index, admission := range admissions {
@@ -1045,10 +608,6 @@ func validateBrainInputAdmissions(admissions []BrainInputAdmission) error {
 
 func validateOrchestrationDatabase(database orchestrationDatabase) error {
 	return validateOrchestrationDatabaseWithSourceThread(database, true)
-}
-
-func validateOrchestrationDatabaseLoose(database orchestrationDatabase) error {
-	return validateOrchestrationDatabaseWithSourceThread(database, false)
 }
 
 func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabase, requireSourceThread bool) error {
@@ -1121,7 +680,7 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 				return fmt.Errorf("brain_work_events[%d]: invalid coalesced_into %q", index, targetID)
 			}
 		}
-		if event.Resolution != "" || event.DiscardedAt != nil || event.HandledAt != nil || event.HistoricalDelivery {
+		if event.Resolution != "" || event.DiscardedAt != nil || event.HandledAt != nil {
 			continue
 		}
 		inFlight := event.ClaimedAt != nil && event.DeliveredAt == nil ||
@@ -1140,11 +699,9 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 			globalDelivered = event.ID
 		}
 	}
-	if database.Migrations.SignalSystemV1At != nil {
-		for index, item := range database.BrainWork {
-			if err := validateWorkSignalState(database, item); err != nil {
-				return fmt.Errorf("brain_work[%d]: %w", index, err)
-			}
+	for index, item := range database.BrainWork {
+		if err := validateWorkSignalState(database, item); err != nil {
+			return fmt.Errorf("brain_work[%d]: %w", index, err)
 		}
 	}
 	if err := validateTurnLedger(database.BrainTurns, workIDs); err != nil {
@@ -1160,7 +717,7 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 			for _, event := range database.BrainWorkEvents {
 				if event.ID == reservation.EventID && event.WorkID == item.ID &&
 					event.HandlingID == reservation.HandlingID && event.DeliveredAt != nil &&
-					event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+					event.HandledAt == nil && event.HandlingEndedAt == nil {
 					liveBinding = true
 					break
 				}
@@ -1375,7 +932,7 @@ func validateWorkEvent(event WorkEvent) error {
 	if event.DeliveredAt != nil && event.ClaimedAt == nil {
 		return fmt.Errorf("delivered event must have a claim")
 	}
-	if event.ClaimedAt != nil && event.DeliveredAt == nil && !event.HistoricalDelivery {
+	if event.ClaimedAt != nil && event.DeliveredAt == nil {
 		if strings.TrimSpace(event.HandlingID) != "" || strings.TrimSpace(event.ProviderTurnID) != "" {
 			if strings.TrimSpace(event.HandlingID) == "" || strings.TrimSpace(event.ProviderTurnID) == "" ||
 				event.HandlingID == event.ProviderTurnID || event.DeliveryWorkRevision == 0 || event.DeliverySequenceFence == 0 {
@@ -1383,7 +940,7 @@ func validateWorkEvent(event WorkEvent) error {
 			}
 		}
 	}
-	if event.DeliveredAt != nil && !event.HistoricalDelivery {
+	if event.DeliveredAt != nil {
 		if strings.TrimSpace(event.HandlingID) == "" || strings.TrimSpace(event.ProviderTurnID) == "" ||
 			event.HandlingID == event.ProviderTurnID || event.DeliveryWorkRevision == 0 || event.DeliverySequenceFence == 0 {
 			return fmt.Errorf("live delivery requires distinct handling and provider Turn identities, Work revision, and sequence fence")
@@ -1486,8 +1043,15 @@ func validateWorkSignalState(database orchestrationDatabase, item Work) error {
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		return nil
 	}
-	_, err := deriveWorkProgressMode(database, item)
-	return err
+	// Silent nonterminal Work (created before its first signal, or between
+	// the Work row and its appended Event) is legal. What is unrepresentable
+	// is dual progress authority: a typed wait beside a live canonical owner
+	// or pending owner admission.
+	state := reduceWorkProgressState(database, item)
+	if state.Owned && state.Waiting {
+		return fmt.Errorf("nonterminal Work cannot be simultaneously owned and waiting")
+	}
+	return nil
 }
 
 type workProgressState struct {
@@ -1519,7 +1083,6 @@ type attentionObligation struct {
 	HeadIndex   int
 	LatestIndex int
 	State       eventDeliveryState
-	NeedsRepair bool
 }
 
 func (obligation attentionObligation) exists() bool {
@@ -1528,7 +1091,7 @@ func (obligation attentionObligation) exists() bool {
 
 func attentionEventOutstanding(event WorkEvent) bool {
 	return event.Actionable && event.HandledAt == nil && event.DiscardedAt == nil &&
-		event.Resolution == "" && !event.HistoricalDelivery
+		event.Resolution == ""
 }
 
 // attentionEventCanObligate excludes durable audit rows that are forbidden
@@ -1613,15 +1176,8 @@ func reduceAttentionObligations(database orchestrationDatabase) map[string]atten
 		if targetID := strings.TrimSpace(event.CoalescedInto); targetID != "" {
 			coalesced = attentionCoalescingPathValid(database, byID, event)
 		}
-		if !coalesced {
-			if obligation.HeadIndex < 0 || event.Sequence < database.BrainWorkEvents[obligation.HeadIndex].Sequence {
-				if obligation.HeadIndex >= 0 {
-					obligation.NeedsRepair = true
-				}
-				obligation.HeadIndex = index
-			} else {
-				obligation.NeedsRepair = true
-			}
+		if !coalesced && (obligation.HeadIndex < 0 || event.Sequence < database.BrainWorkEvents[obligation.HeadIndex].Sequence) {
+			obligation.HeadIndex = index
 		}
 		out[event.WorkID] = obligation
 	}
@@ -1724,7 +1280,7 @@ func reduceWorkProgressState(database orchestrationDatabase, item Work) workProg
 	state := workProgressState{
 		Owned:             liveOwner || ownerAdmission,
 		Waiting:           item.Wake != nil,
-		Ready:             obligation.exists() || obligation.NeedsRepair,
+		Ready:             obligation.exists(),
 		LiveCanonicalTurn: liveOwner,
 		OwnerAdmission:    ownerAdmission,
 	}
@@ -1780,13 +1336,13 @@ func mustDeriveWorkProgressMode(database orchestrationDatabase, item Work) WorkP
 // never gates either path.
 func workHasAttentionObligation(database orchestrationDatabase, workID string) bool {
 	obligation := reduceAttentionObligation(database, workID)
-	return obligation.exists() || obligation.NeedsRepair
+	return obligation.exists()
 }
 
 func workHasInFlightHandling(database orchestrationDatabase, workID string) bool {
 	for _, event := range database.BrainWorkEvents {
 		if event.WorkID == workID && event.DeliveredAt != nil && event.HandledAt == nil &&
-			event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+			event.HandlingEndedAt == nil {
 			return true
 		}
 	}
@@ -1829,8 +1385,7 @@ func (s *Store) loadOrchestrationLocked() (orchestrationDatabase, error) {
 	if err != nil {
 		return orchestrationDatabase{}, err
 	}
-	database, _, err := decodeOrchestrationDatabase(raw)
-	return database, err
+	return decodeOrchestrationDatabase(raw)
 }
 
 func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error {
@@ -1850,7 +1405,6 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 	if database.BrainTurnSubmissions == nil {
 		database.BrainTurnSubmissions = []TurnSubmissionRecord{}
 	}
-	upgradeSignalSchema(&database)
 	sort.Slice(database.BrainWork, func(left, right int) bool {
 		if database.BrainWork[left].CreatedAt.Equal(database.BrainWork[right].CreatedAt) {
 			return database.BrainWork[left].ID < database.BrainWork[right].ID
@@ -1972,11 +1526,7 @@ func (s *Store) CreateWork(item Work) (Work, error) {
 	}
 	if err == nil {
 		database.BrainWork = append(database.BrainWork, item)
-		itemIndex := workIndex(database.BrainWork, item.ID)
-		item, err = ensureInitialAttentionLocked(&database, itemIndex, item, now)
-		if err == nil {
-			err = s.persistOrchestrationLocked(database)
-		}
+		err = s.persistOrchestrationLocked(database)
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -2012,11 +1562,7 @@ func (s *Store) EnsureWork(item Work) (Work, bool, error) {
 			}
 		}
 		database.BrainWork = append(database.BrainWork, item)
-		itemIndex := workIndex(database.BrainWork, item.ID)
-		item, err = ensureInitialAttentionLocked(&database, itemIndex, item, now)
-		if err == nil {
-			err = s.persistOrchestrationLocked(database)
-		}
+		err = s.persistOrchestrationLocked(database)
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -2072,10 +1618,7 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 			now := s.nowUTC()
 			item, err = applyWorkUpdateLocked(&database, index, update, now)
 			if err == nil {
-				item, err = ensureInitialAttentionLocked(&database, index, item, now)
-				if err == nil {
-					err = s.persistOrchestrationLocked(database)
-				}
+				err = s.persistOrchestrationLocked(database)
 			}
 		}
 	}
@@ -2148,7 +1691,7 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 	for index := range database.BrainWorkEvents {
 		event := &database.BrainWorkEvents[index]
 		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
-			event.Resolution != "" || event.HistoricalDelivery {
+			event.Resolution != "" {
 			continue
 		}
 		switch {
@@ -2225,7 +1768,7 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 func activeHostLaneEvent(database orchestrationDatabase, workID string) (string, bool) {
 	for _, event := range database.BrainWorkEvents {
 		if event.WorkID != workID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
-			event.Resolution != "" || event.HistoricalDelivery {
+			event.Resolution != "" {
 			continue
 		}
 		claimInFlight := event.ClaimedAt != nil && event.DeliveredAt == nil
@@ -2294,7 +1837,7 @@ func (s *Store) ReserveWorkSuccessor(id, ownerSessionID string) (Work, error) {
 func inFlightHandlingEventIndex(database orchestrationDatabase, workID string) int {
 	for index, event := range database.BrainWorkEvents {
 		if event.WorkID == workID && event.DeliveredAt != nil && event.HandledAt == nil &&
-			event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+			event.HandlingEndedAt == nil {
 			return index
 		}
 	}
@@ -2384,37 +1927,6 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 	s.mu.Unlock()
 	s.broadcastWorkChange(workID)
 	return item, nil
-}
-
-func ensureInitialAttentionLocked(database *orchestrationDatabase, itemIndex int, item Work, now time.Time) (Work, error) {
-	if database.Migrations.SignalSystemV1At == nil || item.Status == WorkDone || item.Status == WorkCancelled {
-		return item, nil
-	}
-	state := reduceWorkProgressState(*database, item)
-	obligation := reduceAttentionObligation(*database, item.ID)
-	if !obligation.NeedsRepair && (state.Owned || state.Waiting || obligation.exists()) {
-		return item, nil
-	}
-	if state.Owned && state.Waiting {
-		_, err := deriveWorkProgressMode(*database, item)
-		return Work{}, err
-	}
-	if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn && !state.OwnerAdmission {
-		item.OwnerSessionID = ""
-		item.OwnerDelegated = false
-		item.Revision++
-		item.UpdatedAt = now
-		database.BrainWork[itemIndex] = item
-	}
-	event := WorkEvent{
-		ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.reconcile_required",
-		DedupeKey: "brain:work:" + item.ID + ":initial", SourceName: "brain",
-		Summary: "Brain Work requires a durable disposition.", Actionable: true, CreatedAt: now,
-	}
-	if _, err := appendWorkEventLocked(database, itemIndex, event, false); err != nil {
-		return Work{}, err
-	}
-	return database.BrainWork[itemIndex], nil
 }
 
 func settleUndeliveredAttentionForAdmission(database *orchestrationDatabase, workID string, now time.Time) {
@@ -2518,168 +2030,6 @@ func databaseActiveWorkIDForExecutionSession(database orchestrationDatabase, ses
 		}
 	}
 	return ""
-}
-
-// MigrateDelegatedSessionsV1 performs the only legacy ownership adoption.
-// Call it once, after Watcher has produced its first authoritative inventory.
-// New delegated Sessions are created with Work directly and never use this
-// migration or a runtime fallback.
-func (s *Store) MigrateDelegatedSessionsV1(sessions []Work) (bool, error) {
-	defaultThreadID, err := s.ChatThreadID()
-	if err != nil {
-		return false, err
-	}
-	s.mu.Lock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return false, err
-	}
-	if database.Migrations.DelegatedSessionsV1At != nil {
-		s.mu.Unlock()
-		return false, nil
-	}
-	now := s.nowUTC()
-	changedIDs := []string{}
-	for _, candidate := range sessions {
-		if strings.TrimSpace(candidate.OwnerSessionID) == "" {
-			continue
-		}
-		owned := false
-		for _, current := range database.BrainWork {
-			if current.OwnerSessionID == strings.TrimSpace(candidate.OwnerSessionID) {
-				owned = true
-				break
-			}
-		}
-		if owned {
-			continue
-		}
-		candidate.ID = legacySessionWorkID(candidate.OwnerSessionID)
-		candidate.OwnerDelegated = true
-		if strings.TrimSpace(candidate.SourceThreadID) == "" {
-			candidate.SourceThreadID = defaultThreadID
-		}
-		candidate, err = normalizeWorkForCreate(candidate, now)
-		if err != nil {
-			s.mu.Unlock()
-			return false, err
-		}
-		database.BrainWork = append(database.BrainWork, candidate)
-		changedIDs = append(changedIDs, candidate.ID)
-	}
-	database.Migrations.DelegatedSessionsV1At = &now
-	err = s.persistOrchestrationLocked(database)
-	s.mu.Unlock()
-	if err != nil {
-		return false, err
-	}
-	for _, id := range changedIDs {
-		s.broadcastWorkChange(id)
-	}
-	return true, nil
-}
-
-// MigrateSignalSystemV1 performs the bounded semantic half of schema v7. Old
-// consumed events are already decoded as historical delivery facts; each call
-// visits at most limit legacy Work rows and gives every silent nonterminal row
-// exactly one reconcile-required attention. The durable cursor makes a crash
-// resume at the next row without duplicating attention.
-func (s *Store) MigrateSignalSystemV1(limit int) (complete bool, processed int, err error) {
-	if limit <= 0 {
-		return false, 0, fmt.Errorf("signal migration batch limit must be positive")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return false, 0, err
-	}
-	if database.Migrations.SignalSystemV1At != nil {
-		s.mu.Unlock()
-		return true, 0, nil
-	}
-	if database.Migrations.SignalSystemV1StartedAt == nil {
-		started := now.UTC()
-		database.Migrations.SignalSystemV1StartedAt = &started
-	}
-	start := 0
-	if cursor := strings.TrimSpace(database.Migrations.SignalSystemV1Cursor); cursor != "" {
-		for index, item := range database.BrainWork {
-			if item.ID == cursor {
-				start = index + 1
-				break
-			}
-		}
-	}
-	changedIDs := []string{}
-	for index := start; index < len(database.BrainWork) && processed < limit; index++ {
-		item := database.BrainWork[index]
-		revisionBumped := false
-		if item.Status != WorkDone && item.Status != WorkCancelled {
-			state := reduceWorkProgressState(database, item)
-			// A legacy owner link has execution authority only when its exact
-			// current canonical non-Host Turn is still nonterminal. Missing and
-			// immutable Turns make the link historical, so retire it before
-			// deriving the single durable progress mode.
-			if strings.TrimSpace(item.OwnerSessionID) != "" && !state.LiveCanonicalTurn && !state.OwnerAdmission {
-				item.OwnerSessionID = ""
-				item.OwnerDelegated = false
-				item.Revision++
-				item.UpdatedAt = now
-				database.BrainWork[index] = item
-				revisionBumped = true
-				changedIDs = append(changedIDs, item.ID)
-				state = reduceWorkProgressState(database, item)
-			}
-			obligation := reduceAttentionObligation(database, item.ID)
-			if state.Owned && state.Waiting {
-				s.mu.Unlock()
-				_, stateErr := deriveWorkProgressMode(database, item)
-				return false, processed, stateErr
-			}
-			if obligation.NeedsRepair || !state.Owned && !state.Waiting && !obligation.exists() {
-				dedupeKey := "brain:migration:signal-system-v1:" + item.ID
-				exists := false
-				for _, current := range database.BrainWorkEvents {
-					if current.WorkID == item.ID && current.DedupeKey == dedupeKey {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					event := WorkEvent{
-						ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.reconcile_required",
-						DedupeKey: dedupeKey, PayloadRef: "work:" + item.ID, SourceName: "brain",
-						Summary:    "Legacy nonterminal Work requires a typed disposition.",
-						Actionable: true, CreatedAt: now,
-					}
-					if _, appendErr := appendWorkEventLocked(&database, index, event, !revisionBumped); appendErr != nil {
-						s.mu.Unlock()
-						return false, processed, appendErr
-					}
-					changedIDs = append(changedIDs, item.ID)
-				}
-			}
-		}
-		database.Migrations.SignalSystemV1Cursor = item.ID
-		processed++
-	}
-	if processed == 0 {
-		completedAt := now.UTC()
-		database.Migrations.SignalSystemV1At = &completedAt
-		complete = true
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		s.mu.Unlock()
-		return false, processed, err
-	}
-	s.mu.Unlock()
-	for _, workID := range changedIDs {
-		s.broadcastWorkChange(workID)
-	}
-	return complete, processed, nil
 }
 
 func (s *Store) WorkByContextRef(contextRef string) (Work, bool, error) {
@@ -3070,9 +2420,6 @@ func (s *Store) UnprojectedBrainInputAdmissions(limit int) ([]BrainInputAdmissio
 	if err != nil {
 		return nil, false, err
 	}
-	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
-		return nil, false, formatAdmissionProvenanceError(err)
-	}
 	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return nil, false, err
@@ -3167,7 +2514,6 @@ func normalizeWorkEventForAppend(event WorkEvent, now time.Time) (WorkEvent, err
 	event.Disposition = ""
 	event.DispositionSummary = ""
 	event.CoalescedInto = ""
-	event.HistoricalDelivery = false
 	if isSessionLifecycleKind(event.Kind) && !isTurnScopedSessionDedupeKey(event.DedupeKey) {
 		// A delegated lifecycle Event is unrepresentable without the
 		// canonical current TurnID: the dedupe key must be turn-scoped
@@ -3424,18 +2770,12 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 	if err != nil {
 		return WorkEvent{}, false, err
 	}
-	// The Host lane owns at most one live delivered handling. A delivered
-	// Event awaiting its typed disposition stops every further claim; the
-	// same gate lives in the lane reducer and is rechecked here for direct
-	// callers.
-	for _, event := range database.BrainWorkEvents {
-		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
-			return WorkEvent{}, false, nil
-		}
-	}
 	// Fair selection at the boundary: the oldest pending head across Work
-	// keys. No counter and no last-admitted mirror are persisted; FIFO by
-	// append sequence is the whole fairness contract.
+	// keys. One head per Work, so another Work's live delivered handling can
+	// never wedge this Work's claim. The Host lane reducer still admits at
+	// most one delivered handling at a time: a claim made here while another
+	// Work's handling is delivered waits as a durable hold until the lane
+	// resumes and its exact submission is prepared.
 	index := oldestPendingAttentionHeadIndex(database)
 	if index < 0 {
 		return WorkEvent{}, false, nil
@@ -3465,7 +2805,7 @@ func (s *Store) HasLiveDeliveredHandling() (bool, error) {
 		return false, err
 	}
 	for _, event := range database.BrainWorkEvents {
-		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil && !event.HistoricalDelivery {
+		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil {
 			return true, nil
 		}
 	}
@@ -3656,7 +2996,7 @@ func authoritativeReviewEvent(database orchestrationDatabase, claimed WorkEvent)
 	for _, candidate := range database.BrainWorkEvents {
 		if candidate.WorkID != claimed.WorkID || !attentionEventCanObligate(database, candidate) ||
 			candidate.Sequence > claimed.DeliverySequenceFence || candidate.HandledAt != nil ||
-			candidate.DiscardedAt != nil || candidate.Resolution != "" || candidate.HistoricalDelivery {
+			candidate.DiscardedAt != nil || candidate.Resolution != "" {
 			continue
 		}
 		if candidate.Sequence > latest.Sequence {
@@ -3702,7 +3042,7 @@ func (s *Store) LiveHostHandlings(limit int) ([]WorkEvent, bool, error) {
 	out := make([]WorkEvent, 0, limit)
 	more := false
 	for _, event := range database.BrainWorkEvents {
-		if event.DeliveredAt == nil || event.HandledAt != nil || event.HandlingEndedAt != nil || event.HistoricalDelivery {
+		if event.DeliveredAt == nil || event.HandledAt != nil || event.HandlingEndedAt != nil {
 			continue
 		}
 		if len(out) == limit {
@@ -3888,7 +3228,7 @@ func (s *Store) RequeueUnhandledHostAttention(eventID, handlingID, providerTurnI
 		return WorkEvent{}, false, nil
 	}
 	active := &database.BrainWorkEvents[activeIndex]
-	if active.DeliveredAt == nil || active.HandledAt != nil || active.HandlingEndedAt != nil || active.HistoricalDelivery ||
+	if active.DeliveredAt == nil || active.HandledAt != nil || active.HandlingEndedAt != nil ||
 		active.HandlingID != handlingID || active.ProviderTurnID != providerTurnID {
 		return WorkEvent{}, false, nil
 	}
@@ -3909,7 +3249,7 @@ func (s *Store) RequeueUnhandledHostAttention(eventID, handlingID, providerTurnI
 	for index := range database.BrainWorkEvents {
 		event := &database.BrainWorkEvents[index]
 		if event.WorkID == active.WorkID && event.Actionable && event.HandledAt == nil &&
-			event.DiscardedAt == nil && !event.HistoricalDelivery {
+			event.DiscardedAt == nil {
 			event.CoalescedInto = reconcile.ID
 		}
 	}
@@ -4162,7 +3502,7 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	for index := range database.BrainWorkEvents {
 		candidate := &database.BrainWorkEvents[index]
 		if candidate.WorkID != item.ID || !attentionEventCanObligate(database, *candidate) || candidate.HandledAt != nil ||
-			candidate.DiscardedAt != nil || candidate.HistoricalDelivery ||
+			candidate.DiscardedAt != nil ||
 			candidate.Sequence > event.DeliverySequenceFence || candidate.WorkRevision > event.DeliveryWorkRevision {
 			continue
 		}
@@ -4560,10 +3900,8 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 
 	current := make([]CurrentWork, 0, len(database.BrainWork))
 	currentIDs := map[string]bool{}
-	repair := map[string]bool{}
 	for _, item := range database.BrainWork {
 		mode := mustDeriveWorkProgressMode(database, item)
-		obligation := obligations[item.ID]
 		attentionState := WorkAttentionState("")
 		if reviewing[item.ID] {
 			attentionState = WorkAttentionReviewing
@@ -4576,38 +3914,14 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 		if !terminal {
 			switch mode {
 			case WorkProgressOwned:
-				if item.OwnerDelegated && present[item.OwnerSessionID] {
-					include = true
-				} else {
-					repair[item.ID] = true
-				}
+				include = include || item.OwnerDelegated && present[item.OwnerSessionID]
 			case WorkProgressWaiting:
-				if currentWakePresent(item.Wake, present) {
-					include = true
-				} else {
-					repair[item.ID] = true
-				}
+				include = include || currentWakePresent(item.Wake, present)
 			case WorkProgressReady:
 				// Only the bounded fair queue window is operationally current.
-			default:
-				repair[item.ID] = true
 			}
-			if obligation.NeedsRepair {
-				repair[item.ID] = true
-			}
-			if strings.TrimSpace(item.OwnerSessionID) != "" && !present[item.OwnerSessionID] {
-				repair[item.ID] = true
-			}
-		} else {
-			for _, finalization := range item.SessionFinalizations {
-				if (finalization.State == SessionFinalizationPending || finalization.State == SessionFinalizationFailed) &&
-					!present[finalization.SessionID] {
-					repair[item.ID] = true
-				}
-			}
-			if len(finalizations) > 0 {
-				include = true
-			}
+		} else if len(finalizations) > 0 {
+			include = true
 		}
 		if !include {
 			continue
@@ -4650,7 +3964,7 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 		return database.BrainWork[leftIndex].UpdatedAt.After(database.BrainWork[rightIndex].UpdatedAt)
 	})
 
-	backlog := WorkBacklog{RepairNeeded: len(repair)}
+	backlog := WorkBacklog{}
 	for _, item := range database.BrainWork {
 		if currentIDs[item.ID] {
 			continue

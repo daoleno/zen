@@ -245,7 +245,6 @@ export function WorkSignalObservatory({
         <WorkBacklogSummary
           total={brain?.work_backlog?.total ?? 0}
           queued={brain?.work_backlog?.queued_attention ?? 0}
-          repair={brain?.work_backlog?.repair_needed ?? 0}
           styles={styles}
         />
 
@@ -679,19 +678,16 @@ function GraphLegend({ styles }: { styles: ReturnType<typeof createStyles> }) {
 function WorkBacklogSummary({
   total,
   queued,
-  repair,
   styles,
 }: {
   total: number;
   queued: number;
-  repair: number;
   styles: ReturnType<typeof createStyles>;
 }) {
-  if (total === 0 && queued === 0 && repair === 0) return null;
+  if (total === 0 && queued === 0) return null;
   const parts = [
     total > 0 ? `${total} in durable history` : "",
     queued > 0 ? `${queued} queued` : "",
-    repair > 0 ? `${repair} need relationship repair` : "",
   ].filter(Boolean);
   return (
     <View

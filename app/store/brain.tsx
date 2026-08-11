@@ -66,7 +66,6 @@ export type BrainWorkBacklog = {
   total: number;
   queued_attention: number;
   historical_results: number;
-  repair_needed: number;
 };
 
 export type BrainAgentRef = {
@@ -277,7 +276,6 @@ function normalizeWorkBacklog(value: unknown): BrainWorkBacklog {
     total: count(backlog.total),
     queued_attention: count(backlog.queued_attention),
     historical_results: count(backlog.historical_results),
-    repair_needed: count(backlog.repair_needed),
   };
 }
 

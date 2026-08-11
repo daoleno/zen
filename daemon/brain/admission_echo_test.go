@@ -1,10 +1,7 @@
 package brain
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -608,113 +605,6 @@ func TestProviderNativeRowsAreNotAdmissionCredits(t *testing.T) {
 	}
 	if len(again) != 2 {
 		t.Fatalf("second provider input suppressed: %#v", again)
-	}
-}
-
-func TestLegacyPreFieldAdmissionMigrationAndProviderDigestStrip(t *testing.T) {
-	root := t.TempDir()
-	stateDir := filepath.Join(root, "state")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	threadID := "thread-legacy"
-	legacyAdmission := TimelineItem{
-		ID:              "msh1e2ak_atzbs1",
-		ThreadID:        threadID,
-		SessionID:       "019fcf7a-485b-7961-ad2f-dbe9f6eab2d2",
-		Role:            "user",
-		Body:            "pre-field admitted body",
-		CreatedAt:       time.Date(2026, 8, 6, 4, 49, 0, 0, time.UTC),
-		Kind:            "user_message",
-		AdmissionSHA256: AdmissionDigest("pre-field admitted body"),
-	}
-	legacyProvider := TimelineItem{
-		ID:              "rollout-2026-08-05T09-12-05-019fcf7a.jsonl:1791317",
-		ThreadID:        threadID,
-		SessionID:       "019fcf7a-485b-7961-ad2f-dbe9f6eab2d2",
-		Role:            "user",
-		Body:            "older provider user",
-		CreatedAt:       time.Date(2026, 8, 5, 9, 12, 0, 0, time.UTC),
-		Kind:            "user_message",
-		AdmissionSHA256: AdmissionDigest("older provider user"),
-	}
-	path := filepath.Join(stateDir, "messages.jsonl")
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []TimelineItem{legacyProvider, legacyAdmission} {
-		raw, err := json.Marshal(item)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := file.Write(append(raw, '\n')); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := NewStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := store.ThreadTimeline(threadID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 2 {
-		t.Fatalf("migrated timeline = %#v", items)
-	}
-	byID := map[string]TimelineItem{}
-	for _, item := range items {
-		byID[item.ID] = item
-	}
-	admission := byID[legacyAdmission.ID]
-	provider := byID[legacyProvider.ID]
-	if !admission.BrainAdmission || admission.AdmissionSHA256 == "" {
-		t.Fatalf("legacy admission not promoted: %#v", admission)
-	}
-	if provider.BrainAdmission || provider.AdmissionSHA256 != "" {
-		t.Fatalf("legacy provider still has admission credit: %#v", provider)
-	}
-	if _, err := os.Stat(filepath.Join(stateDir, admissionProvenanceMarker)); err != nil {
-		t.Fatalf("missing provenance marker: %v", err)
-	}
-	// Runtime identity is explicit-only after migration.
-	if !IsBrainInputAdmission(admission) || IsBrainInputAdmission(provider) {
-		t.Fatalf("runtime admission identity drifted: adm=%#v prov=%#v", admission, provider)
-	}
-}
-
-func TestMigrationIgnoresNonPreFieldShapes(t *testing.T) {
-	// Digest that does not match body is not the unreleased AdmitUserMessage shape.
-	item := TimelineItem{
-		ID:              "receipt-shaped",
-		Kind:            "user_message",
-		Body:            "actual body",
-		AdmissionSHA256: AdmissionDigest("different body"),
-	}
-	if isUnreleasedPreFieldAdmission(item) {
-		t.Fatal("mismatched digest must not promote")
-	}
-	applyAdmissionProvenanceMigration(&item)
-	if item.BrainAdmission || item.AdmissionSHA256 != "" {
-		t.Fatalf("mismatched digest must strip correlation, not promote: %#v", item)
-	}
-	providerShaped := TimelineItem{
-		ID:              "session:1",
-		Kind:            "user_message",
-		Body:            "x",
-		AdmissionSHA256: AdmissionDigest("x"),
-	}
-	if isUnreleasedPreFieldAdmission(providerShaped) {
-		t.Fatal("provider id shape must not promote")
-	}
-	applyAdmissionProvenanceMigration(&providerShaped)
-	if providerShaped.BrainAdmission || providerShaped.AdmissionSHA256 != "" {
-		t.Fatalf("provider shape must strip correlation: %#v", providerShaped)
 	}
 }
 

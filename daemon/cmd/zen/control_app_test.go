@@ -448,12 +448,6 @@ func (w *fakeControlWatcher) CapturePaneContent(sessionID string) (string, error
 	return w.captures[sessionID], nil
 }
 
-func (w *fakeControlWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker {
-	return nil
-}
-
-func (w *fakeControlWatcher) ClearDelegatedTurnMarkers([]string) {}
-
 func (w *fakeControlWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {
 	return watcher.ProviderActivityObservation{}, false, nil
 }
@@ -1384,141 +1378,96 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	}
 }
 
-func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAndRestart(t *testing.T) {
-	for _, test := range []struct {
-		name                   string
-		migrationCompleteFirst bool
-	}{
-		{name: "migration complete", migrationCompleteFirst: true},
-		{name: "migration incomplete", migrationCompleteFirst: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			store, err := brain.NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.migrationCompleteFirst {
-				complete, processed, err := store.MigrateSignalSystemV1(8)
-				if err != nil || !complete || processed != 0 {
-					t.Fatalf("complete empty migration=%v processed=%d err=%v", complete, processed, err)
-				}
-			}
+func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	store, err := brain.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			fw := newFakeControlWatcher()
-			fw.turnStore = store
-			fw.sendErr = &watcher.InputSubmissionError{
-				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
-				Cause:  errors.New("provider composer was not ready"),
-			}
-			app := &controlApp{
-				watcher: fw, brainStore: store,
-				execs: work.NewExecutorConfig("codex", map[string]work.Executor{
-					"codex": {Name: "codex", Command: "codex"},
-				}),
-			}
-			resp := app.HandleControlRequest(control.Request{
-				Type: "agent_spawn", Name: "Failed admission", Cwd: "/repo/zen",
-				Prompt: "must execute exactly once",
-			})
-			if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
-				t.Fatalf("spawn failure response=%#v", resp)
-			}
-			items, err := store.ListWork()
-			if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled ||
-				items[0].OwnerSessionID != "" {
-				t.Fatalf("failed spawn Work=%+v err=%v", items, err)
-			}
-			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
-				t.Fatalf("provider effects sent=%d submitted=%d created=%d, want one each",
-					len(fw.sent), len(fw.submitted), len(fw.created))
-			}
-			reopened, err := brain.NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !test.migrationCompleteFirst {
-				complete, processed, err := reopened.MigrateSignalSystemV1(8)
-				if err != nil || complete || processed != 1 {
-					t.Fatalf("incomplete migration pass=%v processed=%d err=%v", complete, processed, err)
-				}
-				complete, processed, err = reopened.MigrateSignalSystemV1(8)
-				if err != nil || !complete || processed != 0 {
-					t.Fatalf("migration completion=%v processed=%d err=%v", complete, processed, err)
-				}
-			}
-			events, err := reopened.ListWorkEvents(items[0].ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			reconciles := 0
-			notAdmitted := 0
-			var notAdmittedEvent brain.WorkEvent
-			for _, event := range events {
-				if event.Kind == "brain.reconcile_required" && event.HandledAt == nil &&
-					event.DiscardedAt == nil && event.Resolution == "" {
-					reconciles++
-				}
-				if event.Kind == "brain.submission_not_admitted" {
-					notAdmitted++
-					notAdmittedEvent = event
-				}
-				if strings.HasPrefix(event.Kind, "session.") {
-					t.Fatalf("definite non-submission projected a Session result: %+v", events)
-				}
-			}
-			wantEvents := 1
-			if test.migrationCompleteFirst {
-				wantEvents = 2
-			}
-			if len(events) != wantEvents || reconciles != 0 || notAdmitted != 1 ||
-				notAdmittedEvent.Actionable || notAdmittedEvent.DiscardedAt == nil ||
-				notAdmittedEvent.Resolution != brain.EventResolutionDiscard {
-				t.Fatalf("final Events=%+v; count=%d want=%d reconcile=%d not_admitted=%d",
-					events, len(events), wantEvents, reconciles, notAdmitted)
-			}
-			if test.migrationCompleteFirst && (events[0].Kind != "brain.reconcile_required" ||
-				events[0].Resolution != brain.EventResolutionDiscard || events[0].DiscardedAt == nil ||
-				events[1].Kind != "brain.submission_not_admitted") {
-				t.Fatalf("initial reconcile was not atomically replaced by submission abort: %+v", events)
-			}
-			turnID := strings.TrimPrefix(notAdmittedEvent.DedupeKey, "brain:submission-abort:")
-			if turnID == notAdmittedEvent.DedupeKey || !strings.Contains(fw.sent[0].text, "--turn-id "+turnID) {
-				t.Fatalf("submission abort identity is absent from exact provider payload: event=%+v", notAdmittedEvent)
-			}
-			submission, found, err := reopened.TurnSubmission(notAdmittedEvent.SourceName, turnID)
-			if err != nil || !found || submission.State != watcher.TurnSubmissionAborted ||
-				submission.Receipt != turnID {
-				t.Fatalf("aborted submission=%+v found=%v err=%v", submission, found, err)
-			}
-			if turn, found, err := reopened.Turn(notAdmittedEvent.SourceName); err != nil || found {
-				t.Fatalf("definite non-submission created Turn=%+v found=%v err=%v", turn, found, err)
-			}
+	fw := newFakeControlWatcher()
+	fw.turnStore = store
+	fw.sendErr = &watcher.InputSubmissionError{
+		Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
+		Cause:  errors.New("provider composer was not ready"),
+	}
+	app := &controlApp{
+		watcher: fw, brainStore: store,
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+	resp := app.HandleControlRequest(control.Request{
+		Type: "agent_spawn", Name: "Failed admission", Cwd: "/repo/zen",
+		Prompt: "must execute exactly once",
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+		t.Fatalf("spawn failure response=%#v", resp)
+	}
+	items, err := store.ListWork()
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled ||
+		items[0].OwnerSessionID != "" {
+		t.Fatalf("failed spawn Work=%+v err=%v", items, err)
+	}
+	if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
+		t.Fatalf("provider effects sent=%d submitted=%d created=%d, want one each",
+			len(fw.sent), len(fw.submitted), len(fw.created))
+	}
+	reopened, err := brain.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reopened.ListWorkEvents(items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAdmitted := 0
+	var notAdmittedEvent brain.WorkEvent
+	for _, event := range events {
+		if event.Kind == "brain.submission_not_admitted" {
+			notAdmitted++
+			notAdmittedEvent = event
+		}
+		if event.Kind == "brain.reconcile_required" || strings.HasPrefix(event.Kind, "session.") {
+			t.Fatalf("non-submission projected a reconcile or Session result: %+v", events)
+		}
+	}
+	if len(events) != 1 || notAdmitted != 1 ||
+		notAdmittedEvent.Actionable || notAdmittedEvent.DiscardedAt == nil ||
+		notAdmittedEvent.Resolution != brain.EventResolutionDiscard {
+		t.Fatalf("final Events=%+v not_admitted=%d", events, notAdmitted)
+	}
+	turnID := strings.TrimPrefix(notAdmittedEvent.DedupeKey, "brain:submission-abort:")
+	if turnID == notAdmittedEvent.DedupeKey || !strings.Contains(fw.sent[0].text, "--turn-id "+turnID) {
+		t.Fatalf("submission abort identity is absent from exact provider payload: event=%+v", notAdmittedEvent)
+	}
+	submission, found, err := reopened.TurnSubmission(notAdmittedEvent.SourceName, turnID)
+	if err != nil || !found || submission.State != watcher.TurnSubmissionAborted ||
+		submission.Receipt != turnID {
+		t.Fatalf("aborted submission=%+v found=%v err=%v", submission, found, err)
+	}
+	if turn, found, err := reopened.Turn(notAdmittedEvent.SourceName); err != nil || found {
+		t.Fatalf("definite non-submission created Turn=%+v found=%v err=%v", turn, found, err)
+	}
 
-			hostID := "brain-agent-brain-hidden:@spawn-failure"
-			if event, claimed, err := reopened.ClaimNextActionableEvent(hostID); err != nil || claimed {
-				t.Fatalf("cancelled auto-spawn audit became actionable: event=%+v claimed=%v err=%v", event, claimed, err)
-			}
+	hostID := "brain-agent-brain-hidden:@spawn-failure"
+	if event, claimed, err := reopened.ClaimNextActionableEvent(hostID); err != nil || claimed {
+		t.Fatalf("cancelled auto-spawn audit became actionable: event=%+v claimed=%v err=%v", event, claimed, err)
+	}
 
-			reopenedAgain, err := brain.NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
-				t.Fatalf("resolved spawn failure replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
-			}
-			finalEvents, err := reopenedAgain.ListWorkEvents(items[0].ID)
-			if err != nil || len(finalEvents) != wantEvents ||
-				finalEvents[len(finalEvents)-1].Kind != "brain.submission_not_admitted" ||
-				finalEvents[len(finalEvents)-1].Actionable ||
-				finalEvents[len(finalEvents)-1].DiscardedAt == nil {
-				t.Fatalf("resolved final Events=%+v err=%v", finalEvents, err)
-			}
-			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
-				t.Fatalf("restart replayed Session effect: sent=%d submitted=%d created=%d",
-					len(fw.sent), len(fw.submitted), len(fw.created))
-			}
-		})
+	reopenedAgain, err := brain.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
+		t.Fatalf("resolved spawn failure replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
+	}
+	finalEvents, err := reopenedAgain.ListWorkEvents(items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalEvents) != 1 || finalEvents[0].ID != notAdmittedEvent.ID {
+		t.Fatalf("restart duplicated the submission abort: %+v", finalEvents)
 	}
 }
 

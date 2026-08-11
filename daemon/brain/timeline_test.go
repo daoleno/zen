@@ -1,8 +1,6 @@
 package brain
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -583,105 +581,5 @@ func TestTimelineOmitsCanonicalDirectWorkEventUserRows(t *testing.T) {
 	conversation := TimelineItemsToConversationEvents(items)
 	if len(conversation) != 1 || conversation[0].ID != "user-visible" || strings.Contains(conversation[0].Body, "zen_work_event") {
 		t.Fatalf("conversation leaked envelope: %#v", conversation)
-	}
-}
-
-func TestOrchestrationSchemaV3BindsCurrentThreadWithoutBulkCards(t *testing.T) {
-	root := t.TempDir()
-	stateDir := filepath.Join(root, "state")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	fixed := time.Date(2026, 8, 6, 3, 0, 0, 0, time.UTC)
-	threadID := "thread-current"
-	chatState := `{"thread_id":"` + threadID + `","thread_ids":["` + threadID + `"]}` + "\n"
-	if err := os.WriteFile(filepath.Join(stateDir, "chat_state.json"), []byte(chatState), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	legacy := `{
-  "schema_version": 3,
-  "migrations": {},
-  "brain_work": [{
-    "work_id": "work-active",
-    "title": "Active legacy",
-    "objective": "Bind ownership then accept new cards",
-    "status": "waiting",
-    "completion_policy": "bounded",
-    "created_at": "` + fixed.Format(time.RFC3339Nano) + `",
-    "updated_at": "` + fixed.Format(time.RFC3339Nano) + `"
-  }, {
-    "work_id": "work-calendar",
-    "title": "Calendar legacy",
-    "objective": "Keep explicit source when already present",
-    "status": "running",
-    "source_thread_id": "thread-scheduled",
-    "completion_policy": "bounded",
-    "context_ref": "calendar:item-1:run-1",
-    "created_at": "` + fixed.Format(time.RFC3339Nano) + `",
-    "updated_at": "` + fixed.Format(time.RFC3339Nano) + `"
-  }],
-  "brain_work_events": []
-}`
-	if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), []byte(legacy+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, err := store.Work("work-active")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if active.SourceThreadID != threadID {
-		t.Fatalf("active legacy bind = %q want %q", active.SourceThreadID, threadID)
-	}
-	calendarWork, err := store.Work("work-calendar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calendarWork.SourceThreadID != "thread-scheduled" {
-		t.Fatalf("explicit scheduled source overwritten: %#v", calendarWork)
-	}
-	raw, err := os.ReadFile(filepath.Join(stateDir, "orchestration.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "terminal_at") {
-		t.Fatalf("persisted schema must not retain terminal_at: %s", raw)
-	}
-	database, migrated, err := decodeOrchestrationDatabase(raw)
-	if err != nil || migrated || database.SchemaVersion != orchestrationSchemaVersion {
-		t.Fatalf("schema after upgrade incomplete: migrated=%v schema=%d err=%v", migrated, database.SchemaVersion, err)
-	}
-	items, err := store.ThreadTimeline(threadID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("must not bulk-materialize historical cards: %#v", items)
-	}
-
-	service := NewService(store, nil, nil)
-	event, created, err := service.AppendWorkEvent(WorkEvent{
-		ID: "post-upgrade-card", WorkID: active.ID, Kind: "session.needs_input",
-		DedupeKey: "session:upgrade:turn:one:session.needs_input", Actionable: false, Summary: "first post-upgrade event",
-	})
-	if err != nil || !created {
-		t.Fatalf("append = %#v created=%v err=%v", event, created, err)
-	}
-	items, err = store.ThreadTimeline(threadID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].ID != "post-upgrade-card" || items[0].ThreadID != threadID {
-		t.Fatalf("post-upgrade card = %#v", items)
-	}
-	other, err := store.ThreadTimeline("thread-scheduled", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(other) != 0 {
-		t.Fatalf("card leaked onto scheduled thread: %#v", other)
 	}
 }

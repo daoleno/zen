@@ -487,12 +487,6 @@ func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
 	return w.captures[sessionID], nil
 }
 
-func (w *fakeWatcher) LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker {
-	return nil
-}
-
-func (w *fakeWatcher) ClearDelegatedTurnMarkers([]string) {}
-
 func (w *fakeWatcher) ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error) {
 	observation, found := w.providerEvidence[sessionID]
 	return observation, found, nil

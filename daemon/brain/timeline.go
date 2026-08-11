@@ -166,9 +166,6 @@ func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
-		return formatAdmissionProvenanceError(err)
-	}
 	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return err
@@ -401,9 +398,6 @@ func (s *Store) ThreadTimeline(threadID string, limit int) ([]TimelineItem, erro
 }
 
 func (s *Store) threadTimelineLocked(threadID string, limit int) ([]TimelineItem, error) {
-	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
-		return nil, formatAdmissionProvenanceError(err)
-	}
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return []TimelineItem{}, nil
@@ -505,9 +499,6 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureAdmissionProvenanceLocked(); err != nil {
-		return formatAdmissionProvenanceError(err)
-	}
 	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return err
@@ -718,62 +709,6 @@ func workCardTimelineItem(workItem Work, event WorkEvent, unread bool) TimelineI
 		// card is unread; MarkWorkRead clears it without touching the Event.
 		Unread: unread,
 	}
-}
-
-// migrateLegacyEventReadStateLocked consumes schema <=7 Event read_at only
-// after the corresponding timeline card is durably read. Missing cards are
-// materialized as read; existing unread cards are cleared. Reopen is
-// idempotent because card identity is the immutable Event ID.
-func (s *Store) migrateLegacyEventReadStateLocked(database *orchestrationDatabase) (bool, error) {
-	if database == nil {
-		return false, nil
-	}
-	hasLegacy := false
-	for _, event := range database.BrainWorkEvents {
-		if event.legacyReadAt != nil {
-			hasLegacy = true
-			break
-		}
-	}
-	if !hasLegacy {
-		return false, nil
-	}
-	items, err := s.readAllTimelineItemsLocked()
-	if err != nil {
-		return false, err
-	}
-	byID := make(map[string]int, len(items))
-	for index := range items {
-		byID[strings.TrimSpace(items[index].ID)] = index
-	}
-	timelineChanged := false
-	for eventIndex := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[eventIndex]
-		if event.legacyReadAt == nil {
-			continue
-		}
-		if index, found := byID[event.ID]; found {
-			if items[index].Kind == timelineKindWorkCard && items[index].Unread {
-				items[index].Unread = false
-				timelineChanged = true
-			}
-		} else if isProjectedWorkResultEvent(event.Kind) {
-			if index := workIndex(database.BrainWork, event.WorkID); index >= 0 {
-				item := workCardTimelineItem(database.BrainWork[index], *event, false)
-				items = append(items, item)
-				byID[item.ID] = len(items) - 1
-				timelineChanged = true
-			}
-		}
-		event.legacyReadAt = nil
-	}
-	if timelineChanged {
-		sortTimelineItems(items)
-		if err := s.rewriteTimelineLocked(items); err != nil {
-			return false, err
-		}
-	}
-	return true, nil
 }
 
 // MarkTimelineWorkCardsRead clears unread emphasis on materialized work cards

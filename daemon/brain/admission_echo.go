@@ -1,20 +1,15 @@
 package brain
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/daoleno/zen/daemon/work"
 )
 
-const admissionProvenanceMarker = "timeline_brain_admission_v1"
-
 // IsBrainInputAdmission reports whether a durable user row was written by a
-// Brain Interface send_input admission. After the one-time provenance
-// migration, this is solely the explicit brain_admission field.
+// Brain Interface send_input admission. Identity is solely the explicit
+// brain_admission field; no pre-field heuristic exists.
 func IsBrainInputAdmission(item TimelineItem) bool {
 	return strings.TrimSpace(item.Kind) == timelineKindUserMessage && item.BrainAdmission
 }
@@ -181,102 +176,4 @@ func claimProviderUserEchoes(
 		credits = append(credits[:matched], credits[matched+1:]...)
 	}
 	return suppress, out, dirty
-}
-
-func (s *Store) ensureAdmissionProvenanceLocked() error {
-	markerPath := filepath.Join(s.statePath(), admissionProvenanceMarker)
-	if _, err := os.Stat(markerPath); err == nil {
-		return nil
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	items, err := s.readAllTimelineItemsLocked()
-	if err != nil {
-		return err
-	}
-	changed := false
-	for index := range items {
-		if applyAdmissionProvenanceMigration(&items[index]) {
-			changed = true
-		}
-	}
-	if changed {
-		if err := s.rewriteTimelineLocked(items); err != nil {
-			return err
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(markerPath), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(markerPath, []byte("ok\n"), 0o600)
-}
-
-func applyAdmissionProvenanceMigration(item *TimelineItem) bool {
-	if item == nil {
-		return false
-	}
-	normalizeLegacyTimelineKind(item)
-	if item.Kind != timelineKindUserMessage {
-		return clearNonAdmissionCorrelation(item)
-	}
-	if item.BrainAdmission {
-		changed := false
-		if strings.TrimSpace(item.AdmissionSHA256) == "" && strings.TrimSpace(item.Body) != "" {
-			item.AdmissionSHA256 = AdmissionDigest(item.Body)
-			changed = true
-		}
-		return changed
-	}
-	if isUnreleasedPreFieldAdmission(*item) {
-		item.BrainAdmission = true
-		return true
-	}
-	return clearNonAdmissionCorrelation(item)
-}
-
-// isUnreleasedPreFieldAdmission recognizes the unreleased AdmitUserMessage
-// shape written before brain_admission existed: receipt-shaped id, exact body
-// digest, no colon owner:line provider id. Heuristic is migration-only.
-func isUnreleasedPreFieldAdmission(item TimelineItem) bool {
-	if strings.TrimSpace(item.Kind) != timelineKindUserMessage || item.BrainAdmission {
-		return false
-	}
-	id := strings.TrimSpace(item.ID)
-	body := strings.TrimSpace(item.Body)
-	digest := strings.TrimSpace(item.AdmissionSHA256)
-	if id == "" || body == "" || digest == "" {
-		return false
-	}
-	// Provider transcript event ids use "owner:…" (session:line, path:offset).
-	if strings.Contains(id, ":") {
-		return false
-	}
-	return digest == AdmissionDigest(body)
-}
-
-func clearNonAdmissionCorrelation(item *TimelineItem) bool {
-	if item == nil {
-		return false
-	}
-	changed := false
-	if item.BrainAdmission {
-		item.BrainAdmission = false
-		changed = true
-	}
-	if strings.TrimSpace(item.AdmissionSHA256) != "" {
-		item.AdmissionSHA256 = ""
-		changed = true
-	}
-	if strings.TrimSpace(item.AdmissionEchoEventID) != "" {
-		item.AdmissionEchoEventID = ""
-		changed = true
-	}
-	return changed
-}
-
-func formatAdmissionProvenanceError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("brain admission provenance: %w", err)
 }

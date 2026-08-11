@@ -138,7 +138,6 @@ describe("Brain current Work and backlog normalization", () => {
           total: 274,
           queued_attention: 22,
           historical_results: 202,
-          repair_needed: 25,
         },
       },
     });
@@ -200,7 +199,6 @@ describe("Brain current Work and backlog normalization", () => {
       total: 274,
       queued_attention: 22,
       historical_results: 202,
-      repair_needed: 25,
     });
   });
 });

@@ -9,11 +9,6 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-// delegatedTurnOption is the pre-protocol tmux @zen_delegated_turn marker.
-// After the one-shot migration it is never written again; the canonical
-// ledger owns turn lifecycle state.
-const delegatedTurnOption = "zen_delegated_turn"
-
 // ProviderProbeState distinguishes a successful read (possibly with no new
 // fact) from a provably unlocatable or unreadable transcript source. Only
 // loss states may drive the bounded provider-evidence session.uncertain;

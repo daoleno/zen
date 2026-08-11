@@ -42,14 +42,9 @@ type Watcher interface {
 	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
-	// LegacyDelegatedTurnMarkers returns the raw pre-protocol tmux
-	// @zen_delegated_turn options for the one-shot ledger migration.
-	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
-	// ClearDelegatedTurnMarkers unsets the migrated @zen_delegated_turn
-	// options; all later writes go to the canonical ledger.
-	ClearDelegatedTurnMarkers(targets []string)
 	// ProbeProviderEvidence returns the current provider-native observation
-	// for a session, used by the legacy-marker reconciliation sweep.
+	// for a session; the Host foreground gate and delegated admission window
+	// consume it.
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
 }
@@ -260,15 +255,6 @@ func nextSessionFinalization(item Work) (SessionFinalization, bool) {
 		}
 	}
 	return SessionFinalization{}, false
-}
-
-// MigrateSignalSystemV1 exposes the store's bounded, crash-resumable startup
-// migration to the daemon owner.
-func (s *Service) MigrateSignalSystemV1(limit int) (bool, int, error) {
-	if s == nil || s.store == nil {
-		return true, 0, nil
-	}
-	return s.store.MigrateSignalSystemV1(limit)
 }
 
 // ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
@@ -597,13 +583,6 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 		return HousekeepingReport{}, err
 	}
 	changedPaths := changedWorkspacePaths(before, after)
-	// Closed-turn ledger rows whose terminal events were consumed are pruned
-	// (C.12 Phase 3); held/uncertain rows are never pruned.
-	prunedTurns, pruneErr := s.store.PruneSettledTurns(s.nowUTC().AddDate(0, 0, -7))
-	if pruneErr != nil {
-		return HousekeepingReport{}, pruneErr
-	}
-	_ = prunedTurns
 	context, err := s.Context()
 	if err != nil {
 		return HousekeepingReport{}, err
@@ -833,205 +812,6 @@ func workUpdateChanges(item Work, update WorkUpdate) bool {
 		update.WaitFor != nil && strings.TrimSpace(*update.WaitFor) != item.WaitFor ||
 		update.Wake != nil && !workWakeEqual(*update.Wake, item.Wake) ||
 		update.ContextRef != nil && strings.TrimSpace(*update.ContextRef) != item.ContextRef
-}
-
-func legacySessionWorkID(sessionID string) string {
-	digest := sha256.Sum256([]byte(strings.TrimSpace(sessionID)))
-	return fmt.Sprintf("session-%x", digest[:12])
-}
-
-func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, error) {
-	if s == nil || s.store == nil {
-		return false, nil
-	}
-	candidates := []Work{}
-	for _, agent := range agents {
-		if agent == nil || !agent.Delegated || agent.Hidden || strings.TrimSpace(agent.ID) == "" {
-			continue
-		}
-		status := WorkWaiting
-		if agent.State == classifier.StateRunning {
-			status = WorkRunning
-		}
-		candidates = append(candidates, Work{
-			Title:            firstNonEmpty(agent.Name, "Delegated work"),
-			Objective:        firstNonEmpty(agent.Summary, "Complete the delegated Session."),
-			Status:           status,
-			OwnerSessionID:   agent.ID,
-			OwnerDelegated:   true,
-			CompletionPolicy: CompletionBounded,
-			NextAction:       "Wait for the delegated Session.",
-			WaitFor:          "Session " + agent.ID,
-			ContextRef:       "session:" + agent.ID,
-		})
-	}
-	return s.store.MigrateDelegatedSessionsV1(candidates)
-}
-
-// MigrateTurnLedgerV1 performs the canonical-turn migration (C.2.8): legacy
-// tmux markers import as attached hints only — canonical status is
-// Admitted/Running, never Done/Failed — then Phase 1b reconciles each hinted
-// row against turn-bound provider history: a bound terminal sets the
-// canonical terminal (in-place flip when the kind matches); history showing
-// the turn still running drops the hint; unavailable history with a gone
-// session resolves to Unknown + session.uncertain; unavailable history with a
-// live session keeps the hint attached with canonical Running. Returns the
-// targets whose markers should be cleared.
-//
-// The whole migration is crash-resumable and idempotent: every phase re-runs
-// safely (import skips existing rows, Phase 1b facts dedupe by deterministic
-// FactID, completion is a no-op), and the durable completion marker is
-// persisted only after Phase 1b finished — never before — so a crash between
-// phases resumes from the remaining work instead of skipping it.
-func (s *Service) MigrateTurnLedgerV1(
-	markers []watcher.LegacyDelegatedTurnMarker,
-	agents []*classifier.Agent,
-) ([]string, error) {
-	if s == nil || s.store == nil {
-		return nil, nil
-	}
-	byID := make(map[string]*classifier.Agent, len(agents))
-	for _, agent := range agents {
-		if agent != nil {
-			byID[agent.ID] = agent
-		}
-	}
-	imports := []TurnLedgerImport{}
-	targets := []string{}
-	for _, marker := range markers {
-		legacy, ok, err := watcher.DecodeLegacyDelegatedTurn(marker.Raw)
-		if err != nil || !ok {
-			continue
-		}
-		sessionID := strings.TrimSpace(marker.Target)
-		if sessionID == "" {
-			continue
-		}
-		workItem, found, workErr := s.store.WorkByOwnerSession(sessionID)
-		if workErr != nil || !found {
-			continue
-		}
-		status := watcher.TurnRunning
-		hint := (*watcher.TurnHint)(nil)
-		switch legacy.Status {
-		case "ambiguous", "dispatched":
-			status = watcher.TurnAdmitted
-		case "done":
-			hint = &watcher.TurnHint{
-				Kind:    "session.done",
-				Class:   watcher.EvidenceLegacy,
-				At:      legacyAcceptedAt(legacy),
-				Summary: "Legacy tmux marker reported done",
-			}
-		case "failed":
-			hint = &watcher.TurnHint{
-				Kind:    "session.failed",
-				Class:   watcher.EvidenceLegacy,
-				At:      legacyAcceptedAt(legacy),
-				Summary: "Legacy tmux marker reported failed",
-			}
-		default:
-			// running/idle and anything unknown: canonical Running only.
-		}
-		if legacy.AcceptedAt.IsZero() {
-			continue
-		}
-		imports = append(imports, TurnLedgerImport{
-			SessionID:       sessionID,
-			TurnID:          firstNonEmpty(legacy.ID, sessionTurnID(sessionID, legacy.AcceptedAt)),
-			WorkID:          workItem.ID,
-			Status:          status,
-			AcceptedAt:      legacy.AcceptedAt.UTC(),
-			ProcessIdentity: legacy.ProcessIdentity,
-			Summary:         legacy.Summary,
-			Hint:            hint,
-		})
-		targets = append(targets, sessionID)
-	}
-	// Phase 1: import rows (idempotent; completion marker NOT persisted).
-	if _, err := s.store.MigrateTurnLedgerV1(imports); err != nil {
-		return nil, err
-	}
-	// Phase 1b: reconcile legacy hints against provider history (idempotent
-	// via deterministic FactIDs).
-	s.reconcileLegacyTurnHints(imports, byID)
-	// Completion marker LAST: a crash before this point resumes all phases.
-	if err := s.store.CompleteTurnLedgerV1Migration(); err != nil {
-		return nil, err
-	}
-	return targets, nil
-}
-
-func legacyAcceptedAt(legacy watcher.LegacyDelegatedTurn) time.Time {
-	if legacy.SettledAt != nil {
-		return legacy.SettledAt.UTC()
-	}
-	return legacy.AcceptedAt.UTC()
-}
-
-// sessionTurnID keeps the canonical TurnID shape shared with the control app:
-// "<agentID>:turn:<unixnano>".
-func sessionTurnID(sessionID string, acceptedAt time.Time) string {
-	return fmt.Sprintf("%s:turn:%d", strings.TrimSpace(sessionID), acceptedAt.UnixNano())
-}
-
-// reconcileLegacyTurnHints is migration Phase 1b (C.2.8): per hinted row, read
-// turn-bound provider history and reconcile the attached hint through the same
-// canonical reducer.
-func (s *Service) reconcileLegacyTurnHints(imports []TurnLedgerImport, agents map[string]*classifier.Agent) {
-	if s.watcher == nil {
-		return
-	}
-	for _, candidate := range imports {
-		if candidate.Hint == nil {
-			continue
-		}
-		sessionID := candidate.SessionID
-		agent := agents[sessionID]
-		observation, ok, probeErr := s.watcher.ProbeProviderEvidence(sessionID)
-		if probeErr != nil || !ok || observation.ID == "" {
-			// History unavailable: session gone → Unknown + session.uncertain;
-			// session live → hint stays attached, canonical stays Running.
-			if agent == nil || !s.watcher.HasSession(sessionID) {
-				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-					SessionID: sessionID,
-					TurnID:    candidate.TurnID,
-					Class:     watcher.EvidenceLiveness,
-					Kind:      "uncertain",
-					SourceID:  "liveness\x00migration-reconcile\x00" + sessionID,
-					At:        s.nowUTC(),
-					Summary:   "Legacy delegated Session ended before its outcome could be reconciled",
-				})
-			}
-			continue
-		}
-		if !observation.StartedAt.IsZero() && observation.StartedAt.Before(candidate.AcceptedAt) {
-			continue
-		}
-		switch observation.Status {
-		case "completed":
-			_, _, _ = s.store.ApplyTurnFact(s.providerTerminalFact(sessionID, candidate.TurnID, observation, "done"))
-		case "failed", "interrupted", "cancelled":
-			_, _, _ = s.store.ApplyTurnFact(s.providerTerminalFact(sessionID, candidate.TurnID, observation, "failed"))
-		case "running":
-			// History shows the turn still running: drop the hint, canonical
-			// stays Running (the reducer drops same-kind hints on bound
-			// provider running facts).
-			_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-				SessionID:  sessionID,
-				TurnID:     candidate.TurnID,
-				Class:      watcher.EvidenceProvider,
-				Kind:       "running",
-				SourceID:   providerFactSourceID(sessionID, observation),
-				Cursor:     observation.AdmissionCursor,
-				Admission:  admissionFromObservation(observation),
-				ActivityID: strings.TrimSpace(observation.ID),
-				StartedAt:  observation.StartedAt,
-				At:         s.nowUTC(),
-				Summary:    "Delegated turn running",
-			})
-		}
-	}
 }
 
 func (s *Service) providerTerminalFact(

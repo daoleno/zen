@@ -51,8 +51,10 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 			t.Fatalf("server runtime is missing sole-owner boundary %q", required)
 		}
 	}
-	if count := strings.Count(string(serverSource), "MigrateDelegatedSessionsV1(agentSessions)"); count != 1 {
-		t.Fatalf("one-way delegated Session migration calls = %d, want 1 source path", count)
+	if strings.Contains(string(serverSource), "MigrateDelegatedSessionsV1") ||
+		strings.Contains(string(serverSource), "MigrateSignalSystemV1") ||
+		strings.Contains(string(serverSource), "MigrateTurnLedgerV1") {
+		t.Fatal("server runtime still drives legacy scheduler migration")
 	}
 	brainSource, err := os.ReadFile(filepath.Join("..", "brain", "orchestration.go"))
 	if err != nil {

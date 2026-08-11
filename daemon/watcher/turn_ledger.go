@@ -2,7 +2,6 @@ package watcher
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,12 +19,11 @@ import (
 // reverse).
 
 // EvidenceClass is the strictly ordered evidence lattice
-// Absent < Legacy < Pane < Control < Receipt < Liveness < Provider.
+// Absent < Pane < Control < Receipt < Liveness < Provider.
 type EvidenceClass string
 
 const (
 	EvidenceAbsent   EvidenceClass = "absent"
-	EvidenceLegacy   EvidenceClass = "legacy"
 	EvidencePane     EvidenceClass = "pane"
 	EvidenceControl  EvidenceClass = "control"
 	EvidenceReceipt  EvidenceClass = "receipt"
@@ -98,8 +96,8 @@ func (a TurnAdmission) Empty() bool {
 		a.Cursor == 0
 }
 
-// TurnHint is an attached provisional terminal report (Control, Legacy, or
-// unbound Provider). Hints never change canonical status and never wake.
+// TurnHint is an attached provisional terminal report (Control or unbound
+// Provider). Hints never change canonical status and never wake.
 type TurnHint struct {
 	Kind    string        `json:"kind"`
 	Class   EvidenceClass `json:"evidence_class"`
@@ -348,52 +346,4 @@ type TranscriptBinding struct {
 func (b TranscriptBinding) Empty() bool {
 	return strings.TrimSpace(b.Provider) == "" ||
 		(strings.TrimSpace(b.PiFlag) == "" && strings.TrimSpace(b.PiPath) == "")
-}
-
-// LegacyDelegatedTurnMarker is one pre-protocol tmux @zen_delegated_turn
-// option read by the one-shot migration. After the migration imports it as an
-// attached hint, the option is unset and all later writes go to the ledger.
-type LegacyDelegatedTurnMarker struct {
-	Target string
-	Raw    string
-}
-
-// LegacyDelegatedTurn is the decoded pre-protocol marker used by the one-shot
-// migration. Only the fields that can seed the canonical ledger are read.
-type LegacyDelegatedTurn struct {
-	ID              string
-	Status          string
-	AcceptedAt      time.Time
-	ProcessIdentity string
-	Summary         string
-	SettledAt       *time.Time
-}
-
-// DecodeLegacyDelegatedTurn decodes a raw @zen_delegated_turn option for the
-// one-shot migration. Schema/validation errors are surfaced so the migration
-// can leave the marker quarantined rather than importing garbage.
-func DecodeLegacyDelegatedTurn(raw string) (LegacyDelegatedTurn, bool, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return LegacyDelegatedTurn{}, false, nil
-	}
-	var legacy struct {
-		ID              string     `json:"id"`
-		Status          string     `json:"status"`
-		AcceptedAt      time.Time  `json:"accepted_at"`
-		ProcessIdentity string     `json:"process_identity"`
-		Summary         string     `json:"summary,omitempty"`
-		SettledAt       *time.Time `json:"settled_at,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
-		return LegacyDelegatedTurn{}, false, fmt.Errorf("decode legacy delegated turn: %w", err)
-	}
-	return LegacyDelegatedTurn{
-		ID:              strings.TrimSpace(legacy.ID),
-		Status:          strings.TrimSpace(legacy.Status),
-		AcceptedAt:      legacy.AcceptedAt,
-		ProcessIdentity: strings.TrimSpace(legacy.ProcessIdentity),
-		Summary:         strings.TrimSpace(legacy.Summary),
-		SettledAt:       legacy.SettledAt,
-	}, true, nil
 }

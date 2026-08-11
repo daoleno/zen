@@ -711,7 +711,7 @@ func (w *Watcher) Agents() []*classifier.Agent {
 }
 
 // SnapshotReady reports whether Watcher has completed at least one full poll.
-// It gates one-way migration from pre-Work delegated Session ownership.
+// It gates the Brain startup reconciliation that needs a fresh inventory.
 func (w *Watcher) SnapshotReady() bool {
 	if w == nil {
 		return false
@@ -1024,47 +1024,9 @@ func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 	return SessionPresenceAbsent, nil
 }
 
-// LegacyDelegatedTurnMarkers reads the raw pre-protocol @zen_delegated_turn
-// options from the current tmux inventory for the one-shot ledger migration.
-func (w *Watcher) LegacyDelegatedTurnMarkers() []LegacyDelegatedTurnMarker {
-	windows, err := listTmuxWindowsFunc()
-	if err != nil {
-		return nil
-	}
-	markers := []LegacyDelegatedTurnMarker{}
-	for _, win := range windows {
-		if strings.TrimSpace(win.delegatedTurnRaw) != "" {
-			markers = append(markers, LegacyDelegatedTurnMarker{
-				Target: win.target,
-				Raw:    win.delegatedTurnRaw,
-			})
-		}
-	}
-	return markers
-}
-
-// ClearDelegatedTurnMarkers unsets the migrated @zen_delegated_turn options.
-// All later lifecycle writes go to the canonical ledger.
-func (w *Watcher) ClearDelegatedTurnMarkers(targets []string) {
-	for _, target := range targets {
-		target = strings.TrimSpace(target)
-		if target == "" {
-			continue
-		}
-		present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(target), target)
-		if err != nil || !present || !owned {
-			continue
-		}
-		_ = tmuxCommand(
-			w.socketPathFor(target), "set-option", "-w", "-u", "-t", target,
-			"@"+delegatedTurnOption,
-		).Run()
-	}
-}
-
 // ProbeProviderEvidence returns the current provider-native observation for a
-// session. The brain service uses it during the legacy-marker reconciliation
-// sweep (migration Phase 1b).
+// session. The brain service uses it for the Host foreground gate and the
+// delegated provider admission window.
 func (w *Watcher) ProbeProviderEvidence(sessionID string) (ProviderActivityObservation, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -1147,7 +1109,6 @@ func (w *Watcher) poll() {
 		exists            bool
 		prev              string
 		previousMetadata  agentMetadataSnapshot
-		delegatedTurnRaw  string
 		now               time.Time
 	}
 
@@ -1241,7 +1202,6 @@ func (w *Watcher) poll() {
 			exists:            exists,
 			prev:              prev,
 			previousMetadata:  previousMetadata,
-			delegatedTurnRaw:  win.delegatedTurnRaw,
 			now:               now,
 		})
 	}
@@ -1454,28 +1414,16 @@ func (w *Watcher) compactAgentOrderLocked() {
 
 // restoreTurnTranscriptBindingLocked restores the ledger-recorded provider
 // transcript binding onto the Session command (Pi owned --session/--session-dir
-// path) and backfills a missing binding from the advisory tmux option / launch
-// command, idempotently. The ledger is the durable truth; the tmux option is
-// only an advisory cache for sessions without a ledger record.
+// path). The ledger is the durable truth recorded at admission; the tmux
+// option is only an advisory cache.
 func (w *Watcher) restoreTurnTranscriptBindingLocked(agent *classifier.Agent, turn TurnSnapshot) {
 	if agent == nil || strings.TrimSpace(agent.ID) == "" {
 		return
 	}
 	binding := turn.TranscriptBinding
 	if binding.Empty() {
-		// Backfill: the current launch command carries a Pi owned binding the
-		// ledger lacks (turns admitted before the binding existed, or a
-		// tmux-option recovery). Idempotent: the store only persists when the
-		// binding is missing.
-		if flag, path := piOwnedLaunchFlag(agent.Command); flag != "" && path != "" && w.turnLedger != nil {
-			if backfiller, ok := w.turnLedger.(interface {
-				BackfillTurnTranscriptBinding(string, TranscriptBinding) (bool, error)
-			}); ok {
-				_, _ = backfiller.BackfillTurnTranscriptBinding(agent.ID, TranscriptBinding{
-					Provider: "pi", PiFlag: flag, PiPath: path,
-				})
-			}
-		}
+		// The ledger always records the provider-native binding at admission;
+		// there is no backfill path for rows that predate it.
 		return
 	}
 	if strings.TrimSpace(binding.Provider) != "pi" ||
@@ -2168,7 +2116,6 @@ type tmuxWindow struct {
 	hidden           bool
 	delegated        bool
 	resourceUnit     string
-	delegatedTurnRaw string
 }
 
 // listTmuxWindows inventories only explicitly Zen-owned windows on the one
@@ -2205,7 +2152,7 @@ func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
 }
 
 func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
-	cmd := tmuxCommand(socket, "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_delegated_turn}\t#{@zen_agent_pi_session}")
+	cmd := tmuxCommand(socket, "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_agent_pi_session}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w: %s", err, strings.TrimSpace(string(out)))
@@ -2216,7 +2163,7 @@ func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 10)
+		parts := strings.SplitN(line, "\t", 9)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -2251,19 +2198,15 @@ func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
 		if len(parts) >= 8 {
 			resourceUnit = strings.TrimSpace(parts[7])
 		}
-		delegatedTurnRaw := ""
-		if len(parts) >= 9 {
-			delegatedTurnRaw = strings.TrimSpace(parts[8])
-		}
 		piSessionBinding := ""
-		if len(parts) >= 10 {
-			piSessionBinding = strings.TrimSpace(parts[9])
+		if len(parts) >= 9 {
+			piSessionBinding = strings.TrimSpace(parts[8])
 		}
 		windows = append(windows, tmuxWindow{
 			target: target, name: name, cwd: cwd, command: command,
 			piSessionBinding: piSessionBinding,
 			panePID:          panePID, hidden: hidden, delegated: delegated,
-			resourceUnit: resourceUnit, delegatedTurnRaw: delegatedTurnRaw,
+			resourceUnit: resourceUnit,
 		})
 	}
 	return windows, nil

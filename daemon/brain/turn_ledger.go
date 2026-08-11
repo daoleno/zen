@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -106,21 +105,6 @@ type TurnFactRecord struct {
 	Summary string                `json:"summary,omitempty"`
 }
 
-// TurnLedgerImport is one legacy tmux marker materialized by the one-shot
-// migration. Canonical status is Admitted/Running only; done/failed markers
-// attach a Legacy hint that never changes canonical status (C.2.8).
-type TurnLedgerImport struct {
-	SessionID       string
-	TurnID          string
-	WorkID          string
-	Status          watcher.TurnStatus
-	AcceptedAt      time.Time
-	ProcessIdentity string
-	PaneGeneration  string
-	Summary         string
-	Hint            *watcher.TurnHint
-}
-
 func validTurnStatus(status watcher.TurnStatus) bool {
 	switch status {
 	case watcher.TurnAdmitted, watcher.TurnAccepted, watcher.TurnRunning,
@@ -133,7 +117,7 @@ func validTurnStatus(status watcher.TurnStatus) bool {
 
 func validEvidenceClass(class watcher.EvidenceClass) bool {
 	switch class {
-	case watcher.EvidenceAbsent, watcher.EvidenceLegacy, watcher.EvidencePane,
+	case watcher.EvidenceAbsent, watcher.EvidencePane,
 		watcher.EvidenceControl, watcher.EvidenceReceipt, watcher.EvidenceLiveness,
 		watcher.EvidenceProvider:
 		return true
@@ -1069,8 +1053,7 @@ func databaseHasExactHostEventClaim(database orchestrationDatabase, submission w
 			event.WorkID == submission.WorkID && event.DeliveryHostSessionID == submission.SessionID &&
 			event.ProviderTurnID == submission.ProposedTurnID && event.Actionable &&
 			event.ClaimedAt != nil && event.DeliveredAt == nil && event.HandlingEndedAt == nil &&
-			event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" &&
-			!event.HistoricalDelivery {
+			event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" {
 			return true
 		}
 	}
@@ -1097,41 +1080,6 @@ func databaseHasResolvedHostEventAdmission(
 		}
 	}
 	return false
-}
-
-// BackfillTurnTranscriptBinding idempotently records the provider-native
-// transcript binding on the current turn when it is still empty (turns
-// admitted before the binding existed, or rediscovered sessions whose tmux
-// option holds the binding). It never overwrites an existing binding; the
-// tmux option is only an advisory cache for sessions without a ledger record.
-func (s *Store) BackfillTurnTranscriptBinding(sessionID string, binding watcher.TranscriptBinding) (bool, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if s == nil || sessionID == "" || binding.Empty() {
-		return false, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return false, err
-	}
-	turn, found := currentTurnForSession(database, sessionID)
-	if !found || !turn.TranscriptBinding.Empty() {
-		return false, nil
-	}
-	turn.TranscriptBinding = binding
-	turn.UpdatedAt = s.nowUTC()
-	for index := range database.BrainTurns {
-		if database.BrainTurns[index].SessionID == turn.SessionID && database.BrainTurns[index].TurnID == turn.TurnID {
-			database.BrainTurns[index] = turn
-			break
-		}
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return false, err
-	}
-	s.broadcastWorkChange(turn.WorkID)
-	return true, nil
 }
 
 // Turn returns the canonical snapshot for the current turn of the session.
@@ -1327,9 +1275,8 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			if !binding && !adopts {
 				// An unbound running fact is diagnostic evidence only — except
 				// that provider running inside the admission window
-				// contradicts any provisional same-kind hint (Phase 1b legacy
-				// reconciliation: history showing the turn still running drops
-				// the false done hint, C.2.8).
+				// contradicts any provisional same-kind hint (history showing
+				// the turn still running drops the false done hint).
 				if inWindow {
 					mutation.dropHintKind = "session.done"
 					mutation.changed = true
@@ -1598,16 +1545,6 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			}
 			mutation.changed = true
 			applyEvent("session.uncertain", true, summary)
-		}
-	case watcher.EvidenceLegacy:
-		switch fact.Kind {
-		case "done", "failed":
-			kind := "session.done"
-			if fact.Kind == "failed" {
-				kind = "session.failed"
-			}
-			hintOnly(kind, "Legacy delegated turn marker reported "+fact.Kind)
-			mutation.changed = true
 		}
 	case watcher.EvidencePane, watcher.EvidenceAbsent:
 		// Pane evidence refreshes only and can never promote Admitted, set
@@ -2247,180 +2184,6 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	return turn.snapshot(), true, nil
 }
 
-// MigrateTurnLedgerV1 performs the resumable legacy tmux-marker import
-// (C.2.8): canonical status is Admitted/Running only; done/failed markers
-// attach a Legacy hint that never changes canonical status. All later writes
-// go to the ledger.
-//
-// The migration is crash-resumable and idempotent: this import phase never
-// persists the completion marker — CompleteTurnLedgerV1Migration does that
-// only after every later phase (Phase 1b reconciliation, marker cleanup)
-// finished. A crash between phases re-runs import (existing rows skipped),
-// reconciliation (deterministic FactIDs dedupe), and completion (no-op).
-func (s *Store) MigrateTurnLedgerV1(imports []TurnLedgerImport) (bool, error) {
-	if s == nil {
-		return false, fmt.Errorf("brain store is not configured")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return false, err
-	}
-	imported := false
-	for _, candidate := range imports {
-		candidate.SessionID = strings.TrimSpace(candidate.SessionID)
-		candidate.TurnID = strings.TrimSpace(candidate.TurnID)
-		candidate.WorkID = strings.TrimSpace(candidate.WorkID)
-		if candidate.SessionID == "" || candidate.TurnID == "" {
-			continue
-		}
-		if candidate.WorkID == "" {
-			for _, item := range database.BrainWork {
-				if strings.TrimSpace(item.OwnerSessionID) == candidate.SessionID {
-					candidate.WorkID = item.ID
-					break
-				}
-			}
-		}
-		workExists := false
-		for _, item := range database.BrainWork {
-			if item.ID == candidate.WorkID {
-				workExists = true
-				break
-			}
-		}
-		if !workExists {
-			// A marker without an owning Work cannot be imported; it is left
-			// quarantined rather than failing the whole migration.
-			continue
-		}
-		exists := false
-		for _, turn := range database.BrainTurns {
-			if turn.SessionID == candidate.SessionID && turn.TurnID == candidate.TurnID {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			continue
-		}
-		status := candidate.Status
-		if status != watcher.TurnAdmitted && status != watcher.TurnRunning {
-			status = watcher.TurnRunning
-		}
-		record := TurnRecord{
-			SessionID:       candidate.SessionID,
-			TurnID:          candidate.TurnID,
-			WorkID:          candidate.WorkID,
-			Status:          status,
-			PaneGeneration:  candidate.PaneGeneration,
-			ProcessIdentity: candidate.ProcessIdentity,
-			AcceptedAt:      candidate.AcceptedAt,
-			Summary:         candidate.Summary,
-			Facts:           []TurnFactRecord{},
-			UpdatedAt:       now,
-		}
-		if candidate.AcceptedAt.IsZero() {
-			record.AcceptedAt = now
-		}
-		// Per-turn liveness backfill: imported rows get one fresh upgrade
-		// grace from migration time, never from their old AcceptedAt. This
-		// prevents a live pre-upgrade turn from staling on the first tick.
-		record.LeaseDeadline = now.Add(turnLeaseGrace).UTC()
-		if candidate.Hint != nil {
-			record.Hints = []watcher.TurnHint{*candidate.Hint}
-		}
-		database.BrainTurns = append(database.BrainTurns, record)
-		imported = true
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return false, err
-	}
-	if imported {
-		s.broadcastWorkChange("")
-	}
-	return imported, nil
-}
-
-// CompleteTurnLedgerV1Migration durably records that every migration phase
-// finished. It is the ONLY writer of the TurnLedgerV1At marker and must run
-// after import, Phase 1b reconciliation, and marker cleanup, so a crash in
-// any earlier phase never skips the remaining work. Idempotent.
-func (s *Store) CompleteTurnLedgerV1Migration() error {
-	if s == nil {
-		return fmt.Errorf("brain store is not configured")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return err
-	}
-	if database.Migrations.TurnLedgerV1At != nil {
-		return nil
-	}
-	database.Migrations.TurnLedgerV1At = &now
-	return s.persistOrchestrationLocked(database)
-}
-
-// PruneSettledTurns removes closed-turn ledger rows whose terminal events are
-// consumed and whose settlement predates olderThan. Held/uncertain turns are
-// never pruned. Returns the number of pruned rows.
-func (s *Store) PruneSettledTurns(olderThan time.Time) (int, error) {
-	if s == nil {
-		return 0, fmt.Errorf("brain store is not configured")
-	}
-	olderThan = olderThan.UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return 0, err
-	}
-	pruned := 0
-	kept := database.BrainTurns[:0]
-	for _, turn := range database.BrainTurns {
-		if turn.Status != watcher.TurnDone && turn.Status != watcher.TurnFailed {
-			kept = append(kept, turn)
-			continue
-		}
-		if turn.SettledAt == nil || turn.SettledAt.After(olderThan) {
-			kept = append(kept, turn)
-			continue
-		}
-		consumed := false
-		eventKind := "session.done"
-		if turn.Status == watcher.TurnFailed {
-			eventKind = "session.failed"
-		}
-		dedupeKey := sessionTurnEventDedupeKey(turn.SessionID, turn.TurnID, eventKind)
-		for _, event := range database.BrainWorkEvents {
-			if event.WorkID == turn.WorkID && event.DedupeKey == dedupeKey &&
-				event.HandledAt != nil && event.Actionable {
-				consumed = true
-				break
-			}
-		}
-		if !consumed {
-			kept = append(kept, turn)
-			continue
-		}
-		pruned++
-	}
-	database.BrainTurns = kept
-	if pruned == 0 {
-		return 0, nil
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return 0, err
-	}
-	s.broadcastWorkChange("")
-	return pruned, nil
-}
-
 // AppendDeliveryNote appends a deduped delivery diagnostic for a held claim
 // (delivery.ambiguous non-actionable, delivery.uncertain actionable). It is
 // scheduler audit, not a Work-state mutation, so it preserves the revision
@@ -2475,7 +2238,6 @@ func (s *Store) MarkDeliveredClaim(eventID, actor, reason string) error {
 		deliveredAt := now.UTC()
 		event.DeliveredAt = &deliveredAt
 		event.HandlingEndedAt = &deliveredAt
-		event.HistoricalDelivery = true
 		event.Resolution = EventResolutionMarkDelivered
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
@@ -2675,56 +2437,6 @@ func retirePendingDelegatedSubmissionsForWork(database *orchestrationDatabase, w
 		submission.ResolvedActivityID = ""
 		submission.ResolvedAdmission = watcher.TurnAdmission{}
 		retired++
-	}
-	return retired
-}
-
-// retirePendingDelegatedSubmissionsForTerminalWork is the deterministic
-// schema-10/11 upgrade. Before authority is retired, every exact delegated
-// Session receives one pending teardown obligation unless an older outcome
-// already exists. Work.UpdatedAt is durable and supplies the migration clock;
-// each finalization/retirement timestamp is clamped to AcceptedAt. Existing
-// failed, complete, skipped, and pending outcomes are preserved without reset.
-// Current-schema documents are never repaired on read: validation rejects
-// future invariant violations.
-func retirePendingDelegatedSubmissionsForTerminalWork(database *orchestrationDatabase) int {
-	if database == nil {
-		return 0
-	}
-	retired := 0
-	for workIndex := range database.BrainWork {
-		item := &database.BrainWork[workIndex]
-		if item.Status == WorkDone || item.Status == WorkCancelled {
-			existing := make(map[string]struct{}, len(item.SessionFinalizations))
-			for _, finalization := range item.SessionFinalizations {
-				existing[finalization.SessionID] = struct{}{}
-			}
-			for _, submission := range database.BrainTurnSubmissions {
-				if submission.WorkID != item.ID || submission.State != watcher.TurnSubmissionPending ||
-					strings.TrimSpace(submission.ClaimToken) != "" {
-					continue
-				}
-				sessionID := strings.TrimSpace(submission.SessionID)
-				if sessionID == "" {
-					continue
-				}
-				if _, found := existing[sessionID]; found {
-					continue
-				}
-				updatedAt := item.UpdatedAt.UTC()
-				if updatedAt.Before(submission.AcceptedAt.UTC()) {
-					updatedAt = submission.AcceptedAt.UTC()
-				}
-				item.SessionFinalizations = append(item.SessionFinalizations, SessionFinalization{
-					SessionID: sessionID, Delegated: true, State: SessionFinalizationPending, UpdatedAt: updatedAt,
-				})
-				existing[sessionID] = struct{}{}
-			}
-			sort.SliceStable(item.SessionFinalizations, func(left, right int) bool {
-				return item.SessionFinalizations[left].SessionID < item.SessionFinalizations[right].SessionID
-			})
-			retired += retirePendingDelegatedSubmissionsForWork(database, item.ID, item.UpdatedAt)
-		}
 	}
 	return retired
 }

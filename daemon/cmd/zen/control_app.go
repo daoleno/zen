@@ -41,8 +41,6 @@ type controlWatcher interface {
 	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
-	LegacyDelegatedTurnMarkers() []watcher.LegacyDelegatedTurnMarker
-	ClearDelegatedTurnMarkers(targets []string)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
 	ResolveDelegatedControl(sessionID string) (watcher.OwnedGeneration, error)

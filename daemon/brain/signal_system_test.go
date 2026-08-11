@@ -3,8 +3,6 @@ package brain
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -317,126 +315,6 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 	// Requeueing the same ended handling is idempotent.
 	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || created {
 		t.Fatalf("duplicate requeue created=%v err=%v", created, err)
-	}
-}
-
-func TestSignalMigrationIsBoundedIdempotentAndDoesNotReplay(t *testing.T) {
-	root := t.TempDir()
-	stateDir := filepath.Join(root, "state")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	fixed := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	raw := `{"schema_version":6,"migrations":{},"brain_work":[` +
-		`{"work_id":"legacy-a","title":"Legacy A","objective":"Reconcile A","status":"waiting","completion_policy":"bounded","created_at":"` + fixed.Format(time.RFC3339) + `","updated_at":"` + fixed.Format(time.RFC3339) + `"},` +
-		`{"work_id":"legacy-b","title":"Legacy B","objective":"Reconcile B","status":"needs_input","completion_policy":"bounded","created_at":"` + fixed.Add(time.Second).Format(time.RFC3339) + `","updated_at":"` + fixed.Add(time.Second).Format(time.RFC3339) + `"}],` +
-		`"brain_work_events":[{"event_id":"old-delivered","work_id":"legacy-a","kind":"legacy.result","dedupe_key":"legacy:a:result","actionable":true,"created_at":"` + fixed.Format(time.RFC3339) + `","claimed_at":"` + fixed.Format(time.RFC3339) + `","delivery_host_session_id":"old-host","consumed_at":"` + fixed.Format(time.RFC3339) + `"}],` +
-		`"brain_turns":[],"brain_turn_submissions":[]}`
-	if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	complete, changed, err := store.MigrateSignalSystemV1(1)
-	if err != nil || complete || changed != 1 {
-		t.Fatalf("first batch complete=%v changed=%d err=%v", complete, changed, err)
-	}
-	store, err = NewStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	complete, changed, err = store.MigrateSignalSystemV1(1)
-	if err != nil || complete || changed != 1 {
-		t.Fatalf("second batch complete=%v changed=%d err=%v", complete, changed, err)
-	}
-	complete, changed, err = store.MigrateSignalSystemV1(1)
-	if err != nil || !complete || changed != 0 {
-		t.Fatalf("completion batch complete=%v changed=%d err=%v", complete, changed, err)
-	}
-	if complete, changed, err = store.MigrateSignalSystemV1(1); err != nil || !complete || changed != 0 {
-		t.Fatalf("idempotent rerun complete=%v changed=%d err=%v", complete, changed, err)
-	}
-	events, err := store.ListWorkEvents("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reconciles := map[string]int{}
-	for _, event := range events {
-		if event.ID == "old-delivered" && (event.DeliveredAt == nil || event.HandledAt != nil || !event.HistoricalDelivery) {
-			t.Fatalf("historical consumption was not migrated to delivery-only: %+v", event)
-		}
-		if event.Kind == "brain.reconcile_required" {
-			reconciles[event.WorkID]++
-		}
-	}
-	if reconciles["legacy-a"] != 1 || reconciles["legacy-b"] != 1 {
-		t.Fatalf("reconcile counts=%v events=%+v", reconciles, events)
-	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
-	if err != nil || !ok || claimed.ID == "old-delivered" || claimed.Kind != "brain.reconcile_required" {
-		t.Fatalf("migration replay boundary claim=%+v ok=%v err=%v", claimed, ok, err)
-	}
-	persisted, err := os.ReadFile(filepath.Join(stateDir, "orchestration.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(persisted), "consumed_at") || !strings.Contains(string(persisted), "delivered_at") {
-		t.Fatalf("legacy delivery field survived migration: %s", persisted)
-	}
-}
-
-func TestSignalMigrationNeverBackfillsHistoricalTerminalFinalization(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, err := store.CreateWork(Work{
-		Title: "Historical terminal", Objective: "Remain terminal without bulk cleanup.",
-		Status: WorkDone, OwnerSessionID: "brain-agent-historical:@1",
-		OwnerDelegated: true, CompletionPolicy: CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
-		t.Fatal(err)
-	}
-	current, err := store.Work(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.Status != WorkDone || len(current.SessionFinalizations) != 0 {
-		t.Fatalf("historical terminal ownership was bulk-finalized: %+v", current)
-	}
-}
-
-func TestSignalMigrationMakesNewSilentWorkReadyAtomically(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	complete, processed, err := store.MigrateSignalSystemV1(8)
-	if err != nil || !complete || processed != 0 {
-		t.Fatalf("empty migration complete=%v processed=%d err=%v", complete, processed, err)
-	}
-	item, err := store.CreateWork(Work{
-		Title: "New ready Work", Objective: "Never persist a silent nonterminal shape.",
-		CompletionPolicy: CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, err := store.ListWorkEvents(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].Kind != "brain.reconcile_required" || !events[0].Actionable {
-		t.Fatalf("new Work attention = %+v", events)
 	}
 }
 

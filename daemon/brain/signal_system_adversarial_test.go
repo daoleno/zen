@@ -15,170 +15,57 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func TestSignalAdversarialSchemasTwoThroughSixMigrateBoundedlyWithoutReplay(t *testing.T) {
-	for schema := 2; schema <= 6; schema++ {
-		t.Run(fmt.Sprintf("schema-%d", schema), func(t *testing.T) {
-			root := t.TempDir()
-			stateDir := filepath.Join(root, "state")
-			if err := os.MkdirAll(stateDir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-			document := map[string]any{
-				"schema_version": schema,
-				"migrations":     map[string]any{},
-				"brain_work": []any{map[string]any{
-					"work_id": "legacy-work", "title": "Legacy Work", "objective": "Reconcile once.",
-					"status": "waiting", "completion_policy": "bounded", "created_at": at, "updated_at": at,
-				}},
-				"brain_work_events": []any{map[string]any{
-					"event_id": "historical-delivery", "work_id": "legacy-work", "kind": "legacy.result",
-					"dedupe_key": "legacy:result", "actionable": true, "created_at": at,
-					"claimed_at": at, "delivery_host_session_id": "old-host", "consumed_at": at,
-				}},
-			}
-			if schema >= 3 {
-				document["brain_turns"] = []any{}
-			}
-			if schema >= 6 {
-				document["brain_turn_submissions"] = []any{}
-			}
-			raw, err := json.Marshal(document)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			store, err := NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			complete, processed, err := store.MigrateSignalSystemV1(1)
-			if err != nil || complete || processed != 1 {
-				t.Fatalf("first bounded batch complete=%v processed=%d err=%v", complete, processed, err)
-			}
-			complete, processed, err = store.MigrateSignalSystemV1(1)
-			if err != nil || !complete || processed != 0 {
-				t.Fatalf("completion batch complete=%v processed=%d err=%v", complete, processed, err)
-			}
-			claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
-			if err != nil || !ok || claimed.ID == "historical-delivery" || claimed.Kind != "brain.reconcile_required" {
-				t.Fatalf("migration replayed historical bytes: claimed=%+v ok=%v err=%v", claimed, ok, err)
-			}
-			projected := activeWorkByID(t, store, "legacy-work")
-			if projected.ProgressMode != WorkProgressReady {
-				t.Fatalf("migrated Work mode=%q projection=%+v", projected.ProgressMode, projected)
-			}
-			restarted, err := NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			events, _ := restarted.ListWorkEvents("legacy-work")
-			if countUnhandledEventKind(events, "brain.reconcile_required") != 1 {
-				t.Fatalf("restart duplicated migration attention: %+v", events)
-			}
-		})
+// Non-current scheduler state has no migration path: a fresh store must fail
+// startup with the one clear reset-required error instead of inferring old
+// authority.
+func TestSignalAdversarialNonCurrentSchemaFailsWithResetRequiredError(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A retained legacy owner is not an execution owner unless the Turn Ledger
-// contains its exact live non-Host Turn. Migration must retire missing and
-// immutable owner links in the same replacement that creates ready attention.
-func TestSignalAdversarialSchemasTwoThroughSixRetainedOwnersConvergeToReady(t *testing.T) {
-	type ownerShape struct {
-		name         string
-		terminalTurn bool
-	}
-	for schema := 2; schema <= 6; schema++ {
-		shapes := []ownerShape{{name: "missing Turn"}}
-		if schema >= 3 {
-			shapes = append(shapes, ownerShape{name: "immutable terminal Turn", terminalTurn: true})
+	at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	for schema := 0; schema < orchestrationSchemaVersion; schema++ {
+		document := map[string]any{
+			"schema_version": schema,
+			"brain_work": []any{map[string]any{
+				"work_id": "legacy-work", "title": "Legacy Work", "objective": "Reconcile once.",
+				"status": "waiting", "completion_policy": "bounded", "created_at": at, "updated_at": at,
+			}},
+			"brain_work_events": []any{},
 		}
-		for _, shape := range shapes {
-			t.Run(fmt.Sprintf("schema-%d/%s", schema, shape.name), func(t *testing.T) {
-				root := t.TempDir()
-				stateDir := filepath.Join(root, "state")
-				if err := os.MkdirAll(stateDir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-				document := map[string]any{
-					"schema_version": schema,
-					"migrations":     map[string]any{},
-					"brain_work": []any{map[string]any{
-						"work_id": "legacy-retained-owner", "title": "Legacy retained owner",
-						"objective": "Converge through canonical Turn authority.", "status": "waiting",
-						"owner_session_id": "brain-agent-legacy-owner:@1", "owner_delegated": true,
-						"completion_policy": "bounded", "created_at": at, "updated_at": at,
-					}},
-					"brain_work_events": []any{},
-				}
-				if schema >= 3 {
-					turns := []any{}
-					if shape.terminalTurn {
-						turns = append(turns, map[string]any{
-							"session_id": "brain-agent-legacy-owner:@1", "turn_id": "legacy-turn-1",
-							"work_id": "legacy-retained-owner", "status": "done",
-							"accepted_at": at, "settled_at": at.Add(time.Second),
-							"updated_at": at.Add(time.Second), "facts": []any{},
-						})
-					}
-					document["brain_turns"] = turns
-				}
-				if schema >= 6 {
-					document["brain_turn_submissions"] = []any{}
-				}
-				raw, err := json.Marshal(document)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
-					t.Fatal(err)
-				}
-
-				store, err := NewStore(root)
-				if err != nil {
-					t.Fatal(err)
-				}
-				complete, processed, err := store.MigrateSignalSystemV1(1)
-				if err != nil || complete || processed != 1 {
-					t.Fatalf("first bounded batch complete=%v processed=%d err=%v", complete, processed, err)
-				}
-				complete, processed, err = store.MigrateSignalSystemV1(1)
-				if err != nil || !complete || processed != 0 {
-					t.Fatalf("completion batch complete=%v processed=%d err=%v", complete, processed, err)
-				}
-				item, err := store.Work("legacy-retained-owner")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if item.OwnerSessionID != "" || item.OwnerDelegated {
-					t.Fatalf("historical owner remained active after migration: %+v", item)
-				}
-				events, err := store.ListWorkEvents(item.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if countUnhandledEventKind(events, "brain.reconcile_required") != 1 {
-					t.Fatalf("migration attention count != 1: %+v", events)
-				}
-				if projected := activeWorkByID(t, store, item.ID); projected.ProgressMode != WorkProgressReady {
-					t.Fatalf("migrated retained owner did not become ready: %+v", projected)
-				}
-
-				restarted, err := NewStore(root)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if complete, processed, err = restarted.MigrateSignalSystemV1(1); err != nil || !complete || processed != 0 {
-					t.Fatalf("idempotent restart complete=%v processed=%d err=%v", complete, processed, err)
-				}
-				events, err = restarted.ListWorkEvents(item.ID)
-				if err != nil || countUnhandledEventKind(events, "brain.reconcile_required") != 1 {
-					t.Fatalf("restart duplicated migration attention: events=%+v err=%v", events, err)
-				}
-			})
+		if schema >= 3 {
+			document["brain_turns"] = []any{}
+		}
+		if schema >= 6 {
+			document["brain_turn_submissions"] = []any{}
+		}
+		raw, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store, err := NewStore(root)
+		if err == nil {
+			t.Fatalf("schema %d opened without reset error", schema)
+		}
+		_ = store
+		if !strings.Contains(err.Error(), ErrSchedulerStateReset.Error()) {
+			t.Fatalf("schema %d error = %v, want reset-required", schema, err)
+		}
+		// A future schema is equally reset-required; it is never decoded.
+		document["schema_version"] = orchestrationSchemaVersion + 1
+		raw, err = json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(root); err == nil || !strings.Contains(err.Error(), ErrSchedulerStateReset.Error()) {
+			t.Fatalf("future schema error = %v, want reset-required", err)
 		}
 	}
 }
@@ -1555,43 +1442,30 @@ func TestSignalAdversarialHostProductPathAdmitsClaimedTerminalWorkWithHistorical
 	assertCanonicalHostEventHandledOnce(t, root, store, NewService(store, delivery, nil), delivery, hostID, item.ID)
 }
 
-func TestSignalAdversarialHostProductPathAdmitsClaimedOwnerlessMigrationAttention(t *testing.T) {
+// A fresh ownerless Work with one actionable attention is admitted through
+// the real Host delivery path; delivery and disposition never invent an owner.
+func TestSignalAdversarialHostProductPathAdmitsClaimedOwnerlessAttention(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, "state")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	at := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	document := map[string]any{
-		"schema_version": 6,
-		"migrations":     map[string]any{},
-		"brain_work": []any{map[string]any{
-			"work_id": "ownerless-migration-work", "title": "Ownerless migration Work",
-			"objective": "Reconcile through the real Host delivery path.", "status": "waiting",
-			"completion_policy": "bounded", "created_at": at, "updated_at": at,
-		}},
-		"brain_work_events":      []any{},
-		"brain_turns":            []any{},
-		"brain_turn_submissions": []any{},
-	}
-	raw, err := json.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "orchestration.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	store, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if complete, processed, err := store.MigrateSignalSystemV1(1); err != nil || complete || processed != 1 {
-		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
+	item, err := store.CreateWork(Work{
+		Title: "Ownerless attention", Objective: "Reconcile through the real Host delivery path.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if complete, processed, err := store.MigrateSignalSystemV1(1); err != nil || !complete || processed != 0 {
-		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
+	event, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "brain.reconcile_required",
+		DedupeKey: "brain:work:" + item.ID + ":initial", SourceName: "brain",
+		Summary: "Brain Work requires a durable disposition.", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append attention created=%v err=%v", created, err)
 	}
-	hostID := "brain-agent-brain-hidden:@host-authority-migration"
+	hostID := "brain-agent-brain-hidden:@host-authority-ownerless"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -1599,8 +1473,16 @@ func TestSignalAdversarialHostProductPathAdmitsClaimedOwnerlessMigrationAttentio
 	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
 	delivery.wrongWorkID = distractor.ID
 	assertCanonicalHostEventHandledOnce(
-		t, root, store, NewService(store, delivery, nil), delivery, hostID, "ownerless-migration-work",
+		t, root, store, NewService(store, delivery, nil), delivery, hostID, item.ID,
 	)
+	after, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.OwnerSessionID != "" || after.OwnerDelegated {
+		t.Fatalf("ownerless attention invented an owner: %+v", after)
+	}
+	_ = event
 }
 
 // Host transport admission owns only Event delivery. Even when the Host
@@ -1996,12 +1878,6 @@ func TestSignalAdversarialInitialOwnerAdmissionAndPendingSubmissionAreAtomicAcro
 	if err != nil {
 		t.Fatal(err)
 	}
-	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
-		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
-	}
-	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || !complete || processed != 0 {
-		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
-	}
 
 	sessionID := "brain-agent-atomic-owner:@1"
 	turnID := sessionID + ":turn:1"
@@ -2030,8 +1906,8 @@ func TestSignalAdversarialInitialOwnerAdmissionAndPendingSubmissionAreAtomicAcro
 	if _, found, err := reopened.TurnSubmission(sessionID, turnID); err != nil || found {
 		t.Fatalf("failed atomic admission exposed pending submission: found=%v err=%v", found, err)
 	}
-	if projected := activeWorkByID(t, reopened, item.ID); projected.ProgressMode != WorkProgressReady || !projected.AttentionPending {
-		t.Fatalf("failed atomic admission lost original ready progress: %+v", projected)
+	if projected := activeWorkByID(t, reopened, item.ID); projected.ProgressMode != "" || projected.AttentionPending {
+		t.Fatalf("failed atomic admission changed the silent fresh Work: %+v", projected)
 	}
 
 	writes := 0
@@ -2189,12 +2065,6 @@ func TestSignalAdversarialSameSessionCorrectionStagesAcceptedTurnUntilExactConti
 		Status: WorkOpen, CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.MigrateSignalSystemV1(8); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2402,6 +2272,10 @@ func TestSignalAdversarialWatcherOutputThenStateChangeClosesOnlyExactHandling(t 
 	}
 }
 
+// One delivered handling at a time is an admission-lane invariant, not a
+// claim gate: while Work A's delivered capability is outstanding, unrelated
+// Work B is claimable (the claim boundary is per Work), but B can never enter
+// the delivered state until A's exact disposition settles.
 func TestSignalAdversarialOnlyOneDeliveredHostHandlingGlobally(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -2411,9 +2285,36 @@ func TestSignalAdversarialOnlyOneDeliveredHostHandlingGlobally(t *testing.T) {
 	b := createSignalTestWork(t, store, "Global B", "brain-agent-b:@1")
 	appendSignalTestEvent(t, store, a, "global-a")
 	appendSignalTestEvent(t, store, b, "global-b")
-	deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
-	if event, claimed, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1"); err != nil || claimed {
-		t.Fatalf("second Work entered Host admission window: event=%+v claimed=%v err=%v", event, claimed, err)
+	deliveredA, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+	// The unrelated claim proceeds while A's delivered capability is live.
+	claimB, claimed, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	if err != nil || !claimed || claimB.WorkID != b.ID {
+		t.Fatalf("unrelated claim while A delivered=%+v claimed=%v err=%v", claimB, claimed, err)
+	}
+	// Forcing B through the full admission path while A is delivered fails
+	// atomically: the schema admits at most one live delivered handling.
+	resolveClaimedHostTurnForTest(t, store, claimB)
+	if _, _, err := store.ConsumeClaimedWorkEvent(
+		claimB.ID, claimB.HandlingID, claimB.WorkID,
+		claimB.DeliveryHostSessionID, claimB.ProviderTurnID,
+	); err == nil {
+		t.Fatal("second Work entered the delivered state while A was delivered")
+	}
+	// A's exact disposition settles the claimed capability; B then delivers.
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: deliveredA.ID, HandlingID: deliveredA.HandlingID,
+		ProviderTurnID:       deliveredA.ProviderTurnID,
+		ExpectedWorkRevision: deliveredA.DeliveryWorkRevision,
+		Disposition:          WorkDispositionComplete,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deliveredB, _, err := store.ConsumeClaimedWorkEvent(
+		claimB.ID, claimB.HandlingID, claimB.WorkID,
+		claimB.DeliveryHostSessionID, claimB.ProviderTurnID,
+	)
+	if err != nil || deliveredB.DeliveredAt == nil {
+		t.Fatalf("B did not deliver after A settled: event=%+v err=%v", deliveredB, err)
 	}
 }
 
@@ -2613,12 +2514,6 @@ func TestSignalAdversarialCanonicalAttentionIsOrthogonalToLiveOwner(t *testing.T
 		Stream: "provider", ID: "admission-" + turnID, Cursor: 1,
 		SHA256: pendingSubmissionDigest("continue authority " + turnID), At: acceptedAt.Add(time.Second),
 	}, acceptedAt)
-	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || complete || processed != 1 {
-		t.Fatalf("migration batch complete=%v processed=%d err=%v", complete, processed, err)
-	}
-	if complete, processed, err := store.MigrateSignalSystemV1(8); err != nil || !complete || processed != 0 {
-		t.Fatalf("migration completion complete=%v processed=%d err=%v", complete, processed, err)
-	}
 	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
 		SessionID: owner, TurnID: turnID,
 		Class: watcher.EvidenceControl, Kind: "attention", SourceID: "attention-1",

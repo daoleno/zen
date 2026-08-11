@@ -105,16 +105,13 @@ type Server struct {
 	runtimeClosing               bool
 	terminalCleanup              terminalCleanupOwner
 
-	workSubID                     int
-	workSub                       <-chan work.Event
-	calendarSubID                 int
-	calendarSub                   <-chan calendar.Event
-	brainWorkSubID                int
-	brainWorkSub                  <-chan brain.WorkChange
-	brainMigrationComplete        bool
-	turnLedgerMigrationComplete   bool
-	signalSystemMigrationComplete bool
-	signalSystemStartupComplete   bool
+	workSubID                   int
+	workSub                     <-chan work.Event
+	calendarSubID               int
+	calendarSub                 <-chan calendar.Event
+	brainWorkSubID              int
+	brainWorkSub                <-chan brain.WorkChange
+	signalSystemStartupComplete bool
 
 	clients            map[*websocket.Conn]*authenticatedClient
 	active             map[*websocket.Conn]string
@@ -2981,41 +2978,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 			allAgentSessions := s.watcher.Agents()
 			agentSessions := visibleAgentSessions(allAgentSessions)
 			if s.brain != nil && s.watcher != nil && s.watcher.SnapshotReady() {
-				if !s.brainMigrationComplete {
-					if _, err := s.brain.MigrateDelegatedSessionsV1(agentSessions); err != nil {
-						log.Printf("brain delegated Session migration failed: %v", err)
-					} else {
-						s.brainMigrationComplete = true
-					}
-				}
-				if !s.turnLedgerMigrationComplete {
-					// Canonical-turn migration: legacy tmux markers import as
-					// attached hints (never final), reconcile against
-					// turn-bound provider history, then unset the markers.
-					// Every phase is crash-resumable and idempotent; the
-					// durable completion marker is persisted only after all
-					// phases finished, and marker cleanup is re-attempted
-					// here until it succeeds.
-					targets, err := s.brain.MigrateTurnLedgerV1(
-						s.watcher.LegacyDelegatedTurnMarkers(),
-						allAgentSessions,
-					)
-					if err != nil {
-						log.Printf("brain canonical turn ledger migration failed: %v", err)
-					} else {
-						s.watcher.ClearDelegatedTurnMarkers(targets)
-						s.turnLedgerMigrationComplete = true
-					}
-				}
-				if s.brainMigrationComplete && s.turnLedgerMigrationComplete && !s.signalSystemMigrationComplete {
-					complete, _, err := s.brain.MigrateSignalSystemV1(128)
-					if err != nil {
-						log.Printf("brain signal-system migration failed: %v", err)
-					} else {
-						s.signalSystemMigrationComplete = complete
-					}
-				}
-				if s.signalSystemMigrationComplete && !s.signalSystemStartupComplete {
+				if !s.signalSystemStartupComplete {
 					complete, err := s.brain.ReconcileSignalSystemStartup(allAgentSessions, 64)
 					if err != nil {
 						log.Printf("brain signal-system startup reconciliation failed: %v", err)

@@ -726,7 +726,7 @@ func TestWorkInventoryBoundsCurrentRelationshipsAndBacklogsAbsentHistory(t *test
 		}
 	}
 	if inventory.Backlog.Total != 4 || inventory.Backlog.QueuedAttention != 2 ||
-		inventory.Backlog.HistoricalResults != 1 || inventory.Backlog.RepairNeeded != 1 {
+		inventory.Backlog.HistoricalResults != 1 {
 		t.Fatalf("backlog=%+v", inventory.Backlog)
 	}
 }

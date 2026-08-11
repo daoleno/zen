@@ -243,9 +243,12 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 		}
 	})
 
-	t.Run("backfill idempotently", func(t *testing.T) {
+	t.Run("missing binding is never backfilled", func(t *testing.T) {
+		// The ledger records the provider-native binding at admission; there
+		// is no backfill path. A binding-less snapshot leaves the command
+		// byte-for-byte untouched.
 		w := New(time.Second)
-		ledger := &bindingBackfillLedger{inner: newFakeTurnLedger()}
+		ledger := newFakeTurnLedger()
 		w.turnLedger = ledger
 		agent := &classifier.Agent{
 			ID:      sessionID,
@@ -254,19 +257,8 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 		w.mu.Lock()
 		w.restoreTurnTranscriptBindingLocked(agent, TurnSnapshot{SessionID: sessionID, TurnID: sessionID + ":turn:1"})
 		w.mu.Unlock()
-		if len(ledger.backfilled) != 1 || ledger.backfilled[0].PiPath != ownedPath {
-			t.Fatalf("backfill calls = %#v", ledger.backfilled)
-		}
-		// Idempotent: a second restore with the binding now present performs
-		// no store write.
-		w.mu.Lock()
-		w.restoreTurnTranscriptBindingLocked(agent, TurnSnapshot{
-			SessionID: sessionID, TurnID: sessionID + ":turn:1",
-			TranscriptBinding: TranscriptBinding{Provider: "pi", PiFlag: "--session", PiPath: ownedPath},
-		})
-		w.mu.Unlock()
-		if len(ledger.backfilled) != 1 {
-			t.Fatalf("idempotent backfill wrote again: %#v", ledger.backfilled)
+		if agent.Command != "pi --session "+shellQuoteForLaunch(ownedPath) {
+			t.Fatalf("command changed without a binding: %q", agent.Command)
 		}
 	})
 
@@ -286,28 +278,4 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 			t.Fatalf("non-pi command rewritten: %q", agent.Command)
 		}
 	})
-}
-
-// bindingBackfillLedger wraps the fake ledger with the transcript-binding
-// backfill surface used by the watcher.
-type bindingBackfillLedger struct {
-	inner      *fakeTurnLedger
-	backfilled []TranscriptBinding
-}
-
-func (l *bindingBackfillLedger) Turn(sessionID string) (TurnSnapshot, bool, error) {
-	return l.inner.Turn(sessionID)
-}
-
-func (l *bindingBackfillLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error) {
-	return l.inner.ApplyTurnFact(fact)
-}
-
-func (l *bindingBackfillLedger) ApplyDelegatedTurnProgress(fact TurnFact) (TurnProgressResult, error) {
-	return l.inner.ApplyDelegatedTurnProgress(fact)
-}
-
-func (l *bindingBackfillLedger) BackfillTurnTranscriptBinding(sessionID string, binding TranscriptBinding) (bool, error) {
-	l.backfilled = append(l.backfilled, binding)
-	return true, nil
 }

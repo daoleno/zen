@@ -14,7 +14,6 @@ type PollWindow struct {
 	Hidden           bool
 	Delegated        bool
 	ResourceUnit     string
-	DelegatedTurnRaw string
 }
 
 // PollProcess is the wire shape of one process-table entry for the test-only
@@ -65,7 +64,7 @@ func (w *Watcher) SetPollSources(sources PollSources) func() {
 					target: win.Target, name: win.Name, cwd: win.Cwd,
 					command: win.Command, piSessionBinding: win.PiSessionBinding, panePID: win.PanePID,
 					hidden: win.Hidden, delegated: win.Delegated,
-					resourceUnit: win.ResourceUnit, delegatedTurnRaw: win.DelegatedTurnRaw,
+					resourceUnit: win.ResourceUnit,
 				})
 			}
 			return out, nil
