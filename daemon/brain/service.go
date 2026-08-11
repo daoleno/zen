@@ -1050,10 +1050,12 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 //     closes that exact turn
 //  5. a non-immutable canonical Host Turn: stop until its exact provider
 //     lifecycle reaches an immutable boundary
-//  6. select one fair pending Work key at the boundary
-//  7. atomically claim its current Event head
-//  8. submit once with the existing receipt ledger
-//  9. mark delivered only from the accepted receipt
+//  6. a provider-native Activity not represented by a canonical Turn: stop
+//     conservatively while it remains non-terminal
+//  7. select one fair pending Work key at the boundary
+//  8. atomically claim its current Event head
+//  9. submit once with the existing receipt ledger
+//  10. mark delivered only from the accepted receipt
 func (s *Service) ReconcileHostLane() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -1232,7 +1234,19 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	} else if found && !watcher.TurnImmutable(current.Status) {
 		return false, nil
 	}
-	// Steps 6-9: at the boundary, select one fair pending Work key, claim its
+	// Step 6: the daemon can restart while a provider-native user turn is
+	// already running and therefore has no Brain admission/foreground row. A
+	// current non-terminal provider Activity is only a conservative stop fence:
+	// it never authorizes lifecycle mutation or closes any Turn, but it prevents
+	// an internal Event from being classified as interactive steering. Unknown
+	// observed status also fails closed; only absence or an explicit terminal
+	// provider observation reaches admission.
+	if observation, found, err := s.watcher.ProbeProviderEvidence(hostID); err != nil {
+		return false, err
+	} else if found && !providerStatusTerminal(observation.Status) {
+		return false, nil
+	}
+	// Steps 7-10: at the boundary, select one fair pending Work key, claim its
 	// current Event head atomically, submit once through the receipt ledger,
 	// and mark delivered only from the accepted receipt.
 	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)

@@ -54,6 +54,10 @@ type hostLaneState struct {
 	// immutable done/failed boundary. It is independent of the scheduler
 	// handling and foreground-user checkpoint.
 	CanonicalTurnLive bool
+	// AmbientProviderActivityLive is a provider-native Activity (for example a
+	// user turn that crossed daemon restart) without a current non-immutable
+	// canonical Turn. It is a conservative stop fence only.
+	AmbientProviderActivityLive bool
 }
 
 // hostLaneResult is the one-pass outcome. Stop means the reducer must not
@@ -75,8 +79,9 @@ type hostLaneResult struct {
 //  3. pending user admission: stop
 //  4. foreground turn: stop unless strong exact terminal evidence closes it
 //  5. non-immutable canonical Host Turn: stop
-//  6. claim one fair pending Work key at the boundary
-//  7. submit once; mark delivered only from the accepted receipt
+//  6. non-terminal ambient provider Activity: stop
+//  7. claim one fair pending Work key at the boundary
+//  8. submit once; mark delivered only from the accepted receipt
 func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 	out := hostLaneResult{}
 	switch s.Receipt {
@@ -103,6 +108,10 @@ func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 		out.ClosedForegroundTurn = true
 	}
 	if s.CanonicalTurnLive {
+		out.Stop = true
+		return out
+	}
+	if s.AmbientProviderActivityLive {
 		out.Stop = true
 		return out
 	}
@@ -183,6 +192,11 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{Stop: true},
 		},
 		{
+			name:  "ambient provider Activity stops an untracked steer",
+			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
+			want:  hostLaneResult{Stop: true},
+		},
+		{
 			name:  "foreground turn with terminal evidence closes it even with no pending Work",
 			state: hostLaneState{ForegroundTurn: true, ForegroundTerminalEvidence: true},
 			want:  hostLaneResult{ClosedForegroundTurn: true},
@@ -225,8 +239,9 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 
 // TestHostLaneReducerFrozenOrder verifies the gate precedence that makes user
 // steering unable to overtake an admitted internal Event: the delivered
-// handling, pending user admission, live foreground turn, and live canonical
-// provider Turn gates all stop the lane before any claim, in that order.
+// handling, pending user admission, live foreground turn, live canonical
+// provider Turn, and ambient provider Activity gates all stop the lane before
+// any claim, in that order.
 func TestHostLaneReducerFrozenOrder(t *testing.T) {
 	for _, row := range []struct {
 		state hostLaneState
@@ -235,6 +250,7 @@ func TestHostLaneReducerFrozenOrder(t *testing.T) {
 		{hostLaneState{PendingUserAdmission: true, ForegroundTurn: true, PendingWork: true}},
 		{hostLaneState{ForegroundTurn: true, PendingWork: true}},
 		{hostLaneState{CanonicalTurnLive: true, PendingWork: true}},
+		{hostLaneState{AmbientProviderActivityLive: true, PendingWork: true}},
 	} {
 		result := reconcileHostLaneModel(row.state)
 		if !result.Stop || result.ClaimedEvent || result.SubmittedEvent || result.ClosedForegroundTurn {
@@ -259,6 +275,7 @@ func TestHostLaneReducerIdempotentOneShot(t *testing.T) {
 		{PendingUserAdmission: true, PendingWork: true},
 		{ForegroundTurn: true, PendingWork: true},
 		{CanonicalTurnLive: true, PendingWork: true},
+		{AmbientProviderActivityLive: true, PendingWork: true},
 		{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingWork: true},
 		{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingUserAdmission: true, PendingWork: true},
 	}
@@ -321,6 +338,9 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			name:  "live foreground turn without exact terminal evidence stops",
 			state: hostLaneState{ForegroundTurn: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
+				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+					ID: "model-activity-live", Status: "running", StartedAt: time.Now().Add(-time.Minute),
+				}
 				acceptModelForeground(t, service, store, hostID, "model-live", "model-activity-live")
 				item := createSignalTestWork(t, store, "model live turn", "brain-agent-model:@3")
 				appendSignalTestEvent(t, store, item, "model-live-turn")
@@ -352,9 +372,23 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
+			name:  "ambient provider Activity stops before claim",
+			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
+			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
+				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+					ID: "ambient-provider-activity", Status: "running", StartedAt: time.Now().Add(-time.Minute),
+				}
+				item := createSignalTestWork(t, store, "model ambient provider Activity", "brain-agent-model:@ambient")
+				appendSignalTestEvent(t, store, item, "model-ambient-provider")
+			},
+		},
+		{
 			name:  "terminal boundary closes the exact turn and admits once",
 			state: hostLaneState{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
+				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+					ID: "model-activity-live", Status: "running", StartedAt: time.Now().Add(-time.Minute),
+				}
 				acceptModelForeground(t, service, store, hostID, "model-terminal", "")
 				item := createSignalTestWork(t, store, "model terminal boundary", "brain-agent-model:@4")
 				appendSignalTestEvent(t, store, item, "model-terminal-boundary")
@@ -396,9 +430,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 					hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
 				},
 				ownedGenerations: map[string]string{hostID: "host-generation-model"},
-				providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
-					ID: "model-activity-live", Status: "running", StartedAt: time.Now().Add(-time.Minute),
-				}},
+				providerEvidence: map[string]watcher.ProviderActivityObservation{},
 			}
 			service := NewService(store, fw, nil)
 			row.setup(t, store, fw, service)

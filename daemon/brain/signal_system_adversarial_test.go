@@ -1176,6 +1176,42 @@ func TestSignalAdversarialHostLaneWaitsForCanonicalTurnBoundary(t *testing.T) {
 	}
 }
 
+func TestSignalAdversarialHostLaneWaitsForUntrackedProviderActivity(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@ambient-boundary"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "Ambient Host boundary", "brain-agent-ambient-worker:@1")
+	event := appendSignalTestEvent(t, store, item, "ambient-host-boundary")
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.providerEvidence = map[string]watcher.ProviderActivityObservation{hostID: {
+		ID: "provider-native-user-turn", Status: "running", StartedAt: time.Now().Add(-time.Minute),
+	}}
+	service := NewService(store, delivery, nil)
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("ambient live Activity woke=%v err=%v", woke, err)
+	}
+	row, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || row.ClaimedAt != nil || len(delivery.sentCalls) != 0 {
+		t.Fatalf("ambient live Activity was overtaken: event=%+v found=%v sends=%d err=%v", row, found, len(delivery.sentCalls), err)
+	}
+	delivery.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "provider-native-user-turn", Status: "completed",
+		StartedAt: time.Now().Add(-time.Minute), SettledAt: time.Now(),
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("ambient terminal boundary woke=%v err=%v", woke, err)
+	}
+	row, found, err = store.WorkEvent(event.ID)
+	if err != nil || !found || row.DeliveredAt == nil || len(delivery.sentCalls) != 1 {
+		t.Fatalf("ambient boundary did not deliver once: event=%+v found=%v sends=%d err=%v", row, found, len(delivery.sentCalls), err)
+	}
+}
+
 // Store-level defense in depth: even a stale watcher classification cannot
 // turn a claimed internal Event into interactive steering. Rejection happens
 // before any submission or canonical Turn mutation.

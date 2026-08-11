@@ -1495,9 +1495,7 @@ func TestAcceptedForegroundInputKeepsPendingEventBeforeTimelineProjection(t *tes
 	watcherFixture := &fakeWatcher{
 		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
 		ownedGenerations: map[string]string{hostID: "host-generation-projection"},
-		providerEvidence: map[string]watcher.ProviderActivityObservation{hostID: {
-			ID: "host-activity-projection", Status: "running", StartedAt: time.Now().Add(-time.Second),
-		}},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{},
 	}
 	service := NewService(store, watcherFixture, nil)
 	// The pending internal Event is admitted at the idle boundary BEFORE the
@@ -1596,6 +1594,10 @@ func TestAcceptedForegroundInputGenerationReplacementRetiresLane(t *testing.T) {
 	if err != nil || active != nil {
 		t.Fatalf("superseded generation remained active=%+v err=%v", active, err)
 	}
+	// The replacement generation is at an idle provider boundary. A running
+	// provider-native Activity would conservatively hold the lane regardless of
+	// foreground ownership.
+	delete(watcherFixture.providerEvidence, hostID)
 	// A pending Event that arrives after exact generation replacement is free
 	// to dispatch on the current Host generation.
 	item := createSignalTestWork(t, store, "generation-bound turn", "brain-agent-worker:@generation")
