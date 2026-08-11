@@ -130,6 +130,79 @@ func TestSendInputWhenReadyBudgetedRetriesAfterFullAttemptTimeoutThenSubmitsOnce
 	}
 }
 
+func TestSubmitDelegatedInputWhenReadyBudgetedRetriesReadinessAndAdmitsOneTurn(t *testing.T) {
+	payload := "execute this delegated task exactly once"
+	w, io, mu, calls := scriptedOpenCodeHandoff(t, nil)
+	readyAt := 9
+	previous := capturePaneContentFunc
+	capturePaneContentFunc = func(string) (string, bool, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		*calls++
+		if *calls >= readyAt {
+			return openCodeIdleReadyContent, true, -1
+		}
+		return openCodeStartingContent, true, -1
+	}
+	defer func() { capturePaneContentFunc = previous }()
+	ledger := newFakeTurnLedger()
+	w.turnLedger = ledger
+	w.sessionInput.ledger = ledger
+	w.providerActivityProbe = &transportAdmissionProbe{
+		io: io,
+		inputs: map[int]string{
+			0: "older input",
+			1: payload,
+		},
+		missing: map[int]bool{},
+		staleAt: map[int]time.Time{},
+		activity: map[int]string{
+			0: "older-activity",
+			1: "delegated-activity",
+		},
+	}
+	acceptedAt := time.Now().UTC()
+	result, err := w.SubmitDelegatedInputWhenReadyBudgeted(
+		"opencode-handoff:@1", "opencode", payload,
+		"work-budgeted-delegated", "turn-budgeted-delegated", acceptedAt,
+		1400*time.Millisecond,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != "turn-budgeted-delegated" {
+		t.Fatalf("budgeted delegated result=%+v err=%v", result, err)
+	}
+	if len(io.submissions) != 1 || len(io.queues) != 1 || io.submissions[0] != payload {
+		t.Fatalf("budgeted delegated effects submissions=%+v queues=%d", io.submissions, len(io.queues))
+	}
+	if turn := ledger.snapshot("opencode-handoff:@1"); turn.TurnID != "turn-budgeted-delegated" ||
+		turn.Status != TurnAccepted {
+		t.Fatalf("budgeted delegated canonical turn=%+v", turn)
+	}
+}
+
+func TestSubmitDelegatedInputWhenReadyBudgetedExhaustionCreatesNoTurn(t *testing.T) {
+	w, io, _, _ := scriptedOpenCodeHandoff(t, []string{openCodeStartingContent})
+	ledger := newFakeTurnLedger()
+	w.turnLedger = ledger
+	w.sessionInput.ledger = ledger
+	result, err := w.SubmitDelegatedInputWhenReadyBudgeted(
+		"opencode-handoff:@1", "opencode", "never submitted",
+		"work-never-ready", "turn-never-ready", time.Now().UTC(),
+		400*time.Millisecond,
+	)
+	if err == nil || !errors.Is(err, ErrAgentInputNotReady) || result.Outcome != InputNotSubmitted {
+		t.Fatalf("never-ready delegated result=%+v err=%v", result, err)
+	}
+	if _, found, err := ledger.Turn("opencode-handoff:@1"); err != nil || found {
+		t.Fatalf("never-ready delegated created a Turn found=%v err=%v", found, err)
+	}
+	if _, found, err := ledger.TurnSubmission("opencode-handoff:@1", "turn-never-ready"); err != nil || found {
+		t.Fatalf("never-ready delegated created a submission found=%v err=%v", found, err)
+	}
+	if len(io.submissions) != 0 || len(io.queues) != 0 {
+		t.Fatalf("never-ready delegated mutated provider submissions=%+v queues=%d", io.submissions, len(io.queues))
+	}
+}
+
 func TestSendInputWhenReadyBudgetedTimeoutIsBoundedRetryableNotSubmitted(t *testing.T) {
 	w, io, _, _ := scriptedOpenCodeHandoff(t, []string{openCodeStartingContent})
 	start := time.Now()

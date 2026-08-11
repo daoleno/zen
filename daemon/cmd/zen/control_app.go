@@ -37,6 +37,7 @@ type controlWatcher interface {
 	SubmitInputWhenReady(sessionID, command, payload string) error
 	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitDelegatedInputWhenReadyBudgeted(sessionID, command, payload, workID, turnID string, acceptedAt time.Time, budget time.Duration) (watcher.InputResult, error)
 	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
@@ -58,6 +59,8 @@ type controlApp struct {
 	profiles          *modelprofiles.Owner
 	stateDir          string
 }
+
+const delegatedInitialReadinessBudget = 45 * time.Second
 
 func (a *controlApp) HandleControlRequest(req control.Request) control.Response {
 	switch strings.TrimSpace(req.Type) {
@@ -401,6 +404,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			return brainWorkControlError(err)
 		}
 	}
+	autoCreatedWork := ownedWork.ID != "" && strings.TrimSpace(req.WorkID) == ""
 
 	createOpts := watcher.CreateSessionOptions{
 		Cwd:         cwd,
@@ -422,7 +426,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	if a.profiles != nil {
 		plan, planErr := a.profiles.PrepareLaunch(a.spawnProfileClientHint(req, command), connectionID, command)
 		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {
-			a.recordSpawnWorkFailure(ownedWork, planErr)
+			a.recordSpawnWorkFailure(ownedWork, planErr, autoCreatedWork)
 			return control.ErrorResponse(modelprofiles.ControlErrorCode(planErr), planErr.Error())
 		}
 		if plan.Applied && !plan.Bypass {
@@ -431,7 +435,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			agentID, err = a.watcher.CreateSession("", createOpts)
 			if err != nil {
 				abortPersist, abortErr := a.profiles.AbortLaunch(plan.ProvisionalID)
-				a.recordSpawnWorkFailure(ownedWork, err)
+				a.recordSpawnWorkFailure(ownedWork, err, autoCreatedWork)
 				joined := errors.Join(err, abortErr)
 				if abortErr != nil || !abortPersist.Applied {
 					return control.ErrorResponse(modelprofiles.ControlErrorCode(errors.Join(joined, modelprofiles.ErrLaunchCleanupIncomplete)), joined.Error())
@@ -441,7 +445,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			_, snap, persist, commitErr := a.profiles.CommitLaunch(plan.ProvisionalID, agentID)
 			if !persist.Applied {
 				cleanup := modelprofiles.CleanupFailedLaunch(a.profiles, plan.ProvisionalID, agentID, a.watcher.KillSession, a.sessionLivenessProbe)
-				a.recordSpawnWorkFailure(ownedWork, commitErr)
+				a.recordSpawnWorkFailure(ownedWork, commitErr, autoCreatedWork)
 				joined := errors.Join(commitErr, cleanup.Err)
 				code := modelprofiles.ControlErrorCode(joined)
 				if code == "" || code == modelprofiles.CodeProfilesUnavailable {
@@ -465,7 +469,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	if agentID == "" {
 		agentID, err = a.watcher.CreateSession("", createOpts)
 		if err != nil {
-			a.recordSpawnWorkFailure(ownedWork, err)
+			a.recordSpawnWorkFailure(ownedWork, err, autoCreatedWork)
 			return control.ErrorResponse("spawn_failed", err.Error())
 		}
 	}
@@ -484,7 +488,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			} else {
 				_ = a.watcher.KillSession(agentID)
 			}
-			a.recordSpawnWorkFailure(ownedWork, err)
+			a.recordSpawnWorkFailure(ownedWork, err, autoCreatedWork)
 			joined := errors.Join(err, cleanup.Err)
 			if cleanup.Err != nil || (routeSnap != nil && !cleanup.Persist.Applied) {
 				code := modelprofiles.ControlErrorCode(joined)
@@ -499,8 +503,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 
 	admissionPending := false
 	if prompt != "" {
-		var sendErr error
-		sendErr = a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
+		turnID, sendErr := a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
 		if sendErr != nil && !a.keepSpawnAdmissionPending(agentID, sendErr) {
 			if reservation := ownedWork.SuccessorReservation; reservation != nil && reservation.SessionID == agentID {
 				provedNonAdmission := watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted
@@ -538,7 +541,27 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				}
 				return brainWorkControlError(sendErr)
 			}
-			a.recordSpawnWorkFailure(ownedWork, sendErr)
+			if watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted && ownedWork.ID != "" {
+				var cleanupErr error
+				if a.profiles != nil && routeSnap != nil {
+					cleanup := modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
+					cleanupErr = cleanup.Err
+					if cleanupErr == nil && !cleanup.Persist.Applied {
+						cleanupErr = modelprofiles.ErrLaunchCleanupIncomplete
+					}
+				} else {
+					cleanupErr = a.watcher.KillSession(agentID)
+				}
+				cancelAutoWork := strings.TrimSpace(req.WorkID) == "" && cleanupErr == nil
+				_, lifecycleErr := a.brainStore.RecordInitialSubmissionNotAdmitted(
+					ownedWork.ID, agentID, turnID, sendErr.Error(), cancelAutoWork,
+				)
+				return control.ErrorResponse(
+					"send_prompt_failed",
+					errors.Join(sendErr, cleanupErr, lifecycleErr).Error(),
+				)
+			}
+			a.recordSpawnWorkFailure(ownedWork, sendErr, autoCreatedWork)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
 		}
 		if sendErr != nil {
@@ -678,16 +701,21 @@ func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) 
 	})
 }
 
-func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error) {
+func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error, autoCreated bool) {
 	if a == nil || a.brainStore == nil || item.ID == "" {
 		return
 	}
 	status := brain.WorkNeedsInput
 	next := "Resolve the delegated Session launch failure."
+	wait := strings.TrimSpace(spawnErr.Error())
+	if autoCreated {
+		status = brain.WorkCancelled
+		next = "Delegated launch ended before a usable Session was created."
+		wait = ""
+	}
 	if watcher.InputOutcomeFromError(spawnErr) == watcher.InputAmbiguous {
 		next = "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
 	}
-	wait := strings.TrimSpace(spawnErr.Error())
 	_, _ = a.brainStore.UpdateWork(item.ID, brain.WorkUpdate{
 		Status:     &status,
 		NextAction: &next,
@@ -863,7 +891,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	}
 	var sendErr error
 	if req.Submit && agent != nil && payload != "" {
-		sendErr = a.submitAgentHandoff(agentID, agent.Command, payload, "", false)
+		_, sendErr = a.submitAgentHandoff(agentID, agent.Command, payload, "", false)
 	} else {
 		if req.Submit {
 			payload = ensureTrailingNewline(payload)
@@ -887,15 +915,15 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 // ledger record (persisted before the submit queue runs); this owner rebinds
 // the Session projection from the canonical turn and never replays an
 // ambiguous send.
-func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string, initial bool) error {
+func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string, initial bool) (string, error) {
 	handoffStartedAt := time.Now().UTC()
 	turnID := delegatedTurnID(agentID, handoffStartedAt)
 	payload = delegatedLifecyclePayload(payload, turnID)
 	var result watcher.InputResult
 	var err error
 	if initial {
-		result, err = a.watcher.SubmitDelegatedInputWhenReady(
-			agentID, command, payload, workID, turnID, handoffStartedAt,
+		result, err = a.watcher.SubmitDelegatedInputWhenReadyBudgeted(
+			agentID, command, payload, workID, turnID, handoffStartedAt, delegatedInitialReadinessBudget,
 		)
 	} else {
 		result, err = a.watcher.SubmitDelegatedInput(
@@ -906,13 +934,13 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string
 		if initial {
 			a.recordSubmissionFailure(agentID, err.Error(), watcher.InputOutcomeFromError(err))
 		}
-		return err
+		return turnID, err
 	}
 	if result.Outcome != watcher.InputAccepted {
-		return fmt.Errorf("delegated input was not authoritatively accepted")
+		return turnID, fmt.Errorf("delegated input was not authoritatively accepted")
 	}
 	if result.Duplicate {
-		return nil
+		return turnID, nil
 	}
 	// Rebind the Session projection to the canonical turn: a reused Session
 	// never inherits the previous turn's done state while its new provider
@@ -927,9 +955,9 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string
 		strings.TrimSpace(result.TurnID) != turnID {
 		// Steering was delivered to the existing nonterminal turn. It does not
 		// reset lifecycle metadata or manufacture a new running Event.
-		return nil
+		return turnID, nil
 	}
-	return nil
+	return turnID, nil
 }
 
 func delegatedTurnID(_ string, _ time.Time) string {

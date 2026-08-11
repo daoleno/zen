@@ -688,6 +688,127 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 	return watcher.TurnSubmission{}, fmt.Errorf("pending submission not found")
 }
 
+// RecordInitialSubmissionNotAdmitted converges a zero-Turn delegated launch
+// after the exact initial prompt was proved not submitted. Fresh auto-created
+// Work is cancelled and its fact becomes audit-only; an explicitly attached
+// Work remains retryable with one actionable fact. The caller must tear down
+// the zero-Turn Session before requesting cancellation.
+func (s *Store) RecordInitialSubmissionNotAdmitted(
+	workID, sessionID, proposedTurnID, summary string,
+	cancelAutoWork bool,
+) (Work, error) {
+	workID = strings.TrimSpace(workID)
+	sessionID = strings.TrimSpace(sessionID)
+	proposedTurnID = strings.TrimSpace(proposedTurnID)
+	summary = strings.TrimSpace(summary)
+	if workID == "" || sessionID == "" || proposedTurnID == "" {
+		return Work{}, fmt.Errorf("initial submission Work, Session, and Turn identities are required")
+	}
+	if summary == "" {
+		summary = "Delegated input was proved not submitted."
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return Work{}, err
+	}
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("Work %s not found", workID)
+	}
+	item := database.BrainWork[itemIndex]
+	if turn, found := currentTurnForSession(database, sessionID); found && turn.WorkID == workID {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("accepted delegated Turn %s cannot be recorded as not admitted", turn.TurnID)
+	}
+	for _, record := range database.BrainTurnSubmissions {
+		if record.SessionID != sessionID || record.ProposedTurnID != proposedTurnID {
+			continue
+		}
+		if record.State != watcher.TurnSubmissionAborted {
+			s.mu.Unlock()
+			return Work{}, fmt.Errorf("delegated submission %s is %s, not aborted", proposedTurnID, record.State)
+		}
+	}
+	if item.Status == WorkDone || item.Status == WorkCancelled {
+		if cancelAutoWork && item.Status == WorkCancelled {
+			s.mu.Unlock()
+			return item, nil
+		}
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("Work %s is already %s", item.ID, item.Status)
+	}
+	if owner := strings.TrimSpace(item.OwnerSessionID); owner != "" && owner != sessionID {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, owner)
+	}
+	item.OwnerSessionID = ""
+	item.OwnerDelegated = false
+	if reservation := item.SuccessorReservation; reservation != nil && reservation.SessionID == sessionID {
+		item.SuccessorReservation = nil
+	}
+	item.Wake = nil
+	item.WaitFor = ""
+	if cancelAutoWork {
+		item.Status = WorkCancelled
+		item.NextAction = "Delegated launch ended before its first Turn was admitted."
+	} else {
+		item.Status = WorkNeedsInput
+		item.NextAction = "Retry the delegated Session after confirmed non-submission."
+		item.WaitFor = summary
+	}
+	item.UpdatedAt = now
+	item.Revision++
+	database.BrainWork[itemIndex] = item
+
+	dedupeKey := "brain:submission-abort:" + proposedTurnID
+	eventIndex := -1
+	for index, event := range database.BrainWorkEvents {
+		if event.WorkID == workID && event.DedupeKey == dedupeKey {
+			eventIndex = index
+			break
+		}
+	}
+	if eventIndex < 0 {
+		event := WorkEvent{
+			ID: uuid.NewString(), WorkID: workID, Kind: "brain.submission_not_admitted",
+			DedupeKey: dedupeKey, PayloadRef: "session:" + sessionID, SourceName: sessionID,
+			Summary: summary, Actionable: !cancelAutoWork, CreatedAt: now,
+		}
+		if cancelAutoWork {
+			discardedAt := now
+			event.DiscardedAt = &discardedAt
+			event.Resolution = EventResolutionDiscard
+		}
+		if _, err := appendWorkEventLocked(&database, itemIndex, event, false); err != nil {
+			s.mu.Unlock()
+			return Work{}, err
+		}
+	} else {
+		event := &database.BrainWorkEvents[eventIndex]
+		event.Summary = summary
+		event.SourceName = sessionID
+		event.PayloadRef = "session:" + sessionID
+		event.WorkRevision = item.Revision
+		if cancelAutoWork && event.DeliveredAt == nil && event.HandlingID == "" {
+			discardedAt := now
+			event.Actionable = false
+			event.DiscardedAt = &discardedAt
+			event.Resolution = EventResolutionDiscard
+		}
+	}
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		s.mu.Unlock()
+		return Work{}, err
+	}
+	s.mu.Unlock()
+	s.broadcastWorkChange(workID)
+	return item, nil
+}
+
 // ResolveTurnSubmission atomically resolves provider admission and canonical
 // ownership. Same exact baseline Activity resolves as steering to the
 // existing Turn. Only a different confirmed Activity promotes the proposed

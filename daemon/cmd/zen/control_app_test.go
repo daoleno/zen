@@ -39,6 +39,8 @@ type fakeControlWatcher struct {
 	turnStore         *brain.Store
 	ownershipErr      error
 	ownershipCalls    []string
+	budgetedSubmitErr error
+	budgetedCalls     int
 }
 
 type fakeControlSend struct {
@@ -363,6 +365,22 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 		Outcome: watcher.InputOutcomeFromError(err),
 		Receipt: turnID,
 	}, err
+}
+
+func (w *fakeControlWatcher) SubmitDelegatedInputWhenReadyBudgeted(
+	sessionID, command, payload, workID, turnID string,
+	acceptedAt time.Time,
+	_ time.Duration,
+) (watcher.InputResult, error) {
+	w.budgetedCalls++
+	if w.budgetedSubmitErr != nil {
+		return watcher.InputResult{
+			Outcome: watcher.InputOutcomeFromError(w.budgetedSubmitErr),
+			Receipt: turnID,
+			TurnID:  turnID,
+		}, w.budgetedSubmitErr
+	}
+	return w.SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID, acceptedAt)
 }
 
 func (w *fakeControlWatcher) SubmitBrainHostInput(
@@ -1350,18 +1368,18 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
 		t.Fatalf("response = %#v", resp)
 	}
-	// A definite non-submission must not falsely terminalize the Session:
-	// the canonical turn stays Admitted and the projection stays running.
+	// A definite zero-Turn non-submission tears down the disposable Session and
+	// cancels the auto-created Work instead of leaving a phantom owner.
 	agent := fw.agents["brain-agent-unsubmitted:@1"]
-	if agent == nil || agent.State != classifier.StateRunning || agent.NeedsAttention {
+	if agent != nil || len(fw.killed) != 1 {
 		t.Fatalf("agent after failed initial prompt = %#v", agent)
 	}
 	items, err := app.brainStore.ListWork()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Status != brain.WorkNeedsInput ||
-		!strings.Contains(items[0].WaitFor, os.ErrDeadlineExceeded.Error()) {
+	if len(items) != 1 || items[0].Status != brain.WorkCancelled ||
+		items[0].OwnerSessionID != "" {
 		t.Fatalf("Work after failed initial prompt = %#v", items)
 	}
 }
@@ -1407,10 +1425,11 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 				t.Fatalf("spawn failure response=%#v", resp)
 			}
 			items, err := store.ListWork()
-			if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+			if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled ||
+				items[0].OwnerSessionID != "" {
 				t.Fatalf("failed spawn Work=%+v err=%v", items, err)
 			}
-			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 {
+			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
 				t.Fatalf("provider effects sent=%d submitted=%d created=%d, want one each",
 					len(fw.sent), len(fw.submitted), len(fw.created))
 			}
@@ -1440,8 +1459,7 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 					event.DiscardedAt == nil && event.Resolution == "" {
 					reconciles++
 				}
-				if event.Kind == "brain.submission_not_admitted" && event.Actionable &&
-					event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" {
+				if event.Kind == "brain.submission_not_admitted" {
 					notAdmitted++
 					notAdmittedEvent = event
 				}
@@ -1453,7 +1471,9 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			if test.migrationCompleteFirst {
 				wantEvents = 2
 			}
-			if len(events) != wantEvents || reconciles != 0 || notAdmitted != 1 {
+			if len(events) != wantEvents || reconciles != 0 || notAdmitted != 1 ||
+				notAdmittedEvent.Actionable || notAdmittedEvent.DiscardedAt == nil ||
+				notAdmittedEvent.Resolution != brain.EventResolutionDiscard {
 				t.Fatalf("final Events=%+v; count=%d want=%d reconcile=%d not_admitted=%d",
 					events, len(events), wantEvents, reconciles, notAdmitted)
 			}
@@ -1476,24 +1496,8 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			}
 
 			hostID := "brain-agent-brain-hidden:@spawn-failure"
-			claimed, ok, err := reopened.ClaimNextActionableEvent(hostID)
-			if err != nil || !ok || claimed.Kind != "brain.submission_not_admitted" {
-				t.Fatalf("submission-not-admitted claim=%+v ok=%v err=%v", claimed, ok, err)
-			}
-			resolveControlHostClaim(t, reopened, claimed)
-			delivered, _, err := reopened.ConsumeClaimedWorkEvent(
-				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, resolved, err := reopened.ResolveWorkEvent(brain.WorkEventDispositionRequest{
-				EventID: delivered.ID, HandlingID: delivered.HandlingID,
-				ProviderTurnID:       delivered.ProviderTurnID,
-				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
-				Disposition:          brain.WorkDispositionCancel,
-			}); err != nil || resolved.Status != brain.WorkCancelled {
-				t.Fatalf("typed reconcile resolution Work=%+v err=%v", resolved, err)
+			if event, claimed, err := reopened.ClaimNextActionableEvent(hostID); err != nil || claimed {
+				t.Fatalf("cancelled auto-spawn audit became actionable: event=%+v claimed=%v err=%v", event, claimed, err)
 			}
 
 			reopenedAgain, err := brain.NewStore(root)
@@ -1506,13 +1510,94 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossMigrationAnd
 			finalEvents, err := reopenedAgain.ListWorkEvents(items[0].ID)
 			if err != nil || len(finalEvents) != wantEvents ||
 				finalEvents[len(finalEvents)-1].Kind != "brain.submission_not_admitted" ||
-				finalEvents[len(finalEvents)-1].HandledAt == nil ||
-				finalEvents[len(finalEvents)-1].Disposition != brain.WorkDispositionCancel {
+				finalEvents[len(finalEvents)-1].Actionable ||
+				finalEvents[len(finalEvents)-1].DiscardedAt == nil {
 				t.Fatalf("resolved final Events=%+v err=%v", finalEvents, err)
 			}
-			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 {
+			if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
 				t.Fatalf("restart replayed Session effect: sent=%d submitted=%d created=%d",
 					len(fw.sent), len(fw.submitted), len(fw.created))
+			}
+		})
+	}
+}
+
+func TestControlAppNeverReadyInitialPromptCleansAutoWorkButKeepsAttachedWorkActionable(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		attached   bool
+		wantStatus brain.WorkStatus
+		actionable bool
+	}{
+		{name: "auto Work", wantStatus: brain.WorkCancelled},
+		{name: "attached Work", attached: true, wantStatus: brain.WorkNeedsInput, actionable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newControlBrainStore(t)
+			request := control.Request{
+				Type: "agent_spawn", Name: "Pi readiness timeout", Cwd: "/repo/zen",
+				Command: "pi", Prompt: "execute only after the composer is ready",
+			}
+			var attached brain.Work
+			if test.attached {
+				var err error
+				attached, err = store.CreateWork(brain.Work{
+					Title: "Existing commitment", Objective: "Remain retryable if launch never starts.",
+					Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.WorkID = attached.ID
+			}
+			readinessErr := &watcher.InputSubmissionError{
+				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
+				Cause:  fmt.Errorf("%w for pi", watcher.ErrAgentInputNotReady),
+			}
+			fw := newFakeControlWatcher()
+			fw.turnStore = store
+			fw.budgetedSubmitErr = readinessErr
+			app := &controlApp{
+				watcher: fw, brainStore: store,
+				execs: work.NewExecutorConfig("pi", map[string]work.Executor{
+					"pi": {Name: "pi", Command: "pi"},
+				}),
+			}
+			response := app.HandleControlRequest(request)
+			if response.OK || response.Error == nil || response.Error.Code != "send_prompt_failed" {
+				t.Fatalf("never-ready spawn response=%#v", response)
+			}
+			if fw.budgetedCalls != 1 || len(fw.created) != 1 || len(fw.killed) != 1 ||
+				len(fw.sent) != 0 || len(fw.submitted) != 0 {
+				t.Fatalf("never-ready effects budgeted=%d created=%d killed=%d sent=%d submitted=%d",
+					fw.budgetedCalls, len(fw.created), len(fw.killed), len(fw.sent), len(fw.submitted))
+			}
+			items, err := store.ListWork()
+			if err != nil || len(items) != 1 || items[0].Status != test.wantStatus ||
+				items[0].OwnerSessionID != "" || items[0].SuccessorReservation != nil {
+				t.Fatalf("never-ready Work=%+v err=%v", items, err)
+			}
+			events, err := store.ListWorkEvents(items[0].ID)
+			if err != nil || len(events) != 1 || events[0].Kind != "brain.submission_not_admitted" ||
+				events[0].Actionable != test.actionable {
+				t.Fatalf("never-ready Events=%+v err=%v", events, err)
+			}
+			turnID := strings.TrimPrefix(events[0].DedupeKey, "brain:submission-abort:")
+			if turnID == events[0].DedupeKey || turnID == "" {
+				t.Fatalf("never-ready Event lacks exact turn identity: %+v", events[0])
+			}
+			if _, found, err := store.TurnSubmission(events[0].SourceName, turnID); err != nil || found {
+				t.Fatalf("never-ready created submission found=%v err=%v", found, err)
+			}
+			if _, found, err := store.Turn(events[0].SourceName); err != nil || found {
+				t.Fatalf("never-ready created Turn found=%v err=%v", found, err)
+			}
+			if test.actionable {
+				if events[0].DiscardedAt != nil || events[0].Resolution != "" {
+					t.Fatalf("attached retry fact was discarded: %+v", events[0])
+				}
+			} else if events[0].DiscardedAt == nil || events[0].Resolution != brain.EventResolutionDiscard {
+				t.Fatalf("auto Work fact was not audit-only: %+v", events[0])
 			}
 		})
 	}
@@ -1663,7 +1748,7 @@ func TestControlAppAmbiguousSpawnWithVanishedOwnedSessionStillReturnsFailure(t *
 		t.Fatalf("vanished response = %#v", resp)
 	}
 	items, err := store.ListWork()
-	if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled {
 		t.Fatalf("vanished Work = %+v err=%v", items, err)
 	}
 	if len(fw.sent) != 1 {
@@ -1693,7 +1778,7 @@ func TestControlAppPreSubmitLaunchFailureRemainsDefinitive(t *testing.T) {
 		t.Fatalf("pre-submit failure sent input: %#v", fw.sent)
 	}
 	items, err := store.ListWork()
-	if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput {
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled {
 		t.Fatalf("pre-submit Work = %+v err=%v", items, err)
 	}
 }
@@ -1721,18 +1806,17 @@ func TestControlAppDefinitelyNotSubmittedSpawnFailureStillProjectsFailure(t *tes
 	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
 		t.Fatalf("response = %#v", resp)
 	}
-	// The input provably never reached the provider: the Session must not be
-	// falsely terminalized; the Work surfaces the launch failure.
+	// The input provably never reached the provider: the zero-Turn Session is
+	// removed and its auto-created Work is cancelled.
 	agent := fw.agents["brain-agent-notsubmitted:@1"]
-	if agent == nil || agent.State != classifier.StateRunning || agent.NeedsAttention {
+	if agent != nil || len(fw.killed) != 1 {
 		t.Fatalf("definitely-not-submitted spawn projected a false failure: %#v", agent)
 	}
 	items, err := app.brainStore.ListWork()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Status != brain.WorkNeedsInput ||
-		!strings.Contains(items[0].NextAction, "Resolve the delegated Session launch failure") {
+	if len(items) != 1 || items[0].Status != brain.WorkCancelled || items[0].OwnerSessionID != "" {
 		t.Fatalf("Work after not-submitted spawn = %#v", items)
 	}
 }

@@ -2606,13 +2606,58 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 	sessionID, command, payload, workID, turnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
+	return w.submitDelegatedInputWhenReadyAttempt(
+		sessionID, command, payload, workID, turnID, acceptedAt, inputReadyTimeout(command),
+	)
+}
+
+// SubmitDelegatedInputWhenReadyBudgeted retries only the pre-mutation
+// ErrAgentInputNotReady outcome while the exact spawned identity remains
+// attributable. The turn id is stable across attempts; once any submission
+// may have started, the result returns immediately and is never replayed.
+func (w *Watcher) SubmitDelegatedInputWhenReadyBudgeted(
+	sessionID, command, payload, workID, turnID string,
+	acceptedAt time.Time,
+	budget time.Duration,
+) (InputResult, error) {
+	if budget <= 0 {
+		return w.SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID, acceptedAt)
+	}
+	deadline := w.admissionNowValue().Add(budget)
+	for {
+		timeout := inputReadyTimeout(command)
+		if remaining := deadline.Sub(w.admissionNowValue()); remaining < timeout {
+			timeout = remaining
+		}
+		result, err := w.submitDelegatedInputWhenReadyAttempt(
+			sessionID, command, payload, workID, turnID, acceptedAt, timeout,
+		)
+		if err == nil || !errors.Is(err, ErrAgentInputNotReady) {
+			return result, err
+		}
+		if !w.admissionNowValue().Before(deadline) {
+			return result, err
+		}
+		w.admissionSleepValue(inputReadyRetryInterval)
+	}
+}
+
+func (w *Watcher) submitDelegatedInputWhenReadyAttempt(
+	sessionID, command, payload, workID, turnID string,
+	acceptedAt time.Time,
+	timeout time.Duration,
+) (InputResult, error) {
 	resolver := w.targetForSession
-	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	identityTimeout := timeout
+	if perAttempt := inputReadyTimeout(command); perAttempt < identityTimeout {
+		identityTimeout = perAttempt
+	}
+	identity, known := resolveTargetIdentityWhenReadyTimeout(resolver, sessionID, command, identityTimeout)
 	if !known {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
 			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
 	}
-	if !waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
+	if !waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, timeout, func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
