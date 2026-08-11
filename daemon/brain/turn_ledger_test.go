@@ -8,6 +8,36 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
+func TestReduceImmutableOwnershipLossIsAuditOnly(t *testing.T) {
+	now := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
+	for _, status := range []watcher.TurnStatus{watcher.TurnDone, watcher.TurnFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			mutation, err := reduceTurnFact(&TurnRecord{
+				SessionID: "brain-agent-terminal-audit:@1",
+				TurnID:    "turn-terminal-audit",
+				Status:    status,
+				Summary:   "immutable provider outcome",
+			}, watcher.TurnFact{
+				SessionID: "brain-agent-terminal-audit:@1",
+				TurnID:    "turn-terminal-audit",
+				Class:     watcher.EvidenceLiveness,
+				Kind:      "ownership_lost",
+				SourceID:  "lost-after-terminal",
+				At:        now,
+			}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !mutation.changed || mutation.status != "" || mutation.controlState != "" ||
+				mutation.eventKind != "" || mutation.eventActionable ||
+				mutation.workUpdate.Status != nil || mutation.workUpdate.NextAction != nil ||
+				mutation.workUpdate.WaitFor != nil || mutation.workUpdate.Wake != nil {
+				t.Fatalf("immutable ownership loss mutation=%+v, want audit-only fact", mutation)
+			}
+		})
+	}
+}
+
 // bootstrapAdmittedTurnFixture seeds the exact pre-receipt reducer state that
 // Turn fact tests need. It is deliberately test-only and requires the exact
 // Work ID; live delegated input must use Prepare/ResolveTurnSubmission and

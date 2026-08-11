@@ -580,13 +580,22 @@ func TestOwnershipLossPreservesImmutableProviderOutcome(t *testing.T) {
 		SessionReplaced: true, At: acceptedAt.Add(2 * time.Minute),
 	})
 	if err != nil || !changed || lost.Status != watcher.TurnDone ||
-		lost.ControlState != watcher.TurnControlOwnershipLost || lost.Attention != "" {
+		lost.ControlState != watcher.TurnControlOwned || lost.Attention != "" {
 		t.Fatalf("control loss rewrote provider outcome: Turn=%+v changed=%v err=%v", lost, changed, err)
 	}
 	current, err := store.Work(item.ID)
-	if err != nil || current.OwnerSessionID != "" || current.OwnerDelegated ||
-		current.Status != WorkNeedsInput {
+	if err != nil || current.OwnerSessionID != sessionID || !current.OwnerDelegated ||
+		current.Status != WorkWaiting {
 		t.Fatalf("completed control loss Work=%+v err=%v", current, err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "session.uncertain" {
+			t.Fatalf("immutable ownership loss emitted review Attention: %+v", events)
+		}
 	}
 
 	reopened, err := NewStore(root)
@@ -595,15 +604,15 @@ func TestOwnershipLossPreservesImmutableProviderOutcome(t *testing.T) {
 	}
 	durable, found, err := reopened.TurnByID(sessionID, turnID)
 	if err != nil || !found || durable.Status != watcher.TurnDone ||
-		durable.ControlState != watcher.TurnControlOwnershipLost {
+		durable.ControlState != watcher.TurnControlOwned {
 		t.Fatalf("reopened completed control loss=%+v found=%v err=%v", durable, found, err)
 	}
 	candidate := delegatedSubmissionCandidate(
 		item.ID, sessionID, sessionID+":turn:2", "must remain unsent", acceptedAt.Add(3*time.Minute),
 	)
 	candidate.ExistingTurnID = turnID
-	if _, created, err := reopened.PrepareTurnSubmission(candidate); err == nil || created {
-		t.Fatalf("control-lost Session prepared fresh input: created=%v err=%v", created, err)
+	if _, created, err := reopened.PrepareTurnSubmission(candidate); err != nil || !created {
+		t.Fatalf("terminal Session follow-up was not prepared: created=%v err=%v", created, err)
 	}
 }
 

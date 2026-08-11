@@ -50,9 +50,10 @@ const (
 	TurnUnknown  TurnStatus = "unknown"
 )
 
-// TurnControlState is orthogonal to provider lifecycle outcome. A completed
-// Turn remains completed if its tmux/provider control identity later becomes
-// unsafe; commands still fail closed from the durable ownership_lost state.
+// TurnControlState is orthogonal to provider lifecycle outcome. Ownership loss
+// gates only a non-immutable turn whose provider outcome may still be live or
+// unknown. Once Done/Failed is immutable, later liveness loss is audit evidence
+// and the next turn must establish its own independent control capability.
 type TurnControlState string
 
 const (

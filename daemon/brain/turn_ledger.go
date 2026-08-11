@@ -1049,9 +1049,9 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	controlOwnershipLoss := fact.Class == watcher.EvidenceLiveness && fact.Kind == "ownership_lost"
 	switch turn.Status {
 	case watcher.TurnDone, watcher.TurnFailed:
-		// Provider outcome is globally final. Control ownership is orthogonal:
-		// losing the target after completion deprojects commands without
-		// rewriting the completed/failed result.
+		// Provider outcome is globally final. A later ownership-loss observation
+		// is retained only as audit evidence: the completed capability no longer
+		// controls admission for the next turn.
 		if !controlOwnershipLoss {
 			return mutation, nil
 		}
@@ -1363,6 +1363,14 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	case watcher.EvidenceLiveness:
 		switch fact.Kind {
 		case "ownership_lost":
+			if watcher.TurnImmutable(status) {
+				// The provider outcome already ended this turn. Persist the exact
+				// liveness fact for audit, but do not create a control gate, mutate
+				// Work, or wake Brain. A fresh turn owns its own generation and
+				// admission transaction.
+				mutation.changed = true
+				break
+			}
 			// Ownership loss is a control capability state only: it never
 			// fabricates a terminal outcome. The canonical status becomes
 			// Unknown (terminal for scheduling) and the review fact is
