@@ -342,11 +342,18 @@ func (s *Store) appendTimelineItemLocked(item TimelineItem) (TimelineItem, error
 	if err != nil {
 		return TimelineItem{}, err
 	}
-	defer file.Close()
 	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
 		return TimelineItem{}, err
 	}
 	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return TimelineItem{}, err
+	}
+	if err := file.Close(); err != nil {
+		return TimelineItem{}, err
+	}
+	if err := syncDirectory(filepath.Dir(s.messagesPath())); err != nil {
 		return TimelineItem{}, err
 	}
 	return item, nil
@@ -367,9 +374,20 @@ func (s *Store) timelineItemByIDLocked(id string) (TimelineItem, bool, error) {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
+		if strings.TrimSpace(scanner.Text()) == "" {
+			continue
+		}
 		var item TimelineItem
-		if json.Unmarshal(scanner.Bytes(), &item) == nil && strings.TrimSpace(item.ID) == id {
+		if err := json.Unmarshal(scanner.Bytes(), &item); err != nil {
+			return TimelineItem{}, false, fmt.Errorf("decode timeline line %d: %w", lineNumber, err)
+		}
+		if strings.TrimSpace(item.ID) == "" {
+			return TimelineItem{}, false, fmt.Errorf("decode timeline line %d: id is required", lineNumber)
+		}
+		if strings.TrimSpace(item.ID) == id {
 			return item, true, nil
 		}
 	}
@@ -405,18 +423,23 @@ func (s *Store) threadTimelineLocked(threadID string, limit int) ([]TimelineItem
 	out := []TimelineItem{}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		var item TimelineItem
 		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			continue
+			return nil, fmt.Errorf("decode timeline line %d: %w", lineNumber, err)
 		}
 		item.ID = strings.TrimSpace(item.ID)
 		item.ThreadID = strings.TrimSpace(item.ThreadID)
-		if item.ID == "" || item.ThreadID != threadID {
+		if item.ID == "" {
+			return nil, fmt.Errorf("decode timeline line %d: id is required", lineNumber)
+		}
+		if item.ThreadID != threadID {
 			continue
 		}
 		normalizeLegacyTimelineKind(&item)
@@ -650,6 +673,15 @@ func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (Timel
 		return existing, false, nil
 	}
 
+	item, err := s.appendTimelineItemLocked(workCardTimelineItem(workItem, event, true))
+	if err != nil {
+		return TimelineItem{}, false, err
+	}
+	return item, true, nil
+}
+
+func workCardTimelineItem(workItem Work, event WorkEvent, unread bool) TimelineItem {
+	threadID := strings.TrimSpace(workItem.SourceThreadID)
 	sessionID := strings.TrimSpace(workItem.OwnerSessionID)
 	if payloadSessionID := strings.TrimPrefix(event.PayloadRef, "session:"); payloadSessionID != event.PayloadRef {
 		sessionID = strings.TrimSpace(payloadSessionID)
@@ -668,7 +700,7 @@ func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (Timel
 	title := strings.TrimSpace(workItem.Title)
 	body := firstNonEmpty(summary, title, event.Kind)
 
-	item, err := s.appendTimelineItemLocked(TimelineItem{
+	return TimelineItem{
 		ID:          event.ID,
 		ThreadID:    threadID,
 		SessionID:   sessionID,
@@ -684,12 +716,64 @@ func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (Timel
 		SessionName: strings.TrimSpace(event.SourceName),
 		// Read state lives in the timeline projection. A freshly materialized
 		// card is unread; MarkWorkRead clears it without touching the Event.
-		Unread: true,
-	})
-	if err != nil {
-		return TimelineItem{}, false, err
+		Unread: unread,
 	}
-	return item, true, nil
+}
+
+// migrateLegacyEventReadStateLocked consumes schema <=7 Event read_at only
+// after the corresponding timeline card is durably read. Missing cards are
+// materialized as read; existing unread cards are cleared. Reopen is
+// idempotent because card identity is the immutable Event ID.
+func (s *Store) migrateLegacyEventReadStateLocked(database *orchestrationDatabase) (bool, error) {
+	if database == nil {
+		return false, nil
+	}
+	hasLegacy := false
+	for _, event := range database.BrainWorkEvents {
+		if event.legacyReadAt != nil {
+			hasLegacy = true
+			break
+		}
+	}
+	if !hasLegacy {
+		return false, nil
+	}
+	items, err := s.readAllTimelineItemsLocked()
+	if err != nil {
+		return false, err
+	}
+	byID := make(map[string]int, len(items))
+	for index := range items {
+		byID[strings.TrimSpace(items[index].ID)] = index
+	}
+	timelineChanged := false
+	for eventIndex := range database.BrainWorkEvents {
+		event := &database.BrainWorkEvents[eventIndex]
+		if event.legacyReadAt == nil {
+			continue
+		}
+		if index, found := byID[event.ID]; found {
+			if items[index].Kind == timelineKindWorkCard && items[index].Unread {
+				items[index].Unread = false
+				timelineChanged = true
+			}
+		} else if isProjectedWorkResultEvent(event.Kind) {
+			if index := workIndex(database.BrainWork, event.WorkID); index >= 0 {
+				item := workCardTimelineItem(database.BrainWork[index], *event, false)
+				items = append(items, item)
+				byID[item.ID] = len(items) - 1
+				timelineChanged = true
+			}
+		}
+		event.legacyReadAt = nil
+	}
+	if timelineChanged {
+		sortTimelineItems(items)
+		if err := s.rewriteTimelineLocked(items); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // MarkTimelineWorkCardsRead clears unread emphasis on materialized work cards
@@ -733,17 +817,19 @@ func (s *Store) readAllTimelineItemsLocked() ([]TimelineItem, error) {
 	out := []TimelineItem{}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		var item TimelineItem
 		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			continue
+			return nil, fmt.Errorf("decode timeline line %d: %w", lineNumber, err)
 		}
 		if strings.TrimSpace(item.ID) == "" {
-			continue
+			return nil, fmt.Errorf("decode timeline line %d: id is required", lineNumber)
 		}
 		normalizeLegacyTimelineKind(&item)
 		out = append(out, item)
@@ -784,7 +870,7 @@ func (s *Store) rewriteTimelineLocked(items []TimelineItem) error {
 	if err := os.Rename(tmpName, s.messagesPath()); err != nil {
 		return err
 	}
-	return nil
+	return syncDirectory(filepath.Dir(s.messagesPath()))
 }
 
 func timelineItemsToConversationEvents(items []TimelineItem) []work.CodexConversationEvent {

@@ -133,13 +133,148 @@ func TestOrchestrationSchemaV7DropsReservationSchedulerState(t *testing.T) {
 		database.HostForegroundTurn == nil || database.HostForegroundTurn.HostTurnID != "h:foreground:1" {
 		t.Fatalf("v7 durable gates were not preserved: %+v", database)
 	}
-	// The reservation, its counters, and the Event read_at mirror are gone:
-	// the append-only Event fact and the Host lane are the only authorities.
+	// The reservation and its counters are gone. The decode-only read marker is
+	// retained in memory until NewStore migrates it into the timeline card.
 	if len(database.BrainWorkEvents) != 1 {
 		t.Fatalf("v7 events = %+v", database.BrainWorkEvents)
 	}
 	if database.BrainWorkEvents[0].ID != "e1" || database.BrainWorkEvents[0].ClaimedAt != nil {
 		t.Fatalf("v7 event was rewritten: %+v", database.BrainWorkEvents[0])
+	}
+	if database.BrainWorkEvents[0].legacyReadAt == nil {
+		t.Fatal("v7 read_at was dropped before timeline migration")
+	}
+}
+
+func TestOrchestrationSchemaV7MigratesReadStateIntoTimelineExactlyOnce(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		existingCard bool
+	}{
+		{name: "missing card"},
+		{name: "existing unread card", existingCard: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "state")
+			if err := os.MkdirAll(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stateDir, "chat_state.json"), []byte(`{
+				"thread_id":"thread-read-migration",
+				"thread_ids":["thread-read-migration"]
+			}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			raw := []byte(`{
+				"schema_version":7,
+				"next_event_sequence":1,
+				"migrations":{},
+				"brain_input_admissions":[],
+				"brain_work":[{
+					"work_id":"work-read-migration","revision":1,
+					"title":"Read migration","objective":"Preserve presentation read state",
+					"status":"waiting","source_thread_id":"thread-read-migration",
+					"completion_policy":"bounded",
+					"created_at":"2026-08-11T00:00:00Z","updated_at":"2026-08-11T00:00:00Z"
+				}],
+				"brain_work_events":[{
+					"event_id":"event-read-migration","work_id":"work-read-migration",
+					"kind":"session.done",
+					"dedupe_key":"session:worker:@1:turn:one:session.done",
+					"source_name":"worker:@1","summary":"Already reviewed result",
+					"actionable":true,"created_at":"2026-08-11T00:00:01Z",
+					"sequence":1,"work_revision":1,"read_at":"2026-08-11T00:00:02Z"
+				}],
+				"brain_turns":[],"brain_turn_submissions":[]
+			}`)
+			orchestrationPath := filepath.Join(stateDir, "orchestration.json")
+			if err := os.WriteFile(orchestrationPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.existingCard {
+				card, err := json.Marshal(TimelineItem{
+					ID: "event-read-migration", ThreadID: "thread-read-migration",
+					SessionID: "worker:@1", Role: "assistant", Body: "Already reviewed result",
+					CreatedAt: time.Date(2026, 8, 11, 0, 0, 1, 0, time.UTC),
+					Kind:      timelineKindWorkCard, Status: "session.done", Title: "Read migration",
+					WorkID: "work-read-migration", EventKind: "session.done",
+					Summary: "Already reviewed result", Unread: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stateDir, "messages.jsonl"), append(card, '\n'), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			items, err := store.ThreadTimeline("thread-read-migration", 0)
+			if err != nil || len(items) != 1 || items[0].ID != "event-read-migration" || items[0].Unread {
+				t.Fatalf("migrated timeline=%+v err=%v", items, err)
+			}
+			persisted, err := os.ReadFile(orchestrationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(persisted, []byte(`"read_at"`)) {
+				t.Fatalf("scheduler read mirror survived migration: %s", persisted)
+			}
+			messagesPath := filepath.Join(stateDir, "messages.jsonl")
+			firstMessages, err := os.ReadFile(messagesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewStore(root); err != nil {
+				t.Fatal(err)
+			}
+			secondMessages, err := os.ReadFile(messagesPath)
+			if err != nil || !bytes.Equal(firstMessages, secondMessages) {
+				t.Fatalf("read-state migration replayed: first=%q second=%q err=%v", firstMessages, secondMessages, err)
+			}
+		})
+	}
+}
+
+func TestTimelineCorruptionFailsWorkReadProjectionClosed(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID, err := store.ChatThreadID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendTimelineItem(TimelineItem{
+		ID: "valid-card", ThreadID: threadID, SessionID: "worker:@1",
+		Role: "assistant", Body: "valid before corruption", Kind: timelineKindWorkCard,
+		WorkID: "work-corrupt-timeline", EventKind: "session.done", Unread: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(store.messagesPath(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{not-json}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ActiveWork(); err == nil || !strings.Contains(err.Error(), "decode timeline line 2") {
+		t.Fatalf("ActiveWork corruption error=%v", err)
+	}
+	if _, err := store.ProjectWorkInventory(nil); err == nil || !strings.Contains(err.Error(), "decode timeline line 2") {
+		t.Fatalf("ProjectWorkInventory corruption error=%v", err)
+	}
+	if _, err := store.ThreadTimeline(threadID, 0); err == nil || !strings.Contains(err.Error(), "decode timeline line 2") {
+		t.Fatalf("ThreadTimeline corruption error=%v", err)
 	}
 }
 

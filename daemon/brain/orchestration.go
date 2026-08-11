@@ -222,6 +222,11 @@ type WorkEvent struct {
 	DiscardedAt           *time.Time      `json:"discarded_at,omitempty"`
 	ReplayOf              string          `json:"replay_of,omitempty"`
 
+	// Decode-only schema <=7 input. New writes never persist presentation
+	// state in the scheduler ledger; ensure-time migration moves it into the
+	// timeline card before the old field is dropped.
+	legacyReadAt *time.Time
+
 	// Review* is a read-time delivery projection. The append-only fact named by
 	// ID never changes identity, while a coalesced newer fact can be the latest
 	// authoritative result Brain must review through DeliverySequenceFence.
@@ -434,6 +439,7 @@ type legacyWorkEvent struct {
 	DeliveryHostSessionID  string     `json:"delivery_host_session_id,omitempty"`
 	DeliveryAcknowledgedAt *time.Time `json:"delivery_acknowledged_at,omitempty"`
 	ConsumedAt             *time.Time `json:"consumed_at,omitempty"`
+	ReadAt                 *time.Time `json:"read_at,omitempty"`
 }
 
 // UnmarshalJSON accepts consumed_at only as a pre-v7 migration input. The
@@ -443,11 +449,13 @@ func (event *WorkEvent) UnmarshalJSON(raw []byte) error {
 	decoded := struct {
 		durableWorkEvent
 		ConsumedAt *time.Time `json:"consumed_at,omitempty"`
+		ReadAt     *time.Time `json:"read_at,omitempty"`
 	}{}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return err
 	}
 	*event = WorkEvent(decoded.durableWorkEvent)
+	event.legacyReadAt = decoded.ReadAt
 	if event.DeliveredAt == nil && decoded.ConsumedAt != nil {
 		delivered := decoded.ConsumedAt.UTC()
 		event.DeliveredAt = &delivered
@@ -486,13 +494,17 @@ func (s *Store) ensureOrchestrationDatabase() error {
 		return err
 	}
 	bound := bindUnresolvedSourceThreadIDs(&database, threadID)
+	readStateMigrated, err := s.migrateLegacyEventReadStateLocked(&database)
+	if err != nil {
+		return fmt.Errorf("migrate Brain Work read state: %w", err)
+	}
 	// Per-turn liveness backfill: rows persisted before the per-turn lease
 	// existed have a zero deadline. They get a fresh lease minted from their
 	// acceptance so an upgrade can never resurrect an old turn's expired
 	// lease as an immediate session.stale. Deterministic and idempotent: a
 	// deadline already set is never rewritten.
 	leaseBackfilled := backfillTurnLeaseDeadlines(&database, s.nowUTC())
-	if migrated || bound || leaseBackfilled {
+	if migrated || bound || leaseBackfilled || readStateMigrated {
 		return s.persistOrchestrationLocked(database)
 	}
 	if err := validateOrchestrationDatabase(database); err != nil {
@@ -563,7 +575,7 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 				DedupeKey: old.DedupeKey, PayloadRef: old.PayloadRef,
 				Actionable: old.Actionable, CreatedAt: old.CreatedAt,
 				ClaimedAt: old.ClaimedAt, DeliveryHostSessionID: old.DeliveryHostSessionID,
-				DeliveredAt: old.ConsumedAt,
+				DeliveredAt: old.ConsumedAt, legacyReadAt: old.ReadAt,
 			}
 			if old.DeliveryAcknowledgedAt != nil && event.DeliveredAt == nil {
 				event.DeliveredAt = old.DeliveryAcknowledgedAt
@@ -4209,7 +4221,11 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 		return nil, err
 	}
 	unread := map[string]bool{}
-	for _, item := range s.readTimelineWorkCardsLocked() {
+	cards, err := s.readTimelineWorkCardsLocked()
+	if err != nil {
+		return nil, fmt.Errorf("read Work timeline projection: %w", err)
+	}
+	for _, item := range cards {
 		if item.Unread {
 			unread[item.WorkID] = true
 		}
@@ -4276,7 +4292,11 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 			hasResult[event.WorkID] = true
 		}
 	}
-	for _, item := range s.readTimelineWorkCardsLocked() {
+	cards, err := s.readTimelineWorkCardsLocked()
+	if err != nil {
+		return WorkInventory{}, fmt.Errorf("read Work timeline projection: %w", err)
+	}
+	for _, item := range cards {
 		if item.Unread {
 			unread[item.WorkID] = true
 		}
@@ -4505,10 +4525,10 @@ func (s *Store) MarkWorkRead(workID string) error {
 // readTimelineWorkCardsLocked returns every materialized work card. It is the
 // read projection consumed by ActiveWork/ProjectWorkInventory unread labels.
 // The caller must hold s.mu.
-func (s *Store) readTimelineWorkCardsLocked() []TimelineItem {
+func (s *Store) readTimelineWorkCardsLocked() ([]TimelineItem, error) {
 	items, err := s.readAllTimelineItemsLocked()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make([]TimelineItem, 0, len(items))
 	for _, item := range items {
@@ -4516,7 +4536,7 @@ func (s *Store) readTimelineWorkCardsLocked() []TimelineItem {
 			out = append(out, item)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (s *Store) SubscribeWork() (int, <-chan WorkChange) {

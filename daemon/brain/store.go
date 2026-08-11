@@ -119,11 +119,18 @@ func (s *Store) AppendHostReplacement(event HostReplacementEvent) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if _, err := f.Write(append(raw, '\n')); err != nil {
+		_ = f.Close()
 		return err
 	}
-	return nil
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(s.HostReplacementsPath()))
 }
 
 func (s *Store) Snapshot() (Snapshot, error) {
@@ -892,20 +899,40 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
+	cleanup := func() {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Chmod(tmpPath, perm); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return syncDirectory(filepath.Dir(path))
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func firstNonEmpty(values ...string) string {

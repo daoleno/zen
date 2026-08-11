@@ -2690,8 +2690,8 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if store.WorkspacePath() != wantWorkspace {
 		t.Fatalf("workspace path = %q, want %q", store.WorkspacePath(), wantWorkspace)
 	}
-	if pathExists(retiredResultLogPath(root)) {
-		t.Fatalf("fresh Brain store created retired result log")
+	if pathExists(timelineMessagesPath(root)) {
+		t.Fatalf("fresh Brain store created an empty timeline ledger")
 	}
 	if !pathExists(filepath.Join(root, "state", "reminders.json")) {
 		t.Fatalf("missing state reminders file")
@@ -2783,11 +2783,11 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 }
 
-func TestStoreContextAndHousekeepingDoNotCreateOrReadRetiredResultLog(t *testing.T) {
+func TestStoreContextAndHousekeepingDoNotCreateButFailClosedOnCorruptTimeline(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
 			root := t.TempDir()
-			path := retiredResultLogPath(root)
+			path := timelineMessagesPath(root)
 			var before os.FileInfo
 			want := []byte("not current Brain state\n")
 			if existing {
@@ -2809,18 +2809,22 @@ func TestStoreContextAndHousekeepingDoNotCreateOrReadRetiredResultLog(t *testing
 				t.Fatal(err)
 			}
 			service := NewService(store, nil, nil)
-			if _, err := service.Context(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := service.Housekeeping(); err != nil {
-				t.Fatal(err)
-			}
+			_, contextErr := service.Context()
+			_, housekeepingErr := service.Housekeeping()
 
 			if !existing {
+				if contextErr != nil || housekeepingErr != nil {
+					t.Fatalf("empty timeline context=%v housekeeping=%v", contextErr, housekeepingErr)
+				}
 				if pathExists(path) {
-					t.Fatal("Brain context/housekeeping created retired result log")
+					t.Fatal("Brain context/housekeeping created an empty timeline ledger")
 				}
 				return
+			}
+			if contextErr == nil || housekeepingErr == nil ||
+				!strings.Contains(contextErr.Error(), "decode timeline line 1") ||
+				!strings.Contains(housekeepingErr.Error(), "decode timeline line 1") {
+				t.Fatalf("corrupt timeline context=%v housekeeping=%v", contextErr, housekeepingErr)
 			}
 			got, err := os.ReadFile(path)
 			if err != nil {
@@ -2832,13 +2836,13 @@ func TestStoreContextAndHousekeepingDoNotCreateOrReadRetiredResultLog(t *testing
 			}
 			if !bytes.Equal(got, want) || after.Mode() != before.Mode() ||
 				!after.ModTime().Equal(before.ModTime()) || !os.SameFile(before, after) {
-				t.Fatalf("retired result log changed: bytes=%q mode=%v mtime=%v", got, after.Mode(), after.ModTime())
+				t.Fatalf("corrupt timeline changed: bytes=%q mode=%v mtime=%v", got, after.Mode(), after.ModTime())
 			}
 		})
 	}
 }
 
-func retiredResultLogPath(root string) string {
+func timelineMessagesPath(root string) string {
 	return filepath.Join(root, "state", "messages.jsonl")
 }
 
