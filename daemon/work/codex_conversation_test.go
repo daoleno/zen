@@ -409,6 +409,46 @@ func TestParseCodexConversation_PairsProviderUserAdmissionAndRenderingEchoByReco
 	}
 }
 
+func TestParseCodexConversation_ResponseItemOnlyUserPreservesAdmissionDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response-item-only-user.jsonl")
+	payload := "<zen_work_event>exact durable payload</zen_work_event>"
+	writeJSONL(t, path,
+		map[string]any{
+			"type": "session_meta", "timestamp": "2026-08-11T01:00:00Z",
+			"payload": map[string]any{"id": "codex-response-only", "cwd": "/repo"},
+		},
+		map[string]any{
+			"type": "event_msg", "timestamp": "2026-08-11T01:00:01Z",
+			"payload": map[string]any{"type": "task_started", "turn_id": "native-response-only"},
+		},
+		map[string]any{
+			"type": "response_item", "timestamp": "2026-08-11T01:00:02Z",
+			"payload": map[string]any{
+				"type": "message", "role": "user",
+				"content": []map[string]any{{"type": "input_text", "text": payload}},
+			},
+		},
+		map[string]any{
+			"type": "event_msg", "timestamp": "2026-08-11T01:00:03Z",
+			"payload": map[string]any{"type": "task_complete", "turn_id": "native-response-only"},
+		},
+	)
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Events) != 1 || got.Events[0].Kind != "user_message" || got.Events[0].Body != payload {
+		t.Fatalf("response-item-only events=%#v", got.Events)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	if got.Events[0].AdmissionSHA256 != want {
+		t.Fatalf("response-item-only admission digest=%q want=%q", got.Events[0].AdmissionSHA256, want)
+	}
+	if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("response-item-only activity=%#v", got.Activity)
+	}
+}
+
 func TestParseCodexConversation_KeepsIdenticalUserMessagesAcrossTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,

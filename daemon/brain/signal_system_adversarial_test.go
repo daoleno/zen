@@ -637,6 +637,8 @@ type canonicalHostDeliveryWatcher struct {
 	wrongWorkID      string
 	prepareCount     int
 	resolveCount     int
+	recoveryCount    int
+	recoverPending   bool
 	wrongClaimChecks int
 }
 
@@ -647,6 +649,16 @@ func newCanonicalHostDeliveryWatcher(store *Store, hostID string) *canonicalHost
 		}},
 		store: store,
 	}
+}
+
+func (w *canonicalHostDeliveryWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	if !w.HasSession(sessionID) {
+		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
+	}
+	return watcher.OwnedGeneration{
+		SessionID: sessionID, Generation: "canonical-host-generation",
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+	}, nil
 }
 
 // This is the live cutover shape that previously wedged startup: an ambiguous
@@ -725,6 +737,268 @@ func TestSignalAdversarialAmbiguousOldHostGenerationCannotWedgeReplacementLane(t
 	}
 }
 
+// An ambiguous transport receipt is not the end of reconciliation. Retrying
+// the exact pending capability enters the watcher's duplicate-only provider
+// admission path: it may resolve from authoritative transcript/activity
+// evidence, but it must never enqueue the payload again. The recovered Turn
+// then consumes the original Event with its unchanged Work revision fence.
+func TestSignalAdversarialExactAmbiguousHostReceiptRecoversWithoutReplay(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@recovery"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "Recover exact Host admission", "brain-agent-worker-recovery:@1")
+	event := appendSignalTestEvent(t, store, item, "exact-recovery")
+	item, err = store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || claim.ID != event.ID {
+		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	payload, err := marshalDirectWorkEventInput(claim, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest(payload),
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare pending created=%v submission=%+v err=%v", created, pending, err)
+	}
+	rolloutPath := filepath.Join(root, "bound-host-recovery.jsonl")
+	userAt := claim.ClaimedAt.UTC().Add(time.Second)
+	writeCodexRolloutFixture(t, rolloutPath, "bound-host-recovery", []map[string]any{
+		{
+			"timestamp": claim.ClaimedAt.UTC().Add(-time.Second).Format(time.RFC3339Nano),
+			"type":      "event_msg",
+			"payload": map[string]any{
+				"type": "task_started", "turn_id": "native-bound-host-recovery",
+			},
+		},
+		{
+			"timestamp": userAt.Format(time.RFC3339Nano),
+			"type":      "response_item",
+			"payload": map[string]any{
+				"type": "message", "role": "user",
+				"content": []map[string]any{{"type": "input_text", "text": payload}},
+			},
+		},
+		{
+			"timestamp": userAt.Add(time.Second).Format(time.RFC3339Nano),
+			"type":      "event_msg",
+			"payload": map[string]any{
+				"type": "task_complete", "turn_id": "native-bound-host-recovery",
+			},
+		},
+	})
+	if err := store.SetHostProviderTranscript("bound-host-recovery", rolloutPath, root); err != nil {
+		t.Fatal(err)
+	}
+
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.outcomes = map[string]watcher.InputOutcome{claim.ID: watcher.InputAmbiguous}
+	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
+	if err != nil || woke {
+		t.Fatalf("exact recovery woke=%v err=%v", woke, err)
+	}
+	if delivery.recoveryCount != 0 || delivery.prepareCount != 0 || delivery.resolveCount != 0 || len(delivery.sentCalls) != 0 {
+		t.Fatalf("recovery replayed provider input: recoveries=%d prepares=%d resolves=%d sends=%d",
+			delivery.recoveryCount, delivery.prepareCount, delivery.resolveCount, len(delivery.sentCalls))
+	}
+	delivered, found, err := store.WorkEvent(claim.ID)
+	if err != nil || !found || delivered.DeliveredAt == nil || delivered.DeliveryWorkRevision != item.Revision {
+		t.Fatalf("recovered Event=%+v found=%v err=%v", delivered, found, err)
+	}
+	current, err := store.Work(item.ID)
+	if err != nil || current.Revision != delivered.DeliveryWorkRevision {
+		t.Fatalf("recovery changed claim revision: Work=%+v Event=%+v err=%v", current, delivered, err)
+	}
+	resolvedSubmission, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || resolvedSubmission.State != watcher.TurnSubmissionResolved {
+		t.Fatalf("recovered submission=%+v found=%v err=%v", resolvedSubmission, found, err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition: WorkDispositionSupersede, Summary: "Recovered exact provider execution.",
+	}); err != nil {
+		t.Fatalf("recovered Event could not take its typed disposition: %v", err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, found, err := reopened.WorkEvent(claim.ID)
+	if err != nil || !found || durable.HandledAt == nil || durable.Disposition != WorkDispositionSupersede {
+		t.Fatalf("recovered disposition did not survive reopen: event=%+v found=%v err=%v", durable, found, err)
+	}
+}
+
+func TestSignalAdversarialRecoveredLegacyDiagnosticRequeuesCurrentRevision(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@legacy-diagnostic"
+	item := createSignalTestWork(t, store, "Legacy diagnostic revision", "brain-agent-legacy-worker:@1")
+	originalEvent := appendSignalTestEvent(t, store, item, "legacy-diagnostic")
+	item, err = store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || claim.ID != originalEvent.ID {
+		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	payload, err := marshalDirectWorkEventInput(claim, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   AdmissionDigest(payload),
+		ProcessIdentity: "legacy-process", PaneGeneration: "legacy-pane",
+		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare pending created=%v submission=%+v err=%v", created, pending, err)
+	}
+	// Reproduce the pre-fix daemon: its generic diagnostic append advanced the
+	// Work revision after the direct Event payload was already admitted.
+	if _, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "delivery.ambiguous", DedupeKey: "legacy-delivery:" + claim.ID,
+		PayloadRef: "delivery:" + claim.ID, Summary: "Legacy diagnostic revision bump.",
+		Actionable: false,
+	}); err != nil || !created {
+		t.Fatalf("legacy diagnostic created=%v err=%v", created, err)
+	}
+	legacyWork, err := store.Work(item.ID)
+	if err != nil || legacyWork.Revision != claim.DeliveryWorkRevision+1 {
+		t.Fatalf("legacy diagnostic did not reproduce stale fence: Work=%+v claim=%+v err=%v", legacyWork, claim, err)
+	}
+	resolvedAt := claim.ClaimedAt.UTC().Add(time.Second)
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: hostID, ProposedTurnID: claim.ProviderTurnID, Receipt: claim.ID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "legacy-recovered-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "legacy-recovered-admission", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewService(store, nil, nil).consumeRecoveredClaimedEvent(claim); err != nil {
+		t.Fatalf("consume recovered legacy claim: %v", err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original, reconcile WorkEvent
+	for _, event := range events {
+		switch {
+		case event.ID == claim.ID:
+			original = event
+		case event.Kind == "brain.reconcile_required" && event.ID != claim.ID:
+			reconcile = event
+		}
+	}
+	if original.DeliveredAt == nil || original.HandlingEndedAt == nil || original.HandledAt != nil {
+		t.Fatalf("legacy handling did not become historical delivery: %+v", original)
+	}
+	if reconcile.ID == "" || reconcile.WorkRevision <= legacyWork.Revision || reconcile.CoalescedInto != "" {
+		t.Fatalf("current-revision reconciliation=%+v legacy Work=%+v", reconcile, legacyWork)
+	}
+	if next, claimed, err := store.ClaimNextActionableEvent(hostID); err != nil || !claimed || next.ID != reconcile.ID {
+		t.Fatalf("fresh reconciliation claim=%+v claimed=%v err=%v", next, claimed, err)
+	}
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedEvents, err := reopened.ListWorkEvents(item.ID)
+	if err != nil || countUnhandledEventKind(reopenedEvents, "brain.reconcile_required") != 1 {
+		t.Fatalf("legacy recovery replayed reconciliation after reopen: events=%+v err=%v", reopenedEvents, err)
+	}
+}
+
+// If exact provider evidence is still unavailable and the pending authority
+// names the current pane/process generation, the lane must stop cleanly. It
+// neither logs a startup failure forever nor admits an unrelated Event into
+// the same mutation domain.
+func TestSignalAdversarialCurrentGenerationAmbiguityHoldsLaneWithoutError(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@held-current"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	firstWork := createSignalTestWork(t, store, "Held current generation", "brain-agent-held-worker:@1")
+	firstEvent := appendSignalTestEvent(t, store, firstWork, "held-current")
+	secondWork := createSignalTestWork(t, store, "Unrelated queued Work", "brain-agent-queued-worker:@1")
+	secondEvent := appendSignalTestEvent(t, store, secondWork, "queued-behind-held")
+	claim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || claim.ID != firstEvent.ID {
+		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	currentWork, err := store.Work(firstWork.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := marshalDirectWorkEventInput(claim, currentWork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest(payload),
+		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
+		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare held current generation created=%v submission=%+v err=%v", created, pending, err)
+	}
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.outcomes = map[string]watcher.InputOutcome{claim.ID: watcher.InputAmbiguous}
+	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
+	if err != nil || woke {
+		t.Fatalf("held current generation woke=%v err=%v", woke, err)
+	}
+	if len(delivery.sentCalls) != 0 || delivery.resolveCount != 0 {
+		t.Fatalf("held lane mutated provider: sends=%d prepares=%d resolves=%d", len(delivery.sentCalls), delivery.prepareCount, delivery.resolveCount)
+	}
+	durable, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("held authority changed: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	queued, found, err := store.WorkEvent(secondEvent.ID)
+	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil {
+		t.Fatalf("unrelated Event overtook held generation: event=%+v found=%v err=%v", queued, found, err)
+	}
+	after, err := store.Work(firstWork.ID)
+	if err != nil || after.Revision != currentWork.Revision {
+		t.Fatalf("ambiguity diagnostic invalidated claim revision: before=%+v after=%+v err=%v", currentWork, after, err)
+	}
+}
+
 func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
 	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
@@ -735,6 +1009,32 @@ func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
 		PayloadSHA256:   pendingSubmissionDigest(payload),
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+	}
+	if existing, found, err := w.store.TurnSubmission(sessionID, providerTurnID); err != nil {
+		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+	} else if found && w.recoverPending {
+		if existing.Receipt != eventID || existing.ClaimToken != claimToken || existing.WorkID != workID ||
+			existing.PayloadSHA256 != candidate.PayloadSHA256 || existing.State != watcher.TurnSubmissionPending {
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID},
+				fmt.Errorf("recovery candidate does not match exact pending authority")
+		}
+		w.recoveryCount++
+		resolvedAt := time.Now().UTC()
+		resolved, err := w.store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+			PayloadSHA256: existing.PayloadSHA256, ActivityID: "recovered-host-activity-" + providerTurnID,
+			Admission: watcher.TurnAdmission{
+				Stream: "provider", ID: "recovered-host-admission-" + providerTurnID, Cursor: 1,
+				SHA256: existing.PayloadSHA256, At: resolvedAt,
+			},
+			ResolvedAt: resolvedAt,
+		})
+		if err != nil {
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+		}
+		return watcher.InputResult{
+			Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID, Duplicate: true,
+		}, nil
 	}
 	wrongClaims := []struct {
 		name      string
@@ -1157,7 +1457,7 @@ func TestSignalAdversarialUnrelatedPendingHostSubmissionCannotBlockExactClaimRel
 		},
 	}
 	service := NewService(store, fixture, nil)
-	if err := service.reconcileDeliveryReceiptsLocked(); err != nil {
+	if held, err := service.reconcileDeliveryReceiptsLocked(); err != nil || held {
 		t.Fatalf("unrelated pending submission wedged exact releases: %v", err)
 	}
 

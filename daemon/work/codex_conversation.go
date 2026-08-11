@@ -570,6 +570,11 @@ func (b *codexConversationBuilder) flushPendingUserEcho() {
 	b.startActivity("", pending.timestamp, pending.lineNumber)
 	b.slashCommandActivity = isCodexSlashCommandInvocation(pending.text)
 	b.addMessage(pending.lineNumber, pending.timestamp, "user", pending.text)
+	// A response_item-only user row is the provider-native admitted payload,
+	// not merely a display echo. Preserve its exact digest just like the paired
+	// event_msg shape so restart recovery can correlate a pending transaction
+	// without cwd/latest-session guessing or input replay.
+	b.markAdmissionDigest(pending.lineNumber, pending.text)
 }
 
 func (b *codexConversationBuilder) consumeSessionMeta(raw json.RawMessage) {

@@ -2390,8 +2390,9 @@ func (s *Store) PruneSettledTurns(olderThan time.Time) (int, error) {
 }
 
 // AppendDeliveryNote appends a deduped delivery diagnostic for a held claim
-// (delivery.ambiguous non-actionable, delivery.uncertain actionable). Returns
-// the existing row on duplicate.
+// (delivery.ambiguous non-actionable, delivery.uncertain actionable). It is
+// scheduler audit, not a Work-state mutation, so it preserves the revision
+// fence carried by the in-flight claim. Returns the existing row on duplicate.
 func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary string, actionable bool) (WorkEvent, bool, error) {
 	if s == nil {
 		return WorkEvent{}, false, fmt.Errorf("brain store is not configured")
@@ -2423,7 +2424,7 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 		CreatedAt:  now,
 	}
 	itemIndex := workIndex(database.BrainWork, workID)
-	event, err = appendWorkEventLocked(&database, itemIndex, event, true)
+	event, err = appendWorkEventLocked(&database, itemIndex, event, false)
 	if err != nil {
 		return WorkEvent{}, false, err
 	}

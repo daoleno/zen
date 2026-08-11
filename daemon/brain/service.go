@@ -1073,8 +1073,15 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
-	if err := s.reconcileDeliveryReceiptsLocked(); err != nil {
+	heldCurrentGeneration, err := s.reconcileDeliveryReceiptsLocked()
+	if err != nil {
 		return false, err
+	}
+	if heldCurrentGeneration {
+		// The current provider generation still owns one ambiguous exact
+		// transaction. No other Event may enter that same mutation domain until
+		// provider evidence or an explicit actor disposition retires it.
+		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
 	if err != nil {
@@ -1305,11 +1312,17 @@ func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) erro
 
 // reconcileDeliveryReceiptsLocked is reducer step 1: every dispatching Event's
 // provider submission receipt is reconciled against the exact claim identity.
-func (s *Service) reconcileDeliveryReceiptsLocked() error {
+func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 	claimedEvents, err := s.store.ClaimedActionableEvents()
 	if err != nil {
-		return err
+		return false, err
 	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return false, err
+	}
+	currentHostID := strings.TrimSpace(host.ID)
+	heldCurrentGeneration := false
 	for _, claimed := range claimedEvents {
 		if claimed.DeliveryHostSessionID == "" {
 			continue
@@ -1337,7 +1350,7 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 				continue
 			}
 			if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return turnErr
+				return false, turnErr
 			} else if providerMutated {
 				// Canonical provider admission dominates an absent transport
 				// receipt. Mutation began, so hold both authorities without
@@ -1349,14 +1362,28 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return false, fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+			}
+			continue
+		}
+		// Canonical provider admission dominates every transport receipt state,
+		// including an ambiguous pre-mutation marker left by a process crash.
+		// Consume through the exact five-part claim; the Store independently
+		// verifies the matching resolved submission.
+		if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
+			return false, turnErr
+		} else if providerMutated {
+			if _, _, consumeErr := s.store.ConsumeClaimedWorkEvent(
+				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			); consumeErr != nil {
+				return false, fmt.Errorf("finalize admitted Work Event %s: %w", claimed.ID, consumeErr)
 			}
 			continue
 		}
 		switch result.Outcome {
 		case watcher.InputAccepted:
 			if _, found, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return turnErr
+				return false, turnErr
 			} else if !found {
 				// The transport receipt alone is not a provider Turn. Hold the
 				// claim without replay until canonical admission is recoverable.
@@ -1365,11 +1392,18 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 			if _, _, err := s.store.ConsumeClaimedWorkEvent(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); err != nil {
-				return fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
 			}
 		case watcher.InputAmbiguous:
-			// Mutation may have begun: hold forever; never release, never
-			// re-send; append a non-actionable delivery.ambiguous note.
+			// Retry only the exact pending capability. The watcher recognizes its
+			// canonical transaction before any provider mutation and may resolve
+			// it from provider admission/transcript evidence; it never replays the
+			// payload. The original ambiguous receipt remains dominant, so a
+			// failed recovery never releases the claim.
+			recovered, exactPending, recoveryErr := s.recoverAmbiguousClaimedEventLocked(claimed)
+			if recoveryErr == nil && recovered {
+				continue
+			}
 			_, _, _ = s.store.AppendDeliveryNote(
 				claimed.WorkID,
 				claimed.ID,
@@ -1378,16 +1412,232 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 				"Delivery of Work Event "+claimed.ID+" stayed ambiguous; it will not be replayed automatically.",
 				false,
 			)
+			if exactPending && hostID == currentHostID {
+				submission, submissionFound, submissionErr := s.store.TurnSubmission(hostID, claimed.ProviderTurnID)
+				if submissionErr != nil {
+					return false, submissionErr
+				}
+				if submissionFound && submission.State == watcher.TurnSubmissionPending {
+					owned, ownershipErr := s.watcher.ResolveOwnedGeneration(hostID)
+					if ownershipErr != nil || strings.TrimSpace(owned.ProcessIdentity) == "" ||
+						strings.TrimSpace(owned.PaneGeneration) == "" ||
+						(owned.ProcessIdentity == submission.ProcessIdentity && owned.PaneGeneration == submission.PaneGeneration) {
+						heldCurrentGeneration = true
+					}
+				}
+			}
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 		}
 	}
-	return nil
+	return heldCurrentGeneration, nil
+}
+
+// recoverAmbiguousClaimedEventLocked re-enters only an already-persisted exact
+// pending transaction. Reconstructed bytes must match its durable digest
+// before the watcher is called. The watcher duplicate path may resolve from
+// authoritative provider evidence but cannot enqueue input again. A failed
+// retry never releases the original ambiguous authority.
+func (s *Service) recoverAmbiguousClaimedEventLocked(claimed WorkEvent) (bool, bool, error) {
+	hostID := strings.TrimSpace(claimed.DeliveryHostSessionID)
+	submission, found, err := s.store.TurnSubmission(hostID, claimed.ProviderTurnID)
+	if err != nil || !found || submission.State != watcher.TurnSubmissionPending {
+		return false, false, err
+	}
+	if submission.Receipt != claimed.ID || submission.ClaimToken != claimed.HandlingID ||
+		submission.WorkID != claimed.WorkID || submission.SessionID != hostID ||
+		submission.ProposedTurnID != claimed.ProviderTurnID {
+		return false, false, fmt.Errorf("ambiguous Work Event %s lacks its exact pending submission", claimed.ID)
+	}
+	item, err := s.store.Work(claimed.WorkID)
+	if err != nil {
+		return false, true, err
+	}
+	payload, err := marshalDirectWorkEventInput(claimed, item)
+	if err != nil {
+		return false, true, err
+	}
+	if AdmissionDigest(payload) != submission.PayloadSHA256 {
+		return false, true, fmt.Errorf("ambiguous Work Event %s payload no longer matches its pending submission", claimed.ID)
+	}
+	if claimed.ClaimedAt == nil {
+		return false, true, fmt.Errorf("ambiguous Work Event %s has no claim timestamp", claimed.ID)
+	}
+	if recovered, matched, err := s.recoverPendingFromBoundHostConversation(submission); err != nil {
+		if matched {
+			return false, true, err
+		}
+	} else if recovered {
+		if err := s.consumeRecoveredClaimedEvent(claimed); err != nil {
+			return false, true, err
+		}
+		return true, true, nil
+	}
+	acceptedAt := claimed.ClaimedAt.UTC()
+	result, submitErr := s.watcher.SubmitBrainHostInput(
+		hostID, payload, claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
+	)
+	if submitErr != nil {
+		return false, true, submitErr
+	}
+	if result.Outcome != watcher.InputAccepted || result.TurnID != claimed.ProviderTurnID {
+		return false, true, fmt.Errorf("ambiguous Work Event %s recovery returned outcome=%q turn=%q", claimed.ID, result.Outcome, result.TurnID)
+	}
+	if _, found, err := s.store.TurnByID(hostID, claimed.ProviderTurnID); err != nil || !found {
+		if err == nil {
+			err = fmt.Errorf("canonical provider Turn is missing")
+		}
+		return false, true, err
+	}
+	if err := s.consumeRecoveredClaimedEvent(claimed); err != nil {
+		return false, true, err
+	}
+	return true, true, nil
+}
+
+func (s *Service) consumeRecoveredClaimedEvent(claimed WorkEvent) error {
+	_, item, err := s.store.ConsumeClaimedWorkEvent(
+		claimed.ID, claimed.HandlingID, claimed.WorkID,
+		claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+	)
+	if err != nil {
+		return err
+	}
+	if item.Revision == claimed.DeliveryWorkRevision {
+		return nil
+	}
+	// Older daemons incorrectly advanced Work revision when appending a
+	// delivery diagnostic. Provider execution is now canonical, but the
+	// original disposition fence is stale. End that handling and append one
+	// fresh current-revision reconciliation instead of accepting stale intent.
+	// A crash between the two writes is restart-recoverable from the delivered
+	// handling plus its exact terminal Turn.
+	_, _, err = s.store.RequeueUnhandledHostAttention(
+		claimed.ID, claimed.HandlingID, claimed.ProviderTurnID,
+	)
+	return err
+}
+
+// recoverPendingFromBoundHostConversation uses the Host Session's persisted
+// provider transcript identity, never cwd/latest-session guessing. The latest
+// provider-native user row must carry the exact pending digest and occur after
+// admission; the current provider Activity must be a valid lifecycle enclosing
+// that row. Only then may the pending transaction become a canonical Turn.
+// matched=true means exact evidence was found and any resolution error is a
+// consistency failure rather than a reason to fall back to ambient probing.
+func (s *Service) recoverPendingFromBoundHostConversation(
+	submission watcher.TurnSubmission,
+) (recovered bool, matched bool, err error) {
+	host, err := s.store.HostSession()
+	if err != nil || strings.TrimSpace(host.ID) != strings.TrimSpace(submission.SessionID) ||
+		(strings.TrimSpace(host.ProviderSessionID) == "" && strings.TrimSpace(host.TranscriptPath) == "") {
+		return false, false, err
+	}
+	conversation, err := s.HostBoundProviderConversation()
+	if err != nil {
+		return false, false, err
+	}
+	resolution, observation, matched := boundHostConversationSubmissionResolution(conversation, submission, s.now().UTC())
+	if !matched {
+		return false, false, nil
+	}
+	if _, err := s.store.ResolveTurnSubmission(resolution); err != nil {
+		return false, true, err
+	}
+	switch observation.Status {
+	case "completed":
+		if _, _, err := s.store.ApplyTurnFact(s.providerTerminalFact(
+			submission.SessionID, submission.ProposedTurnID, observation, "done",
+		)); err != nil {
+			return false, true, err
+		}
+	case "failed", "interrupted", "cancelled":
+		if _, _, err := s.store.ApplyTurnFact(s.providerTerminalFact(
+			submission.SessionID, submission.ProposedTurnID, observation, "failed",
+		)); err != nil {
+			return false, true, err
+		}
+	}
+	return true, true, nil
+}
+
+func boundHostConversationSubmissionResolution(
+	conversation work.CodexConversation,
+	submission watcher.TurnSubmission,
+	resolvedAt time.Time,
+) (watcher.TurnSubmissionResolution, watcher.ProviderActivityObservation, bool) {
+	if !conversation.Available || conversation.Activity == nil ||
+		strings.TrimSpace(conversation.Source) == "" || strings.TrimSpace(conversation.SessionID) == "" ||
+		strings.TrimSpace(conversation.Path) == "" {
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	var userEvent *work.CodexConversationEvent
+	for index := len(conversation.Events) - 1; index >= 0; index-- {
+		event := &conversation.Events[index]
+		if event.Kind == "user_message" {
+			userEvent = event
+			break
+		}
+	}
+	if userEvent == nil || strings.TrimSpace(userEvent.ID) == "" || userEvent.Seq <= 0 ||
+		strings.TrimSpace(userEvent.AdmissionSHA256) != strings.TrimSpace(submission.PayloadSHA256) {
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	userAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(userEvent.Timestamp))
+	if err != nil || userAt.UTC().Before(submission.AcceptedAt.UTC()) {
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	activity := conversation.Activity
+	activityID := strings.TrimSpace(activity.ID)
+	activityStartedAt, startErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(activity.StartedAt))
+	if activityID == "" || startErr != nil || activityStartedAt.IsZero() {
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	switch activity.Status {
+	case work.ProviderActivityRunning, work.ProviderActivityCompleted, work.ProviderActivityFailed,
+		work.ProviderActivityInterrupted, work.ProviderActivityCancelled:
+	default:
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	settledAt := time.Time{}
+	if strings.TrimSpace(activity.SettledAt) != "" {
+		var settledErr error
+		settledAt, settledErr = time.Parse(time.RFC3339Nano, strings.TrimSpace(activity.SettledAt))
+		if settledErr != nil || settledAt.UTC().Before(userAt.UTC()) {
+			return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		}
+	}
+	if resolvedAt.Before(userAt.UTC()) {
+		resolvedAt = userAt.UTC()
+	}
+	stream := strings.Join([]string{
+		strings.TrimSpace(conversation.Source),
+		strings.TrimSpace(conversation.SessionID),
+		strings.TrimSpace(conversation.Path),
+	}, "\x00")
+	observation := watcher.ProviderActivityObservation{
+		ID: activityID, Status: string(activity.Status),
+		StartedAt: activityStartedAt.UTC(), SettledAt: settledAt.UTC(),
+		Structured:      true,
+		AdmissionStream: stream, AdmissionID: strings.TrimSpace(userEvent.ID),
+		AdmissionCursor: uint64(userEvent.Seq), AdmissionAt: userAt.UTC(),
+		InputSHA256: strings.TrimSpace(userEvent.AdmissionSHA256),
+	}
+	return watcher.TurnSubmissionResolution{
+		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
+		Receipt: submission.Receipt, PayloadSHA256: submission.PayloadSHA256,
+		ActivityID: activityID,
+		Admission: watcher.TurnAdmission{
+			Stream: stream, ID: strings.TrimSpace(userEvent.ID), Cursor: uint64(userEvent.Seq),
+			SHA256: strings.TrimSpace(userEvent.AdmissionSHA256), At: userAt.UTC(),
+		},
+		ResolvedAt: resolvedAt.UTC(),
+	}, observation, true
 }
 
 // hostForegroundTerminalEvidence resolves strong exact terminal evidence for

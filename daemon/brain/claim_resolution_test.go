@@ -69,6 +69,43 @@ func TestMarkDeliveredClaimClosesHeldClaim(t *testing.T) {
 	}
 }
 
+// Delivery diagnostics are scheduler audit, not Work-state mutation. They
+// must never advance the revision fence carried by the exact Host claim;
+// otherwise the provider can accept and execute the Event but its mandated
+// typed disposition becomes impossible.
+func TestDeliveryDiagnosticDoesNotInvalidateClaimRevision(t *testing.T) {
+	store, workID, event := claimResolutionStore(t)
+	before, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, created, err := store.AppendDeliveryNote(
+		workID,
+		event.ID,
+		"delivery.ambiguous",
+		"delivery:"+event.ID+":ambiguous",
+		"Provider admission is still being reconciled.",
+		false,
+	)
+	if err != nil || !created {
+		t.Fatalf("append diagnostic created=%v note=%+v err=%v", created, note, err)
+	}
+	after, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("delivery diagnostic changed Work revision: before=%+v after=%+v", before, after)
+	}
+	claimed, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || claimed.DeliveryWorkRevision != after.Revision {
+		t.Fatalf("diagnostic invalidated exact claim fence: event=%+v Work=%+v found=%v err=%v", claimed, after, found, err)
+	}
+	if note.WorkRevision != after.Revision {
+		t.Fatalf("diagnostic Work revision=%d want unchanged %d", note.WorkRevision, after.Revision)
+	}
+}
+
 // TestDiscardClaimRemovesHeldClaimForever discards a held delivery (C.2.6.2).
 func TestDiscardClaimRemovesHeldClaimForever(t *testing.T) {
 	store, _, event := claimResolutionStore(t)
