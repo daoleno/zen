@@ -649,6 +649,82 @@ func newCanonicalHostDeliveryWatcher(store *Store, hostID string) *canonicalHost
 	}
 }
 
+// This is the live cutover shape that previously wedged startup: an ambiguous
+// Host transaction belongs to an older provider process behind the same stable
+// Session ID, while an unrelated Work Event is ready for the replacement
+// process. Reconciliation must preserve the old Event as held audit, retire
+// only its obsolete provider authority, and deliver the unrelated Event once.
+func TestSignalAdversarialAmbiguousOldHostGenerationCannotWedgeReplacementLane(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@stable"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	oldWork := createSignalTestWork(t, store, "Ambiguous old Host generation", "brain-agent-worker-old:@1")
+	oldEvent := appendSignalTestEvent(t, store, oldWork, "old-generation")
+	newWork := createSignalTestWork(t, store, "Replacement Host generation", "brain-agent-worker-new:@1")
+	newEvent := appendSignalTestEvent(t, store, newWork, "replacement-generation")
+
+	oldClaim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || oldClaim.ID != oldEvent.ID {
+		t.Fatalf("old claim=%+v claimed=%v err=%v", oldClaim, claimed, err)
+	}
+	oldAcceptedAt := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+	oldPending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: oldClaim.WorkID, SessionID: hostID, ProposedTurnID: oldClaim.ProviderTurnID,
+		Receipt: oldClaim.ID, ClaimToken: oldClaim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("ambiguous old Host payload"),
+		ProcessIdentity: "old-host-process", PaneGeneration: "old-host-pane",
+		AcceptedAt: oldAcceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created {
+		t.Fatalf("old Host prepare created=%v submission=%+v err=%v", created, oldPending, err)
+	}
+
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	delivery.outcomes = map[string]watcher.InputOutcome{oldClaim.ID: watcher.InputAmbiguous}
+	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
+	if err != nil || !woke {
+		t.Fatalf("replacement Host lane woke=%v err=%v", woke, err)
+	}
+	if delivery.prepareCount != 1 || delivery.resolveCount != 1 || len(delivery.sentCalls) != 1 {
+		t.Fatalf("replacement delivery counts prepare=%d resolve=%d sends=%d", delivery.prepareCount, delivery.resolveCount, len(delivery.sentCalls))
+	}
+	oldDurable, found, err := store.TurnSubmission(hostID, oldClaim.ProviderTurnID)
+	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("old Host authority was not retired: submission=%+v found=%v err=%v", oldDurable, found, err)
+	}
+	oldRow, found, err := store.WorkEvent(oldClaim.ID)
+	if err != nil || !found || oldRow.ClaimedAt == nil || oldRow.DeliveredAt != nil || oldRow.Resolution != "" {
+		t.Fatalf("ambiguous old Event was replayed or actor-resolved: event=%+v found=%v err=%v", oldRow, found, err)
+	}
+	newRow, found, err := store.WorkEvent(newEvent.ID)
+	if err != nil || !found || newRow.DeliveredAt == nil || newRow.ProviderTurnID == "" {
+		t.Fatalf("replacement Event was not delivered: event=%+v found=%v err=%v", newRow, found, err)
+	}
+	newSubmission, found, err := store.TurnSubmission(hostID, newRow.ProviderTurnID)
+	if err != nil || !found || newSubmission.State != watcher.TurnSubmissionResolved {
+		t.Fatalf("replacement provider authority did not resolve: submission=%+v found=%v err=%v", newSubmission, found, err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDurable, found, err = reopened.TurnSubmission(hostID, oldClaim.ProviderTurnID)
+	if err != nil || !found || oldDurable.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("old Host retirement did not survive reopen: submission=%+v found=%v err=%v", oldDurable, found, err)
+	}
+	newRow, found, err = reopened.WorkEvent(newEvent.ID)
+	if err != nil || !found || newRow.DeliveredAt == nil {
+		t.Fatalf("replacement delivery did not survive reopen: event=%+v found=%v err=%v", newRow, found, err)
+	}
+}
+
 func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
 	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
@@ -1390,6 +1466,107 @@ func TestSignalAdversarialInitialOwnerAdmissionAndPendingSubmissionAreAtomicAcro
 	}
 	if projected := activeWorkByID(t, reopenedAgain, item.ID); projected.ProgressMode != WorkProgressOwned || projected.AttentionPending {
 		t.Fatalf("pending admission is not the singular owner: %+v", projected)
+	}
+}
+
+// A stable Session name is a UI container, not provider mutation authority.
+// Once the watcher has admitted a newer exact pane/process generation, an
+// ambiguous pending transaction from the replaced generation must remain
+// non-adoptable audit without wedging the new generation forever. The
+// replacement and retirement are one durable write; a concurrent input aimed
+// at the same generation is still rejected.
+func TestSignalAdversarialReplacedProviderGenerationRetiresOldPendingAtomically(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "Replaced provider generation", Objective: "Keep one mutation authority per exact provider generation.",
+		Status: WorkOpen, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-stable-session:@1"
+	acceptedAt := time.Date(2026, 8, 11, 2, 0, 0, 0, time.UTC)
+	oldCandidate := delegatedSubmissionCandidate(
+		item.ID, sessionID, sessionID+":turn:old", "ambiguous old input", acceptedAt,
+	)
+	oldCandidate.ProcessIdentity = "old-process"
+	oldCandidate.PaneGeneration = "old-pane"
+	oldPending, created, err := store.PrepareTurnSubmission(oldCandidate)
+	if err != nil || !created {
+		t.Fatalf("prepare old generation created=%v submission=%+v err=%v", created, oldPending, err)
+	}
+
+	sameGeneration := delegatedSubmissionCandidate(
+		item.ID, sessionID, sessionID+":turn:concurrent", "concurrent same-generation input", acceptedAt.Add(time.Second),
+	)
+	sameGeneration.ProcessIdentity = oldCandidate.ProcessIdentity
+	sameGeneration.PaneGeneration = oldCandidate.PaneGeneration
+	if _, created, err := store.PrepareTurnSubmission(sameGeneration); err == nil || created {
+		t.Fatalf("same provider generation acquired concurrent authority: created=%v err=%v", created, err)
+	}
+	if durable, found, err := store.TurnSubmission(sessionID, oldCandidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("same-generation rejection changed old authority: submission=%+v found=%v err=%v", durable, found, err)
+	}
+
+	replacement := delegatedSubmissionCandidate(
+		item.ID, sessionID, sessionID+":turn:replacement", "replacement generation input", acceptedAt.Add(2*time.Second),
+	)
+	replacement.ProcessIdentity = "replacement-process"
+	replacement.PaneGeneration = "replacement-pane"
+	originalWrite := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error {
+		return errors.New("injected generation-replacement persistence failure")
+	}
+	if _, created, err := store.PrepareTurnSubmission(replacement); err == nil || created {
+		t.Fatalf("failed atomic replacement created=%v err=%v", created, err)
+	}
+	store.writeOrchestration = originalWrite
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable, found, err := reopened.TurnSubmission(sessionID, oldCandidate.ProposedTurnID); err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("failed replacement retired old authority: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	if _, found, err := reopened.TurnSubmission(sessionID, replacement.ProposedTurnID); err != nil || found {
+		t.Fatalf("failed replacement persisted new authority: found=%v err=%v", found, err)
+	}
+
+	newPending, created, err := reopened.PrepareTurnSubmission(replacement)
+	if err != nil || !created || newPending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("replacement generation created=%v submission=%+v err=%v", created, newPending, err)
+	}
+	reopenedAgain, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDurable, oldFound, err := reopenedAgain.TurnSubmission(sessionID, oldCandidate.ProposedTurnID)
+	if err != nil || !oldFound || oldDurable.State != watcher.TurnSubmissionRetired {
+		t.Fatalf("old generation was not durably retired: submission=%+v found=%v err=%v", oldDurable, oldFound, err)
+	}
+	current, currentFound, err := reopenedAgain.PendingTurnSubmission(sessionID)
+	if err != nil || !currentFound || current.ProposedTurnID != replacement.ProposedTurnID || current.State != watcher.TurnSubmissionPending {
+		t.Fatalf("replacement is not the sole current authority: submission=%+v found=%v err=%v", current, currentFound, err)
+	}
+	if _, err := reopenedAgain.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: oldCandidate.SessionID, ProposedTurnID: oldCandidate.ProposedTurnID,
+		Receipt: oldCandidate.Receipt, PayloadSHA256: oldCandidate.PayloadSHA256,
+		ActivityID: "late-old-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "late-old-admission", Cursor: 1,
+			SHA256: oldCandidate.PayloadSHA256, At: acceptedAt.Add(3 * time.Second),
+		},
+		ResolvedAt: acceptedAt.Add(3 * time.Second),
+	}); err == nil {
+		t.Fatal("late evidence adopted the replaced provider generation")
+	}
+	if _, found, err := reopenedAgain.Turn(sessionID); err != nil || found {
+		t.Fatalf("replaced provider generation created a canonical Turn: found=%v err=%v", found, err)
 	}
 }
 

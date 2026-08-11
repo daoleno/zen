@@ -525,7 +525,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				case TurnSubmissionAborted:
 					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("the prior submission was permanently aborted before mutation"))
 				case TurnSubmissionRetired:
-					return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior submission was retired by explicit actor resolution and cannot be replayed or adopted"))
+					return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior submission authority was retired and cannot be replayed or adopted"))
 				case TurnSubmissionPending:
 					if submission.ProcessIdentity != delegatedTurnIdentity(expected) ||
 						submission.PaneGeneration != baseline.generation {

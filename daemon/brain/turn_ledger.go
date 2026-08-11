@@ -363,10 +363,15 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 // turn's expired lease (the false-stale incident).
 const turnLeaseGrace = 10 * time.Minute
 
-// PrepareTurnSubmission persists the sole pre-mutation transaction row. It
-// never appends to brain_turns and therefore cannot replace the current
-// running Turn. The provider baseline already classified by the watcher is
-// rechecked against the authoritative current row under the Store lock.
+// PrepareTurnSubmission persists the sole pre-mutation transaction for the
+// exact provider pane/process generation. A stable Session ID is only a UI
+// container: when the watcher presents a causally newer, different provider
+// generation, any older pending transaction is retired atomically with the
+// replacement. It remains non-adoptable audit and can never block the new
+// provider generation. The method never appends to brain_turns and therefore
+// cannot replace the current running Turn. The provider baseline already
+// classified by the watcher is rechecked against the authoritative current row
+// under the Store lock.
 func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher.TurnSubmission, bool, error) {
 	if s == nil {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")
@@ -411,7 +416,8 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if err != nil {
 		return watcher.TurnSubmission{}, false, err
 	}
-	for _, record := range database.BrainTurnSubmissions {
+	pendingIndexes := []int{}
+	for index, record := range database.BrainTurnSubmissions {
 		if record.SessionID != candidate.SessionID {
 			continue
 		}
@@ -426,7 +432,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 			return record.snapshot(), false, nil
 		}
 		if record.State == watcher.TurnSubmissionPending {
-			return watcher.TurnSubmission{}, false, fmt.Errorf("Session already has an unresolved pending submission")
+			pendingIndexes = append(pendingIndexes, index)
 		}
 	}
 	workID := candidate.WorkID
@@ -478,6 +484,15 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if hasCurrent && current.TurnID == candidate.ProposedTurnID {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("proposed turn is already canonical without a matching submission transaction")
 	}
+	for _, index := range pendingIndexes {
+		pending := database.BrainTurnSubmissions[index]
+		if pending.ProcessIdentity == candidate.ProcessIdentity && pending.PaneGeneration == candidate.PaneGeneration {
+			return watcher.TurnSubmission{}, false, fmt.Errorf("provider generation already has an unresolved pending submission")
+		}
+		if !candidate.AcceptedAt.UTC().After(pending.AcceptedAt) {
+			return watcher.TurnSubmission{}, false, fmt.Errorf("replacement provider generation must be accepted after the pending submission")
+		}
+	}
 
 	ownerID := strings.TrimSpace(item.OwnerSessionID)
 	reservation := item.SuccessorReservation
@@ -510,6 +525,17 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		initialOwnerAdmission = true
 	case ownerID != candidate.SessionID:
 		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, ownerID)
+	}
+
+	// Every validation above runs before this mutation. A malformed or stale
+	// candidate therefore cannot retire existing provider authority. The old
+	// generation retirement and the new pending row share the one atomic Store
+	// replacement below, so a crash exposes either side of the transition,
+	// never a gap or two live authorities for the current generation.
+	for _, index := range pendingIndexes {
+		retiredAt := now
+		database.BrainTurnSubmissions[index].State = watcher.TurnSubmissionRetired
+		database.BrainTurnSubmissions[index].ResolvedAt = &retiredAt
 	}
 
 	record := TurnSubmissionRecord{
@@ -641,7 +667,7 @@ func (s *Store) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadS
 		case watcher.TurnSubmissionResolved:
 			return watcher.TurnSubmission{}, fmt.Errorf("resolved submission cannot be aborted")
 		case watcher.TurnSubmissionRetired:
-			return watcher.TurnSubmission{}, fmt.Errorf("actor-retired submission cannot be aborted")
+			return watcher.TurnSubmission{}, fmt.Errorf("retired submission authority cannot be aborted")
 		case watcher.TurnSubmissionPending:
 			abortedAt := now
 			record.State = watcher.TurnSubmissionAborted
@@ -874,7 +900,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 	case watcher.TurnSubmissionAborted:
 		return watcher.TurnSubmission{}, fmt.Errorf("aborted submission can never be adopted")
 	case watcher.TurnSubmissionRetired:
-		return watcher.TurnSubmission{}, fmt.Errorf("actor-retired submission can never be adopted")
+		return watcher.TurnSubmission{}, fmt.Errorf("retired submission authority can never be adopted")
 	case watcher.TurnSubmissionResolved:
 		// A matching Control signal may win the admission race before the
 		// provider adapter reports its tuple. Exact later provider evidence
