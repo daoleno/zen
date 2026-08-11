@@ -1048,10 +1048,12 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 //  3. pending Brain user admission: stop (durable user-steering gate)
 //  4. a Host foreground turn: stop unless strong exact terminal evidence
 //     closes that exact turn
-//  5. select one fair pending Work key at the boundary
-//  6. atomically claim its current Event head
-//  7. submit once with the existing receipt ledger
-//  8. mark delivered only from the accepted receipt
+//  5. a non-immutable canonical Host Turn: stop until its exact provider
+//     lifecycle reaches an immutable boundary
+//  6. select one fair pending Work key at the boundary
+//  7. atomically claim its current Event head
+//  8. submit once with the existing receipt ledger
+//  9. mark delivered only from the accepted receipt
 func (s *Service) ReconcileHostLane() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -1068,7 +1070,9 @@ func (s *Service) ReconcileHostLane() (bool, error) {
 // claim forever and surfaces a deduped delivery diagnostic while unrelated
 // events keep dispatching. Held claims close only via explicit
 // MarkDeliveredClaim/DiscardClaim/ReplayEvent or a receipt-state change —
-// never by elapsed time.
+// never by elapsed time. An ambiguity in the current provider generation
+// holds the entire Host mutation lane; an obsolete generation may be retired
+// while the replacement lane progresses.
 func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -1217,7 +1221,18 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			return false, closeErr
 		}
 	}
-	// Steps 5-8: at the boundary, select one fair pending Work key, claim its
+	// Step 5: a stable Host Session is only a UI/container identity. Its
+	// canonical Turn remains the exclusive provider mutation domain until an
+	// immutable done/failed fact closes it. A typed Work disposition ends the
+	// scheduler handling, not the provider response; admitting another internal
+	// Event in that interval would make tmux classify it as steering and bind
+	// multiple Work Events to one provider Activity.
+	if current, found, err := s.store.Turn(hostID); err != nil {
+		return false, err
+	} else if found && !watcher.TurnImmutable(current.Status) {
+		return false, nil
+	}
+	// Steps 6-9: at the boundary, select one fair pending Work key, claim its
 	// current Event head atomically, submit once through the receipt ledger,
 	// and mark delivered only from the accepted receipt.
 	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)

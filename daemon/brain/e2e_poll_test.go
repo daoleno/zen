@@ -174,6 +174,7 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	if err != nil || len(handlings) != 1 {
 		t.Fatalf("live Host handling = %+v err=%v", handlings, err)
 	}
+	settleCanonicalHostTurnForTest(t, store, "brain-agent-brain-hidden:@1", handlings[0].ProviderTurnID)
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type: "agent_state_change", AgentID: "brain-agent-brain-hidden:@1",
 		OldState: string(classifier.StateRunning),

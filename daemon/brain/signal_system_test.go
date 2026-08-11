@@ -69,17 +69,7 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent
 	} else if found {
 		existingTurnID = current.TurnID
 		if !watcher.TurnImmutable(current.Status) {
-			settledAt := time.Now().UTC()
-			settled, changed, err := store.ApplyTurnFact(watcher.TurnFact{
-				SessionID: current.SessionID, TurnID: current.TurnID,
-				Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
-				SourceID:  "provider\x00test-host\x00" + current.TurnID + "\x00done",
-				Admission: current.Admission, ActivityID: current.ActivityID,
-				StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
-			})
-			if err != nil || !changed || !watcher.TurnImmutable(settled.Status) {
-				t.Fatalf("settle previous Host provider turn: turn=%+v changed=%v err=%v", settled, changed, err)
-			}
+			settleCanonicalHostTurnForTest(t, store, current.SessionID, current.TurnID)
 		}
 	}
 	acceptedAt := time.Now().UTC()
@@ -106,6 +96,32 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent
 	}); err != nil {
 		t.Fatalf("resolve Host provider turn: %v", err)
 	}
+}
+
+func settleCanonicalHostTurnForTest(t *testing.T, store *Store, sessionID, turnID string) watcher.TurnSnapshot {
+	t.Helper()
+	current, found, err := store.TurnByID(sessionID, turnID)
+	if err != nil || !found {
+		t.Fatalf("canonical Host Turn %s found=%v err=%v", turnID, found, err)
+	}
+	if watcher.TurnImmutable(current.Status) {
+		return current
+	}
+	settledAt := time.Now().UTC()
+	if !settledAt.After(current.AcceptedAt) {
+		settledAt = current.AcceptedAt.Add(time.Second)
+	}
+	settled, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: current.SessionID, TurnID: current.TurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
+		SourceID:  "provider\x00test-host\x00" + current.TurnID + "\x00done",
+		Admission: current.Admission, ActivityID: current.ActivityID,
+		StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
+	})
+	if err != nil || !changed || !watcher.TurnImmutable(settled.Status) {
+		t.Fatalf("settle Host provider turn: turn=%+v changed=%v err=%v", settled, changed, err)
+	}
+	return settled
 }
 
 func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testing.T) {
@@ -434,6 +450,11 @@ func TestSignalRestartRequeuesWorkKeyWithoutReplayingDeliveredFact(t *testing.T)
 	item := createSignalTestWork(t, store, "Restart recovery", "brain-agent-restart:@1")
 	appendSignalTestEvent(t, store, item, "restart-1")
 	deliverSignalTestEvent(t, store, hostID)
+	current, found, err := store.Turn(hostID)
+	if err != nil || !found {
+		t.Fatalf("current Host Turn=%+v found=%v err=%v", current, found, err)
+	}
+	settleCanonicalHostTurnForTest(t, store, hostID, current.TurnID)
 
 	restarted, err := NewStore(root)
 	if err != nil {

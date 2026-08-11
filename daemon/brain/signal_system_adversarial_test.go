@@ -1036,6 +1036,15 @@ func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
 			Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID, Duplicate: true,
 		}, nil
 	}
+	if current, found, err := w.store.Turn(sessionID); err != nil {
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+	} else if found {
+		if !watcher.TurnImmutable(current.Status) {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+				fmt.Errorf("canonical Host Turn %s is still live", current.TurnID)
+		}
+		candidate.ExistingTurnID = current.TurnID
+	}
 	wrongClaims := []struct {
 		name      string
 		candidate watcher.TurnSubmission
@@ -1101,6 +1110,115 @@ func (w *canonicalHostDeliveryWatcher) SubmitBrainHostInput(
 	result.Outcome = watcher.InputAccepted
 	result.TurnID = resolved.ResolvedTurnID
 	return result, nil
+}
+
+// A typed disposition closes the scheduler handling, not the provider
+// Activity. The next internal Event must remain unclaimed until the exact
+// canonical Host Turn reaches an immutable boundary; only then may it start a
+// distinct fresh Turn. This is the production incident where multiple cards
+// were previously conditionally steered into one Codex response.
+func TestSignalAdversarialHostLaneWaitsForCanonicalTurnBoundary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@stable-boundary"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	firstWork := createSignalTestWork(t, store, "Host boundary first", "brain-agent-boundary-worker:@1")
+	appendSignalTestEvent(t, store, firstWork, "host-boundary-first")
+	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
+	service := NewService(store, delivery, nil)
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("first delivery woke=%v err=%v", woke, err)
+	}
+	firstEvents, err := store.ListWorkEvents(firstWork.ID)
+	if err != nil || len(firstEvents) != 1 || firstEvents[0].DeliveredAt == nil {
+		t.Fatalf("first handling=%+v err=%v", firstEvents, err)
+	}
+	first := firstEvents[0]
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: first.ID, HandlingID: first.HandlingID, ProviderTurnID: first.ProviderTurnID,
+		ExpectedWorkRevision: first.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondWork := createSignalTestWork(t, store, "Host boundary second", "brain-agent-boundary-worker:@2")
+	secondEvent := appendSignalTestEvent(t, store, secondWork, "host-boundary-second")
+	sendsBeforeBoundary := len(delivery.sentCalls)
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("live canonical boundary woke=%v err=%v", woke, err)
+	}
+	queued, found, err := store.WorkEvent(secondEvent.ID)
+	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil || len(delivery.sentCalls) != sendsBeforeBoundary {
+		t.Fatalf("second Event overtook live Turn: event=%+v found=%v sends=%d err=%v", queued, found, len(delivery.sentCalls), err)
+	}
+	current, found, err := store.Turn(hostID)
+	if err != nil || !found || current.TurnID != first.ProviderTurnID || watcher.TurnImmutable(current.Status) {
+		t.Fatalf("live canonical Turn=%+v found=%v err=%v", current, found, err)
+	}
+	settledAt := current.AcceptedAt.Add(2 * time.Second)
+	if settled, changed, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: hostID, TurnID: current.TurnID, Class: watcher.EvidenceProvider,
+		Kind: "done", Bound: true, SourceID: "provider\x00host-boundary\x00" + current.TurnID,
+		Admission: current.Admission, ActivityID: current.ActivityID,
+		StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
+	}); err != nil || !changed || !watcher.TurnImmutable(settled.Status) {
+		t.Fatalf("terminal boundary turn=%+v changed=%v err=%v", settled, changed, err)
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("post-boundary delivery woke=%v err=%v", woke, err)
+	}
+	queued, found, err = store.WorkEvent(secondEvent.ID)
+	if err != nil || !found || queued.DeliveredAt == nil || queued.ProviderTurnID == first.ProviderTurnID || len(delivery.sentCalls) != sendsBeforeBoundary+1 {
+		t.Fatalf("second Event did not get one fresh Turn: event=%+v found=%v sends=%d err=%v", queued, found, len(delivery.sentCalls), err)
+	}
+}
+
+// Store-level defense in depth: even a stale watcher classification cannot
+// turn a claimed internal Event into interactive steering. Rejection happens
+// before any submission or canonical Turn mutation.
+func TestSignalAdversarialHostClaimRejectsConditionalSteeringBeforeMutation(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@host-steer-reject"
+	currentWork := createSignalTestWork(t, store, "Current Host Turn", hostID)
+	acceptedAt := time.Date(2026, 8, 11, 2, 0, 0, 0, time.UTC)
+	currentTurnID := hostID + ":turn:current"
+	bootstrapAdmittedTurnFixture(t, store, currentWork.ID, watcher.AdmittedTurn{
+		SessionID: hostID, TurnID: currentTurnID, AcceptedAt: acceptedAt,
+		ProcessIdentity: "host-process", PaneGeneration: "host-pane",
+	})
+	claimedWork := createSignalTestWork(t, store, "Claimed Host Event", "brain-agent-host-claimed:@1")
+	event := appendSignalTestEvent(t, store, claimedWork, "host-steer-reject")
+	claim, claimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !claimed || claim.ID != event.ID {
+		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("must never steer"),
+		ProcessIdentity: "host-process", PaneGeneration: "host-pane",
+		AcceptedAt: acceptedAt.Add(time.Minute), Mode: watcher.TurnSubmissionConditionalSteer,
+		ExistingTurnID: currentTurnID,
+	}); !errors.Is(err, ErrEventClaim) || created {
+		t.Fatalf("conditional Host claim created=%v err=%v", created, err)
+	}
+	if _, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID); err != nil || found {
+		t.Fatalf("rejected Host steering persisted submission found=%v err=%v", found, err)
+	}
+	after, found, err := store.Turn(hostID)
+	if err != nil || !found || after.TurnID != currentTurnID || watcher.TurnImmutable(after.Status) {
+		t.Fatalf("rejected Host steering mutated current Turn=%+v found=%v err=%v", after, found, err)
+	}
+	row, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || row.ClaimedAt == nil || row.DeliveredAt != nil || row.HandlingID != claim.HandlingID {
+		t.Fatalf("rejected Host steering changed exact claim=%+v found=%v err=%v", row, found, err)
+	}
 }
 
 func assertCanonicalHostEventHandledOnce(
@@ -2072,6 +2190,7 @@ func TestSignalAdversarialWatcherOutputThenStateChangeClosesOnlyExactHandling(t 
 		OldState: string(classifier.StateRunning), NewState: string(classifier.StateDone),
 		TurnID: deliveredA.ProviderTurnID,
 	}
+	settleCanonicalHostTurnForTest(t, store, hostID, deliveredA.ProviderTurnID)
 	if _, err := service.ObserveHostSessionEvent(terminal); err != nil {
 		t.Fatal(err)
 	}

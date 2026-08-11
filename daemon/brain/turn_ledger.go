@@ -403,6 +403,14 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	if hostClaimSubmission && (candidate.WorkID == "" || candidate.ClaimToken == "") {
 		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Host submission requires exact Work and claim token", ErrEventClaim)
 	}
+	if hostClaimSubmission && candidate.Mode != watcher.TurnSubmissionFresh {
+		// Internal Work Events are serialized scheduler transactions, never
+		// interactive steering. Allowing one to share a running provider Activity
+		// destroys the Event -> Turn ownership fence even if the transport accepts
+		// the bytes. Keep this defense below exact Host classification but before
+		// every Store mutation.
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Host Work Event submission must start a fresh provider Turn", ErrEventClaim)
+	}
 	now := s.nowUTC()
 	s.mu.Lock()
 	changedWorkID := ""
