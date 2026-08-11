@@ -3523,7 +3523,6 @@ func (s *Store) ReleaseEventClaim(
 			return ErrEventClaim
 		}
 		submissionIndex := -1
-		conflictingPending := false
 		for candidate := range database.BrainTurnSubmissions {
 			submission := database.BrainTurnSubmissions[candidate]
 			exact := submission.Receipt == eventID && submission.ClaimToken == claimToken &&
@@ -3533,12 +3532,6 @@ func (s *Store) ReleaseEventClaim(
 				submissionIndex = candidate
 				break
 			}
-			if submission.SessionID == hostSessionID && submission.State == watcher.TurnSubmissionPending {
-				conflictingPending = true
-			}
-		}
-		if submissionIndex < 0 && conflictingPending {
-			return ErrEventClaim
 		}
 		if submissionIndex >= 0 {
 			submission := &database.BrainTurnSubmissions[submissionIndex]

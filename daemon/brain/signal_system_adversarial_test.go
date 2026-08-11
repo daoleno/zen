@@ -1037,6 +1037,71 @@ func preparePendingClaimedHostSubmission(t *testing.T) (string, *Store, WorkEven
 	return root, store, claimed, pending
 }
 
+// A Host Session may retain an unrelated pending submission while startup
+// reconciles an older claim whose exact receipt is absent. The complete Event
+// capability, not ambient Session-wide pending state, is the release
+// authority. Otherwise one stale submission can wedge the entire Host lane
+// before foreground retirement and every later Work delivery.
+func TestSignalAdversarialUnrelatedPendingHostSubmissionCannotBlockExactClaimRelease(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@unrelated-pending"
+	firstWork := createSignalTestWork(t, store, "Release exact older claim", "brain-agent-worker:@older")
+	appendSignalTestEvent(t, store, firstWork, "older-claim")
+	secondWork := createSignalTestWork(t, store, "Keep unrelated pending submission isolated", "brain-agent-worker:@newer")
+	appendSignalTestEvent(t, store, secondWork, "newer-claim")
+
+	firstClaim, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || firstClaim.WorkID != firstWork.ID {
+		t.Fatalf("first claim=%+v ok=%v err=%v", firstClaim, ok, err)
+	}
+	secondClaim, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || secondClaim.WorkID != secondWork.ID {
+		t.Fatalf("second claim=%+v ok=%v err=%v", secondClaim, ok, err)
+	}
+	acceptedAt := time.Date(2026, 8, 11, 1, 25, 0, 0, time.UTC)
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: secondClaim.WorkID, SessionID: hostID, ProposedTurnID: secondClaim.ProviderTurnID,
+		Receipt: secondClaim.ID, ClaimToken: secondClaim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("unrelated pending Host submission"),
+		ProcessIdentity: "unrelated-pending-process", PaneGeneration: "unrelated-pending-pane",
+		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+	})
+	if err != nil || !created || pending.State != watcher.TurnSubmissionPending {
+		t.Fatalf("pending submission=%+v created=%v err=%v", pending, created, err)
+	}
+
+	fixture := &fakeWatcher{
+		turnStore: store,
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		},
+	}
+	service := NewService(store, fixture, nil)
+	if err := service.reconcileDeliveryReceiptsLocked(); err != nil {
+		t.Fatalf("unrelated pending submission wedged exact releases: %v", err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claimed := range []WorkEvent{firstClaim, secondClaim} {
+		event, found, eventErr := reopened.WorkEvent(claimed.ID)
+		if eventErr != nil || !found || event.ClaimedAt != nil || event.HandlingID != "" ||
+			event.DeliveryHostSessionID != "" || event.ProviderTurnID != "" {
+			t.Fatalf("claim %s did not release exactly: event=%+v found=%v err=%v", claimed.ID, event, found, eventErr)
+		}
+	}
+	resolvedPending, found, err := reopened.TurnSubmission(hostID, secondClaim.ProviderTurnID)
+	if err != nil || !found || resolvedPending.State != watcher.TurnSubmissionAborted {
+		t.Fatalf("exact pending submission was not aborted: submission=%+v found=%v err=%v", resolvedPending, found, err)
+	}
+}
+
 // Missing transport receipt plus the unchanged frozen target proves that the
 // provider mutation never began. The exact pending Host submission abort and
 // exact Event-claim release must therefore be one orchestration replacement:
