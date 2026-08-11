@@ -2237,6 +2237,11 @@ func activeHostLaneEvent(database orchestrationDatabase, workID string) (string,
 	return "", false
 }
 
+func workHostLaneOwned(database orchestrationDatabase, workID string) bool {
+	_, owned := activeHostLaneEvent(database, workID)
+	return owned
+}
+
 // ReserveWorkSuccessor binds a newly created correction Session to the exact
 // delivered handling before provider mutation. Initial ownership is never
 // reserved here: PrepareTurnSubmission persists that owner and its canonical
@@ -2341,17 +2346,20 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 		s.mu.Unlock()
 		return item, nil
 	}
+	hostLaneOwned := workHostLaneOwned(database, workID)
 	if provedNonAdmission {
 		item.SuccessorReservation = nil
 	}
-	item.Status = WorkNeedsInput
-	item.NextAction = "Resolve the delegated successor launch failure."
-	if !provedNonAdmission {
-		item.NextAction = "Confirm whether the reserved successor received the prompt; input will not be replayed."
+	if !hostLaneOwned {
+		item.Status = WorkNeedsInput
+		item.NextAction = "Resolve the delegated successor launch failure."
+		if !provedNonAdmission {
+			item.NextAction = "Confirm whether the reserved successor received the prompt; input will not be replayed."
+		}
+		item.WaitFor = failure
+		item.Wake = nil
+		item.UpdatedAt = now
 	}
-	item.WaitFor = failure
-	item.Wake = nil
-	item.UpdatedAt = now
 	database.BrainWork[index] = item
 	if !eventExists {
 		event := WorkEvent{
@@ -2363,7 +2371,7 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 			s.mu.Unlock()
 			return Work{}, err
 		}
-	} else {
+	} else if !hostLaneOwned {
 		item.Revision++
 		item.UpdatedAt = now
 		database.BrainWork[index] = item
@@ -3312,13 +3320,21 @@ func appendWorkEventWithCoalescingLocked(
 		return WorkEvent{}, ErrWorkNotFound
 	}
 	item := &database.BrainWork[itemIndex]
-	if bumpRevision {
+	hostLaneOwned := workHostLaneOwned(*database, item.ID)
+	if bumpRevision && !hostLaneOwned {
 		item.Revision++
 		item.UpdatedAt = event.CreatedAt.UTC()
 	}
 	database.NextEventSequence++
 	event.Sequence = database.NextEventSequence
 	event.WorkRevision = item.Revision
+	if hostLaneOwned {
+		// The claimed capability freezes the current Work revision. New facts
+		// belong to the immediately following revision epoch so the current
+		// disposition cannot accidentally consume them and a terminal outcome
+		// cannot classify them as pre-terminal history.
+		event.WorkRevision++
+	}
 	if autoCoalesce && event.Actionable && strings.TrimSpace(event.CoalescedInto) == "" {
 		if obligation := reduceAttentionObligation(*database, event.WorkID); obligation.exists() {
 			event.CoalescedInto = database.BrainWorkEvents[obligation.HeadIndex].ID
@@ -4147,7 +4163,7 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		candidate := &database.BrainWorkEvents[index]
 		if candidate.WorkID != item.ID || !attentionEventCanObligate(database, *candidate) || candidate.HandledAt != nil ||
 			candidate.DiscardedAt != nil || candidate.HistoricalDelivery ||
-			candidate.Sequence > event.DeliverySequenceFence {
+			candidate.Sequence > event.DeliverySequenceFence || candidate.WorkRevision > event.DeliveryWorkRevision {
 			continue
 		}
 		candidate.HandledAt = &handledAt
@@ -4299,8 +4315,10 @@ func (s *Store) RecordSessionFinalization(workID, sessionID string, state Sessio
 		finalization.LastError = strings.TrimSpace(failure.Error())
 	}
 	finalization.UpdatedAt = now
-	item.Revision++
-	item.UpdatedAt = now
+	if !workHostLaneOwned(database, item.ID) {
+		item.Revision++
+		item.UpdatedAt = now
+	}
 	database.BrainWork[itemIndex] = item
 	if state == SessionFinalizationFailed {
 		event := WorkEvent{

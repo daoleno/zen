@@ -354,6 +354,127 @@ func TestUpdateWorkMetadataRejectsActiveHostLane(t *testing.T) {
 	})
 }
 
+func TestFactsAppendedDuringHostLaneUseNextRevisionEpoch(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	before, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: workID, Kind: "calendar.result", DedupeKey: "after-claim", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append after claim created=%v event=%+v err=%v", created, queued, err)
+	}
+	afterClaim, err := store.Work(workID)
+	if err != nil || afterClaim.Revision != before.Revision || queued.WorkRevision != before.Revision+1 ||
+		queued.CoalescedInto != claimed.ID {
+		t.Fatalf("claim epoch changed Work=%+v event=%+v err=%v", afterClaim, queued, err)
+	}
+
+	delivered := admitAndConsumeHostClaim(t, store, claimed)
+	queuedDelivered, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: workID, Kind: "calendar.result", DedupeKey: "after-delivery", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append after delivery created=%v event=%+v err=%v", created, queuedDelivered, err)
+	}
+	afterDelivery, err := store.Work(workID)
+	if err != nil || afterDelivery.Revision != before.Revision || queuedDelivered.WorkRevision != before.Revision+1 {
+		t.Fatalf("delivery epoch changed Work=%+v event=%+v err=%v", afterDelivery, queuedDelivered, err)
+	}
+
+	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+		Summary: "dispose only the claimed revision epoch",
+	})
+	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone ||
+		terminal.Revision != before.Revision+1 || terminal.TerminalRevision != terminal.Revision {
+		t.Fatalf("exact disposition event=%+v Work=%+v err=%v", resolved, terminal, err)
+	}
+	for _, eventID := range []string{queued.ID, queuedDelivered.ID} {
+		row, found, err := store.WorkEvent(eventID)
+		if err != nil || !found || row.HandledAt != nil || row.WorkRevision != terminal.TerminalRevision {
+			t.Fatalf("next epoch Event=%+v found=%v err=%v", row, found, err)
+		}
+	}
+	next, ok, err := store.ClaimNextActionableEvent(claimed.DeliveryHostSessionID)
+	if err != nil || !ok || next.ID != queued.ID || next.DeliveryWorkRevision != terminal.Revision {
+		t.Fatalf("next revision claim=%+v ok=%v err=%v", next, ok, err)
+	}
+}
+
+func TestDelegatedAdmissionCannotOvertakeClaimedHostLane(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	before, err := store.Work(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: workID, SessionID: "brain-agent-overtake:@1", ProposedTurnID: "turn:overtake",
+		Receipt: "turn:overtake", PayloadSHA256: strings.Repeat("a", 64),
+		ProcessIdentity: "overtake-process", PaneGeneration: "overtake-generation",
+		AcceptedAt: claimed.ClaimedAt.Add(time.Millisecond), Mode: watcher.TurnSubmissionFresh,
+	})
+	if !errors.Is(err, ErrWorkConflict) || created {
+		t.Fatalf("delegated admission overtook claim: created=%v err=%v", created, err)
+	}
+	after, err := store.Work(workID)
+	if err != nil || after.Revision != before.Revision || after.OwnerSessionID != before.OwnerSessionID {
+		t.Fatalf("rejected admission changed Work: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if _, found, err := store.TurnSubmission("brain-agent-overtake:@1", "turn:overtake"); err != nil || found {
+		t.Fatalf("rejected admission persisted submission: found=%v err=%v", found, err)
+	}
+}
+
+func TestFinalizationResultDuringHostLaneKeepsDispositionRevision(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-finalization-freeze:@1"
+	item, err := store.CreateWork(Work{
+		Title: "finalization revision freeze", Objective: "preserve exact Host disposition",
+		Status: WorkRunning, OwnerSessionID: sessionID, OwnerDelegated: true,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := WorkDone
+	item, err = store.UpdateWork(item.ID, WorkUpdate{Status: &done})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, errors.New("retry teardown")); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@finalization-freeze")
+	if err != nil || !ok || claimed.Kind != "brain.finalization_failed" {
+		t.Fatalf("finalization claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	before, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
+	if err != nil || updated.Revision != before.Revision || updated.UpdatedAt != before.UpdatedAt ||
+		len(updated.SessionFinalizations) != 1 || updated.SessionFinalizations[0].State != SessionFinalizationComplete {
+		t.Fatalf("finalization during claim before=%+v after=%+v err=%v", before, updated, err)
+	}
+	delivered := admitAndConsumeHostClaim(t, store, claimed)
+	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
+		Summary: "finalization result preserved the exact Host capability",
+	})
+	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone {
+		t.Fatalf("finalization disposition event=%+v Work=%+v err=%v", resolved, terminal, err)
+	}
+}
+
 func TestTerminalWorkPermitsExactHostClaimTransaction(t *testing.T) {
 	store, workID, claimed := claimResolutionStore(t)
 	store.mu.Lock()

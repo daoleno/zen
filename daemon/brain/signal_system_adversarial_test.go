@@ -741,7 +741,7 @@ func TestSignalAdversarialSuccessorRunningPreservesDeliveredDispositionRevision(
 	for _, event := range events {
 		if event.Kind == "session.running" && event.SourceName == successor {
 			runningRows++
-			if event.Actionable || event.WorkRevision != delivered.DeliveryWorkRevision {
+			if event.Actionable || event.WorkRevision != delivered.DeliveryWorkRevision+1 {
 				t.Fatalf("successor running outbox row = %+v", event)
 			}
 		}
@@ -1009,14 +1009,32 @@ func TestSignalAdversarialRecoveredLegacyDiagnosticRequeuesCurrentRevision(t *te
 	if err != nil || !created {
 		t.Fatalf("prepare pending created=%v submission=%+v err=%v", created, pending, err)
 	}
-	// Reproduce the pre-fix daemon: its generic diagnostic append advanced the
-	// Work revision after the direct Event payload was already admitted.
+	// Start with the durable diagnostic row, then directly reproduce the old
+	// on-disk shape: pre-fix daemons advanced the Work revision after the exact
+	// Host capability was already claimed. Healthy appends no longer create
+	// this shape, but startup recovery must still converge stores that contain it.
 	if _, created, err := store.AppendWorkEvent(WorkEvent{
 		WorkID: item.ID, Kind: "delivery.ambiguous", DedupeKey: "legacy-delivery:" + claim.ID,
 		PayloadRef: "delivery:" + claim.ID, Summary: "Legacy diagnostic revision bump.",
 		Actionable: false,
 	}); err != nil || !created {
 		t.Fatalf("legacy diagnostic created=%v err=%v", created, err)
+	}
+	store.mu.Lock()
+	legacyDatabase, err := store.loadOrchestrationLocked()
+	if err == nil {
+		index := workIndex(legacyDatabase.BrainWork, item.ID)
+		if index < 0 {
+			err = ErrWorkNotFound
+		} else {
+			legacyDatabase.BrainWork[index].Revision++
+			legacyDatabase.BrainWork[index].UpdatedAt = claim.ClaimedAt.UTC().Add(time.Millisecond)
+			err = store.persistOrchestrationLocked(legacyDatabase)
+		}
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatalf("persist legacy stale revision: %v", err)
 	}
 	legacyWork, err := store.Work(item.ID)
 	if err != nil || legacyWork.Revision != claim.DeliveryWorkRevision+1 {
@@ -3319,6 +3337,9 @@ func TestSignalAdversarialSuccessorReleaseRequiresProvedNonAdmission(t *testing.
 			current, err := store.RecordSuccessorLaunchFailure(item.ID, s1, "provider submission failed", test.proved)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if current.Revision != handling.DeliveryWorkRevision {
+				t.Fatalf("successor failure invalidated Host disposition revision: Work=%+v handling=%+v", current, handling)
 			}
 			if (current.SuccessorReservation == nil) != test.cleared {
 				t.Fatalf("reservation after failure=%+v cleared=%v", current.SuccessorReservation, test.cleared)

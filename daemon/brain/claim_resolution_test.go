@@ -101,8 +101,8 @@ func TestDeliveryDiagnosticDoesNotInvalidateClaimRevision(t *testing.T) {
 	if err != nil || !found || claimed.DeliveryWorkRevision != after.Revision {
 		t.Fatalf("diagnostic invalidated exact claim fence: event=%+v Work=%+v found=%v err=%v", claimed, after, found, err)
 	}
-	if note.WorkRevision != after.Revision {
-		t.Fatalf("diagnostic Work revision=%d want unchanged %d", note.WorkRevision, after.Revision)
+	if note.WorkRevision != after.Revision+1 {
+		t.Fatalf("diagnostic revision epoch=%d want next epoch %d", note.WorkRevision, after.Revision+1)
 	}
 }
 

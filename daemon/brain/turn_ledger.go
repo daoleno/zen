@@ -506,6 +506,7 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 	ownerID := strings.TrimSpace(item.OwnerSessionID)
 	reservation := item.SuccessorReservation
 	handlingIndex := inFlightHandlingEventIndex(database, item.ID)
+	hostLaneOwned := workHostLaneOwned(database, item.ID)
 	initialOwnerAdmission := false
 	switch {
 	case hostClaimSubmission:
@@ -527,6 +528,8 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		}
 		database.BrainWork[workIndex] = item
 		changedWorkID = item.ID
+	case hostLaneOwned:
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s has an in-flight Host claim", ErrWorkConflict, item.ID)
 	case ownerID == "":
 		if candidate.WorkID == "" {
 			return watcher.TurnSubmission{}, false, fmt.Errorf("initial delegated submission requires exact work_id")
@@ -766,6 +769,10 @@ func (s *Store) RecordInitialSubmissionNotAdmitted(
 		return Work{}, fmt.Errorf("Work %s not found", workID)
 	}
 	item := database.BrainWork[itemIndex]
+	if eventID, owned := activeHostLaneEvent(database, item.ID); owned {
+		s.mu.Unlock()
+		return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkConflict, eventID)
+	}
 	if turn, found := currentTurnForSession(database, sessionID); found && turn.WorkID == workID {
 		s.mu.Unlock()
 		return Work{}, fmt.Errorf("accepted delegated Turn %s cannot be recorded as not admitted", turn.TurnID)
@@ -1008,7 +1015,7 @@ func (s *Store) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolutio
 			// exact continue disposition. Updating Work here would invalidate the
 			// delivered revision before Brain could commit that disposition.
 			if record.ClaimToken == "" && item.Status != WorkDone && item.Status != WorkCancelled &&
-				!workHasInFlightHandling(database, record.WorkID) {
+				!workHostLaneOwned(database, record.WorkID) {
 				update := derivedWorkUpdate(watcher.TurnAccepted, record.SessionID, "")
 				if workUpdateChanges(item, update) {
 					applyWorkUpdate(&item, update)
@@ -1778,6 +1785,9 @@ func (s *Store) ReassertLiveTurnOwnership(workID, sessionID, turnID string) (Wor
 		return Work{}, false, ErrWorkNotFound
 	}
 	item := database.BrainWork[index]
+	if workHostLaneOwned(database, item.ID) {
+		return item, false, nil
+	}
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		return item, false, nil
 	}
@@ -1867,7 +1877,7 @@ func prepareDelegatedSignalTurnLocked(database *orchestrationDatabase, fact watc
 			item.SuccessorReservation = reservation
 			database.BrainWork[index] = item
 		}
-		if item.Status != WorkDone && item.Status != WorkCancelled && !workHasInFlightHandling(*database, record.WorkID) {
+		if item.Status != WorkDone && item.Status != WorkCancelled && !workHostLaneOwned(*database, record.WorkID) {
 			update := derivedWorkUpdate(watcher.TurnAccepted, record.SessionID, "")
 			if workUpdateChanges(item, update) {
 				applyWorkUpdate(&item, update)
@@ -2076,7 +2086,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		// progress before that disposition commits; its Turn facts/outbox rows
 		// remain durable, but they cannot mutate Work or advance the capability's
 		// revision fence. ResolveWorkEvent is the sole owner of that transition.
-		dispositionRevisionFrozen = workHasInFlightHandling(database, turn.WorkID)
+		dispositionRevisionFrozen = workHostLaneOwned(database, turn.WorkID)
 	}
 	if !terminalWork && !dispositionRevisionFrozen && mutation.hint != nil && workIndex >= 0 {
 		note := "Delegated Session reported " +
@@ -2176,6 +2186,9 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			database.BrainWorkEvents[eventIndex].Summary = mutation.eventSummary
 			database.BrainWorkEvents[eventIndex].SourceName = turn.SessionID
 			database.BrainWorkEvents[eventIndex].WorkRevision = workItem.Revision
+			if dispositionRevisionFrozen {
+				database.BrainWorkEvents[eventIndex].WorkRevision++
+			}
 			if readyID := readyAttentionEventID(database, workID); readyID != "" &&
 				readyID != database.BrainWorkEvents[eventIndex].ID {
 				database.BrainWorkEvents[eventIndex].CoalescedInto = readyID

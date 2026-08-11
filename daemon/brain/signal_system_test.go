@@ -165,7 +165,7 @@ func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testi
 	}
 }
 
-func TestSignalResolutionCASConflictLeavesAttentionDurable(t *testing.T) {
+func TestSignalResolutionSerializesNextAttentionRevision(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -173,34 +173,36 @@ func TestSignalResolutionCASConflictLeavesAttentionDurable(t *testing.T) {
 	item := createSignalTestWork(t, store, "CAS conflict", "brain-agent-cas:@1")
 	appendSignalTestEvent(t, store, item, "cas-1")
 	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
-	if _, _, err := store.AppendWorkEvent(WorkEvent{
-		WorkID: item.ID, Kind: "review.changed", DedupeKey: "review:cas:changed", Actionable: true,
-	}); err != nil {
+	before, err := store.Work(item.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+	later, created, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "review.changed", DedupeKey: "review:cas:changed", Actionable: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("append next attention created=%v event=%+v err=%v", created, later, err)
+	}
+	afterAppend, err := store.Work(item.ID)
+	if err != nil || afterAppend.Revision != before.Revision || later.WorkRevision != before.Revision+1 {
+		t.Fatalf("later fact stole current revision: before=%+v after=%+v event=%+v err=%v", before, afterAppend, later, err)
+	}
+	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
 		EventID: delivered.ID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
-	}); !errors.Is(err, ErrWorkRevisionConflict) {
-		t.Fatalf("stale resolution err=%v, want ErrWorkRevisionConflict", err)
+	})
+	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone || terminal.Revision != before.Revision+1 {
+		t.Fatalf("current disposition event=%+v Work=%+v err=%v", resolved, terminal, err)
 	}
-	if _, created, err := store.RequeueUnhandledHostAttention(delivered.ID, delivered.HandlingID, delivered.ProviderTurnID); err != nil || !created {
-		t.Fatalf("requeue created=%v err=%v", created, err)
+	durableLater, found, err := store.WorkEvent(later.ID)
+	if err != nil || !found || durableLater.HandledAt != nil || durableLater.WorkRevision != terminal.Revision {
+		t.Fatalf("next attention was consumed with prior epoch: event=%+v found=%v err=%v", durableLater, found, err)
 	}
-	events, err := store.ListWorkEvents(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var reconciles int
-	for _, event := range events {
-		if event.Kind == "brain.reconcile_required" && event.HandledAt == nil {
-			reconciles++
-		}
-	}
-	if reconciles != 1 {
-		t.Fatalf("unhandled reconcile attentions=%d events=%+v", reconciles, events)
+	next, ok, err := store.ClaimNextActionableEvent(delivered.DeliveryHostSessionID)
+	if err != nil || !ok || next.ID != later.ID || next.DeliveryWorkRevision != terminal.Revision {
+		t.Fatalf("next epoch claim=%+v ok=%v err=%v", next, ok, err)
 	}
 }
 
