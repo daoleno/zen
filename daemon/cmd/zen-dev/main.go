@@ -74,6 +74,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := runner.start(); err != nil {
 		return err
 	}
+	childDone := runner.child.done
 	defer func() {
 		_ = runner.stop(syscall.SIGINT)
 	}()
@@ -102,6 +103,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		case <-signals:
 			fmt.Fprintln(stderr, "\nzen-dev shutting down...")
 			return nil
+		case err := <-childDone:
+			// The daemon is the service; the watcher must never remain alive as
+			// a false-positive runtime owner after its child exits. Surface the
+			// failure so supervisors and developers can restart or diagnose it.
+			runner.child = nil
+			return unexpectedDaemonExit(err)
 		case event, ok := <-tree.watcher.Events:
 			if !ok {
 				return fmt.Errorf("watcher closed")
@@ -141,8 +148,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 			if err := runner.restart(); err != nil {
 				return err
 			}
+			childDone = runner.child.done
 		}
 	}
+}
+
+func unexpectedDaemonExit(err error) error {
+	if err == nil {
+		return errors.New("daemon exited unexpectedly")
+	}
+	return fmt.Errorf("daemon exited unexpectedly: %w", err)
 }
 
 func newWatchTree(root string) (*watchTree, error) {

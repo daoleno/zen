@@ -834,6 +834,18 @@ func workTurnHasRelinquishmentEvidence(database orchestrationDatabase, workID st
 			return true
 		}
 	}
+	// A delegated Session is reusable. Once that same Session has a later
+	// accepted Turn for the Work, the older nonterminal row is historical
+	// lifecycle evidence even if the provider never emitted a terminal fact for
+	// it. The exact newer admission is sufficient: a result from merely an older
+	// Turn must not relinquish a later rogue Turn.
+	for _, candidate := range database.BrainTurns {
+		if candidate.WorkID == workID &&
+			strings.TrimSpace(candidate.SessionID) == sessionID &&
+			candidate.TurnID != turn.TurnID && candidate.AcceptedAt.After(turn.AcceptedAt) {
+			return true
+		}
+	}
 	return false
 }
 

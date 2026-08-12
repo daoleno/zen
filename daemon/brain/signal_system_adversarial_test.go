@@ -802,6 +802,72 @@ func TestSignalAdversarialRogueNonOwnerTurnStillFailsBesideLiveOwner(t *testing.
 	}
 }
 
+// A reusable delegated Session may retain an older nonterminal Turn after a
+// later Turn has been accepted. The later exact admission supersedes execution
+// ownership for the old row, so a different canonical owner can coexist with
+// that history and the database must remain loadable after restart.
+func TestSignalAdversarialLaterAcceptedTurnRelinquishesHistoricalRunningTurn(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical := "brain-agent-reusable-history:@1"
+	item := createSignalTestWork(t, store, "Later Turn supersedes historical running Turn", historical)
+	acceptedAt := time.Date(2026, 8, 13, 3, 55, 0, 0, time.UTC)
+	oldTurn := historical + ":turn:old"
+	oldDigest := pendingSubmissionDigest("old Turn " + oldTurn)
+	seedContinueAuthorityTurn(t, store, item.ID, historical, oldTurn, watcher.TurnRunning, watcher.TurnAdmission{
+		Stream: "provider", ID: "old-admission", Cursor: 1, SHA256: oldDigest, At: acceptedAt,
+	}, acceptedAt)
+
+	newTurn := historical + ":turn:new"
+	newDigest := pendingSubmissionDigest("new Turn " + newTurn)
+	seedContinueAuthorityTurn(t, store, item.ID, historical, newTurn, watcher.TurnDone, watcher.TurnAdmission{
+		Stream: "provider", ID: "new-admission", Cursor: 2, SHA256: newDigest, At: acceptedAt.Add(time.Minute),
+	}, acceptedAt.Add(time.Minute))
+
+	owner := "brain-agent-current-owner:@2"
+	ownerTurn := owner + ":turn:1"
+	ownerDigest := pendingSubmissionDigest("current owner " + ownerTurn)
+	store.mu.Lock()
+	database, err := store.loadOrchestrationLocked()
+	if err == nil {
+		index := workIndex(database.BrainWork, item.ID)
+		if index < 0 {
+			err = ErrWorkNotFound
+		} else {
+			database.BrainWork[index].OwnerSessionID = owner
+			database.BrainWork[index].OwnerDelegated = true
+			database.BrainTurns = append(database.BrainTurns, TurnRecord{
+				SessionID: owner, TurnID: ownerTurn, WorkID: item.ID,
+				Status: watcher.TurnRunning, Receipt: "receipt-" + ownerTurn,
+				PayloadSHA256: ownerDigest,
+				Admission: watcher.TurnAdmission{
+					Stream: "provider", ID: "owner-admission", Cursor: 3,
+					SHA256: ownerDigest, At: acceptedAt.Add(2 * time.Minute),
+				},
+				AcceptedAt: acceptedAt.Add(2 * time.Minute),
+				UpdatedAt:  acceptedAt.Add(2 * time.Minute), Facts: []TurnFactRecord{},
+			})
+			err = store.persistOrchestrationLocked(database)
+		}
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatalf("later accepted Turn did not relinquish historical running Turn: %v", err)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("reopen rejected superseded Turn history: %v", err)
+	}
+	current, err := reopened.Work(item.ID)
+	if err != nil || current.OwnerSessionID != owner {
+		t.Fatalf("reopened Work=%+v err=%v", current, err)
+	}
+}
+
 // canonicalHostDeliveryWatcher exercises the same prepare/provider/resolve
 // transaction owned by Watcher.SubmitBrainHostInput. It deliberately does not
 // bootstrap an Admitted Turn: product-path Host delivery evidence must come
