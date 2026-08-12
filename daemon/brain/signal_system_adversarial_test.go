@@ -768,6 +768,15 @@ func TestSignalAdversarialRogueNonOwnerTurnStillFailsBesideLiveOwner(t *testing.
 
 	rogue := "brain-agent-rogue-non-owner:@2"
 	rogueTurn := rogue + ":turn:1"
+	// A result from an older Turn in the same reusable Session cannot
+	// relinquish this later Turn.
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.done",
+		DedupeKey:  "session:" + rogue + ":turn:older:session.done",
+		PayloadRef: "session:" + rogue, SourceName: rogue, Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	rogueDigest := pendingSubmissionDigest("continue authority " + rogueTurn)
 	rogueAdmission := watcher.TurnAdmission{
 		Stream: "provider", ID: "rogue-admission", Cursor: 2,

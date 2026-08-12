@@ -796,7 +796,7 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 			// evidence. Ready attention, a typed wait, or another canonical owner
 			// then owns progress; exact continue may promote this same active
 			// Session again.
-			relinquished := workSessionHasRelinquishmentEvidence(database, item.ID, turn.SessionID)
+			relinquished := workTurnHasRelinquishmentEvidence(database, item.ID, turn)
 			if !relinquished && (owner != "" || (!state.Ready && !state.Waiting)) {
 				return fmt.Errorf("brain_turns: active Session %q is not an owner or reserved successor of Work %q", turn.SessionID, item.ID)
 			}
@@ -821,15 +821,16 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 	return nil
 }
 
-func workSessionHasRelinquishmentEvidence(database orchestrationDatabase, workID, sessionID string) bool {
+func workTurnHasRelinquishmentEvidence(database orchestrationDatabase, workID string, turn TurnRecord) bool {
 	workID = strings.TrimSpace(workID)
-	sessionID = strings.TrimSpace(sessionID)
+	sessionID := strings.TrimSpace(turn.SessionID)
 	if workID == "" || sessionID == "" {
 		return false
 	}
 	for _, event := range database.BrainWorkEvents {
 		if event.WorkID == workID && strings.TrimSpace(event.SourceName) == sessionID &&
-			isProjectedWorkResultEvent(event.Kind) {
+			isProjectedWorkResultEvent(event.Kind) &&
+			strings.TrimSpace(event.DedupeKey) == sessionTurnEventDedupeKey(sessionID, turn.TurnID, event.Kind) {
 			return true
 		}
 	}
