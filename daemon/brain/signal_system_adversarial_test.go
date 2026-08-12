@@ -975,11 +975,12 @@ func TestSignalAdversarialRecoveredLegacyDiagnosticRequeuesCurrentRevision(t *te
 	}
 }
 
-// If exact provider evidence is still unavailable and the pending authority
-// names the current pane/process generation, the lane must stop cleanly. It
-// neither logs a startup failure forever nor admits an unrelated Event into
-// the same mutation domain.
-func TestSignalAdversarialCurrentGenerationAmbiguityHoldsLaneWithoutError(t *testing.T) {
+// An exact current-generation ambiguity is quarantined as one held claim: its
+// payload is never replayed and its pending provider authority remains
+// recoverable from exact evidence. The quarantine is not a Session-wide
+// mutation fence, however, so an unrelated Work key can reach the normal
+// provider/foreground boundary and dispatch once that boundary is idle.
+func TestSignalAdversarialCurrentGenerationAmbiguityQuarantinesExactClaimWithoutWedgingUnrelatedWork(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1016,24 +1017,82 @@ func TestSignalAdversarialCurrentGenerationAmbiguityHoldsLaneWithoutError(t *tes
 	}
 	delivery := newCanonicalHostDeliveryWatcher(store, hostID)
 	delivery.outcomes = map[string]watcher.InputOutcome{claim.ID: watcher.InputAmbiguous}
-	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
-	if err != nil || woke {
-		t.Fatalf("held current generation woke=%v err=%v", woke, err)
+	service := NewService(store, delivery, nil)
+	writeOrchestration := store.writeOrchestration
+	store.writeOrchestration = func(string, any) error {
+		return errors.New("injected ambiguity quarantine persistence failure")
 	}
-	if len(delivery.sentCalls) != 0 || delivery.resolveCount != 0 {
-		t.Fatalf("held lane mutated provider: sends=%d prepares=%d resolves=%d", len(delivery.sentCalls), delivery.prepareCount, delivery.resolveCount)
-	}
-	durable, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
-	if err != nil || !found || durable.State != watcher.TurnSubmissionPending {
-		t.Fatalf("held authority changed: submission=%+v found=%v err=%v", durable, found, err)
+	if woke, err := service.ReconcileHostLane(); err == nil || woke {
+		t.Fatalf("unpersisted ambiguity quarantine woke=%v err=%v", woke, err)
 	}
 	queued, found, err := store.WorkEvent(secondEvent.ID)
 	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil {
-		t.Fatalf("unrelated Event overtook held generation: event=%+v found=%v err=%v", queued, found, err)
+		t.Fatalf("unpersisted quarantine allowed unrelated delivery: event=%+v found=%v err=%v", queued, found, err)
+	}
+	store.writeOrchestration = writeOrchestration
+	delivery.providerEvidence = map[string]watcher.ProviderActivityObservation{hostID: {
+		ID: "visible-current-provider-activity", Status: "running", StartedAt: time.Now().UTC(),
+	}}
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("running provider boundary woke=%v err=%v", woke, err)
+	}
+	queued, found, err = store.WorkEvent(secondEvent.ID)
+	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil || len(delivery.sentCalls) != 0 {
+		t.Fatalf("running provider boundary allowed unrelated delivery: event=%+v sends=%d found=%v err=%v", queued, len(delivery.sentCalls), found, err)
+	}
+	delivery.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "visible-current-provider-activity", Status: "completed",
+		StartedAt: time.Now().UTC().Add(-time.Second), SettledAt: time.Now().UTC(),
+	}
+	woke, err := service.ReconcileHostLane()
+	if err != nil || !woke {
+		t.Fatalf("quarantined current generation woke=%v err=%v", woke, err)
+	}
+	if len(delivery.sentCalls) != 1 || delivery.resolveCount != 1 {
+		t.Fatalf("unrelated delivery counts sends=%d prepares=%d resolves=%d", len(delivery.sentCalls), delivery.prepareCount, delivery.resolveCount)
+	}
+	durable, found, err := store.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("quarantined authority changed: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	quarantined, found, err := store.WorkEvent(claim.ID)
+	if err != nil || !found || quarantined.ClaimedAt == nil || quarantined.DeliveredAt != nil || quarantined.Resolution != "" {
+		t.Fatalf("ambiguous Event was replayed or resolved: event=%+v found=%v err=%v", quarantined, found, err)
+	}
+	delivered, found, err := store.WorkEvent(secondEvent.ID)
+	if err != nil || !found || delivered.DeliveredAt == nil || delivered.ProviderTurnID == "" {
+		t.Fatalf("unrelated Event remained wedged: event=%+v found=%v err=%v", delivered, found, err)
 	}
 	after, err := store.Work(firstWork.ID)
 	if err != nil || after.Revision != currentWork.Revision {
 		t.Fatalf("ambiguity diagnostic invalidated claim revision: before=%+v after=%+v err=%v", currentWork, after, err)
+	}
+	notes, err := store.ListWorkEvents(firstWork.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ambiguousNote *WorkEvent
+	for index := range notes {
+		if notes[index].Kind == "delivery.ambiguous" && notes[index].PayloadRef == "delivery:"+claim.ID {
+			ambiguousNote = &notes[index]
+			break
+		}
+	}
+	if ambiguousNote == nil || ambiguousNote.Actionable {
+		t.Fatalf("durable ambiguity quarantine note=%+v events=%+v", ambiguousNote, notes)
+	}
+
+	reopened, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, found, err = reopened.TurnSubmission(hostID, claim.ProviderTurnID)
+	if err != nil || !found || durable.State != watcher.TurnSubmissionPending {
+		t.Fatalf("quarantined authority did not survive reopen: submission=%+v found=%v err=%v", durable, found, err)
+	}
+	quarantined, found, err = reopened.WorkEvent(claim.ID)
+	if err != nil || !found || quarantined.ClaimedAt == nil || quarantined.DeliveredAt != nil || quarantined.Resolution != "" {
+		t.Fatalf("quarantined Event did not survive reopen: event=%+v found=%v err=%v", quarantined, found, err)
 	}
 }
 
@@ -1644,7 +1703,7 @@ func TestSignalAdversarialUnrelatedPendingHostSubmissionCannotBlockExactClaimRel
 		},
 	}
 	service := NewService(store, fixture, nil)
-	if held, err := service.reconcileDeliveryReceiptsLocked(); err != nil || held {
+	if err := service.reconcileDeliveryReceiptsLocked(); err != nil {
 		t.Fatalf("unrelated pending submission wedged exact releases: %v", err)
 	}
 

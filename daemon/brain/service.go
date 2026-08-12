@@ -890,22 +890,15 @@ func (s *Service) ReconcileHostLane() (bool, error) {
 // claim forever and surfaces a deduped delivery diagnostic while unrelated
 // events keep dispatching. Held claims close only via explicit
 // MarkDeliveredClaim/DiscardClaim/ReplayEvent or a receipt-state change —
-// never by elapsed time. An ambiguity in the current provider generation
-// holds the entire Host mutation lane; an obsolete generation may be retired
-// while the replacement lane progresses.
+// never by elapsed time. The exact held claim is the quarantine boundary: it
+// is never replayed, while unrelated Work continues through the ordinary
+// foreground/provider gates instead of inheriting a Session-wide fence.
 func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
-	heldCurrentGeneration, err := s.reconcileDeliveryReceiptsLocked()
-	if err != nil {
+	if err := s.reconcileDeliveryReceiptsLocked(); err != nil {
 		return false, err
-	}
-	if heldCurrentGeneration {
-		// The current provider generation still owns one ambiguous exact
-		// transaction. No other Event may enter that same mutation domain until
-		// provider evidence or an explicit actor disposition retires it.
-		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
 	if err != nil {
@@ -964,6 +957,28 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			}
 		}
 	}
+	if active != nil {
+		previousBoundary := active.StartedAt
+		converged, repaired, convergeErr := s.store.ConvergeHostForegroundAdmissionBoundary(*active)
+		if convergeErr != nil {
+			return false, convergeErr
+		}
+		active = &converged
+		if repaired {
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason: "foreground_admission_boundary_repaired",
+				FromID: active.HostSessionID,
+				ToID:   active.HostSessionID,
+				Detail: fmt.Sprintf(
+					"foreground_turn=%q generation=%q old_boundary=%s prepared_boundary=%s",
+					active.HostTurnID,
+					active.HostGeneration,
+					previousBoundary.UTC().Format(time.RFC3339Nano),
+					active.StartedAt.UTC().Format(time.RFC3339Nano),
+				),
+			})
+		}
+	}
 	// Step 2: one delivered Event awaits its typed disposition. The Host is
 	// mid-review; no new admission may overtake it.
 	if delivered, err := s.store.HasLiveDeliveredHandling(); err != nil {
@@ -1013,9 +1028,8 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 					// the daemon was down) before any running observation
 					// could bind it. The current activity ending is adopted
 					// only when it began inside this turn's admission
-					// window: a stale terminal that settled before acceptance
-					// is never a boundary for the new turn and never closes
-					// it.
+					// window: a stale terminal that began before the durable
+					// Prepare boundary is never a boundary for the new turn.
 					activityID = observedID
 					exactTerminal = true
 				}
@@ -1159,17 +1173,14 @@ func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) erro
 
 // reconcileDeliveryReceiptsLocked is reducer step 1: every dispatching Event's
 // provider submission receipt is reconciled against the exact claim identity.
-func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
+// An ambiguous exact transaction remains a durable held claim with an audited
+// delivery.ambiguous note. That per-claim quarantine is replay-proof but is
+// not returned as a lane-wide stop condition for unrelated Work.
+func (s *Service) reconcileDeliveryReceiptsLocked() error {
 	claimedEvents, err := s.store.ClaimedActionableEvents()
 	if err != nil {
-		return false, err
+		return err
 	}
-	host, err := s.store.HostSession()
-	if err != nil {
-		return false, err
-	}
-	currentHostID := strings.TrimSpace(host.ID)
-	heldCurrentGeneration := false
 	for _, claimed := range claimedEvents {
 		if claimed.DeliveryHostSessionID == "" {
 			continue
@@ -1197,7 +1208,7 @@ func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 				continue
 			}
 			if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return false, turnErr
+				return turnErr
 			} else if providerMutated {
 				// Canonical provider admission dominates an absent transport
 				// receipt. Mutation began, so hold both authorities without
@@ -1209,7 +1220,7 @@ func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return false, fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 			continue
 		}
@@ -1218,19 +1229,19 @@ func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 		// Consume through the exact five-part claim; the Store independently
 		// verifies the matching resolved submission.
 		if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-			return false, turnErr
+			return turnErr
 		} else if providerMutated {
 			if _, _, consumeErr := s.store.ConsumeClaimedWorkEvent(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); consumeErr != nil {
-				return false, fmt.Errorf("finalize admitted Work Event %s: %w", claimed.ID, consumeErr)
+				return fmt.Errorf("finalize admitted Work Event %s: %w", claimed.ID, consumeErr)
 			}
 			continue
 		}
 		switch result.Outcome {
 		case watcher.InputAccepted:
 			if _, found, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
-				return false, turnErr
+				return turnErr
 			} else if !found {
 				// The transport receipt alone is not a provider Turn. Hold the
 				// claim without replay until canonical admission is recoverable.
@@ -1239,7 +1250,7 @@ func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 			if _, _, err := s.store.ConsumeClaimedWorkEvent(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); err != nil {
-				return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+				return fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
 			}
 		case watcher.InputAmbiguous:
 			// Retry only the exact pending capability. The watcher recognizes its
@@ -1247,42 +1258,30 @@ func (s *Service) reconcileDeliveryReceiptsLocked() (bool, error) {
 			// it from provider admission/transcript evidence; it never replays the
 			// payload. The original ambiguous receipt remains dominant, so a
 			// failed recovery never releases the claim.
-			recovered, exactPending, recoveryErr := s.recoverAmbiguousClaimedEventLocked(claimed)
+			recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(claimed)
 			if recoveryErr == nil && recovered {
 				continue
 			}
-			_, _, _ = s.store.AppendDeliveryNote(
+			if _, _, noteErr := s.store.AppendDeliveryNote(
 				claimed.WorkID,
 				claimed.ID,
 				"delivery.ambiguous",
 				"delivery:"+claimed.ID+":ambiguous",
-				"Delivery of Work Event "+claimed.ID+" stayed ambiguous; it will not be replayed automatically.",
+				"Delivery of Work Event "+claimed.ID+" is quarantined because its exact provider outcome remains ambiguous. It will not be replayed automatically; wait for exact provider evidence or resolve the held claim explicitly (mark_delivered, discard, or replay).",
 				false,
-			)
-			if exactPending && hostID == currentHostID {
-				submission, submissionFound, submissionErr := s.store.TurnSubmission(hostID, claimed.ProviderTurnID)
-				if submissionErr != nil {
-					return false, submissionErr
-				}
-				if submissionFound && submission.State == watcher.TurnSubmissionPending {
-					owned, ownershipErr := s.watcher.ResolveOwnedGeneration(hostID)
-					if ownershipErr != nil || strings.TrimSpace(owned.ProcessIdentity) == "" ||
-						strings.TrimSpace(owned.PaneGeneration) == "" ||
-						(owned.ProcessIdentity == submission.ProcessIdentity && owned.PaneGeneration == submission.PaneGeneration) {
-						heldCurrentGeneration = true
-					}
-				}
+			); noteErr != nil {
+				return fmt.Errorf("persist ambiguous delivery quarantine for Work Event %s: %w", claimed.ID, noteErr)
 			}
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.
 			if releaseErr := s.store.ReleaseEventClaim(
 				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
 			}
 		}
 	}
-	return heldCurrentGeneration, nil
+	return nil
 }
 
 // recoverAmbiguousClaimedEventLocked re-enters only an already-persisted exact

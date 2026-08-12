@@ -3,6 +3,7 @@ package brain
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1699,6 +1700,228 @@ func TestHostForegroundLateBindsNewActivityAfterPriorTerminal(t *testing.T) {
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
 		t.Fatalf("terminal boundary delivery events=%+v err=%v", events, err)
+	}
+}
+
+// Provider acceptance mutates Codex before Zen can persist the accepted
+// BrainInputAdmission. An exact Activity may therefore begin after the durable
+// Prepare boundary but a few milliseconds before the accepted-state write.
+// Its terminal observation closes that exact foreground epoch and frees the
+// queued review in the same reducer pass.
+func TestHostForegroundTerminalStartedBetweenPrepareAndAcceptClosesExactEpoch(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@prepare-accept-window"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	boundary := time.Date(2026, 8, 12, 16, 52, 2, 878000000, time.UTC)
+	now := boundary
+	store.now = func() time.Time { return now }
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone, PaneAlive: true}
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-prepare-accept-window"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{},
+	}
+	service := NewService(store, watcherFixture, nil)
+	service.now = func() time.Time { return now }
+
+	prepared, created, err := service.PrepareHostUserInput(
+		hostID, "foreground-prepare-accept-window", "continue", "",
+	)
+	if err != nil || !created || !prepared.CreatedAt.Equal(boundary) {
+		t.Fatalf("prepare created=%v admission=%+v err=%v", created, prepared, err)
+	}
+	item := createSignalTestWork(t, store, "prepare/accept window review", "brain-agent-worker:@prepare-accept-window")
+	event := appendSignalTestEvent(t, store, item, "prepare-accept-window")
+
+	// This is the incident ordering: Activity start is six milliseconds before
+	// the later accepted-state persistence, but after the prepared admission.
+	now = boundary.Add(6 * time.Millisecond)
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "activity-prepare-accept-window", Status: "completed",
+		StartedAt: boundary.Add(2 * time.Millisecond), SettledAt: boundary.Add(5 * time.Millisecond),
+	}
+	if err := service.AdmitHostUserInput(prepared); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.CurrentHostForegroundTurn()
+	if err != nil || active != nil {
+		t.Fatalf("exact terminal boundary left foreground active=%+v err=%v", active, err)
+	}
+	delivered, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || delivered.DeliveredAt == nil || delivered.ProviderTurnID == "" {
+		t.Fatalf("terminal boundary did not free queued review: event=%+v found=%v err=%v", delivered, found, err)
+	}
+	admission, found, err := store.BrainInputAdmission(prepared.RequestID, prepared.ThreadID)
+	if err != nil || !found || admission.AcceptedAt == nil || !admission.AcceptedAt.Equal(now) {
+		t.Fatalf("accepted admission=%+v found=%v err=%v", admission, found, err)
+	}
+}
+
+// The prepared admission is also the strict stale-evidence fence. A terminal
+// Activity from before Prepare cannot close the new epoch. Once exact terminal
+// evidence inside the Prepare-to-Accept window arrives, the epoch closes and a
+// subsequent accepted input receives a distinct Host turn identity.
+func TestHostForegroundPreparedBoundaryRejectsStaleTerminalAndPreventsEpochReuse(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@prepared-stale-fence"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	boundary := time.Date(2026, 8, 12, 17, 10, 0, 0, time.UTC)
+	now := boundary
+	store.now = func() time.Time { return now }
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone, PaneAlive: true}
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-prepared-stale-fence"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{},
+	}
+	service := NewService(store, watcherFixture, nil)
+	service.now = func() time.Time { return now }
+
+	first, created, err := service.PrepareHostUserInput(hostID, "foreground-stale-fence-1", "first", "")
+	if err != nil || !created {
+		t.Fatalf("first prepare created=%v admission=%+v err=%v", created, first, err)
+	}
+	now = boundary.Add(6 * time.Millisecond)
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "activity-before-prepare", Status: "completed",
+		StartedAt: boundary.Add(-time.Millisecond), SettledAt: boundary.Add(time.Millisecond),
+	}
+	if err := service.AdmitHostUserInput(first); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.CurrentHostForegroundTurn()
+	if err != nil || active == nil || active.HostTurnID != first.HostTurnID || active.ProviderActivityID != "" {
+		t.Fatalf("stale terminal closed or bound new foreground: active=%+v err=%v", active, err)
+	}
+	item := createSignalTestWork(t, store, "stale terminal must not wake", "brain-agent-worker:@prepared-stale-fence")
+	event := appendSignalTestEvent(t, store, item, "prepared-stale-fence")
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("stale terminal woke=%v err=%v", woke, err)
+	}
+	queued, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil {
+		t.Fatalf("stale terminal freed queued review: event=%+v found=%v err=%v", queued, found, err)
+	}
+
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "activity-inside-admission-window", Status: "completed",
+		StartedAt: boundary.Add(2 * time.Millisecond), SettledAt: boundary.Add(5 * time.Millisecond),
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("exact window terminal woke=%v err=%v", woke, err)
+	}
+	if active, err = store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("exact window terminal left foreground active=%+v err=%v", active, err)
+	}
+
+	// End the delivered review so the only identity decision for the next
+	// input is whether the prior exact foreground boundary was really closed.
+	delivered, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || delivered.DeliveredAt == nil {
+		t.Fatalf("exact window terminal did not deliver queued review: event=%+v found=%v err=%v", delivered, found, err)
+	}
+	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
+		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+		Disposition: WorkDispositionSupersede, Summary: "Boundary regression review complete.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = boundary.Add(7 * time.Millisecond)
+	second, created, err := service.PrepareHostUserInput(hostID, "foreground-stale-fence-2", "second", "")
+	if err != nil || !created {
+		t.Fatalf("second prepare created=%v admission=%+v err=%v", created, second, err)
+	}
+	if second.HostTurnID == first.HostTurnID {
+		t.Fatalf("subsequent input reused terminal foreground epoch %q", second.HostTurnID)
+	}
+}
+
+// Existing ledgers may already contain the diagnosed post-acceptance
+// foreground timestamp. Reconciliation repairs that exact row from its
+// matching accepted admission with a CAS-protected orchestration write and an
+// append-only audit record before evaluating provider terminal evidence.
+func TestHostForegroundLegacyAcceptedBoundaryConvergesFromExactPreparedAdmission(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@legacy-accepted-boundary"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	boundary := time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC)
+	now := boundary
+	store.now = func() time.Time { return now }
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true}
+	watcherFixture := &fakeWatcher{
+		turnStore: store, sessions: map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation-legacy-boundary"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{},
+	}
+	service := NewService(store, watcherFixture, nil)
+	service.now = func() time.Time { return now }
+	prepared, created, err := service.PrepareHostUserInput(hostID, "foreground-legacy-boundary", "continue", "")
+	if err != nil || !created {
+		t.Fatalf("prepare created=%v admission=%+v err=%v", created, prepared, err)
+	}
+	now = boundary.Add(6 * time.Millisecond)
+	if err := service.AdmitHostUserInput(prepared); err != nil {
+		t.Fatal(err)
+	}
+	accepted, found, err := store.BrainInputAdmission(prepared.RequestID, prepared.ThreadID)
+	if err != nil || !found || accepted.AcceptedAt == nil {
+		t.Fatalf("accepted admission=%+v found=%v err=%v", accepted, found, err)
+	}
+
+	// Recreate the exact legacy defect without using a production mutation
+	// path: old daemons wrote accepted_at into HostForegroundTurn.StartedAt.
+	store.mu.Lock()
+	database, loadErr := store.loadOrchestrationLocked()
+	if loadErr == nil {
+		if database.HostForegroundTurn == nil {
+			loadErr = fmt.Errorf("accepted foreground is missing")
+		} else {
+			database.HostForegroundTurn.StartedAt = accepted.AcceptedAt.UTC()
+			loadErr = store.persistOrchestrationLocked(database)
+		}
+	}
+	store.mu.Unlock()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+
+	item := createSignalTestWork(t, store, "legacy boundary review", "brain-agent-worker:@legacy-boundary")
+	event := appendSignalTestEvent(t, store, item, "legacy-boundary")
+	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: "activity-legacy-boundary", Status: "completed",
+		StartedAt: boundary.Add(2 * time.Millisecond), SettledAt: boundary.Add(5 * time.Millisecond),
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("legacy boundary convergence woke=%v err=%v", woke, err)
+	}
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("legacy boundary remained active=%+v err=%v", active, err)
+	}
+	delivered, found, err := store.WorkEvent(event.ID)
+	if err != nil || !found || delivered.DeliveredAt == nil {
+		t.Fatalf("legacy boundary did not free queued review: event=%+v found=%v err=%v", delivered, found, err)
+	}
+	audit, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil || !strings.Contains(string(audit), `"reason":"foreground_admission_boundary_repaired"`) ||
+		!strings.Contains(string(audit), accepted.AcceptedAt.UTC().Format(time.RFC3339Nano)) ||
+		!strings.Contains(string(audit), boundary.Format(time.RFC3339Nano)) {
+		t.Fatalf("legacy boundary repair audit=%q err=%v", audit, err)
 	}
 }
 

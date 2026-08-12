@@ -93,11 +93,13 @@ type BrainInputAdmission struct {
 }
 
 // HostForegroundTurn is the durable admission epoch for one foreground Brain
-// response. Multiple accepted steering inputs may share the same provider
-// activity, but a terminal boundary closes this exact Host generation and
-// turn once. It is not a provider input queue. It is closed only by strong
-// exact terminal evidence (matching provider activity identity) inside the
-// single Host-lane reducer.
+// response. StartedAt is the persisted pre-provider-mutation Prepare boundary,
+// not the later accepted-state write: provider Activity may naturally begin
+// between those two commits. Multiple accepted steering inputs may share the
+// same provider activity, but a terminal boundary closes this exact Host
+// generation and turn once. It is not a provider input queue. It is closed
+// only by strong exact terminal evidence (matching provider activity identity)
+// inside the single Host-lane reducer.
 type HostForegroundTurn struct {
 	HostSessionID      string    `json:"host_session_id"`
 	HostGeneration     string    `json:"host_generation"`
@@ -2206,7 +2208,7 @@ func (s *Store) AcceptBrainInputAdmission(candidate BrainInputAdmission) (BrainI
 		} else {
 			database.HostForegroundTurn = &HostForegroundTurn{
 				HostSessionID: candidate.HostSessionID, HostGeneration: candidate.HostGeneration,
-				HostTurnID: turnID, ProviderActivityID: candidate.ProviderActivityID, StartedAt: acceptedAt,
+				HostTurnID: turnID, ProviderActivityID: candidate.ProviderActivityID, StartedAt: prepared.CreatedAt.UTC(),
 			}
 		}
 		if database.HostForegroundTurn.ProviderActivityID == "" {
@@ -2340,7 +2342,7 @@ func (s *Store) SettleBrainInputAdmission(
 					HostGeneration:     admission.HostGeneration,
 					HostTurnID:         admission.HostTurnID,
 					ProviderActivityID: admission.ProviderActivityID,
-					StartedAt:          acceptedAt,
+					StartedAt:          admission.CreatedAt.UTC(),
 				}
 			}
 		}
@@ -2866,6 +2868,62 @@ func (s *Store) CurrentHostForegroundTurn() (*HostForegroundTurn, error) {
 	}
 	copy := *database.HostForegroundTurn
 	return &copy, nil
+}
+
+// ConvergeHostForegroundAdmissionBoundary repairs a legacy foreground row
+// whose StartedAt was persisted at the post-provider acceptance commit. The
+// exact accepted BrainInputAdmission for the same Host/generation/turn is the
+// durable pre-mutation authority, so convergence can only move the boundary
+// earlier to the oldest matching accepted Prepare time. The full foreground
+// identity is compared before replacement; a delayed repair can never mutate
+// a newer epoch.
+func (s *Store) ConvergeHostForegroundAdmissionBoundary(expected HostForegroundTurn) (HostForegroundTurn, bool, error) {
+	expected.HostSessionID = strings.TrimSpace(expected.HostSessionID)
+	expected.HostGeneration = strings.TrimSpace(expected.HostGeneration)
+	expected.HostTurnID = strings.TrimSpace(expected.HostTurnID)
+	expected.ProviderActivityID = strings.TrimSpace(expected.ProviderActivityID)
+	if expected.HostSessionID == "" || expected.HostGeneration == "" || expected.HostTurnID == "" || expected.StartedAt.IsZero() {
+		return HostForegroundTurn{}, false, fmt.Errorf("foreground Host identity and started_at are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return HostForegroundTurn{}, false, err
+	}
+	active := database.HostForegroundTurn
+	if active == nil {
+		return expected, false, nil
+	}
+	if active.HostSessionID != expected.HostSessionID ||
+		active.HostGeneration != expected.HostGeneration ||
+		active.HostTurnID != expected.HostTurnID ||
+		active.ProviderActivityID != expected.ProviderActivityID ||
+		!active.StartedAt.Equal(expected.StartedAt) {
+		return HostForegroundTurn{}, false, fmt.Errorf("foreground Host turn identity changed before admission-boundary convergence")
+	}
+	boundary := active.StartedAt.UTC()
+	for _, admission := range database.BrainInputAdmissions {
+		if admission.State != BrainInputAdmissionAccepted ||
+			admission.HostSessionID != active.HostSessionID ||
+			admission.HostGeneration != active.HostGeneration ||
+			admission.HostTurnID != active.HostTurnID || admission.CreatedAt.IsZero() {
+			continue
+		}
+		if preparedAt := admission.CreatedAt.UTC(); preparedAt.Before(boundary) {
+			boundary = preparedAt
+		}
+	}
+	if boundary.Equal(active.StartedAt) {
+		copy := *active
+		return copy, false, nil
+	}
+	active.StartedAt = boundary
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return HostForegroundTurn{}, false, err
+	}
+	copy := *active
+	return copy, true, nil
 }
 
 // RetireHostForegroundTurn clears only the exact foreground identity observed
