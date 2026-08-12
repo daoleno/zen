@@ -750,6 +750,79 @@ func TestSignalAdversarialRelinquishedRunningTurnDoesNotBlockReservedSuccessorAd
 	}
 }
 
+// A delivered stale/result Event retains the incumbent owner projection until
+// exact continue promotes the reserved successor. That projection is
+// disposition authority, not proof that the result-bearing Turn still owns
+// execution; admitting the successor must therefore remain a single-owner
+// transition without clearing the incumbent early.
+func TestSignalAdversarialRelinquishedProjectedOwnerDoesNotBlockReservedSuccessorAdmission(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incumbent := "brain-agent-projected-incumbent:@1"
+	item := createSignalTestWork(t, store, "Projected incumbent successor admission", incumbent)
+	appendSignalTestEvent(t, store, item, "projected-incumbent-successor")
+	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+
+	acceptedAt := time.Date(2026, 8, 13, 4, 5, 0, 0, time.UTC)
+	incumbentTurn := incumbent + ":turn:stale"
+	incumbentDigest := pendingSubmissionDigest("projected incumbent " + incumbentTurn)
+	seedContinueAuthorityTurn(
+		t, store, item.ID, incumbent, incumbentTurn,
+		watcher.TurnRunning, watcher.TurnAdmission{
+			Stream: "provider", ID: "projected-incumbent-admission", Cursor: 1,
+			SHA256: incumbentDigest, At: acceptedAt,
+		}, acceptedAt,
+	)
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.stale",
+		DedupeKey:  sessionTurnEventDedupeKey(incumbent, incumbentTurn, "session.stale"),
+		PayloadRef: "session:" + incumbent, SourceName: incumbent,
+		Actionable: true, CoalescedInto: delivered.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	successor := "brain-agent-projected-successor:@2"
+	if _, err := store.ReserveWorkSuccessor(item.ID, successor); err != nil {
+		t.Fatal(err)
+	}
+	successorTurn := successor + ":turn:1"
+	successorDigest := pendingSubmissionDigest("projected successor payload")
+	if _, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: successor, ProposedTurnID: successorTurn,
+		Receipt: successorTurn, PayloadSHA256: successorDigest,
+		ProcessIdentity: "projected-successor-process", PaneGeneration: "projected-successor-pane",
+		AcceptedAt: acceptedAt.Add(time.Minute), Mode: watcher.TurnSubmissionFresh,
+		SignalProtocol: true,
+	}); err != nil || !created {
+		t.Fatalf("prepare projected successor created=%v err=%v", created, err)
+	}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: successor, ProposedTurnID: successorTurn, Receipt: successorTurn,
+		PayloadSHA256: successorDigest, ActivityID: "projected-successor-activity",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "projected-successor-admission", Cursor: 2,
+			SHA256: successorDigest, At: acceptedAt.Add(time.Minute + time.Second),
+		},
+		ResolvedAt: acceptedAt.Add(time.Minute + time.Second),
+	}); err != nil {
+		t.Fatalf("reserved successor admission was blocked by relinquished projected owner: %v", err)
+	}
+
+	current, err := store.Work(item.ID)
+	if err != nil || current.OwnerSessionID != incumbent || current.SuccessorReservation == nil ||
+		current.SuccessorReservation.ProviderTurnID != successorTurn {
+		t.Fatalf("pre-disposition Work=%+v err=%v", current, err)
+	}
+	_, continued := resolveAdversarialEvent(t, store, delivered, WorkDispositionContinue, nil, successor)
+	if continued.OwnerSessionID != successor || continued.SuccessorReservation != nil {
+		t.Fatalf("projected-owner continuation did not promote exact successor: %+v", continued)
+	}
+}
+
 func TestSignalAdversarialRogueNonOwnerTurnStillFailsBesideLiveOwner(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

@@ -789,6 +789,16 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 		if item.SuccessorReservation != nil {
 			reserved = strings.TrimSpace(item.SuccessorReservation.SessionID)
 		}
+		// Exact continue keeps the old owner projection until the Host atomically
+		// promotes its reserved successor. If this exact owner Turn has already
+		// emitted a result, it has relinquished execution even though the owner
+		// string is intentionally retained for disposition authority. Count only
+		// the admitted successor. A different live owner Turn with no result still
+		// participates below and rejects concurrent execution.
+		if reserved != "" && reserved != owner && turn.SessionID == owner &&
+			workTurnHasRelinquishmentEvidence(database, item.ID, turn) {
+			continue
+		}
 		if turn.SessionID != owner && turn.SessionID != reserved {
 			state := reduceWorkProgressState(database, item)
 			// The canonical Turn reducer may explicitly relinquish a blocked or
