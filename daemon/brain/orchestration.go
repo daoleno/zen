@@ -793,11 +793,22 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 			state := reduceWorkProgressState(database, item)
 			// The canonical Turn reducer may explicitly relinquish a blocked or
 			// stale execution owner while retaining its exact Turn as lifecycle
-			// evidence. Ready attention or a later typed wait then owns progress;
-			// exact continue may promote this same active Session again.
-			if owner != "" || (!state.Ready && !state.Waiting) {
+			// evidence. Ready attention, a typed wait, or another canonical owner
+			// then owns progress; exact continue may promote this same active
+			// Session again.
+			relinquished := workSessionHasRelinquishmentEvidence(database, item.ID, turn.SessionID)
+			if !relinquished && (owner != "" || (!state.Ready && !state.Waiting)) {
 				return fmt.Errorf("brain_turns: active Session %q is not an owner or reserved successor of Work %q", turn.SessionID, item.ID)
 			}
+			// Once ready attention, a typed wait, or explicit Session-result
+			// evidence has replaced execution ownership, a non-owner Turn is
+			// durable lifecycle evidence only. Do not count it as an active
+			// execution Session: doing so makes the exact admission of a newly
+			// reserved successor look like a second concurrent owner and rolls
+			// back the otherwise valid transaction. A rogue non-owner beside a
+			// live owner still fails above unless its own result Event proves the
+			// relinquishment.
+			continue
 		}
 		if activeByWork[item.ID] == nil {
 			activeByWork[item.ID] = map[string]struct{}{}
@@ -808,6 +819,21 @@ func validateActiveExecutionOwners(database orchestrationDatabase) error {
 		}
 	}
 	return nil
+}
+
+func workSessionHasRelinquishmentEvidence(database orchestrationDatabase, workID, sessionID string) bool {
+	workID = strings.TrimSpace(workID)
+	sessionID = strings.TrimSpace(sessionID)
+	if workID == "" || sessionID == "" {
+		return false
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID == workID && strings.TrimSpace(event.SourceName) == sessionID &&
+			isProjectedWorkResultEvent(event.Kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func isHostHandlingTurn(database orchestrationDatabase, turn TurnRecord) bool {

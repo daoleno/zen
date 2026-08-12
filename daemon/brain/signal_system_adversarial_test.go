@@ -647,6 +647,152 @@ func TestSignalAdversarialSuccessorRunningPreservesDeliveredDispositionRevision(
 	}
 }
 
+// A ready Host handling owns progress after the previous delegated execution
+// owner has been relinquished. Its still-running Turn remains exact lifecycle
+// evidence, but it cannot count as a concurrent execution owner when the Host
+// reserves and admits a different successor. The successor admission and exact
+// continue disposition must converge without deleting or terminalizing the
+// historical Turn.
+func TestSignalAdversarialRelinquishedRunningTurnDoesNotBlockReservedSuccessorAdmission(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incumbent := "brain-agent-relinquished:@1"
+	item := createSignalTestWork(t, store, "Relinquished owner successor admission", incumbent)
+	appendSignalTestEvent(t, store, item, "relinquished-successor")
+	delivered, _ := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
+
+	// The delivered attention is now the singular progress owner. Clear the
+	// historical owner projection while retaining its nonterminal Turn below.
+	store.mu.Lock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	workIndex := workIndex(database.BrainWork, item.ID)
+	if workIndex < 0 {
+		store.mu.Unlock()
+		t.Fatal("Work disappeared before relinquished-turn fixture setup")
+	}
+	database.BrainWork[workIndex].OwnerSessionID = ""
+	database.BrainWork[workIndex].OwnerDelegated = false
+	if err := store.persistOrchestrationLocked(database); err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	store.mu.Unlock()
+
+	acceptedAt := time.Date(2026, 8, 13, 3, 30, 0, 0, time.UTC)
+	incumbentTurn := incumbent + ":turn:stale"
+	incumbentDigest := pendingSubmissionDigest("continue authority " + incumbentTurn)
+	incumbentAdmission := watcher.TurnAdmission{
+		Stream: "provider", ID: "incumbent-admission", Cursor: 1,
+		SHA256: incumbentDigest, At: acceptedAt,
+	}
+	seedContinueAuthorityTurn(
+		t, store, item.ID, incumbent, incumbentTurn,
+		watcher.TurnRunning, incumbentAdmission, acceptedAt,
+	)
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.stale",
+		DedupeKey:  "session:" + incumbent + ":turn:" + incumbentTurn + ":session.stale",
+		PayloadRef: "session:" + incumbent, SourceName: incumbent,
+		Actionable: true, CoalescedInto: delivered.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	successor := "brain-agent-reserved-successor:@2"
+	if _, err := store.ReserveWorkSuccessor(item.ID, successor); err != nil {
+		t.Fatal(err)
+	}
+	successorTurn := successor + ":turn:1"
+	successorDigest := pendingSubmissionDigest("reserved successor payload")
+	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+		WorkID: item.ID, SessionID: successor, ProposedTurnID: successorTurn,
+		Receipt: successorTurn, PayloadSHA256: successorDigest,
+		ProcessIdentity: "successor-process", PaneGeneration: "successor-pane",
+		AcceptedAt: acceptedAt.Add(time.Minute), Mode: watcher.TurnSubmissionFresh,
+		SignalProtocol: true,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare successor=%+v created=%v err=%v", pending, created, err)
+	}
+	successorAdmission := watcher.TurnAdmission{
+		Stream: "provider", ID: "successor-admission", Cursor: 2,
+		SHA256: successorDigest, At: acceptedAt.Add(time.Minute + time.Second),
+	}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: successor, ProposedTurnID: successorTurn, Receipt: successorTurn,
+		PayloadSHA256: successorDigest, ActivityID: "successor-activity",
+		Admission: successorAdmission, ResolvedAt: acceptedAt.Add(time.Minute + time.Second),
+	}); err != nil {
+		t.Fatalf("reserved successor admission was blocked by relinquished Turn: %v", err)
+	}
+
+	current, err := store.Work(item.ID)
+	if err != nil || current.SuccessorReservation == nil ||
+		current.SuccessorReservation.ProviderTurnID != successorTurn ||
+		current.Revision != delivered.DeliveryWorkRevision {
+		t.Fatalf("accepted successor changed disposition authority: Work=%+v delivery=%+v err=%v", current, delivered, err)
+	}
+	resolvedEvent, continued := resolveAdversarialEvent(
+		t, store, delivered, WorkDispositionContinue, nil, successor,
+	)
+	if resolvedEvent.HandledAt == nil || continued.OwnerSessionID != successor || continued.SuccessorReservation != nil {
+		t.Fatalf("exact successor continuation did not converge: Event=%+v Work=%+v", resolvedEvent, continued)
+	}
+	if historical, found, err := store.TurnByID(incumbent, incumbentTurn); err != nil || !found || historical.Status != watcher.TurnRunning {
+		t.Fatalf("relinquished lifecycle evidence was lost: Turn=%+v found=%v err=%v", historical, found, err)
+	}
+}
+
+func TestSignalAdversarialRogueNonOwnerTurnStillFailsBesideLiveOwner(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "brain-agent-canonical-owner:@1"
+	item := createSignalTestWork(t, store, "Reject rogue non-owner", owner)
+	acceptedAt := time.Date(2026, 8, 13, 3, 35, 0, 0, time.UTC)
+	ownerTurn := owner + ":turn:1"
+	ownerDigest := pendingSubmissionDigest("continue authority " + ownerTurn)
+	ownerAdmission := watcher.TurnAdmission{
+		Stream: "provider", ID: "owner-admission", Cursor: 1,
+		SHA256: ownerDigest, At: acceptedAt,
+	}
+	seedContinueAuthorityTurn(t, store, item.ID, owner, ownerTurn, watcher.TurnRunning, ownerAdmission, acceptedAt)
+
+	rogue := "brain-agent-rogue-non-owner:@2"
+	rogueTurn := rogue + ":turn:1"
+	rogueDigest := pendingSubmissionDigest("continue authority " + rogueTurn)
+	rogueAdmission := watcher.TurnAdmission{
+		Stream: "provider", ID: "rogue-admission", Cursor: 2,
+		SHA256: rogueDigest, At: acceptedAt.Add(time.Second),
+	}
+	store.mu.Lock()
+	database, err := store.loadOrchestrationLocked()
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	database.BrainTurns = append(database.BrainTurns, TurnRecord{
+		SessionID: rogue, TurnID: rogueTurn, WorkID: item.ID,
+		Status: watcher.TurnRunning, Receipt: "receipt-" + rogueTurn,
+		PayloadSHA256: rogueDigest, Admission: rogueAdmission, ActivityID: "rogue-activity",
+		AcceptedAt: acceptedAt.Add(time.Second), LeaseDeadline: acceptedAt.Add(turnLeaseGrace),
+		UpdatedAt: acceptedAt.Add(time.Second), Facts: []TurnFactRecord{},
+	})
+	err = store.persistOrchestrationLocked(database)
+	store.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "is not an owner or reserved successor") {
+		t.Fatalf("rogue non-owner beside live owner err=%v", err)
+	}
+}
+
 // canonicalHostDeliveryWatcher exercises the same prepare/provider/resolve
 // transaction owned by Watcher.SubmitBrainHostInput. It deliberately does not
 // bootstrap an Admitted Turn: product-path Host delivery evidence must come
