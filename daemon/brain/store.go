@@ -223,14 +223,17 @@ func (s *Store) SetHostExecutorID(executorID string) error {
 	if err != nil {
 		return err
 	}
-	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
-		ID:                host.ID,
-		ExecutorID:        executorID,
-		UpdatedAt:         time.Now().UTC(),
-		ProviderSessionID: host.ProviderSessionID,
-		TranscriptPath:    host.TranscriptPath,
-		ProviderDataRoot:  host.ProviderDataRoot,
-	})
+	next := hostSessionFile{
+		ID:         host.ID,
+		ExecutorID: executorID,
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if strings.TrimSpace(host.ExecutorID) == executorID || strings.TrimSpace(host.ExecutorID) == "" {
+		next.ProviderSessionID = host.ProviderSessionID
+		next.TranscriptPath = host.TranscriptPath
+		next.ProviderDataRoot = host.ProviderDataRoot
+	}
+	return writeJSONFile(s.HostSessionPath(), next)
 }
 
 // SetHostProviderTranscript persists the stable Host Executor Session provider

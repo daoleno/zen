@@ -1371,11 +1371,13 @@ func (s *Service) consumeRecoveredClaimedEvent(claimed WorkEvent) error {
 
 // recoverPendingFromBoundHostConversation uses the Host Session's persisted
 // provider transcript identity, never cwd/latest-session guessing. The latest
-// provider-native user row must carry the exact pending digest and occur after
-// admission; the current provider Activity must be a valid lifecycle enclosing
-// that row. Only then may the pending transaction become a canonical Turn.
-// matched=true means exact evidence was found and any resolution error is a
-// consistency failure rather than a reason to fall back to ambient probing.
+// public provider-native user row must carry the exact pending digest (native
+// admission hash or visible body) and occur after admission; Grok chat_history
+// rows may omit timestamps, in which case the enclosing Activity clock is the
+// admission time. The current provider Activity must be a valid lifecycle
+// enclosing that row. Only then may the pending transaction become a canonical
+// Turn. matched=true means exact evidence was found and any resolution error is
+// a consistency failure rather than a reason to fall back to ambient probing.
 func (s *Service) recoverPendingFromBoundHostConversation(
 	submission watcher.TurnSubmission,
 ) (recovered bool, matched bool, err error) {
@@ -1422,26 +1424,36 @@ func boundHostConversationSubmissionResolution(
 		strings.TrimSpace(conversation.Path) == "" {
 		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
+	wantDigest := strings.TrimSpace(submission.PayloadSHA256)
 	var userEvent *work.CodexConversationEvent
 	for index := len(conversation.Events) - 1; index >= 0; index-- {
 		event := &conversation.Events[index]
-		if event.Kind == "user_message" {
-			userEvent = event
-			break
+		if event.Kind != "user_message" {
+			continue
 		}
+		if work.IsPrivateHostPrompt(event.Body) {
+			continue
+		}
+		userEvent = event
+		break
 	}
 	if userEvent == nil || strings.TrimSpace(userEvent.ID) == "" || userEvent.Seq <= 0 ||
-		strings.TrimSpace(userEvent.AdmissionSHA256) != strings.TrimSpace(submission.PayloadSHA256) {
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
-	}
-	userAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(userEvent.Timestamp))
-	if err != nil || userAt.UTC().Before(submission.AcceptedAt.UTC()) {
+		!eventMatchesPendingPayloadDigest(*userEvent, wantDigest) {
 		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	activity := conversation.Activity
 	activityID := strings.TrimSpace(activity.ID)
-	activityStartedAt, startErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(activity.StartedAt))
-	if activityID == "" || startErr != nil || activityStartedAt.IsZero() {
+	activityStartedAt, activityOK := parseBoundHostAdmissionTime(activity.StartedAt)
+	if activityID == "" || !activityOK || activityStartedAt.IsZero() {
+		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+	}
+	userAt, userOK := parseBoundHostAdmissionTime(userEvent.Timestamp)
+	if !userOK {
+		// Grok chat_history user rows have no timestamps. The enclosing
+		// provider Activity clock is the native admission time.
+		userAt = activityStartedAt
+	}
+	if userAt.Before(submission.AcceptedAt.UTC()) {
 		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	switch activity.Status {
@@ -1452,14 +1464,14 @@ func boundHostConversationSubmissionResolution(
 	}
 	settledAt := time.Time{}
 	if strings.TrimSpace(activity.SettledAt) != "" {
-		var settledErr error
-		settledAt, settledErr = time.Parse(time.RFC3339Nano, strings.TrimSpace(activity.SettledAt))
-		if settledErr != nil || settledAt.UTC().Before(userAt.UTC()) {
+		var settledOK bool
+		settledAt, settledOK = parseBoundHostAdmissionTime(activity.SettledAt)
+		if !settledOK || settledAt.Before(userAt) {
 			return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
 		}
 	}
-	if resolvedAt.Before(userAt.UTC()) {
-		resolvedAt = userAt.UTC()
+	if resolvedAt.Before(userAt) {
+		resolvedAt = userAt
 	}
 	stream := strings.Join([]string{
 		strings.TrimSpace(conversation.Source),
@@ -1468,11 +1480,11 @@ func boundHostConversationSubmissionResolution(
 	}, "\x00")
 	observation := watcher.ProviderActivityObservation{
 		ID: activityID, Status: string(activity.Status),
-		StartedAt: activityStartedAt.UTC(), SettledAt: settledAt.UTC(),
+		StartedAt: activityStartedAt, SettledAt: settledAt,
 		Structured:      true,
 		AdmissionStream: stream, AdmissionID: strings.TrimSpace(userEvent.ID),
-		AdmissionCursor: uint64(userEvent.Seq), AdmissionAt: userAt.UTC(),
-		InputSHA256: strings.TrimSpace(userEvent.AdmissionSHA256),
+		AdmissionCursor: uint64(userEvent.Seq), AdmissionAt: userAt,
+		InputSHA256: wantDigest,
 	}
 	return watcher.TurnSubmissionResolution{
 		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
@@ -1480,10 +1492,44 @@ func boundHostConversationSubmissionResolution(
 		ActivityID: activityID,
 		Admission: watcher.TurnAdmission{
 			Stream: stream, ID: strings.TrimSpace(userEvent.ID), Cursor: uint64(userEvent.Seq),
-			SHA256: strings.TrimSpace(userEvent.AdmissionSHA256), At: userAt.UTC(),
+			SHA256: wantDigest, At: userAt,
 		},
 		ResolvedAt: resolvedAt.UTC(),
 	}, observation, true
+}
+
+func eventMatchesPendingPayloadDigest(event work.CodexConversationEvent, wantDigest string) bool {
+	wantDigest = strings.TrimSpace(wantDigest)
+	if wantDigest == "" {
+		return false
+	}
+	if strings.TrimSpace(event.AdmissionSHA256) == wantDigest {
+		return true
+	}
+	body := strings.TrimSpace(event.Body)
+	if body == "" {
+		return false
+	}
+	if AdmissionDigest(body) == wantDigest {
+		return true
+	}
+	if parsed, ok := work.ParseCanonicalDirectWorkEventInput(body); ok {
+		return AdmissionDigest(work.FormatDirectWorkEventInput(parsed)) == wantDigest
+	}
+	return false
+}
+
+func parseBoundHostAdmissionTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // hostForegroundTerminalEvidence resolves strong exact terminal evidence for
@@ -1554,9 +1600,19 @@ func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
 				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", event.ID, releaseErr)
 			}
 		}
+		if result.Outcome == watcher.InputAmbiguous {
+			if recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(event); recoveryErr == nil && recovered {
+				return true, nil
+			}
+		}
 		return false, sendErr
 	}
 	if result.Outcome != watcher.InputAccepted {
+		if result.Outcome == watcher.InputAmbiguous {
+			if recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(event); recoveryErr == nil && recovered {
+				return true, nil
+			}
+		}
 		return false, fmt.Errorf("Work Event %s Session Input returned non-accepted outcome %q", event.ID, result.Outcome)
 	}
 	if result.TurnID != event.ProviderTurnID {
@@ -2104,39 +2160,58 @@ func threadIDFromConversationScopeKey(scopeKey string) string {
 
 // BindHostProviderTranscript resolves and persists the Host Executor Session's
 // provider transcript identity from the live host process when needed.
-func (s *Service) BindHostProviderTranscript() (work.CodexTranscriptIdentity, error) {
+func (s *Service) BindHostProviderTranscript() (work.HostTranscriptIdentity, error) {
 	if s == nil || s.store == nil {
-		return work.CodexTranscriptIdentity{}, nil
+		return work.HostTranscriptIdentity{}, nil
 	}
 	host, err := s.store.HostSession()
 	if err != nil {
-		return work.CodexTranscriptIdentity{}, err
+		return work.HostTranscriptIdentity{}, err
 	}
-	existing := work.CodexTranscriptIdentity{
+	var agent *classifier.Agent
+	if strings.TrimSpace(host.ID) != "" && s.watcher != nil {
+		agent = s.watcher.GetAgent(host.ID)
+	}
+	provider := s.hostTranscriptProvider(host, agent)
+	existing := work.HostTranscriptIdentity{
+		Provider:  provider,
 		SessionID: host.ProviderSessionID,
 		Path:      host.TranscriptPath,
 		DataRoot:  host.ProviderDataRoot,
 	}
-	if strings.TrimSpace(host.ID) == "" || s.watcher == nil {
+	if strings.TrimSpace(host.ID) == "" || s.watcher == nil || agent == nil {
 		return existing, nil
 	}
-	agent := s.watcher.GetAgent(host.ID)
-	if agent == nil {
-		return existing, nil
-	}
-	resolved := work.ResolveCodexTranscriptIdentityForAgent(*agent, existing)
+	resolved := work.ResolveHostTranscriptIdentityForAgent(*agent, existing, provider)
 	if strings.TrimSpace(resolved.SessionID) == strings.TrimSpace(existing.SessionID) &&
 		strings.TrimSpace(resolved.Path) == strings.TrimSpace(existing.Path) &&
-		strings.TrimSpace(resolved.DataRoot) == strings.TrimSpace(existing.DataRoot) {
+		strings.TrimSpace(resolved.DataRoot) == strings.TrimSpace(existing.DataRoot) &&
+		strings.TrimSpace(resolved.Provider) == strings.TrimSpace(existing.Provider) {
 		return resolved, nil
 	}
-	if strings.TrimSpace(resolved.SessionID) == "" && strings.TrimSpace(resolved.Path) == "" {
-		return existing, nil
+	if !resolved.Bound() {
+		return work.HostTranscriptIdentity{Provider: provider}, nil
 	}
 	if err := s.store.SetHostProviderTranscript(resolved.SessionID, resolved.Path, resolved.DataRoot); err != nil {
 		return resolved, err
 	}
 	return resolved, nil
+}
+
+func (s *Service) hostTranscriptProvider(host HostSession, agent *classifier.Agent) string {
+	if agent != nil {
+		if provider := work.InferAgentProvider(agent.Command, agent.Name); provider != "" {
+			return provider
+		}
+	}
+	if provider := work.InferAgentProvider(host.ExecutorID); provider != "" && provider != work.AgentProviderCustom {
+		return provider
+	}
+	executor := s.hostExecutor()
+	if provider := strings.TrimSpace(executor.Provider); provider != "" && provider != work.AgentProviderCustom {
+		return provider
+	}
+	return work.InferAgentProvider(host.ExecutorID, executor.ID, executor.Command)
 }
 
 // HostBoundProviderConversation loads assistant/final transcript rows from the
@@ -2149,25 +2224,35 @@ func (s *Service) HostBoundProviderConversation() (work.CodexConversation, error
 	if err != nil {
 		return work.CodexConversation{}, err
 	}
-	if strings.TrimSpace(identity.SessionID) == "" && strings.TrimSpace(identity.Path) == "" {
+	if !identity.Bound() {
 		host, hostErr := s.store.HostSession()
 		if hostErr != nil {
 			return work.CodexConversation{}, hostErr
 		}
-		identity = work.CodexTranscriptIdentity{
+		var agent *classifier.Agent
+		if strings.TrimSpace(host.ID) != "" && s.watcher != nil {
+			agent = s.watcher.GetAgent(host.ID)
+		}
+		identity = work.HostTranscriptIdentity{
+			Provider:  s.hostTranscriptProvider(host, agent),
 			SessionID: host.ProviderSessionID,
 			Path:      host.TranscriptPath,
 			DataRoot:  host.ProviderDataRoot,
 		}
 	}
-	if strings.TrimSpace(identity.SessionID) == "" && strings.TrimSpace(identity.Path) == "" {
+	if !identity.Bound() {
 		return work.CodexConversation{
 			Available: false,
 			Reason:    "host_transcript_unbound",
 			Events:    []work.CodexConversationEvent{},
 		}, nil
 	}
-	return work.LoadCodexConversationByIdentity(identity)
+	conversation, err := work.LoadHostConversationByIdentity(identity)
+	if err != nil {
+		return work.CodexConversation{}, err
+	}
+	conversation.Events = work.SuppressPrivateHostTurns(conversation.Events)
+	return conversation, nil
 }
 
 func (s *Service) ThreadTimeline(threadID string, limit int) ([]TimelineItem, error) {

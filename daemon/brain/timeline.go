@@ -499,6 +499,7 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	if threadID == "" {
 		return nil
 	}
+	conversation.Events = work.SuppressPrivateHostTurns(conversation.Events)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	allItems, err := s.readAllTimelineItemsLocked()
