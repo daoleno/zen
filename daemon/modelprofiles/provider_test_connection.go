@@ -25,17 +25,14 @@ func (o *Owner) TestProviderConnection(in ProviderConnectionTestInput) (Provider
 		return out, fmt.Errorf("%w: base_url and credential are required", ErrInvalid)
 	}
 
-	modelID := "gpt-5"
-	if client == ClientClaude {
-		modelID = "claude-sonnet-4-6"
-	}
+	// Empty ModelID: compileProviderConnectionForClient uses the preset
+	// ClientModel contract id as the ephemeral probe placeholder.
 	profile, err := compileProviderConnectionForClient(ProviderConnectionInput{
 		ID:       "connection-test",
 		Name:     "Connection test",
 		Client:   client,
 		PresetID: ProviderPresetCustom,
 		BaseURL:  baseURL,
-		ModelID:  modelID,
 		Advanced: true,
 	}, executorFromClient(client))
 	if err != nil {

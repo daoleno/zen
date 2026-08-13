@@ -301,12 +301,17 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 	if clientModel == "" {
 		return Profile{}, fmt.Errorf("%w: preset missing client contract for %s", ErrInvalid, executor)
 	}
+	// Upstream model for the ephemeral client Profile. Account connections and
+	// custom presets may omit model_id (DefaultModel empty). Prefer explicit
+	// input, then preset default, then the ClientModel contract id as a
+	// compile-only placeholder so /v1/models probes and empty-model compiles
+	// stay valid without persisting a connection-owned model.
 	modelID := in.ModelID
 	if modelID == "" {
 		modelID = spec.DefaultModel[executor]
 	}
 	if modelID == "" {
-		return Profile{}, fmt.Errorf("%w: model_id is required", ErrInvalid)
+		modelID = clientModel
 	}
 	if !in.Advanced && normalizeID(in.PresetID) != ProviderPresetCustom {
 		if err := requireTrustedOrFail(in.PresetID, modelID); err != nil {

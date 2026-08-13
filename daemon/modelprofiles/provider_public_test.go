@@ -362,6 +362,90 @@ func TestProviderConnectionProbeIsTransientAndUsesClientAuth(t *testing.T) {
 	}
 }
 
+// Regression: custom/advanced account connections intentionally omit model_id.
+// Discover and compile probes must use the ClientModel contract placeholder
+// instead of failing with "model_id is required".
+func TestDiscoverCustomAccountConnectionWithoutModelID(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"data":[{"id":"upstream-a"},{"id":"upstream-b"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, client := range []string{ClientCodex, ClientClaude} {
+		t.Run(client, func(t *testing.T) {
+			owner := startTestOwner(t, func(string) (string, bool) { return "", false })
+			store := NewMemoryCredentialStore()
+			owner.creds = store
+			owner.router.creds = store
+
+			proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+				ID:       "custom-" + client,
+				Name:     "gateway.example",
+				Client:   client,
+				PresetID: ProviderPresetCustom,
+				BaseURL:  srv.URL + "/v1",
+				Advanced: true,
+			}, 0, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn, err := owner.GetProfile("custom-" + client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conn.Model != "" {
+				t.Fatalf("durable account must not own model_id: %#v", conn)
+			}
+
+			if _, err := owner.SetProviderCredential(conn.ID, "sk-test-not-a-secret"); err != nil {
+				t.Fatal(err)
+			}
+
+			target, err := CompileConnectionTarget(conn, client, "")
+			if err != nil {
+				t.Fatalf("empty-model compile probe: %v", err)
+			}
+			wantClientModel := "gpt-5"
+			if client == ClientClaude {
+				wantClientModel = "claude-sonnet-4-6"
+			}
+			if target.Model != wantClientModel || target.ClientModel != wantClientModel {
+				t.Fatalf("probe placeholder model=%q client_model=%q want %q", target.Model, target.ClientModel, wantClientModel)
+			}
+
+			owner.mu.Lock()
+			owner.discovery = newModelDiscoveryCache()
+			owner.discovery.client = srv.Client()
+			owner.mu.Unlock()
+
+			beforeHits := hits
+			entries, err := owner.DiscoverProviderModels(conn.ID, true)
+			if err != nil {
+				t.Fatalf("discover: %v", err)
+			}
+			if hits <= beforeHits {
+				t.Fatalf("discover did not hit upstream (hits=%d)", hits)
+			}
+			if len(entries) == 0 {
+				t.Fatalf("expected discovered entries, got %#v", entries)
+			}
+
+			after, err := owner.GetProfile(conn.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Model != "" {
+				t.Fatalf("discover must not persist model_id onto account: %#v", after)
+			}
+			if owner.Catalog().Revision != proj.Revision {
+				t.Fatalf("discover mutated catalog revision %d -> %d", proj.Revision, owner.Catalog().Revision)
+			}
+		})
+	}
+}
+
 func TestCustomDefaultUsesDiscoveredModelWithoutManualModelInput(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
