@@ -84,7 +84,7 @@ func (o *Owner) modelsForConnection(profile Profile, forceDiscover bool) ([]Prov
 		manual = normalizeSpace(profile.Model)
 	}
 	if o == nil {
-		return projectModelEntries(trusted, manual, nil, nil, false), nil
+		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
 	}
 	if !forceDiscover {
 		o.mu.Lock()
@@ -92,16 +92,112 @@ func (o *Owner) modelsForConnection(profile Profile, forceDiscover bool) ([]Prov
 		o.mu.Unlock()
 		if cache != nil {
 			if e, ok := cache.get(profile.ID); ok {
-				return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Err == "" && len(e.IDs) > 0), nil
+				return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == "" && len(e.IDs) > 0), nil
 			}
 		}
-		return projectModelEntries(trusted, manual, nil, nil, false), nil
+		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
 	}
 	entries, err := o.DiscoverProviderModels(profile.ID, true)
 	if err != nil && len(entries) == 0 {
-		return projectModelEntries(trusted, manual, nil, nil, false), nil
+		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
 	}
 	return entries, nil
+}
+
+// supportedModelEntriesLocked projects the synced support allowlist of a
+// connection (available entries only, in catalog order). Caller must hold
+// o.mu when reading through an Owner; nil-safe for the zero Owner. Returns nil
+// when no synced catalog exists yet (never syncs, never reaches upstream).
+func (o *Owner) supportedModelEntriesLocked(profile Profile) []ProviderModelEntry {
+	entries, synced := o.syncedModelCatalogLocked(profile)
+	if !synced {
+		return nil
+	}
+	out := make([]ProviderModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Available {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// syncedModelCatalogLocked projects the full synced catalog of a connection
+// (with per-model availability) and reports whether a discovery cache entry
+// exists. Never syncs and never reaches upstream.
+func (o *Owner) syncedModelCatalogLocked(profile Profile) ([]ProviderModelEntry, bool) {
+	presetID := inferPresetID(profile)
+	trusted := presetTrustedModels(presetID)
+	manual := ""
+	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
+		manual = normalizeSpace(profile.Model)
+	}
+	if o == nil || o.discovery == nil {
+		return nil, false
+	}
+	e, ok := o.discovery.get(profile.ID)
+	if !ok || len(e.IDs) == 0 {
+		return nil, false
+	}
+	return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == ""), true
+}
+
+// resolveSupportedLaunchModelLocked applies the deterministic launch-model rule
+// for Provider account connections: the client-selected model is used while it
+// stays in the synced support allowlist; an unsupported or missing selection
+// falls back to the first supported model (catalog order); a synced allowlist
+// with every model disabled fails closed. Legacy executor-scoped profiles own
+// an explicit model and are untouched. Returns (profile, false) when the
+// caller must fail closed.
+func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, bool) {
+	// The ephemeral launch target loses account scope during compile; the
+	// durable connection record decides whether the allowlist applies.
+	durable, err := o.store.Get(profile.ID)
+	if err != nil || !isAccountConnection(durable) {
+		return profile, true
+	}
+	entries, synced := o.syncedModelCatalogLocked(durable)
+	candidate := ""
+	if !profile.ModelPlaceholder {
+		candidate = normalizeSpace(profile.Model)
+	}
+	firstSupported := ""
+	supportedSet := map[string]struct{}{}
+	for _, entry := range entries {
+		if !entry.Available {
+			continue
+		}
+		supportedSet[entry.ID] = struct{}{}
+		if firstSupported == "" {
+			firstSupported = entry.ID
+		}
+	}
+
+	if candidate != "" {
+		if _, ok := supportedSet[candidate]; ok || !synced {
+			// The client's explicit selection is still supported, or no synced
+			// allowlist exists to contradict it: use it unchanged.
+			return profile, true
+		}
+		// The selected model is no longer supported: deterministic visible
+		// fallback to the first supported model.
+		if firstSupported != "" {
+			profile.Model = firstSupported
+			profile.ModelPlaceholder = false
+			return profile, true
+		}
+		// A synced allowlist exists but every model is disabled: fail closed
+		// rather than route a model the client turned off.
+		return profile, false
+	}
+
+	// No client selection: deterministic fallback from the allowlist.
+	if firstSupported != "" {
+		profile.Model = firstSupported
+		profile.ModelPlaceholder = false
+		return profile, true
+	}
+	return profile, false
 }
 
 func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnection {
@@ -185,9 +281,24 @@ func (o *Owner) DeleteProviderConnection(id string, revision int64) (ProviderCat
 	return proj, delErr
 }
 
-// SetProviderDefault sets the future-launch default connection + model for a
-// client in one catalog mutation and one atomic durable write. The exact
-// (connection, client, model) target is compiled/validated before persistence.
+// CodexRoutedDefault reports whether the effective Codex connection is a
+// routed Provider/API-key connection rather than the direct official
+// ChatGPT/Codex login. Official Codex subscription usage is meaningful only
+// for the direct login, so Stats suppression keys off this authoritative fact.
+func (o *Owner) CodexRoutedDefault() bool {
+	if o == nil || o.store == nil {
+		return false
+	}
+	connID, _ := o.store.ClientDefault(ClientCodex)
+	return normalizeID(connID) != ""
+}
+
+// SetProviderDefault sets the future-launch default connection for a client in
+// one catalog mutation and one atomic durable write. The gateway never owns a
+// model: modelID is the client's explicit selection (chosen from the synced
+// support allowlist) and is never fabricated from a preset or catalog. An empty
+// modelID preserves the existing client-selected model when the same connection
+// stays default, and clears it when the connection changes.
 func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID string, revision int64) (ProviderCatalogProjection, error) {
 	client := clientFromExecutor(clientOrExecutor)
 	connectionID = normalizeID(connectionID)
@@ -198,28 +309,25 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 			return ProviderCatalogProjection{}, err
 		}
 		if modelID == "" {
-			if spec, ok := lookupPreset(inferPresetID(raw)); ok {
-				modelID = spec.DefaultModel[executorFromClient(client)]
+			// Keep the client's recorded selection when the same connection
+			// remains the default; a new default connection starts without a
+			// fabricated model until the client chooses one.
+			currentConn, currentModel := o.store.ClientDefault(client)
+			if normalizeID(currentConn) == connectionID {
+				modelID = normalizeSpace(currentModel)
 			}
 		}
-		if modelID == "" {
-			entries, _ := o.modelsForConnection(raw, false)
-			for _, entry := range entries {
-				if entry.Available {
-					modelID = entry.ID
-					break
-				}
+		if modelID != "" {
+			target, err := CompileConnectionTarget(raw, client, modelID)
+			if err != nil {
+				return ProviderCatalogProjection{}, err
 			}
-		}
-		target, err := CompileConnectionTarget(raw, client, modelID)
-		if err != nil {
-			return ProviderCatalogProjection{}, err
-		}
-		// Fail closed: never persist a client default whose model is only a
-		// compile probe placeholder (Custom/Advanced connection with no explicit
-		// model and no discovered model to pick).
-		if target.ModelPlaceholder {
-			return ProviderCatalogProjection{}, ErrUpstreamModelRequired
+			// Fail closed: never persist a client default whose model is only a
+			// compile probe placeholder (connection with no explicit model). The
+			// launch path resolves a deterministic supported model instead.
+			if target.ModelPlaceholder {
+				return ProviderCatalogProjection{}, ErrUpstreamModelRequired
+			}
 		}
 	}
 	if _, err := o.store.SetClientDefault(client, connectionID, modelID, revision); err != nil {
@@ -227,6 +335,75 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 		return empty, err
 	}
 	return o.ProjectProviders()
+}
+
+// SetProviderModelSupport persists the client-side model support allowlist of
+// one connection: every discovered model is supported unless the client
+// explicitly disabled it. enabledIDs is the full set of models the client
+// wants to expose; the durable representation is the complement (disabled ids)
+// so a refresh never re-enables an explicitly disabled model while genuinely
+// new discovered models default enabled. The catalog revision is untouched;
+// durability comes from the discovery-cache file.
+func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string) (ProviderCatalogProjection, PersistResult, error) {
+	if o == nil || !o.started || o.store == nil {
+		return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	connectionID = normalizeID(connectionID)
+	profile, err := o.GetProfile(connectionID)
+	if err != nil {
+		return ProviderCatalogProjection{}, PersistResult{}, err
+	}
+	presetID := inferPresetID(profile)
+	trusted := presetTrustedModels(presetID)
+	manual := ""
+	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
+		manual = normalizeSpace(profile.Model)
+	}
+
+	o.mu.Lock()
+	if o.discovery == nil {
+		o.discovery = newModelDiscoveryCache()
+		if o.discoveryPath != "" {
+			if lerr := o.discovery.load(o.discoveryPath); lerr != nil {
+				o.discoveryLoadWarning = lerr
+			}
+		}
+	}
+	e, ok := o.discovery.get(connectionID)
+	if !ok || len(e.IDs) == 0 {
+		o.mu.Unlock()
+		return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf("%w: sync models before choosing support", ErrDiscoveryCacheInvalid)
+	}
+
+	enabledSet := map[string]struct{}{}
+	for _, id := range enabledIDs {
+		id = normalizeSpace(id)
+		if id != "" {
+			enabledSet[id] = struct{}{}
+		}
+	}
+	// The reference catalog is the full projected id set (trusted + discovered
+	// + LKG + manual). Disabled = reference minus the client's enabled set.
+	reference := projectModelEntries(trusted, manual, e.IDs, e.LastGood, nil, e.Err == "")
+	disabled := make([]string, 0, len(reference))
+	for _, entry := range reference {
+		if _, on := enabledSet[entry.ID]; !on {
+			disabled = append(disabled, entry.ID)
+		}
+	}
+	o.discovery.setDisabled(connectionID, disabled)
+
+	persist := PersistResult{Applied: true, Durable: true}
+	if o.discoveryPath != "" {
+		if serr := o.discovery.save(o.discoveryPath); serr != nil {
+			persist = PersistResultFromError(serr)
+			// Keep memory aligned with the intended allowlist even when the
+			// rename-sync is uncertain (applied-with-warning semantics).
+		}
+	}
+	o.mu.Unlock()
+	proj, _ := o.ProjectProviders()
+	return proj, persist, nil
 }
 
 // SetCredentialStore installs Zen's private credential store (or a test fake).

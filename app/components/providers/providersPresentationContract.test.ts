@@ -190,16 +190,30 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("clientForConnection(connection)");
   });
 
-  test("picking a model binds it via set_provider_default with modelId", () => {
-    expect(presentationSource).toContain("Choose model");
-    expect(presentationSource).toContain("modelSyncChoices(");
+  test("credentials keep one clear Edit-key flow; Clear key is gone", () => {
+    expect(presentationSource).toContain('label={ready ? "Replace key" : "Add API key"}');
+    expect(presentationSource).toContain("onOpenCredential");
+    expect(presentationSource).not.toContain("Clear key");
+    expect(presentationSource).not.toContain("onClearCredential");
+    expect(screenSource).not.toContain("clearProviderCredential");
+  });
+
+  test("model chips toggle gateway support, never a provider default", () => {
+    expect(presentationSource).toContain("Models");
+    expect(presentationSource).toContain("modelSupportChoices(");
     expect(presentationSource).toContain("onSelectModel(");
     expect(presentationSource).toContain("picker.client,");
-    expect(screenSource).toContain("runSelectModel");
-    expect(screenSource).toContain(
-      "wsClient.setProviderDefault(currentServerId!",
-    );
-    expect(screenSource).toContain("modelId,\n        revision,");
+    // The gateway never owns a default model: the picker is a support
+    // allowlist with compact chips, not a "default" radio list.
+    expect(presentationSource).not.toContain("Choose model");
+    expect(presentationSource).not.toMatch(/>Default</);
+    expect(presentationSource).not.toContain("pickerCurrentLabel");
+    expect(presentationSource).toContain("modelChipSelected");
+    expect(presentationSource).toContain("chipWrap");
+    expect(screenSource).toContain("runSetModels");
+    expect(screenSource).toContain("wsClient.setProviderModels");
+    expect(screenSource).toContain("toggleModelSupport(");
+    expect(screenSource).toContain("firstSupportedModel(");
   });
 
   test("rows show the bound model or a sync-models hint when none is bound", () => {

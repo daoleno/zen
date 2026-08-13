@@ -19,7 +19,12 @@ import {
   boundModelForConnection,
   clientForConnection,
   connectionRequiresModelSelection,
-  modelSyncChoices,
+  enabledModelIds,
+  firstSupportedModel,
+  launchSelectionFromSnapshot,
+  modelSupportChoices,
+  providerClientForCommand,
+  toggleModelSupport,
   type ProvidersSnapshot,
 } from "./index";
 
@@ -499,14 +504,10 @@ describe("Model sync and default binding policy", () => {
     expect(connectionRequiresModelSelection(null, "codex", "c1")).toBe(false);
   });
 
-  test("sync choices list available models and mark the bound one current", () => {
-    const snapshot = providerSnapshot({
-      defaults: {
-        codex: { connection_id: "c1", model_id: "gpt-5.6-sol" },
-      },
-    });
+  test("support chips mark the gateway's exposed models", () => {
+    const snapshot = providerSnapshot();
     const connection = snapshot.connections[0]!;
-    const choices = modelSyncChoices(snapshot, "codex", connection, [
+    const choices = modelSupportChoices(snapshot, connection, [
       { id: "gpt-5.6-sol", available: true, source: "discovered" },
       { id: "gpt-5.4-mini", available: true, source: "discovered" },
       { id: "retired-model", available: false, source: "lkg" },
@@ -514,23 +515,67 @@ describe("Model sync and default binding policy", () => {
     expect(choices.map((choice) => choice.model.id)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.4-mini",
+      "retired-model",
     ]);
+    // Selected means the gateway exposes the model; unselected models are
+    // still listed (disabled chips) so the client can re-enable them.
     expect(choices[0]!.current).toBe(true);
-    expect(choices[1]!.current).toBe(false);
+    expect(choices[1]!.current).toBe(true);
+    expect(choices[2]!.current).toBe(false);
     expect(choices.every((choice) => choice.connection.id === "c1")).toBe(true);
   });
 
-  test("sync choices with no bound model offer every available model", () => {
+  test("support toggle flips one model and keeps catalog order", () => {
     const snapshot = providerSnapshot({
-      defaults: { codex: { connection_id: "c1" } },
+      models: {
+        c1: [
+          { id: "gpt-5.6-sol", available: true, source: "discovered" },
+          { id: "gpt-5.4-mini", available: true, source: "discovered" },
+          { id: "retired-model", available: false, source: "lkg" },
+        ],
+      },
     });
-    const connection = snapshot.connections[0]!;
-    const choices = modelSyncChoices(snapshot, "codex", connection, [
-      { id: "gpt-5.6-sol", available: true, source: "discovered" },
-      { id: "gpt-5.4-mini", available: true, source: "discovered" },
+    expect(enabledModelIds(snapshot, "c1")).toEqual(["gpt-5.6-sol", "gpt-5.4-mini"]);
+    expect(toggleModelSupport(snapshot, "c1", "gpt-5.6-sol")).toEqual([
+      "gpt-5.4-mini",
     ]);
-    expect(choices.every((choice) => !choice.current)).toBe(true);
-    expect(choices).toHaveLength(2);
+    const reenabled = toggleModelSupport(
+      { ...snapshot, models: { c1: snapshot.models.c1!.map((m) => ({ ...m, available: false })) } },
+      "c1",
+      "gpt-5.6-sol",
+    );
+    expect(reenabled).toEqual(["gpt-5.6-sol"]);
+  });
+
+  test("firstSupportedModel is the deterministic launch fallback", () => {
+    const snapshot = providerSnapshot({
+      models: {
+        c1: [
+          { id: "gpt-5.6-sol", available: false, source: "discovered" },
+          { id: "gpt-5.4-mini", available: true, source: "discovered" },
+        ],
+      },
+    });
+    expect(firstSupportedModel(snapshot, "c1")).toBe("gpt-5.4-mini");
+    expect(firstSupportedModel(snapshot, "missing")).toBeNull();
+  });
+
+  test("launch selection carries the client's connection and model", () => {
+    const snapshot = providerSnapshot({
+      defaults: { codex: { connection_id: "c1", model_id: "gpt-5.6-sol" } },
+    });
+    expect(providerClientForCommand("codex")).toBe("codex");
+    expect(providerClientForCommand("cd /x && codex exec")).toBe("codex");
+    expect(providerClientForCommand("claude -p hi")).toBe("claude");
+    expect(providerClientForCommand("sh")).toBeNull();
+    expect(launchSelectionFromSnapshot(snapshot, "codex")).toEqual({
+      connectionId: "c1",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(launchSelectionFromSnapshot(snapshot, "claude")).toBeNull();
+    expect(
+      launchSelectionFromSnapshot({ ...snapshot, defaults: {} }, "codex"),
+    ).toBeNull();
   });
 });
 
@@ -553,6 +598,7 @@ describe("Provider transport source contract", () => {
       "delete_provider_connection",
       "set_provider_default",
       "discover_provider_models",
+      "set_provider_models",
       "get_session_provider",
       "activate_session_provider",
       "set_provider_credential",

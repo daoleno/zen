@@ -35,8 +35,13 @@ type discoveryEntry struct {
 	IDs       []string  `json:"ids,omitempty"`
 	FetchedAt time.Time `json:"fetched_at"`
 	LastGood  []string  `json:"last_good,omitempty"`
-	Err       string    `json:"err,omitempty"`
-	Seq       uint64    `json:"seq,omitempty"`
+	// Disabled is the durable client-side support allowlist: model ids the
+	// client explicitly turned off. Everything discovered is supported unless
+	// listed here, so a catalog refresh never silently re-enables an
+	// explicitly disabled model while genuinely new models default enabled.
+	Disabled []string `json:"disabled,omitempty"`
+	Err      string   `json:"err,omitempty"`
+	Seq      uint64   `json:"seq,omitempty"`
 }
 
 type durableDiscoveryFile struct {
@@ -205,6 +210,9 @@ func (c *modelDiscoveryCache) put(key string, ids []string, fetchErr error) {
 	defer c.mu.Unlock()
 	prev := c.entries[key]
 	next := discoveryEntry{FetchedAt: c.now(), Seq: c.saveSeq.Load()}
+	// The explicit support allowlist survives refresh: disabled ids are never
+	// re-enabled by a rediscovery, and new ids are not disabled.
+	next.Disabled = append([]string{}, prev.Disabled...)
 	if fetchErr != nil {
 		next.Err = fetchErr.Error()
 		next.LastGood = append([]string{}, prev.LastGood...)
@@ -217,6 +225,24 @@ func (c *modelDiscoveryCache) put(key string, ids []string, fetchErr error) {
 		next.LastGood = append([]string{}, ids...)
 	}
 	c.entries[key] = next
+}
+
+// setDisabled replaces the durable support allowlist (disabled ids) of one
+// connection without treating the write as a rediscovery: catalog ids,
+// timestamps, and last-good state are preserved.
+func (c *modelDiscoveryCache) setDisabled(key string, disabled []string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return false
+	}
+	e.Disabled = append([]string{}, disabled...)
+	c.entries[key] = e
+	return true
 }
 
 func (c *modelDiscoveryCache) fresh(key string) bool {
@@ -288,7 +314,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	key := connectionID
 	if !force && cache.fresh(key) {
 		e, _ := cache.get(key)
-		out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Err == "")
+		out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == "")
 		out.PersistenceDurable = len(e.LastGood) > 0 && out.PersistenceWarning == ""
 		return out, nil
 	}
@@ -298,7 +324,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 		client := executorFromClient(profile.Client)
 		compiled, cErr := CompileConnectionTarget(profile, client, "")
 		if cErr != nil {
-			out.Entries = projectModelEntries(trusted, manual, nil, nil, false)
+			out.Entries = projectModelEntries(trusted, manual, nil, nil, nil, false)
 			return out, cErr
 		}
 		probe = compiled
@@ -316,7 +342,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 		}
 	}
 	e, _ := cache.get(key)
-	out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, discoverErr == nil)
+	out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, discoverErr == nil)
 	if !out.PersistenceDurable {
 		// Never claim LKG source durability when write failed — force bundled
 		// labels for entries that would otherwise say lkg from this refresh.
@@ -338,7 +364,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	return out, nil
 }
 
-func projectModelEntries(trusted []string, manual string, discovered, lkg []string, liveOK bool) []ProviderModelEntry {
+func projectModelEntries(trusted []string, manual string, discovered, lkg, disabled []string, liveOK bool) []ProviderModelEntry {
 	available := map[string]struct{}{}
 	for _, id := range discovered {
 		id = normalizeSpace(id)
@@ -354,6 +380,13 @@ func projectModelEntries(trusted []string, manual string, discovered, lkg []stri
 			lkgSet[id] = struct{}{}
 		}
 	}
+	disabledSet := map[string]struct{}{}
+	for _, id := range disabled {
+		id = normalizeSpace(id)
+		if id != "" {
+			disabledSet[id] = struct{}{}
+		}
+	}
 
 	seen := map[string]struct{}{}
 	out := make([]ProviderModelEntry, 0, len(trusted)+1)
@@ -366,6 +399,12 @@ func projectModelEntries(trusted []string, manual string, discovered, lkg []stri
 			return
 		}
 		seen[id] = struct{}{}
+		// The client support allowlist is authoritative: an explicitly
+		// disabled model is never exposed as supported, even when the gateway
+		// still lists it.
+		if _, off := disabledSet[id]; off {
+			avail = false
+		}
 		out = append(out, ProviderModelEntry{ID: id, Available: avail, Source: source})
 	}
 	for _, id := range trusted {

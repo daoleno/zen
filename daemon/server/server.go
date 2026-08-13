@@ -1340,7 +1340,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"request_id": raw.RequestID,
 				"ranges":     resp.Ranges,
 			}
-			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" {
+			// Official subscription usage is only meaningful for the direct
+			// ChatGPT/Codex login. When the effective Codex connection is a
+			// routed Provider/API-key connection, suppress the subscription
+			// even if stale official usage is still cached on this host.
+			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" &&
+				(s.profiles == nil || !s.profiles.CodexRoutedDefault()) {
 				payload["codexSubscription"] = resp.CodexSubscription
 			}
 			s.sendJSON(conn, payload)

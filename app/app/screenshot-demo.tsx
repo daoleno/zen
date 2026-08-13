@@ -15,6 +15,8 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useWindowDimensions } from "react-native";
+import type { MenuAnchorLayout } from "../components/terminal/screen/TerminalScreenModel";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -564,6 +566,10 @@ function BrainDemo() {
  * clips at large system font scales.
  */
 function ComposerStatesDemo() {
+  const params = useLocalSearchParams<{ autoModel?: string | string[] }>();
+  const autoModel = Array.isArray(params.autoModel)
+    ? params.autoModel[0]
+    : params.autoModel;
   const { theme: zenTheme } = useAppTheme();
   const insets = useSafeAreaInsets();
   const { chrome, theme } = useMemo(
@@ -592,7 +598,10 @@ function ComposerStatesDemo() {
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
   };
   const [demoSheet, setDemoSheet] = useState<null | "routed">(null);
+  const [demoSheetAnchor, setDemoSheetAnchor] =
+    useState<MenuAnchorLayout | null>(null);
   const [demoModelId, setDemoModelId] = useState("deepseek-chat");
+  const demoWindow = useWindowDimensions();
   const demoSelection = {
     session_id: "tmux:@demo",
     client: "codex" as const,
@@ -602,6 +611,17 @@ function ComposerStatesDemo() {
     credential_ready: true,
     hot_switchable: true,
   };
+  useEffect(() => {
+    if (autoModel !== "1") return;
+    setDemoSheetAnchor({
+      x: Math.max(12, demoWindow.width / 2 - 120),
+      y: demoWindow.height - 160 - insets.bottom,
+      width: 240,
+      height: 44,
+    });
+    setDemoSheet("routed");
+  }, [autoModel, demoWindow.height, demoWindow.width, insets.bottom]);
+
   const routedModelControl = resolveComposerModelControl({
     capabilities: {
       structured_events: true,
@@ -949,13 +969,24 @@ function ComposerStatesDemo() {
             onInputBlur={NOOP}
             onSendPress={NOOP}
             onStopPress={NOOP}
-            onModelControlPress={() => setDemoSheet("routed")}
+            onModelControlPress={() => {
+              // Anchor the popover above the composer chip, as the real
+              // control does.
+              setDemoSheetAnchor({
+                x: Math.max(12, demoWindow.width / 2 - 120),
+                y: demoWindow.height - 160 - insets.bottom,
+                width: 240,
+                height: 44,
+              });
+              setDemoSheet("routed");
+            }}
           />,
         )}
       </ScrollView>
 
       <SessionModelSheet
         visible={demoSheet !== null}
+        anchor={demoSheetAnchor}
         loading={false}
         activating={false}
         error={null}
@@ -1064,8 +1095,29 @@ function ProvidersDemo() {
     fixture?: string | string[];
     editor?: string | string[];
     keyboard?: string | string[];
+    picker?: string | string[];
   }>();
   const demo = useMemo(() => resolveScreenshotProvidersDemo(params), [params]);
+  const modelPicker = useMemo(() => {
+    const raw = Array.isArray(params.picker) ? params.picker[0] : params.picker;
+    if (raw !== "1") return null;
+    const codex = demo.catalog.connections
+      .filter(
+        (candidate) =>
+          candidate.clients.includes("codex") && candidate.credential_ready,
+      )
+      .sort(
+        (left, right) =>
+          (demo.catalog.models[right.id]?.length ?? 0) -
+          (demo.catalog.models[left.id]?.length ?? 0),
+      )[0];
+    if (!codex) return null;
+    return {
+      client: "codex" as const,
+      connection: codex,
+      models: demo.catalog.models[codex.id] ?? [],
+    };
+  }, [demo.catalog, params]);
   return (
     <SafeAreaView style={styles.flex} edges={["top"]}>
       <ProvidersPresentation
@@ -1083,12 +1135,11 @@ function ProvidersDemo() {
         onOpenSettings={NOOP}
         onOpenEditor={NOOP}
         onCloseEditor={NOOP}
-        onClearCredential={NOOP}
         onDelete={NOOP}
         onUseDirect={NOOP}
         onSetDefault={NOOP}
         onDiscover={NOOP}
-        modelPicker={null}
+        modelPicker={modelPicker}
         onCloseModelPicker={NOOP}
         onSelectModel={NOOP}
         onTestConnection={async () => ({

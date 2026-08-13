@@ -1022,6 +1022,8 @@ export default function SettingsScreen() {
                   accessibilityLabel="Server name"
                   placeholder="workstation"
                   placeholderTextColor={colors.textSecondary}
+                  selectionColor={colors.selectionBackground}
+                  cursorColor={colors.accentStrong}
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
@@ -1046,6 +1048,8 @@ export default function SettingsScreen() {
                       accessibilityLabel="Server endpoint"
                       placeholder="wss://zen.example.com/ws"
                       placeholderTextColor={colors.textSecondary}
+                  selectionColor={colors.selectionBackground}
+                  cursorColor={colors.accentStrong}
                       autoCapitalize="none"
                       autoCorrect={false}
                     />
@@ -1106,6 +1110,8 @@ export default function SettingsScreen() {
                   accessibilityLabel="Pairing link"
                   placeholder="zen://settings?p=..."
                   placeholderTextColor={colors.textSecondary}
+                  selectionColor={colors.selectionBackground}
+                  cursorColor={colors.accentStrong}
                   autoCapitalize="none"
                   autoCorrect={false}
                   multiline

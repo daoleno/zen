@@ -30,11 +30,34 @@ import {
   type CreateAmbiguityGateState,
 } from "../../../services/providers";
 import { wsClient } from "../../../services/websocket";
+import {
+  launchSelectionFromSnapshot,
+  providerClientForCommand,
+} from "../../../services/providers";
 
 interface CreateTerminalInput {
   cwd: string;
   command: string;
   name: string;
+}
+
+/**
+ * Resolve the current client-selected Provider connection + model for a new
+ * Session launch. Best-effort: any Provider load failure returns null so
+ * creation proceeds with the daemon's own resolution.
+ */
+async function resolveLaunchSelection(
+  serverId: string,
+  command: string,
+): Promise<{ connectionId: string; modelId: string } | null> {
+  const client = providerClientForCommand(command);
+  if (!client) return null;
+  try {
+    const snapshot = await wsClient.listProviders(serverId);
+    return launchSelectionFromSnapshot(snapshot, client);
+  } catch {
+    return null;
+  }
 }
 
 interface UseTerminalSessionActionsInput {
@@ -196,11 +219,18 @@ export function useTerminalSessionActions({
       let dispatched = false;
       try {
         const startedAt = Date.now();
+        // Carry the client-selected Provider connection + model end-to-end
+        // into the launch. The daemon resolves a deterministic supported-model
+        // fallback when the selection is stale; failure to load Providers
+        // never blocks creation (the daemon falls back to its own state).
+        const selection = await resolveLaunchSelection(serverId, input.command);
         const pending = wsClient.createSession(serverId, {
           targetId: agentId,
           cwd: input.cwd,
           command: input.command,
           name: input.name,
+          connectionId: selection?.connectionId,
+          modelId: selection?.modelId,
         });
         dispatched = true;
         const created = await pending;

@@ -66,8 +66,11 @@ export const MobileSingleLineInput = forwardRef<
         maxFontSizeMultiplier={maxFontSizeMultiplier}
         placeholder={controlled ? undefined : placeholder}
         placeholderTextColor={placeholderTextColor}
+        selectionColor={colors.selectionBackground}
+        cursorColor={colors.accentStrong}
         style={[
           styles.input,
+          { color: colors.textPrimary },
           leading ? styles.inputWithLeading : null,
           trailing ? styles.inputWithTrailing : null,
           style,

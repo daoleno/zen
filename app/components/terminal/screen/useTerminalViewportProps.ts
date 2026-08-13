@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import type { LayoutChangeEvent } from "react-native";
+import type { MenuAnchorLayout } from "./TerminalScreenModel";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
 import type { TerminalSurfaceHandle } from "../TerminalSurface";
@@ -38,7 +39,7 @@ interface UseTerminalViewportPropsInput {
   onAccessoryLayout(event: LayoutChangeEvent): void;
   onConsumeInitialComposerFocus(): void;
   composerModelControl?: ComposerModelControlPresentation | null;
-  onComposerModelControlPress?: () => void;
+  onComposerModelControlPress?: (anchor: MenuAnchorLayout) => void;
   skillsHandoffToken?: string;
 }
 

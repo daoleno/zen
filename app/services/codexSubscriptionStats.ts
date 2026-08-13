@@ -43,3 +43,21 @@ export function isOfficialCodexSubscription(
 ): subscription is { authKind: 'official' } {
   return subscription?.authKind === 'official';
 }
+
+/**
+ * Whether a Codex subscription payload is visible for the effective Provider
+ * state of the current server. Official ChatGPT/Codex subscription usage is
+ * only meaningful when the effective Codex route is the direct official
+ * login: any routed Provider/API-key default (or an unknown server state)
+ * hides it, even when stale official usage is still cached on a daemon or
+ * returned by another linked server.
+ */
+export function codexSubscriptionVisibleForProviderState(
+  subscription: { authKind?: unknown } | null | undefined,
+  snapshot: {
+    defaults?: Record<string, { connection_id?: string } | undefined>;
+  } | null | undefined,
+): boolean {
+  if (!isOfficialCodexSubscription(subscription)) return false;
+  return !snapshot?.defaults?.codex?.connection_id;
+}

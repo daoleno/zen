@@ -17,8 +17,9 @@ export type ProvidersEditorState =
 
 /**
  * Open model-sync picker: the discovery result for exactly one connection,
- * waiting for the user to choose which upstream model becomes the client
- * default. Bound only after a successful `set_provider_default` write.
+ * rendered as compact support chips. Selected chips are the models the
+ * gateway exposes (the client-owned enable allowlist); tapping toggles
+ * support. Persisted only after a successful `set_provider_models` write.
  */
 export type ModelSyncPickerState = {
   client: ProviderClient;

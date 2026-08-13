@@ -5,6 +5,7 @@ import type {
   ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../../services/providers";
+import type { MenuAnchorLayout } from "./TerminalScreenModel";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type {
   TerminalThemeChrome,
@@ -20,6 +21,7 @@ interface UseTerminalScreenOverlayPropsInput {
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
+  routeSheetAnchor?: MenuAnchorLayout | null;
   routeSheetVisible: boolean;
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
@@ -66,6 +68,7 @@ export function useTerminalScreenOverlayProps({
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
+  routeSheetAnchor,
   routeSheetVisible,
   routeSheetLoading,
   routeSheetActivating,
@@ -131,6 +134,7 @@ export function useTerminalScreenOverlayProps({
       resourceSheetLoading,
       resourceSheetError,
       resourceSheetSnapshot,
+      routeSheetAnchor,
       routeSheetVisible,
       routeSheetLoading,
       routeSheetActivating,
@@ -204,6 +208,7 @@ export function useTerminalScreenOverlayProps({
       resourceSheetLoading,
       resourceSheetSnapshot,
       resourceSheetVisible,
+      routeSheetAnchor,
       routeSheetActivating,
       routeSheetError,
       routeSheetLoading,

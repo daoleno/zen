@@ -11,6 +11,7 @@ import type {
   ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../../services/providers";
+import type { MenuAnchorLayout } from "./TerminalScreenModel";
 import {
   SessionModelSheet,
   type SessionModelChoice,
@@ -32,6 +33,7 @@ export interface TerminalScreenOverlaysProps {
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
   routeSheetVisible: boolean;
+  routeSheetAnchor?: MenuAnchorLayout | null;
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
@@ -80,6 +82,7 @@ export function TerminalScreenOverlays({
   resourceSheetError,
   resourceSheetSnapshot,
   routeSheetVisible,
+  routeSheetAnchor,
   routeSheetLoading,
   routeSheetActivating,
   routeSheetError,
@@ -160,6 +163,7 @@ export function TerminalScreenOverlays({
 
       <SessionModelSheet
         visible={routeSheetVisible}
+        anchor={routeSheetAnchor}
         loading={routeSheetLoading}
         activating={routeSheetActivating}
         error={routeSheetError}

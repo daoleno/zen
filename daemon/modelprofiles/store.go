@@ -162,6 +162,15 @@ func (s *Store) DefaultProfileID(executorID string) string {
 // Account-scoped connections are compiled into an ephemeral client Profile.
 // Empty profileID with no default yields ErrNotFound.
 func (s *Store) ResolveProfile(executorID, profileID string) (Profile, error) {
+	return s.ResolveProfileWithModel(executorID, profileID, "")
+}
+
+// ResolveProfileWithModel is ResolveProfile with an explicit client model
+// override for the launch: a non-empty modelOverride wins over the recorded
+// client-selected model, which wins over the connection's durable model. The
+// gateway itself never owns a model — an empty result means no client
+// selection exists yet.
+func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride string) (Profile, error) {
 	if s == nil {
 		return Profile{}, ErrNotFound
 	}
@@ -179,7 +188,10 @@ func (s *Store) ResolveProfile(executorID, profileID string) (Profile, error) {
 		return Profile{}, fmt.Errorf("%w: no profile selected for executor %s", ErrNotFound, executorID)
 	}
 	profile, ok := s.profiles[profileID]
-	modelOverride := strings.TrimSpace(s.defaultModels[clientFromExecutor(executorID)])
+	modelOverride = normalizeSpace(modelOverride)
+	if modelOverride == "" {
+		modelOverride = strings.TrimSpace(s.defaultModels[clientFromExecutor(executorID)])
+	}
 	s.mu.RUnlock()
 	if !ok {
 		return Profile{}, fmt.Errorf("%w: %s", ErrNotFound, profileID)
@@ -204,6 +216,23 @@ func (s *Store) DefaultModelID(client string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return strings.TrimSpace(s.defaultModels[clientFromExecutor(client)])
+}
+
+// ClientDefault returns the recorded default connection and client-selected
+// model for one client (empty when none). The model is explicit client choice
+// only — the store never fabricates one.
+func (s *Store) ClientDefault(client string) (connectionID, modelID string) {
+	if s == nil {
+		return "", ""
+	}
+	client = clientFromExecutor(client)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	connectionID = strings.TrimSpace(s.defaults[client])
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(s.defaults[executorFromClient(client)])
+	}
+	return connectionID, strings.TrimSpace(s.defaultModels[client])
 }
 
 // SetDefaultModel sets or clears the Settings default model for a client without

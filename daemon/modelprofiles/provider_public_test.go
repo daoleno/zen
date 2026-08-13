@@ -73,7 +73,7 @@ func TestCompileProviderConnectionRejectsUntrustedModelUnlessAdvanced(t *testing
 
 func TestProjectModelEntriesTrustedAuthorizeAvailability(t *testing.T) {
 	trusted := []string{"gpt-5", "o3"}
-	entries := projectModelEntries(trusted, "manual-1", []string{"gpt-5", "extra"}, []string{"o3"}, true)
+	entries := projectModelEntries(trusted, "manual-1", []string{"gpt-5", "extra"}, []string{"o3"}, nil, true)
 	byID := map[string]ProviderModelEntry{}
 	for _, e := range entries {
 		byID[e.ID] = e
@@ -90,7 +90,7 @@ func TestProjectModelEntriesTrustedAuthorizeAvailability(t *testing.T) {
 }
 
 func TestProjectModelEntriesCustomUsesDiscoveredCatalog(t *testing.T) {
-	entries := projectModelEntries(nil, "", []string{"deepseek-v4-flash", "deepseek-v4-pro"}, nil, true)
+	entries := projectModelEntries(nil, "", []string{"deepseek-v4-flash", "deepseek-v4-pro"}, nil, nil, true)
 	if len(entries) != 2 || !entries[0].Available || entries[0].Source != ModelSourceDiscovered {
 		t.Fatalf("custom entries=%#v", entries)
 	}
@@ -446,7 +446,7 @@ func TestDiscoverCustomAccountConnectionWithoutModelID(t *testing.T) {
 	}
 }
 
-func TestCustomDefaultUsesDiscoveredModelWithoutManualModelInput(t *testing.T) {
+func TestCustomDefaultDoesNotFabricateDiscoveredModel(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID:       "codex-auto",
@@ -463,11 +463,22 @@ func TestCustomDefaultUsesDiscoveredModelWithoutManualModelInput(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("codex-auto", []string{"deepseek-v4-flash"}, nil)
 	owner.mu.Unlock()
-	projection, err = owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision)
+	// The gateway never owns a default model: selecting the connection with an
+	// empty model must not fabricate the first discovered id into the client
+	// selection.
+	proj, err := owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projection.Defaults[ClientCodex].ModelID; got != "deepseek-v4-flash" {
-		t.Fatalf("default model=%q", got)
+	if d, ok := proj.Defaults[ClientCodex]; !ok || d.ModelID != "" {
+		t.Fatalf("default fabricated a model: %#v", proj.Defaults[ClientCodex])
+	}
+	// Launch still resolves deterministically from the support allowlist.
+	plan, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.State.Binding.UpstreamModel != "deepseek-v4-flash" {
+		t.Fatalf("binding upstream_model=%q", plan.State.Binding.UpstreamModel)
 	}
 }

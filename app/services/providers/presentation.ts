@@ -69,10 +69,49 @@ export function clientForConnection(
 }
 
 /**
- * The model_id bound to a connection via the client default, or null when the
- * connection is not the client default or no model is bound yet. This is the
- * single source the UI shows under a connection row and the truth the daemon
- * launches with (fail-closed when null).
+ * The client the launch command targets, when it is a managed Provider client.
+ * Shells and other executors return null (no Provider selection applies).
+ */
+export function providerClientForCommand(command: string): ProviderClient | null {
+  const fields = command.trim().split(/\s+/).filter(Boolean);
+  for (const field of fields) {
+    if (field.includes("=")) continue;
+    const bin = field.split("/").pop() ?? "";
+    if (normalizeProviderClient(bin) === "codex") return "codex";
+    if (normalizeProviderClient(bin) === "claude") return "claude";
+  }
+  return null;
+}
+
+/**
+ * The authoritative launch selection for a new Session: the client's default
+ * connection plus its client-selected model. Null when the client has no
+ * Provider connection (direct official login) or the snapshot is missing.
+ * The daemon resolves a deterministic supported-model fallback when the
+ * selected model is no longer supported.
+ */
+export function launchSelectionFromSnapshot(
+  snapshot: ProvidersSnapshot | null | undefined,
+  client: ProviderClient | null,
+): { connectionId: string; modelId: string } | null {
+  if (!snapshot || !client) return null;
+  const entry = snapshot.defaults[client];
+  if (!entry?.connection_id) return null;
+  const connection = snapshot.connections.find(
+    (item) => item.id === entry.connection_id,
+  );
+  if (!connection) return null;
+  return {
+    connectionId: connection.id,
+    modelId: entry.model_id?.trim() || "",
+  };
+}
+
+/**
+ * The client-selected model bound to a connection via the client default, or
+ * null when the connection is not the client default or no model is selected
+ * yet. This is the single source the UI shows under a connection row; the
+ * client (never the gateway) owns this selection for new Sessions.
  */
 export function boundModelForConnection(
   snapshot: ProvidersSnapshot | null | undefined,
@@ -115,25 +154,72 @@ export function connectionRequiresModelSelection(
 }
 
 /**
- * Picker inventory for one connection after discovery: only available models,
- * with the currently bound model marked. Choosing one binds it as the client
- * default in one `set_provider_default` write.
+ * Picker inventory for one connection after discovery: every discovered model
+ * as a compact support chip. "Selected" means the gateway exposes the model
+ * (the client enable allowlist); tapping toggles support. There is no
+ * default-model concept: the gateway never owns a default model.
  */
-export function modelSyncChoices(
+export function modelSupportChoices(
   snapshot: ProvidersSnapshot | null | undefined,
-  client: string,
   connection: ProviderConnection,
   models: ProviderModel[],
 ): ProviderModelChoice[] {
-  const bound = boundModelForConnection(snapshot, client, connection.id);
-  return models
+  void snapshot;
+  return models.map((model) => ({
+    connection,
+    model,
+    current: model.available,
+    disabled: false,
+  }));
+}
+
+/**
+ * The client-side model support allowlist of a connection as enabled ids in
+ * catalog order (availability is the wire's enabled state).
+ */
+export function enabledModelIds(
+  snapshot: ProvidersSnapshot | null | undefined,
+  connectionId: string,
+): string[] {
+  return (snapshot?.models[connectionId] ?? [])
     .filter((model) => model.available)
-    .map((model) => ({
-      connection,
-      model,
-      current: model.id === bound,
-      disabled: false,
-    }));
+    .map((model) => model.id);
+}
+
+/**
+ * Toggle one model's support: returns the next full enabled set (catalog
+ * order) after flipping modelId, preserving every other model's state.
+ */
+export function toggleModelSupport(
+  snapshot: ProvidersSnapshot | null | undefined,
+  connectionId: string,
+  modelId: string,
+): string[] {
+  const current = new Set(enabledModelIds(snapshot, connectionId));
+  const normalized = normalizeProviderId(modelId);
+  if (!normalized) return enabledModelIds(snapshot, connectionId);
+  if (current.has(normalized)) {
+    current.delete(normalized);
+  } else {
+    current.add(normalized);
+  }
+  return (snapshot?.models[connectionId] ?? [])
+    .map((model) => model.id)
+    .filter((id) => current.has(id));
+}
+
+/**
+ * Deterministic visible fallback / initial selection: the first supported
+ * model of a connection in catalog order, or null when none exists.
+ */
+export function firstSupportedModel(
+  snapshot: ProvidersSnapshot | null | undefined,
+  connectionId: string,
+): string | null {
+  for (const model of snapshot?.models[connectionId] ?? []) {
+    if (model.available) return model.id;
+  }
+  return null;
 }
 
 export function connectionIsFutureDefault(

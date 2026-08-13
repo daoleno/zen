@@ -136,6 +136,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleProviderDelete(req)
 	case "provider_set_default":
 		return a.handleProviderSetDefault(req)
+	case "provider_set_models":
+		return a.handleProviderSetModels(req)
 	case "provider_discover":
 		return a.handleProviderDiscover(req)
 	case "session_provider_get":
@@ -424,7 +426,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		connectionID = strings.TrimSpace(req.ProfileID)
 	}
 	if a.profiles != nil {
-		plan, planErr := a.profiles.PrepareLaunch(a.spawnProfileClientHint(req, command), connectionID, command)
+		plan, planErr := a.profiles.PrepareLaunchModel(a.spawnProfileClientHint(req, command), connectionID, strings.TrimSpace(req.ModelID), command)
 		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {
 			a.recordSpawnWorkFailure(ownedWork, planErr, autoCreatedWork)
 			return control.ErrorResponse(modelprofiles.ControlErrorCode(planErr), planErr.Error())
@@ -1733,6 +1735,36 @@ func (a *controlApp) handleProviderSetDefault(req control.Request) control.Respo
 	}
 	proj, err := a.profiles.SetProviderDefault(executorID, connectionID, req.ModelID, req.Revision)
 	return a.providersMutationResponse(proj, err)
+}
+
+// handleProviderSetModels persists the client-side model support allowlist of
+// one connection (provider_set_models). The gateway never owns a default
+// model: this write only decides which discovered models the client exposes.
+func (a *controlApp) handleProviderSetModels(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	id := strings.TrimSpace(req.ConnectionID)
+	if id == "" {
+		id = strings.TrimSpace(req.ProfileID)
+	}
+	if id == "" {
+		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "connection_id is required")
+	}
+	proj, persist, err := a.profiles.SetProviderModelSupport(id, req.ModelIDs)
+	if !persist.Applied {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	response := control.Response{OK: true, Providers: &proj}
+	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
+		response.PersistenceOutcome = control.PersistenceOutcome(outcome)
+		response.PersistenceDurable = durable
+	}
+	if err != nil {
+		log.Printf("provider model support applied with uncertain durability: %v", err)
+		response.Confirmation = "Model support updated; persistence was applied but directory durability is uncertain."
+	}
+	return response
 }
 
 func (a *controlApp) handleProviderDiscover(req control.Request) control.Response {

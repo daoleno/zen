@@ -4,6 +4,7 @@ import {
   codexAuthSummary,
   codexRemainingPercent,
   codexPlanLabel,
+  codexSubscriptionVisibleForProviderState,
   codexWindowLabel,
   isOfficialCodexSubscription,
   normalizeCodexUsedPercent,
@@ -49,5 +50,30 @@ describe('Codex subscription stats presentation', () => {
     ].filter(isOfficialCodexSubscription);
 
     expect(candidates).toEqual([{ authKind: 'official', state: 'unavailable' }]);
+  });
+
+  test('subscription hides when the effective Codex route is a Provider connection', () => {
+    const official = { authKind: 'official', state: 'available' };
+    expect(
+      codexSubscriptionVisibleForProviderState(official, null),
+    ).toBe(true);
+    expect(
+      codexSubscriptionVisibleForProviderState(official, {
+        defaults: { codex: { connection_id: 'gw' } },
+      }),
+    ).toBe(false);
+    // Stale official data from another linked server must not leak: any
+    // routed default hides it.
+    expect(
+      codexSubscriptionVisibleForProviderState(official, {
+        defaults: { codex: { connection_id: 'custom-cf' }, claude: {} },
+      }),
+    ).toBe(false);
+    expect(
+      codexSubscriptionVisibleForProviderState(
+        { authKind: 'api_key', state: 'unavailable' },
+        { defaults: {} },
+      ),
+    ).toBe(false);
   });
 });

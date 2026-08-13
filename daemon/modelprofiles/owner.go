@@ -32,6 +32,7 @@ const (
 	CodeBindingNotRouted           = "route_binding_not_routed"
 	CodeContractUnverified         = "model_profile_contract_unverified"
 	CodeUpstreamModelRequired      = "upstream_model_required"
+	CodeDiscoveryCacheInvalid      = "provider_discovery_cache_invalid"
 	CodeRouteListenerFailed        = "route_listener_failed"
 	CodeRouteSnapshotInvalid       = "route_snapshot_invalid"
 	CodeLaunchBypass               = "model_profile_bypass"
@@ -757,6 +758,15 @@ func (o *Owner) persistStatesLocked(states []SessionRouteState) error {
 // PrepareLaunch resolves profile override/default, binds a provisional route, and
 // compiles a secret-free command/env plan. Raw/custom/unsupported commands bypass.
 func (o *Owner) PrepareLaunch(executorID, profileID, baseCommand string) (SessionLaunchPlan, error) {
+	return o.PrepareLaunchModel(executorID, profileID, "", baseCommand)
+}
+
+// PrepareLaunchModel is PrepareLaunch with an explicit client model override
+// (create_session's connection_id + model_id). The gateway never owns a model:
+// the launch model is the explicit override, else the client-selected model,
+// else a deterministic fallback chosen from the connection's supported
+// allowlist; with no supported models the launch fails closed.
+func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCommand string) (SessionLaunchPlan, error) {
 	if o == nil || !o.started {
 		return SessionLaunchPlan{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
@@ -778,12 +788,17 @@ func (o *Owner) PrepareLaunch(executorID, profileID, baseCommand string) (Sessio
 		return SessionLaunchPlan{Bypass: true, Command: baseCommand}, nil
 	}
 
-	profile, err := o.store.ResolveProfile(executorID, profileID)
+	profile, err := o.store.ResolveProfileWithModel(executorID, profileID, modelOverride)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) && strings.TrimSpace(profileID) == "" {
 			return SessionLaunchPlan{Bypass: true, Command: baseCommand}, nil
 		}
 		return SessionLaunchPlan{}, err
+	}
+	if resolved, ok := o.resolveSupportedLaunchModelLocked(profile); ok {
+		profile = resolved
+	} else {
+		return SessionLaunchPlan{}, fmt.Errorf("%w: connection %s has no supported models enabled", ErrUpstreamModelRequired, profile.ID)
 	}
 
 	auth := ContractAuth{Verifier: o.verifier}
@@ -1331,6 +1346,8 @@ func ControlErrorCode(err error) string {
 		return CodeContractUnverified
 	case errors.Is(err, ErrUpstreamModelRequired):
 		return CodeUpstreamModelRequired
+	case errors.Is(err, ErrDiscoveryCacheInvalid):
+		return CodeDiscoveryCacheInvalid
 	case errors.Is(err, ErrRouteSnapshotInvalid):
 		return CodeRouteSnapshotInvalid
 	case errors.Is(err, ErrListenerFailed), errors.Is(err, ErrLaunchCleanupIncomplete):

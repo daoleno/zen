@@ -28,7 +28,7 @@ import {
   boundModelForConnection,
   connectionRequiresModelSelection,
   connectionsForClient,
-  modelSyncChoices,
+  modelSupportChoices,
   providerClientLabel,
 } from "../../services/providers";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
@@ -67,7 +67,6 @@ export interface ProvidersPresentationProps {
   onOpenSettings(): void;
   onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
   onCloseEditor(): void;
-  onClearCredential(connection: ProviderConnection): void;
   onDelete(connection: ProviderConnection): void;
   onUseDirect(client: ProviderClient): void;
   onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
@@ -112,7 +111,6 @@ export function ProvidersPresentation({
   onOpenSettings,
   onOpenEditor,
   onCloseEditor,
-  onClearCredential,
   onDelete,
   onUseDirect,
   onSetDefault,
@@ -220,7 +218,6 @@ export function ProvidersPresentation({
                 onUseDirect={() => onUseDirect(client)}
                 onSetDefault={(connection) => onSetDefault(client, connection)}
                 onOpenEditor={onOpenEditor}
-                onClearCredential={onClearCredential}
                 onDelete={onDelete}
                 onDiscover={onDiscover}
               />
@@ -260,7 +257,6 @@ function ClientConnectionCard({
   onUseDirect,
   onSetDefault,
   onOpenEditor,
-  onClearCredential,
   onDelete,
   onDiscover,
 }: {
@@ -270,7 +266,6 @@ function ClientConnectionCard({
   onUseDirect(): void;
   onSetDefault(connection: ProviderConnection): void;
   onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
-  onClearCredential(connection: ProviderConnection): void;
   onDelete(connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
 }) {
@@ -332,7 +327,6 @@ function ClientConnectionCard({
               onOpenCredential={() =>
                 onOpenEditor({ kind: "credential", connection })
               }
-              onClearCredential={() => onClearCredential(connection)}
               onDelete={() => onDelete(connection)}
               onDiscover={() => onDiscover(connection)}
             />
@@ -404,7 +398,6 @@ function ConnectionChoiceRow({
   needsModel,
   onSelect,
   onOpenCredential,
-  onClearCredential,
   onDelete,
   onDiscover,
 }: {
@@ -418,7 +411,6 @@ function ConnectionChoiceRow({
   needsModel: boolean;
   onSelect(): void;
   onOpenCredential(): void;
-  onClearCredential(): void;
   onDelete(): void;
   onDiscover(): void;
 }) {
@@ -490,9 +482,6 @@ function ConnectionChoiceRow({
             disabled={disabled}
             primary
           />
-          {ready ? (
-            <ActionButton label="Clear key" onPress={onClearCredential} disabled={disabled} />
-          ) : null}
           <ActionButton label="Delete" onPress={onDelete} disabled={disabled} danger />
         </View>
       ) : null}
@@ -739,7 +728,7 @@ function ProviderEditorSheet({
               onChangeText={updateBaseUrl}
               editable={!mutating && !testing}
               placeholder="https://api.example.com/v1"
-              placeholderTextColor={colors.textTertiary}
+              placeholderTextColor={colors.textSecondary}
               accessibilityLabel="Base URL"
               autoCapitalize="none"
               autoCorrect={false}
@@ -758,7 +747,7 @@ function ProviderEditorSheet({
           editable={!mutating && !testing}
           autoFocus={apiKeyAutoFocus && !mutating}
           placeholder="Paste API key"
-          placeholderTextColor={colors.textTertiary}
+          placeholderTextColor={colors.textSecondary}
           accessibilityLabel="API Key"
           secureTextEntry
           autoCapitalize="none"
@@ -853,14 +842,13 @@ function ModelSyncSheet({
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const choices = modelSyncChoices(
+  const choices = modelSupportChoices(
     catalog,
-    picker.client,
     picker.connection,
     picker.models,
   );
+  const enabledCount = choices.filter((choice) => choice.current).length;
   const saving = mutating;
-  const clientLabel = providerClientLabel(picker.client);
 
   return (
     <RisingSheet
@@ -875,7 +863,7 @@ function ModelSyncSheet({
       <View style={styles.pickerHeader}>
         <View style={styles.pickerCopy}>
           <Text style={styles.pickerTitle} accessibilityRole="header">
-            Choose model
+            Models
           </Text>
           <Text style={styles.pickerSubtitle} numberOfLines={1}>
             {picker.connection.name}
@@ -892,50 +880,49 @@ function ModelSyncSheet({
         </Pressable>
       </View>
       <Text style={styles.pickerHint}>
-        Pick the upstream model new {clientLabel} Sessions launch with. It is
-        saved as the {clientLabel} default for this connection.
+        {enabledCount === choices.length
+          ? `${enabledCount} models exposed`
+          : `${enabledCount} of ${choices.length} models exposed`}
+        {" · "}tap to toggle support.
       </Text>
-      <ScrollView
-        style={styles.pickerList}
-        showsVerticalScrollIndicator={false}
-      >
+      <View style={styles.chipWrap}>
         {choices.map((choice) => {
-          const current = choice.current;
-          const rowDisabled = saving || disabled || current;
+          const selected = choice.current;
+          const chipDisabled = saving || disabled;
           return (
             <Pressable
               key={choice.model.id}
               style={[
-                styles.pickerRow,
-                current && { backgroundColor: colors.accentSoft },
+                styles.modelChip,
+                selected && styles.modelChipSelected,
+                chipDisabled && styles.modelChipDisabled,
               ]}
-              disabled={rowDisabled}
-              accessibilityRole="button"
+              disabled={chipDisabled}
+              accessibilityRole="checkbox"
               accessibilityState={{
-                selected: current,
-                disabled: rowDisabled,
+                checked: selected,
+                disabled: chipDisabled,
                 busy: saving,
               }}
-              accessibilityLabel={`Use ${choice.model.id}`}
+              accessibilityLabel={`${choice.model.id}, ${selected ? "exposed" : "hidden"}`}
               onPress={() =>
                 onSelectModel(picker.client, picker.connection, choice.model.id)
               }
             >
-              <View style={styles.radioOuter}>
-                {current ? <View style={styles.radioInner} /> : null}
-              </View>
+              <Ionicons
+                name={selected ? "checkmark-circle" : "ellipse-outline"}
+                size={15}
+                color={selected ? colors.accentStrong : colors.textTertiary}
+              />
               <Text
                 style={[
-                  styles.pickerRowText,
-                  current && { color: colors.accentStrong },
+                  styles.modelChipText,
+                  selected && { color: colors.accentStrong },
                 ]}
                 numberOfLines={1}
               >
                 {choice.model.id}
               </Text>
-              {current ? (
-                <Text style={styles.pickerCurrentLabel}>Default</Text>
-              ) : null}
             </Pressable>
           );
         })}
@@ -950,7 +937,7 @@ function ModelSyncSheet({
             No models were reported by this endpoint.
           </Text>
         ) : null}
-      </ScrollView>
+      </View>
     </RisingSheet>
   );
 }
@@ -1126,23 +1113,36 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       paddingBottom: 10,
     },
     pickerList: { paddingHorizontal: 16, paddingBottom: 8 },
-    pickerRow: {
-      minHeight: 52,
+    chipWrap: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+      paddingHorizontal: 16,
+      paddingBottom: 8,
+    },
+    modelChip: {
+      minHeight: 34,
+      maxWidth: "100%",
       flexDirection: "row",
       alignItems: "center",
-      gap: 12,
-      borderRadius: Radii.xs,
+      gap: 6,
+      borderRadius: 17,
+      borderWidth: 1,
+      borderColor: colors.border,
       backgroundColor: colors.surfacePressed,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      marginBottom: 8,
+      paddingHorizontal: 11,
+      paddingVertical: 6,
     },
-    pickerRowText: { ...UiTextMetrics, ...TypeScale.body, flex: 1, minWidth: 0 },
-    pickerCurrentLabel: {
+    modelChipSelected: {
+      borderColor: colors.accent,
+      backgroundColor: colors.accentSoft,
+    },
+    modelChipDisabled: { opacity: 0.45 },
+    modelChipText: {
       ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.accentStrong,
-      fontWeight: "600",
+      ...TypeScale.label,
+      color: colors.textSecondary,
+      flexShrink: 1,
     },
     pickerSavingRow: {
       flexDirection: "row",

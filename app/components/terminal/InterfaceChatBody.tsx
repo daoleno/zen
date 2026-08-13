@@ -9,6 +9,7 @@ import {
   type TextInput,
 } from "react-native";
 import type { SharedValue } from "react-native-reanimated";
+import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -121,7 +122,7 @@ export interface InterfaceChatBodyProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
-  onModelControlPress?(): void;
+  onModelControlPress?(anchor: MenuAnchorLayout): void;
   onRetryPendingUserMessage(id: string): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   composerAccessory?: React.ReactNode;

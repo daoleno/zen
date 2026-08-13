@@ -302,25 +302,15 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 		return Profile{}, fmt.Errorf("%w: preset missing client contract for %s", ErrInvalid, executor)
 	}
 	// Upstream model for the ephemeral client Profile. Account connections and
-	// custom presets may omit model_id (DefaultModel empty). Prefer explicit
-	// input, then preset default, then the ClientModel contract id as a
-	// compile-only placeholder so /v1/models probes and empty-model compiles
-	// stay valid without persisting a connection-owned model.
+	// custom presets may omit model_id; the gateway never owns a default model,
+	// so an omitted model stays a compile-only probe placeholder (never the
+	// route's UpstreamModel) until the client selects one from the synced
+	// support allowlist or sets it explicitly.
 	modelID := in.ModelID
-	if modelID == "" {
-		modelID = spec.DefaultModel[executor]
-	}
-	// The ClientModel contract fallback is only a probe placeholder. For
-	// Custom/Advanced connections it must never become the route's upstream
-	// model: mark it so binding creation fails closed (ErrUpstreamModelRequired)
-	// until a model is selected from discovery or set explicitly. Curated
-	// presets keep their trusted catalog default semantics unchanged.
 	modelPlaceholder := false
 	if modelID == "" {
 		modelID = clientModel
-		if in.Advanced || normalizeID(in.PresetID) == ProviderPresetCustom {
-			modelPlaceholder = true
-		}
+		modelPlaceholder = true
 	}
 	if !in.Advanced && normalizeID(in.PresetID) != ProviderPresetCustom {
 		if err := requireTrustedOrFail(in.PresetID, modelID); err != nil {

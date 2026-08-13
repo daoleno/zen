@@ -28,6 +28,7 @@ import {
   useAppTheme,
 } from '../constants/tokens';
 import { useAgents } from '../store/agents';
+import { useCurrentServer } from '../store/currentServer';
 import { wsClient } from '../services/websocket';
 import { AnimatedPressable } from '../components/ui/AnimatedPressable';
 import { RisingSheet } from '../components/ui/RisingSheet';
@@ -35,6 +36,7 @@ import {
   codexAuthSummary,
   codexRemainingPercent,
   codexPlanLabel,
+  codexSubscriptionVisibleForProviderState,
   codexWindowLabel,
   normalizeCodexUsedPercent,
   isOfficialCodexSubscription,
@@ -323,6 +325,8 @@ export default function StatsScreen() {
   const { width } = useWindowDimensions();
   const reducedMotion = useReducedMotion();
   const { state: agentsState } = useAgents();
+  const { currentServer } = useCurrentServer();
+  const currentServerId = currentServer?.id ?? null;
   const [range, setRange] = useState<TimeRange>(INITIAL_STATS_RANGE);
   const [statsData, setStatsData] = useState<StatsPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -378,31 +382,51 @@ export default function StatsScreen() {
           return;
         }
 
+        // The effective Provider state of the current server decides whether
+        // official Codex subscription usage is meaningful. A routed
+        // Provider/API-key Codex connection hides the subscription even when
+        // stale official usage is still cached or returned by another server.
         setLoading(!statsDataRef.current);
-        Promise.allSettled(liveServerIds.map(id => wsClient.getStats(id)))
-          .then(results => {
-            if (cancelled) return;
-            const payloads = results
-              .filter((r): r is PromiseFulfilledResult<StatsPayload> => r.status === 'fulfilled')
-              .map(r => r.value);
-            const merged = mergeStatsPayloads(payloads);
-            const rangesReady = Object.keys(merged?.ranges ?? {}).length > 0;
-
-            if (!rangesReady && attempt < EMPTY_STATS_MAX_RETRIES) {
-              retryTimer = setTimeout(
-                () => loadStats(attempt + 1),
-                EMPTY_STATS_RETRY_MS * (attempt + 1),
-              );
-              return;
+        void (async () => {
+          let providerSnapshot = null;
+          if (currentServerId && wsClient.isConnected(currentServerId)) {
+            try {
+              providerSnapshot = await wsClient.listProviders(currentServerId);
+            } catch {
+              providerSnapshot = null;
             }
+          }
+          const results = await Promise.allSettled(
+            liveServerIds.map(id => wsClient.getStats(id)),
+          );
+          if (cancelled) return;
+          const payloads = results
+            .filter((r): r is PromiseFulfilledResult<StatsPayload> => r.status === 'fulfilled')
+            .map(r => r.value)
+            .map(payload =>
+              codexSubscriptionVisibleForProviderState(
+                payload.codexSubscription,
+                providerSnapshot,
+              )
+                ? payload
+                : { ...payload, codexSubscription: undefined },
+            );
+          const merged = mergeStatsPayloads(payloads);
+          const rangesReady = Object.keys(merged?.ranges ?? {}).length > 0;
 
-            statsDataRef.current = merged;
-            setStatsData(merged);
-          })
-          .catch(() => {})
-          .finally(() => {
-            if (!cancelled && !retryTimer) setLoading(false);
-          });
+          if (!rangesReady && attempt < EMPTY_STATS_MAX_RETRIES) {
+            retryTimer = setTimeout(
+              () => loadStats(attempt + 1),
+              EMPTY_STATS_RETRY_MS * (attempt + 1),
+            );
+            return;
+          }
+
+          statsDataRef.current = merged;
+          setStatsData(merged);
+        })().finally(() => {
+          if (!cancelled && !retryTimer) setLoading(false);
+        });
       };
 
       loadStats(0);
@@ -411,7 +435,7 @@ export default function StatsScreen() {
         cancelled = true;
         if (retryTimer) clearTimeout(retryTimer);
       };
-    }, [connectedServerIdsKey, hasConnectingServer]),
+    }, [connectedServerIdsKey, currentServerId, hasConnectingServer]),
   );
 
   const selectRangeIndex = useCallback((index: number) => {

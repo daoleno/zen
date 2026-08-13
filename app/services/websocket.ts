@@ -629,6 +629,10 @@ export class MultiServerWebSocketClient {
       cwd?: string;
       command?: string;
       name?: string;
+      /** Provider connection for the new Session (managed clients only). */
+      connectionId?: string;
+      /** Client-selected model, carried end-to-end into the launch. */
+      modelId?: string;
     },
   ) {
     const requestId = newProviderRequestId();
@@ -725,6 +729,12 @@ export class MultiServerWebSocketClient {
           cwd: options?.cwd,
           command: options?.command,
           name: options?.name,
+          ...(options?.connectionId?.trim()
+            ? { connection_id: options.connectionId.trim() }
+            : {}),
+          ...(options?.modelId?.trim()
+            ? { model_id: options.modelId.trim() }
+            : {}),
         },
         cleanup,
         reject,
@@ -796,6 +806,27 @@ export class MultiServerWebSocketClient {
         revision: input.revision,
       },
       "Timed out while updating Provider default.",
+      false,
+    );
+  }
+
+  /**
+   * Persist the client-side model support allowlist of one connection: the
+   * full set of discovered models the client wants exposed. The gateway never
+   * owns a default model; this write only toggles which models are supported.
+   */
+  setProviderModels(
+    serverId: string,
+    input: { connectionId: string; modelIds: string[] },
+  ): Promise<ProvidersMutationResult> {
+    return this.requestProvidersCatalog(
+      serverId,
+      {
+        type: "set_provider_models",
+        connection_id: input.connectionId,
+        model_ids: input.modelIds,
+      },
+      "Timed out while updating model support.",
       false,
     );
   }

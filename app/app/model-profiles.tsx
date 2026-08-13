@@ -16,6 +16,7 @@ import {
   clientForConnection,
   customGatewayCreateInput,
   durabilityWarningMessage,
+  firstSupportedModel,
   mayDiscoverAfterCredential,
   offlineProviderError,
   planAfterCredentialWrite,
@@ -24,6 +25,7 @@ import {
   providersScreenAfterBlur,
   resolveCreatedConnection,
   settleCredentialPersistence,
+  toggleModelSupport,
   type ProviderConnection,
   type ProviderClient,
   type ProvidersMutationResult,
@@ -404,69 +406,39 @@ export default function ProvidersScreen() {
     }
   };
 
-  const runSelectModel = async (
-    client: ProviderClient,
+  const runSetModels = async (
     connection: ProviderConnection,
-    modelId: string,
+    enabledIds: string[],
   ) => {
     if (!currentServerId || !currentConnected) return;
     const result = await runMutation(() =>
-      wsClient.setProviderDefault(currentServerId!, {
-        client,
+      wsClient.setProviderModels(currentServerId!, {
         connectionId: connection.id,
-        modelId,
-        revision,
+        modelIds: enabledIds,
       }),
     );
-    if (result) setModelPicker(null);
-  };
-
-  const runClearCredential = async (connection: ProviderConnection) => {
-    if (!currentServerId || !currentConnected) return;
-    if (ownerRef.current.catalogRequiresRefresh()) {
-      syncWriteLockUi();
-      Alert.alert(
-        "Refresh required",
-        "Refresh Providers before clearing an API key.",
-        [{ text: "Refresh", onPress: () => void loadCatalog({ soft: true }) }],
+    if (!result) return;
+    // Keep the client-selected model aligned with the allowlist: when the
+    // model new Sessions would launch with was just disabled, move the
+    // selection to the deterministic first supported model (or clear it).
+    const client = clientForConnection(connection);
+    if (!client) return;
+    const entry = result.snapshot.defaults[client];
+    const selected = entry?.model_id?.trim();
+    if (
+      entry?.connection_id === connection.id &&
+      selected &&
+      !enabledIds.includes(selected)
+    ) {
+      const next = firstSupportedModel(result.snapshot, connection.id);
+      await runMutation(() =>
+        wsClient.setProviderDefault(currentServerId!, {
+          client,
+          connectionId: connection.id,
+          modelId: next ?? undefined,
+          revision: result.snapshot.revision,
+        }),
       );
-      return;
-    }
-    const admission = ownerRef.current.admitCatalogMutation();
-    if (!admission.ok) {
-      Alert.alert("Busy", admission.reason);
-      return;
-    }
-    const token = admission.token;
-    setMutating(true);
-    try {
-      const result = await wsClient.clearProviderCredential(
-        currentServerId,
-        connection.id,
-      );
-      assertNoCredentialRetention(result);
-      if (!ownerRef.current.isCurrent(token)) return;
-      const settled = settleCredentialPersistence(result.persistence);
-      ownerRef.current.settleCatalogMutation(token, {
-        refreshRequired: settled.refreshRequired,
-      });
-      if (settled.refreshRequired) {
-        setDurabilityWarning(durabilityWarningMessage(result.persistence));
-      }
-      syncWriteLockUi();
-      await loadCatalog({ soft: true });
-    } catch (clearError) {
-      if (!ownerRef.current.isCurrent(token)) return;
-      ownerRef.current.settleCatalogMutation(token, {
-        refreshRequired: providerMutationRequiresRefresh(clearError),
-      });
-      syncWriteLockUi();
-      const presented = presentProviderError(clearError);
-      Alert.alert(presented.title, presented.message);
-    } finally {
-      if (ownerRef.current.isCurrent(token)) {
-        setMutating(false);
-      }
     }
   };
 
@@ -513,18 +485,6 @@ export default function ProvidersScreen() {
       onOpenSettings={() => router.push("/settings")}
       onOpenEditor={setEditor}
       onCloseEditor={closeEditor}
-      onClearCredential={(connection) => {
-        Alert.alert("Clear API key?", connection.name, [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Clear",
-            style: "destructive",
-            onPress: () => {
-              void runClearCredential(connection);
-            },
-          },
-        ]);
-      }}
       onDelete={(connection) => {
         Alert.alert("Delete Provider?", connection.name, [
           { text: "Cancel", style: "cancel" },
@@ -554,10 +514,25 @@ export default function ProvidersScreen() {
         );
       }}
       onSetDefault={(client, connection) => {
+        // Selecting a connection is a provider choice; the client-selected
+        // model for new Sessions is the existing selection when this
+        // connection already owns it, else the deterministic first supported
+        // model of the allowlist (never a gateway-owned default).
+        const current = catalogRef.current;
+        const entry = current?.defaults[client];
+        const keepModel =
+          entry?.connection_id === connection.id
+            ? entry.model_id?.trim()
+            : undefined;
+        const modelId =
+          keepModel ||
+          firstSupportedModel(current, connection.id) ||
+          undefined;
         void runMutation(() =>
           wsClient.setProviderDefault(currentServerId!, {
             client,
             connectionId: connection.id,
+            modelId,
             revision,
           }),
         );
@@ -568,7 +543,10 @@ export default function ProvidersScreen() {
       modelPicker={modelPicker}
       onCloseModelPicker={() => setModelPicker(null)}
       onSelectModel={(client, connection, modelId) => {
-        void runSelectModel(client, connection, modelId);
+        void runSetModels(
+          connection,
+          toggleModelSupport(catalog, connection.id, modelId),
+        );
       }}
       onTestConnection={async ({ client, baseUrl, apiKey }) => {
         if (!currentServerId || !currentConnected) {

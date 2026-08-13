@@ -56,7 +56,7 @@ func TestCustomConnectionWithoutModelCannotBind(t *testing.T) {
 	}
 }
 
-func TestSetProviderDefaultRejectsEmptyModelWithoutDiscovery(t *testing.T) {
+func TestSetProviderDefaultAllowsEmptyModelBeforeDiscovery(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "custom-gw", Name: "gateway.example", Client: ClientCodex,
@@ -66,22 +66,25 @@ func TestSetProviderDefaultRejectsEmptyModelWithoutDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No discovery entries: no model can be synced, so a default must not be
-	// persisted with an empty/placeholder model.
-	_, err = owner.SetProviderDefault(ClientCodex, "custom-gw", "", proj.Revision)
-	if !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("want ErrUpstreamModelRequired got %v", err)
-	}
-	projAfter, err := owner.ProjectProviders()
+	// Selecting a connection is a provider choice, not a model choice: with no
+	// synced models the default persists with an honest empty model instead of
+	// a fabricated placeholder.
+	proj, err = owner.SetProviderDefault(ClientCodex, "custom-gw", "", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := projAfter.Defaults[ClientCodex]; ok {
-		t.Fatalf("empty-model default was persisted: %#v", projAfter.Defaults[ClientCodex])
+	d, ok := proj.Defaults[ClientCodex]
+	if !ok || d.ConnectionID != "custom-gw" || d.ModelID != "" {
+		t.Fatalf("default=%#v want connection with empty model", proj.Defaults[ClientCodex])
+	}
+	// Launch without any synced model still fails closed (no fabrication).
+	_, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")
+	if !errors.Is(err, ErrUpstreamModelRequired) {
+		t.Fatalf("want ErrUpstreamModelRequired got %v", err)
 	}
 }
 
-func TestSetProviderDefaultSyncsModelFromDiscovery(t *testing.T) {
+func TestLaunchFallsBackToFirstSupportedModel(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
@@ -99,23 +102,43 @@ func TestSetProviderDefaultSyncsModelFromDiscovery(t *testing.T) {
 	}, nil)
 	owner.mu.Unlock()
 
-	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "", proj.Revision)
+	// No client-selected model: the connection can still become the default
+	// (connection selection is not a model choice), and launch falls back to
+	// the first supported model deterministically.
+	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "gpt-5.6-sol", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := proj.Defaults[ClientCodex].ModelID; got != "codex-auto-review" {
-		t.Fatalf("default model=%q want first discovered id", got)
+	if got := proj.Defaults[ClientCodex].ModelID; got != "gpt-5.6-sol" {
+		t.Fatalf("client-selected model=%q", got)
 	}
 
 	plan, err := owner.PrepareLaunch(ExecutorCodex, "", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if plan.State.Binding.UpstreamModel != "gpt-5.6-sol" {
+		t.Fatalf("binding upstream_model=%q want gpt-5.6-sol", plan.State.Binding.UpstreamModel)
+	}
+	if plan.Wire.ModelID != "gpt-5.6-sol" {
+		t.Fatalf("wire model_id=%q", plan.Wire.ModelID)
+	}
+
+	// Selected model no longer supported (refresh dropped it): deterministic
+	// visible fallback to the first supported model, never a hard-coded gpt-5.
+	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "retired-model", proj.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if plan.State.Binding.UpstreamModel != "codex-auto-review" {
-		t.Fatalf("binding upstream_model=%q", plan.State.Binding.UpstreamModel)
+		t.Fatalf("fallback upstream_model=%q want codex-auto-review", plan.State.Binding.UpstreamModel)
 	}
 	if plan.Wire.ModelID != "codex-auto-review" {
-		t.Fatalf("wire model_id=%q", plan.Wire.ModelID)
+		t.Fatalf("fallback wire model_id=%q", plan.Wire.ModelID)
 	}
 }
 

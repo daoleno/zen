@@ -167,8 +167,14 @@ export default function TerminalScreen() {
 
   const openModel = useCallback(() => {
     closeMenu();
-    routeSheet.open();
-  }, [closeMenu, routeSheet]);
+    // The top-bar Model action anchors the menu near the action popover.
+    routeSheet.openFromAnchor({
+      x: chromeLayout.menuPosition.left,
+      y: chromeLayout.menuPosition.top,
+      width: 0,
+      height: 0,
+    });
+  }, [chromeLayout.menuPosition.left, chromeLayout.menuPosition.top, closeMenu, routeSheet]);
 
   // The popover Model action exists only when this exact Session can switch
   // models right now — the same truth as the Composer control.
@@ -210,6 +216,7 @@ export default function TerminalScreen() {
       resourceSheetLoading: resourceSheet.loading,
       resourceSheetError: resourceSheet.error,
       resourceSheetSnapshot: resourceSheet.snapshot,
+      routeSheetAnchor: routeSheet.anchor,
       routeSheetVisible: routeSheet.visible,
       routeSheetLoading: routeSheet.loading,
       routeSheetActivating: routeSheet.activating,
@@ -244,7 +251,9 @@ export default function TerminalScreen() {
         : undefined,
       modelActionAvailable,
       composerModelControl: routeSheet.composerControl,
-      onComposerModelControlPress: openModel,
+      onComposerModelControlPress: (anchor) => {
+        routeSheet.openFromAnchor(anchor);
+      },
       closeRouteSheet: routeSheet.close,
       retryRouteSheet: routeSheet.retry,
       activateSessionModel: (choice) => {
