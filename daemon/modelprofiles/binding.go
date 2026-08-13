@@ -14,6 +14,7 @@ type RouteTable struct {
 	bySession map[string]SessionRouteState
 	byRoute   map[string]string // routeID -> sessionID
 	lookup    func(string) (string, bool)
+	creds     CredentialStore
 	newRoute  func() (string, error)
 	verifier  ProfileContractVerifier
 	// inFlight tracks per-route request leases until Release/Complete.
@@ -51,6 +52,25 @@ func (t *RouteTable) SetLookup(lookup func(string) (string, bool)) {
 	t.lookup = lookup
 }
 
+// SetCredentials installs the private store used for launch/bind readiness.
+// Secret values are never copied onto bindings or launch env.
+func (t *RouteTable) SetCredentials(store CredentialStore) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.creds = store
+}
+
+func (t *RouteTable) requireAuthLocked(profile Profile) error {
+	return requireAuthReady(profile, t.creds, t.lookup)
+}
+
+func (t *RouteTable) credentialReadyLocked(profile Profile) bool {
+	return connectionAuthReady(profile, t.creds, t.lookup)
+}
+
 // SetContractVerifier installs the daemon-owned verifier used by Restore.
 func (t *RouteTable) SetContractVerifier(v ProfileContractVerifier) {
 	if t == nil {
@@ -81,11 +101,11 @@ func (t *RouteTable) BindLaunch(sessionID string, profile Profile, catalogRevisi
 	if _, exists := t.bySession[sessionID]; exists {
 		return SessionRouteState{}, fmt.Errorf("%w: session %s already has a route binding", ErrBindingConflict, sessionID)
 	}
-	if err := RequireAuth(profile.AuthMode, profile.CredentialEnv, t.lookup); err != nil {
+	if err := t.requireAuthLocked(profile); err != nil {
 		return SessionRouteState{}, err
 	}
 
-	ready := AuthReady(profile.AuthMode, profile.CredentialEnv, t.lookup)
+	ready := t.credentialReadyLocked(profile)
 	draft, err := BindingDraftFromProfile(profile, catalogRevision, ActivationLaunch, ready, admitted)
 	if err != nil {
 		return SessionRouteState{}, err
@@ -149,11 +169,11 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	if normalizeID(profile.ExecutorID) != normalizeID(current.Binding.ExecutorID) {
 		return SessionRouteState{}, fmt.Errorf("%w: current %s next %s", ErrBindingExecutorMismatch, current.Binding.ExecutorID, profile.ExecutorID)
 	}
-	if err := RequireAuth(profile.AuthMode, profile.CredentialEnv, t.lookup); err != nil {
+	if err := t.requireAuthLocked(profile); err != nil {
 		return SessionRouteState{}, err
 	}
 
-	ready := AuthReady(profile.AuthMode, profile.CredentialEnv, t.lookup)
+	ready := t.credentialReadyLocked(profile)
 	draft, err := BindingDraftFromProfile(profile, catalogRevision, ActivationActiveSession, ready, admitted)
 	if err != nil {
 		return SessionRouteState{}, err
@@ -242,7 +262,7 @@ func (t *RouteTable) BeginRouteFlight(routeID string) (RouteBinding, string, err
 		generation:    state.Generation,
 	}
 	binding := state.Binding
-	binding.CredentialReady = AuthReady(binding.AuthMode, binding.CredentialEnv, t.lookup)
+	binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(binding))
 	return binding, token, nil
 }
 
@@ -337,7 +357,7 @@ func (t *RouteTable) Get(sessionID string) (SessionRouteState, bool) {
 		return SessionRouteState{}, false
 	}
 	state = cloneSessionState(state)
-	state.Binding.CredentialReady = AuthReady(state.Binding.AuthMode, state.Binding.CredentialEnv, t.lookup)
+	state.Binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(state.Binding))
 	return state, true
 }
 
@@ -357,7 +377,7 @@ func (t *RouteTable) GetByRouteID(routeID string) (RouteBinding, bool) {
 		return RouteBinding{}, false
 	}
 	binding := state.Binding
-	binding.CredentialReady = AuthReady(binding.AuthMode, binding.CredentialEnv, t.lookup)
+	binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(binding))
 	return binding, true
 }
 

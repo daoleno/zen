@@ -20,7 +20,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 		return ResolvedLaunch{}, err
 	}
 	profile = normalizeProfile(profile)
-	if err := RequireAuth(profile.AuthMode, profile.CredentialEnv, opts.Lookup); err != nil {
+	if err := requireAuthReady(profile, opts.Credentials, opts.Lookup); err != nil {
 		return ResolvedLaunch{}, err
 	}
 	baseCommand = strings.TrimSpace(baseCommand)
@@ -28,7 +28,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 		baseCommand = profile.ExecutorID
 	}
 
-	ready := AuthReady(profile.AuthMode, profile.CredentialEnv, opts.Lookup)
+	ready := connectionAuthReady(profile, opts.Credentials, opts.Lookup)
 	draft, err := BindingDraftFromProfile(profile, opts.CatalogRevision, ActivationLaunch, ready, admitted)
 	if err != nil {
 		return ResolvedLaunch{}, err

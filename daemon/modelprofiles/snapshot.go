@@ -235,7 +235,7 @@ func (t *RouteTable) Restore(states []SessionRouteState, verifier ProfileContrac
 		if err := assertPersistedMatchesAdmitted(state.Launched, launchedAdmitted); err != nil {
 			return fmt.Errorf("%w: launched %v", ErrRouteSnapshotInvalid, err)
 		}
-		state.Binding.CredentialReady = AuthReady(state.Binding.AuthMode, state.Binding.CredentialEnv, t.lookup)
+		state.Binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(state.Binding))
 		state.History = trimHistory(state.History)
 		sid := state.Binding.SessionID
 		if _, ok := bySession[sid]; ok {

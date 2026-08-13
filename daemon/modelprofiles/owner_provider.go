@@ -235,6 +235,9 @@ func (o *Owner) SetCredentialStore(store CredentialStore) {
 	if o.router != nil {
 		o.router.creds = store
 	}
+	if o.table != nil {
+		o.table.SetCredentials(store)
+	}
 }
 
 // SetProviderCredential writes a secret to the credential store for a

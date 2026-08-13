@@ -211,10 +211,12 @@ type ExecutorCapabilities struct {
 
 // CompileOptions configures Compile, including required contract authorization.
 // Supply Verifier or VerifiedProfileContract; Profile TOML claims are never sufficient.
+// Credentials is consulted for readiness only; secret values never enter launch env.
 type CompileOptions struct {
 	LoopbackRouteURL        string
 	CatalogRevision         int64
 	Lookup                  func(string) (string, bool)
+	Credentials             CredentialStore
 	Verifier                ProfileContractVerifier
 	VerifiedProfileContract VerifiedProfileContract
 }

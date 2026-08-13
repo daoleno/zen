@@ -282,13 +282,18 @@ func CredentialReady(envName string, lookup func(string) (string, bool)) bool {
 	return ok && strings.TrimSpace(value) != ""
 }
 
-// AuthReady reports whether the profile/binding auth mode can be satisfied.
+// AuthReady reports whether the auth mode can be satisfied from process env.
+// Launch/bind/compile must use connectionAuthReady so a stored secret counts.
 func AuthReady(authMode, envName string, lookup func(string) (string, bool)) bool {
-	switch normalizeID(authMode) {
+	return connectionAuthReady(Profile{AuthMode: authMode, CredentialEnv: envName}, nil, lookup)
+}
+
+func connectionAuthReady(profile Profile, store CredentialStore, lookup func(string) (string, bool)) bool {
+	switch normalizeID(profile.AuthMode) {
 	case "", AuthModeNone, AuthModeNativePassthrough:
 		return true
 	case AuthModeBearerEnv, AuthModeXAPIKeyEnv:
-		return CredentialReady(envName, lookup)
+		return providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup)
 	default:
 		return false
 	}
@@ -296,7 +301,11 @@ func AuthReady(authMode, envName string, lookup func(string) (string, bool)) boo
 
 // RequireAuth fails closed when the auth mode needs an env that is missing/empty.
 func RequireAuth(authMode, envName string, lookup func(string) (string, bool)) error {
-	authMode = normalizeID(authMode)
+	return requireAuthReady(Profile{AuthMode: authMode, CredentialEnv: envName}, nil, lookup)
+}
+
+func requireAuthReady(profile Profile, store CredentialStore, lookup func(string) (string, bool)) error {
+	authMode := normalizeID(profile.AuthMode)
 	if authMode == "" {
 		authMode = AuthModeNone
 	}
@@ -304,11 +313,11 @@ func RequireAuth(authMode, envName string, lookup func(string) (string, bool)) e
 	case AuthModeNone, AuthModeNativePassthrough:
 		return nil
 	case AuthModeBearerEnv, AuthModeXAPIKeyEnv:
-		if err := ValidateCredentialEnv(envName); err != nil {
+		if err := ValidateCredentialEnv(profile.CredentialEnv); err != nil {
 			return err
 		}
-		if !CredentialReady(envName, lookup) {
-			return fmt.Errorf("%w: %s", ErrCredentialNotReady, envName)
+		if !providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup) {
+			return fmt.Errorf("%w: %s", ErrCredentialNotReady, profile.CredentialEnv)
 		}
 		return nil
 	default:

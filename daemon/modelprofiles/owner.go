@@ -162,6 +162,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 
 	table := NewRouteTable()
 	table.SetLookup(lookup)
+	table.SetCredentials(cfg.Credentials)
 	table.SetContractVerifier(verifier)
 
 	routes, err := NewRouteStateFile(routesPath)
@@ -813,6 +814,7 @@ func (o *Owner) PrepareLaunch(executorID, profileID, baseCommand string) (Sessio
 			LoopbackRouteURL: loopbackURL,
 			CatalogRevision:  o.store.Revision(),
 			Lookup:           o.lookup,
+			Credentials:      o.creds,
 			Verifier:         o.verifier,
 		})
 		if compileErr != nil {
@@ -1063,6 +1065,7 @@ func (o *Owner) ResumeLaunch(sessionID, baseCommand string) (command string, env
 		LoopbackRouteURL:        loopbackURL,
 		CatalogRevision:         state.Binding.CatalogRevision,
 		Lookup:                  o.lookup,
+		Credentials:             o.creds,
 		VerifiedProfileContract: contractFromBinding(state.Binding),
 	})
 	if err != nil {
