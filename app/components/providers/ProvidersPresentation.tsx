@@ -25,7 +25,10 @@ import type {
   ProvidersSnapshot,
 } from "../../services/providers";
 import {
+  boundModelForConnection,
+  connectionRequiresModelSelection,
   connectionsForClient,
+  modelSyncChoices,
   providerClientLabel,
 } from "../../services/providers";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
@@ -35,11 +38,13 @@ import {
   providerEditorCanSave,
   providerEditorSessionKey,
   providerEditorShouldResetFields,
+  type ModelSyncPickerState,
   type ProviderSaveOutcome,
   type ProvidersEditorState,
 } from "./providersPresentationModel";
 
 export type {
+  ModelSyncPickerState,
   ProviderSaveOutcome,
   ProvidersEditorState,
 } from "./providersPresentationModel";
@@ -67,6 +72,13 @@ export interface ProvidersPresentationProps {
   onUseDirect(client: ProviderClient): void;
   onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
+  modelPicker: ModelSyncPickerState | null;
+  onCloseModelPicker(): void;
+  onSelectModel(
+    client: ProviderClient,
+    connection: ProviderConnection,
+    modelId: string,
+  ): void;
   onTestConnection(input: {
     client: ProviderClient;
     baseUrl: string;
@@ -105,6 +117,9 @@ export function ProvidersPresentation({
   onUseDirect,
   onSetDefault,
   onDiscover,
+  modelPicker,
+  onCloseModelPicker,
+  onSelectModel,
   onTestConnection,
   onSaveCustom,
   onSaveCredential,
@@ -223,6 +238,17 @@ export function ProvidersPresentation({
         onSaveCustom={onSaveCustom}
         onSaveCredential={onSaveCredential}
       />
+
+      {modelPicker && catalog ? (
+        <ModelSyncSheet
+          picker={modelPicker}
+          catalog={catalog}
+          mutating={mutating}
+          disabled={!canMutate || writeLocked}
+          onClose={onCloseModelPicker}
+          onSelectModel={onSelectModel}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -282,22 +308,36 @@ function ClientConnectionCard({
           onPress={onUseDirect}
           isLast={connections.length === 0}
         />
-        {connections.map((connection, index) => (
-          <ConnectionChoiceRow
-            key={connection.id}
-            connection={connection}
-            selected={selectedId === connection.id}
-            disabled={disabled}
-            isLast={index === connections.length - 1}
-            onSelect={() => onSetDefault(connection)}
-            onOpenCredential={() =>
-              onOpenEditor({ kind: "credential", connection })
-            }
-            onClearCredential={() => onClearCredential(connection)}
-            onDelete={() => onDelete(connection)}
-            onDiscover={() => onDiscover(connection)}
-          />
-        ))}
+        {connections.map((connection, index) => {
+          const boundModel = boundModelForConnection(
+            catalog,
+            client,
+            connection.id,
+          );
+          const needsModel = connectionRequiresModelSelection(
+            catalog,
+            client,
+            connection.id,
+          );
+          return (
+            <ConnectionChoiceRow
+              key={connection.id}
+              connection={connection}
+              selected={selectedId === connection.id}
+              disabled={disabled}
+              isLast={index === connections.length - 1}
+              boundModel={boundModel}
+              needsModel={needsModel}
+              onSelect={() => onSetDefault(connection)}
+              onOpenCredential={() =>
+                onOpenEditor({ kind: "credential", connection })
+              }
+              onClearCredential={() => onClearCredential(connection)}
+              onDelete={() => onDelete(connection)}
+              onDiscover={() => onDiscover(connection)}
+            />
+          );
+        })}
       </View>
 
       <AnimatedPressable
@@ -360,6 +400,8 @@ function ConnectionChoiceRow({
   selected,
   disabled,
   isLast,
+  boundModel,
+  needsModel,
   onSelect,
   onOpenCredential,
   onClearCredential,
@@ -370,6 +412,10 @@ function ConnectionChoiceRow({
   selected: boolean;
   disabled: boolean;
   isLast: boolean;
+  /** Model bound as this client default, when this connection is the default. */
+  boundModel: string | null;
+  /** Default connection with no bound model: new Sessions would fail closed. */
+  needsModel: boolean;
   onSelect(): void;
   onOpenCredential(): void;
   onClearCredential(): void;
@@ -392,7 +438,7 @@ function ConnectionChoiceRow({
           disabled={disabled}
           accessibilityRole="radio"
           accessibilityState={{ checked: selected, disabled }}
-          accessibilityLabel={`${connection.name}, ${ready ? "connected" : "API key required"}`}
+          accessibilityLabel={`${connection.name}, ${ready ? "connected" : "API key required"}${boundModel ? `, model ${boundModel}` : needsModel ? ", no model selected" : ""}`}
           onPress={ready ? onSelect : onOpenCredential}
         >
           <View style={styles.radioOuter}>
@@ -405,6 +451,15 @@ function ConnectionChoiceRow({
             <Text style={styles.rowSubtitle} numberOfLines={1}>
               {subtitle}
             </Text>
+            {boundModel ? (
+              <Text style={styles.rowModel} numberOfLines={1}>
+                Model · {boundModel}
+              </Text>
+            ) : needsModel ? (
+              <Text style={styles.rowModelHint} numberOfLines={1}>
+                No model selected · Sync models
+              </Text>
+            ) : null}
           </View>
           {!ready ? (
             <Text style={styles.keyRequired}>Add key</Text>
@@ -427,7 +482,7 @@ function ConnectionChoiceRow({
       {expanded ? (
         <View style={styles.connectionActions}>
           {ready ? (
-            <ActionButton label="Test connection" onPress={onDiscover} disabled={disabled} />
+            <ActionButton label="Sync models" onPress={onDiscover} disabled={disabled} />
           ) : null}
           <ActionButton
             label={ready ? "Replace key" : "Add API key"}
@@ -776,6 +831,130 @@ function ProviderEditorSheet({
   );
 }
 
+function ModelSyncSheet({
+  picker,
+  catalog,
+  mutating,
+  disabled,
+  onClose,
+  onSelectModel,
+}: {
+  picker: ModelSyncPickerState;
+  catalog: ProvidersSnapshot;
+  mutating: boolean;
+  disabled: boolean;
+  onClose(): void;
+  onSelectModel(
+    client: ProviderClient,
+    connection: ProviderConnection,
+    modelId: string,
+  ): void;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const choices = modelSyncChoices(
+    catalog,
+    picker.client,
+    picker.connection,
+    picker.models,
+  );
+  const saving = mutating;
+  const clientLabel = providerClientLabel(picker.client);
+
+  return (
+    <RisingSheet
+      visible
+      onClose={onClose}
+      align="bottom"
+      cardStyle={[
+        styles.pickerCard,
+        { paddingBottom: Math.max(insets.bottom, 16) },
+      ]}
+    >
+      <View style={styles.pickerHeader}>
+        <View style={styles.pickerCopy}>
+          <Text style={styles.pickerTitle} accessibilityRole="header">
+            Choose model
+          </Text>
+          <Text style={styles.pickerSubtitle} numberOfLines={1}>
+            {picker.connection.name}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityLabel="Close model picker"
+          accessibilityRole="button"
+          hitSlop={8}
+          style={styles.editorClose}
+          onPress={onClose}
+        >
+          <Ionicons name="close" size={22} color={colors.textSecondary} />
+        </Pressable>
+      </View>
+      <Text style={styles.pickerHint}>
+        Pick the upstream model new {clientLabel} Sessions launch with. It is
+        saved as the {clientLabel} default for this connection.
+      </Text>
+      <ScrollView
+        style={styles.pickerList}
+        showsVerticalScrollIndicator={false}
+      >
+        {choices.map((choice) => {
+          const current = choice.current;
+          const rowDisabled = saving || disabled || current;
+          return (
+            <Pressable
+              key={choice.model.id}
+              style={[
+                styles.pickerRow,
+                current && { backgroundColor: colors.accentSoft },
+              ]}
+              disabled={rowDisabled}
+              accessibilityRole="button"
+              accessibilityState={{
+                selected: current,
+                disabled: rowDisabled,
+                busy: saving,
+              }}
+              accessibilityLabel={`Use ${choice.model.id}`}
+              onPress={() =>
+                onSelectModel(picker.client, picker.connection, choice.model.id)
+              }
+            >
+              <View style={styles.radioOuter}>
+                {current ? <View style={styles.radioInner} /> : null}
+              </View>
+              <Text
+                style={[
+                  styles.pickerRowText,
+                  current && { color: colors.accentStrong },
+                ]}
+                numberOfLines={1}
+              >
+                {choice.model.id}
+              </Text>
+              {current ? (
+                <Text style={styles.pickerCurrentLabel}>Default</Text>
+              ) : null}
+            </Pressable>
+          );
+        })}
+        {saving ? (
+          <View style={styles.pickerSavingRow}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <Text style={styles.pickerSavingText}>Saving…</Text>
+          </View>
+        ) : null}
+        {!saving && choices.length === 0 ? (
+          <Text style={styles.pickerEmpty}>
+            No models were reported by this endpoint.
+          </Text>
+        ) : null}
+      </ScrollView>
+    </RisingSheet>
+  );
+}
+
 function createStyles(colors: ReturnType<typeof useAppColors>) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: colors.bgPrimary },
@@ -864,6 +1043,8 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     rowCopy: { flex: 1, minWidth: 0 },
     rowTitle: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary },
     rowSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
+    rowModel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.accent, marginTop: 3 },
+    rowModelHint: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, marginTop: 3 },
     keyRequired: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, paddingHorizontal: 4 },
     connectionActions: {
       flexDirection: "row",
@@ -917,6 +1098,66 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.surfaceSubtle,
+    },
+    pickerCard: {
+      backgroundColor: colors.bgSurface,
+      borderTopLeftRadius: Radii.sm,
+      borderTopRightRadius: Radii.sm,
+      overflow: "hidden",
+      maxHeight: 560,
+    },
+    pickerHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingTop: 14,
+      paddingBottom: 4,
+    },
+    pickerCopy: { flex: 1, minWidth: 0 },
+    pickerTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary },
+    pickerSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
+    pickerHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textSecondary,
+      paddingHorizontal: 16,
+      paddingBottom: 10,
+    },
+    pickerList: { paddingHorizontal: 16, paddingBottom: 8 },
+    pickerRow: {
+      minHeight: 52,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfacePressed,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 8,
+    },
+    pickerRowText: { ...UiTextMetrics, ...TypeScale.body, flex: 1, minWidth: 0 },
+    pickerCurrentLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+      color: colors.accentStrong,
+      fontWeight: "600",
+    },
+    pickerSavingRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      paddingVertical: 14,
+    },
+    pickerSavingText: { ...UiTextMetrics, ...TypeScale.body, color: colors.textSecondary },
+    pickerEmpty: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textTertiary,
+      textAlign: "center",
+      paddingVertical: 20,
     },
     editorHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textSecondary, marginBottom: 4 },
     editorProviderName: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary, fontWeight: "600" },

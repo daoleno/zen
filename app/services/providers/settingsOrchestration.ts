@@ -92,6 +92,9 @@ export function curatedCreateInput(preset: ProviderPreset, client: string) {
 export function customGatewayCreateInput(input: {
   client: string;
   baseUrl: string;
+  /** Optional explicit upstream model. Omit to stay discovery-driven; the
+   *  daemon fails closed at binding time instead of fabricating a model. */
+  modelId?: string;
 }) {
   return advancedConnectionInput({
     ...input,

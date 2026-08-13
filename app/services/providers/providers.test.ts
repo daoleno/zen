@@ -16,6 +16,10 @@ import {
   blockCreateAfterAmbiguity,
   isCreateBlockedByAmbiguity,
   shouldUnlockCreateAfterAmbiguity,
+  boundModelForConnection,
+  clientForConnection,
+  connectionRequiresModelSelection,
+  modelSyncChoices,
   type ProvidersSnapshot,
 } from "./index";
 
@@ -426,6 +430,107 @@ describe("Provider stale, reconnect, and ambiguity admission", () => {
         listFreshForConnection: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("Model sync and default binding policy", () => {
+  test("connection client is the single scoped client or null", () => {
+    expect(
+      clientForConnection({
+        id: "c1",
+        name: "cf.api.fan",
+        preset_id: "custom",
+        clients: ["codex"],
+        credential_ready: true,
+        advanced: true,
+        base_url: "https://cf.api.fan/v1",
+      }),
+    ).toBe("codex");
+    expect(clientForConnection(null)).toBeNull();
+    expect(
+      clientForConnection({
+        id: "bad",
+        name: "bad",
+        preset_id: "custom",
+        clients: ["unknown-client"],
+        credential_ready: true,
+        advanced: true,
+      }),
+    ).toBeNull();
+  });
+
+  test("bound model is the client default model for that connection only", () => {
+    const snapshot = providerSnapshot({
+      defaults: {
+        codex: { connection_id: "c1", model_id: "deepseek-chat" },
+      },
+    });
+    expect(boundModelForConnection(snapshot, "codex", "c1")).toBe(
+      "deepseek-chat",
+    );
+    // A non-default connection has no bound model to show.
+    expect(boundModelForConnection(snapshot, "codex", "c2")).toBeNull();
+    expect(boundModelForConnection(snapshot, "claude", "c1")).toBeNull();
+    expect(boundModelForConnection(null, "codex", "c1")).toBeNull();
+  });
+
+  test("default without a model is the exact fail-closed state", () => {
+    const snapshot = providerSnapshot({
+      defaults: { codex: { connection_id: "c1" } },
+    });
+    expect(connectionRequiresModelSelection(snapshot, "codex", "c1")).toBe(
+      true,
+    );
+    // Non-default connection: no model needed until it becomes the default.
+    expect(connectionRequiresModelSelection(snapshot, "codex", "c2")).toBe(
+      false,
+    );
+    expect(
+      connectionRequiresModelSelection(
+        providerSnapshot({
+          defaults: {
+            codex: { connection_id: "c1", model_id: "deepseek-chat" },
+          },
+        }),
+        "codex",
+        "c1",
+      ),
+    ).toBe(false);
+    expect(connectionRequiresModelSelection(null, "codex", "c1")).toBe(false);
+  });
+
+  test("sync choices list available models and mark the bound one current", () => {
+    const snapshot = providerSnapshot({
+      defaults: {
+        codex: { connection_id: "c1", model_id: "gpt-5.6-sol" },
+      },
+    });
+    const connection = snapshot.connections[0]!;
+    const choices = modelSyncChoices(snapshot, "codex", connection, [
+      { id: "gpt-5.6-sol", available: true, source: "discovered" },
+      { id: "gpt-5.4-mini", available: true, source: "discovered" },
+      { id: "retired-model", available: false, source: "lkg" },
+    ]);
+    expect(choices.map((choice) => choice.model.id)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.4-mini",
+    ]);
+    expect(choices[0]!.current).toBe(true);
+    expect(choices[1]!.current).toBe(false);
+    expect(choices.every((choice) => choice.connection.id === "c1")).toBe(true);
+  });
+
+  test("sync choices with no bound model offer every available model", () => {
+    const snapshot = providerSnapshot({
+      defaults: { codex: { connection_id: "c1" } },
+    });
+    const connection = snapshot.connections[0]!;
+    const choices = modelSyncChoices(snapshot, "codex", connection, [
+      { id: "gpt-5.6-sol", available: true, source: "discovered" },
+      { id: "gpt-5.4-mini", available: true, source: "discovered" },
+    ]);
+    expect(choices.every((choice) => !choice.current)).toBe(true);
+    expect(choices).toHaveLength(2);
   });
 });
 

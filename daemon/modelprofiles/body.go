@@ -2,12 +2,19 @@ package modelprofiles
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 const MaxRouteRequestBodyBytes = 8 << 20
@@ -22,6 +29,158 @@ var hopByHopHeaderNames = []string{
 	"Transfer-Encoding",
 	"Upgrade",
 	"Proxy-Connection",
+}
+
+// decodeBodyEncoding applies the request Content-Encoding to a bounded body.
+// Supported codings match what real clients ship — Codex Desktop sends
+// zstd-compressed request bodies, others use gzip/x-gzip, deflate, or br:
+//
+//	gzip, x-gzip, deflate (zlib per RFC 9110 with raw-DEFLATE fallback),
+//	br (brotli), zstd, zst (zstd alias)
+//
+// Stacked codings (e.g. "gzip, zstd") are listed in application order and are
+// decoded in reverse, with every stage — final output and intermediate
+// products — bounded by max so compressed bombs are cut off at the budget
+// instead of expanded fully. Unknown or unsupported codings are rejected
+// explicitly (fail closed): the router must rewrite the JSON body, so a
+// compressed body it cannot decode must never be passed through untouched.
+// decoded reports whether the caller must strip Content-Encoding before
+// forwarding upstream.
+func decodeBodyEncoding(encoding string, raw []byte, max int64) (body []byte, decoded bool, err error) {
+	codings := splitCodings(encoding)
+	if len(codings) == 0 {
+		return raw, false, nil
+	}
+	for _, coding := range codings {
+		if !isSupportedCoding(coding) {
+			return nil, false, fmt.Errorf("%w: unsupported content-encoding %q", ErrRequestBodyMalformed, encoding)
+		}
+	}
+	if max <= 0 {
+		max = MaxRouteRequestBodyBytes
+	}
+	// RFC 9110 §8.4: codings are listed in application order, so the last one
+	// applied comes off first.
+	data := raw
+	for i := len(codings) - 1; i >= 0; i-- {
+		out, err := decodeSingleCoding(codings[i], data, max)
+		if err != nil {
+			return nil, false, err
+		}
+		data = out
+	}
+	return data, true, nil
+}
+
+// splitCodings splits a Content-Encoding value into trimmed, lowercased
+// codings, dropping empties and identity. Repeated headers are already joined
+// by net/http with commas, so a single split covers both forms.
+func splitCodings(encoding string) []string {
+	var out []string
+	for _, part := range strings.Split(encoding, ",") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part == "" || part == "identity" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func isSupportedCoding(coding string) bool {
+	switch coding {
+	case "gzip", "x-gzip", "deflate", "br", "zstd", "zst":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeSingleCoding(coding string, raw []byte, max int64) ([]byte, error) {
+	switch coding {
+	case "gzip", "x-gzip":
+		return decodeGzipBody(raw, max)
+	case "deflate":
+		return decodeDeflateBody(raw, max)
+	case "br":
+		return decodeBrotliBody(raw, max)
+	case "zstd", "zst":
+		return decodeZstdBody(raw, max)
+	default:
+		// Unreachable: decodeBodyEncoding validates every coding first.
+		return nil, fmt.Errorf("%w: unsupported content-encoding %q", ErrRequestBodyMalformed, coding)
+	}
+}
+
+func decodeGzipBody(raw []byte, max int64) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: gzip: %v", ErrRequestBodyMalformed, err)
+	}
+	defer r.Close()
+	return boundedReadAll(r, max, "gzip")
+}
+
+func decodeZstdBody(raw []byte, max int64) ([]byte, error) {
+	r, err := zstd.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: zstd: %v", ErrRequestBodyMalformed, err)
+	}
+	defer r.Close()
+	return boundedReadAll(r, max, "zstd")
+}
+
+func decodeBrotliBody(raw []byte, max int64) ([]byte, error) {
+	return boundedReadAll(brotli.NewReader(bytes.NewReader(raw)), max, "br")
+}
+
+func decodeDeflateBody(raw []byte, max int64) ([]byte, error) {
+	// RFC 9110 §8.4.1: deflate means the zlib wrapper. Some clients send raw
+	// DEFLATE streams instead, so fall back to raw flate before rejecting —
+	// mirrors cc-switch. A genuine zlib bomb keeps its 413: the raw fallback
+	// sees the zlib wrapper as corruption, but the limit abort is the more
+	// honest diagnosis.
+	zr, zlibErr := zlib.NewReader(bytes.NewReader(raw))
+	zlibTooLarge := false
+	if zlibErr == nil {
+		out, readErr := boundedReadAll(zr, max, "deflate(zlib)")
+		_ = zr.Close()
+		if readErr == nil {
+			return out, nil
+		}
+		if errors.Is(readErr, ErrRequestBodyTooLarge) {
+			zlibTooLarge = true
+		}
+	}
+	fr := flate.NewReader(bytes.NewReader(raw))
+	out, rawErr := boundedReadAll(fr, max, "deflate(raw)")
+	if rawErr == nil {
+		return out, nil
+	}
+	if zlibTooLarge {
+		return nil, ErrRequestBodyTooLarge
+	}
+	// A limit abort is authoritative under either interpretation: the request
+	// is rejected regardless of which codec the stream actually is.
+	if errors.Is(rawErr, ErrRequestBodyTooLarge) {
+		return nil, rawErr
+	}
+	if zlibErr != nil {
+		// The stream never parsed as zlib; the header check is the diagnosis.
+		return nil, fmt.Errorf("%w: deflate: %v", ErrRequestBodyMalformed, zlibErr)
+	}
+	return nil, rawErr
+}
+
+func boundedReadAll(r io.Reader, max int64, codec string) ([]byte, error) {
+	out, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrRequestBodyMalformed, codec, err)
+	}
+	if int64(len(out)) > max {
+		return nil, ErrRequestBodyTooLarge
+	}
+	return out, nil
 }
 
 // rewriteRequestModel replaces only the top-level JSON "model" field.

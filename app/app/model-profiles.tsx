@@ -3,6 +3,7 @@ import { Alert } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   ProvidersPresentation,
+  type ModelSyncPickerState,
   type ProvidersEditorState,
   type ProviderSaveOutcome,
 } from "../components/providers/ProvidersPresentation";
@@ -12,6 +13,7 @@ import {
   ProviderRequestOwner,
   assertNoCredentialRetention,
   classifyMutationPersistence,
+  clientForConnection,
   customGatewayCreateInput,
   durabilityWarningMessage,
   mayDiscoverAfterCredential,
@@ -47,6 +49,9 @@ export default function ProvidersScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ProviderError | null>(null);
   const [editor, setEditor] = useState<ProvidersEditorState>(null);
+  const [modelPicker, setModelPicker] = useState<ModelSyncPickerState | null>(
+    null,
+  );
   const [mutating, setMutating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [durabilityWarning, setDurabilityWarning] = useState<string | null>(
@@ -62,6 +67,7 @@ export default function ProvidersScreen() {
   const clearProjection = useCallback(() => {
     ownerRef.current.invalidateAll();
     setEditor(null);
+    setModelPicker(null);
     setMutating(false);
     setRefreshing(false);
     setDurabilityWarning(null);
@@ -134,6 +140,7 @@ export default function ProvidersScreen() {
       }
       return () => {
         ownerRef.current.invalidateAll();
+        setModelPicker(null);
         const after = providersScreenAfterBlur({
           flags: {
             loading: true,
@@ -362,12 +369,26 @@ export default function ProvidersScreen() {
       }
       syncWriteLockUi();
       await loadCatalog({ soft: true });
-      Alert.alert(
-        "Connection successful",
-        discovery.models.length > 0
-          ? `${discovery.models.length} models are available.`
-          : "The endpoint accepted the saved API key.",
-      );
+      if (discovery.models.length > 0) {
+        const client = clientForConnection(connection);
+        if (client) {
+          setModelPicker({
+            client,
+            connection,
+            models: discovery.models,
+          });
+          return;
+        }
+        Alert.alert(
+          "Connection successful",
+          "Models were discovered, but this connection has no supported client.",
+        );
+      } else {
+        Alert.alert(
+          "Connection successful",
+          "The endpoint accepted the saved API key but reported no models.",
+        );
+      }
     } catch (discoverError) {
       if (!ownerRef.current.isCurrent(token)) return;
       ownerRef.current.settleCatalogMutation(token, {
@@ -381,6 +402,23 @@ export default function ProvidersScreen() {
         setMutating(false);
       }
     }
+  };
+
+  const runSelectModel = async (
+    client: ProviderClient,
+    connection: ProviderConnection,
+    modelId: string,
+  ) => {
+    if (!currentServerId || !currentConnected) return;
+    const result = await runMutation(() =>
+      wsClient.setProviderDefault(currentServerId!, {
+        client,
+        connectionId: connection.id,
+        modelId,
+        revision,
+      }),
+    );
+    if (result) setModelPicker(null);
   };
 
   const runClearCredential = async (connection: ProviderConnection) => {
@@ -526,6 +564,11 @@ export default function ProvidersScreen() {
       }}
       onDiscover={(connection) => {
         void runDiscover(connection);
+      }}
+      modelPicker={modelPicker}
+      onCloseModelPicker={() => setModelPicker(null)}
+      onSelectModel={(client, connection, modelId) => {
+        void runSelectModel(client, connection, modelId);
       }}
       onTestConnection={async ({ client, baseUrl, apiKey }) => {
         if (!currentServerId || !currentConnected) {

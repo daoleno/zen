@@ -3,6 +3,7 @@ package modelprofiles
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,9 @@ type Router struct {
 	lookup  func(string) (string, bool)
 	creds   CredentialStore
 	maxBody int64
+	// models resolves a route's connection to its synced model catalog for the
+	// local GET /v1/models surface. Nil means the surface is unavailable.
+	models func(profileID string) ([]ProviderModelEntry, error)
 }
 
 // RouterOption configures Router construction.
@@ -55,6 +59,15 @@ func WithRouterMaxBody(n int64) RouterOption {
 		if n > 0 {
 			r.maxBody = n
 		}
+	}
+}
+
+// WithRouterModelCatalog installs the resolver for the local GET /v1/models
+// surface. It receives the route binding's connection id and must return the
+// synced (discovery-cache) model entries for that connection.
+func WithRouterModelCatalog(models func(profileID string) ([]ProviderModelEntry, error)) RouterOption {
+	return func(r *Router) {
+		r.models = models
 	}
 }
 
@@ -104,14 +117,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if req.Method != http.MethodPost {
-		writeRouteError(w, http.StatusMethodNotAllowed, ErrRouteMethodMismatch)
-		return
-	}
-
 	parsed, err := ParseRouteRequestPath(req.URL.Path)
 	if err != nil {
 		writeRouteError(w, http.StatusNotFound, ErrRoutePathMismatch)
+		return
+	}
+
+	// GET /v1/models is the local catalog surface; every other admitted
+	// endpoint is a POST request path.
+	if parsed.Endpoint == EndpointModels {
+		if req.Method != http.MethodGet {
+			writeRouteError(w, http.StatusMethodNotAllowed, ErrRouteMethodMismatch)
+			return
+		}
+	} else if req.Method != http.MethodPost {
+		writeRouteError(w, http.StatusMethodNotAllowed, ErrRouteMethodMismatch)
 		return
 	}
 
@@ -132,9 +152,18 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The local model catalog is served from the synced discovery cache of the
+	// route's connection; nothing is forwarded upstream and no live discovery
+	// is triggered. The flight lease is released by the deferred end (no
+	// opaque-history marking: nothing upstream ran).
+	if parsed.Endpoint == EndpointModels {
+		r.serveLocalModels(w, binding)
+		return
+	}
+
 	inboundAuth := captureInboundAuth(req.Header)
 
-	body, err := readBoundedBody(req, r.maxBody)
+	body, decodedEncoding, err := readBoundedBody(req, r.maxBody)
 	if err != nil {
 		if errors.Is(err, ErrRequestBodyTooLarge) {
 			writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
@@ -193,6 +222,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	copyInboundHeaders(upReq.Header, req.Header)
+	// The body was decompressed at the router boundary; never forward the
+	// original Content-Encoding with plain JSON bytes.
+	if decodedEncoding {
+		upReq.Header.Del("Content-Encoding")
+	}
 	if err := applyUpstreamAuth(upReq.Header, binding, inboundAuth, r.credentialLookup(), r.creds); err != nil {
 		writeRouteError(w, http.StatusBadGateway, ErrCredentialNotReady)
 		return
@@ -229,6 +263,62 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
+}
+
+// serveLocalModels answers GET /v1/models with the synced model catalog of
+// the route's connection as a standard OpenAI list payload. Only available
+// models are listed — the same set the App picker and default binding use.
+func (r *Router) serveLocalModels(w http.ResponseWriter, binding RouteBinding) {
+	if r.models == nil {
+		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog not configured", ErrInvalid))
+		return
+	}
+	entries, err := r.models(binding.ProfileID)
+	if err != nil {
+		// The route's connection is gone: the catalog cannot resolve.
+		if errors.Is(err, ErrRouteNotFound) || errors.Is(err, ErrNotFound) {
+			writeRouteError(w, http.StatusNotFound, ErrRouteNotFound)
+			return
+		}
+		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog: %v", ErrInvalid, err))
+		return
+	}
+	payload, err := modelsListPayload(entries)
+	if err != nil {
+		writeRouteError(w, http.StatusInternalServerError, fmt.Errorf("%w: model list encode: %v", ErrInvalid, err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
+}
+
+// openAIModelList is the standard OpenAI GET /v1/models response shape that
+// Codex's native /model switch reads (data[].id).
+type openAIModelList struct {
+	Object string           `json:"object"`
+	Data   []openAIModelObj `json:"data"`
+}
+
+type openAIModelObj struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
+func modelsListPayload(entries []ProviderModelEntry) ([]byte, error) {
+	data := make([]openAIModelObj, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Available {
+			continue
+		}
+		data = append(data, openAIModelObj{
+			ID:      entry.ID,
+			Object:  "model",
+			OwnedBy: "zen",
+		})
+	}
+	return json.Marshal(openAIModelList{Object: "list", Data: data})
 }
 
 func isWebSocketUpgrade(req *http.Request) bool {
@@ -268,19 +358,27 @@ func streamCopyFlush(w http.ResponseWriter, src io.Reader) error {
 	}
 }
 
-func readBoundedBody(req *http.Request, max int64) ([]byte, error) {
+// readBoundedBody reads the request body with a hard byte bound and applies
+// request Content-Encoding decoding at the router boundary. The second return
+// reports whether the body was decoded (caller must strip Content-Encoding
+// before forwarding the rewritten plain JSON upstream).
+func readBoundedBody(req *http.Request, max int64) ([]byte, bool, error) {
 	if max <= 0 {
 		max = MaxRouteRequestBodyBytes
 	}
 	limited := io.LimitReader(req.Body, max+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRequestBodyMalformed, err)
+		return nil, false, fmt.Errorf("%w: %v", ErrRequestBodyMalformed, err)
 	}
 	if int64(len(body)) > max {
-		return nil, ErrRequestBodyTooLarge
+		return nil, false, ErrRequestBodyTooLarge
 	}
-	return body, nil
+	decoded, isDecoded, err := decodeBodyEncoding(req.Header.Get("Content-Encoding"), body, max)
+	if err != nil {
+		return nil, false, err
+	}
+	return decoded, isDecoded, nil
 }
 
 func copyInboundHeaders(dst, src http.Header) {

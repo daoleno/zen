@@ -211,8 +211,15 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 				}
 			}
 		}
-		if _, err := CompileConnectionTarget(raw, client, modelID); err != nil {
+		target, err := CompileConnectionTarget(raw, client, modelID)
+		if err != nil {
 			return ProviderCatalogProjection{}, err
+		}
+		// Fail closed: never persist a client default whose model is only a
+		// compile probe placeholder (Custom/Advanced connection with no explicit
+		// model and no discovered model to pick).
+		if target.ModelPlaceholder {
+			return ProviderCatalogProjection{}, ErrUpstreamModelRequired
 		}
 	}
 	if _, err := o.store.SetClientDefault(client, connectionID, modelID, revision); err != nil {

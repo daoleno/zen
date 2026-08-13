@@ -1,5 +1,6 @@
 import { invalidProviderReply } from "./errors";
 import type {
+  ProviderClient,
   ProviderConnection,
   ProviderConnectionInput,
   ProviderModel,
@@ -52,6 +53,87 @@ export function availableModelsForConnection(
   return (snapshot.models[connectionId] ?? []).filter(
     (model) => model.available,
   );
+}
+
+/**
+ * The single client a connection serves. Curated and custom connections are
+ * always created client-scoped, so a missing/unsupported client means the
+ * projection is malformed.
+ */
+export function clientForConnection(
+  connection: ProviderConnection | null | undefined,
+): ProviderClient | null {
+  if (!connection) return null;
+  const client = connection.clients[0];
+  return isSupportedProviderClient(client) ? client : null;
+}
+
+/**
+ * The model_id bound to a connection via the client default, or null when the
+ * connection is not the client default or no model is bound yet. This is the
+ * single source the UI shows under a connection row and the truth the daemon
+ * launches with (fail-closed when null).
+ */
+export function boundModelForConnection(
+  snapshot: ProvidersSnapshot | null | undefined,
+  client: string,
+  connectionId: string,
+): string | null {
+  const normalizedClient = normalizeProviderClient(client);
+  const defaultEntry = snapshot?.defaults[normalizedClient];
+  if (!defaultEntry) return null;
+  if (
+    normalizeProviderId(defaultEntry.connection_id) !==
+    normalizeProviderId(connectionId)
+  ) {
+    return null;
+  }
+  const modelId = normalizeProviderId(defaultEntry.model_id);
+  return modelId || null;
+}
+
+/**
+ * True when a connection is the client default but has no upstream model
+ * bound yet — the exact state that makes `codex new` fail closed. The row
+ * renders a "sync models" hint instead of a model name in this state.
+ */
+export function connectionRequiresModelSelection(
+  snapshot: ProvidersSnapshot | null | undefined,
+  client: string,
+  connectionId: string,
+): boolean {
+  const normalizedClient = normalizeProviderClient(client);
+  const defaultEntry = snapshot?.defaults[normalizedClient];
+  if (!defaultEntry) return false;
+  if (
+    normalizeProviderId(defaultEntry.connection_id) !==
+    normalizeProviderId(connectionId)
+  ) {
+    return false;
+  }
+  return !normalizeProviderId(defaultEntry.model_id);
+}
+
+/**
+ * Picker inventory for one connection after discovery: only available models,
+ * with the currently bound model marked. Choosing one binds it as the client
+ * default in one `set_provider_default` write.
+ */
+export function modelSyncChoices(
+  snapshot: ProvidersSnapshot | null | undefined,
+  client: string,
+  connection: ProviderConnection,
+  models: ProviderModel[],
+): ProviderModelChoice[] {
+  const bound = boundModelForConnection(snapshot, client, connection.id);
+  return models
+    .filter((model) => model.available)
+    .map((model) => ({
+      connection,
+      model,
+      current: model.id === bound,
+      disabled: false,
+    }));
 }
 
 export function connectionIsFutureDefault(
@@ -171,6 +253,8 @@ export function advancedConnectionInput(input: {
   client: string;
   baseUrl: string;
   presetId?: string;
+  /** Optional explicit upstream model id (discovery-driven when omitted). */
+  modelId?: string;
 }): ProviderConnectionInput {
   const name = normalizeProviderId(input.name);
   const baseUrl = normalizeProviderId(input.baseUrl);
@@ -195,6 +279,7 @@ export function advancedConnectionInput(input: {
     preset_id: normalizeProviderId(input.presetId) || "custom",
     client,
     base_url: baseUrl,
+    model_id: normalizeProviderId(input.modelId) || undefined,
     advanced: true,
   };
 }

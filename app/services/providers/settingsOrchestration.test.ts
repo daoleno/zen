@@ -93,6 +93,25 @@ describe("Settings orchestration", () => {
     expect(input.model_id).toBeUndefined();
   });
 
+  test("custom gateway keeps the optional explicit upstream model when given", () => {
+    const input = customGatewayCreateInput({
+      client: "codex",
+      baseUrl: "https://cf.api.fan/v1",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(input.model_id).toBe("gpt-5.6-sol");
+    expect(input.advanced).toBe(true);
+  });
+
+  test("custom gateway drops a blank explicit model back to discovery-driven", () => {
+    const input = customGatewayCreateInput({
+      client: "codex",
+      baseUrl: "https://cf.api.fan/v1",
+      modelId: "  ",
+    });
+    expect(input.model_id).toBeUndefined();
+  });
+
   test("custom gateway still rejects non-HTTP base URLs", () => {
     expect(() =>
       customGatewayCreateInput({

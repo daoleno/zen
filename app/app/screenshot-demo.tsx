@@ -1088,6 +1088,9 @@ function ProvidersDemo() {
         onUseDirect={NOOP}
         onSetDefault={NOOP}
         onDiscover={NOOP}
+        modelPicker={null}
+        onCloseModelPicker={NOOP}
+        onSelectModel={NOOP}
         onTestConnection={async () => ({
           client: "codex",
           modelCount: 3,

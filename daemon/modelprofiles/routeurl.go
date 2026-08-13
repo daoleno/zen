@@ -72,6 +72,10 @@ const (
 	EndpointResponses            RouteEndpoint = "responses"
 	EndpointAnthropicMessages    RouteEndpoint = "anthropic_messages"
 	EndpointAnthropicCountTokens RouteEndpoint = "anthropic_count_tokens"
+	// EndpointModels is the standard GET /v1/models catalog surface Codex's
+	// native /model switch reads. Served locally from the synced discovery
+	// cache — never forwarded upstream.
+	EndpointModels RouteEndpoint = "models"
 )
 
 // ParseRouteRequestPath extracts the opaque RouteID and API path from an
@@ -113,18 +117,22 @@ func matchRouteEndpoint(apiPath string) (RouteEndpoint, error) {
 		return EndpointAnthropicMessages, nil
 	case "/v1/messages/count_tokens":
 		return EndpointAnthropicCountTokens, nil
+	case "/v1/models":
+		return EndpointModels, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported path %s", ErrRoutePathMismatch, apiPath)
 	}
 }
 
 // EndpointForRouteProtocol returns admitted endpoints for a route protocol.
+// GET /v1/models is the local catalog surface and is admitted for every
+// protocol; all other endpoints are POST-only request paths.
 func EndpointAllowedForProtocol(routeProtocol string, endpoint RouteEndpoint) bool {
 	switch normalizeID(routeProtocol) {
 	case RouteProtocolResponses:
-		return endpoint == EndpointResponses
+		return endpoint == EndpointResponses || endpoint == EndpointModels
 	case RouteProtocolAnthropicMessages:
-		return endpoint == EndpointAnthropicMessages || endpoint == EndpointAnthropicCountTokens
+		return endpoint == EndpointAnthropicMessages || endpoint == EndpointAnthropicCountTokens || endpoint == EndpointModels
 	default:
 		return false
 	}

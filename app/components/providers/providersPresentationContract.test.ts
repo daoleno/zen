@@ -179,4 +179,36 @@ describe("client-first Providers surface contract", () => {
       "customGatewayCreateInput({ client, baseUrl })",
     );
   });
+
+  test("connection actions sync models through discovery into a picker", () => {
+    expect(presentationSource).toContain('label="Sync models"');
+    expect(presentationSource).toContain("onPress={onDiscover}");
+    // The editor's transient pre-save test stays untouched.
+    expect(presentationSource).toContain("Test connection");
+    expect(screenSource).toContain("discoverProviderModels");
+    expect(screenSource).toContain("setModelPicker({");
+    expect(screenSource).toContain("clientForConnection(connection)");
+  });
+
+  test("picking a model binds it via set_provider_default with modelId", () => {
+    expect(presentationSource).toContain("Choose model");
+    expect(presentationSource).toContain("modelSyncChoices(");
+    expect(presentationSource).toContain("onSelectModel(");
+    expect(presentationSource).toContain("picker.client,");
+    expect(screenSource).toContain("runSelectModel");
+    expect(screenSource).toContain(
+      "wsClient.setProviderDefault(currentServerId!",
+    );
+    expect(screenSource).toContain("modelId,\n        revision,");
+  });
+
+  test("rows show the bound model or a sync-models hint when none is bound", () => {
+    expect(presentationSource).toContain("boundModelForConnection(");
+    expect(presentationSource).toContain("connectionRequiresModelSelection(");
+    expect(presentationSource).toContain("Model · ");
+    expect(presentationSource).toContain("No model selected · Sync models");
+    expect(screenSource).toContain(
+      "onSelectModel={(client, connection, modelId)",
+    );
+  });
 });

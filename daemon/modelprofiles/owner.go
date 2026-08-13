@@ -31,6 +31,7 @@ const (
 	CodeBindingIncompatible        = "route_binding_incompatible"
 	CodeBindingNotRouted           = "route_binding_not_routed"
 	CodeContractUnverified         = "model_profile_contract_unverified"
+	CodeUpstreamModelRequired      = "upstream_model_required"
 	CodeRouteListenerFailed        = "route_listener_failed"
 	CodeRouteSnapshotInvalid       = "route_snapshot_invalid"
 	CodeLaunchBypass               = "model_profile_bypass"
@@ -191,7 +192,6 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	o := &Owner{
 		store:         store,
 		table:         table,
-		router:        NewRouter(table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials)),
 		routes:        routes,
 		listener:      listenerFile,
 		listenNetwork: network,
@@ -203,6 +203,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		discovery:     newModelDiscoveryCache(),
 		discoveryPath: strings.TrimSpace(cfg.DiscoveryPath),
 	}
+	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute))
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {
 			o.discoveryLoadWarning = fmt.Errorf("%w: %v", ErrDiscoveryCacheInvalid, err)
@@ -353,7 +354,7 @@ func (o *Owner) ensureListenerLocked(sticky bool) (PersistResult, error) {
 	}
 
 	if o.router == nil {
-		o.router = NewRouter(o.table, WithRouterLookup(o.lookup))
+		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterModelCatalog(o.modelsForRoute))
 	}
 	srv := &http.Server{
 		Handler:           o.router.Handler(),
@@ -572,6 +573,17 @@ func (o *Owner) GetProfile(id string) (Profile, error) {
 		return Profile{}, ErrNotFound
 	}
 	return o.store.Get(id)
+}
+
+// modelsForRoute resolves the connection a route is bound to and returns its
+// synced model catalog (discovery cache). Serves the local GET /v1/models
+// surface; never triggers live discovery and never reaches upstream.
+func (o *Owner) modelsForRoute(profileID string) ([]ProviderModelEntry, error) {
+	profile, err := o.GetProfile(profileID)
+	if err != nil {
+		return nil, err
+	}
+	return o.modelsForConnection(profile, false)
 }
 
 // UpsertProfile creates or updates a profile under CAS revision after full
@@ -1317,6 +1329,8 @@ func ControlErrorCode(err error) string {
 		return CodeBindingIncompatible
 	case errors.Is(err, ErrContractUnverified):
 		return CodeContractUnverified
+	case errors.Is(err, ErrUpstreamModelRequired):
+		return CodeUpstreamModelRequired
 	case errors.Is(err, ErrRouteSnapshotInvalid):
 		return CodeRouteSnapshotInvalid
 	case errors.Is(err, ErrListenerFailed), errors.Is(err, ErrLaunchCleanupIncomplete):

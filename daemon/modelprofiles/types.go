@@ -121,12 +121,16 @@ var (
 	ErrRequestBodyMalformed        = errors.New("request body malformed")
 	ErrResponsesFeatureUnsupported = errors.New("responses feature unsupported by upstream capability envelope")
 	ErrUpstreamInvalid             = errors.New("upstream invalid")
-	ErrUpstreamSSRF                = errors.New("upstream address blocked")
-	ErrUpstreamRedirect            = errors.New("upstream redirect rejected")
-	ErrRouteSnapshotInvalid        = errors.New("route snapshot invalid")
-	ErrProfileInUse                = errors.New("model profile is in use by a session")
-	ErrListenerFailed              = errors.New("route listener failed")
-	ErrLaunchCleanupIncomplete     = errors.New("launch cleanup incomplete")
+	// ErrUpstreamModelRequired means a connection has no explicit upstream model:
+	// compile produced only a probe placeholder (client contract id), which must
+	// never enter a RouteBinding. Run discovery and select a model first.
+	ErrUpstreamModelRequired   = errors.New("connection has no upstream model; run discovery and select a model")
+	ErrUpstreamSSRF            = errors.New("upstream address blocked")
+	ErrUpstreamRedirect        = errors.New("upstream redirect rejected")
+	ErrRouteSnapshotInvalid    = errors.New("route snapshot invalid")
+	ErrProfileInUse            = errors.New("model profile is in use by a session")
+	ErrListenerFailed          = errors.New("route listener failed")
+	ErrLaunchCleanupIncomplete = errors.New("launch cleanup incomplete")
 	// ErrSessionStillLive means KillSession failed and the Session is still
 	// confirmed present — route ownership must be preserved.
 	ErrSessionStillLive = errors.New("session still live after kill failure")
@@ -171,10 +175,16 @@ type Profile struct {
 	// connections. Curated account connections leave it empty; defaults and
 	// Session activation own model selection. Legacy executor-scoped profiles
 	// may still store a catalog model.
-	Model         string `toml:"model,omitempty" json:"model,omitempty"`
-	BaseURL       string `toml:"base_url,omitempty" json:"base_url,omitempty"`
-	AuthMode      string `toml:"auth_mode,omitempty" json:"auth_mode,omitempty"`
-	CredentialEnv string `toml:"credential_env,omitempty" json:"credential_env,omitempty"`
+	Model string `toml:"model,omitempty" json:"model,omitempty"`
+	// ModelPlaceholder is an internal compile-only marker set when a Custom/
+	// Advanced connection had no explicit upstream model and compilation fell
+	// back to the ClientModel contract id (probe validation only). It is never
+	// durable (toml/json excluded) and binding creation fails closed on it so a
+	// fabricated model can never reach a RouteBinding's UpstreamModel.
+	ModelPlaceholder bool   `toml:"-" json:"-"`
+	BaseURL          string `toml:"base_url,omitempty" json:"base_url,omitempty"`
+	AuthMode         string `toml:"auth_mode,omitempty" json:"auth_mode,omitempty"`
+	CredentialEnv    string `toml:"credential_env,omitempty" json:"credential_env,omitempty"`
 	// HistoryDomain is optional durable description only — never authorization.
 	HistoryDomain string `toml:"history_domain,omitempty" json:"history_domain,omitempty"`
 }
@@ -411,6 +421,13 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 	profile = normalizeProfile(profile)
 	if err := ValidateProfile(profile); err != nil {
 		return RouteBinding{}, err
+	}
+	// Fail closed: a probe placeholder (client contract id fabricated for
+	// Custom/Advanced connections without an explicit model) must never become
+	// the route's UpstreamModel — it is not synced from upstream discovery and
+	// upstreams routinely 503 unknown model ids.
+	if profile.ModelPlaceholder {
+		return RouteBinding{}, ErrUpstreamModelRequired
 	}
 	if err := validateVerifiedProfileContract(admitted); err != nil {
 		return RouteBinding{}, err

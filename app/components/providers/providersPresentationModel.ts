@@ -7,12 +7,24 @@
 import type {
   ProviderClient,
   ProviderConnection,
+  ProviderModel,
 } from "../../services/providers/types";
 
 export type ProvidersEditorState =
   | { kind: "custom"; client: ProviderClient }
   | { kind: "credential"; connection: ProviderConnection; retry?: boolean }
   | null;
+
+/**
+ * Open model-sync picker: the discovery result for exactly one connection,
+ * waiting for the user to choose which upstream model becomes the client
+ * default. Bound only after a successful `set_provider_default` write.
+ */
+export type ModelSyncPickerState = {
+  client: ProviderClient;
+  connection: ProviderConnection;
+  models: ProviderModel[];
+};
 
 export type ProviderSaveOutcome =
   | { status: "saved" }
