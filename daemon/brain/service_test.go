@@ -390,6 +390,11 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
 	if w.turnStore != nil && w.sendErr == nil {
+		// A re-delivery of the same action identity is a fresh delivery attempt:
+		// the transport receipt ledger is re-written per attempt, never reused.
+		if w.outcomes != nil {
+			delete(w.outcomes, eventID)
+		}
 		existingTurnID := ""
 		if current, found, err := w.turnStore.Turn(sessionID); err != nil {
 			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
@@ -706,8 +711,8 @@ func TestHostInputAdmissionReplacementBecomesUncertainAndFreesLane(t *testing.T)
 		t.Fatalf("uncertain settlement found=%v admission=%+v err=%v", found, settled, err)
 	}
 	events, err := recovered.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil {
-		t.Fatalf("unrelated Event did not dispatch: events=%+v err=%v", events, err)
+	if err != nil || len(events) != 1 || events[0].ID != event.ID || !reviewLeaseDelivered(t, recovered, item.ID) {
+		t.Fatalf("unrelated review did not dispatch: events=%+v err=%v", events, err)
 	}
 	items, err := recovered.ThreadTimeline(threadID, 0)
 	if err != nil || len(items) != 1 || items[0].ID != "brain-input-uncertain:"+requestID {
@@ -795,9 +800,11 @@ func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T)
 		t.Fatalf("old foreground survived replacement: active=%+v err=%v", active, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil ||
-		events[0].DeliveryHostSessionID != newHost {
-		t.Fatalf("replacement did not dispatch on new Host: events=%+v err=%v", events, err)
+	if err != nil || len(events) != 1 || events[0].ID != event.ID {
+		t.Fatalf("replacement event history: events=%+v err=%v", events, err)
+	}
+	if lease := requireReviewDelivered(t, store, item.ID); lease.HostSessionID != newHost {
+		t.Fatalf("replacement did not dispatch on new Host: lease=%+v", lease)
 	}
 	auditRaw, err := os.ReadFile(store.HostReplacementsPath())
 	if err != nil {

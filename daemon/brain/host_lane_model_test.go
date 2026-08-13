@@ -355,14 +355,11 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 				if woke, err := service.ReconcileHostLane(); err != nil || !woke {
 					t.Fatalf("deliver first canonical Turn woke=%v err=%v", woke, err)
 				}
-				events, err := store.ListWorkEvents(first.ID)
-				if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
-					t.Fatalf("first canonical handling=%+v err=%v", events, err)
-				}
-				if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-					EventID: events[0].ID, HandlingID: events[0].HandlingID,
-					ProviderTurnID:       events[0].ProviderTurnID,
-					ExpectedWorkRevision: events[0].DeliveryWorkRevision,
+				lease := requireReviewDelivered(t, store, first.ID)
+				if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+					WorkID: first.ID, HandlingID: lease.HandlingID,
+					ProviderTurnID:       lease.ProviderTurnID,
+					ExpectedWorkRevision: lease.DeliveryWorkRevision,
 					Disposition:          WorkDispositionComplete,
 				}); err != nil {
 					t.Fatal(err)
@@ -458,7 +455,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 				t.Fatalf("model stopped but production acted: woke=%v sent=%d", woke, sent)
 			}
 			if want.SubmittedEvent {
-				if delivered, err := store.HasLiveDeliveredHandling(); err != nil || !delivered {
+				if delivered, err := store.HasLiveDeliveredReview(); err != nil || !delivered {
 					t.Fatalf("model submission left no delivered handling: delivered=%v err=%v", delivered, err)
 				}
 			}

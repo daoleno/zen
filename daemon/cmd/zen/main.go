@@ -1233,13 +1233,13 @@ func runBrainWorkResolve(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zen brain work resolve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfg := cliConfig{json: true}
-	request := brain.WorkEventDispositionRequest{}
+	request := brain.WorkReviewDispositionRequest{}
 	var disposition string
 	var wakeKind string
 	var wakeRef string
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
-	fs.StringVar(&request.EventID, "event-id", "", "delivered Work Event id")
+	fs.StringVar(&request.WorkID, "work-id", "", "delivered Work id")
 	fs.StringVar(&request.HandlingID, "handling-id", "", "exact random Host handling identity")
 	fs.StringVar(&request.ProviderTurnID, "provider-turn-id", "", "exact admitted provider Turn identity")
 	fs.Uint64Var(&request.ExpectedWorkRevision, "revision", 0, "expected Work revision from the delivered input")
@@ -1427,15 +1427,15 @@ func runBrainWorkEventResolve(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zen brain work event-resolve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfg := cliConfig{json: true}
-	var eventID, action, actor, reason string
+	var workID, action, actor, reason string
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
-	fs.StringVar(&eventID, "id", "", "held Event id")
+	fs.StringVar(&workID, "id", "", "held review Work id")
 	fs.StringVar(&action, "action", "", "resolution: mark_delivered, discard, or replay")
 	fs.StringVar(&actor, "actor", "", "resolving actor (user or Brain on explicit user approval)")
 	fs.StringVar(&reason, "reason", "", "audited resolution reason")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: zen brain work event-resolve -id <event_id> -action <mark_delivered|discard|replay> -actor <actor> -reason <reason>")
+		fmt.Fprintln(stderr, "Usage: zen brain work event-resolve -id <work_id> -action <mark_delivered|discard|replay> -actor <actor> -reason <reason>")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}
@@ -1447,7 +1447,7 @@ func runBrainWorkEventResolve(args []string, stderr io.Writer) error {
 	}
 	resp, err := callControl(cfg, control.Request{
 		Type:      "brain_work_event_resolve",
-		ID:        eventID,
+		WorkID:    workID,
 		Operation: action,
 		Actor:     actor,
 		Reason:    reason,

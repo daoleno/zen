@@ -119,14 +119,14 @@ func (s *Service) teardownOwnedSession(sessionID string) error {
 	return result.Err
 }
 
-// ResolveWorkEvent commits Brain's typed disposition before attempting any
+// ResolveWorkReview commits Brain's typed disposition before attempting any
 // terminal Session teardown. A teardown error leaves a durable failed
 // finalization plus one retry attention and is returned to the caller.
-func (s *Service) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent, Work, error) {
+func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEvent, Work, error) {
 	if s == nil || s.store == nil {
 		return WorkEvent{}, Work{}, fmt.Errorf("brain store is not configured")
 	}
-	event, item, err := s.store.ResolveWorkEvent(request)
+	event, item, err := s.store.ResolveWorkReview(request)
 	if err != nil {
 		return event, item, err
 	}
@@ -280,7 +280,7 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 			byID[agent.ID] = agent
 		}
 	}
-	handlings, handlingMore, err := s.store.LiveHostHandlings(limit)
+	handlings, handlingMore, err := s.store.LiveReviewHandlings(limit)
 	if err != nil {
 		return false, err
 	}
@@ -297,8 +297,10 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 		live := agent != nil && (agent.State == classifier.StateRunning || agent.State == classifier.StateBlocked) &&
 			hasTurn && !watcher.TurnImmutable(turn.Status) && hasCurrentTurn && currentTurn.TurnID == handling.ProviderTurnID
 		if !live {
-			if _, _, err := s.store.RequeueUnhandledHostAttention(
-				handling.ID, handling.HandlingID, handling.ProviderTurnID,
+			// The delivered lease ends without a disposition; the same
+			// unresolved action becomes re-claimable (row 16).
+			if _, _, err := s.store.EndReviewDelivery(
+				handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
 			); err != nil {
 				return false, err
 			}
@@ -884,20 +886,25 @@ func (s *Service) ReconcileHostLane() (bool, error) {
 }
 
 // reconcileHostLaneLocked is the reducer body; the caller holds dispatchMu.
-// Delivery receipt recovery is four-state with no time-based release (C.2.7):
-// a provably absent receipt releases the claim immediately; an accepted
-// receipt consumes it; an ambiguous receipt or an inaccessible host holds the
-// claim forever and surfaces a deduped delivery diagnostic while unrelated
-// events keep dispatching. Held claims close only via explicit
-// MarkDeliveredClaim/DiscardClaim/ReplayEvent or a receipt-state change —
-// never by elapsed time. The exact held claim is the quarantine boundary: it
-// is never replayed, while unrelated Work continues through the ordinary
-// foreground/provider gates instead of inheriting a Session-wide fence.
+// Review lease recovery is four-state with no time-based release (C.2.7):
+// a provably absent receipt releases the lease immediately; an accepted
+// receipt consumes it (delivered); an ambiguous receipt or an inaccessible
+// host quarantines the lease in Work state and surfaces a deduped delivery
+// diagnostic while unrelated events keep dispatching. A lease whose Host is
+// gone is recovered from the durable submission ledger: no exact submission
+// (or an Aborted one) proves the action was never sent, so the same
+// unresolved action is re-claimable; a Pending/Resolved exact submission
+// stays the quarantine boundary. Held leases close only via explicit
+// ResolveReviewLease (mark_delivered/discard/replay), a receipt-state change,
+// or that evidence-based recovery — never by elapsed time. The exact held
+// lease is the quarantine boundary: it is never replayed, while unrelated
+// Work continues through the ordinary foreground/provider gates instead of
+// inheriting a Session-wide fence.
 func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
-	if err := s.reconcileDeliveryReceiptsLocked(); err != nil {
+	if err := s.reconcileReviewLeasesLocked(); err != nil {
 		return false, err
 	}
 	hostSession, err := s.store.HostSession()
@@ -979,9 +986,9 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			})
 		}
 	}
-	// Step 2: one delivered Event awaits its typed disposition. The Host is
+	// Step 2: one delivered review awaits its typed disposition. The Host is
 	// mid-review; no new admission may overtake it.
-	if delivered, err := s.store.HasLiveDeliveredHandling(); err != nil {
+	if delivered, err := s.store.HasLiveDeliveredReview(); err != nil {
 		return false, err
 	} else if delivered {
 		return false, nil
@@ -1078,14 +1085,16 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	} else if found && !providerStatusTerminal(observation.Status) {
 		return false, nil
 	}
-	// Steps 7-10: at the boundary, select one fair pending Work key, claim its
-	// current Event head atomically, submit once through the receipt ledger,
-	// and mark delivered only from the accepted receipt.
-	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)
+	// Steps 7-10: at the boundary, select one fair review-required Work, claim
+	// its current action atomically, submit once through the receipt ledger,
+	// and mark delivered only from the accepted receipt. Claims are leases:
+	// Host replacement/death re-delivers the same unresolved action and never
+	// creates a separate queue item.
+	action, claimed, err := s.store.ClaimNextReviewAction(hostID)
 	if err != nil || !claimed {
 		return false, err
 	}
-	return s.deliverClaimedEventLocked(event)
+	return s.deliverClaimedReviewLocked(action)
 }
 
 func (s *Service) retireHostForegroundLocked(
@@ -1171,36 +1180,42 @@ func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) erro
 	return nil
 }
 
-// reconcileDeliveryReceiptsLocked is reducer step 1: every dispatching Event's
-// provider submission receipt is reconciled against the exact claim identity.
-// An ambiguous exact transaction remains a durable held claim with an audited
-// delivery.ambiguous note. That per-claim quarantine is replay-proof but is
-// not returned as a lane-wide stop condition for unrelated Work.
-func (s *Service) reconcileDeliveryReceiptsLocked() error {
-	claimedEvents, err := s.store.ClaimedActionableEvents()
+// reconcileReviewLeasesLocked is reducer step 1: every review lease's provider
+// submission receipt is reconciled against the exact lease capability. An
+// ambiguous exact transaction remains a durable lease quarantine with an
+// audited delivery.ambiguous note; that quarantine is replay-proof but is not
+// a lane-wide stop condition for unrelated Work. A lease whose Host Session is
+// gone is recovered from the durable submission ledger: absent/Aborted exact
+// submission proves the action was never delivered, so the lease is dropped
+// and the same unresolved action is re-claimable by the current Host (I8); a
+// Pending/Resolved exact submission quarantines the lease in Work state (I7).
+func (s *Service) reconcileReviewLeasesLocked() error {
+	leases, err := s.store.LeasedReviewActions()
 	if err != nil {
 		return err
 	}
-	for _, claimed := range claimedEvents {
-		if claimed.DeliveryHostSessionID == "" {
+	for _, claimed := range leases {
+		// Delivered leases await the typed disposition (lane stop gate) and
+		// ended leases await re-claim; neither is receipt-reconciled here.
+		if claimed.DeliveredAt != nil || claimed.HandlingEndedAt != nil {
 			continue
 		}
 		hostID := claimed.DeliveryHostSessionID
 		if !s.watcher.HasSession(hostID) {
-			// Inaccessible/destroyed host: hold forever; never auto-release,
-			// never auto-redispatch; surface an actionable delivery.uncertain
-			// so Brain decides. Held claims never block unrelated events.
-			_, _, _ = s.store.AppendDeliveryNote(
-				claimed.WorkID,
-				claimed.ID,
-				"delivery.uncertain",
-				"delivery:"+claimed.ID+":uncertain",
-				"Delivery host Session "+hostID+" is no longer available for Work Event "+claimed.ID+"; resolve manually (mark_delivered, discard, or replay).",
-				true,
-			)
+			// The claiming Host Session is gone. Recover from the durable
+			// submission ledger: no exact submission (or an Aborted one)
+			// proves the Event was never sent, so the lease is dropped and the
+			// same unresolved action is re-claimable; Pending/Resolved exact
+			// submission means mutation may have begun and the lease is
+			// quarantined in Work state for explicit actor resolution.
+			if _, err := s.store.RecoverReviewLease(
+				claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
+			); err != nil {
+				return err
+			}
 			continue
 		}
-		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.ID)
+		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.FactEventID)
 		if receiptErr != nil || !found {
 			if receiptErr != nil {
 				// Transient receipt-ledger read failure: retry on the next
@@ -1217,24 +1232,24 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 			}
 			// Receipt absent: host receipts are written before the host
 			// mutates, so the mutation provably never began. Release.
-			if releaseErr := s.store.ReleaseEventClaim(
-				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			if releaseErr := s.store.ReleaseReviewLease(
+				claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return fmt.Errorf("release provably-unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release provably-unsent Work review %s: %w", claimed.WorkID, releaseErr)
 			}
 			continue
 		}
 		// Canonical provider admission dominates every transport receipt state,
 		// including an ambiguous pre-mutation marker left by a process crash.
-		// Consume through the exact five-part claim; the Store independently
+		// Consume through the exact lease capability; the Store independently
 		// verifies the matching resolved submission.
 		if _, providerMutated, turnErr := s.store.TurnByID(hostID, claimed.ProviderTurnID); turnErr != nil {
 			return turnErr
 		} else if providerMutated {
-			if _, _, consumeErr := s.store.ConsumeClaimedWorkEvent(
-				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			if _, _, consumeErr := s.store.ConsumeReviewDelivery(
+				claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 			); consumeErr != nil {
-				return fmt.Errorf("finalize admitted Work Event %s: %w", claimed.ID, consumeErr)
+				return fmt.Errorf("finalize admitted Work review %s: %w", claimed.WorkID, consumeErr)
 			}
 			continue
 		}
@@ -1244,61 +1259,61 @@ func (s *Service) reconcileDeliveryReceiptsLocked() error {
 				return turnErr
 			} else if !found {
 				// The transport receipt alone is not a provider Turn. Hold the
-				// claim without replay until canonical admission is recoverable.
+				// lease without replay until canonical admission is recoverable.
 				continue
 			}
-			if _, _, err := s.store.ConsumeClaimedWorkEvent(
-				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			if _, _, err := s.store.ConsumeReviewDelivery(
+				claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 			); err != nil {
-				return fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+				return fmt.Errorf("finalize accepted Work review %s: %w", claimed.WorkID, err)
 			}
 		case watcher.InputAmbiguous:
 			// Retry only the exact pending capability. The watcher recognizes its
 			// canonical transaction before any provider mutation and may resolve
 			// it from provider admission/transcript evidence; it never replays the
 			// payload. The original ambiguous receipt remains dominant, so a
-			// failed recovery never releases the claim.
-			recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(claimed)
+			// failed recovery never releases the lease.
+			recovered, _, recoveryErr := s.recoverAmbiguousReviewLocked(claimed)
 			if recoveryErr == nil && recovered {
 				continue
 			}
 			if _, _, noteErr := s.store.AppendDeliveryNote(
 				claimed.WorkID,
-				claimed.ID,
+				claimed.FactEventID,
 				"delivery.ambiguous",
-				"delivery:"+claimed.ID+":ambiguous",
-				"Delivery of Work Event "+claimed.ID+" is quarantined because its exact provider outcome remains ambiguous. It will not be replayed automatically; wait for exact provider evidence or resolve the held claim explicitly (mark_delivered, discard, or replay).",
+				"delivery:"+claimed.FactEventID+":ambiguous",
+				"Delivery of Work review "+claimed.FactEventID+" is quarantined because its exact provider outcome remains ambiguous. It will not be replayed automatically; wait for exact provider evidence or resolve the held lease explicitly (mark_delivered, discard, or replay).",
 				false,
 			); noteErr != nil {
-				return fmt.Errorf("persist ambiguous delivery quarantine for Work Event %s: %w", claimed.ID, noteErr)
+				return fmt.Errorf("persist ambiguous delivery quarantine for Work review %s: %w", claimed.WorkID, noteErr)
 			}
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.
-			if releaseErr := s.store.ReleaseEventClaim(
-				claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
+			if releaseErr := s.store.ReleaseReviewLease(
+				claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 			); releaseErr != nil {
-				return fmt.Errorf("release definitely unsent Work Event %s: %w", claimed.ID, releaseErr)
+				return fmt.Errorf("release definitely unsent Work review %s: %w", claimed.WorkID, releaseErr)
 			}
 		}
 	}
 	return nil
 }
 
-// recoverAmbiguousClaimedEventLocked re-enters only an already-persisted exact
+// recoverAmbiguousReviewLocked re-enters only an already-persisted exact
 // pending transaction. Reconstructed bytes must match its durable digest
 // before the watcher is called. The watcher duplicate path may resolve from
 // authoritative provider evidence but cannot enqueue input again. A failed
 // retry never releases the original ambiguous authority.
-func (s *Service) recoverAmbiguousClaimedEventLocked(claimed WorkEvent) (bool, bool, error) {
+func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, bool, error) {
 	hostID := strings.TrimSpace(claimed.DeliveryHostSessionID)
 	submission, found, err := s.store.TurnSubmission(hostID, claimed.ProviderTurnID)
 	if err != nil || !found || submission.State != watcher.TurnSubmissionPending {
 		return false, false, err
 	}
-	if submission.Receipt != claimed.ID || submission.ClaimToken != claimed.HandlingID ||
+	if submission.Receipt != claimed.FactEventID || submission.ClaimToken != claimed.HandlingID ||
 		submission.WorkID != claimed.WorkID || submission.SessionID != hostID ||
 		submission.ProposedTurnID != claimed.ProviderTurnID {
-		return false, false, fmt.Errorf("ambiguous Work Event %s lacks its exact pending submission", claimed.ID)
+		return false, false, fmt.Errorf("ambiguous Work review %s lacks its exact pending submission", claimed.WorkID)
 	}
 	item, err := s.store.Work(claimed.WorkID)
 	if err != nil {
@@ -1309,30 +1324,30 @@ func (s *Service) recoverAmbiguousClaimedEventLocked(claimed WorkEvent) (bool, b
 		return false, true, err
 	}
 	if AdmissionDigest(payload) != submission.PayloadSHA256 {
-		return false, true, fmt.Errorf("ambiguous Work Event %s payload no longer matches its pending submission", claimed.ID)
+		return false, true, fmt.Errorf("ambiguous Work review %s payload no longer matches its pending submission", claimed.WorkID)
 	}
 	if claimed.ClaimedAt == nil {
-		return false, true, fmt.Errorf("ambiguous Work Event %s has no claim timestamp", claimed.ID)
+		return false, true, fmt.Errorf("ambiguous Work review %s has no claim timestamp", claimed.WorkID)
 	}
 	if recovered, matched, err := s.recoverPendingFromBoundHostConversation(submission); err != nil {
 		if matched {
 			return false, true, err
 		}
 	} else if recovered {
-		if err := s.consumeRecoveredClaimedEvent(claimed); err != nil {
+		if err := s.consumeRecoveredReview(claimed); err != nil {
 			return false, true, err
 		}
 		return true, true, nil
 	}
 	acceptedAt := claimed.ClaimedAt.UTC()
 	result, submitErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
+		hostID, payload, claimed.FactEventID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
 	)
 	if submitErr != nil {
 		return false, true, submitErr
 	}
 	if result.Outcome != watcher.InputAccepted || result.TurnID != claimed.ProviderTurnID {
-		return false, true, fmt.Errorf("ambiguous Work Event %s recovery returned outcome=%q turn=%q", claimed.ID, result.Outcome, result.TurnID)
+		return false, true, fmt.Errorf("ambiguous Work review %s recovery returned outcome=%q turn=%q", claimed.WorkID, result.Outcome, result.TurnID)
 	}
 	if _, found, err := s.store.TurnByID(hostID, claimed.ProviderTurnID); err != nil || !found {
 		if err == nil {
@@ -1340,16 +1355,15 @@ func (s *Service) recoverAmbiguousClaimedEventLocked(claimed WorkEvent) (bool, b
 		}
 		return false, true, err
 	}
-	if err := s.consumeRecoveredClaimedEvent(claimed); err != nil {
+	if err := s.consumeRecoveredReview(claimed); err != nil {
 		return false, true, err
 	}
 	return true, true, nil
 }
 
-func (s *Service) consumeRecoveredClaimedEvent(claimed WorkEvent) error {
-	_, item, err := s.store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID,
-		claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
+func (s *Service) consumeRecoveredReview(claimed WorkReviewAction) error {
+	_, item, err := s.store.ConsumeReviewDelivery(
+		claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 	)
 	if err != nil {
 		return err
@@ -1359,12 +1373,13 @@ func (s *Service) consumeRecoveredClaimedEvent(claimed WorkEvent) error {
 	}
 	// Older daemons incorrectly advanced Work revision when appending a
 	// delivery diagnostic. Provider execution is now canonical, but the
-	// original disposition fence is stale. End that handling and append one
-	// fresh current-revision reconciliation instead of accepting stale intent.
+	// original disposition fence is stale. End that delivery and let the same
+	// unresolved action be re-claimed at the current revision instead of
+	// accepting stale intent.
 	// A crash between the two writes is restart-recoverable from the delivered
-	// handling plus its exact terminal Turn.
-	_, _, err = s.store.RequeueUnhandledHostAttention(
-		claimed.ID, claimed.HandlingID, claimed.ProviderTurnID,
+	// lease plus its exact terminal Turn.
+	_, _, err = s.store.EndReviewDelivery(
+		claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 	)
 	return err
 }
@@ -1565,43 +1580,43 @@ func providerStatusTerminal(status string) bool {
 	}
 }
 
-func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
-	hostID := strings.TrimSpace(event.DeliveryHostSessionID)
-	item, err := s.store.Work(event.WorkID)
+func (s *Service) deliverClaimedReviewLocked(action WorkReviewAction) (bool, error) {
+	hostID := strings.TrimSpace(action.DeliveryHostSessionID)
+	item, err := s.store.Work(action.WorkID)
 	if err != nil {
-		if releaseErr := s.store.ReleaseEventClaim(
-			event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+		if releaseErr := s.store.ReleaseReviewLease(
+			action.WorkID, action.HandlingID, action.ProviderTurnID,
 		); releaseErr != nil {
-			return false, fmt.Errorf("release undeliverable Work Event %s: %w", event.ID, releaseErr)
+			return false, fmt.Errorf("release undeliverable Work review %s: %w", action.WorkID, releaseErr)
 		}
 		return false, err
 	}
-	payload, err := marshalDirectWorkEventInput(event, item)
+	payload, err := marshalDirectWorkEventInput(action, item)
 	if err != nil {
-		if releaseErr := s.store.ReleaseEventClaim(
-			event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+		if releaseErr := s.store.ReleaseReviewLease(
+			action.WorkID, action.HandlingID, action.ProviderTurnID,
 		); releaseErr != nil {
-			return false, fmt.Errorf("release invalid Work Event input %s: %w", event.ID, releaseErr)
+			return false, fmt.Errorf("release invalid Work review input %s: %w", action.WorkID, releaseErr)
 		}
 		return false, err
 	}
 	acceptedAt := s.now().UTC()
-	if event.ClaimedAt != nil {
-		acceptedAt = event.ClaimedAt.UTC()
+	if action.ClaimedAt != nil {
+		acceptedAt = action.ClaimedAt.UTC()
 	}
 	result, sendErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, event.ID, event.HandlingID, event.WorkID, event.ProviderTurnID, acceptedAt,
+		hostID, payload, action.FactEventID, action.HandlingID, action.WorkID, action.ProviderTurnID, acceptedAt,
 	)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {
-			if releaseErr := s.store.ReleaseEventClaim(
-				event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+			if releaseErr := s.store.ReleaseReviewLease(
+				action.WorkID, action.HandlingID, action.ProviderTurnID,
 			); releaseErr != nil {
-				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", event.ID, releaseErr)
+				return false, fmt.Errorf("release definitely unsent Work review %s: %w", action.WorkID, releaseErr)
 			}
 		}
 		if result.Outcome == watcher.InputAmbiguous {
-			if recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(event); recoveryErr == nil && recovered {
+			if recovered, _, recoveryErr := s.recoverAmbiguousReviewLocked(action); recoveryErr == nil && recovered {
 				return true, nil
 			}
 		}
@@ -1609,24 +1624,24 @@ func (s *Service) deliverClaimedEventLocked(event WorkEvent) (bool, error) {
 	}
 	if result.Outcome != watcher.InputAccepted {
 		if result.Outcome == watcher.InputAmbiguous {
-			if recovered, _, recoveryErr := s.recoverAmbiguousClaimedEventLocked(event); recoveryErr == nil && recovered {
+			if recovered, _, recoveryErr := s.recoverAmbiguousReviewLocked(action); recoveryErr == nil && recovered {
 				return true, nil
 			}
 		}
-		return false, fmt.Errorf("Work Event %s Session Input returned non-accepted outcome %q", event.ID, result.Outcome)
+		return false, fmt.Errorf("Work review %s Session Input returned non-accepted outcome %q", action.WorkID, result.Outcome)
 	}
-	if result.TurnID != event.ProviderTurnID {
-		return false, fmt.Errorf("Work Event %s admitted provider Turn %q, want %q", event.ID, result.TurnID, event.ProviderTurnID)
+	if result.TurnID != action.ProviderTurnID {
+		return false, fmt.Errorf("Work review %s admitted provider Turn %q, want %q", action.WorkID, result.TurnID, action.ProviderTurnID)
 	}
 	if _, found, err := s.store.TurnByID(hostID, result.TurnID); err != nil {
 		return false, fmt.Errorf("read accepted Host provider Turn %s: %w", result.TurnID, err)
 	} else if !found {
 		return false, fmt.Errorf("accepted Host provider Turn %s lacks canonical prepare/resolve evidence", result.TurnID)
 	}
-	if _, _, err := s.store.ConsumeClaimedWorkEvent(
-		event.ID, event.HandlingID, event.WorkID, hostID, event.ProviderTurnID,
+	if _, _, err := s.store.ConsumeReviewDelivery(
+		action.WorkID, action.HandlingID, action.ProviderTurnID,
 	); err != nil {
-		return false, fmt.Errorf("consume accepted Work Event %s: %w", event.ID, err)
+		return false, fmt.Errorf("consume accepted Work review %s: %w", action.WorkID, err)
 	}
 	return true, nil
 }
@@ -1698,7 +1713,7 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	if state != classifier.StateDone && state != classifier.StateUnknown && state != classifier.StateFailed {
 		return false, nil
 	}
-	handlings, _, err := s.store.LiveHostHandlings(2)
+	handlings, _, err := s.store.LiveReviewHandlings(2)
 	if err != nil {
 		return false, err
 	}
@@ -1706,8 +1721,8 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	for _, handling := range handlings {
 		if handling.DeliveryHostSessionID == strings.TrimSpace(event.Agent.ID) &&
 			handling.ProviderTurnID == strings.TrimSpace(event.TurnID) {
-			_, requeued, err = s.store.RequeueUnhandledHostAttention(
-				handling.ID, handling.HandlingID, handling.ProviderTurnID,
+			_, requeued, err = s.store.EndReviewDelivery(
+				handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
 			)
 			if err != nil {
 				return false, err

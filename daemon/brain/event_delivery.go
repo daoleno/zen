@@ -17,30 +17,26 @@ const (
 	directWorkEventReferenceRuneLimit  = 512
 )
 
-func marshalDirectWorkEventInput(event WorkEvent, item Work) (string, error) {
-	reviewKind := firstNonEmpty(event.ReviewKind, event.Kind)
-	reviewSource := firstNonEmpty(event.ReviewSourceName, event.SourceName)
-	reviewSummary := firstNonEmpty(event.ReviewSummary, event.Summary)
-	reviewPayloadRef := firstNonEmpty(event.ReviewPayloadRef, event.PayloadRef)
+func marshalDirectWorkEventInput(action WorkReviewAction, item Work) (string, error) {
 	input := work.DirectWorkEventInput{
-		EventID:            strings.TrimSpace(event.ID),
-		WorkID:             strings.TrimSpace(event.WorkID),
-		WorkRevision:       event.DeliveryWorkRevision,
-		HandlingID:         strings.TrimSpace(event.HandlingID),
-		ProviderTurnID:     strings.TrimSpace(event.ProviderTurnID),
-		EventSequenceFence: event.DeliverySequenceFence,
+		EventID:            strings.TrimSpace(action.FactEventID),
+		WorkID:             strings.TrimSpace(action.WorkID),
+		WorkRevision:       action.DeliveryWorkRevision,
+		HandlingID:         strings.TrimSpace(action.HandlingID),
+		ProviderTurnID:     strings.TrimSpace(action.ProviderTurnID),
+		EventSequenceFence: action.DeliverySequenceFence,
 		ResolutionRequired: true,
 		ResolveCommand: fmt.Sprintf(
-			"zen brain work resolve --event-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <continue|wait|complete|cancel|supersede>",
-			event.ID, event.HandlingID, event.ProviderTurnID, event.DeliveryWorkRevision,
+			"zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <continue|wait|complete|cancel|supersede>",
+			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
 		),
 		WorkTitle:  compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),
-		Kind:       compactDirectWorkEventField(reviewKind, directWorkEventKindRuneLimit),
-		Source:     compactDirectWorkEventField(reviewSource, directWorkEventSourceRuneLimit),
-		Summary:    compactWorkResultText(reviewSummary),
+		Kind:       compactDirectWorkEventField(action.Kind, directWorkEventKindRuneLimit),
+		Source:     compactDirectWorkEventField(action.SourceName, directWorkEventSourceRuneLimit),
+		Summary:    compactWorkResultText(action.Summary),
 		NextAction: compactDirectWorkEventField(item.NextAction, directWorkEventNextActionRuneLimit),
 		ContextRef: compactDirectWorkEventField(item.ContextRef, directWorkEventReferenceRuneLimit),
-		PayloadRef: compactDirectWorkEventField(reviewPayloadRef, directWorkEventReferenceRuneLimit),
+		PayloadRef: compactDirectWorkEventField(action.PayloadRef, directWorkEventReferenceRuneLimit),
 	}
 	payload := work.FormatDirectWorkEventInput(input)
 	if len(payload) > directWorkEventInputMaxBytes {

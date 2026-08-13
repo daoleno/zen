@@ -27,19 +27,17 @@ func TestAttentionSchedulerClaimsOldestPendingHeadFifoAcrossWorkKeys(t *testing.
 	// head is selected at every boundary; no counter or last-admitted mirror
 	// is persisted.
 	for index, want := range items {
-		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+		claimed, ok, err := store.ClaimNextReviewAction(hostID)
 		if err != nil || !ok || claimed.WorkID != want.ID {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Work %s", index, claimed, ok, err, want.ID)
 		}
 		resolveClaimedHostTurnForTest(t, store, claimed)
-		delivered, _, err := store.ConsumeClaimedWorkEvent(
-			claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
-		)
+		delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+			WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 			ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 			Disposition: WorkDispositionComplete,
 		}); err != nil {
@@ -64,17 +62,17 @@ func TestAttentionSchedulerFifoAdmitsFreshCompletionInAppendOrder(t *testing.T) 
 	// Discharge every older head exactly once; FIFO append sequence is the
 	// whole fairness contract.
 	for _, old := range oldItems {
-		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+		claimed, ok, err := store.ClaimNextReviewAction(hostID)
 		if err != nil || !ok || claimed.WorkID != old.ID {
 			t.Fatalf("old head claim ok=%v err=%v, want Work %s", ok, err, old.ID)
 		}
 		resolveClaimedHostTurnForTest(t, store, claimed)
-		delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
+		delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+			WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 			ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 			Disposition: WorkDispositionComplete,
 		}); err != nil {
@@ -87,7 +85,7 @@ func TestAttentionSchedulerFifoAdmitsFreshCompletionInAppendOrder(t *testing.T) 
 	}
 	fresh := createSignalTestWork(t, store, "fresh completion", "brain-agent-fresh:@1")
 	appendSignalTestEvent(t, store, fresh, "fresh")
-	next, ok, err := store.ClaimNextActionableEvent(hostID)
+	next, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok || next.WorkID != fresh.ID {
 		t.Fatalf("fresh result was not admitted at its FIFO turn: claim=%+v ok=%v err=%v", next, ok, err)
 	}
@@ -173,38 +171,32 @@ func TestContinuousForegroundSteeringKeepsOneTurnAndFairSuccessor(t *testing.T) 
 		t.Fatalf("terminal boundary deliveries=%d, want exact-once", len(watcherFixture.sentCalls))
 	}
 	events, err := store.ListWorkEvents(items[0].ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+	if err != nil || len(events) != 1 || !reviewLeaseDelivered(t, store, events[0].WorkID) {
 		t.Fatalf("oldest pending head was not delivered exactly once: %+v err=%v", events, err)
 	}
-	delivered := events[0]
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
-		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
-		Disposition: WorkDispositionComplete,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_, _ = resolveDeliveredReview(t, store, items[0].ID, WorkDispositionComplete)
+	_ = err
 	// FIFO fairness: the remaining older heads (old-b, old-c) discharge
 	// before the fresh Work's head is admitted at its append-order turn.
 	for _, remaining := range []Work{items[1], items[2]} {
-		next, ok, err := store.ClaimNextActionableEvent(hostID)
+		next, ok, err := store.ClaimNextReviewAction(hostID)
 		if err != nil || !ok || next.WorkID != remaining.ID {
 			t.Fatalf("FIFO successor claim=%+v ok=%v err=%v, want Work %s", next, ok, err, remaining.ID)
 		}
 		resolveClaimedHostTurnForTest(t, store, next)
-		consumed, _, err := store.ConsumeClaimedWorkEvent(next.ID, next.HandlingID, next.WorkID, hostID, next.ProviderTurnID)
+		consumed, _, err := store.ConsumeReviewDelivery(next.WorkID, next.HandlingID, next.ProviderTurnID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-			EventID: consumed.ID, HandlingID: consumed.HandlingID,
+		if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+			WorkID: consumed.WorkID, HandlingID: consumed.HandlingID,
 			ProviderTurnID: consumed.ProviderTurnID, ExpectedWorkRevision: consumed.DeliveryWorkRevision,
 			Disposition: WorkDispositionComplete,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	next, ok, err := store.ClaimNextActionableEvent(hostID)
+	next, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok || next.WorkID != fresh.ID {
 		t.Fatalf("fair successor after continuous steering=%+v ok=%v err=%v, want fresh Work %s", next, ok, err, fresh.ID)
 	}
@@ -231,21 +223,22 @@ func TestClaimPresentsLatestAuthoritativeFactWithoutRewritingAudit(t *testing.T)
 		SourceName: item.OwnerSessionID, PayloadRef: "session:" + item.OwnerSessionID,
 		Summary: "Release completed", Actionable: true,
 	})
-	if err != nil || !created || done.CoalescedInto != stale.ID {
+	if err != nil || !created {
 		t.Fatalf("append done=%+v created=%v err=%v", done, created, err)
 	}
 	lifecycles, err := store.WorkResultLifecycles([]string{stale.ID, done.ID})
 	if err != nil || lifecycles[stale.ID].CurrentResult || !lifecycles[done.ID].CurrentResult ||
-		lifecycles[stale.ID].ReviewState != "queued" || lifecycles[done.ID].ReviewState != "queued" {
+		lifecycles[stale.ID].ReviewState != "resolved" || lifecycles[done.ID].ReviewState != "queued" {
 		t.Fatalf("stale/done card lifecycle=%+v err=%v", lifecycles, err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@latest")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@latest")
 	if err != nil || !ok {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	if claimed.ID != stale.ID || claimed.Kind != "session.stale" ||
-		claimed.ReviewKind != "session.done" || claimed.ReviewSummary != "Release completed" {
-		t.Fatalf("claim did not separate scheduler head from latest fact: %+v", claimed)
+	// The current action is the latest eligible fact: one queue item whose
+	// content is the newest result (I3), never a separate stale row.
+	if claimed.FactEventID != done.ID || claimed.Kind != "session.done" || claimed.Summary != "Release completed" {
+		t.Fatalf("claim did not present the latest fact as the current action: %+v", claimed)
 	}
 	payload, err := marshalDirectWorkEventInput(claimed, item)
 	if err != nil || !strings.Contains(payload, `"kind":"session.done"`) || strings.Contains(payload, `"summary":"Lease expired"`) {
@@ -256,25 +249,22 @@ func TestClaimPresentsLatestAuthoritativeFactWithoutRewritingAudit(t *testing.T)
 		t.Fatalf("append-only audit changed: events=%+v err=%v", audit, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID,
-		"brain-agent-brain-hidden:@latest", claimed.ProviderTurnID,
-	)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition: WorkDispositionComplete,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	audit, err = store.ListWorkEvents(item.ID)
-	if err != nil || audit[0].HandledAt == nil || audit[1].HandledAt == nil {
-		t.Fatalf("delivery fence did not handle stale and latest facts exactly once: events=%+v err=%v", audit, err)
+	if err != nil || audit[0].HandledAt != nil || audit[1].HandledAt == nil {
+		t.Fatalf("disposition audited only the current action exactly once: events=%+v err=%v", audit, err)
 	}
-	if next, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@latest"); err != nil || ok {
+	if next, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@latest"); err != nil || ok {
 		t.Fatalf("coalesced Work replayed after disposition: next=%+v ok=%v err=%v", next, ok, err)
 	}
 	lifecycles, err = store.WorkResultLifecycles([]string{stale.ID, done.ID})
@@ -327,8 +317,8 @@ func TestLegacyUnscopedAuditCannotCaptureScopedTerminalObligationAcrossRestart(t
 	if err != nil || !created || done.CoalescedInto != "" {
 		t.Fatalf("scoped done coalesced behind legacy audit: done=%+v created=%v err=%v", done, created, err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@legacy-repair")
-	if err != nil || !ok || claimed.ID != done.ID || claimed.ReviewKind != "session.done" {
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@legacy-repair")
+	if err != nil || !ok || claimed.FactEventID != done.ID || claimed.Kind != "session.done" {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	reopened, err := NewStore(root)
@@ -336,14 +326,12 @@ func TestLegacyUnscopedAuditCannotCaptureScopedTerminalObligationAcrossRestart(t
 		t.Fatal(err)
 	}
 	resolveClaimedHostTurnForTest(t, reopened, claimed)
-	delivered, _, err := reopened.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID,
-	)
+	delivered, _, err := reopened.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, completed, err := reopened.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
+	resolved, completed, err := reopened.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID, ProviderTurnID: delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
 	})
 	if err != nil || resolved.ID != done.ID || completed.Status != WorkDone || len(completed.SessionFinalizations) != 1 ||
@@ -359,7 +347,7 @@ func TestLegacyUnscopedAuditCannotCaptureScopedTerminalObligationAcrossRestart(t
 	if err != nil || len(audit) != 2 || audit[0].HandledAt != nil || audit[1].HandledAt == nil {
 		t.Fatalf("legacy/current audit disposition=%+v err=%v", audit, err)
 	}
-	if next, ok, err := reopened.ClaimNextActionableEvent("brain-agent-brain-hidden:@legacy-repair"); err != nil || ok {
+	if next, ok, err := reopened.ClaimNextReviewAction("brain-agent-brain-hidden:@legacy-repair"); err != nil || ok {
 		t.Fatalf("disposed obligation replayed: next=%+v ok=%v err=%v", next, ok, err)
 	}
 }
@@ -535,9 +523,11 @@ func TestOwnershipLossAtomicallyDeprojectsAndRemainsProviderRecoverable(t *testi
 		t.Fatalf("provider recovery Turn=%+v changed=%v err=%v", recovered, changed, err)
 	}
 	events, err = store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 2 || events[1].Kind != "session.done" ||
-		events[1].CoalescedInto != events[0].ID {
+	if err != nil || len(events) != 2 || events[1].Kind != "session.done" || !events[1].Actionable {
 		t.Fatalf("provider recovery obligations=%+v err=%v", events, err)
+	}
+	if item, err := store.Work(item.ID); err != nil || item.Review == nil || item.Review.FactEventID != events[1].ID {
+		t.Fatalf("provider recovery current action=%+v err=%v", item, err)
 	}
 	if _, changed, err := store.ApplyTurnFact(doneFact); err != nil || changed {
 		t.Fatalf("provider recovery replay changed=%v err=%v", changed, err)
@@ -639,14 +629,12 @@ func TestAbsentOwnerRepairCannotInvalidateAdmittedHandlingRevision(t *testing.T)
 		t.Fatal(err)
 	}
 	hostID := "brain-agent-brain-hidden:@admitted-revision"
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
-	)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,8 +649,8 @@ func TestAbsentOwnerRepairCannotInvalidateAdmittedHandlingRevision(t *testing.T)
 	if err != nil || after.Revision != before.Revision {
 		t.Fatalf("in-flight handling revision changed: before=%+v after=%+v err=%v", before, after, err)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition: WorkDispositionComplete,
 	}); err != nil {
@@ -770,20 +758,18 @@ func TestWorkResultLifecycleSeparatesQueuedReviewDispositionAndFinalization(t *t
 	assertLifecycle("queued", "open")
 
 	hostID := "brain-agent-brain-hidden:@lifecycle"
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
-	)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertLifecycle("reviewing", "open")
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition: WorkDispositionComplete,
 	}); err != nil {
@@ -895,7 +881,7 @@ func TestAcceptedForegroundSurvivesIntervalTerminalObservation(t *testing.T) {
 		t.Fatalf("foreground turn was interrupted: %+v", watcherFixture.sentCalls)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
+	if err != nil || len(events) != 1 || reviewLeaseOf(t, store, events[0].WorkID) != nil {
 		t.Fatalf("foreground turn claimed or delivered the pending Event: %+v err=%v", events, err)
 	}
 	lifecycles, err := store.WorkResultLifecycles([]string{event.ID})
@@ -968,10 +954,9 @@ func TestAlreadyTerminalReopenConvergesExactBoundaryWithoutWatcherEdge(t *testin
 	if err != nil || len(events) != 1 {
 		t.Fatalf("reopen delivered events=%+v err=%v", events, err)
 	}
-	delivered := events[0]
-	if delivered.ID != event.ID || delivered.DeliveredAt == nil ||
-		delivered.DeliveryHostSessionID != hostID || delivered.DeliverySequenceFence == 0 {
-		t.Fatalf("reopen boundary did not deliver the exact pending Event: %+v", delivered)
+	if lease := reviewLeaseOf(t, reopened, item.ID); lease == nil || lease.DeliveredAt == nil ||
+		lease.HostSessionID != hostID || lease.DeliverySequenceFence == 0 {
+		t.Fatalf("reopen boundary did not deliver the exact pending review: %+v", lease)
 	}
 	lifecycles, err := reopened.WorkResultLifecycles([]string{event.ID})
 	if err != nil || lifecycles[event.ID].ReviewState != WorkReviewReviewing {
@@ -1070,7 +1055,7 @@ func TestDelayedOldTerminalCannotCloseCurrentForegroundTurn(t *testing.T) {
 		t.Fatalf("exact terminal boundary deliveries=%d, want one", len(watcherFixture.sentCalls))
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+	if err != nil || len(events) != 1 || !reviewLeaseDelivered(t, store, events[0].WorkID) {
 		t.Fatalf("exact terminal delivery events=%+v err=%v", events, err)
 	}
 	active, err = store.CurrentHostForegroundTurn()
@@ -1141,7 +1126,7 @@ func TestTerminalMismatchAtReopenFailsClosedWithoutDelivery(t *testing.T) {
 		t.Fatalf("mismatch delivered: %+v", watcherFixture.sentCalls)
 	}
 	events, err := reopened.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt != nil {
+	if err != nil || len(events) != 1 || reviewLeaseOf(t, store, events[0].WorkID) != nil && reviewLeaseOf(t, store, events[0].WorkID).DeliveredAt != nil {
 		t.Fatalf("mismatch moved the pending Event: %+v err=%v", events, err)
 	}
 
@@ -1218,7 +1203,7 @@ func TestIntervalTerminalProjectionFailureStillKeepsPendingEvent(t *testing.T) {
 		t.Fatalf("projection failure lost foreground: active=%+v err=%v", active, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
+	if err != nil || len(events) != 1 || reviewLeaseOf(t, store, events[0].WorkID) != nil {
 		t.Fatalf("projection failure moved the pending Event: %+v err=%v", events, err)
 	}
 	admission, found, err := store.BrainInputAdmission(requestID, activeHostThreadID(t, store))
@@ -1360,7 +1345,7 @@ func TestLongForegroundTurnPersistsPendingAttentionAcrossReopenAndDeliversAtBoun
 	}
 	boundTurnID := active.HostTurnID
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].ClaimedAt != nil || events[0].DeliveredAt != nil {
+	if err != nil || len(events) != 1 || reviewLeaseOf(t, store, events[0].WorkID) != nil {
 		t.Fatalf("pending attention was claimed behind the live turn: %+v err=%v", events, err)
 	}
 	lifecycles, err := store.WorkResultLifecycles([]string{stale.ID})
@@ -1392,14 +1377,14 @@ func TestLongForegroundTurnPersistsPendingAttentionAcrossReopenAndDeliversAtBoun
 		DedupeKey: "session:brain-agent-worker:@durable:turn:one:session.done",
 		Summary:   "worker completed", Actionable: true,
 	})
-	if err != nil || !created || done.CoalescedInto != stale.ID {
+	if err != nil || !created {
 		t.Fatalf("append terminal done=%+v created=%v err=%v", done, created, err)
 	}
 	if updated.Revision == 0 {
 		t.Fatal("Work update did not advance revision")
 	}
 	events, err = reopened.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 2 || events[0].ClaimedAt != nil || events[1].ClaimedAt != nil {
+	if err != nil || len(events) != 2 || reviewLeaseOf(t, reopened, events[0].WorkID) != nil || reviewLeaseOf(t, reopened, events[1].WorkID) != nil {
 		t.Fatalf("Work/Event mutations disturbed the pending head: %+v err=%v", events, err)
 	}
 	// A terminal boundary without the bound provider activity never converges.
@@ -1508,7 +1493,7 @@ func TestAcceptedForegroundInputKeepsPendingEventBeforeTimelineProjection(t *tes
 		t.Fatalf("idle-boundary delivery=%d, want exact-once", len(watcherFixture.sentCalls))
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+	if err != nil || len(events) != 1 || !reviewLeaseDelivered(t, store, events[0].WorkID) {
 		t.Fatalf("idle-boundary delivery events=%+v err=%v", events, err)
 	}
 	requestID := "foreground-projection-failure"
@@ -1607,7 +1592,7 @@ func TestAcceptedForegroundInputGenerationReplacementRetiresLane(t *testing.T) {
 		t.Fatalf("replacement lane pass woke=%v err=%v", woke, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+	if err != nil || len(events) != 1 || !reviewLeaseDelivered(t, store, events[0].WorkID) {
 		t.Fatalf("generation replacement did not deliver the pending Event: %+v err=%v", events, err)
 	}
 	if len(watcherFixture.sentCalls) != 1 {
@@ -1698,7 +1683,7 @@ func TestHostForegroundLateBindsNewActivityAfterPriorTerminal(t *testing.T) {
 		t.Fatalf("terminal close left foreground active=%+v err=%v", active, err)
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
+	if err != nil || len(events) != 1 || !reviewLeaseDelivered(t, store, events[0].WorkID) {
 		t.Fatalf("terminal boundary delivery events=%+v err=%v", events, err)
 	}
 }
@@ -1736,7 +1721,7 @@ func TestHostForegroundTerminalStartedBetweenPrepareAndAcceptClosesExactEpoch(t 
 		t.Fatalf("prepare created=%v admission=%+v err=%v", created, prepared, err)
 	}
 	item := createSignalTestWork(t, store, "prepare/accept window review", "brain-agent-worker:@prepare-accept-window")
-	event := appendSignalTestEvent(t, store, item, "prepare-accept-window")
+	appendSignalTestEvent(t, store, item, "prepare-accept-window")
 
 	// This is the incident ordering: Activity start is six milliseconds before
 	// the later accepted-state persistence, but after the prepared admission.
@@ -1752,9 +1737,8 @@ func TestHostForegroundTerminalStartedBetweenPrepareAndAcceptClosesExactEpoch(t 
 	if err != nil || active != nil {
 		t.Fatalf("exact terminal boundary left foreground active=%+v err=%v", active, err)
 	}
-	delivered, found, err := store.WorkEvent(event.ID)
-	if err != nil || !found || delivered.DeliveredAt == nil || delivered.ProviderTurnID == "" {
-		t.Fatalf("terminal boundary did not free queued review: event=%+v found=%v err=%v", delivered, found, err)
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("terminal boundary did not free queued review: %+v", lease)
 	}
 	admission, found, err := store.BrainInputAdmission(prepared.RequestID, prepared.ThreadID)
 	if err != nil || !found || admission.AcceptedAt == nil || !admission.AcceptedAt.Equal(now) {
@@ -1804,13 +1788,12 @@ func TestHostForegroundPreparedBoundaryRejectsStaleTerminalAndPreventsEpochReuse
 		t.Fatalf("stale terminal closed or bound new foreground: active=%+v err=%v", active, err)
 	}
 	item := createSignalTestWork(t, store, "stale terminal must not wake", "brain-agent-worker:@prepared-stale-fence")
-	event := appendSignalTestEvent(t, store, item, "prepared-stale-fence")
+	appendSignalTestEvent(t, store, item, "prepared-stale-fence")
 	if woke, err := service.ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("stale terminal woke=%v err=%v", woke, err)
 	}
-	queued, found, err := store.WorkEvent(event.ID)
-	if err != nil || !found || queued.ClaimedAt != nil || queued.DeliveredAt != nil {
-		t.Fatalf("stale terminal freed queued review: event=%+v found=%v err=%v", queued, found, err)
+	if lease := reviewLeaseOf(t, store, item.ID); lease != nil {
+		t.Fatalf("stale terminal freed queued review: %+v", lease)
 	}
 
 	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
@@ -1826,13 +1809,10 @@ func TestHostForegroundPreparedBoundaryRejectsStaleTerminalAndPreventsEpochReuse
 
 	// End the delivered review so the only identity decision for the next
 	// input is whether the prior exact foreground boundary was really closed.
-	delivered, found, err := store.WorkEvent(event.ID)
-	if err != nil || !found || delivered.DeliveredAt == nil {
-		t.Fatalf("exact window terminal did not deliver queued review: event=%+v found=%v err=%v", delivered, found, err)
-	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
-		ProviderTurnID: delivered.ProviderTurnID, ExpectedWorkRevision: delivered.DeliveryWorkRevision,
+	lease := requireReviewDelivered(t, store, item.ID)
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: item.ID, HandlingID: lease.HandlingID,
+		ProviderTurnID: lease.ProviderTurnID, ExpectedWorkRevision: lease.DeliveryWorkRevision,
 		Disposition: WorkDispositionSupersede, Summary: "Boundary regression review complete.",
 	}); err != nil {
 		t.Fatal(err)
@@ -1902,7 +1882,7 @@ func TestHostForegroundLegacyAcceptedBoundaryConvergesFromExactPreparedAdmission
 	}
 
 	item := createSignalTestWork(t, store, "legacy boundary review", "brain-agent-worker:@legacy-boundary")
-	event := appendSignalTestEvent(t, store, item, "legacy-boundary")
+	appendSignalTestEvent(t, store, item, "legacy-boundary")
 	watcherFixture.providerEvidence[hostID] = watcher.ProviderActivityObservation{
 		ID: "activity-legacy-boundary", Status: "completed",
 		StartedAt: boundary.Add(2 * time.Millisecond), SettledAt: boundary.Add(5 * time.Millisecond),
@@ -1913,9 +1893,8 @@ func TestHostForegroundLegacyAcceptedBoundaryConvergesFromExactPreparedAdmission
 	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
 		t.Fatalf("legacy boundary remained active=%+v err=%v", active, err)
 	}
-	delivered, found, err := store.WorkEvent(event.ID)
-	if err != nil || !found || delivered.DeliveredAt == nil {
-		t.Fatalf("legacy boundary did not free queued review: event=%+v found=%v err=%v", delivered, found, err)
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("legacy boundary did not free queued review: %+v", lease)
 	}
 	audit, err := os.ReadFile(store.HostReplacementsPath())
 	if err != nil || !strings.Contains(string(audit), `"reason":"foreground_admission_boundary_repaired"`) ||
@@ -1968,7 +1947,7 @@ func TestLiveOwnerCorrectionNotBlockedByQueuedReview(t *testing.T) {
 	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil || len(events) != 1 || events[0].Kind != "session.failed" ||
-		!events[0].Actionable || events[0].DeliveredAt != nil {
+		!events[0].Actionable || reviewLeaseOf(t, store, events[0].WorkID) != nil && reviewLeaseOf(t, store, events[0].WorkID).DeliveredAt != nil {
 		t.Fatalf("queued review head=%+v err=%v", events, err)
 	}
 	// The owner Session may submit correction input: queued review never
@@ -1992,14 +1971,12 @@ func TestLiveOwnerCorrectionNotBlockedByQueuedReview(t *testing.T) {
 	// rejected: the successor reservation binds the delivered Event and
 	// ownership transfers only when the typed continue disposition commits.
 	hostID := "brain-agent-brain-hidden:@live-correction"
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID,
-	)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2018,13 +1995,13 @@ func TestLiveOwnerCorrectionNotBlockedByQueuedReview(t *testing.T) {
 	stagedWork, err := store.Work(item.ID)
 	if err != nil || stagedWork.SuccessorReservation == nil ||
 		stagedWork.SuccessorReservation.SessionID != sessionID ||
-		stagedWork.SuccessorReservation.EventID != delivered.ID ||
+		stagedWork.SuccessorReservation.EventID != delivered.FactEventID ||
 		stagedWork.Revision != delivered.DeliveryWorkRevision {
 		t.Fatalf("delivered review did not stage the correction under the exact handling: Work=%+v err=%v", stagedWork, err)
 	}
 	// The staged correction does not overtake the review: the delivered
 	// handling still awaits its exact typed disposition.
-	if unhandled, err := store.WorkHasInFlightHandling(item.ID); err != nil || !unhandled {
+	if unhandled, err := store.WorkHasDeliveredReview(item.ID); err != nil || !unhandled {
 		t.Fatalf("staged correction displaced the delivered review: unhandled=%v err=%v", unhandled, err)
 	}
 }

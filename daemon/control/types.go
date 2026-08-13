@@ -53,7 +53,7 @@ type Request struct {
 	CalendarItem         *calendar.Item                         `json:"calendar_item,omitempty"`
 	BrainWork            *brain.Work                            `json:"brain_work,omitempty"`
 	BrainWorkEvent       *brain.WorkEvent                       `json:"brain_work_event,omitempty"`
-	BrainWorkDisposition *brain.WorkEventDispositionRequest     `json:"brain_work_disposition,omitempty"`
+	BrainWorkDisposition *brain.WorkReviewDispositionRequest    `json:"brain_work_disposition,omitempty"`
 	WorkID               string                                 `json:"work_id,omitempty"`
 	WorkFields           []string                               `json:"work_fields,omitempty"`
 }

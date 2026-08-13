@@ -452,11 +452,11 @@ func TestFaultMatchingControlDoneAtomicallyAdmitsAndSettlesAcrossRestart(t *test
 		!replay.Owned || !replay.Matched || replay.Changed || replay.Turn.Status != watcher.TurnDone {
 		t.Fatalf("restart replay = (%+v, %v)", replay, err)
 	}
-	claimed, ok, err := restarted.ClaimNextActionableEvent("brain-agent-brain-hidden:@signal")
-	if err != nil || !ok || claimed.ID != row.ID {
+	claimed, ok, err := restarted.ClaimNextReviewAction("brain-agent-brain-hidden:@signal")
+	if err != nil || !ok || claimed.FactEventID != row.ID {
 		t.Fatalf("canonical Brain wake = event=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	if duplicate, ok, err := restarted.ClaimNextActionableEvent("brain-agent-brain-hidden:@signal"); err != nil || ok {
+	if duplicate, ok, err := restarted.ClaimNextReviewAction("brain-agent-brain-hidden:@signal"); err != nil || ok {
 		t.Fatalf("duplicate Brain wake = event=%+v ok=%v err=%v", duplicate, ok, err)
 	}
 }

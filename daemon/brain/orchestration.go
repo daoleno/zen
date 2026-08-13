@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 11
+const orchestrationSchemaVersion = 12
 
 var (
 	ErrWorkNotFound         = errors.New("Brain Work not found")
@@ -170,6 +170,10 @@ type WorkSuccessorReservation struct {
 // SourceThreadID freezes the originating Brain thread at Work creation.
 // Later Work Events materialize only into that persisted thread, even if the
 // user has since created or switched to another Brain thread.
+//
+// Review is the canonical Brain review obligation (see work_review.go): it is
+// the only scheduler truth. Session status and Event delivery never
+// independently own scheduler state.
 type Work struct {
 	ID                   string                    `json:"work_id"`
 	Revision             uint64                    `json:"revision"`
@@ -185,6 +189,7 @@ type Work struct {
 	NextAction           string                    `json:"next_action,omitempty"`
 	WaitFor              string                    `json:"wait_for,omitempty"`
 	Wake                 *WorkWake                 `json:"wake,omitempty"`
+	Review               *WorkReview               `json:"review,omitempty"`
 	SuccessorReservation *WorkSuccessorReservation `json:"successor_reservation,omitempty"`
 	SessionFinalizations []SessionFinalization     `json:"session_finalizations,omitempty"`
 	ContextRef           string                    `json:"context_ref,omitempty"`
@@ -192,55 +197,38 @@ type Work struct {
 	UpdatedAt            time.Time                 `json:"updated_at"`
 }
 
-// WorkEvent is an append-only fact. Event.ID is also its delivery receipt.
-// Only Actionable events participate in Brain scheduling. A claimed Event is
-// bound to one Host Session, marked delivered after its exact input is accepted,
-// and marked handled only with an atomic typed Work disposition.
-// Resolution/ResolvedBy/ResolvedAt/DiscardedAt/ReplayOf are the durable
-// actor-recorded audit trail for held delivery claims (C.2.6); they are set
-// only by explicit MarkDeliveredClaim/DiscardClaim/ReplayEvent operations,
-// never by elapsed time. Read state lives in the timeline projection, never
-// on the scheduling fact.
+// WorkEvent is an append-only fact and at most a one-shot wake/delivery
+// signal. It never carries claim, lease, or delivery state: Work.Review is the
+// only scheduler truth (I1). Event.ID is the delivery receipt identity and
+// the review epoch anchor. Resolution/ResolvedBy/ResolvedAt/DiscardedAt are
+// the durable actor-recorded audit trail for explicit lease closures
+// (mark_delivered, discard, replay); HandledAt/Disposition/DispositionSummary
+// are the Brain disposition audit. Both are written only with the atomic
+// transition that closes the epoch; elapsed time never writes them.
 type WorkEvent struct {
-	ID                    string          `json:"event_id"`
-	WorkID                string          `json:"work_id"`
-	Kind                  string          `json:"kind"`
-	DedupeKey             string          `json:"dedupe_key"`
-	PayloadRef            string          `json:"payload_ref,omitempty"`
-	SourceName            string          `json:"source_name,omitempty"`
-	Summary               string          `json:"summary,omitempty"`
-	Actionable            bool            `json:"actionable"`
-	CreatedAt             time.Time       `json:"created_at"`
-	Sequence              uint64          `json:"sequence"`
-	WorkRevision          uint64          `json:"work_revision"`
-	ClaimedAt             *time.Time      `json:"claimed_at,omitempty"`
-	DeliveryHostSessionID string          `json:"delivery_host_session_id,omitempty"`
-	HandlingID            string          `json:"handling_id,omitempty"`
-	ProviderTurnID        string          `json:"provider_turn_id,omitempty"`
-	DeliveryWorkRevision  uint64          `json:"delivery_work_revision,omitempty"`
-	DeliverySequenceFence uint64          `json:"delivery_sequence_fence,omitempty"`
-	DeliveredAt           *time.Time      `json:"delivered_at,omitempty"`
-	HandlingEndedAt       *time.Time      `json:"handling_ended_at,omitempty"`
-	HandledAt             *time.Time      `json:"handled_at,omitempty"`
-	Disposition           WorkDisposition `json:"disposition,omitempty"`
-	DispositionSummary    string          `json:"disposition_summary,omitempty"`
-	CoalescedInto         string          `json:"coalesced_into,omitempty"`
-	Resolution            string          `json:"resolution,omitempty"`
-	ResolvedBy            string          `json:"resolved_by,omitempty"`
-	ResolvedAt            *time.Time      `json:"resolved_at,omitempty"`
-	DiscardedAt           *time.Time      `json:"discarded_at,omitempty"`
-	ReplayOf              string          `json:"replay_of,omitempty"`
-
-	// Review* is a read-time delivery projection. The append-only fact named by
-	// ID never changes identity, while a coalesced newer fact can be the latest
-	// authoritative result Brain must review through DeliverySequenceFence.
-	ReviewKind       string `json:"-"`
-	ReviewPayloadRef string `json:"-"`
-	ReviewSourceName string `json:"-"`
-	ReviewSummary    string `json:"-"`
+	ID                 string          `json:"event_id"`
+	WorkID             string          `json:"work_id"`
+	Kind               string          `json:"kind"`
+	DedupeKey          string          `json:"dedupe_key"`
+	PayloadRef         string          `json:"payload_ref,omitempty"`
+	SourceName         string          `json:"source_name,omitempty"`
+	Summary            string          `json:"summary,omitempty"`
+	Actionable         bool            `json:"actionable"`
+	CreatedAt          time.Time       `json:"created_at"`
+	Sequence           uint64          `json:"sequence"`
+	WorkRevision       uint64          `json:"work_revision"`
+	CoalescedInto      string          `json:"coalesced_into,omitempty"`
+	HandledAt          *time.Time      `json:"handled_at,omitempty"`
+	Disposition        WorkDisposition `json:"disposition,omitempty"`
+	DispositionSummary string          `json:"disposition_summary,omitempty"`
+	Resolution         string          `json:"resolution,omitempty"`
+	ResolvedBy         string          `json:"resolved_by,omitempty"`
+	ResolvedAt         *time.Time      `json:"resolved_at,omitempty"`
+	DiscardedAt        *time.Time      `json:"discarded_at,omitempty"`
 }
 
-// WorkEventResolution values for held-claim closure (C.2.6).
+// WorkEventResolution values for actor lease closure audit (the C.2.6 path,
+// now Work-scoped: the fact row records who closed the lease and how).
 const (
 	EventResolutionMarkDelivered = "mark_delivered"
 	EventResolutionDiscard       = "discard"
@@ -262,7 +250,7 @@ type WorkUpdate struct {
 
 // WorkCloseRequest is the explicit operator path for terminalizing queued or
 // historical Work that has no in-flight Host/provider authority. It is not a
-// substitute for ResolveWorkEvent: a claimed delivery, admitted Host handling,
+// substitute for ResolveWorkReview: a claimed delivery, admitted Host handling,
 // or unresolved provider submission must still finish through its exact
 // capability. Actor and reason are persisted in a non-actionable audit Event.
 type WorkCloseRequest struct {
@@ -271,21 +259,6 @@ type WorkCloseRequest struct {
 	Status           WorkStatus `json:"status"`
 	Actor            string     `json:"actor"`
 	Reason           string     `json:"reason"`
-}
-
-// WorkEventDispositionRequest is Brain's exact handling transaction. The
-// handling identity and expected Work revision came from the delivered compact
-// input, preventing an old Host turn from overwriting newer durable state.
-type WorkEventDispositionRequest struct {
-	EventID              string          `json:"event_id"`
-	HandlingID           string          `json:"handling_id"`
-	ProviderTurnID       string          `json:"provider_turn_id"`
-	ExpectedWorkRevision uint64          `json:"expected_work_revision"`
-	Disposition          WorkDisposition `json:"disposition"`
-	SuccessorSessionID   string          `json:"successor_session_id,omitempty"`
-	Wake                 *WorkWake       `json:"wake,omitempty"`
-	NextAction           string          `json:"next_action,omitempty"`
-	Summary              string          `json:"summary,omitempty"`
 }
 
 type ActiveWork struct {
@@ -403,6 +376,7 @@ type workRecord struct {
 	NextAction           string                    `json:"next_action,omitempty"`
 	WaitFor              string                    `json:"wait_for,omitempty"`
 	Wake                 *WorkWake                 `json:"wake,omitempty"`
+	Review               *WorkReview               `json:"review,omitempty"`
 	SuccessorReservation *WorkSuccessorReservation `json:"successor_reservation,omitempty"`
 	SessionFinalizations []SessionFinalization     `json:"session_finalizations,omitempty"`
 	ContextRef           string                    `json:"context_ref,omitempty"`
@@ -446,10 +420,11 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	return nil
 }
 
-// decodeOrchestrationDatabase accepts exactly the current scheduler schema.
-// Older scheduler state has no migration path: it fails with
-// ErrSchedulerStateReset so the operator can archive/reset the disposable
-// state directory. Current-schema documents are validated, never repaired.
+// decodeOrchestrationDatabase accepts the current scheduler schema and
+// migrates the previous schema forward by re-deriving canonical Work.Review
+// state from the append-only fact rows (development-stage migration: the
+// flawed Event-carried lease representation is replaced, not preserved).
+// Older documents fail with ErrSchedulerStateReset.
 func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -464,11 +439,12 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, error) {
 	if header.SchemaVersion == nil {
 		return orchestrationDatabase{}, fmt.Errorf("schema_version is required")
 	}
-	if *header.SchemaVersion != orchestrationSchemaVersion {
+	version := *header.SchemaVersion
+	if version < 11 || version > orchestrationSchemaVersion {
 		return orchestrationDatabase{}, fmt.Errorf(
 			"%w: schema_version %d (expected %d)",
 			ErrSchedulerStateReset,
-			*header.SchemaVersion,
+			version,
 			orchestrationSchemaVersion,
 		)
 	}
@@ -489,10 +465,126 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, error) {
 		BrainTurns:           record.BrainTurns,
 		BrainTurnSubmissions: record.BrainTurnSubmissions,
 	}
+	if version < orchestrationSchemaVersion {
+		var legacyRecord struct {
+			BrainWorkEvents []workEventRecordV11 `json:"brain_work_events"`
+		}
+		if err := json.Unmarshal(trimmed, &legacyRecord); err != nil {
+			return orchestrationDatabase{}, err
+		}
+		migrateOrchestrationV11ToV12(&database, legacyRecord.BrainWorkEvents)
+	}
 	if err := validateOrchestrationDatabase(database); err != nil {
 		return orchestrationDatabase{}, err
 	}
 	return database, nil
+}
+
+// workEventRecordV11 is the v11 Event shape whose scheduler fields the
+// migration re-derives into canonical Work.Review state before they are
+// dropped from the schema.
+type workEventRecordV11 struct {
+	ID                    string          `json:"event_id"`
+	WorkID                string          `json:"work_id"`
+	Kind                  string          `json:"kind"`
+	DedupeKey             string          `json:"dedupe_key"`
+	PayloadRef            string          `json:"payload_ref,omitempty"`
+	SourceName            string          `json:"source_name,omitempty"`
+	Summary               string          `json:"summary,omitempty"`
+	Actionable            bool            `json:"actionable"`
+	CreatedAt             time.Time       `json:"created_at"`
+	Sequence              uint64          `json:"sequence"`
+	WorkRevision          uint64          `json:"work_revision"`
+	ClaimedAt             *time.Time      `json:"claimed_at,omitempty"`
+	DeliveryHostSessionID string          `json:"delivery_host_session_id,omitempty"`
+	HandlingID            string          `json:"handling_id,omitempty"`
+	ProviderTurnID        string          `json:"provider_turn_id,omitempty"`
+	DeliveryWorkRevision  uint64          `json:"delivery_work_revision,omitempty"`
+	DeliverySequenceFence uint64          `json:"delivery_sequence_fence,omitempty"`
+	DeliveredAt           *time.Time      `json:"delivered_at,omitempty"`
+	HandlingEndedAt       *time.Time      `json:"handling_ended_at,omitempty"`
+	HandledAt             *time.Time      `json:"handled_at,omitempty"`
+	Disposition           WorkDisposition `json:"disposition,omitempty"`
+	DispositionSummary    string          `json:"disposition_summary,omitempty"`
+	CoalescedInto         string          `json:"coalesced_into,omitempty"`
+	Resolution            string          `json:"resolution,omitempty"`
+	ResolvedBy            string          `json:"resolved_by,omitempty"`
+	ResolvedAt            *time.Time      `json:"resolved_at,omitempty"`
+	DiscardedAt           *time.Time      `json:"discarded_at,omitempty"`
+	ReplayOf              string          `json:"replay_of,omitempty"`
+}
+
+// migrateOrchestrationV11ToV12 derives canonical Work.Review state from the
+// v11 Event-carried scheduler fields and strips those fields from the fact
+// rows. The derivation mirrors the v11 reducer: one outstanding eligible head
+// per Work becomes the review epoch; its claim/delivery fields become the
+// lease; the latest eligible fact is the current action. Resolution/DiscardedAt
+// audit rows never obligate and are left as history. The migration is
+// idempotent and runs in memory on every load until the document is rewritten
+// at schema 12.
+func migrateOrchestrationV11ToV12(database *orchestrationDatabase, legacyEvents []workEventRecordV11) {
+	legacyByID := make(map[string]workEventRecordV11, len(legacyEvents))
+	for _, event := range legacyEvents {
+		legacyByID[event.ID] = event
+	}
+	for itemIndex := range database.BrainWork {
+		item := &database.BrainWork[itemIndex]
+		if item.Status == WorkDone || item.Status == WorkCancelled {
+			continue
+		}
+		headID := ""
+		headClaim := workEventRecordV11{}
+		headClaimed := false
+		latestID := ""
+		for _, event := range database.BrainWorkEvents {
+			if event.WorkID != item.ID || !migrationV11Eligible(database, *item, event) {
+				continue
+			}
+			if headID == "" || event.Sequence < database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, headID)].Sequence {
+				headID = event.ID
+				headClaim = legacyByID[event.ID]
+				headClaimed = headClaim.ClaimedAt != nil
+			}
+			if latestID == "" || event.Sequence > database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, latestID)].Sequence {
+				latestID = event.ID
+			}
+		}
+		if headID == "" {
+			continue
+		}
+		review := &WorkReview{
+			RequiredAt:  database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, headID)].CreatedAt.UTC(),
+			FactEventID: latestID,
+		}
+		if headClaimed {
+			review.Lease = &WorkReviewLease{
+				HostSessionID:         headClaim.DeliveryHostSessionID,
+				HandlingID:            headClaim.HandlingID,
+				ProviderTurnID:        headClaim.ProviderTurnID,
+				DeliveryWorkRevision:  headClaim.DeliveryWorkRevision,
+				DeliverySequenceFence: headClaim.DeliverySequenceFence,
+				ClaimedAt:             headClaim.ClaimedAt.UTC(),
+				DeliveredAt:           headClaim.DeliveredAt,
+				HandlingEndedAt:       headClaim.HandlingEndedAt,
+			}
+		}
+		item.Review = review
+	}
+}
+
+// migrationV11Eligible mirrors the v11 attentionEventCanObligate gate.
+func migrationV11Eligible(database *orchestrationDatabase, item Work, event WorkEvent) bool {
+	if !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil || event.Resolution != "" {
+		return false
+	}
+	if isSessionLifecycleKind(event.Kind) &&
+		!isTurnScopedSessionDedupeKey(event.DedupeKey) && !isCanonicalSessionWakeDedupeKey(event.DedupeKey) {
+		return false
+	}
+	if item.Status != WorkDone && item.Status != WorkCancelled {
+		return true
+	}
+	return terminalFinalizationFailureOwnsAttention(item, event)
 }
 
 // worksFromRecords copies durable Work fields.
@@ -514,6 +606,7 @@ func worksFromRecords(records []workRecord) []Work {
 			NextAction:           strings.TrimSpace(record.NextAction),
 			WaitFor:              strings.TrimSpace(record.WaitFor),
 			Wake:                 cloneWorkWake(record.Wake),
+			Review:               cloneWorkReview(record.Review),
 			SuccessorReservation: cloneSuccessorReservation(record.SuccessorReservation),
 			SessionFinalizations: cloneSessionFinalizations(record.SessionFinalizations),
 			ContextRef:           strings.TrimSpace(record.ContextRef),
@@ -682,23 +775,22 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 				return fmt.Errorf("brain_work_events[%d]: invalid coalesced_into %q", index, targetID)
 			}
 		}
-		if event.Resolution != "" || event.DiscardedAt != nil || event.HandledAt != nil {
-			continue
+	}
+	for index, item := range database.BrainWork {
+		if err := validateWorkReview(database, item); err != nil {
+			return fmt.Errorf("brain_work[%d]: %w", index, err)
 		}
-		inFlight := event.ClaimedAt != nil && event.DeliveredAt == nil ||
-			event.DeliveredAt != nil && event.HandlingEndedAt == nil
-		if !inFlight {
-			continue
-		}
-		if existingID := inFlightByWork[event.WorkID]; existingID != "" {
-			return fmt.Errorf("brain_work_events[%d]: Work %q already has in-flight event %q", index, event.WorkID, existingID)
-		}
-		inFlightByWork[event.WorkID] = event.ID
-		if event.DeliveredAt != nil && event.HandlingEndedAt == nil {
-			if globalDelivered != "" {
-				return fmt.Errorf("brain_work_events[%d]: Host already has live delivered handling %q", index, globalDelivered)
+		if review := item.Review; review != nil && review.Lease != nil && review.Lease.HandlingEndedAt == nil {
+			if existingID := inFlightByWork[item.ID]; existingID != "" {
+				return fmt.Errorf("brain_work[%d]: Work %q already has an in-flight review lease", index, item.ID)
 			}
-			globalDelivered = event.ID
+			inFlightByWork[item.ID] = review.FactEventID
+			if review.Lease.DeliveredAt != nil {
+				if globalDelivered != "" {
+					return fmt.Errorf("brain_work[%d]: Host already has live delivered review %q", index, globalDelivered)
+				}
+				globalDelivered = item.ID
+			}
 		}
 	}
 	for index, item := range database.BrainWork {
@@ -716,13 +808,11 @@ func validateOrchestrationDatabaseWithSourceThread(database orchestrationDatabas
 		}
 		if strings.TrimSpace(reservation.EventID) != "" {
 			liveBinding := false
-			for _, event := range database.BrainWorkEvents {
-				if event.ID == reservation.EventID && event.WorkID == item.ID &&
-					event.HandlingID == reservation.HandlingID && event.DeliveredAt != nil &&
-					event.HandledAt == nil && event.HandlingEndedAt == nil {
-					liveBinding = true
-					break
-				}
+			if review := item.Review; review != nil && review.Lease != nil {
+				lease := review.Lease
+				liveBinding = review.FactEventID == reservation.EventID &&
+					lease.HandlingID == reservation.HandlingID &&
+					lease.DeliveredAt != nil && lease.HandlingEndedAt == nil
 			}
 			if !liveBinding {
 				return fmt.Errorf("brain_work[%d]: successor reservation is bound to a non-live Host handling", index)
@@ -860,9 +950,28 @@ func workTurnHasRelinquishmentEvidence(database orchestrationDatabase, workID st
 }
 
 func isHostHandlingTurn(database orchestrationDatabase, turn TurnRecord) bool {
-	for _, event := range database.BrainWorkEvents {
-		if event.ID == turn.Receipt && event.WorkID == turn.WorkID &&
-			event.DeliveryHostSessionID == turn.SessionID && event.ProviderTurnID == turn.TurnID {
+	// A Host handling Turn's Receipt names the review-epoch fact it delivered.
+	// The receipt identity is durable even after the lease ends or is
+	// replaced, so a Host Turn is never misread as delegated execution.
+	fact, found := workEventByID(database.BrainWorkEvents, turn.Receipt)
+	if !found || fact.WorkID != turn.WorkID {
+		return false
+	}
+	itemIndex := workIndex(database.BrainWork, turn.WorkID)
+	if itemIndex < 0 {
+		return false
+	}
+	review := database.BrainWork[itemIndex].Review
+	if review != nil && review.Lease != nil && review.FactEventID == turn.Receipt &&
+		review.Lease.HostSessionID == turn.SessionID && review.Lease.ProviderTurnID == turn.TurnID {
+		return true
+	}
+	// The fact row carries no claim state (I1); a Turn whose Receipt names a
+	// fact and whose session ever acted as the delivery host is Host-side
+	// lifecycle. ClaimToken-bearing submissions are Host submissions.
+	for _, submission := range database.BrainTurnSubmissions {
+		if submission.ProposedTurnID == turn.TurnID && submission.SessionID == turn.SessionID &&
+			strings.TrimSpace(submission.ClaimToken) != "" {
 			return true
 		}
 	}
@@ -974,36 +1083,23 @@ func validateWorkEvent(event WorkEvent) error {
 	if event.Sequence == 0 || event.WorkRevision == 0 {
 		return fmt.Errorf("sequence and work_revision are required")
 	}
-	if event.ClaimedAt == nil && strings.TrimSpace(event.DeliveryHostSessionID) != "" {
-		return fmt.Errorf("delivery host requires a claim")
-	}
-	if event.ClaimedAt != nil && event.DeliveredAt == nil && strings.TrimSpace(event.DeliveryHostSessionID) == "" {
-		return fmt.Errorf("undelivered claim requires delivery_host_session_id")
-	}
-	if event.DeliveredAt != nil && event.ClaimedAt == nil {
-		return fmt.Errorf("delivered event must have a claim")
-	}
-	if event.ClaimedAt != nil && event.DeliveredAt == nil {
-		if strings.TrimSpace(event.HandlingID) != "" || strings.TrimSpace(event.ProviderTurnID) != "" {
-			if strings.TrimSpace(event.HandlingID) == "" || strings.TrimSpace(event.ProviderTurnID) == "" ||
-				event.HandlingID == event.ProviderTurnID || event.DeliveryWorkRevision == 0 || event.DeliverySequenceFence == 0 {
-				return fmt.Errorf("live claim requires distinct handling and provider Turn identities, Work revision, and sequence fence")
-			}
-		}
-	}
-	if event.DeliveredAt != nil {
-		if strings.TrimSpace(event.HandlingID) == "" || strings.TrimSpace(event.ProviderTurnID) == "" ||
-			event.HandlingID == event.ProviderTurnID || event.DeliveryWorkRevision == 0 || event.DeliverySequenceFence == 0 {
-			return fmt.Errorf("live delivery requires distinct handling and provider Turn identities, Work revision, and sequence fence")
-		}
-	}
 	if event.HandledAt != nil {
-		if event.DeliveredAt == nil && strings.TrimSpace(event.CoalescedInto) == "" || !validWorkDisposition(event.Disposition) {
-			return fmt.Errorf("handled event requires delivery and disposition")
+		if !validWorkDisposition(event.Disposition) {
+			return fmt.Errorf("handled event requires a disposition")
 		}
 	}
 	if event.Disposition != "" && event.HandledAt == nil {
 		return fmt.Errorf("disposition requires handled_at")
+	}
+	if event.Resolution != "" {
+		if event.ResolvedBy == "" || event.ResolvedAt == nil {
+			return fmt.Errorf("resolved event requires resolved_by and resolved_at")
+		}
+	}
+	if event.DiscardedAt != nil {
+		if event.Resolution != EventResolutionDiscard || event.ResolvedAt == nil {
+			return fmt.Errorf("discarded event requires discard resolution audit")
+		}
 	}
 	return nil
 }
@@ -1113,70 +1209,45 @@ type workProgressState struct {
 	OwnerAdmission    bool
 }
 
-// eventDeliveryState is the one derived delivery state of the append-only
-// Work Event head. It collapses the former attentionObligationState,
-// WorkAttentionState, and WorkReviewState mirrors into a single scheduler
-// fact: pending (queued for the Host lane), dispatching (claimed, delivery
-// receipt outstanding), delivered (awaiting the exact typed disposition), and
-// handled (terminal; no longer a head). Fewer than ten persisted transition
-// states exist across the lane in total.
-type eventDeliveryState uint8
+// reviewDeliveryState is the derived delivery stage of the canonical review
+// obligation: pending (claimable), leased (claimed, delivery in flight),
+// delivered (awaiting the exact typed disposition), or quarantined (mutation
+// evidence while the lease Host is gone; explicit actor resolution only).
+type reviewDeliveryState uint8
 
 const (
-	deliveryNone eventDeliveryState = iota
-	deliveryPending
-	deliveryDispatching
-	deliveryDelivered
+	reviewNone reviewDeliveryState = iota
+	reviewPending
+	reviewLeased
+	reviewDelivered
+	reviewQuarantined
 )
 
-type attentionObligation struct {
-	WorkID      string
-	HeadIndex   int
-	LatestIndex int
-	State       eventDeliveryState
-}
-
-func (obligation attentionObligation) exists() bool {
-	return obligation.HeadIndex >= 0 && obligation.State != deliveryNone
-}
-
-func attentionEventOutstanding(event WorkEvent) bool {
-	return event.Actionable && event.HandledAt == nil && event.DiscardedAt == nil &&
-		event.Resolution == ""
-}
-
-// attentionEventCanObligate excludes durable audit rows that are forbidden
-// from ever reaching the Host scheduler. In particular, pre-TurnID delegated
-// lifecycle rows stay append-only evidence but cannot become a coalescing
-// head for a current turn-scoped fact.
-func attentionEventCanObligate(database orchestrationDatabase, event WorkEvent) bool {
-	if !attentionEventOutstanding(event) {
-		return false
+func reduceWorkReviewState(database orchestrationDatabase, workID string) reviewDeliveryState {
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return reviewNone
 	}
-	if isSessionLifecycleKind(event.Kind) && strings.TrimSpace(event.ReplayOf) == "" &&
-		!isTurnScopedSessionDedupeKey(event.DedupeKey) && !isCanonicalSessionWakeDedupeKey(event.DedupeKey) {
-		return false
+	review := database.BrainWork[itemIndex].Review
+	if review == nil {
+		return reviewNone
 	}
-	index := workIndex(database.BrainWork, event.WorkID)
-	if index < 0 {
-		return false
+	lease := review.Lease
+	if lease == nil {
+		return reviewPending
 	}
-	item := database.BrainWork[index]
-	if item.Status != WorkDone && item.Status != WorkCancelled {
-		return true
+	if lease.AmbiguousDelivery {
+		return reviewQuarantined
 	}
-	// A finalization retry is born only after the Work is terminal. Its
-	// immutable Session/attempt identity, not the Work's mutable metadata
-	// timestamp, is the causality fence. A later title, context, or other
-	// terminal metadata update therefore cannot turn the current failed
-	// teardown obligation into audit-only history.
-	if terminalFinalizationFailureOwnsAttention(item, event) {
-		return true
+	if lease.HandlingEndedAt != nil {
+		// Ended without a disposition: the same unresolved action is
+		// re-claimable (rows 9-10).
+		return reviewPending
 	}
-	// TerminalRevision is the immutable causal boundary written by the
-	// transition that first terminalized the Work. Later title/context edits
-	// advance Revision but never move this fence.
-	return item.TerminalRevision != 0 && event.WorkRevision >= item.TerminalRevision
+	if lease.DeliveredAt != nil {
+		return reviewDelivered
+	}
+	return reviewLeased
 }
 
 func terminalFinalizationFailureOwnsAttention(item Work, event WorkEvent) bool {
@@ -1198,88 +1269,6 @@ func terminalFinalizationFailureOwnsAttention(item Work, event WorkEvent) bool {
 
 func finalizationFailureDedupeKey(sessionID string, attempt uint32) string {
 	return fmt.Sprintf("brain:finalization:%s:attempt:%d", strings.TrimSpace(sessionID), attempt)
-}
-
-func reduceAttentionObligations(database orchestrationDatabase) map[string]attentionObligation {
-	out := make(map[string]attentionObligation, len(database.BrainWork))
-	byID := make(map[string]int, len(database.BrainWorkEvents))
-	for index, event := range database.BrainWorkEvents {
-		byID[event.ID] = index
-	}
-	for _, item := range database.BrainWork {
-		out[item.ID] = attentionObligation{WorkID: item.ID, HeadIndex: -1, LatestIndex: -1}
-	}
-	for index, event := range database.BrainWorkEvents {
-		if !attentionEventOutstanding(event) {
-			continue
-		}
-		obligation := out[event.WorkID]
-		if !attentionEventCanObligate(database, event) {
-			// Known audit-only rows are valid durable history. They neither
-			// obligate Brain nor create a repair/backlog obligation.
-			out[event.WorkID] = obligation
-			continue
-		}
-		if obligation.LatestIndex < 0 || event.Sequence > database.BrainWorkEvents[obligation.LatestIndex].Sequence {
-			obligation.LatestIndex = index
-		}
-		coalesced := false
-		if targetID := strings.TrimSpace(event.CoalescedInto); targetID != "" {
-			coalesced = attentionCoalescingPathValid(database, byID, event)
-		}
-		if !coalesced && (obligation.HeadIndex < 0 || event.Sequence < database.BrainWorkEvents[obligation.HeadIndex].Sequence) {
-			obligation.HeadIndex = index
-		}
-		out[event.WorkID] = obligation
-	}
-	for workID, obligation := range out {
-		if obligation.HeadIndex < 0 {
-			continue
-		}
-		head := database.BrainWorkEvents[obligation.HeadIndex]
-		switch {
-		case head.DeliveredAt != nil && head.HandlingEndedAt == nil:
-			obligation.State = deliveryDelivered
-		case head.ClaimedAt != nil:
-			obligation.State = deliveryDispatching
-		default:
-			obligation.State = deliveryPending
-		}
-		out[workID] = obligation
-	}
-	return out
-}
-
-// attentionCoalescingPathValid requires a coalesced row to reach one eligible
-// uncoalesced root in the same Work. Dangling targets and cycles are treated as
-// independent roots by the reducer, which keeps Attention schedulable and
-// marks the Work for repair instead of silently losing the obligation.
-func attentionCoalescingPathValid(database orchestrationDatabase, byID map[string]int, event WorkEvent) bool {
-	seen := map[string]bool{event.ID: true}
-	targetID := strings.TrimSpace(event.CoalescedInto)
-	for targetID != "" {
-		if seen[targetID] {
-			return false
-		}
-		seen[targetID] = true
-		targetIndex, found := byID[targetID]
-		if !found {
-			return false
-		}
-		target := database.BrainWorkEvents[targetIndex]
-		if target.WorkID != event.WorkID || !attentionEventCanObligate(database, target) {
-			return false
-		}
-		targetID = strings.TrimSpace(target.CoalescedInto)
-	}
-	return true
-}
-
-func reduceAttentionObligation(database orchestrationDatabase, workID string) attentionObligation {
-	if obligation, found := reduceAttentionObligations(database)[strings.TrimSpace(workID)]; found {
-		return obligation
-	}
-	return attentionObligation{WorkID: strings.TrimSpace(workID), HeadIndex: -1, LatestIndex: -1}
 }
 
 func workHasLiveCanonicalOwnerTurn(database orchestrationDatabase, item Work) bool {
@@ -1327,11 +1316,11 @@ func reduceWorkProgressState(database orchestrationDatabase, item Work) workProg
 	}
 	liveOwner := workHasLiveCanonicalOwnerTurn(database, item)
 	ownerAdmission := !liveOwner && workHasPendingOwnerAdmission(database, item)
-	obligation := reduceAttentionObligation(database, item.ID)
+	hasReview := item.Review != nil
 	state := workProgressState{
 		Owned:             liveOwner || ownerAdmission,
 		Waiting:           item.Wake != nil,
-		Ready:             obligation.exists(),
+		Ready:             hasReview,
 		LiveCanonicalTurn: liveOwner,
 		OwnerAdmission:    ownerAdmission,
 	}
@@ -1378,33 +1367,34 @@ func mustDeriveWorkProgressMode(database orchestrationDatabase, item Work) WorkP
 	return mode
 }
 
-// workHasAttentionObligation reports any outstanding or repair-needing
-// attention head for the Work, regardless of delivery stage. It drives the
-// wire AttentionPending flag only; it never gates scheduling. A delivered
-// handling awaiting its typed disposition is the Host lane's stop gate
-// (HasLiveDeliveredHandling); worker-side correction admissions stage under
-// that exact handling instead of being rejected, and a queued (pending) head
-// never gates either path.
-func workHasAttentionObligation(database orchestrationDatabase, workID string) bool {
-	obligation := reduceAttentionObligation(database, workID)
-	return obligation.exists()
-}
-
-func workHasInFlightHandling(database orchestrationDatabase, workID string) bool {
-	for _, event := range database.BrainWorkEvents {
-		if event.WorkID == workID && event.DeliveredAt != nil && event.HandledAt == nil &&
-			event.HandlingEndedAt == nil {
-			return true
-		}
+// workHasReviewObligation reports the canonical review obligation regardless
+// of delivery stage. It drives the wire AttentionPending flag only; it never
+// gates scheduling. A delivered review awaiting its typed disposition is the
+// Host lane's stop gate; worker-side correction admissions stage under that
+// exact handling instead of being rejected, and a pending review never gates
+// either path.
+func workHasReviewObligation(database orchestrationDatabase, workID string) bool {
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return false
 	}
-	return false
+	return database.BrainWork[itemIndex].Review != nil
 }
 
-// WorkHasInFlightHandling reports whether Work is currently owned by an exact
-// delivered Host handling transaction. It is a preflight hint for delegated
-// spawn; ReserveWorkSuccessor performs the authoritative check under the Store
-// lock.
-func (s *Store) WorkHasInFlightHandling(workID string) (bool, error) {
+// workHasDeliveredReview reports whether Work is currently owned by an exact
+// delivered review awaiting its typed disposition.
+func workHasDeliveredReview(database orchestrationDatabase, workID string) bool {
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return false
+	}
+	return reviewDeliveredAwaitingDisposition(database.BrainWork[itemIndex].Review)
+}
+
+// WorkHasDeliveredReview reports whether Work is currently owned by an exact
+// delivered review handling. It is a preflight hint for delegated spawn;
+// ReserveWorkSuccessor performs the authoritative check under the Store lock.
+func (s *Store) WorkHasDeliveredReview(workID string) (bool, error) {
 	workID = strings.TrimSpace(workID)
 	if s == nil || workID == "" {
 		return false, nil
@@ -1415,7 +1405,7 @@ func (s *Store) WorkHasInFlightHandling(workID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return workHasInFlightHandling(database, workID), nil
+	return workHasDeliveredReview(database, workID), nil
 }
 
 func validWorkStatus(status WorkStatus) bool {
@@ -1739,26 +1729,21 @@ func (s *Store) CloseWork(request WorkCloseRequest) (Work, error) {
 	if request.Status == WorkDone {
 		terminalDisposition = WorkDispositionComplete
 	}
-	for index := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[index]
-		if event.WorkID != item.ID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
-			event.Resolution != "" {
-			continue
+	// The operator's exact Work revision supplies the terminal disposition for
+	// the review epoch (ended or undelivered) and the canonical review
+	// obligation is cleared atomically (row 15).
+	if review := item.Review; review != nil {
+		eventIndex := workEventIndex(database.BrainWorkEvents, review.FactEventID)
+		if eventIndex >= 0 {
+			event := &database.BrainWorkEvents[eventIndex]
+			if event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" {
+				event.HandledAt = &settledAt
+				event.Disposition = terminalDisposition
+				event.DispositionSummary = request.Reason
+			}
 		}
-		switch {
-		case event.DeliveredAt != nil && event.HandlingEndedAt != nil:
-			// The provider Turn already ended, so this row no longer owns an
-			// effect. The operator's exact Work revision now supplies the terminal
-			// disposition that the ended handling did not record itself.
-			event.HandledAt = &settledAt
-			event.Disposition = terminalDisposition
-			event.DispositionSummary = request.Reason
-		case event.ClaimedAt == nil && event.DeliveredAt == nil:
-			event.DiscardedAt = &settledAt
-			event.Resolution = EventResolutionDiscard
-			event.ResolvedBy = request.Actor
-			event.ResolvedAt = &settledAt
-		}
+		item.Review = nil
+		database.BrainWork[itemIndex] = item
 	}
 	audit := WorkEvent{
 		ID: uuid.NewString(), WorkID: item.ID, Kind: "brain.work_closed",
@@ -1803,6 +1788,22 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 		item.SessionFinalizations = terminalSessionFinalizations(*database, item, now)
 		retirePendingDelegatedSubmissionsForWork(database, item.ID, now)
 		item.SuccessorReservation = nil
+		// Terminal Work never retains a review obligation except a live
+		// finalization-failure retry: any other epoch is settled as history so
+		// no ghost card survives the terminal transition (I7).
+		if review := item.Review; review != nil {
+			fact, found := workEventByID(database.BrainWorkEvents, review.FactEventID)
+			if !found || !terminalFinalizationFailureOwnsAttention(item, fact) {
+				settledAt := now.UTC()
+				if found {
+					database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, fact.ID)].DiscardedAt = &settledAt
+					database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, fact.ID)].Resolution = EventResolutionDiscard
+					database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, fact.ID)].ResolvedBy = "work_update"
+					database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, fact.ID)].ResolvedAt = &settledAt
+				}
+				item.Review = nil
+			}
+		}
 	}
 	if err := validateWork(item); err != nil {
 		return Work{}, err
@@ -1812,21 +1813,21 @@ func applyWorkUpdateLocked(database *orchestrationDatabase, index int, update Wo
 }
 
 // activeHostLaneEvent identifies the sole fail-closed boundary shared by
-// operator closure and internal Work updates. Once an actionable Event is
-// claimed, neither a metadata producer nor an operator may advance the Work
+// operator closure and internal Work updates. Once a review lease is in
+// flight, neither a metadata producer nor an operator may advance the Work
 // revision until the exact Host capability is consumed and disposed (or the
 // ended handling is explicitly recovered).
 func activeHostLaneEvent(database orchestrationDatabase, workID string) (string, bool) {
-	for _, event := range database.BrainWorkEvents {
-		if event.WorkID != workID || !event.Actionable || event.HandledAt != nil || event.DiscardedAt != nil ||
-			event.Resolution != "" {
-			continue
-		}
-		claimInFlight := event.ClaimedAt != nil && event.DeliveredAt == nil
-		handlingInFlight := event.DeliveredAt != nil && event.HandlingEndedAt == nil
-		if claimInFlight || handlingInFlight {
-			return event.ID, true
-		}
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return "", false
+	}
+	review := database.BrainWork[itemIndex].Review
+	if review == nil || review.Lease == nil {
+		return "", false
+	}
+	if review.Lease.HandlingEndedAt == nil {
+		return review.FactEventID, true
 	}
 	return "", false
 }
@@ -1837,10 +1838,10 @@ func workHostLaneOwned(database orchestrationDatabase, workID string) bool {
 }
 
 // ReserveWorkSuccessor binds a newly created correction Session to the exact
-// delivered handling before provider mutation. Initial ownership is never
-// reserved here: PrepareTurnSubmission persists that owner and its canonical
-// pending submission atomically. The reservation survives handling requeue and
-// restart; only the exact continue disposition may promote it.
+// delivered review handling before provider mutation. Initial ownership is
+// never reserved here: PrepareTurnSubmission persists that owner and its
+// canonical pending submission atomically. The reservation survives lease
+// requeue and restart; only the exact continue disposition may promote it.
 func (s *Store) ReserveWorkSuccessor(id, ownerSessionID string) (Work, error) {
 	id = strings.TrimSpace(id)
 	ownerSessionID = strings.TrimSpace(ownerSessionID)
@@ -1861,13 +1862,13 @@ func (s *Store) ReserveWorkSuccessor(id, ownerSessionID string) (Work, error) {
 			} else if executionWorkID := databaseActiveWorkIDForExecutionSession(database, ownerSessionID); executionWorkID != "" && executionWorkID != item.ID {
 				err = fmt.Errorf("%w: Session %s already executes Work %s", ErrWorkOwnerConflict, ownerSessionID, executionWorkID)
 			} else if handlingIndex := inFlightHandlingEventIndex(database, item.ID); handlingIndex >= 0 {
-				handling := database.BrainWorkEvents[handlingIndex]
+				review := item.Review
 				reservation := item.SuccessorReservation
 				if reservation != nil && strings.TrimSpace(reservation.SessionID) != ownerSessionID {
 					err = fmt.Errorf("%w: Work %s already staged successor %s", ErrWorkOwnerConflict, item.ID, reservation.SessionID)
-				} else if reservation == nil {
+				} else if reservation == nil && review != nil && review.Lease != nil {
 					item.SuccessorReservation = &WorkSuccessorReservation{
-						SessionID: ownerSessionID, EventID: handling.ID, HandlingID: handling.HandlingID,
+						SessionID: ownerSessionID, EventID: review.FactEventID, HandlingID: review.Lease.HandlingID,
 					}
 					database.BrainWork[index] = item
 					err = s.persistOrchestrationLocked(database)
@@ -1885,14 +1886,18 @@ func (s *Store) ReserveWorkSuccessor(id, ownerSessionID string) (Work, error) {
 	return item, nil
 }
 
+// inFlightHandlingEventIndex returns the index of the review-epoch fact whose
+// lease is delivered and awaiting disposition for the Work, or -1.
 func inFlightHandlingEventIndex(database orchestrationDatabase, workID string) int {
-	for index, event := range database.BrainWorkEvents {
-		if event.WorkID == workID && event.DeliveredAt != nil && event.HandledAt == nil &&
-			event.HandlingEndedAt == nil {
-			return index
-		}
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return -1
 	}
-	return -1
+	review := database.BrainWork[itemIndex].Review
+	if !reviewDeliveredAwaitingDisposition(review) {
+		return -1
+	}
+	return workEventIndex(database.BrainWorkEvents, review.FactEventID)
 }
 
 // RecordSuccessorLaunchFailure owns the successor's post-spawn failure
@@ -1961,7 +1966,12 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 			PayloadRef: "session:" + sessionID, SourceName: sessionID, Summary: failure,
 			Actionable: true, CreatedAt: now,
 		}
-		if _, err := appendWorkEventLocked(&database, index, event, true); err != nil {
+		event, err = appendWorkEventLocked(&database, index, event, true)
+		if err != nil {
+			s.mu.Unlock()
+			return Work{}, err
+		}
+		if err := setWorkReviewLocked(&database, index, event, now); err != nil {
 			s.mu.Unlock()
 			return Work{}, err
 		}
@@ -1981,18 +1991,7 @@ func (s *Store) RecordSuccessorLaunchFailure(workID, sessionID, failure string, 
 }
 
 func settleUndeliveredAttentionForAdmission(database *orchestrationDatabase, workID string, now time.Time) {
-	for index := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[index]
-		if event.WorkID != workID || !attentionEventCanObligate(*database, *event) ||
-			event.DeliveredAt != nil {
-			continue
-		}
-		discarded := now.UTC()
-		event.DiscardedAt = &discarded
-		event.Resolution = EventResolutionDiscard
-		event.ResolvedBy = "owner_admission"
-		event.ResolvedAt = &discarded
-	}
+	settleReviewForOwnerAdmissionLocked(database, workIndex(database.BrainWork, workID), now)
 }
 
 func applyWorkUpdate(item *Work, update WorkUpdate) {
@@ -2528,6 +2527,9 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 		}
 		event, err = appendWorkEventLocked(&database, itemIndex, event, true)
 		if err == nil {
+			err = setWorkReviewLocked(&database, itemIndex, event, event.CreatedAt)
+		}
+		if err == nil {
 			err = s.persistOrchestrationLocked(database)
 		}
 	}
@@ -2553,18 +2555,14 @@ func normalizeWorkEventForAppend(event WorkEvent, now time.Time) (WorkEvent, err
 	event.CreatedAt = now.UTC()
 	event.Sequence = 0
 	event.WorkRevision = 0
-	event.ClaimedAt = nil
-	event.DeliveryHostSessionID = ""
-	event.HandlingID = ""
-	event.ProviderTurnID = ""
-	event.DeliveryWorkRevision = 0
-	event.DeliverySequenceFence = 0
-	event.DeliveredAt = nil
-	event.HandlingEndedAt = nil
 	event.HandledAt = nil
 	event.Disposition = ""
 	event.DispositionSummary = ""
 	event.CoalescedInto = ""
+	event.Resolution = ""
+	event.ResolvedBy = ""
+	event.ResolvedAt = nil
+	event.DiscardedAt = nil
 	if isSessionLifecycleKind(event.Kind) && !isTurnScopedSessionDedupeKey(event.DedupeKey) {
 		// A delegated lifecycle Event is unrepresentable without the
 		// canonical current TurnID: the dedupe key must be turn-scoped
@@ -2659,6 +2657,10 @@ func (s *Store) ApplyProducerTransition(
 		s.mu.Unlock()
 		return Work{}, WorkEvent{}, false, nil, err
 	}
+	if err := setWorkReviewLocked(&database, itemIndex, event, now); err != nil {
+		s.mu.Unlock()
+		return Work{}, WorkEvent{}, false, nil, err
+	}
 	woken := []WorkEvent{}
 	changedIDs := []string{event.WorkID}
 	if wake != nil {
@@ -2694,25 +2696,6 @@ func (s *Store) ApplyProducerTransition(
 }
 
 func appendWorkEventLocked(database *orchestrationDatabase, itemIndex int, event WorkEvent, bumpRevision bool) (WorkEvent, error) {
-	return appendWorkEventWithCoalescingLocked(database, itemIndex, event, bumpRevision, true)
-}
-
-// appendWorkEventAsAttentionHeadLocked is reserved for transitions that have
-// already redirected every prior obligation to this new Event ID. The normal
-// append path cannot discover that forward reference before the row exists,
-// so allowing it to coalesce would manufacture a two-row cycle and lose the
-// Work's schedulable head.
-func appendWorkEventAsAttentionHeadLocked(database *orchestrationDatabase, itemIndex int, event WorkEvent, bumpRevision bool) (WorkEvent, error) {
-	return appendWorkEventWithCoalescingLocked(database, itemIndex, event, bumpRevision, false)
-}
-
-func appendWorkEventWithCoalescingLocked(
-	database *orchestrationDatabase,
-	itemIndex int,
-	event WorkEvent,
-	bumpRevision bool,
-	autoCoalesce bool,
-) (WorkEvent, error) {
 	if database == nil || itemIndex < 0 || itemIndex >= len(database.BrainWork) {
 		return WorkEvent{}, ErrWorkNotFound
 	}
@@ -2726,30 +2709,13 @@ func appendWorkEventWithCoalescingLocked(
 	event.Sequence = database.NextEventSequence
 	event.WorkRevision = item.Revision
 	if hostLaneOwned {
-		// The claimed capability freezes the current Work revision. New facts
-		// belong to the immediately following revision epoch so the current
-		// disposition cannot accidentally consume them and a terminal outcome
-		// cannot classify them as pre-terminal history.
 		event.WorkRevision++
-	}
-	if autoCoalesce && event.Actionable && strings.TrimSpace(event.CoalescedInto) == "" {
-		if obligation := reduceAttentionObligation(*database, event.WorkID); obligation.exists() {
-			event.CoalescedInto = database.BrainWorkEvents[obligation.HeadIndex].ID
-		}
 	}
 	if err := validateWorkEvent(event); err != nil {
 		return WorkEvent{}, err
 	}
 	database.BrainWorkEvents = append(database.BrainWorkEvents, event)
 	return event, nil
-}
-
-func readyAttentionEventID(database orchestrationDatabase, workID string) string {
-	obligation := reduceAttentionObligation(database, workID)
-	if obligation.exists() && obligation.State == deliveryPending {
-		return database.BrainWorkEvents[obligation.HeadIndex].ID
-	}
-	return ""
 }
 
 func wakeWaitingWorkLocked(database *orchestrationDatabase, wake WorkWake, kind, occurrenceID, summary string, now time.Time) ([]WorkEvent, []string, error) {
@@ -2777,14 +2743,16 @@ func wakeWaitingWorkLocked(database *orchestrationDatabase, wake WorkWake, kind,
 			Actionable: true, CreatedAt: now,
 		}
 		// Only provenance-bearing producer transactions call this helper.
-		// Clearing the wait before append makes wake satisfaction and ready
-		// attention one atomic database replacement without trusting strings in
-		// the generic append path.
+		// Clearing the wait before append makes wake satisfaction and the
+		// canonical review obligation one atomic database replacement.
 		item.Wake = nil
 		database.BrainWork[index] = item
 		var err error
 		event, err = appendWorkEventLocked(database, index, event, true)
 		if err != nil {
+			return nil, nil, err
+		}
+		if err := setWorkReviewLocked(database, index, event, now); err != nil {
 			return nil, nil, err
 		}
 		recorded = append(recorded, event)
@@ -2810,57 +2778,78 @@ func (s *Store) ListWorkEvents(workID string) ([]WorkEvent, error) {
 	return out, nil
 }
 
-func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool, error) {
+// ClaimNextReviewAction claims the next review-required Work for the Host:
+// the oldest epoch birth (RequiredAt) with no in-flight lease and no
+// quarantine. Claiming mints a disposable lease carrying the exact capability
+// and the frozen Work revision fence. The same unresolved action is
+// re-claimable after lease expiry (Host death or ended delivery), and never
+// creates a second queue item.
+func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, bool, error) {
 	hostSessionID = strings.TrimSpace(hostSessionID)
 	if hostSessionID == "" {
-		return WorkEvent{}, false, fmt.Errorf("delivery host Session is required")
+		return WorkReviewAction{}, false, fmt.Errorf("delivery host Session is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
-		return WorkEvent{}, false, err
+		return WorkReviewAction{}, false, err
 	}
-	// Fair selection at the boundary: the oldest pending head across Work
-	// keys. One head per Work, so another Work's live delivered handling can
-	// never wedge this Work's claim. The Host lane reducer still admits at
-	// most one delivered handling at a time: a claim made here while another
-	// Work's handling is delivered waits as a durable hold until the lane
-	// resumes and its exact submission is prepared.
-	index := oldestPendingAttentionHeadIndex(database)
-	if index < 0 {
-		return WorkEvent{}, false, nil
+	itemIndex := oldestPendingReviewIndex(database)
+	if itemIndex < 0 {
+		return WorkReviewAction{}, false, nil
 	}
+	item := &database.BrainWork[itemIndex]
 	now := s.nowUTC()
-	database.BrainWorkEvents[index].ClaimedAt = &now
-	database.BrainWorkEvents[index].DeliveryHostSessionID = hostSessionID
-	database.BrainWorkEvents[index].HandlingID = uuid.NewString()
-	database.BrainWorkEvents[index].ProviderTurnID = hostSessionID + ":turn:" + uuid.NewString()
-	itemIndex := workIndex(database.BrainWork, database.BrainWorkEvents[index].WorkID)
-	database.BrainWorkEvents[index].DeliveryWorkRevision = database.BrainWork[itemIndex].Revision
-	database.BrainWorkEvents[index].DeliverySequenceFence = database.NextEventSequence
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return WorkEvent{}, false, err
+	item.Review.Lease = &WorkReviewLease{
+		HostSessionID:         hostSessionID,
+		HandlingID:            uuid.NewString(),
+		ProviderTurnID:        hostSessionID + ":turn:" + uuid.NewString(),
+		DeliveryWorkRevision:  item.Revision,
+		DeliverySequenceFence: database.NextEventSequence,
+		ClaimedAt:             now.UTC(),
 	}
-	return authoritativeReviewEvent(database, database.BrainWorkEvents[index]), true, nil
+	if err := s.persistOrchestrationLocked(database); err != nil {
+		return WorkReviewAction{}, false, err
+	}
+	action, found := reviewActionFromReview(database, item.Review)
+	return action, found, nil
 }
 
-// HasLiveDeliveredHandling reports whether one delivered Event still awaits
-// its exact typed disposition. The Host lane stops while it is true: the Host
-// is mid-review and no new admission may overtake the disposition.
-func (s *Store) HasLiveDeliveredHandling() (bool, error) {
+// oldestPendingReviewIndex selects the oldest review-required Work with no
+// in-flight lease and no quarantine. An ended lease (delivered handling that
+// ended without disposition) is re-claimable: the same unresolved action is
+// re-delivered, never duplicated (row 10). Fairness is a property of Work,
+// not of how many facts one Work accumulated while it waited.
+func oldestPendingReviewIndex(database orchestrationDatabase) int {
+	best := -1
+	for index := range database.BrainWork {
+		review := database.BrainWork[index].Review
+		if review == nil {
+			continue
+		}
+		if review.Lease != nil && (review.Lease.HandlingEndedAt == nil || review.Lease.AmbiguousDelivery) {
+			// In-flight or quarantined: not claimable on this pass.
+			continue
+		}
+		if best < 0 || review.RequiredAt.Before(database.BrainWork[best].Review.RequiredAt) {
+			best = index
+		}
+	}
+	return best
+}
+
+// HasLiveDeliveredReview reports whether one delivered review still awaits its
+// exact typed disposition. The Host lane stops while it is true: the Host is
+// mid-review and no new admission may overtake the disposition.
+func (s *Store) HasLiveDeliveredReview() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
 		return false, err
 	}
-	for _, event := range database.BrainWorkEvents {
-		if event.DeliveredAt != nil && event.HandledAt == nil && event.HandlingEndedAt == nil {
-			return true, nil
-		}
-	}
-	return false, nil
+	return reviewDeliveredInFlightIndex(database) >= 0, nil
 }
 
 // BindHostForegroundActivity persists the exact provider activity identity of
@@ -3065,78 +3054,34 @@ func (s *Store) CloseHostForegroundTurn(hostSessionID, hostGeneration, hostTurnI
 	return s.persistOrchestrationLocked(database)
 }
 
-// oldestPendingAttentionHeadIndex selects the one fair pending Work key at the
-// admission boundary: the oldest ready head by append sequence. One head per
-// Work key, deterministic, and replay-free after reopen.
-func oldestPendingAttentionHeadIndex(database orchestrationDatabase) int {
-	candidates := attentionCandidateIndexes(database)
-	if len(candidates) == 0 {
-		return -1
-	}
-	return candidates[0]
-}
-
-// attentionCandidateIndexes returns at most one ready head per Work key. This
-// makes fairness a property of Work, not of how many append-only facts one Work
-// accumulated while it waited.
-func attentionCandidateIndexes(database orchestrationDatabase) []int {
-	obligations := reduceAttentionObligations(database)
-	out := make([]int, 0, len(obligations))
-	for _, obligation := range obligations {
-		if obligation.exists() && obligation.State == deliveryPending {
-			out = append(out, obligation.HeadIndex)
-		}
-	}
-	sort.Slice(out, func(left, right int) bool {
-		leftEvent := database.BrainWorkEvents[out[left]]
-		rightEvent := database.BrainWorkEvents[out[right]]
-		if leftEvent.Sequence == rightEvent.Sequence {
-			return leftEvent.WorkID < rightEvent.WorkID
-		}
-		return leftEvent.Sequence < rightEvent.Sequence
-	})
-	return out
-}
-
-func authoritativeReviewEvent(database orchestrationDatabase, claimed WorkEvent) WorkEvent {
-	latest := claimed
-	for _, candidate := range database.BrainWorkEvents {
-		if candidate.WorkID != claimed.WorkID || !attentionEventCanObligate(database, candidate) ||
-			candidate.Sequence > claimed.DeliverySequenceFence || candidate.HandledAt != nil ||
-			candidate.DiscardedAt != nil || candidate.Resolution != "" {
-			continue
-		}
-		if candidate.Sequence > latest.Sequence {
-			latest = candidate
-		}
-	}
-	claimed.ReviewKind = latest.Kind
-	claimed.ReviewPayloadRef = latest.PayloadRef
-	claimed.ReviewSourceName = latest.SourceName
-	claimed.ReviewSummary = latest.Summary
-	return claimed
-}
-
-func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
+// LeasedReviewActions returns every review lease currently held (claimed or
+// delivered), the dispatching surface the reducer reconciles against the
+// receipt ledger.
+func (s *Store) LeasedReviewActions() ([]WorkReviewAction, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
 		return nil, err
 	}
-	out := []WorkEvent{}
-	for _, event := range database.BrainWorkEvents {
-		if workEventSchedulerEligible(database, event) && event.ClaimedAt != nil {
-			out = append(out, event)
+	out := []WorkReviewAction{}
+	for _, item := range database.BrainWork {
+		review := item.Review
+		if review == nil || review.Lease == nil {
+			continue
+		}
+		if action, found := reviewActionFromReview(database, review); found {
+			out = append(out, action)
 		}
 	}
 	return out, nil
 }
 
-// LiveHostHandlings returns every delivered handling that still owns the Host
-// effect. The schema admits at most one globally, but the bounded API keeps
-// startup reconciliation explicit and safe if persisted state is corrupt.
-func (s *Store) LiveHostHandlings(limit int) ([]WorkEvent, bool, error) {
+// LiveReviewHandlings returns every delivered review lease that still owns the
+// Host effect. The schema admits at most one globally, but the bounded API
+// keeps startup reconciliation explicit and safe if persisted state is
+// corrupt.
+func (s *Store) LiveReviewHandlings(limit int) ([]WorkReviewAction, bool, error) {
 	if limit <= 0 {
 		return nil, false, fmt.Errorf("Host handling batch limit must be positive")
 	}
@@ -3146,44 +3091,36 @@ func (s *Store) LiveHostHandlings(limit int) ([]WorkEvent, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	out := make([]WorkEvent, 0, limit)
+	out := make([]WorkReviewAction, 0, limit)
 	more := false
-	for _, event := range database.BrainWorkEvents {
-		if event.DeliveredAt == nil || event.HandledAt != nil || event.HandlingEndedAt != nil {
+	for _, item := range database.BrainWork {
+		review := item.Review
+		if !reviewDeliveredAwaitingDisposition(review) {
+			continue
+		}
+		action, found := reviewActionFromReview(database, review)
+		if !found {
 			continue
 		}
 		if len(out) == limit {
 			more = true
 			break
 		}
-		out = append(out, event)
+		out = append(out, action)
 	}
 	return out, more, nil
 }
 
-func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
-	if workEventIndex(database.BrainWorkEvents, event.ID) < 0 {
-		return attentionEventCanObligate(database, event) && strings.TrimSpace(event.CoalescedInto) == ""
-	}
-	obligation := reduceAttentionObligation(database, event.WorkID)
-	return obligation.exists() && obligation.State != deliveryDelivered &&
-		database.BrainWorkEvents[obligation.HeadIndex].ID == event.ID
-}
-
-// ReleaseEventClaim atomically makes the exact identity-bound Event claimable
-// again only when Session Input proved that provider mutation never started.
-// If canonical Host preparation already persisted the exact five-part pending
-// submission, that submission is aborted in this same replacement. A resolved
-// provider admission is ambiguous and keeps both authorities held.
-func (s *Store) ReleaseEventClaim(
-	eventID, claimToken, workID, hostSessionID, providerTurnID string,
-) error {
-	eventID = strings.TrimSpace(eventID)
-	claimToken = strings.TrimSpace(claimToken)
+// ReleaseReviewLease atomically makes the exact lease claimable again only
+// when Session Input proved that provider mutation never started. If canonical
+// Host preparation already persisted the exact five-part pending submission,
+// that submission is aborted in this same replacement. A resolved provider
+// admission is ambiguous and keeps the lease held.
+func (s *Store) ReleaseReviewLease(workID, claimToken, providerTurnID string) error {
 	workID = strings.TrimSpace(workID)
-	hostSessionID = strings.TrimSpace(hostSessionID)
+	claimToken = strings.TrimSpace(claimToken)
 	providerTurnID = strings.TrimSpace(providerTurnID)
-	if eventID == "" || claimToken == "" || workID == "" || hostSessionID == "" || providerTurnID == "" {
+	if workID == "" || claimToken == "" || providerTurnID == "" {
 		return ErrEventClaim
 	}
 	s.mu.Lock()
@@ -3192,191 +3129,160 @@ func (s *Store) ReleaseEventClaim(
 	if err != nil {
 		return err
 	}
-	for index := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[index]
-		if event.ID != eventID {
-			continue
+	itemIndex := reviewLeaseByCapability(database, workID, claimToken, providerTurnID)
+	if itemIndex < 0 {
+		return ErrEventClaim
+	}
+	item := &database.BrainWork[itemIndex]
+	review := item.Review
+	lease := review.Lease
+	if lease.DeliveredAt != nil || lease.HandlingEndedAt != nil {
+		return ErrEventClaim
+	}
+	submissionIndex := -1
+	for candidate := range database.BrainTurnSubmissions {
+		submission := database.BrainTurnSubmissions[candidate]
+		exact := submission.Receipt == review.FactEventID && submission.ClaimToken == claimToken &&
+			submission.WorkID == workID && submission.SessionID == lease.HostSessionID &&
+			submission.ProposedTurnID == providerTurnID
+		if exact {
+			submissionIndex = candidate
+			break
 		}
-		if !event.Actionable || event.ClaimedAt == nil || event.DeliveredAt != nil ||
-			event.HandlingID != claimToken || event.WorkID != workID ||
-			event.DeliveryHostSessionID != hostSessionID || event.ProviderTurnID != providerTurnID {
+	}
+	if submissionIndex >= 0 {
+		submission := &database.BrainTurnSubmissions[submissionIndex]
+		switch submission.State {
+		case watcher.TurnSubmissionPending:
+			abortedAt := s.nowUTC()
+			submission.State = watcher.TurnSubmissionAborted
+			submission.AbortedAt = &abortedAt
+		case watcher.TurnSubmissionAborted:
+			// A pre-mutation live attempt may already have persisted its
+			// canonical abort before returning InputNotSubmitted. Releasing
+			// the still-held lease completes that safe held state.
+		case watcher.TurnSubmissionResolved:
+			return ErrEventClaim
+		case watcher.TurnSubmissionRetired:
+			return ErrEventClaim
+		default:
 			return ErrEventClaim
 		}
-		submissionIndex := -1
-		for candidate := range database.BrainTurnSubmissions {
-			submission := database.BrainTurnSubmissions[candidate]
-			exact := submission.Receipt == eventID && submission.ClaimToken == claimToken &&
-				submission.WorkID == workID && submission.SessionID == hostSessionID &&
-				submission.ProposedTurnID == providerTurnID
-			if exact {
-				submissionIndex = candidate
-				break
-			}
-		}
-		if submissionIndex >= 0 {
-			submission := &database.BrainTurnSubmissions[submissionIndex]
-			switch submission.State {
-			case watcher.TurnSubmissionPending:
-				abortedAt := s.nowUTC()
-				submission.State = watcher.TurnSubmissionAborted
-				submission.AbortedAt = &abortedAt
-			case watcher.TurnSubmissionAborted:
-				// A pre-mutation live attempt may already have persisted its
-				// canonical abort before returning InputNotSubmitted. Releasing
-				// the still-claimed Event completes that safe held state.
-			case watcher.TurnSubmissionResolved:
-				return ErrEventClaim
-			case watcher.TurnSubmissionRetired:
-				return ErrEventClaim
-			default:
-				return ErrEventClaim
-			}
-		}
-		event.ClaimedAt = nil
-		event.DeliveryHostSessionID = ""
-		event.HandlingID = ""
-		event.ProviderTurnID = ""
-		event.DeliveryWorkRevision = 0
-		event.DeliverySequenceFence = 0
-		return s.persistOrchestrationLocked(database)
 	}
-	return ErrEventClaim
+	review.Lease = nil
+	return s.persistOrchestrationLocked(database)
 }
 
-// ConsumeClaimedWorkEvent atomically consumes the exact Event assigned to the
-// Host after canonical provider admission accepts that Event.ID receipt. The
-// complete claimed Event capability is the authorization boundary; no Work,
-// owner, receipt, or provider Turn lookup may substitute for it.
-func (s *Store) ConsumeClaimedWorkEvent(
-	eventID, claimToken, workID, hostSessionID, providerTurnID string,
-) (WorkEvent, Work, error) {
-	eventID = strings.TrimSpace(eventID)
-	claimToken = strings.TrimSpace(claimToken)
+// ConsumeReviewDelivery atomically marks the exact review lease delivered
+// after canonical provider admission accepts the fact receipt. The complete
+// lease capability is the authorization boundary; no Work, owner, receipt, or
+// provider Turn lookup may substitute for it.
+func (s *Store) ConsumeReviewDelivery(workID, claimToken, providerTurnID string) (WorkReviewAction, Work, error) {
 	workID = strings.TrimSpace(workID)
-	hostSessionID = strings.TrimSpace(hostSessionID)
+	claimToken = strings.TrimSpace(claimToken)
 	providerTurnID = strings.TrimSpace(providerTurnID)
-	if eventID == "" || claimToken == "" || workID == "" || hostSessionID == "" || providerTurnID == "" {
-		return WorkEvent{}, Work{}, ErrEventClaim
+	if workID == "" || claimToken == "" || providerTurnID == "" {
+		return WorkReviewAction{}, Work{}, ErrEventClaim
 	}
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
-	claimedWorkID := ""
-	var claimed WorkEvent
+	var action WorkReviewAction
 	var item Work
 	if err == nil {
-		for index := range database.BrainWorkEvents {
-			event := &database.BrainWorkEvents[index]
-			if event.ID != eventID {
-				continue
-			}
-			if !event.Actionable || event.ClaimedAt == nil || event.DeliveredAt != nil ||
-				event.HandlingID != claimToken || event.WorkID != workID ||
-				event.DeliveryHostSessionID != hostSessionID || event.ProviderTurnID != providerTurnID {
+		itemIndex := reviewLeaseByCapability(database, workID, claimToken, providerTurnID)
+		if itemIndex < 0 {
+			err = ErrEventClaim
+		} else {
+			review := database.BrainWork[itemIndex].Review
+			lease := review.Lease
+			if lease.DeliveredAt != nil || lease.HandlingEndedAt != nil {
 				err = ErrEventClaim
-				break
-			}
-			if !databaseHasResolvedHostEventAdmission(
-				database, eventID, claimToken, workID, hostSessionID, providerTurnID,
+			} else if !databaseHasResolvedHostEventAdmission(
+				database, review.FactEventID, claimToken, workID, lease.HostSessionID, providerTurnID,
 			) {
 				err = fmt.Errorf("%w: canonical Host admission is missing", ErrEventClaim)
-				break
+			} else {
+				now := s.nowUTC()
+				deliveredAt := now.UTC()
+				lease.DeliveredAt = &deliveredAt
+				item = database.BrainWork[itemIndex]
+				action, _ = reviewActionFromReview(database, review)
+				err = s.persistOrchestrationLocked(database)
 			}
-			claimedWorkID = database.BrainWorkEvents[index].WorkID
-			workIndex := -1
-			for candidate := range database.BrainWork {
-				if database.BrainWork[candidate].ID == claimedWorkID {
-					workIndex = candidate
-					break
-				}
-			}
-			if workIndex < 0 {
-				err = ErrWorkNotFound
-				break
-			}
-			now := s.nowUTC()
-			deliveredAt := now.UTC()
-			event.DeliveredAt = &deliveredAt
-			claimed = *event
-			item = database.BrainWork[workIndex]
-			err = s.persistOrchestrationLocked(database)
-			break
-		}
-		if claimedWorkID == "" && err == nil {
-			err = ErrEventClaim
 		}
 	}
 	s.mu.Unlock()
-	if err == nil && claimedWorkID != "" {
-		s.broadcastWorkChange(claimedWorkID)
+	if err == nil && item.ID != "" {
+		s.broadcastWorkChange(item.ID)
 	}
-	return claimed, item, err
+	return action, item, err
 }
 
-// RequeueUnhandledHostAttention ends only the exact admitted Host handling.
-// Wrong, reordered, and duplicate provider terminal identities are no-ops. All
-// unresolved signals for the Work coalesce into one fresh attention at the FIFO
-// tail, while the delivered bytes remain permanently consumed.
-func (s *Store) RequeueUnhandledHostAttention(eventID, handlingID, providerTurnID string) (WorkEvent, bool, error) {
-	eventID = strings.TrimSpace(eventID)
+// EndReviewDelivery ends exactly the admitted review lease without a typed
+// disposition (Host turn ended or Host died after delivery). The delivered
+// bytes remain permanently consumed; the unresolved Work action stays the same
+// review epoch and becomes re-claimable — no new queue item is created (I7).
+// An audit note records the ended handling.
+func (s *Store) EndReviewDelivery(workID, handlingID, providerTurnID string) (WorkReviewAction, bool, error) {
+	workID = strings.TrimSpace(workID)
 	handlingID = strings.TrimSpace(handlingID)
 	providerTurnID = strings.TrimSpace(providerTurnID)
-	if eventID == "" || handlingID == "" || providerTurnID == "" {
-		return WorkEvent{}, false, nil
+	if workID == "" || handlingID == "" || providerTurnID == "" {
+		return WorkReviewAction{}, false, nil
 	}
 	now := s.nowUTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
 	if err != nil {
-		return WorkEvent{}, false, err
+		return WorkReviewAction{}, false, err
 	}
-	activeIndex := workEventIndex(database.BrainWorkEvents, eventID)
-	if activeIndex < 0 {
-		return WorkEvent{}, false, nil
+	itemIndex := reviewLeaseByCapability(database, workID, handlingID, providerTurnID)
+	if itemIndex < 0 {
+		return WorkReviewAction{}, false, nil
 	}
-	active := &database.BrainWorkEvents[activeIndex]
-	if active.DeliveredAt == nil || active.HandledAt != nil || active.HandlingEndedAt != nil ||
-		active.HandlingID != handlingID || active.ProviderTurnID != providerTurnID {
-		return WorkEvent{}, false, nil
+	review := database.BrainWork[itemIndex].Review
+	lease := review.Lease
+	if lease.DeliveredAt == nil || lease.HandlingEndedAt != nil {
+		action, _ := reviewActionFromReview(database, review)
+		return action, false, nil
 	}
-	dedupeKey := "brain:reconcile:handling:" + active.HandlingID
+	dedupeKey := "brain:reconcile:handling:" + lease.HandlingID
 	for _, event := range database.BrainWorkEvents {
-		if event.WorkID == active.WorkID && event.DedupeKey == dedupeKey {
-			return event, false, nil
+		if event.WorkID == workID && event.DedupeKey == dedupeKey {
+			action, _ := reviewActionFromReview(database, review)
+			return action, false, nil
 		}
-	}
-	reconcile := WorkEvent{
-		ID: uuid.NewString(), WorkID: active.WorkID, Kind: "brain.reconcile_required",
-		DedupeKey: dedupeKey, PayloadRef: "work:" + active.WorkID,
-		SourceName: "brain", Summary: "The previous Host turn ended without a durable disposition.",
-		Actionable: true, CreatedAt: now,
 	}
 	endedAt := now.UTC()
-	active.HandlingEndedAt = &endedAt
-	for index := range database.BrainWorkEvents {
-		event := &database.BrainWorkEvents[index]
-		if event.WorkID == active.WorkID && event.Actionable && event.HandledAt == nil &&
-			event.DiscardedAt == nil {
-			event.CoalescedInto = reconcile.ID
-		}
-	}
-	itemIndex := workIndex(database.BrainWork, active.WorkID)
-	if reservation := database.BrainWork[itemIndex].SuccessorReservation; reservation != nil &&
-		reservation.EventID == active.ID && reservation.HandlingID == active.HandlingID {
+	lease.HandlingEndedAt = &endedAt
+	// The same unresolved action re-enters the fair queue at the tail: its
+	// epoch birth moves to the requeue time so an old delivery attempt never
+	// jumps newer Work (the identity, FactEventID, is unchanged).
+	review.RequiredAt = now.UTC()
+	item := &database.BrainWork[itemIndex]
+	if reservation := item.SuccessorReservation; reservation != nil &&
+		reservation.EventID == review.FactEventID && reservation.HandlingID == lease.HandlingID {
 		reservation = cloneSuccessorReservation(reservation)
 		reservation.EventID = ""
 		reservation.HandlingID = ""
-		database.BrainWork[itemIndex].SuccessorReservation = reservation
+		item.SuccessorReservation = reservation
 	}
-	reconcile, err = appendWorkEventAsAttentionHeadLocked(&database, itemIndex, reconcile, true)
-	if err != nil {
-		return WorkEvent{}, false, err
+	audit := WorkEvent{
+		ID: uuid.NewString(), WorkID: workID, Kind: "brain.reconcile_required",
+		DedupeKey: dedupeKey, PayloadRef: "work:" + workID,
+		SourceName: "brain", Summary: "The previous Host turn ended without a durable disposition.",
+		Actionable: false, CreatedAt: now,
+	}
+	if _, err := appendWorkEventLocked(&database, itemIndex, audit, true); err != nil {
+		return WorkReviewAction{}, false, err
 	}
 	if err := s.persistOrchestrationLocked(database); err != nil {
-		return WorkEvent{}, false, err
+		return WorkReviewAction{}, false, err
 	}
-	s.broadcastWorkChange(active.WorkID)
-	return reconcile, true, nil
+	action, _ := reviewActionFromReview(database, review)
+	s.broadcastWorkChange(workID)
+	return action, true, nil
 }
 
 func (s *Store) WorkEvent(eventID string) (WorkEvent, bool, error) {
@@ -3394,8 +3300,10 @@ func (s *Store) WorkEvent(eventID string) (WorkEvent, bool, error) {
 	return database.BrainWorkEvents[index], true, nil
 }
 
-// WorkResultLifecycles derives presentation labels from durable authorities;
-// cards themselves stay immutable timeline messages.
+// WorkResultLifecycles derives presentation labels from canonical Work state;
+// cards themselves stay immutable timeline messages. A card is active (queued
+// or reviewing) iff its fact is the current review action (I7); older epoch
+// cards are history. "Session open" requires a live delegated owner (I9).
 func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLifecycle, error) {
 	wanted := map[string]bool{}
 	for _, eventID := range eventIDs {
@@ -3418,43 +3326,54 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 			latestResult[event.WorkID] = event
 		}
 	}
-	obligations := reduceAttentionObligations(database)
 	out := map[string]WorkResultLifecycle{}
 	for _, event := range database.BrainWorkEvents {
 		if !wanted[event.ID] || !isProjectedWorkResultEvent(event.Kind) {
 			continue
 		}
-		obligation := obligations[event.WorkID]
-		outstanding := obligation.exists() && attentionEventCanObligate(database, event)
+		itemIndex := workIndex(database.BrainWork, event.WorkID)
+		item := Work{}
+		if itemIndex >= 0 {
+			item = database.BrainWork[itemIndex]
+		}
 		reviewState := WorkReviewResolved
-		if outstanding {
+		review := item.Review
+		if review != nil && review.FactEventID == event.ID {
 			reviewState = WorkReviewQueued
-			// One derived delivery state feeds every presentation label:
-			// pending/dispatching stay queued, delivered becomes reviewing.
-			if obligation.State == deliveryDelivered &&
-				event.Sequence <= database.BrainWorkEvents[obligation.HeadIndex].DeliverySequenceFence {
+			if reviewDeliveredAwaitingDisposition(review) {
 				reviewState = WorkReviewReviewing
 			}
 		}
-		sessionState := WorkResultSessionOpen
-		if itemIndex := workIndex(database.BrainWork, event.WorkID); itemIndex >= 0 {
-			for _, finalization := range database.BrainWork[itemIndex].SessionFinalizations {
-				if finalization.SessionID != event.SourceName && finalization.SessionID != strings.TrimPrefix(event.PayloadRef, "session:") {
-					continue
+		sessionState := WorkResultSessionNotRequired
+		if itemIndex >= 0 {
+			sessionID := firstNonEmpty(event.SourceName, strings.TrimPrefix(event.PayloadRef, "session:"))
+			if item.Status == WorkDone || item.Status == WorkCancelled {
+				sessionState = WorkResultSessionClosing
+				for _, finalization := range item.SessionFinalizations {
+					if finalization.SessionID != sessionID {
+						continue
+					}
+					switch finalization.State {
+					case SessionFinalizationPending:
+						sessionState = WorkResultSessionClosing
+					case SessionFinalizationFailed:
+						sessionState = WorkResultSessionCloseFailed
+					case SessionFinalizationComplete, SessionFinalizationSkipped:
+						sessionState = WorkResultSessionFinalized
+					}
+					break
 				}
-				switch finalization.State {
-				case SessionFinalizationPending:
-					sessionState = WorkResultSessionClosing
-				case SessionFinalizationFailed:
-					sessionState = WorkResultSessionCloseFailed
-				case SessionFinalizationComplete, SessionFinalizationSkipped:
-					sessionState = WorkResultSessionFinalized
-				}
-				break
+			} else if sessionID != "" && item.OwnerSessionID == sessionID &&
+				!sessionHasImmutableTurn(database, sessionID) {
+				// "Session open" reflects a live delegated owner only: a completed
+				// Session (immutable canonical Turn) or a terminal Work is never
+				// shown as open.
+				sessionState = WorkResultSessionOpen
+			} else if sessionHasImmutableTurn(database, sessionID) {
+				// The Session completed/closed; teardown is owed or done. It is
+				// never shown as open.
+				sessionState = WorkResultSessionClosing
 			}
-		}
-		if reviewState == WorkReviewResolved && sessionState == WorkResultSessionOpen {
-			sessionState = WorkResultSessionNotRequired
 		}
 		out[event.ID] = WorkResultLifecycle{
 			EventID:       event.ID,
@@ -3466,19 +3385,30 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 	return out, nil
 }
 
-// ResolveWorkEvent is the single Fact/Attention/Disposition transaction. It
-// CASes the exact delivered handling attempt, applies one typed Work outcome,
-// and records handling for every coalesced signal through the delivery fence.
-func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent, Work, error) {
-	request.EventID = strings.TrimSpace(request.EventID)
+func sessionHasImmutableTurn(database orchestrationDatabase, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	turn, found := currentTurnForSession(database, sessionID)
+	return found && watcher.TurnImmutable(turn.Status)
+}
+
+// ResolveWorkReview is the single Work/Disposition transaction. It CASes the
+// exact delivered review lease, applies one typed Work outcome, audits the
+// epoch fact, and atomically clears the canonical review obligation. Facts
+// appended during the lease (sequence > fence) re-require a fresh epoch in the
+// same replacement.
+func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEvent, Work, error) {
+	request.WorkID = strings.TrimSpace(request.WorkID)
 	request.HandlingID = strings.TrimSpace(request.HandlingID)
 	request.ProviderTurnID = strings.TrimSpace(request.ProviderTurnID)
 	request.SuccessorSessionID = strings.TrimSpace(request.SuccessorSessionID)
 	request.NextAction = strings.TrimSpace(request.NextAction)
 	request.Summary = strings.TrimSpace(request.Summary)
-	if request.EventID == "" || request.HandlingID == "" || request.ProviderTurnID == "" || request.ExpectedWorkRevision == 0 ||
+	if request.WorkID == "" || request.HandlingID == "" || request.ProviderTurnID == "" || request.ExpectedWorkRevision == 0 ||
 		!validWorkDisposition(request.Disposition) {
-		return WorkEvent{}, Work{}, fmt.Errorf("event_id, handling_id, provider_turn_id, expected_work_revision, and a valid disposition are required")
+		return WorkEvent{}, Work{}, fmt.Errorf("work_id, handling_id, provider_turn_id, expected_work_revision, and a valid disposition are required")
 	}
 	if request.Disposition == WorkDispositionWait {
 		if err := validateWorkWake(request.Wake); err != nil || request.Wake == nil {
@@ -3495,28 +3425,32 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, err
 	}
-	eventIndex := workEventIndex(database.BrainWorkEvents, request.EventID)
-	if eventIndex < 0 {
+	itemIndex := reviewLeaseByCapability(database, request.WorkID, request.HandlingID, request.ProviderTurnID)
+	if itemIndex < 0 {
+		// A stale capability after the epoch already committed reads as
+		// handled; a capability that never existed reads as a claim conflict.
+		if itemIndex2 := workIndex(database.BrainWork, request.WorkID); itemIndex2 >= 0 &&
+			database.BrainWork[itemIndex2].Revision > request.ExpectedWorkRevision {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, ErrEventHandled
+		}
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrEventClaim
 	}
+	review := database.BrainWork[itemIndex].Review
+	lease := review.Lease
+	eventIndex := workEventIndex(database.BrainWorkEvents, review.FactEventID)
 	event := database.BrainWorkEvents[eventIndex]
 	if event.HandledAt != nil {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrEventHandled
 	}
-	if event.DeliveredAt == nil || event.HandlingEndedAt != nil || event.HandlingID != request.HandlingID ||
-		event.ProviderTurnID != request.ProviderTurnID {
+	if lease.DeliveredAt == nil || lease.HandlingEndedAt != nil {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrEventClaim
 	}
-	itemIndex := workIndex(database.BrainWork, event.WorkID)
-	if itemIndex < 0 {
-		s.mu.Unlock()
-		return WorkEvent{}, Work{}, ErrWorkNotFound
-	}
 	item := database.BrainWork[itemIndex]
-	if event.DeliveryWorkRevision != request.ExpectedWorkRevision || item.Revision != request.ExpectedWorkRevision {
+	if lease.DeliveryWorkRevision != request.ExpectedWorkRevision || item.Revision != request.ExpectedWorkRevision {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrWorkRevisionConflict
 	}
@@ -3549,17 +3483,17 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		}
 		successorTurnID := ""
 		if reservation := item.SuccessorReservation; reservation != nil {
-			boundToDisposition := reservation.EventID == event.ID && reservation.HandlingID == event.HandlingID
+			boundToDisposition := reservation.EventID == event.ID && reservation.HandlingID == request.HandlingID
 			unboundAfterRequeue := strings.TrimSpace(reservation.EventID) == "" && strings.TrimSpace(reservation.HandlingID) == ""
 			if reservation.SessionID != request.SuccessorSessionID || reservation.ProviderTurnID == "" ||
 				(!boundToDisposition && !unboundAfterRequeue) {
 				s.mu.Unlock()
 				return WorkEvent{}, Work{}, fmt.Errorf("continue successor does not match the Session reserved for this disposition")
 			}
-			// Requeue intentionally removes the old Host handling binding while
+			// EndReviewDelivery removes the old Host handling binding while
 			// preserving the exclusive accepted successor. The new exact
 			// disposition validates that unbound reservation and promotes it in
-			// this transaction; consume never binds it to a coincident Host ID.
+			// this transaction.
 			successorTurnID = reservation.ProviderTurnID
 		}
 		if !databaseHasCanonicalAcceptedSuccessor(database, item.ID, request.SuccessorSessionID, successorTurnID) {
@@ -3575,9 +3509,6 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 		item.SuccessorReservation = nil
 		item.SessionFinalizations = nil
 	case WorkDispositionWait:
-		// OwnerSessionID without a live canonical owner Turn is historical
-		// linkage, not execution authority. Retire it in the same disposition
-		// replacement before installing the one typed wait owner.
 		item.OwnerSessionID = ""
 		item.OwnerDelegated = false
 		item.Status = WorkWaiting
@@ -3606,18 +3537,15 @@ func (s *Store) ResolveWorkEvent(request WorkEventDispositionRequest) (WorkEvent
 	}
 	item.UpdatedAt = now
 	handledAt := now.UTC()
-	for index := range database.BrainWorkEvents {
-		candidate := &database.BrainWorkEvents[index]
-		if candidate.WorkID != item.ID || !attentionEventCanObligate(database, *candidate) || candidate.HandledAt != nil ||
-			candidate.DiscardedAt != nil ||
-			candidate.Sequence > event.DeliverySequenceFence || candidate.WorkRevision > event.DeliveryWorkRevision {
-			continue
-		}
-		candidate.HandledAt = &handledAt
-		candidate.Disposition = request.Disposition
-		candidate.DispositionSummary = request.Summary
-	}
+	database.BrainWorkEvents[eventIndex].HandledAt = &handledAt
+	database.BrainWorkEvents[eventIndex].Disposition = request.Disposition
+	database.BrainWorkEvents[eventIndex].DispositionSummary = request.Summary
+	fence := lease.DeliverySequenceFence
+	review.Lease = nil
+	item.Review = nil
 	database.BrainWork[itemIndex] = item
+	// Facts appended during the lease belong to the next epoch.
+	rebaseReviewAfterDispositionLocked(&database, itemIndex, fence)
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, err
@@ -3775,7 +3703,12 @@ func (s *Store) RecordSessionFinalization(workID, sessionID string, state Sessio
 			Summary:    "Delegated Session finalization failed: " + finalization.LastError,
 			Actionable: true, CreatedAt: now,
 		}
-		if _, err = appendWorkEventLocked(&database, itemIndex, event, false); err != nil {
+		event, err = appendWorkEventLocked(&database, itemIndex, event, false)
+		if err != nil {
+			s.mu.Unlock()
+			return Work{}, err
+		}
+		if err := setWorkReviewLocked(&database, itemIndex, event, now); err != nil {
 			s.mu.Unlock()
 			return Work{}, err
 		}
@@ -3854,12 +3787,10 @@ func (s *Store) ReconcileAbsentWorkOwner(workID, sessionID string) (Work, bool, 
 		s.mu.Unlock()
 		return item, false, nil
 	}
-	obligation := reduceAttentionObligation(database, workID)
-	if obligation.exists() && (obligation.State == deliveryDispatching ||
-		obligation.State == deliveryDelivered) {
+	if review := item.Review; review != nil && review.Lease != nil && review.Lease.HandlingEndedAt == nil {
 		// Do not invalidate the immutable Work revision already carried by an
-		// admitted or admitting Host turn. Attention, not the absent owner
-		// string, is operational during this bounded deferral.
+		// admitted or admitting Host lease. The review action, not the absent
+		// owner string, is operational during this bounded deferral.
 		s.mu.Unlock()
 		return item, false, nil
 	}
@@ -3875,7 +3806,7 @@ func (s *Store) ReconcileAbsentWorkOwner(workID, sessionID string) (Work, bool, 
 	}
 	database.BrainWork[itemIndex] = item
 
-	if !reduceAttentionObligation(database, workID).exists() {
+	if item.Review == nil {
 		event := WorkEvent{
 			ID:         uuid.NewString(),
 			WorkID:     workID,
@@ -3887,7 +3818,12 @@ func (s *Store) ReconcileAbsentWorkOwner(workID, sessionID string) (Work, bool, 
 			Actionable: true,
 			CreatedAt:  now,
 		}
-		if _, err = appendWorkEventLocked(&database, itemIndex, event, true); err != nil {
+		event, err = appendWorkEventLocked(&database, itemIndex, event, true)
+		if err != nil {
+			s.mu.Unlock()
+			return Work{}, false, err
+		}
+		if err := setWorkReviewLocked(&database, itemIndex, event, now); err != nil {
 			s.mu.Unlock()
 			return Work{}, false, err
 		}
@@ -3939,7 +3875,7 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 			WaitFor:              item.WaitFor,
 			Wake:                 cloneWorkWake(item.Wake),
 			ProgressMode:         mustDeriveWorkProgressMode(database, item),
-			AttentionPending:     workHasAttentionObligation(database, item.ID),
+			AttentionPending:     workHasReviewObligation(database, item.ID),
 			SuccessorReservation: cloneSuccessorReservation(item.SuccessorReservation),
 			SessionFinalizations: cloneSessionFinalizations(item.SessionFinalizations),
 			UnreadResult:         hasUnread,
@@ -3994,10 +3930,11 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 			unread[item.WorkID] = true
 		}
 	}
-	obligations := reduceAttentionObligations(database)
 	reviewing := map[string]bool{}
-	for workID, obligation := range obligations {
-		reviewing[workID] = obligation.exists() && obligation.State == deliveryDelivered
+	for _, item := range database.BrainWork {
+		if item.Review != nil && reviewDeliveredAwaitingDisposition(item.Review) {
+			reviewing[item.ID] = true
+		}
 	}
 	queued := projectedAttentionWork(database, currentWorkQueuedAttentionLimit)
 	queueRank := map[string]int{}
@@ -4077,7 +4014,7 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 			continue
 		}
 		backlog.Total++
-		if obligations[item.ID].exists() {
+		if item.Review != nil {
 			backlog.QueuedAttention++
 		}
 		if item.Status == WorkDone || item.Status == WorkCancelled || hasResult[item.ID] {
@@ -4087,23 +4024,46 @@ func (s *Store) ProjectWorkInventory(presentSessions map[string]bool) (WorkInven
 	return WorkInventory{Current: current, Backlog: backlog}, nil
 }
 
+// projectedAttentionWork returns the bounded queue window of review-required
+// Work, oldest epoch birth first. Every returned Work is claimable or
+// recoverable (I6): leased-undelivered items are still the same single queue
+// item, delivered items sort first as reviewing.
 func projectedAttentionWork(database orchestrationDatabase, limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
+	type candidate struct {
+		workID     string
+		requiredAt time.Time
+		delivered  bool
+	}
+	candidates := make([]candidate, 0, len(database.BrainWork))
+	for _, item := range database.BrainWork {
+		review := item.Review
+		if review == nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			workID:     item.ID,
+			requiredAt: review.RequiredAt,
+			delivered:  reviewDeliveredAwaitingDisposition(review),
+		})
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		if candidates[left].delivered != candidates[right].delivered {
+			return candidates[left].delivered
+		}
+		if candidates[left].requiredAt.Equal(candidates[right].requiredAt) {
+			return candidates[left].workID < candidates[right].workID
+		}
+		return candidates[left].requiredAt.Before(candidates[right].requiredAt)
+	})
 	out := make([]string, 0, limit)
-	projection := database
-	projection.BrainWorkEvents = append([]WorkEvent(nil), database.BrainWorkEvents...)
-	for len(out) < limit {
-		index := oldestPendingAttentionHeadIndex(projection)
-		if index < 0 {
+	for _, candidate := range candidates {
+		if len(out) == limit {
 			break
 		}
-		workID := projection.BrainWorkEvents[index].WorkID
-		out = append(out, workID)
-		claimed := time.Unix(1, int64(len(out))).UTC()
-		projection.BrainWorkEvents[index].ClaimedAt = &claimed
-		projection.BrainWorkEvents[index].DeliveryHostSessionID = "projection"
+		out = append(out, candidate.workID)
 	}
 	return out
 }

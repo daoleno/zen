@@ -9,8 +9,8 @@ import (
 )
 
 func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
-	event := WorkEvent{
-		ID:                    "event-direct-1",
+	event := WorkReviewAction{
+		FactEventID:           "event-direct-1",
 		WorkID:                "work-direct-1",
 		Kind:                  "session.done",
 		SourceName:            "Worker One",
@@ -50,14 +50,14 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 	}
 	got := decodeDirectWorkEventInput(t, first)
 	want := work.DirectWorkEventInput{
-		EventID:            event.ID,
+		EventID:            "event-direct-1",
 		WorkID:             item.ID,
 		WorkRevision:       event.DeliveryWorkRevision,
 		HandlingID:         event.HandlingID,
 		ProviderTurnID:     event.ProviderTurnID,
 		EventSequenceFence: event.DeliverySequenceFence,
 		ResolutionRequired: true,
-		ResolveCommand:     "zen brain work resolve --event-id event-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede>",
+		ResolveCommand:     "zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede>",
 		WorkTitle:          item.Title,
 		Kind:               event.Kind,
 		Source:             event.SourceName,
@@ -81,8 +81,8 @@ func decodeDirectWorkEventInput(t *testing.T, payload string) work.DirectWorkEve
 }
 
 func TestDirectWorkEventInputCompactsDescriptiveFieldsWithoutChangingIdentity(t *testing.T) {
-	event := WorkEvent{
-		ID: "event-exact-identity", WorkID: "work-exact-identity",
+	event := WorkReviewAction{
+		FactEventID: "event-exact-identity", WorkID: "work-exact-identity",
 		HandlingID: "handling-exact-identity", ProviderTurnID: "provider-turn-exact-identity",
 		DeliveryWorkRevision: 1, Kind: strings.Repeat("kind ", 100),
 		SourceName: strings.Repeat("source ", 100), Summary: strings.Repeat("summary ", 200),
@@ -103,7 +103,7 @@ func TestDirectWorkEventInputCompactsDescriptiveFieldsWithoutChangingIdentity(t 
 	if len(payload) > directWorkEventInputMaxBytes || !utf8.ValidString(payload) {
 		t.Fatalf("direct input bytes=%d valid_utf8=%v", len(payload), utf8.ValidString(payload))
 	}
-	if !strings.Contains(payload, event.ID) || !strings.Contains(payload, event.WorkID) {
+	if !strings.Contains(payload, event.FactEventID) || !strings.Contains(payload, event.WorkID) {
 		t.Fatalf("identity changed in compact input: %q", payload)
 	}
 	if strings.Contains(payload, item.Objective) {

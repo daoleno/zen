@@ -37,8 +37,8 @@ func TestFreshSignalInitialDelegationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimed, ok, err := store.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || claimed.ID != event.ID {
+	claimed, ok, err := store.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || claimed.FactEventID != event.ID {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	if claimed.ClaimedAt == nil || claimed.DeliveryHostSessionID != freshHostID ||
@@ -48,18 +48,19 @@ func TestFreshSignalInitialDelegationLifecycle(t *testing.T) {
 		t.Fatalf("claim identity is incomplete: %+v", claimed)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, current, err := store.ConsumeClaimedWorkEvent(
-		claimed.ID, claimed.HandlingID, claimed.WorkID, freshHostID, claimed.ProviderTurnID,
-	)
+	delivered, current, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivered.DeliveredAt == nil || delivered.HandledAt != nil ||
-		delivered.DeliveryWorkRevision != current.Revision {
+	if delivered.DeliveredAt == nil || delivered.DeliveryWorkRevision != current.Revision {
 		t.Fatalf("delivery boundary broken: event=%+v Work=%+v", delivered, current)
 	}
-	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	fact, found, err := store.WorkEvent(delivered.FactEventID)
+	if err != nil || !found || fact.HandledAt != nil {
+		t.Fatalf("delivery boundary fact=%+v found=%v err=%v", fact, found, err)
+	}
+	resolved, terminal, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -72,8 +73,8 @@ func TestFreshSignalInitialDelegationLifecycle(t *testing.T) {
 		terminal.Status != WorkDone || terminal.TerminalRevision != terminal.Revision {
 		t.Fatalf("disposition did not settle the claimed capability: event=%+v Work=%+v", resolved, terminal)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -85,7 +86,7 @@ func TestFreshSignalInitialDelegationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replay, claimed, err := reopened.ClaimNextActionableEvent(freshHostID); err != nil || claimed {
+	if replay, claimed, err := reopened.ClaimNextReviewAction(freshHostID); err != nil || claimed {
 		t.Fatalf("terminal Work replayed a signal: event=%+v claimed=%v err=%v", replay, claimed, err)
 	}
 	durable, err := reopened.Work(item.ID)
@@ -122,8 +123,8 @@ func TestFreshSignalFollowUpOnActiveWorkAppendsDuringHandling(t *testing.T) {
 	if err != nil || afterAppend.Revision != before.Revision || later.WorkRevision != before.Revision+1 {
 		t.Fatalf("follow-up stole the delivered revision epoch: before=%+v after=%+v event=%+v err=%v", before, afterAppend, later, err)
 	}
-	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	resolved, terminal, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -140,8 +141,11 @@ func TestFreshSignalFollowUpOnActiveWorkAppendsDuringHandling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, ok, err := reopened.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || next.ID != later.ID || next.DeliveryWorkRevision != terminal.Revision {
+	// The follow-up fact appended during the lease belongs to the next
+	// revision epoch (WorkRevision == TerminalRevision): it re-requires the
+	// same queue item once, never a duplicate card (row 19).
+	next, ok, err := reopened.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || next.FactEventID != later.ID || next.DeliveryWorkRevision != terminal.Revision {
 		t.Fatalf("next epoch claim=%+v ok=%v err=%v", next, ok, err)
 	}
 }
@@ -165,19 +169,17 @@ func TestFreshSignalIndependentConcurrentWorks(t *testing.T) {
 		fixtures = append(fixtures, workFixture{item: item, event: event})
 	}
 	for index, fixture := range fixtures {
-		claimed, ok, err := store.ClaimNextActionableEvent(freshHostID)
-		if err != nil || !ok || claimed.WorkID != fixture.event.WorkID || claimed.ID != fixture.event.ID {
+		claimed, ok, err := store.ClaimNextReviewAction(freshHostID)
+		if err != nil || !ok || claimed.WorkID != fixture.event.WorkID || claimed.FactEventID != fixture.event.ID {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Event %s", index, claimed, ok, err, fixture.event.ID)
 		}
 		resolveClaimedHostTurnForTest(t, store, claimed)
-		delivered, _, err := store.ConsumeClaimedWorkEvent(
-			claimed.ID, claimed.HandlingID, claimed.WorkID, freshHostID, claimed.ProviderTurnID,
-		)
+		delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+			WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 			ProviderTurnID:       delivered.ProviderTurnID,
 			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 			Disposition:          WorkDispositionComplete,
@@ -217,18 +219,26 @@ func TestFreshSignalDuplicateNotificationIsIdempotent(t *testing.T) {
 		t.Fatalf("duplicate append added a row: %+v err=%v", events, err)
 	}
 	delivered, _ := deliverSignalTestEvent(t, store, freshHostID)
-	requeued, created, err := store.RequeueUnhandledHostAttention(
-		delivered.ID, delivered.HandlingID, delivered.ProviderTurnID,
+	requeued, created, err := store.EndReviewDelivery(
+		delivered.WorkID, delivered.HandlingID, delivered.ProviderTurnID,
 	)
-	if err != nil || !created || requeued.ID == "" {
+	if err != nil || !created || requeued.FactEventID != delivered.FactEventID {
 		t.Fatalf("first requeue created=%v event=%+v err=%v", created, requeued, err)
 	}
-	// The ended handling makes a second requeue an exact no-op: the same
-	// reconcile row is returned, never a duplicate signal.
-	if again, created, err := store.RequeueUnhandledHostAttention(
-		delivered.ID, delivered.HandlingID, delivered.ProviderTurnID,
-	); err != nil || created || again.ID != "" {
+	lease := reviewLeaseOf(t, store, item.ID)
+	if lease == nil || lease.HandlingEndedAt == nil {
+		t.Fatalf("first requeue did not end the lease: %+v", lease)
+	}
+	// The ended lease makes a second requeue an exact no-op: the same
+	// unresolved action is returned, never a duplicate queue item.
+	if again, created, err := store.EndReviewDelivery(
+		delivered.WorkID, delivered.HandlingID, delivered.ProviderTurnID,
+	); err != nil || created || again.FactEventID != delivered.FactEventID {
 		t.Fatalf("duplicate requeue created=%v event=%+v err=%v", created, again, err)
+	}
+	events, err = store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("requeue history=%+v err=%v", events, err)
 	}
 }
 
@@ -250,14 +260,14 @@ func TestFreshSignalAmbiguousAdmissionNeverReplaysAndDoesNotWedgeUnrelatedWork(t
 	workB := createSignalTestWork(t, store, "Unrelated B", "brain-agent-unrelated-b:@1")
 	eventB := appendSignalTestEvent(t, store, workB, "unrelated-b")
 
-	claimA, claimed, err := store.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !claimed || claimA.ID != eventA.ID {
+	claimA, claimed, err := store.ClaimNextReviewAction(freshHostID)
+	if err != nil || !claimed || claimA.FactEventID != eventA.ID {
 		t.Fatalf("claim A=%+v claimed=%v err=%v", claimA, claimed, err)
 	}
 	oldAcceptedAt := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
 	oldPending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
 		WorkID: claimA.WorkID, SessionID: freshHostID, ProposedTurnID: claimA.ProviderTurnID,
-		Receipt: claimA.ID, ClaimToken: claimA.HandlingID,
+		Receipt: claimA.FactEventID, ClaimToken: claimA.HandlingID,
 		PayloadSHA256:   pendingSubmissionDigest("ambiguous A payload"),
 		ProcessIdentity: "old-host-process", PaneGeneration: "old-host-pane",
 		AcceptedAt: oldAcceptedAt, Mode: watcher.TurnSubmissionFresh,
@@ -267,15 +277,15 @@ func TestFreshSignalAmbiguousAdmissionNeverReplaysAndDoesNotWedgeUnrelatedWork(t
 	}
 
 	// A held claim never blocks the unrelated claim at the store boundary.
-	claimB, ok, err := store.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || claimB.ID != eventB.ID {
+	claimB, ok, err := store.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || claimB.FactEventID != eventB.ID {
 		t.Fatalf("unrelated claim while A held=%+v ok=%v err=%v", claimB, ok, err)
 	}
 	// The replacement provider generation delivers B while A's ambiguous
 	// transaction stays pending: it is never replayed, never released, and
 	// never blocks the unrelated transaction.
 	delivery := newCanonicalHostDeliveryWatcher(store, freshHostID)
-	delivery.outcomes = map[string]watcher.InputOutcome{claimA.ID: watcher.InputAmbiguous}
+	delivery.outcomes = map[string]watcher.InputOutcome{claimA.FactEventID: watcher.InputAmbiguous}
 	woke, err := NewService(store, delivery, nil).ReconcileHostLane()
 	if err != nil || !woke {
 		t.Fatalf("replacement lane woke=%v err=%v", woke, err)
@@ -285,13 +295,14 @@ func TestFreshSignalAmbiguousAdmissionNeverReplaysAndDoesNotWedgeUnrelatedWork(t
 		t.Fatalf("ambiguous authority was settled without exact evidence: %+v found=%v err=%v", oldDurable, found, err)
 	}
 	heldA, found, err := store.WorkEvent(eventA.ID)
-	if err != nil || !found || heldA.ClaimedAt == nil || heldA.DeliveredAt != nil ||
-		heldA.Resolution != "" {
-		t.Fatalf("ambiguous A was replayed or released: event=%+v found=%v err=%v", heldA, found, err)
+	if err != nil || !found || heldA.Resolution != "" {
+		t.Fatalf("ambiguous A audit drifted: event=%+v found=%v err=%v", heldA, found, err)
 	}
-	deliveredB, found, err := store.WorkEvent(eventB.ID)
-	if err != nil || !found || deliveredB.DeliveredAt == nil {
-		t.Fatalf("unrelated B did not proceed: event=%+v found=%v err=%v", deliveredB, found, err)
+	if leaseA := reviewLeaseOf(t, store, workA.ID); leaseA == nil || leaseA.DeliveredAt != nil {
+		t.Fatalf("ambiguous A was replayed or released: %+v", leaseA)
+	}
+	if leaseB := reviewLeaseOf(t, store, workB.ID); leaseB == nil || leaseB.DeliveredAt == nil {
+		t.Fatalf("unrelated B did not proceed: %+v", leaseB)
 	}
 }
 
@@ -314,14 +325,14 @@ func TestFreshSignalDeliveredCapabilityDoesNotWedgeUnrelatedWork(t *testing.T) {
 	workB := createSignalTestWork(t, store, "Unrelated B", "brain-agent-unrelated-b2:@1")
 	eventB := appendSignalTestEvent(t, store, workB, "unrelated-b2")
 	deliveredA, _ := deliverSignalTestEvent(t, store, freshHostID)
-	if live, err := store.HasLiveDeliveredHandling(); err != nil || !live {
+	if live, err := store.HasLiveDeliveredReview(); err != nil || !live {
 		t.Fatalf("delivered handling not live: live=%v err=%v", live, err)
 	}
 	// The store-level claim boundary is per Work: B is claimable while A's
 	// delivered capability is outstanding. The reducer still admits one
 	// delivered handling at a time.
-	claimB, ok, err := store.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || claimB.ID != eventB.ID {
+	claimB, ok, err := store.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || claimB.FactEventID != eventB.ID {
 		t.Fatalf("unrelated claim while A delivered=%+v ok=%v err=%v", claimB, ok, err)
 	}
 
@@ -344,9 +355,12 @@ func TestFreshSignalDeliveredCapabilityDoesNotWedgeUnrelatedWork(t *testing.T) {
 	if complete, err := service.ReconcileSignalSystemStartup(fw.Agents(), 8); err != nil || !complete {
 		t.Fatalf("startup complete=%v err=%v", complete, err)
 	}
-	requeuedA, found, err := reopened.WorkEvent(deliveredA.ID)
-	if err != nil || !found || requeuedA.HandlingEndedAt == nil {
-		t.Fatalf("delivered A was not requeued: event=%+v found=%v err=%v", requeuedA, found, err)
+	requeuedA, found, err := reopened.WorkEvent(deliveredA.FactEventID)
+	if err != nil || !found {
+		t.Fatalf("delivered A fact missing: event=%+v found=%v err=%v", requeuedA, found, err)
+	}
+	if leaseA := reviewLeaseOf(t, reopened, workA.ID); leaseA == nil || leaseA.HandlingEndedAt == nil {
+		t.Fatalf("delivered A was not requeued: %+v", leaseA)
 	}
 	if len(fw.sentCalls) != 1 || !strings.Contains(fw.sentCalls[0].text, `"work_id":"`+workB.ID+`"`) {
 		t.Fatalf("unrelated B was not admitted first after reopen: %+v", fw.sentCalls)
@@ -354,8 +368,11 @@ func TestFreshSignalDeliveredCapabilityDoesNotWedgeUnrelatedWork(t *testing.T) {
 	// B's stale pre-crash claim was released by exact receipt reconciliation;
 	// the durable Event remains the same and is never duplicated.
 	durableB, found, err := reopened.WorkEvent(eventB.ID)
-	if err != nil || !found || durableB.ClaimedAt == nil || durableB.ClaimedAt.Equal(*claimB.ClaimedAt) {
-		t.Fatalf("B claim did not converge: event=%+v found=%v err=%v", durableB, found, err)
+	if err != nil || !found {
+		t.Fatalf("B fact missing: event=%+v found=%v err=%v", durableB, found, err)
+	}
+	if leaseB := reviewLeaseOf(t, reopened, workB.ID); leaseB == nil || leaseB.ClaimedAt.Equal(*claimB.ClaimedAt) {
+		t.Fatalf("B claim did not converge: %+v", leaseB)
 	}
 }
 
@@ -371,8 +388,8 @@ func TestFreshSignalCrashReopenAfterClaimConverges(t *testing.T) {
 	}
 	item := createSignalTestWork(t, store, "Crash after claim", "brain-agent-crash-claim:@1")
 	event := appendSignalTestEvent(t, store, item, "crash-claim")
-	claimed, ok, err := store.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || claimed.ID != event.ID {
+	claimed, ok, err := store.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || claimed.FactEventID != event.ID {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
 
@@ -381,30 +398,29 @@ func TestFreshSignalCrashReopenAfterClaimConverges(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, found, err := reopened.WorkEvent(event.ID)
-	if err != nil || !found || held.ClaimedAt == nil || held.HandlingID != claimed.HandlingID ||
-		held.ProviderTurnID != claimed.ProviderTurnID || held.DeliveryWorkRevision != claimed.DeliveryWorkRevision {
-		t.Fatalf("reopened claim identity drifted: event=%+v found=%v err=%v", held, found, err)
+	if err != nil || !found {
+		t.Fatalf("reopened claim fact missing: event=%+v found=%v err=%v", held, found, err)
+	}
+	if lease := reviewLeaseOf(t, reopened, item.ID); lease == nil || lease.HandlingID != claimed.HandlingID ||
+		lease.ProviderTurnID != claimed.ProviderTurnID || lease.DeliveryWorkRevision != claimed.DeliveryWorkRevision {
+		t.Fatalf("reopened claim identity drifted: %+v", lease)
 	}
 	// Proved non-submission releases the exact claim; the event is claimable
 	// again with a fresh capability.
-	if err := reopened.ReleaseEventClaim(
-		event.ID, claimed.HandlingID, claimed.WorkID, freshHostID, claimed.ProviderTurnID,
-	); err != nil {
+	if err := reopened.ReleaseReviewLease(event.WorkID, claimed.HandlingID, claimed.ProviderTurnID); err != nil {
 		t.Fatalf("release proved-unsent claim: %v", err)
 	}
-	reclaimed, ok, err := reopened.ClaimNextActionableEvent(freshHostID)
-	if err != nil || !ok || reclaimed.ID != event.ID || reclaimed.HandlingID == claimed.HandlingID {
+	reclaimed, ok, err := reopened.ClaimNextReviewAction(freshHostID)
+	if err != nil || !ok || reclaimed.FactEventID != event.ID || reclaimed.HandlingID == claimed.HandlingID {
 		t.Fatalf("reclaim=%+v ok=%v err=%v", reclaimed, ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, reopened, reclaimed)
-	delivered, _, err := reopened.ConsumeClaimedWorkEvent(
-		reclaimed.ID, reclaimed.HandlingID, reclaimed.WorkID, freshHostID, reclaimed.ProviderTurnID,
-	)
+	delivered, _, err := reopened.ConsumeReviewDelivery(reclaimed.WorkID, reclaimed.HandlingID, reclaimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := reopened.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := reopened.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -425,15 +441,15 @@ func TestFreshSignalCrashReopenAtDispositionPersistence(t *testing.T) {
 	item := createSignalTestWork(t, store, "Crash at disposition", "brain-agent-crash-disposition:@1")
 	appendSignalTestEvent(t, store, item, "crash-disposition")
 	delivered, _ := deliverSignalTestEvent(t, store, freshHostID)
-	request := WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	request := WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
 	}
 	originalWrite := store.writeOrchestration
 	store.writeOrchestration = func(string, any) error { return errors.New("injected disposition persistence failure") }
-	if _, _, err := store.ResolveWorkEvent(request); err == nil {
+	if _, _, err := store.ResolveWorkReview(request); err == nil {
 		t.Fatal("disposition persistence failure was reported successful")
 	}
 	store.writeOrchestration = originalWrite
@@ -445,7 +461,7 @@ func TestFreshSignalCrashReopenAtDispositionPersistence(t *testing.T) {
 	if err != nil || unchanged.Status == WorkDone || unchanged.Revision != beforeDisposition.Revision {
 		t.Fatalf("failed disposition mutated Work: %+v err=%v", unchanged, err)
 	}
-	unchangedEvent, found, err := store.WorkEvent(delivered.ID)
+	unchangedEvent, found, err := store.WorkEvent(delivered.FactEventID)
 	if err != nil || !found || unchangedEvent.HandledAt != nil || unchangedEvent.Disposition != "" {
 		t.Fatalf("failed disposition settled the Event: %+v found=%v err=%v", unchangedEvent, found, err)
 	}
@@ -454,15 +470,18 @@ func TestFreshSignalCrashReopenAtDispositionPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	durable, found, err := reopened.WorkEvent(delivered.ID)
-	if err != nil || !found || durable.HandledAt != nil || durable.DeliveredAt == nil {
+	durable, found, err := reopened.WorkEvent(delivered.FactEventID)
+	if err != nil || !found || durable.HandledAt != nil {
 		t.Fatalf("reopened delivered handling drifted: %+v found=%v err=%v", durable, found, err)
 	}
-	resolved, terminal, err := reopened.ResolveWorkEvent(request)
+	if lease := reviewLeaseOf(t, reopened, item.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("reopened delivered lease drifted: %+v", lease)
+	}
+	resolved, terminal, err := reopened.ResolveWorkReview(request)
 	if err != nil || resolved.HandledAt == nil || terminal.Status != WorkDone {
 		t.Fatalf("retry disposition event=%+v Work=%+v err=%v", resolved, terminal, err)
 	}
-	if duplicate, claimed, err := reopened.ClaimNextActionableEvent(freshHostID); err != nil || claimed {
+	if duplicate, claimed, err := reopened.ClaimNextReviewAction(freshHostID); err != nil || claimed {
 		t.Fatalf("settled disposition replayed: event=%+v claimed=%v err=%v", duplicate, claimed, err)
 	}
 }
@@ -500,8 +519,8 @@ func TestFreshSignalExactTypedDispositionsSettleClaimedCapability(t *testing.T) 
 				}
 				test.wake.Ref = "brain-thread:" + threadID
 			}
-			resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			resolved, terminal, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+				WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 				ProviderTurnID:       delivered.ProviderTurnID,
 				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 				Disposition:          test.disposition,
@@ -522,7 +541,7 @@ func TestFreshSignalExactTypedDispositionsSettleClaimedCapability(t *testing.T) 
 			} else if terminal.TerminalRevision != terminal.Revision {
 				t.Fatalf("terminal fence missing: %+v", terminal)
 			}
-			if replay, claimed, err := store.ClaimNextActionableEvent(freshHostID); err != nil || claimed {
+			if replay, claimed, err := store.ClaimNextReviewAction(freshHostID); err != nil || claimed {
 				t.Fatalf("settled capability replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
 			}
 		})

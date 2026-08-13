@@ -170,7 +170,7 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	}
 	// Ending the Host turn without disposition requeues one level-based
 	// reconcile attention at the FIFO tail; it does not replay either raw fact.
-	handlings, _, err := store.LiveHostHandlings(2)
+	handlings, _, err := store.LiveReviewHandlings(2)
 	if err != nil || len(handlings) != 1 {
 		t.Fatalf("live Host handling = %+v err=%v", handlings, err)
 	}
@@ -184,9 +184,12 @@ func TestE2ERealPollDeadPaneUnknownThenBoundTerminal(t *testing.T) {
 	}); err != nil || !woke {
 		t.Fatalf("Host turn end woke=%v err=%v", woke, err)
 	}
+	firstID := eventIDFromDelivery(t, hostWatcher.sentCalls[0].text)
+	secondID := eventIDFromDelivery(t, hostWatcher.sentCalls[1].text)
 	if len(hostWatcher.sentCalls) != 2 ||
-		!strings.Contains(hostWatcher.sentCalls[1].text, `"kind":"brain.reconcile_required"`) {
-		t.Fatalf("Work key was not reconciled exactly once: %#v", hostWatcher.sentCalls)
+		!strings.Contains(hostWatcher.sentCalls[1].text, `"kind":"session.done"`) ||
+		firstID == "" || firstID != secondID {
+		t.Fatalf("Work key was not re-delivered exactly once with the same action identity: %#v", hostWatcher.sentCalls)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if woke, err := service.ReconcileHostLane(); err != nil || woke {
@@ -385,4 +388,20 @@ func TestE2ERealPollDeadPaneWithMatchedIdentityNeverFails(t *testing.T) {
 			t.Fatalf("delivered a failed wake from liveness: %#v", hostWatcher.sentCalls)
 		}
 	}
+}
+
+func eventIDFromDelivery(t *testing.T, payload string) string {
+	t.Helper()
+	marker := `"event_id":`
+	start := strings.Index(payload, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := payload[start+len(marker):]
+	rest = strings.TrimLeft(rest, " \"")
+	end := strings.Index(rest, "\"")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }

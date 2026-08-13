@@ -492,15 +492,15 @@ func (s *Store) PrepareTurnSubmission(candidate watcher.TurnSubmission) (watcher
 		// A delivered review handling awaits its exact typed disposition. A
 		// correction admission is staged under that handling (same or new
 		// Session) and takes ownership only when the exact continue
-		// disposition commits; a queued head never stages or blocks.
-		handling := database.BrainWorkEvents[handlingIndex]
+		// disposition commits; a pending review never stages or blocks.
+		review := item.Review
 		item.SuccessorReservation = &WorkSuccessorReservation{
-			SessionID: candidate.SessionID, EventID: handling.ID, HandlingID: handling.HandlingID,
+			SessionID: candidate.SessionID, EventID: review.FactEventID, HandlingID: review.Lease.HandlingID,
 		}
 		database.BrainWork[workIndex] = item
 		changedWorkID = item.ID
 	case hostLaneOwned:
-		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s has an in-flight Host claim", ErrWorkConflict, item.ID)
+		return watcher.TurnSubmission{}, false, fmt.Errorf("%w: Work %s has an in-flight review lease", ErrWorkConflict, item.ID)
 	case ownerID == "":
 		if candidate.WorkID == "" {
 			return watcher.TurnSubmission{}, false, fmt.Errorf("initial delegated submission requires exact work_id")
@@ -814,8 +814,14 @@ func (s *Store) RecordInitialSubmissionNotAdmitted(
 			discardedAt := now
 			event.DiscardedAt = &discardedAt
 			event.Resolution = EventResolutionDiscard
+			event.ResolvedBy = "system"
+			event.ResolvedAt = &now
 		}
 		if _, err := appendWorkEventLocked(&database, itemIndex, event, false); err != nil {
+			s.mu.Unlock()
+			return Work{}, err
+		}
+		if err := setWorkReviewLocked(&database, itemIndex, event, now); err != nil {
 			s.mu.Unlock()
 			return Work{}, err
 		}
@@ -825,11 +831,21 @@ func (s *Store) RecordInitialSubmissionNotAdmitted(
 		event.SourceName = sessionID
 		event.PayloadRef = "session:" + sessionID
 		event.WorkRevision = item.Revision
-		if cancelAutoWork && event.DeliveredAt == nil && event.HandlingID == "" {
+		if cancelAutoWork {
 			discardedAt := now
 			event.Actionable = false
 			event.DiscardedAt = &discardedAt
 			event.Resolution = EventResolutionDiscard
+			event.ResolvedBy = "system"
+			event.ResolvedAt = &now
+		} else if !event.Actionable {
+			// In-place correction flip: the same row becomes the current action;
+			// the row count never changes, so no second queue item is possible.
+			event.Actionable = true
+			if err := setWorkReviewLocked(&database, itemIndex, *event, now); err != nil {
+				s.mu.Unlock()
+				return Work{}, err
+			}
 		}
 	}
 	if err := s.persistOrchestrationLocked(database); err != nil {
@@ -1031,7 +1047,7 @@ func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID st
 			reservationMatches := item.SuccessorReservation != nil && item.SuccessorReservation.SessionID == sessionID
 			if item.Status != WorkDone && item.Status != WorkCancelled &&
 				(item.OwnerSessionID == sessionID || reservationMatches ||
-					(strings.TrimSpace(item.OwnerSessionID) == "" && (workHasAttentionObligation(database, item.ID) || item.Wake != nil))) {
+					(strings.TrimSpace(item.OwnerSessionID) == "" && (workHasReviewObligation(database, item.ID) || item.Wake != nil))) {
 				return item.ID
 			}
 		}
@@ -1040,16 +1056,7 @@ func databaseWorkIDForTurnAdmission(database orchestrationDatabase, sessionID st
 }
 
 func databaseHasExactHostEventClaim(database orchestrationDatabase, submission watcher.TurnSubmission) bool {
-	for _, event := range database.BrainWorkEvents {
-		if event.ID == submission.Receipt && event.HandlingID == submission.ClaimToken &&
-			event.WorkID == submission.WorkID && event.DeliveryHostSessionID == submission.SessionID &&
-			event.ProviderTurnID == submission.ProposedTurnID && event.Actionable &&
-			event.ClaimedAt != nil && event.DeliveredAt == nil && event.HandlingEndedAt == nil &&
-			event.HandledAt == nil && event.DiscardedAt == nil && event.Resolution == "" {
-			return true
-		}
-	}
-	return false
+	return databaseHasExactReviewLease(database, submission)
 }
 
 func databaseHasResolvedHostEventAdmission(
@@ -2116,7 +2123,8 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		} else if actionable &&
 			!database.BrainWorkEvents[eventIndex].Actionable {
 			// In-place correction flip: the same row becomes actionable; the
-			// row count never changes, so no second wake is possible.
+			// row count never changes, so no second wake or queue item is
+			// possible (I7).
 			if workIndex >= 0 && !revisionBumped && !dispositionRevisionFrozen {
 				workItem.Revision++
 				workItem.UpdatedAt = now
@@ -2130,9 +2138,8 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			if dispositionRevisionFrozen {
 				database.BrainWorkEvents[eventIndex].WorkRevision++
 			}
-			if readyID := readyAttentionEventID(database, workID); readyID != "" &&
-				readyID != database.BrainWorkEvents[eventIndex].ID {
-				database.BrainWorkEvents[eventIndex].CoalescedInto = readyID
+			if err := setWorkReviewLocked(&database, workIndex, database.BrainWorkEvents[eventIndex], now); err != nil {
+				return watcher.TurnSnapshot{}, false, err
 			}
 			eventID = database.BrainWorkEvents[eventIndex].ID
 			eventCreated = true
@@ -2141,6 +2148,11 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	if workChanged && !revisionBumped && !dispositionRevisionFrozen && workIndex >= 0 {
 		workItem.Revision++
 		database.BrainWork[workIndex] = workItem
+	}
+	if eventCreated && eventID != "" && workIndex >= 0 {
+		if err := setWorkReviewLocked(&database, workIndex, database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, eventID)], now); err != nil {
+			return watcher.TurnSnapshot{}, false, err
+		}
 	}
 
 	// Canonical producer terminalization and every matching cross-Work wake
@@ -2188,10 +2200,11 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	return turn.snapshot(), true, nil
 }
 
-// AppendDeliveryNote appends a deduped delivery diagnostic for a held claim
-// (delivery.ambiguous non-actionable, delivery.uncertain actionable). It is
-// scheduler audit, not a Work-state mutation, so it preserves the revision
-// fence carried by the in-flight claim. Returns the existing row on duplicate.
+// AppendDeliveryNote appends a deduped delivery diagnostic. Delivery notes are
+// scheduler audit only: they never carry claim/lease state and never create a
+// review obligation (the review epoch itself is the queue item; the lease
+// quarantine is expressed in Work state). Returns the existing row on
+// duplicate.
 func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary string, actionable bool) (WorkEvent, bool, error) {
 	if s == nil {
 		return WorkEvent{}, false, fmt.Errorf("brain store is not configured")
@@ -2200,6 +2213,8 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 	if workID == "" || eventID == "" || kind == "" || dedupeKey == "" {
 		return WorkEvent{}, false, fmt.Errorf("delivery note requires work_id, event_id, kind, and dedupe_key")
 	}
+	// Delivery notes are audit rows; a note must never become a queue item.
+	actionable = false
 	now := s.nowUTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2234,163 +2249,114 @@ func (s *Store) AppendDeliveryNote(workID, eventID, kind, dedupeKey, summary str
 	return event, true, nil
 }
 
-// MarkDeliveredClaim closes a held claim by explicit user assertion that the
-// Host received the event (C.2.6.1). It records delivery only, then requeues
-// the Work key for a typed disposition. Actor-recorded, never time-based.
-func (s *Store) MarkDeliveredClaim(eventID, actor, reason string) error {
-	return s.resolveClaimWithReconcile(eventID, actor, reason, func(event *WorkEvent, now time.Time) {
-		deliveredAt := now.UTC()
-		event.DeliveredAt = &deliveredAt
-		event.HandlingEndedAt = &deliveredAt
+// ResolveReviewLease is the explicit actor path (C.2.6, now Work-scoped) that
+// closes a held review lease. Actor-recorded, never time-based. The fact row
+// records the closure audit; the review epoch is the same queue item before
+// and after.
+//
+//   - mark_delivered: the actor asserts the Host received the action; the
+//     lease is cleared and the same unresolved action is re-claimable (row 11).
+//   - replay: the actor authorizes re-delivery; the lease is cleared and the
+//     same action identity is re-claimable (row 12) — no second fact is
+//     created, so no second card is possible.
+//   - discard: the actor abandons the current action; the epoch is cleared
+//     with audit. If Work is still non-terminal, one fresh
+//     brain.reconcile_required fact re-requires the same queue item so the
+//     Brain still decides the disposition (row 13).
+func (s *Store) ResolveReviewLease(workID string, resolution ReviewLeaseResolution, actor, reason string) (WorkReviewAction, bool, error) {
+	workID = strings.TrimSpace(workID)
+	actor = strings.TrimSpace(actor)
+	if workID == "" || actor == "" || strings.TrimSpace(reason) == "" {
+		return WorkReviewAction{}, false, fmt.Errorf("lease resolution requires work_id, actor, and reason")
+	}
+	if resolution != ReviewLeaseMarkDelivered && resolution != ReviewLeaseDiscard && resolution != ReviewLeaseReplay {
+		return WorkReviewAction{}, false, fmt.Errorf("lease resolution must be mark_delivered, discard, or replay")
+	}
+	now := s.nowUTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return WorkReviewAction{}, false, err
+	}
+	itemIndex := workIndex(database.BrainWork, workID)
+	if itemIndex < 0 {
+		return WorkReviewAction{}, false, ErrWorkNotFound
+	}
+	review := database.BrainWork[itemIndex].Review
+	if review == nil || review.Lease == nil {
+		return WorkReviewAction{}, false, fmt.Errorf("Work %s has no held review lease", workID)
+	}
+	lease := review.Lease
+	if lease.DeliveredAt != nil {
+		return WorkReviewAction{}, false, fmt.Errorf("Work %s review is delivered; it awaits the typed Brain disposition", workID)
+	}
+	if err := retireExactHostSubmissionForReview(&database, workID, review, now); err != nil {
+		return WorkReviewAction{}, false, err
+	}
+	eventIndex := workEventIndex(database.BrainWorkEvents, review.FactEventID)
+	event := &database.BrainWorkEvents[eventIndex]
+	switch resolution {
+	case ReviewLeaseMarkDelivered:
 		event.Resolution = EventResolutionMarkDelivered
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
-	})
-}
-
-// DiscardClaim abandons a held delivery (C.2.6.2). The row leaves the held
-// set forever; Brain separately reconciles the owning Work.
-func (s *Store) DiscardClaim(eventID, actor, reason string) error {
-	return s.resolveClaimWithReconcile(eventID, actor, reason, func(event *WorkEvent, now time.Time) {
-		event.DiscardedAt = &now
+		review.Lease = nil
+	case ReviewLeaseReplay:
+		event.Resolution = EventResolutionReplayed
+		event.ResolvedBy = actor
+		event.ResolvedAt = &now
+		review.Lease = nil
+	case ReviewLeaseDiscard:
+		discardedAt := now.UTC()
+		event.DiscardedAt = &discardedAt
 		event.Resolution = EventResolutionDiscard
 		event.ResolvedBy = actor
 		event.ResolvedAt = &now
-	})
-}
-
-// ReplayEvent performs an explicit user-authorized replay as a new event with
-// a new identity and key (C.2.6.3). This is the only mechanism that creates a
-// second actionable row for one semantic fact, and only with authorization.
-//
-// Replay is a bounded transition: the original must be an unresolved held
-// claim (ClaimedAt set, not consumed, not discarded, never resolved before),
-// so a second replay of the same original is rejected and the resolved
-// original leaves the held set forever. The replay row retains the audited
-// ReplayOf identity; the original records the resolution actor and time.
-func (s *Store) ReplayEvent(eventID, actor, reason string) (WorkEvent, error) {
-	eventID = strings.TrimSpace(eventID)
-	actor = strings.TrimSpace(actor)
-	if eventID == "" || actor == "" || strings.TrimSpace(reason) == "" {
-		return WorkEvent{}, fmt.Errorf("replay requires event_id, actor, and reason")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return WorkEvent{}, err
-	}
-	index := workEventIndex(database.BrainWorkEvents, eventID)
-	if index < 0 {
-		return WorkEvent{}, ErrEventClaim
-	}
-	original := database.BrainWorkEvents[index]
-	if original.ClaimedAt == nil {
-		return WorkEvent{}, fmt.Errorf("event %s is not a held claim; no replay", eventID)
-	}
-	if original.DeliveredAt != nil || original.DiscardedAt != nil {
-		return WorkEvent{}, fmt.Errorf("event %s is already resolved; no replay", eventID)
-	}
-	if original.Resolution != "" {
-		return WorkEvent{}, fmt.Errorf("event %s was already replayed; a second replay is not authorized", eventID)
-	}
-	if err := retireExactHostSubmissionForClaim(&database, original, now); err != nil {
-		return WorkEvent{}, err
-	}
-	nonce := uuid.NewString()
-	replay := WorkEvent{
-		ID:         uuid.NewString(),
-		WorkID:     original.WorkID,
-		Kind:       original.Kind,
-		DedupeKey:  "delivery:" + eventID + ":replay:" + nonce,
-		PayloadRef: original.PayloadRef,
-		SourceName: original.SourceName,
-		Summary:    original.Summary,
-		Actionable: original.Actionable,
-		CreatedAt:  now,
-		ReplayOf:   eventID,
-	}
-	original.Resolution = EventResolutionReplayed
-	original.ResolvedBy = actor
-	original.ResolvedAt = &now
-	database.BrainWorkEvents[index] = original
-	itemIndex := workIndex(database.BrainWork, replay.WorkID)
-	replay, err = appendWorkEventLocked(&database, itemIndex, replay, true)
-	if err != nil {
-		return WorkEvent{}, err
+		clearWorkReviewLocked(&database, itemIndex, actor, string(ReviewLeaseDiscard), now)
+		if database.BrainWork[itemIndex].Status != WorkDone && database.BrainWork[itemIndex].Status != WorkCancelled {
+			reconcile := WorkEvent{
+				ID: uuid.NewString(), WorkID: workID, Kind: "brain.reconcile_required",
+				DedupeKey:  "brain:delivery-resolution:" + review.FactEventID + ":" + uuid.NewString()[:8],
+				PayloadRef: "work:" + workID,
+				SourceName: "brain", Summary: "A held review lease was discarded; the current Work state requires a disposition.",
+				Actionable: true, CreatedAt: now,
+			}
+			if _, err := appendWorkEventLocked(&database, itemIndex, reconcile, true); err != nil {
+				return WorkReviewAction{}, false, err
+			}
+			if err := setWorkReviewLocked(&database, itemIndex, reconcile, now); err != nil {
+				return WorkReviewAction{}, false, err
+			}
+		}
 	}
 	if err := s.persistOrchestrationLocked(database); err != nil {
-		return WorkEvent{}, err
+		return WorkReviewAction{}, false, err
 	}
-	s.broadcastWorkChange(replay.WorkID)
-	return replay, nil
+	action, found := reviewActionFromReview(database, database.BrainWork[itemIndex].Review)
+	s.broadcastWorkChange(workID)
+	return action, found, nil
 }
 
-func (s *Store) resolveClaimWithReconcile(eventID, actor, reason string, resolve func(*WorkEvent, time.Time)) error {
-	eventID = strings.TrimSpace(eventID)
-	actor = strings.TrimSpace(actor)
-	if eventID == "" || actor == "" || strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("claim resolution requires event_id, actor, and reason")
-	}
-	now := s.nowUTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
-	if err != nil {
-		return err
-	}
-	index := workEventIndex(database.BrainWorkEvents, eventID)
-	if index < 0 {
-		return ErrEventClaim
-	}
-	event := &database.BrainWorkEvents[index]
-	if event.ClaimedAt == nil {
-		return fmt.Errorf("event %s is not claimed", eventID)
-	}
-	if event.DeliveredAt != nil || event.DiscardedAt != nil {
-		return fmt.Errorf("event %s is already resolved", eventID)
-	}
-	if err := retireExactHostSubmissionForClaim(&database, *event, now); err != nil {
-		return err
-	}
-	resolve(event, now)
-	itemIndex := workIndex(database.BrainWork, event.WorkID)
-	if itemIndex < 0 {
-		return ErrWorkNotFound
-	}
-	reconcile := WorkEvent{
-		ID: uuid.NewString(), WorkID: event.WorkID, Kind: "brain.reconcile_required",
-		DedupeKey: "brain:delivery-resolution:" + event.ID, PayloadRef: "work:" + event.WorkID,
-		SourceName: "brain", Summary: "A held Host delivery was resolved; the current Work state requires a disposition.",
-		Actionable: true, CreatedAt: now,
-	}
-	if _, err := appendWorkEventLocked(&database, itemIndex, reconcile, true); err != nil {
-		return err
-	}
-	if err := s.persistOrchestrationLocked(database); err != nil {
-		return err
-	}
-	s.broadcastWorkChange(database.BrainWorkEvents[index].WorkID)
-	return nil
-}
-
-// retireExactHostSubmissionForClaim closes only the pre-mutation transaction
-// authorized by the held Event's complete five-part capability. Manual claim
+// retireExactHostSubmissionForReview closes only the pre-mutation transaction
+// authorized by the held lease's complete five-part capability. Manual lease
 // resolution is neither proof of non-submission nor provider admission, so it
-// gets its own terminal state: future provider evidence cannot adopt it, and a
-// replacement Event is no longer blocked by the Session's sole-pending gate.
-// The caller persists this mutation together with the Event resolution.
-func retireExactHostSubmissionForClaim(database *orchestrationDatabase, event WorkEvent, now time.Time) error {
-	if database == nil || event.ID == "" || event.HandlingID == "" || event.WorkID == "" ||
-		event.DeliveryHostSessionID == "" || event.ProviderTurnID == "" {
+// gets its own terminal state: future provider evidence cannot adopt it, and
+// a replacement action is no longer blocked by the Session's sole-pending
+// gate. The caller persists this mutation together with the resolution.
+func retireExactHostSubmissionForReview(database *orchestrationDatabase, workID string, review *WorkReview, now time.Time) error {
+	if database == nil || review == nil || review.Lease == nil || review.FactEventID == "" {
+		return nil
+	}
+	lease := review.Lease
+	if lease.HandlingID == "" || lease.HostSessionID == "" || lease.ProviderTurnID == "" {
 		return nil
 	}
 	for index := range database.BrainTurnSubmissions {
 		submission := &database.BrainTurnSubmissions[index]
-		if submission.Receipt != event.ID || submission.ClaimToken != event.HandlingID ||
-			submission.WorkID != event.WorkID || submission.SessionID != event.DeliveryHostSessionID ||
-			submission.ProposedTurnID != event.ProviderTurnID {
+		if submission.Receipt != review.FactEventID || submission.ClaimToken != lease.HandlingID ||
+			submission.WorkID != workID || submission.SessionID != lease.HostSessionID ||
+			submission.ProposedTurnID != lease.ProviderTurnID {
 			continue
 		}
 		switch submission.State {

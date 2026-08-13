@@ -521,7 +521,7 @@ func TestBrainResolveCLI(t *testing.T) {
 	var stderr bytes.Buffer
 	if err := runBrainCommand([]string{
 		"work", "resolve", "--state-dir", stateDir, "--json=false",
-		"--event-id", "event-1", "--handling-id", "handling-1",
+		"--work-id", "work-1", "--handling-id", "handling-1",
 		"--provider-turn-id", "provider-turn-1", "--revision", "7",
 		"--disposition", "continue", "--successor-session-id", "worker-2",
 	}, &stderr); err != nil {
@@ -531,7 +531,7 @@ func TestBrainResolveCLI(t *testing.T) {
 	select {
 	case req := <-handler.requests:
 		got := req.BrainWorkDisposition
-		if req.Type != "brain_work_resolve" || got == nil || got.EventID != "event-1" ||
+		if req.Type != "brain_work_resolve" || got == nil || got.WorkID != "work-1" ||
 			got.HandlingID != "handling-1" || got.ProviderTurnID != "provider-turn-1" ||
 			got.ExpectedWorkRevision != 7 || got.Disposition != brain.WorkDispositionContinue ||
 			got.SuccessorSessionID != "worker-2" {

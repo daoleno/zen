@@ -352,13 +352,21 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 		active.HostTurnID == "" {
 		t.Fatalf("foreground turn active=%+v err=%v", active, err)
 	}
-	claims, err := store.ClaimedActionableEvents()
-	if err != nil || len(claims) != 0 {
-		t.Fatalf("idle-boundary Event left a dispatching claim: claims=%+v err=%v", claims, err)
+	claims, err := store.LeasedReviewActions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range claims {
+		if claim.DeliveredAt == nil {
+			t.Fatalf("idle-boundary Event left an undelivered claim: %+v", claim)
+		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
-		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", events, err)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("idle-boundary Event history: %+v err=%v", events, err)
+	}
+	if item2, err := store.Work(item.ID); err != nil || item2.Review == nil || item2.Review.Lease == nil || item2.Review.Lease.DeliveredAt == nil {
+		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", item2, err)
 	}
 }
 
@@ -464,13 +472,21 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 	if err != nil || active != nil {
 		t.Fatalf("superseded prepared generation remained active=%+v err=%v", active, err)
 	}
-	claims, err := store.ClaimedActionableEvents()
-	if err != nil || len(claims) != 0 {
-		t.Fatalf("idle-boundary Event left a dispatching claim: claims=%+v err=%v", claims, err)
+	claims, err := store.LeasedReviewActions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range claims {
+		if claim.DeliveredAt == nil {
+			t.Fatalf("idle-boundary Event left an undelivered claim: %+v", claim)
+		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 1 || events[0].DeliveredAt == nil {
-		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", events, err)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("idle-boundary Event history: %+v err=%v", events, err)
+	}
+	if item2, err := store.Work(item.ID); err != nil || item2.Review == nil || item2.Review.Lease == nil || item2.Review.Lease.DeliveredAt == nil {
+		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", item2, err)
 	}
 }
 

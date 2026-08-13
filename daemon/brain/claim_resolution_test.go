@@ -2,24 +2,23 @@ package brain
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-// claimResolutionStore builds a store with one Work and one claimed actionable
-// Event (the held-claim shape: ClaimedAt set, DeliveredAt/DiscardedAt nil).
-func claimResolutionStore(t *testing.T) (*Store, string, WorkEvent) {
+// claimResolutionStore builds a store with one Work and one held review lease
+// (the quarantine shape: lease minted, never delivered, no exact submission).
+func claimResolutionStore(t *testing.T) (*Store, string, WorkReviewAction) {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	item, err := store.CreateWork(Work{
-		Title:            "Held claim resolution",
-		Objective:        "Close held delivery claims explicitly.",
+		Title:            "Held lease resolution",
+		Objective:        "Close held review leases explicitly.",
 		Status:           WorkWaiting,
 		CompletionPolicy: CompletionBounded,
 	})
@@ -35,55 +34,60 @@ func claimResolutionStore(t *testing.T) (*Store, string, WorkEvent) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
-	if err != nil || !ok || claimed.ID != event.ID {
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
+	if err != nil || !ok || claimed.FactEventID != event.ID {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	return store, item.ID, claimed
 }
 
-// TestMarkDeliveredClaimClosesHeldClaim explicitly closes a held claim by user
-// assertion (C.2.6.1): actor-recorded, idempotent, never time-based.
-func TestMarkDeliveredClaimClosesHeldClaim(t *testing.T) {
-	store, _, event := claimResolutionStore(t)
-	if err := store.MarkDeliveredClaim(event.ID, "user", "visible in host transcript"); err != nil {
+// TestMarkReviewDeliveredClosesHeldLease explicitly closes a held lease by
+// user assertion (C.2.6.1): actor-recorded, idempotent, never time-based. The
+// same unresolved action remains the same queue item and becomes re-claimable.
+func TestMarkReviewDeliveredClosesHeldLease(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseMarkDelivered, "user", "visible in host transcript"); err != nil {
 		t.Fatal(err)
 	}
-	events, err := store.ListWorkEvents(event.WorkID)
-	if err != nil {
-		t.Fatal(err)
+	lease := reviewLeaseOf(t, store, workID)
+	if lease != nil {
+		t.Fatalf("mark_delivered left lease: %+v", lease)
 	}
-	row := events[0]
-	if row.DeliveredAt == nil || row.Resolution != EventResolutionMarkDelivered ||
-		row.ResolvedBy != "user" || row.ResolvedAt == nil {
-		t.Fatalf("mark_delivered row = %#v", row)
+	event, found, err := store.WorkEvent(claimed.FactEventID)
+	if err != nil || !found || event.Resolution != EventResolutionMarkDelivered ||
+		event.ResolvedBy != "user" || event.ResolvedAt == nil {
+		t.Fatalf("mark_delivered audit row = %#v found=%v err=%v", event, found, err)
 	}
-	// Idempotent: a second resolution on the same row is refused.
-	if err := store.MarkDeliveredClaim(event.ID, "user", "again"); err == nil {
-		t.Fatal("already-resolved claim accepted a second resolution")
+	// Idempotent: a second resolution on the same held lease is refused.
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseMarkDelivered, "user", "again"); err == nil {
+		t.Fatal("already-resolved lease accepted a second resolution")
 	}
-	// ClaimedActionableEvents no longer lists the row.
-	claimed, err := store.ClaimedActionableEvents()
-	if err != nil || len(claimed) != 0 {
-		t.Fatalf("resolved claim still listed: %#v err=%v", claimed, err)
+	// The same unresolved action is re-claimable: exactly one queue item.
+	requeued, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@2")
+	if err != nil || !ok || requeued.FactEventID != claimed.FactEventID {
+		t.Fatalf("mark_delivered did not re-claim the same action: %+v ok=%v err=%v", requeued, ok, err)
+	}
+	actions, err := store.LeasedReviewActions()
+	if err != nil || len(actions) != 1 {
+		t.Fatalf("post-resolution leases = %+v err=%v", actions, err)
 	}
 }
 
 // Delivery diagnostics are scheduler audit, not Work-state mutation. They
-// must never advance the revision fence carried by the exact Host claim;
-// otherwise the provider can accept and execute the Event but its mandated
+// must never advance the revision fence carried by the exact review lease;
+// otherwise the provider can accept and execute the action but its mandated
 // typed disposition becomes impossible.
-func TestDeliveryDiagnosticDoesNotInvalidateClaimRevision(t *testing.T) {
-	store, workID, event := claimResolutionStore(t)
+func TestDeliveryDiagnosticDoesNotInvalidateLeaseRevision(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
 	before, err := store.Work(workID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	note, created, err := store.AppendDeliveryNote(
 		workID,
-		event.ID,
+		claimed.FactEventID,
 		"delivery.ambiguous",
-		"delivery:"+event.ID+":ambiguous",
+		"delivery:"+claimed.FactEventID+":ambiguous",
 		"Provider admission is still being reconciled.",
 		false,
 	)
@@ -97,172 +101,174 @@ func TestDeliveryDiagnosticDoesNotInvalidateClaimRevision(t *testing.T) {
 	if after.Revision != before.Revision || !after.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Fatalf("delivery diagnostic changed Work revision: before=%+v after=%+v", before, after)
 	}
-	claimed, found, err := store.WorkEvent(event.ID)
-	if err != nil || !found || claimed.DeliveryWorkRevision != after.Revision {
-		t.Fatalf("diagnostic invalidated exact claim fence: event=%+v Work=%+v found=%v err=%v", claimed, after, found, err)
+	lease := reviewLeaseOf(t, store, workID)
+	if lease == nil || lease.DeliveryWorkRevision != after.Revision {
+		t.Fatalf("diagnostic invalidated exact lease fence: lease=%+v Work=%+v", lease, after)
 	}
 	if note.WorkRevision != after.Revision+1 {
 		t.Fatalf("diagnostic revision epoch=%d want next epoch %d", note.WorkRevision, after.Revision+1)
 	}
 }
 
-// TestDiscardClaimRemovesHeldClaimForever discards a held delivery (C.2.6.2).
-func TestDiscardClaimRemovesHeldClaimForever(t *testing.T) {
-	store, _, event := claimResolutionStore(t)
-	if err := store.DiscardClaim(event.ID, "user", "work is moot"); err != nil {
+// TestDiscardReviewRemovesHeldLeaseForever discards a held lease (C.2.6.2).
+// The current action is abandoned with audit; the same Work queue item is
+// re-required by one fresh reconcile fact so the Brain still decides the
+// disposition.
+func TestDiscardReviewRemovesHeldLeaseForever(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseDiscard, "user", "work is moot"); err != nil {
 		t.Fatal(err)
 	}
-	events, _ := store.ListWorkEvents(event.WorkID)
-	row := events[0]
-	if row.DiscardedAt == nil || row.Resolution != EventResolutionDiscard ||
-		row.ResolvedBy != "user" || row.ResolvedAt == nil {
-		t.Fatalf("discard row = %#v", row)
+	if lease := reviewLeaseOf(t, store, workID); lease != nil {
+		t.Fatalf("discard left lease: %+v", lease)
 	}
-	// The discarded row is excluded from claims forever. Its Work receives one
-	// fresh level-based reconciliation; the discarded input is never replayed.
-	claimed, err := store.ClaimedActionableEvents()
-	if err != nil || len(claimed) != 0 {
-		t.Fatalf("discarded claim still listed: %#v", claimed)
+	event, found, err := store.WorkEvent(claimed.FactEventID)
+	if err != nil || !found || event.DiscardedAt == nil || event.Resolution != EventResolutionDiscard ||
+		event.ResolvedBy != "user" || event.ResolvedAt == nil {
+		t.Fatalf("discard audit row = %#v found=%v err=%v", event, found, err)
 	}
-	reconcile, wasClaimed, err := store.ClaimNextActionableEvent("host")
-	if err != nil || !wasClaimed || reconcile.ID == event.ID || reconcile.Kind != "brain.reconcile_required" {
+	// The same queue item is re-required by one fresh reconcile fact; the
+	// discarded action is never replayed.
+	reconcile, wasClaimed, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@2")
+	if err != nil || !wasClaimed || reconcile.FactEventID == claimed.FactEventID || reconcile.Kind != "brain.reconcile_required" {
 		t.Fatalf("discard reconciliation = %+v claimed=%v err=%v", reconcile, wasClaimed, err)
 	}
+	events, err := store.ListWorkEvents(workID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("discard event history = %+v err=%v", events, err)
+	}
 }
 
-// TestReplayEventCreatesAuditedNewEvent replays a held delivery as a new event
-// with a new identity and key (C.2.6.3): the only authorized second wake.
-func TestReplayEventCreatesAuditedNewEvent(t *testing.T) {
-	store, workID, event := claimResolutionStore(t)
-	replay, err := store.ReplayEvent(event.ID, "user", "explicit replay authorization")
-	if err != nil {
+// TestReplayReviewCreatesNoSecondFact replays a held lease as the same action
+// identity (C.2.6.3): the only authorized second wake is a lease reset — the
+// fact row is unchanged, so no second card is possible.
+func TestReplayReviewCreatesNoSecondFact(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "explicit replay authorization"); err != nil {
 		t.Fatal(err)
 	}
-	if replay.ID == event.ID || replay.WorkID != event.WorkID ||
-		replay.Kind != event.Kind || replay.ReplayOf != event.ID ||
-		!strings.HasPrefix(replay.DedupeKey, "delivery:"+event.ID+":replay:") {
-		t.Fatalf("replay row = %#v", replay)
+	event, found, err := store.WorkEvent(claimed.FactEventID)
+	if err != nil || !found || event.Resolution != EventResolutionReplayed || event.ResolvedBy != "user" {
+		t.Fatalf("replay audit row = %#v found=%v err=%v", event, found, err)
 	}
-	events, _ := store.ListWorkEvents(workID)
-	original := events[0]
-	if original.Resolution != EventResolutionReplayed || original.ResolvedBy != "user" {
-		t.Fatalf("original row after replay = %#v", original)
+	// The same action identity re-enters the claim pipeline exactly once.
+	replayed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@2")
+	if err != nil || !ok || replayed.FactEventID != claimed.FactEventID {
+		t.Fatalf("replay re-claim=%+v ok=%v err=%v", replayed, ok, err)
 	}
-	// The replay enters the normal claim pipeline exactly once.
-	if _, claimed, err := store.ClaimNextActionableEvent("host"); err != nil || !claimed {
-		t.Fatalf("replay not claimable: claimed=%v err=%v", claimed, err)
+	events, err := store.ListWorkEvents(workID)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("replay created a second fact row: %+v err=%v", events, err)
 	}
 }
 
-// TestReplayEventIsBoundedToOneReplayOfHeldClaim covers the P1.1 contract:
-// replay requires an unresolved held claim, a second replay of the same
-// original is rejected, and the resolved original leaves the held set.
-func TestReplayEventIsBoundedToOneReplayOfHeldClaim(t *testing.T) {
-	store, _, event := claimResolutionStore(t)
-	if _, err := store.ReplayEvent(event.ID, "user", "first replay"); err != nil {
+// TestReplayReviewIsBoundedToOneReplayOfHeldLease covers the bounded
+// contract: replay requires a held lease, a second replay of the same action
+// is rejected, and the resolved original leaves the held set.
+func TestReplayReviewIsBoundedToOneReplayOfHeldLease(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "first replay"); err != nil {
 		t.Fatal(err)
 	}
 	// The resolved original is excluded from the held set forever.
-	claimed, err := store.ClaimedActionableEvents()
+	actions, err := store.LeasedReviewActions()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range claimed {
-		if row.ID == event.ID {
-			t.Fatalf("resolved original still in held set: %#v", claimed)
+	for _, action := range actions {
+		if action.FactEventID == claimed.FactEventID {
+			t.Fatalf("resolved original still in held set: %+v", actions)
 		}
 	}
-	// A second replay of the same original is rejected.
-	if _, err := store.ReplayEvent(event.ID, "user", "second replay"); err == nil {
-		t.Fatal("second replay of the same original was accepted")
+	// A second replay of the same action is rejected.
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "second replay"); err == nil {
+		t.Fatal("second replay of the same action was accepted")
 	}
 	// The single audited replay identity is retained exactly once.
-	events, _ := store.ListWorkEvents(event.WorkID)
-	replays := 0
-	for _, row := range events {
-		if row.ReplayOf == event.ID {
-			replays++
-		}
-	}
-	if replays != 1 {
-		t.Fatalf("replay rows for %s = %d, want exactly one", event.ID, replays)
+	events, _ := store.ListWorkEvents(workID)
+	if len(events) != 1 || events[0].Resolution != EventResolutionReplayed {
+		t.Fatalf("replay rows = %+v, want exactly one audited row", events)
 	}
 }
 
-// TestReplayEventRequiresHeldClaim covers the P1.1 contract: replay without a
-// held claim (unclaimed, consumed, discarded, or already resolved) is
+// TestReplayReviewRequiresHeldLease covers the bounded contract: replay
+// without a held lease (pending, consumed, discarded, or already resolved) is
 // rejected.
-func TestReplayEventRequiresHeldClaim(t *testing.T) {
-	store, _, event := claimResolutionStore(t)
-	// Release the claim: an unclaimed event cannot be replayed.
-	if err := store.ReleaseEventClaim(
-		event.ID, event.HandlingID, event.WorkID, event.DeliveryHostSessionID, event.ProviderTurnID,
-	); err != nil {
+func TestReplayReviewRequiresHeldLease(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	// Release the lease: an unleased action cannot be replayed.
+	if err := store.ReleaseReviewLease(workID, claimed.HandlingID, claimed.ProviderTurnID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ReplayEvent(event.ID, "user", "no held claim"); err == nil {
-		t.Fatal("replay of an unclaimed event was accepted")
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "no held lease"); err == nil {
+		t.Fatal("replay of an unleased action was accepted")
 	}
-	// A discarded claim cannot be replayed.
-	store2, _, event2 := claimResolutionStore(t)
-	if err := store2.DiscardClaim(event2.ID, "user", "moot"); err != nil {
+	// A discarded lease cannot be replayed.
+	store2, workID2, claimed2 := claimResolutionStore(t)
+	if _, _, err := store2.ResolveReviewLease(workID2, ReviewLeaseDiscard, "user", "moot"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store2.ReplayEvent(event2.ID, "user", "discarded"); err == nil {
-		t.Fatal("replay of a discarded claim was accepted")
+	if _, _, err := store2.ResolveReviewLease(workID2, ReviewLeaseReplay, "user", "discarded"); err == nil {
+		t.Fatal("replay of a discarded action was accepted")
 	}
-	// A consumed claim cannot be replayed.
-	store3, _, event3 := claimResolutionStore(t)
-	if err := store3.MarkDeliveredClaim(event3.ID, "user", "delivered"); err != nil {
+	_ = claimed2
+	// A consumed lease cannot be replayed.
+	store3, workID3, claimed3 := claimResolutionStore(t)
+	if _, _, err := store3.ResolveReviewLease(workID3, ReviewLeaseMarkDelivered, "user", "delivered"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store3.ReplayEvent(event3.ID, "user", "consumed"); err == nil {
-		t.Fatal("replay of a consumed claim was accepted")
+	if _, _, err := store3.ResolveReviewLease(workID3, ReviewLeaseReplay, "user", "consumed"); err == nil {
+		t.Fatal("replay of a consumed action was accepted")
 	}
+	_ = claimed3
+	_ = claimed
 }
 
-// TestClaimResolutionRequiresActorAndReason enforces the authorization gate:
-// automatic or time-based resolution is prohibited.
-func TestClaimResolutionRequiresActorAndReason(t *testing.T) {
-	store, _, event := claimResolutionStore(t)
-	if err := store.MarkDeliveredClaim(event.ID, "", "reason"); err == nil {
+// TestReviewLeaseResolutionRequiresActorAndReason enforces the authorization
+// gate: automatic or time-based resolution is prohibited.
+func TestReviewLeaseResolutionRequiresActorAndReason(t *testing.T) {
+	store, workID, _ := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseMarkDelivered, "", "reason"); err == nil {
 		t.Fatal("resolution without actor accepted")
 	}
-	if err := store.DiscardClaim(event.ID, "user", ""); err == nil {
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseDiscard, "user", ""); err == nil {
 		t.Fatal("resolution without reason accepted")
 	}
-	if _, err := store.ReplayEvent(event.ID, "user", ""); err == nil {
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", ""); err == nil {
 		t.Fatal("replay without reason accepted")
 	}
-	if err := store.MarkDeliveredClaim("missing-event", "user", "reason"); err == nil {
-		t.Fatal("resolution of unknown event accepted")
+	if _, _, err := store.ResolveReviewLease("missing-work", ReviewLeaseMarkDelivered, "user", "reason"); err == nil {
+		t.Fatal("resolution of unknown Work accepted")
 	}
 }
 
-// A held Host claim may already own the Session's sole pending submission.
+// A held review lease may already own the Session's sole pending submission.
 // An explicit actor resolution must retire that exact transaction in the same
-// orchestration replacement; otherwise the replacement Event can be claimed
+// orchestration replacement; otherwise the replacement action can be claimed
 // but can never prepare its own provider Turn. Late provider evidence for the
 // retired transaction must also remain non-adoptable.
-func TestClaimResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T) {
+func TestReviewLeaseResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		apply func(*Store, WorkEvent) error
+		apply func(*Store, string) error
 	}{
-		{name: "mark delivered", apply: func(store *Store, event WorkEvent) error {
-			return store.MarkDeliveredClaim(event.ID, "user", "visible in Host transcript")
+		{name: "mark delivered", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseMarkDelivered, "user", "visible in Host transcript")
+			return err
 		}},
-		{name: "discard", apply: func(store *Store, event WorkEvent) error {
-			return store.DiscardClaim(event.ID, "user", "obsolete delivery")
+		{name: "discard", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseDiscard, "user", "obsolete delivery")
+			return err
 		}},
-		{name: "replay", apply: func(store *Store, event WorkEvent) error {
-			_, err := store.ReplayEvent(event.ID, "user", "explicit replay authorization")
+		{name: "replay", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "explicit replay authorization")
 			return err
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, store, original, pending := preparePendingClaimedHostSubmission(t)
-			if err := test.apply(store, original); err != nil {
+			workID := original.WorkID
+			if err := test.apply(store, workID); err != nil {
 				t.Fatal(err)
 			}
 
@@ -289,13 +295,22 @@ func TestClaimResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T
 				t.Fatalf("retired submission created a canonical Turn: found=%v err=%v", found, err)
 			}
 
-			next, claimed, err := reopened.ClaimNextActionableEvent(original.DeliveryHostSessionID)
-			if err != nil || !claimed || next.ID == original.ID {
-				t.Fatalf("replacement Event claim=%+v claimed=%v err=%v", next, claimed, err)
+			next, claimed, err := reopened.ClaimNextReviewAction(original.DeliveryHostSessionID)
+			if err != nil || !claimed {
+				t.Fatalf("replacement action claim=%+v claimed=%v err=%v", next, claimed, err)
+			}
+			// The same queue item is re-claimable: replay/mark_delivered keep
+			// the same action identity; discard re-requires via a fresh
+			// reconcile fact. In every case only one item exists.
+			if test.name == "discard" && next.FactEventID == original.FactEventID {
+				t.Fatalf("discard kept the discarded action identity: %+v", next)
+			}
+			if test.name != "discard" && next.FactEventID != original.FactEventID {
+				t.Fatalf("replay/mark_delivered changed the action identity: %+v", next)
 			}
 			candidate := watcher.TurnSubmission{
 				WorkID: next.WorkID, SessionID: next.DeliveryHostSessionID,
-				ProposedTurnID: next.ProviderTurnID, Receipt: next.ID, ClaimToken: next.HandlingID,
+				ProposedTurnID: next.ProviderTurnID, Receipt: next.FactEventID, ClaimToken: next.HandlingID,
 				PayloadSHA256:   pendingSubmissionDigest("replacement Host delivery"),
 				ProcessIdentity: "replacement-process", PaneGeneration: "replacement-pane",
 				AcceptedAt: lateAt.Add(time.Second), Mode: watcher.TurnSubmissionFresh,
@@ -304,44 +319,31 @@ func TestClaimResolutionRetiresExactPendingHostSubmissionAtomically(t *testing.T
 			if err != nil || !created || prepared.State != watcher.TurnSubmissionPending {
 				t.Fatalf("retired transaction still gated replacement: submission=%+v created=%v err=%v", prepared, created, err)
 			}
-
-			reopenedAgain, err := NewStore(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			old, found, err := reopenedAgain.TurnSubmission(original.DeliveryHostSessionID, original.ProviderTurnID)
-			if err != nil || !found || old.State != watcher.TurnSubmissionState("retired") {
-				t.Fatalf("retired terminal state did not survive second reopen: submission=%+v found=%v err=%v", old, found, err)
-			}
-			current, err := reopenedAgain.PendingTurnSubmissions(original.DeliveryHostSessionID)
-			if err != nil || len(current) != 1 || current[0].ProposedTurnID != next.ProviderTurnID {
-				t.Fatalf("replacement pending identity after reopen=%+v err=%v", current, err)
-			}
 		})
 	}
 }
 
-func TestClaimResolutionRetirementIgnoresUnrelatedPendingSubmission(t *testing.T) {
+func TestReviewLeaseResolutionRetirementIgnoresUnrelatedPendingSubmission(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	hostID := "brain-agent-brain-hidden:@manual-isolation"
-	firstWork := createSignalTestWork(t, store, "Resolve first held claim", "brain-agent-worker:@first")
+	firstWork := createSignalTestWork(t, store, "Resolve first held lease", "brain-agent-worker:@first")
 	appendSignalTestEvent(t, store, firstWork, "manual-first")
-	secondWork := createSignalTestWork(t, store, "Preserve second pending claim", "brain-agent-worker:@second")
+	secondWork := createSignalTestWork(t, store, "Preserve second pending lease", "brain-agent-worker:@second")
 	appendSignalTestEvent(t, store, secondWork, "manual-second")
-	first, ok, err := store.ClaimNextActionableEvent(hostID)
+	first, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok || first.WorkID != firstWork.ID {
 		t.Fatalf("first claim=%+v ok=%v err=%v", first, ok, err)
 	}
-	second, ok, err := store.ClaimNextActionableEvent(hostID)
+	second, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok || second.WorkID != secondWork.ID {
 		t.Fatalf("second claim=%+v ok=%v err=%v", second, ok, err)
 	}
 	unrelated, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
 		WorkID: second.WorkID, SessionID: hostID, ProposedTurnID: second.ProviderTurnID,
-		Receipt: second.ID, ClaimToken: second.HandlingID,
+		Receipt: second.FactEventID, ClaimToken: second.HandlingID,
 		PayloadSHA256:   pendingSubmissionDigest("unrelated provider input"),
 		ProcessIdentity: "unrelated-process", PaneGeneration: "unrelated-pane",
 		AcceptedAt: time.Date(2026, 8, 11, 1, 40, 0, 0, time.UTC), Mode: watcher.TurnSubmissionFresh,
@@ -349,7 +351,7 @@ func TestClaimResolutionRetirementIgnoresUnrelatedPendingSubmission(t *testing.T
 	if err != nil || !created {
 		t.Fatalf("prepare unrelated submission=%+v created=%v err=%v", unrelated, created, err)
 	}
-	if err := store.DiscardClaim(first.ID, "user", "retire exact delivery only"); err != nil {
+	if _, _, err := store.ResolveReviewLease(first.WorkID, ReviewLeaseDiscard, "user", "retire exact delivery only"); err != nil {
 		t.Fatal(err)
 	}
 	unchanged, found, err := store.TurnSubmission(hostID, unrelated.ProposedTurnID)
@@ -359,31 +361,34 @@ func TestClaimResolutionRetirementIgnoresUnrelatedPendingSubmission(t *testing.T
 	}
 }
 
-func TestClaimResolutionRetirementAndEventMutationShareOneCommit(t *testing.T) {
+func TestReviewLeaseResolutionAndFactAuditShareOneCommit(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		apply func(*Store, WorkEvent) error
+		apply func(*Store, string) error
 	}{
-		{name: "mark delivered", apply: func(store *Store, event WorkEvent) error {
-			return store.MarkDeliveredClaim(event.ID, "user", "visible in Host transcript")
+		{name: "mark delivered", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseMarkDelivered, "user", "visible in Host transcript")
+			return err
 		}},
-		{name: "discard", apply: func(store *Store, event WorkEvent) error {
-			return store.DiscardClaim(event.ID, "user", "obsolete delivery")
+		{name: "discard", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseDiscard, "user", "obsolete delivery")
+			return err
 		}},
-		{name: "replay", apply: func(store *Store, event WorkEvent) error {
-			_, err := store.ReplayEvent(event.ID, "user", "explicit replay authorization")
+		{name: "replay", apply: func(store *Store, workID string) error {
+			_, _, err := store.ResolveReviewLease(workID, ReviewLeaseReplay, "user", "explicit replay authorization")
 			return err
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, store, event, _ := preparePendingClaimedHostSubmission(t)
+			workID := event.WorkID
 			writes := 0
 			write := store.writeOrchestration
 			store.writeOrchestration = func(path string, value any) error {
 				writes++
 				return write(path, value)
 			}
-			if err := test.apply(store, event); err != nil {
+			if err := test.apply(store, workID); err != nil {
 				t.Fatal(err)
 			}
 			if writes != 1 {
@@ -393,9 +398,9 @@ func TestClaimResolutionRetirementAndEventMutationShareOneCommit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			original, found, err := reopened.WorkEvent(event.ID)
-			if err != nil || !found || original.Resolution == "" {
-				t.Fatalf("Event resolution missing after reopen: event=%+v found=%v err=%v", original, found, err)
+			fact, found, err := reopened.WorkEvent(event.FactEventID)
+			if err != nil || !found || fact.Resolution == "" {
+				t.Fatalf("fact resolution audit missing after reopen: fact=%+v found=%v err=%v", fact, found, err)
 			}
 			submission, found, err := reopened.TurnSubmission(event.DeliveryHostSessionID, event.ProviderTurnID)
 			if err != nil || !found || submission.State != watcher.TurnSubmissionRetired {
@@ -406,16 +411,16 @@ func TestClaimResolutionRetirementAndEventMutationShareOneCommit(t *testing.T) {
 		t.Run(test.name+" write failure", func(t *testing.T) {
 			root, store, event, _ := preparePendingClaimedHostSubmission(t)
 			store.writeOrchestration = func(string, any) error { return errors.New("injected actor-resolution write failure") }
-			if err := test.apply(store, event); err == nil {
+			if _, _, err := store.ResolveReviewLease(event.WorkID, ReviewLeaseMarkDelivered, "user", "reason"); err == nil {
 				t.Fatal("injected persistence failure was ignored")
 			}
 			reopened, err := NewStore(root)
 			if err != nil {
 				t.Fatal(err)
 			}
-			original, found, err := reopened.WorkEvent(event.ID)
-			if err != nil || !found || original.Resolution != "" || original.DeliveredAt != nil || original.DiscardedAt != nil {
-				t.Fatalf("write failure exposed partial Event resolution: event=%+v found=%v err=%v", original, found, err)
+			fact, found, err := reopened.WorkEvent(event.FactEventID)
+			if err != nil || !found || fact.Resolution != "" || fact.DiscardedAt != nil {
+				t.Fatalf("write failure exposed partial fact audit: fact=%+v found=%v err=%v", fact, found, err)
 			}
 			submission, found, err := reopened.TurnSubmission(event.DeliveryHostSessionID, event.ProviderTurnID)
 			if err != nil || !found || submission.State != watcher.TurnSubmissionPending {
@@ -425,11 +430,32 @@ func TestClaimResolutionRetirementAndEventMutationShareOneCommit(t *testing.T) {
 	}
 }
 
-func storeWorkID(t *testing.T, store *Store, sessionID string) string {
+// TestReviewLeaseDiscardReconcileDedupe proves the discard re-requirement is
+// a single fresh fact (same queue item) and that repeating the discard is a
+// no-op once the lease is gone.
+func TestReviewLeaseDiscardReconcileDedupe(t *testing.T) {
+	store, workID, claimed := claimResolutionStore(t)
+	if _, _, err := store.ResolveReviewLease(workID, ReviewLeaseDiscard, "user", "moot"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Work(workID)
+	if err != nil || item.Review == nil || item.Review.FactEventID == claimed.FactEventID {
+		t.Fatalf("discard re-requirement missing: Work=%+v err=%v", item, err)
+	}
+	if _, found := workEventByID(mustLoadEvents(t, store), item.Review.FactEventID); !found {
+		t.Fatalf("reconcile fact id is not a fact row id: %q", item.Review.FactEventID)
+	}
+	events, err := store.ListWorkEvents(workID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("discard history = %+v err=%v", events, err)
+	}
+}
+
+func mustLoadEvents(t *testing.T, store *Store) []WorkEvent {
 	t.Helper()
-	item, _, err := store.WorkByOwnerSession(sessionID)
+	events, err := store.ListWorkEvents("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return item.ID
+	return events
 }

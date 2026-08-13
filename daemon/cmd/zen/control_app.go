@@ -157,7 +157,7 @@ func (a *controlApp) handleBrainWorkResolve(req control.Request) control.Respons
 	if a == nil || a.brainService == nil || req.BrainWorkDisposition == nil {
 		return control.ErrorResponse("brain_unavailable", "Brain Work disposition is not configured.")
 	}
-	event, item, err := a.brainService.ResolveWorkEvent(*req.BrainWorkDisposition)
+	event, item, err := a.brainService.ResolveWorkReview(*req.BrainWorkDisposition)
 	if err != nil {
 		return brainWorkControlError(err)
 	}
@@ -477,7 +477,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	}
 	if ownedWork.ID != "" {
 		var inFlight bool
-		inFlight, err = a.brainStore.WorkHasInFlightHandling(ownedWork.ID)
+		inFlight, err = a.brainStore.WorkHasDeliveredReview(ownedWork.ID)
 		if err == nil && inFlight {
 			ownedWork, err = a.brainStore.ReserveWorkSuccessor(ownedWork.ID, agentID)
 		}
@@ -663,7 +663,7 @@ func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) 
 			return brain.Work{}, fmt.Errorf("Brain Work %s is already %s", item.ID, item.Status)
 		}
 		if strings.TrimSpace(item.OwnerSessionID) != "" {
-			inFlight, inFlightErr := a.brainStore.WorkHasInFlightHandling(item.ID)
+			inFlight, inFlightErr := a.brainStore.WorkHasDeliveredReview(item.ID)
 			if inFlightErr != nil {
 				return brain.Work{}, inFlightErr
 			}
@@ -834,34 +834,37 @@ func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response 
 	return response
 }
 
-// handleBrainWorkEventResolve closes held delivery claims explicitly and
-// actor-recorded (C.2.6): mark_delivered, discard, or user-authorized replay.
-// Automatic or time-based resolution is prohibited.
+// handleBrainWorkEventResolve closes held review leases explicitly and
+// actor-recorded (C.2.6, Work-scoped): mark_delivered, discard, or
+// user-authorized replay. Automatic or time-based resolution is prohibited.
 func (a *controlApp) handleBrainWorkEventResolve(req control.Request) control.Response {
 	if a == nil || a.brainStore == nil {
 		return control.ErrorResponse("brain_unavailable", "Brain Work is not configured.")
 	}
-	eventID := strings.TrimSpace(req.ID)
+	workID := strings.TrimSpace(req.WorkID)
 	action := strings.TrimSpace(req.Operation)
 	actor := strings.TrimSpace(req.Actor)
 	reason := strings.TrimSpace(req.Reason)
+	if workID == "" {
+		return control.ErrorResponse("invalid_brain_work_event_resolution", "work_id is required")
+	}
 	switch action {
 	case "mark_delivered":
-		if err := a.brainStore.MarkDeliveredClaim(eventID, actor, reason); err != nil {
+		if _, _, err := a.brainStore.ResolveReviewLease(workID, brain.ReviewLeaseMarkDelivered, actor, reason); err != nil {
 			return brainWorkControlError(err)
 		}
-		return control.Response{OK: true, Confirmation: "Held claim marked delivered."}
+		return control.Response{OK: true, Confirmation: "Held review lease marked delivered."}
 	case "discard":
-		if err := a.brainStore.DiscardClaim(eventID, actor, reason); err != nil {
+		if _, _, err := a.brainStore.ResolveReviewLease(workID, brain.ReviewLeaseDiscard, actor, reason); err != nil {
 			return brainWorkControlError(err)
 		}
-		return control.Response{OK: true, Confirmation: "Held claim discarded."}
+		return control.Response{OK: true, Confirmation: "Held review lease discarded."}
 	case "replay":
-		replay, err := a.brainStore.ReplayEvent(eventID, actor, reason)
+		_, _, err := a.brainStore.ResolveReviewLease(workID, brain.ReviewLeaseReplay, actor, reason)
 		if err != nil {
 			return brainWorkControlError(err)
 		}
-		return control.Response{OK: true, BrainWorkEvent: &replay, Confirmation: "Event replayed under an audited new identity."}
+		return control.Response{OK: true, Confirmation: "Review lease replayed under the same audited action identity."}
 	default:
 		return control.ErrorResponse("invalid_brain_work_event_resolution",
 			"resolution action must be mark_delivered, discard, or replay")

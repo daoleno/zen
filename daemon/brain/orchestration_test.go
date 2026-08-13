@@ -139,7 +139,7 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 		claimWG.Add(1)
 		go func() {
 			defer claimWG.Done()
-			_, ok, claimErr := store.ClaimNextActionableEvent("brain-agent-host-hidden:@1")
+			_, ok, claimErr := store.ClaimNextReviewAction("brain-agent-host-hidden:@1")
 			if claimErr != nil {
 				claimErrors.Add(1)
 			}
@@ -157,7 +157,7 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := reopened.ClaimNextActionableEvent("brain-agent-host-hidden:@1"); err != nil || ok {
+	if _, ok, err := reopened.ClaimNextReviewAction("brain-agent-host-hidden:@1"); err != nil || ok {
 		t.Fatalf("durable claim replayed after restart: ok=%v err=%v", ok, err)
 	}
 }
@@ -183,40 +183,36 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-	if err != nil || !ok || claimed.ID != event.ID {
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
+	if err != nil || !ok || claimed.FactEventID != event.ID {
 		t.Fatalf("claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, "different-host:@1", claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
-		t.Fatalf("different Host consumed assigned Event: err=%v", err)
-	}
 	for name, claim := range map[string]struct {
-		eventID, token, workID, providerTurnID string
+		token, workID, providerTurnID string
 	}{
-		"event":         {eventID: "different-event", token: claimed.HandlingID, workID: claimed.WorkID, providerTurnID: claimed.ProviderTurnID},
-		"claim token":   {eventID: event.ID, token: "different-claim-token", workID: claimed.WorkID, providerTurnID: claimed.ProviderTurnID},
-		"Work":          {eventID: event.ID, token: claimed.HandlingID, workID: "different-work", providerTurnID: claimed.ProviderTurnID},
-		"provider Turn": {eventID: event.ID, token: claimed.HandlingID, workID: claimed.WorkID, providerTurnID: "different-provider-turn"},
+		"claim token":   {token: "different-claim-token", workID: claimed.WorkID, providerTurnID: claimed.ProviderTurnID},
+		"Work":          {token: claimed.HandlingID, workID: "different-work", providerTurnID: claimed.ProviderTurnID},
+		"provider Turn": {token: claimed.HandlingID, workID: claimed.WorkID, providerTurnID: "different-provider-turn"},
 	} {
-		if _, _, err := store.ConsumeClaimedWorkEvent(
-			claim.eventID, claim.token, claim.workID, hostID, claim.providerTurnID,
+		if _, _, err := store.ConsumeReviewDelivery(
+			claim.workID, claim.token, claim.providerTurnID,
 		); !errors.Is(err, ErrEventClaim) {
-			t.Fatalf("different %s consumed assigned Event: err=%v", name, err)
+			t.Fatalf("different %s consumed assigned review: err=%v", name, err)
 		}
 	}
-	gotEvent, gotWork, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
-	if err != nil || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.DeliveredAt == nil {
+	gotEvent, gotWork, err := store.ConsumeReviewDelivery(event.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
+	if err != nil || gotEvent.FactEventID != event.ID || gotWork.ID != item.ID || gotEvent.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", gotEvent, gotWork, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
+	if _, _, err := store.ConsumeReviewDelivery(event.WorkID, claimed.HandlingID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
 		t.Fatalf("consumed Event replayed: err=%v", err)
 	}
 	reopened, err := NewStore(store.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := reopened.ClaimNextActionableEvent(hostID); err != nil || ok {
+	if _, ok, err := reopened.ClaimNextReviewAction(hostID); err != nil || ok {
 		t.Fatalf("consumed Event reclaimed after restart: ok=%v err=%v", ok, err)
 	}
 }
@@ -265,7 +261,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		terminalWorks = append(terminalWorks, item)
 		now = base
 	}
-	if event, claimed, err := store.ClaimNextActionableEvent(hostID); err != nil || claimed {
+	if event, claimed, err := store.ClaimNextReviewAction(hostID); err != nil || claimed {
 		t.Fatalf("pre-terminal unclaimed Event was claimable: event=%#v claimed=%v err=%v", event, claimed, err)
 	}
 
@@ -291,8 +287,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if _, _, err := store.MaterializeWorkCard(terminal, terminalEvent); err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-	if err != nil || !ok || claimed.ID != terminalEvent.ID {
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
+	if err != nil || !ok || claimed.FactEventID != terminalEvent.ID {
 		t.Fatalf("active Event claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	now = base.Add(3*time.Hour + 34*time.Minute)
@@ -300,7 +296,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if _, err := store.UpdateWork(terminal.ID, WorkUpdate{Status: &status}); !errors.Is(err, ErrWorkConflict) {
 		t.Fatalf("terminal update bypassed held Host claim: %v", err)
 	}
-	if err := store.DiscardClaim(claimed.ID, "test", "explicitly retire the undelivered historical claim"); err != nil {
+	if _, _, err := store.ResolveReviewLease(claimed.WorkID, ReviewLeaseDiscard, "test", "explicitly retire the undelivered historical claim"); err != nil {
 		t.Fatal(err)
 	}
 	terminal, err = store.UpdateWork(terminal.ID, WorkUpdate{Status: &status})
@@ -308,7 +304,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	terminalWorks = append(terminalWorks, terminal)
-	blockers, err := store.ClaimedActionableEvents()
+	blockers, err := store.LeasedReviewActions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,21 +331,21 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok, err = store.ClaimNextActionableEvent(hostID)
-	if err != nil || !ok || claimed.ID != activeEvent.ID {
+	claimed, ok, err = store.ClaimNextReviewAction(hostID)
+	if err != nil || !ok || claimed.FactEventID != activeEvent.ID {
 		t.Fatalf("later active Event claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
-	if err != nil || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
+	consumed, consumedWork, err := store.ConsumeReviewDelivery(activeEvent.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
+	if err != nil || consumed.FactEventID != activeEvent.ID || consumedWork.ID != active.ID ||
 		consumed.DeliveredAt == nil {
 		t.Fatalf("consume event=%#v work=%#v err=%v", consumed, consumedWork, err)
 	}
-	if _, _, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
+	if _, _, err := store.ConsumeReviewDelivery(activeEvent.WorkID, claimed.HandlingID, claimed.ProviderTurnID); !errors.Is(err, ErrEventClaim) {
 		t.Fatalf("active Event was consumed more than once: err=%v", err)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: consumed.ID, HandlingID: consumed.HandlingID, ProviderTurnID: consumed.ProviderTurnID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: consumed.WorkID, HandlingID: consumed.HandlingID, ProviderTurnID: consumed.ProviderTurnID,
 		ExpectedWorkRevision: consumed.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
 	}); err != nil {
 		t.Fatalf("end active Host handling: %v", err)
@@ -381,18 +377,18 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-		if err != nil || !ok || claimed.ID != event.ID {
+		claimed, ok, err := store.ClaimNextReviewAction(hostID)
+		if err != nil || !ok || claimed.FactEventID != event.ID {
 			t.Fatalf("terminal result offset=%s claim=%#v ok=%v err=%v", offset, claimed, ok, err)
 		}
 		resolveClaimedHostTurnForTest(t, store, claimed)
-		consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(event.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
-		if err != nil || consumed.ID != event.ID || consumedWork.ID != item.ID {
+		consumed, consumedWork, err := store.ConsumeReviewDelivery(event.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
+		if err != nil || consumed.FactEventID != event.ID || consumedWork.ID != item.ID {
 			t.Fatalf("terminal result offset=%s consume=%#v work=%#v err=%v",
 				offset, consumed, consumedWork, err)
 		}
-		if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-			EventID: consumed.ID, HandlingID: consumed.HandlingID, ProviderTurnID: consumed.ProviderTurnID,
+		if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+			WorkID: consumed.WorkID, HandlingID: consumed.HandlingID, ProviderTurnID: consumed.ProviderTurnID,
 			ExpectedWorkRevision: consumed.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
 		}); err != nil {
 			t.Fatalf("end terminal Host handling offset=%s err=%v", offset, err)
@@ -418,7 +414,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if _, _, err := store.MaterializeWorkCard(readWork, readEvent); err != nil {
 		t.Fatal(err)
 	}
-	readClaim, ok, err := store.ClaimNextActionableEvent(hostID)
+	readClaim, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok {
 		t.Fatalf("Event to acknowledge was not claimed: ok=%v err=%v", ok, err)
 	}
@@ -426,12 +422,12 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err := store.MarkWorkRead(readWork.ID); err != nil {
 		t.Fatal(err)
 	}
-	if blockers, err := store.ClaimedActionableEvents(); err != nil || len(blockers) != 1 ||
-		blockers[0].ID != readEvent.ID {
+	if blockers, err := store.LeasedReviewActions(); err != nil || len(blockers) != 1 ||
+		blockers[0].FactEventID != readEvent.ID {
 		t.Fatalf("card acknowledgement changed the exact delivery claim: blockers=%#v err=%v", blockers, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, readClaim)
-	consumedRead, _, err := store.ConsumeClaimedWorkEvent(readEvent.ID, readClaim.HandlingID, readClaim.WorkID, hostID, readClaim.ProviderTurnID)
+	consumedRead, _, err := store.ConsumeReviewDelivery(readEvent.WorkID, readClaim.HandlingID, readClaim.ProviderTurnID)
 	if err != nil || consumedRead.DeliveredAt == nil {
 		t.Fatalf("exact accepted claim was not consumable after card acknowledgement: event=%#v err=%v", consumedRead, err)
 	}
@@ -439,9 +435,11 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(readEvents) != 1 || readEvents[0].ID != readEvent.ID ||
-		readEvents[0].ClaimedAt == nil || readEvents[0].DeliveredAt == nil {
-		t.Fatalf("card acknowledgement mutated the exact delivery claim: %#v", readEvents)
+	if len(readEvents) != 1 || readEvents[0].ID != readEvent.ID {
+		t.Fatalf("card acknowledgement mutated the fact history: %#v", readEvents)
+	}
+	if lease := reviewLeaseOf(t, store, readWork.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("card acknowledgement mutated the exact delivery lease: %#v", lease)
 	}
 	projectedAfterRead, err := store.ActiveWork()
 	if err != nil {
@@ -452,8 +450,8 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 			t.Fatalf("card acknowledgement did not clear the read projection: %+v", item)
 		}
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: consumedRead.ID, HandlingID: consumedRead.HandlingID, ProviderTurnID: consumedRead.ProviderTurnID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: consumedRead.WorkID, HandlingID: consumedRead.HandlingID, ProviderTurnID: consumedRead.ProviderTurnID,
 		ExpectedWorkRevision: consumedRead.DeliveryWorkRevision, Disposition: WorkDispositionComplete,
 	}); err != nil {
 		t.Fatalf("end card-acknowledged Host handling: %v", err)
@@ -479,12 +477,12 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err := store.MarkWorkRead(unclaimedReadWork.ID); err != nil {
 		t.Fatal(err)
 	}
-	readBeforeClaim, wasClaimed, err := store.ClaimNextActionableEvent(hostID)
+	readBeforeClaim, wasClaimed, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !wasClaimed || readBeforeClaim.WorkID != unclaimedReadWork.ID {
 		t.Fatalf("card acknowledgement suppressed Event delivery: event=%#v claimed=%v err=%v", readBeforeClaim, wasClaimed, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, readBeforeClaim)
-	if _, _, err := store.ConsumeClaimedWorkEvent(readBeforeClaim.ID, readBeforeClaim.HandlingID, readBeforeClaim.WorkID, hostID, readBeforeClaim.ProviderTurnID); err != nil {
+	if _, _, err := store.ConsumeReviewDelivery(readBeforeClaim.WorkID, readBeforeClaim.HandlingID, readBeforeClaim.ProviderTurnID); err != nil {
 		t.Fatalf("consume card-acknowledged Event: %v", err)
 	}
 
@@ -493,10 +491,12 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		t.Fatal(err)
 	}
 	if len(terminalEvents) != 2 || terminalEvents[0].ID != terminalEvent.ID ||
-		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].DeliveredAt != nil ||
 		terminalEvents[0].Resolution != EventResolutionDiscard || terminalEvents[0].DiscardedAt == nil ||
-		terminalEvents[1].Kind != "brain.reconcile_required" || terminalEvents[1].ClaimedAt != nil {
+		terminalEvents[1].Kind != "brain.reconcile_required" {
 		t.Fatalf("terminal Event history changed: %#v", terminalEvents)
+	}
+	if lease := reviewLeaseOf(t, store, terminal.ID); lease != nil {
+		t.Fatalf("terminal Work retained a review lease: %#v", lease)
 	}
 	projected, err := store.ActiveWork()
 	if err != nil {
@@ -793,8 +793,11 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
-	if err != nil || len(events) != 2 || events[1].ID != actionable.ID || events[1].DeliveredAt == nil {
-		t.Fatalf("accepted direct Event was not consumed exactly: events=%#v err=%v", events, err)
+	if err != nil || len(events) != 2 || events[1].ID != actionable.ID {
+		t.Fatalf("accepted direct Event history: events=%#v err=%v", events, err)
+	}
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("accepted direct Event was not consumed exactly: %#v", lease)
 	}
 }
 
@@ -846,8 +849,11 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveredAt != nil {
+	if len(events) != 1 {
 		t.Fatalf("failed send claim = %#v", events)
+	}
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt != nil {
+		t.Fatalf("failed send lease = %#v", lease)
 	}
 	// The tmux receipt ledger proves the mutation may have begun: the claim
 	// is held forever, never released by elapsed time, never replayed.
@@ -866,14 +872,8 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := WorkEvent{}
-	for _, event := range events {
-		if event.ID == events[0].ID || event.DedupeKey == "external:send-failure" {
-			original = event
-		}
-	}
-	if original.ClaimedAt == nil || original.DeliveredAt != nil || len(fw.sentCalls) != 1 {
-		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt != nil || len(fw.sentCalls) != 1 {
+		t.Fatalf("ambiguous failed send did not remain closed: lease=%#v sends=%#v", lease, fw.sentCalls)
 	}
 	// The held claim is surfaced as a deduped delivery.ambiguous note.
 	noteFound := false
@@ -939,9 +939,11 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 		t.Fatal(err)
 	}
 	if len(events) != 1 || events[0].ID != event.ID ||
-		events[0].ClaimedAt == nil || events[0].DeliveredAt != nil ||
 		len(fw.sentCalls) != 1 || fw.outcomes[event.ID] != watcher.InputAccepted {
 		t.Fatalf("accepted persistence boundary events=%#v sends=%#v outcomes=%#v", events, fw.sentCalls, fw.outcomes)
+	}
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt != nil {
+		t.Fatalf("accepted persistence boundary lease=%#v", lease)
 	}
 
 	restarted, err := NewStore(root)
@@ -955,7 +957,7 @@ func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ID != event.ID || events[0].DeliveredAt == nil ||
+	if len(events) != 1 || events[0].ID != event.ID ||
 		len(fw.sentCalls) != 1 {
 		t.Fatalf("restart did not finalize without resend: events=%#v sends=%#v", events, fw.sentCalls)
 	}
@@ -1011,8 +1013,11 @@ func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 1 || events[0].ID != event.ID || events[0].ClaimedAt != nil {
+			if len(events) != 1 || events[0].ID != event.ID {
 				t.Fatalf("exact Event was not released: %#v", events)
+			}
+			if lease := reviewLeaseOf(t, store, item.ID); lease != nil {
+				t.Fatalf("exact Event was not released: %#v", lease)
 			}
 
 			restarted, err := NewStore(root)
@@ -1098,8 +1103,7 @@ func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 2 || events[0].ID != event.ID || events[0].ClaimedAt == nil ||
-				events[0].DeliveredAt != nil ||
+			if len(events) != 2 || events[0].ID != event.ID ||
 				len(restartedWatcher.sentCalls) != 0 {
 				t.Fatalf("ambiguous Event did not remain singly held: events=%#v sends=%#v",
 					events, restartedWatcher.sentCalls)
@@ -1214,8 +1218,11 @@ func TestUserSteeringCannotOvertakeIdleBoundaryEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveredAt == nil {
-		t.Fatalf("idle-boundary Event was not delivered exactly once: %#v", events)
+	if len(events) != 1 {
+		t.Fatalf("idle-boundary Event history = %#v", events)
+	}
+	if lease := reviewLeaseOf(t, store, item.ID); lease == nil || lease.DeliveredAt == nil {
+		t.Fatalf("idle-boundary review was not delivered exactly once: %#v", lease)
 	}
 
 	// The prepared user message becomes the durable pending admission; the
@@ -1918,8 +1925,11 @@ func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing
 	}
 	if got.OwnerSessionID != "" || got.OwnerDelegated || got.Status != WorkNeedsInput ||
 		len(events) != 1 || events[0].Kind != "brain.owner_absent" ||
-		events[0].ClaimedAt != nil || len(fw.sentCalls) != 0 {
+		len(fw.sentCalls) != 0 {
 		t.Fatalf("markerless missing-owner reconcile Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
+	}
+	if lease := reviewLeaseOf(t, store, got.ID); lease != nil {
+		t.Fatalf("markerless missing-owner reconcile lease=%#v", lease)
 	}
 }
 
@@ -2112,7 +2122,7 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 // TurnID gate (occurrence-counted or bare-session dedupe keys) remain durable
 // audit rows but are never scheduler-eligible; only the reducer's turn-scoped
 // rows can wake Brain, and non-lifecycle rows keep their eligibility.
-func TestLegacyUnscopedLifecycleRowsNeverSchedulerEligible(t *testing.T) {
+func TestLegacyUnscopedLifecycleRowsNeverReviewEligible(t *testing.T) {
 	base := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
 	database := orchestrationDatabase{
 		BrainWork: []Work{{ID: "work-1", Status: WorkWaiting}},
@@ -2124,34 +2134,32 @@ func TestLegacyUnscopedLifecycleRowsNeverSchedulerEligible(t *testing.T) {
 		Actionable: true,
 		CreatedAt:  base,
 	}
-	if workEventSchedulerEligible(database, legacy) {
-		t.Fatal("legacy unscoped lifecycle row became scheduler-eligible")
+	if reviewEligibleFact(database, database.BrainWork[0], legacy) {
+		t.Fatal("legacy unscoped lifecycle row became review-eligible")
 	}
 	scoped := legacy
 	scoped.DedupeKey = "session:agent-1:turn:turn-1:session.done"
-	if !workEventSchedulerEligible(database, scoped) {
-		t.Fatal("turn-scoped lifecycle row is not scheduler-eligible")
+	if !reviewEligibleFact(database, database.BrainWork[0], scoped) {
+		t.Fatal("turn-scoped lifecycle row is not review-eligible")
 	}
 	// The canonical ledger shape embeds the Session ID inside the TurnID
 	// (turnID = sessionID+":turn:N"); the key still contains exactly one
 	// scope marker and must stay eligible.
 	embedded := legacy
 	embedded.DedupeKey = "session:brain-agent-worker:@2:turn:brain-agent-worker:@2:turn:1:session.stale"
-	if !workEventSchedulerEligible(database, embedded) {
-		t.Fatal("embedded-turnID lifecycle row is not scheduler-eligible")
+	if !reviewEligibleFact(database, database.BrainWork[0], embedded) {
+		t.Fatal("embedded-turnID lifecycle row is not review-eligible")
 	}
-	// A user-authorized replay of a held lifecycle delivery is the one
-	// explicit second wake and stays eligible despite its non-turn-scoped key.
+	// A user-authorized replay keeps the same fact identity and stays eligible.
 	replay := legacy
-	replay.DedupeKey = "delivery:event-1:replay:nonce"
-	replay.ReplayOf = "event-1"
-	if !workEventSchedulerEligible(database, replay) {
-		t.Fatal("authorized replay lost scheduler eligibility")
+	replay.DedupeKey = "session:agent-1:turn:turn-2:session.done"
+	if !reviewEligibleFact(database, database.BrainWork[0], replay) {
+		t.Fatal("authorized replay lost review eligibility")
 	}
 	plain := legacy
 	plain.Kind = "provider.changed"
 	plain.DedupeKey = "provider:agent-1:changed"
-	if !workEventSchedulerEligible(database, plain) {
-		t.Fatal("non-lifecycle row lost scheduler eligibility")
+	if !reviewEligibleFact(database, database.BrainWork[0], plain) {
+		t.Fatal("non-lifecycle row lost review eligibility")
 	}
 }

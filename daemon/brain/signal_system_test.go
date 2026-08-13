@@ -43,9 +43,9 @@ func appendSignalTestEvent(t *testing.T, store *Store, item Work, suffix string)
 	return event
 }
 
-func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEvent, Work) {
+func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkReviewAction, Work) {
 	t.Helper()
-	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	claimed, ok, err := store.ClaimNextReviewAction(hostID)
 	if err != nil || !ok {
 		t.Fatalf("claim ok=%v err=%v", ok, err)
 	}
@@ -53,14 +53,14 @@ func deliverSignalTestEvent(t *testing.T, store *Store, hostID string) (WorkEven
 		t.Fatalf("claim did not separate handling and provider turn identities: %+v", claimed)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, item, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, hostID, claimed.ProviderTurnID)
+	delivered, item, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatalf("consume claimed event: %v", err)
 	}
 	return delivered, item
 }
 
-func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent) {
+func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkReviewAction) {
 	t.Helper()
 	existingTurnID := ""
 	if current, found, err := store.Turn(claimed.DeliveryHostSessionID); err != nil {
@@ -72,10 +72,10 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent
 		}
 	}
 	acceptedAt := time.Now().UTC()
-	payloadDigest := pendingSubmissionDigest("claimed Host Event " + claimed.ID)
+	payloadDigest := pendingSubmissionDigest("claimed Host review " + claimed.FactEventID)
 	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
 		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.ID, ClaimToken: claimed.HandlingID, PayloadSHA256: payloadDigest,
+		Receipt: claimed.FactEventID, ClaimToken: claimed.HandlingID, PayloadSHA256: payloadDigest,
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
 	})
@@ -85,7 +85,7 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkEvent
 	resolvedAt := acceptedAt.Add(time.Millisecond)
 	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
 		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.ID, PayloadSHA256: pending.PayloadSHA256,
+		Receipt: claimed.FactEventID, PayloadSHA256: pending.PayloadSHA256,
 		ActivityID: "host-activity-" + claimed.ProviderTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
@@ -131,15 +131,18 @@ func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testi
 	item := createSignalTestWork(t, store, "Delivery boundary", "brain-agent-delivery:@1")
 	appendSignalTestEvent(t, store, item, "delivery-1")
 	delivered, current := deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
-	if delivered.DeliveredAt == nil || delivered.HandledAt != nil || delivered.HandlingID == "" {
+	if delivered.DeliveredAt == nil || delivered.HandlingID == "" {
 		t.Fatalf("delivery incorrectly implied handling: %+v", delivered)
+	}
+	if fact, found, err := store.WorkEvent(delivered.FactEventID); err != nil || !found || fact.HandledAt != nil {
+		t.Fatalf("delivery incorrectly implied handling: fact=%+v found=%v err=%v", fact, found, err)
 	}
 	if delivered.DeliveryWorkRevision != current.Revision {
 		t.Fatalf("delivery revision=%d Work revision=%d", delivered.DeliveryWorkRevision, current.Revision)
 	}
 
-	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID:              delivered.ID,
+	resolvedEvent, resolvedWork, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID:               delivered.WorkID,
 		HandlingID:           delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
@@ -153,8 +156,8 @@ func TestSignalDeliveryAndHandlingAreSeparateRevisionCheckedTransitions(t *testi
 		resolvedWork.Status != WorkDone || resolvedWork.Revision <= current.Revision {
 		t.Fatalf("resolution did not atomically handle and terminalize: event=%+v Work=%+v", resolvedEvent, resolvedWork)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -185,8 +188,8 @@ func TestSignalResolutionSerializesNextAttentionRevision(t *testing.T) {
 	if err != nil || afterAppend.Revision != before.Revision || later.WorkRevision != before.Revision+1 {
 		t.Fatalf("later fact stole current revision: before=%+v after=%+v event=%+v err=%v", before, afterAppend, later, err)
 	}
-	resolved, terminal, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	resolved, terminal, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -198,8 +201,8 @@ func TestSignalResolutionSerializesNextAttentionRevision(t *testing.T) {
 	if err != nil || !found || durableLater.HandledAt != nil || durableLater.WorkRevision != terminal.Revision {
 		t.Fatalf("next attention was consumed with prior epoch: event=%+v found=%v err=%v", durableLater, found, err)
 	}
-	next, ok, err := store.ClaimNextActionableEvent(delivered.DeliveryHostSessionID)
-	if err != nil || !ok || next.ID != later.ID || next.DeliveryWorkRevision != terminal.Revision {
+	next, ok, err := store.ClaimNextReviewAction(delivered.DeliveryHostSessionID)
+	if err != nil || !ok || next.FactEventID != later.ID || next.DeliveryWorkRevision != terminal.Revision {
 		t.Fatalf("next epoch claim=%+v ok=%v err=%v", next, ok, err)
 	}
 }
@@ -285,25 +288,25 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || !created {
+	if _, created, err := store.EndReviewDelivery(deliveredA.WorkID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || !created {
 		t.Fatalf("requeue created=%v err=%v", created, err)
 	}
 	// FIFO by append sequence: B and C (older heads) discharge before the
 	// requeued dirty key A, whose new head was appended after them. The
 	// requeue never jumps the fair tail.
 	for index, wantWorkID := range []string{b.ID, c.ID, a.ID} {
-		claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+		claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 		if err != nil || !ok || claimed.WorkID != wantWorkID {
 			t.Fatalf("claim %d = %+v ok=%v err=%v, want Work %s", index, claimed, ok, err, wantWorkID)
 		}
 		if index < 2 {
 			resolveClaimedHostTurnForTest(t, store, claimed)
-			delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+			delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+				WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 				ProviderTurnID:       delivered.ProviderTurnID,
 				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 				Disposition:          WorkDispositionComplete,
@@ -313,7 +316,7 @@ func TestDirtyWorkRequeuesOnceAtFairTail(t *testing.T) {
 		}
 	}
 	// Requeueing the same ended handling is idempotent.
-	if _, created, err := store.RequeueUnhandledHostAttention(deliveredA.ID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || created {
+	if _, created, err := store.EndReviewDelivery(deliveredA.WorkID, deliveredA.HandlingID, deliveredA.ProviderTurnID); err != nil || created {
 		t.Fatalf("duplicate requeue created=%v err=%v", created, err)
 	}
 }
@@ -349,9 +352,11 @@ func TestSignalRestartRequeuesWorkKeyWithoutReplayingDeliveredFact(t *testing.T)
 	if err != nil || !complete {
 		t.Fatalf("startup complete=%v err=%v", complete, err)
 	}
-	if len(fw.sentCalls) != 1 || strings.Contains(fw.sentCalls[0].text, `"kind":"session.done"`) ||
-		!strings.Contains(fw.sentCalls[0].text, `"kind":"brain.reconcile_required"`) {
-		t.Fatalf("restart replayed delivered fact instead of reconciling Work: %+v", fw.sentCalls)
+	// The unresolved action is re-delivered to the current Host exactly once
+	// (I8): same fact identity, no second queue item, no replay of the old
+	// Host's consumed turn.
+	if len(fw.sentCalls) != 1 || !strings.Contains(fw.sentCalls[0].text, `"kind":"session.done"`) {
+		t.Fatalf("restart did not re-deliver the unresolved action exactly once: %+v", fw.sentCalls)
 	}
 }
 
@@ -369,8 +374,8 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	fw.killErr = errors.New("injected teardown failure")
 	fw.killLeavesLive = true
 	service := NewService(store, fw, nil)
-	_, failedWork, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	_, failedWork, err := service.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -384,8 +389,8 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	if retryEvent.Kind != "brain.finalization_failed" || retryWork.ID != item.ID {
 		t.Fatalf("retry attention event=%+v Work=%+v", retryEvent, retryWork)
 	}
-	_, got, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: retryEvent.ID, HandlingID: retryEvent.HandlingID,
+	_, got, err := service.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: retryEvent.WorkID, HandlingID: retryEvent.HandlingID,
 		ProviderTurnID:       retryEvent.ProviderTurnID,
 		ExpectedWorkRevision: retryEvent.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -399,8 +404,8 @@ func TestTerminalDispositionFinalizesOnlyDelegatedOwnerAndRetriesFailure(t *test
 	appendSignalTestEvent(t, store, nondelegated, "external-1")
 	delivered, _ = deliverSignalTestEvent(t, store, "brain-agent-brain-hidden:@1")
 	fw.sessions[nondelegatedID] = &classifier.Agent{ID: nondelegatedID, Delegated: false}
-	_, safeWork, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	_, safeWork, err := service.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionCancel,
@@ -435,8 +440,8 @@ func TestTerminalDispositionSkipsReusedUnownedRuntimeIdentity(t *testing.T) {
 		sessions: map[string]*classifier.Agent{},
 		killErr:  fmt.Errorf("%w: %s", watcher.ErrUnownedTmuxTarget, sessionID),
 	}
-	_, terminal, err := NewService(store, fw, nil).ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	_, terminal, err := NewService(store, fw, nil).ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionComplete,
@@ -487,8 +492,8 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 				delegatedID: {ID: delegatedID, Delegated: true},
 			}, killErr: errors.New("injected teardown failure"), killLeavesLive: true}
 			service := NewService(store, fw, nil)
-			_, failed, err := service.ResolveWorkEvent(WorkEventDispositionRequest{
-				EventID: delivered.ID, HandlingID: delivered.HandlingID,
+			_, failed, err := service.ResolveWorkReview(WorkReviewDispositionRequest{
+				WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 				ProviderTurnID:       delivered.ProviderTurnID,
 				ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 				Disposition:          WorkDispositionComplete,
@@ -505,10 +510,10 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 				t.Fatalf("finalization retry was not exactly one durable obligation: %+v", events)
 			}
 
-			var claim WorkEvent
+			var claim WorkReviewAction
 			if test.claimBeforeMetadata {
 				var ok bool
-				claim, ok, err = store.ClaimNextActionableEvent(hostID)
+				claim, ok, err = store.ClaimNextReviewAction(hostID)
 				if err != nil || !ok || claim.Kind != "brain.finalization_failed" {
 					t.Fatalf("pre-metadata claim=%+v ok=%v err=%v", claim, ok, err)
 				}
@@ -534,24 +539,20 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 				t.Fatal(err)
 			}
 			if test.claimBeforeMetadata {
-				blockers, err := reopened.ClaimedActionableEvents()
-				if err != nil || len(blockers) != 1 || blockers[0].ID != claim.ID {
+				blockers, err := reopened.LeasedReviewActions()
+				if err != nil || len(blockers) != 1 || blockers[0].FactEventID != claim.FactEventID {
 					t.Fatalf("reopened held claim=%+v err=%v", blockers, err)
 				}
-				if err := reopened.ReleaseEventClaim(
-					claim.ID, claim.HandlingID, claim.WorkID, hostID, claim.ProviderTurnID,
-				); err != nil {
+				if err := reopened.ReleaseReviewLease(claim.WorkID, claim.HandlingID, claim.ProviderTurnID); err != nil {
 					t.Fatalf("release proved-undelivered retry claim: %v", err)
 				}
 			}
-			claim, ok, err := reopened.ClaimNextActionableEvent(hostID)
+			claim, ok, err := reopened.ClaimNextReviewAction(hostID)
 			if err != nil || !ok || claim.Kind != "brain.finalization_failed" {
 				t.Fatalf("post-metadata retry claim=%+v ok=%v err=%v", claim, ok, err)
 			}
 			resolveClaimedHostTurnForTest(t, reopened, claim)
-			retry, _, err := reopened.ConsumeClaimedWorkEvent(
-				claim.ID, claim.HandlingID, claim.WorkID, hostID, claim.ProviderTurnID,
-			)
+			retry, _, err := reopened.ConsumeReviewDelivery(claim.WorkID, claim.HandlingID, claim.ProviderTurnID)
 			if err != nil {
 				t.Fatalf("deliver finalization retry: %v", err)
 			}
@@ -559,8 +560,8 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 			fw.killErr = nil
 			fw.killLeavesLive = false
 			reopenedService := NewService(reopened, fw, nil)
-			_, finalized, err := reopenedService.ResolveWorkEvent(WorkEventDispositionRequest{
-				EventID: retry.ID, HandlingID: retry.HandlingID,
+			_, finalized, err := reopenedService.ResolveWorkReview(WorkReviewDispositionRequest{
+				WorkID: retry.WorkID, HandlingID: retry.HandlingID,
 				ProviderTurnID:       retry.ProviderTurnID,
 				ExpectedWorkRevision: retry.DeliveryWorkRevision,
 				Disposition:          WorkDispositionComplete,
@@ -574,7 +575,7 @@ func TestTerminalFinalizationAttentionSurvivesMetadataUpdateAndReopen(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
+			if replay, claimed, err := reopenedAgain.ClaimNextReviewAction(hostID); err != nil || claimed {
 				t.Fatalf("finalization retry replayed after completion: event=%+v claimed=%v err=%v", replay, claimed, err)
 			}
 			events, err = reopenedAgain.ListWorkEvents(item.ID)
@@ -611,7 +612,7 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 		t.Fatal(err)
 	}
 	if stagedWork.SuccessorReservation == nil || stagedWork.SuccessorReservation.SessionID != successor ||
-		stagedWork.SuccessorReservation.EventID != delivered.ID || len(events) != 1 {
+		stagedWork.SuccessorReservation.EventID != delivered.FactEventID || len(events) != 1 {
 		t.Fatalf("staged successor Work=%+v Events=%+v", stagedWork, events)
 	}
 	acceptedAt := time.Now().UTC()
@@ -635,8 +636,8 @@ func TestContinueDispositionAtomicallyAttachesStagedSuccessorSession(t *testing.
 	if beforeDisposition.Revision != current.Revision || beforeDisposition.OwnerSessionID != incumbent {
 		t.Fatalf("accepted successor bypassed disposition: before=%+v after=%+v", current, beforeDisposition)
 	}
-	resolvedEvent, resolvedWork, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	resolvedEvent, resolvedWork, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionContinue, SuccessorSessionID: successor,

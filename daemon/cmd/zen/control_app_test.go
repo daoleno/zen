@@ -114,16 +114,16 @@ func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID s
 	return turnID
 }
 
-func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.WorkEvent) {
+func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.WorkReviewAction) {
 	t.Helper()
 	acceptedAt := time.Now().UTC()
 	if claimed.ClaimedAt != nil {
 		acceptedAt = claimed.ClaimedAt.UTC()
 	}
-	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.ID)))
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.FactEventID)))
 	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
 		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
-		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ID, ClaimToken: claimed.HandlingID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.FactEventID, ClaimToken: claimed.HandlingID,
 		PayloadSHA256: digest, ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
 	})
@@ -133,7 +133,7 @@ func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.Wor
 	resolvedAt := acceptedAt.Add(time.Millisecond)
 	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
 		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.ID, PayloadSHA256: pending.PayloadSHA256,
+		Receipt: claimed.FactEventID, PayloadSHA256: pending.PayloadSHA256,
 		ActivityID: "host-activity-" + claimed.ProviderTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
@@ -684,12 +684,12 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	}); err != nil || !changed {
 		t.Fatalf("terminalize incumbent changed=%v err=%v", changed, err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveControlHostClaim(t, store, claimed)
-	if _, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID); err != nil {
+	if _, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); err != nil {
@@ -1451,7 +1451,7 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *t
 	}
 
 	hostID := "brain-agent-brain-hidden:@spawn-failure"
-	if event, claimed, err := reopened.ClaimNextActionableEvent(hostID); err != nil || claimed {
+	if event, claimed, err := reopened.ClaimNextReviewAction(hostID); err != nil || claimed {
 		t.Fatalf("cancelled auto-spawn audit became actionable: event=%+v claimed=%v err=%v", event, claimed, err)
 	}
 
@@ -1459,7 +1459,7 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replay, claimed, err := reopenedAgain.ClaimNextActionableEvent(hostID); err != nil || claimed {
+	if replay, claimed, err := reopenedAgain.ClaimNextReviewAction(hostID); err != nil || claimed {
 		t.Fatalf("resolved spawn failure replayed: event=%+v claimed=%v err=%v", replay, claimed, err)
 	}
 	finalEvents, err := reopenedAgain.ListWorkEvents(items[0].ID)
@@ -2039,19 +2039,19 @@ func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
 	if !duplicate.OK || duplicate.Confirmation != "Duplicate event already recorded." {
 		t.Fatalf("duplicate response = %#v", duplicate)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveControlHostClaim(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolved := app.HandleControlRequest(control.Request{
 		Type: "brain_work_resolve",
-		BrainWorkDisposition: &brain.WorkEventDispositionRequest{
-			EventID: delivered.ID, HandlingID: delivered.HandlingID,
+		BrainWorkDisposition: &brain.WorkReviewDispositionRequest{
+			WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 			ProviderTurnID:       delivered.ProviderTurnID,
 			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 			Disposition:          brain.WorkDispositionComplete,
@@ -2111,9 +2111,8 @@ func TestControlAppBrainWorkCloseUsesAuditedRevisionGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].Resolution != brain.EventResolutionDiscard ||
-		events[0].ResolvedBy != "brain" || events[1].Kind != "brain.work_closed" ||
-		events[1].Summary != "verified obsolete Work" {
+	if len(events) != 2 || events[0].HandledAt == nil || events[0].Disposition != brain.WorkDispositionCancel ||
+		events[1].Kind != "brain.work_closed" || events[1].Summary != "verified obsolete Work" {
 		t.Fatalf("closed event ledger = %#v", events)
 	}
 }
@@ -2135,7 +2134,7 @@ func TestControlAppBrainWorkCloseRejectsClaimedAttention(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {
 		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
 	}

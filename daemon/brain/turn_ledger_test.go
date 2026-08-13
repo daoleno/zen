@@ -1179,17 +1179,17 @@ func TestTurnStaleForNonCurrentTurnIsIgnored(t *testing.T) {
 	if _, changed, err := store.ApplyTurnFact(oldStale); err != nil || !changed {
 		t.Fatalf("old turn stale apply = changed:%v err:%v", changed, err)
 	}
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {
 		t.Fatalf("claim stale attention=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionContinue,
@@ -1281,12 +1281,12 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	// A loss fact for an older turn record after a newer turn is current is
 	// ignored entirely (current-turn gate).
 	newTurnID := sessionID + ":turn:2"
-	claimed, ok, err := store.ClaimNextActionableEvent("brain-agent-brain-hidden:@1")
+	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
 	if err != nil || !ok {
 		t.Fatalf("claim uncertain attention=%+v ok=%v err=%v", claimed, ok, err)
 	}
 	resolveClaimedHostTurnForTest(t, store, claimed)
-	delivered, _, err := store.ConsumeClaimedWorkEvent(claimed.ID, claimed.HandlingID, claimed.WorkID, claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1300,8 +1300,8 @@ func TestTurnProviderEvidenceLossResolvesUnknownOnce(t *testing.T) {
 	}
 	seedContinueAuthorityTurn(t, store, workItem.ID, sessionID, newTurnID, watcher.TurnAccepted, newAdmission, newAcceptedAt)
 	bindContinueAuthorityReservation(t, store, workItem.ID, sessionID, newTurnID)
-	if _, _, err := store.ResolveWorkEvent(WorkEventDispositionRequest{
-		EventID: delivered.ID, HandlingID: delivered.HandlingID,
+	if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
+		WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
 		ProviderTurnID:       delivered.ProviderTurnID,
 		ExpectedWorkRevision: delivered.DeliveryWorkRevision,
 		Disposition:          WorkDispositionContinue,
