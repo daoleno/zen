@@ -25,8 +25,6 @@ import {
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 
-import type { MenuAnchorLayout } from "./TerminalScreenModel";
-
 export { sessionSupportsModelProfileAction } from "../../../services/providers/sessionCapabilities";
 
 interface UseSessionProviderSheetInput {
@@ -58,7 +56,6 @@ export function useSessionProviderSheet({
   eagerLoad = false,
 }: UseSessionProviderSheetInput) {
   const [visible, setVisible] = useState(false);
-  const [anchor, setAnchor] = useState<MenuAnchorLayout | null>(null);
   const [loading, setLoading] = useState(false);
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState<ProviderErrorType | string | null>(null);
@@ -96,38 +93,30 @@ export function useSessionProviderSheet({
     // Keep the loaded projection so the Composer model control stays stable
     // across sheet open/close. Rebinding a different server/agent clears it.
     setVisible(false);
-    setAnchor(null);
   }, []);
 
   /**
    * The sheet opens only for the acknowledged live-switch Session. Every
    * other capability state keeps the surface hidden; open() is a no-op so a
-   * stale entry point can never show a dead picker.
+   * stale entry point can never show a dead picker. The sheet is a native
+   * bottom sheet, so no on-screen anchor is needed — open() takes none.
    */
-  const openFromAnchor = useCallback(
-    (nextAnchor: MenuAnchorLayout | null) => {
-      if (
-        !managed ||
-        !activationCapable ||
-        requiresRefreshBeforeMutation ||
-        !selection?.hot_switchable
-      ) {
-        return;
-      }
-      setAnchor(nextAnchor);
-      setVisible(true);
-    },
-    [
-      activationCapable,
-      managed,
-      requiresRefreshBeforeMutation,
-      selection?.hot_switchable,
-    ],
-  );
-
   const open = useCallback(() => {
-    openFromAnchor(null);
-  }, [openFromAnchor]);
+    if (
+      !managed ||
+      !activationCapable ||
+      requiresRefreshBeforeMutation ||
+      !selection?.hot_switchable
+    ) {
+      return;
+    }
+    setVisible(true);
+  }, [
+    activationCapable,
+    managed,
+    requiresRefreshBeforeMutation,
+    selection?.hot_switchable,
+  ]);
 
   const fetchProjection = useCallback(
     async (mode: "sheet" | "eager") => {
@@ -392,9 +381,7 @@ export function useSessionProviderSheet({
 
   return {
     visible,
-    anchor,
     open,
-    openFromAnchor,
     close,
     load,
     retry: load,

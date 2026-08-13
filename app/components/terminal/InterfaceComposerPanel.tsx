@@ -9,7 +9,6 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
-import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import { InterfaceComposerInput } from "./InterfaceComposerInput";
 import { InterfaceComposerPanelFrame } from "./InterfaceComposerPanelFrame";
 import { ComposerIconButton } from "./ComposerIconButton";
@@ -45,7 +44,7 @@ interface InterfaceComposerPanelProps {
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
   onActionMenuPress(): void;
-  onModelControlPress?(anchor: MenuAnchorLayout): void;
+  onModelControlPress?(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;

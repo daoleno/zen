@@ -26,7 +26,6 @@ import type {
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
-import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import { useInterfaceChatController } from "./InterfaceChatController";
 import {
   type InterfaceChatAgentInfo,
@@ -85,7 +84,7 @@ interface UseInterfaceChatSurfaceStateInput {
     setDraft: (value: string) => void;
   }) => ReactNode;
   composerModelControl?: import("../../services/providers/sessionModelHelpers").ComposerModelControlPresentation | null;
-  onComposerModelControlPress?: (anchor: MenuAnchorLayout) => void;
+  onComposerModelControlPress?: () => void;
   onSwitchToTerminal?: () => void;
   onConsumeInitialComposerFocus?: () => void;
 }
@@ -275,9 +274,9 @@ export function useInterfaceChatSurfaceState({
   const dismissActionMenu = useCallback(() => {
     setActionMenuPinned(false);
   }, []);
-  const handleModelControlPress = useCallback((anchor: MenuAnchorLayout) => {
+  const handleModelControlPress = useCallback(() => {
     composerInput.blur();
-    onComposerModelControlPress?.(anchor);
+    onComposerModelControlPress?.();
   }, [composerInput.blur, onComposerModelControlPress]);
   const openSkillsSheet = useCallback(() => {
     setActionMenuPinned(false);

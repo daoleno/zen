@@ -1,11 +1,49 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  buildModelSheetRows,
+  MODEL_SHEET_HEADER_HEIGHT,
+  MODEL_SHEET_MAX_LIST_FRACTION,
+  MODEL_SHEET_MIN_LIST_HEIGHT,
+  MODEL_SHEET_ROW_HEIGHT,
+  resolveModelSheetListMaxHeight,
+  type SessionModelSheetRow,
+} from "./sessionModelSheetModel";
+import type { ProviderModelChoice } from "../../services/providers";
 
 const source = (relativePath: string) =>
   readFileSync(join(import.meta.dir, relativePath), "utf8");
 
-describe("SessionModelSheet v2 minimal picker", () => {
+function choice(
+  modelId: string,
+  overrides: Partial<ProviderModelChoice> = {},
+): ProviderModelChoice {
+  return {
+    connection: {
+      id: "c1",
+      name: "DeepSeek",
+      clients: ["codex"],
+      credential_ready: true,
+      advanced: false,
+      preset_id: "deepseek",
+    },
+    model: { id: modelId, available: true, source: "bundled" },
+    current: false,
+    disabled: false,
+    ...overrides,
+  };
+}
+
+const LONG_IDS = [
+  "gpt-5.6-sol",
+  "gpt-5.1-codex-max-longhaul-8k-context",
+  "anthropic/claude-sonnet-4-5-20250929",
+  "deepseek-r1-0528-ultra",
+  "openai/gpt-oss-120b-consistency",
+];
+
+describe("SessionModelSheet v3 native bottom sheet", () => {
   const sheet = source("SessionModelSheet.tsx");
 
   test("is a compact model-only picker with no Provider vocabulary", () => {
@@ -33,11 +71,32 @@ describe("SessionModelSheet v2 minimal picker", () => {
     expect(sheet).not.toContain("requiresRefreshBeforeMutation");
   });
 
-  test("marks the current model with a checkmark", () => {
-    expect(sheet).toContain("const selected = choice.current;");
+  test("presents through the native @expo/ui bottom sheet, never coordinates", () => {
+    expect(sheet).toContain(
+      'from "@expo/ui/community/bottom-sheet"',
+    );
+    expect(sheet).toContain("<BottomSheet");
+    expect(sheet).toContain("enablePanDownToClose");
+    expect(sheet).not.toContain("buildModelMenuPosition");
+    expect(sheet).not.toContain("MODEL_MENU_WIDTH");
+    expect(sheet).not.toContain("position: \"absolute\"");
+    expect(sheet).not.toContain("MenuAnchorLayout");
+    expect(sheet).not.toContain("useSafeAreaInsets");
+  });
+
+  test("visible is the single open/close truth driving ref present/dismiss", () => {
+    expect(sheet).toContain("sheetRef.current?.present();");
+    expect(sheet).toContain("sheetRef.current?.dismiss();");
+    expect(sheet).toContain("index={-1}");
+    expect(sheet).toContain("onClose={handleClose}");
+    expect(sheet).toContain("onDismiss={handleClose}");
+  });
+
+  test("marks the current model with a checkmark and accessible state", () => {
     expect(sheet).toContain('name="checkmark"');
     expect(sheet).toContain("accessibilityState={{");
-    expect(sheet).toContain("selected,");
+    expect(sheet).toContain("selected: row.selected,");
+    expect(sheet).toContain("accessibilityLabel={`Use ${row.modelId}`}");
   });
 
   test("shows loading, error, and retry only when genuinely needed", () => {
@@ -48,21 +107,27 @@ describe("SessionModelSheet v2 minimal picker", () => {
     expect(sheet).toContain("errorMessage && choices.length === 0");
   });
 
-  test("disables rows while switching and prevents re-selecting the current", () => {
-    expect(sheet).toContain("const disabled = activating || choice.disabled || selected;");
-    expect(sheet).toContain("onActivate({");
+  test("scrolls the list and keeps the final item reachable", () => {
+    expect(sheet).toContain("BottomSheetScrollView");
+    expect(sheet).toContain("maxHeight: listMaxHeight");
+    expect(sheet).toContain("resolveModelSheetListMaxHeight");
+  });
+
+  test("activation carries the row's canonical ids, never a label", () => {
+    expect(sheet).toContain("buildModelSheetRows(choices, activating)");
+    expect(sheet).toContain(
+      "onActivate({ connectionId: row.connectionId, modelId: row.modelId })",
+    );
   });
 });
 
-describe("useSessionProviderSheet v2 wiring", () => {
+describe("useSessionProviderSheet v3 wiring", () => {
   const hook = source("../terminal/screen/useSessionProviderSheet.ts");
 
-  test("accepts no client hint and never fabricates a direct state", () => {
-    expect(hook).not.toContain("DirectSessionClient");
-    expect(hook).not.toContain("isDirectSessionClient");
-    expect(hook).not.toContain("resolveDirectComposerModelControl");
-    expect(hook).not.toContain('setSheetMode("direct")');
-    expect(hook).not.toContain("admitCatalogLoad");
+  test("exposes no anchor and no coordinate open path", () => {
+    expect(hook).not.toContain("MenuAnchorLayout");
+    expect(hook).not.toContain("openFromAnchor");
+    expect(hook).not.toContain("setAnchor(");
   });
 
   test("open() is a no-op for Sessions without acknowledged live switch", () => {
@@ -81,10 +146,6 @@ describe("useSessionProviderSheet v2 wiring", () => {
   });
 
   test("a refetch that loses hot-switchability closes the open sheet", () => {
-    // The sheet may be open when a refetch discovers the binding is no
-    // longer hot-switchable: it must close instead of presenting an empty
-    // fabricated "No models discovered" inventory, and the fresh non-hot
-    // selection keeps the Composer control hidden.
     expect(hook).toContain(
       "refetchFoundBindingNotSwitchable({",
     );
@@ -119,5 +180,117 @@ describe("useSessionProviderSheet v2 wiring", () => {
     expect(hook).toContain("classification === \"applied_durable\"");
     expect(hook).toContain("setVisible(false);");
     expect(hook).toContain("result.selection");
+  });
+});
+
+describe("sessionModelSheetModel rows (exact ID propagation)", () => {
+  test("rows carry the canonical model id unchanged, including the last", () => {
+    const choices = LONG_IDS.map((id) => choice(id));
+    const rows = buildModelSheetRows(choices, false);
+
+    expect(rows).toHaveLength(LONG_IDS.length);
+    rows.forEach((row, index) => {
+      expect(row.modelId).toBe(LONG_IDS[index]);
+      expect(row.label).toBe(LONG_IDS[index]);
+      expect(row.connectionId).toBe("c1");
+    });
+    // The final row stays selectable and exact.
+    const last = rows[rows.length - 1];
+    expect(last.modelId).toBe("openai/gpt-oss-120b-consistency");
+    expect(last.disabled).toBe(false);
+  });
+
+  test("long lists produce one row per model with unique keys", () => {
+    const many = Array.from({ length: 60 }, (_, i) => choice(`model-${i}`));
+    const rows = buildModelSheetRows(many, false);
+
+    expect(rows).toHaveLength(60);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(60);
+    expect(rows[59].modelId).toBe("model-59");
+  });
+
+  test("selection marks exactly the current model", () => {
+    const rows = buildModelSheetRows(
+      [
+        choice("a", { current: true }),
+        choice("b"),
+        choice("c"),
+      ],
+      false,
+    );
+    expect(rows.map((row) => row.selected)).toEqual([true, false, false]);
+  });
+
+  test("activating disables every non-selected row; the current stays marked", () => {
+    const rows = buildModelSheetRows(
+      [
+        choice("a", { current: true }),
+        choice("b"),
+      ],
+      true,
+    );
+    expect(rows[0].selected).toBe(true);
+    expect(rows[0].disabled).toBe(true); // re-selecting current is prevented
+    expect(rows[1].selected).toBe(false);
+    expect(rows[1].disabled).toBe(true); // switching in flight
+  });
+
+  test("unavailable or uncredentialed choices never fabricate ids", () => {
+    const rows = buildModelSheetRows(
+      [choice("gpt-5.6-sol", { disabled: true })],
+      false,
+    );
+    expect(rows[0].modelId).toBe("gpt-5.6-sol");
+    expect(rows[0].disabled).toBe(true);
+  });
+});
+
+describe("sessionModelSheetModel list height (size changes)", () => {
+  test("short lists size to content with a floor", () => {
+    expect(
+      resolveModelSheetListMaxHeight({ windowHeight: 800, rowCount: 3 }),
+    ).toBe(MODEL_SHEET_HEADER_HEIGHT + 3 * MODEL_SHEET_ROW_HEIGHT);
+    expect(
+      resolveModelSheetListMaxHeight({ windowHeight: 800, rowCount: 0 }),
+    ).toBe(MODEL_SHEET_MIN_LIST_HEIGHT);
+  });
+
+  test("long lists are capped so the sheet scrolls, never fullscreen", () => {
+    const tall = resolveModelSheetListMaxHeight({ windowHeight: 800, rowCount: 60 });
+    expect(tall).toBe(Math.floor(800 * MODEL_SHEET_MAX_LIST_FRACTION));
+    expect(tall).toBeLessThan(800);
+  });
+
+  test("a shorter window shrinks the cap deterministically", () => {
+    const narrow = resolveModelSheetListMaxHeight({ windowHeight: 480, rowCount: 60 });
+    const wide = resolveModelSheetListMaxHeight({ windowHeight: 800, rowCount: 60 });
+    expect(narrow).toBe(Math.floor(480 * MODEL_SHEET_MAX_LIST_FRACTION));
+    expect(narrow).toBeLessThan(wide);
+  });
+
+  test("very short windows keep a usable floor", () => {
+    expect(
+      resolveModelSheetListMaxHeight({ windowHeight: 100, rowCount: 60 }),
+    ).toBe(MODEL_SHEET_MIN_LIST_HEIGHT);
+  });
+});
+
+describe("sessionModelSheetModel row→activation shape", () => {
+  test("activation input derives solely from the row ids", () => {
+    const rows: SessionModelSheetRow[] = [
+      {
+        key: "c1:gpt-5.6-sol",
+        connectionId: "c1",
+        modelId: "gpt-5.6-sol",
+        label: "gpt-5.6-sol",
+        selected: false,
+        disabled: false,
+      },
+    ];
+    const [row] = rows;
+    expect({ connectionId: row.connectionId, modelId: row.modelId }).toEqual({
+      connectionId: "c1",
+      modelId: "gpt-5.6-sol",
+    });
   });
 });

@@ -12,7 +12,6 @@ import type {
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ActiveAttachmentUpload } from "../../services/uploads";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
-import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import {
   InterfaceComposerAttachmentRail,
   type InterfaceComposerAttachment,
@@ -65,7 +64,7 @@ interface InterfaceChatComposerProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
-  onModelControlPress?(anchor: MenuAnchorLayout): void;
+  onModelControlPress?(): void;
 }
 
 export function InterfaceChatComposer({

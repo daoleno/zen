@@ -1,5 +1,4 @@
 import { useCallback, type RefObject } from "react";
-import type { MenuAnchorLayout } from "./TerminalScreenModel";
 import type { LayoutChangeEvent } from "react-native";
 import type { useTerminalGitDiff } from "../useTerminalGitDiff";
 import type { TerminalSurfaceHandle } from "../TerminalSurface";
@@ -62,7 +61,6 @@ interface UseTerminalScreenLayoutPropsInput {
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
-  routeSheetAnchor?: import("./TerminalScreenModel").MenuAnchorLayout | null;
   routeSheetVisible: boolean;
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
@@ -95,7 +93,7 @@ interface UseTerminalScreenLayoutPropsInput {
   openModel?: () => void;
   modelActionAvailable?: boolean;
   composerModelControl?: ComposerModelControlPresentation | null;
-  onComposerModelControlPress?: (anchor: MenuAnchorLayout) => void;
+  onComposerModelControlPress?: () => void;
   closeRouteSheet(): void;
   retryRouteSheet(): void;
   activateSessionModel(choice: SessionModelChoice): void;
@@ -137,7 +135,6 @@ export function useTerminalScreenLayoutProps({
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
-  routeSheetAnchor,
   routeSheetVisible,
   routeSheetLoading,
   routeSheetActivating,
@@ -250,7 +247,6 @@ export function useTerminalScreenLayoutProps({
     resourceSheetLoading,
     resourceSheetError,
     resourceSheetSnapshot,
-    routeSheetAnchor,
     routeSheetVisible,
     routeSheetLoading,
     routeSheetActivating,

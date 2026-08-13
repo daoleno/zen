@@ -1,5 +1,4 @@
 import { useCallback, useMemo, type ReactNode } from "react";
-import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
@@ -62,7 +61,7 @@ interface UseInterfaceChatBodyPropsInput {
   setDraft(value: string): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
-  onModelControlPress?(anchor: MenuAnchorLayout): void;
+  onModelControlPress?(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   onKeyboardLifecycleInvalidate(reason: "route" | "app"): void;
   showUnavailableAction?: boolean;

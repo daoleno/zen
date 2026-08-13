@@ -14,7 +14,6 @@ import { shadow } from "../../constants/tokens";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerModelChip } from "./ComposerModelChip";
-import type { MenuAnchorLayout } from "./screen/TerminalScreenModel";
 import { ComposerSendButton } from "./ComposerSendButton";
 import { COMPOSER_ACTION_SLOT_WIDTH } from "./composerActionSlot";
 import {
@@ -56,7 +55,7 @@ interface InterfaceComposerExpandingDockProps {
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
   onActionMenuPress(): void;
-  onModelControlPress?(anchor: MenuAnchorLayout): void;
+  onModelControlPress?(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;

@@ -16,7 +16,6 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useWindowDimensions } from "react-native";
-import type { MenuAnchorLayout } from "../components/terminal/screen/TerminalScreenModel";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -598,10 +597,7 @@ function ComposerStatesDemo() {
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
   };
   const [demoSheet, setDemoSheet] = useState<null | "routed">(null);
-  const [demoSheetAnchor, setDemoSheetAnchor] =
-    useState<MenuAnchorLayout | null>(null);
   const [demoModelId, setDemoModelId] = useState("deepseek-chat");
-  const demoWindow = useWindowDimensions();
   const demoSelection = {
     session_id: "tmux:@demo",
     client: "codex" as const,
@@ -613,14 +609,8 @@ function ComposerStatesDemo() {
   };
   useEffect(() => {
     if (autoModel !== "1") return;
-    setDemoSheetAnchor({
-      x: Math.max(12, demoWindow.width / 2 - 120),
-      y: demoWindow.height - 160 - insets.bottom,
-      width: 240,
-      height: 44,
-    });
     setDemoSheet("routed");
-  }, [autoModel, demoWindow.height, demoWindow.width, insets.bottom]);
+  }, [autoModel]);
 
   const routedModelControl = resolveComposerModelControl({
     capabilities: {
@@ -970,14 +960,7 @@ function ComposerStatesDemo() {
             onSendPress={NOOP}
             onStopPress={NOOP}
             onModelControlPress={() => {
-              // Anchor the popover above the composer chip, as the real
-              // control does.
-              setDemoSheetAnchor({
-                x: Math.max(12, demoWindow.width / 2 - 120),
-                y: demoWindow.height - 160 - insets.bottom,
-                width: 240,
-                height: 44,
-              });
+              // Open the native bottom sheet, as the real control does.
               setDemoSheet("routed");
             }}
           />,
@@ -986,7 +969,6 @@ function ComposerStatesDemo() {
 
       <SessionModelSheet
         visible={demoSheet !== null}
-        anchor={demoSheetAnchor}
         loading={false}
         activating={false}
         error={null}
