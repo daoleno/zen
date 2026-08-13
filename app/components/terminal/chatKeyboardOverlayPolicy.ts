@@ -26,25 +26,34 @@ export interface StructuredChatEffectiveClearanceInput {
 export interface StructuredChatKeyboardLifecycleGate {
   enabled: boolean;
   appActive: boolean;
+  composerFocused: boolean;
   epoch: number;
   acceptedNativeSampleEpoch: number;
+  keyboardTranslation: number;
+  keyboardProgress: number;
+  mayBindPreexistingGeometry: boolean;
 }
 
 export type StructuredChatKeyboardLifecycleEvent =
   | { type: "set_enabled"; enabled: boolean }
   | { type: "app_state"; active: boolean }
-  | { type: "native_sample"; height: number; progress: number }
+  | { type: "composer_focus"; focused: boolean }
+  | {
+      type: "native_sample";
+      sourceEpoch: number;
+      height: number;
+      progress: number;
+      updatesGeometry: boolean;
+    }
   /**
-   * Composer focus under current route/app ownership may bind KeyboardController's
-   * current geometry to this epoch. That is ownership proof for already-open IME
-   * state, not a stale-geometry fallback from a prior route.
+   * Composer focus may bind KeyboardController's current geometry only in the
+   * never-invalidated mount epoch. Lifecycle recovery always requires a native
+   * sample captured by the current handler epoch.
    */
   | { type: "composer_focus_bind"; height: number; progress: number };
 
 export interface StructuredChatGatedOverlayTranslateYInput {
   gate: StructuredChatKeyboardLifecycleGate;
-  keyboardTranslation: number;
-  keyboardProgress: number;
   keyboardVerticalOffset: number;
 }
 
@@ -85,8 +94,12 @@ export function createStructuredChatKeyboardLifecycleGate({
   return {
     enabled,
     appActive,
+    composerFocused: false,
     epoch: 1,
     acceptedNativeSampleEpoch: 0,
+    keyboardTranslation: 0,
+    keyboardProgress: 0,
+    mayBindPreexistingGeometry: true,
   };
 }
 
@@ -103,26 +116,96 @@ export function structuredChatKeyboardGeometryIsOpen(
   );
 }
 
+// Must precede reduce: the worklets plugin rewrites this to a const factory,
+// and a later binding is captured as undefined on Metro's UI runtime.
+function invalidateStructuredChatKeyboardLifecycleGate(
+  gate: StructuredChatKeyboardLifecycleGate,
+  changes: Partial<
+    Pick<
+      StructuredChatKeyboardLifecycleGate,
+      "enabled" | "appActive" | "composerFocused"
+    >
+  >,
+): StructuredChatKeyboardLifecycleGate {
+  "worklet";
+  return {
+    ...gate,
+    ...changes,
+    epoch: gate.epoch + 1,
+    acceptedNativeSampleEpoch: 0,
+    keyboardTranslation: 0,
+    keyboardProgress: 0,
+    mayBindPreexistingGeometry: false,
+  };
+}
+
 export function reduceStructuredChatKeyboardLifecycleGate(
   gate: StructuredChatKeyboardLifecycleGate,
   event: StructuredChatKeyboardLifecycleEvent,
 ): StructuredChatKeyboardLifecycleGate {
   "worklet";
-  if (event.type === "native_sample" || event.type === "composer_focus_bind") {
+  if (event.type === "native_sample") {
+    const currentEpochOwnsGeometry =
+      gate.acceptedNativeSampleEpoch === gate.epoch;
+    // Android KeyboardController events commonly finish before React
+    // TextInput onFocus. JS composerFocused must not drop a current-epoch
+    // sample; overlay translation still waits for focus via gateOpen.
     if (
       !gate.enabled ||
       !gate.appActive ||
-      !structuredChatKeyboardGeometryIsOpen(event.height, event.progress)
+      event.sourceEpoch !== gate.epoch ||
+      !Number.isFinite(event.height) ||
+      !Number.isFinite(event.progress) ||
+      (!currentEpochOwnsGeometry &&
+        !structuredChatKeyboardGeometryIsOpen(event.height, event.progress))
     ) {
-      return gate;
-    }
-    if (gate.acceptedNativeSampleEpoch === gate.epoch) {
       return gate;
     }
     return {
       ...gate,
       acceptedNativeSampleEpoch: gate.epoch,
+      keyboardTranslation: event.updatesGeometry
+        ? -Math.abs(event.height)
+        : gate.keyboardTranslation,
+      keyboardProgress: event.updatesGeometry
+        ? event.progress
+        : gate.keyboardProgress,
+      mayBindPreexistingGeometry: false,
     };
+  }
+
+  if (event.type === "composer_focus_bind") {
+    if (
+      !gate.enabled ||
+      !gate.appActive ||
+      !gate.composerFocused ||
+      !gate.mayBindPreexistingGeometry ||
+      !structuredChatKeyboardGeometryIsOpen(event.height, event.progress)
+    ) {
+      return gate;
+    }
+    return {
+      ...gate,
+      acceptedNativeSampleEpoch: gate.epoch,
+      keyboardTranslation: event.height,
+      keyboardProgress: event.progress,
+      mayBindPreexistingGeometry: false,
+    };
+  }
+
+  if (event.type === "composer_focus") {
+    if (event.focused === gate.composerFocused) {
+      return gate;
+    }
+    if (event.focused) {
+      return {
+        ...gate,
+        composerFocused: true,
+      };
+    }
+    return invalidateStructuredChatKeyboardLifecycleGate(gate, {
+      composerFocused: false,
+    });
   }
 
   const nextEnabled =
@@ -133,12 +216,11 @@ export function reduceStructuredChatKeyboardLifecycleGate(
     return gate;
   }
 
-  return {
+  return invalidateStructuredChatKeyboardLifecycleGate(gate, {
     enabled: nextEnabled,
     appActive: nextAppActive,
-    epoch: gate.epoch + 1,
-    acceptedNativeSampleEpoch: gate.acceptedNativeSampleEpoch,
-  };
+    composerFocused: false,
+  });
 }
 
 export function structuredChatKeyboardLifecycleGateOpen(
@@ -148,8 +230,47 @@ export function structuredChatKeyboardLifecycleGateOpen(
   return (
     gate.enabled &&
     gate.appActive &&
+    gate.composerFocused &&
     gate.acceptedNativeSampleEpoch === gate.epoch
   );
+}
+
+export interface StructuredChatKeyboardLifecycleDispatchResult {
+  epoch: number;
+  epochChanged: boolean;
+  invalidateReason: "route" | "app" | null;
+}
+
+export type StructuredChatKeyboardLifecycleDispatchEvent = Extract<
+  StructuredChatKeyboardLifecycleEvent,
+  { type: "set_enabled" } | { type: "app_state" } | { type: "composer_focus" }
+>;
+
+/**
+ * Single-owner gate mutation for the UI runtime. The JS thread must never
+ * read-modify-write the gate shared value: its copy lags the UI runtime's
+ * accepted native samples, so a JS write-back drops acceptedNativeSampleEpoch
+ * and the keyboard translation and pins the Composer to the screen bottom
+ * while the IME is open. JS effects schedule this worklet with runOnUIAsync
+ * and use the reported transition for callback-epoch and invalidation
+ * bookkeeping.
+ */
+export function dispatchStructuredChatKeyboardLifecycleEvent(
+  gate: { value: StructuredChatKeyboardLifecycleGate },
+  event: StructuredChatKeyboardLifecycleDispatchEvent,
+): StructuredChatKeyboardLifecycleDispatchResult {
+  "worklet";
+  const previous = gate.value;
+  const next = reduceStructuredChatKeyboardLifecycleGate(previous, event);
+  gate.value = next;
+  const epochChanged = next.epoch !== previous.epoch;
+  const invalidateReason =
+    epochChanged && event.type === "set_enabled" && !event.enabled
+      ? "route"
+      : epochChanged && event.type === "app_state" && !event.active
+        ? "app"
+        : null;
+  return { epoch: next.epoch, epochChanged, invalidateReason };
 }
 
 export function structuredChatOverlayTranslateY(
@@ -166,8 +287,6 @@ export function structuredChatOverlayTranslateY(
 
 export function structuredChatGatedOverlayTranslateY({
   gate,
-  keyboardTranslation,
-  keyboardProgress,
   keyboardVerticalOffset,
 }: StructuredChatGatedOverlayTranslateYInput) {
   "worklet";
@@ -175,8 +294,8 @@ export function structuredChatGatedOverlayTranslateY({
     return 0;
   }
   return structuredChatOverlayTranslateY(
-    keyboardTranslation,
-    keyboardProgress,
+    gate.keyboardTranslation,
+    gate.keyboardProgress,
     keyboardVerticalOffset,
   );
 }

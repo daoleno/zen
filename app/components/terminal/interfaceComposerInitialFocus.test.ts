@@ -210,9 +210,7 @@ describe("Interface Composer initial focus", () => {
     );
     const notificationOpen = source("../../app/_layout.tsx");
     const brainOpen = source("../../app/(primary)/index.tsx");
-    const inSessionCreate = source(
-      "./screen/useTerminalSessionActions.ts",
-    );
+    const inSessionCreate = source("./screen/useTerminalSessionActions.ts");
 
     expect(existingOpen).not.toContain("initialComposerFocus");
     expect(serviceOpen).not.toContain("initialComposerFocus");
@@ -223,9 +221,7 @@ describe("Interface Composer initial focus", () => {
   });
 
   test("the route grant accepts one exact token and is made inert at the route owner", () => {
-    const localState = source(
-      "./screen/useTerminalScreenLocalState.ts",
-    );
+    const localState = source("./screen/useTerminalScreenLocalState.ts");
     const surfaceState = source("useInterfaceChatSurfaceState.ts");
     const keyboardFrame = source("InterfaceChatKeyboardFrame.tsx");
 
@@ -243,8 +239,12 @@ describe("Interface Composer initial focus", () => {
       surfaceState.indexOf("onConsumeInitialComposerFocus?.()"),
     ).toBeLessThan(surfaceState.indexOf("composerInput.focus()"));
     expect(surfaceState).toContain('reason === "app"');
-    expect(keyboardFrame).toContain('onKeyboardLifecycleInvalidate?.("app")');
-    expect(keyboardFrame).toContain('onKeyboardLifecycleInvalidate?.("route")');
+    // Lifecycle invalidation is reported through the UI-runtime dispatch result
+    // so the app/route reasons reach the surface owner exactly as before.
+    expect(keyboardFrame).toContain("invalidateReason");
+    expect(keyboardFrame).toContain(
+      "onKeyboardLifecycleInvalidate?.(result.invalidateReason)",
+    );
   });
 
   test("manual native focus stays direct without a refocus timer path", () => {

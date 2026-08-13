@@ -1,10 +1,17 @@
-import React, { useEffect, useLayoutEffect } from "react";
-import { AppState, StyleSheet, View } from "react-native";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { AppState, Platform, StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useGenericKeyboardHandler,
   useKeyboardContext,
 } from "react-native-keyboard-controller";
+import { runOnUI, runOnUIAsync } from "react-native-worklets";
 import Reanimated, {
   useDerivedValue,
   useAnimatedStyle,
@@ -18,10 +25,12 @@ import { useInterfaceComposerLayout } from "./useInterfaceComposerLayout";
 import { StructuredChatContentFade } from "./StructuredChatContentFade";
 import {
   createStructuredChatKeyboardLifecycleGate,
+  dispatchStructuredChatKeyboardLifecycleEvent,
   reduceStructuredChatKeyboardLifecycleGate,
   resolveInterfaceChatCanvasColor,
   structuredChatGatedOverlayTranslateY,
   structuredChatScrollClearance,
+  type StructuredChatKeyboardLifecycleDispatchResult,
   type StructuredChatKeyboardLifecycleGate,
 } from "./chatKeyboardOverlayPolicy";
 
@@ -41,6 +50,11 @@ interface InterfaceChatKeyboardFrameProps {
   portal?: React.ReactNode;
 }
 
+// Mirrors KeyboardProvider's platform cadence: iOS publishes destination
+// geometry on start, Android publishes live geometry on move/end, and both
+// publish interactive samples.
+const KEYBOARD_GEOMETRY_PLATFORM = Platform.OS;
+
 export function InterfaceChatKeyboardFrame({
   enabled,
   composerFocused = false,
@@ -58,58 +72,81 @@ export function InterfaceChatKeyboardFrame({
     enabled: overlayEnabled,
   });
   const { reanimated } = useKeyboardContext();
-  // KeyboardController remains the sole geometry owner. This shared value only
-  // proves whether that geometry belongs to the current app/route epoch.
-  const keyboardLifecycleGate = useSharedValue(
+  const initialKeyboardLifecycleGate =
     createStructuredChatKeyboardLifecycleGate({
       enabled,
       appActive: AppState.currentState === "active",
-    }),
+    });
+  // KeyboardController provides raw native samples; this shared value is the
+  // sole accepted lifecycle + geometry owner for both layout consumers.
+  const keyboardLifecycleGate = useSharedValue(initialKeyboardLifecycleGate);
+  // A handler closure captures the epoch in which it was registered. Native
+  // callbacks already queued by the previous Activity/focus lifetime can then
+  // be rejected instead of being credited to whichever epoch is current when
+  // they finally arrive.
+  const [nativeCallbackEpoch, setNativeCallbackEpoch] = useState(
+    initialKeyboardLifecycleGate.epoch,
   );
   useStructuredChatWindowMode(enabled);
+  const disposedRef = useRef(false);
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+    };
+  }, []);
+  const handleGateDispatch = useCallback(
+    (result: StructuredChatKeyboardLifecycleDispatchResult) => {
+      if (disposedRef.current) {
+        return;
+      }
+      setNativeCallbackEpoch(result.epoch);
+      if (result.invalidateReason) {
+        onKeyboardLifecycleInvalidate?.(result.invalidateReason);
+      }
+    },
+    [onKeyboardLifecycleInvalidate],
+  );
 
   useLayoutEffect(() => {
-    const previous = keyboardLifecycleGate.value;
-    const next = reduceStructuredChatKeyboardLifecycleGate(previous, {
-      type: "set_enabled",
-      enabled,
-    });
-    keyboardLifecycleGate.value = next;
-    if (next.epoch !== previous.epoch && !enabled) {
-      onKeyboardLifecycleInvalidate?.("route");
-    }
-  }, [enabled, keyboardLifecycleGate, onKeyboardLifecycleInvalidate]);
+    void runOnUIAsync(
+      dispatchStructuredChatKeyboardLifecycleEvent,
+      keyboardLifecycleGate,
+      { type: "set_enabled", enabled },
+    ).then(handleGateDispatch);
+  }, [enabled, keyboardLifecycleGate, handleGateDispatch]);
 
   useEffect(() => {
     const updateAppState = (active: boolean) => {
-      const previous = keyboardLifecycleGate.value;
-      const next = reduceStructuredChatKeyboardLifecycleGate(previous, {
-        type: "app_state",
-        active,
-      });
-      keyboardLifecycleGate.value = next;
-      if (next.epoch !== previous.epoch && !active) {
-        onKeyboardLifecycleInvalidate?.("app");
-      }
+      void runOnUIAsync(
+        dispatchStructuredChatKeyboardLifecycleEvent,
+        keyboardLifecycleGate,
+        { type: "app_state", active },
+      ).then(handleGateDispatch);
     };
     updateAppState(AppState.currentState === "active");
     const subscription = AppState.addEventListener("change", (state) => {
       updateAppState(state === "active");
     });
     return () => subscription.remove();
-  }, [keyboardLifecycleGate, onKeyboardLifecycleInvalidate]);
+  }, [keyboardLifecycleGate, handleGateDispatch]);
 
-  // First-mount / re-entry may acquire Composer focus while KeyboardController
-  // already reports open geometry and will not emit another animation sample.
-  // Bind that current geometry only under Composer focus + route/app ownership.
+  // The gate is owned by the UI runtime: composer focus and the pre-existing
+  // geometry bind are scheduled there so the reduce always sees the live
+  // accepted samples instead of a stale JS-side snapshot.
   useLayoutEffect(() => {
+    void runOnUIAsync(
+      dispatchStructuredChatKeyboardLifecycleEvent,
+      keyboardLifecycleGate,
+      { type: "composer_focus", focused: enabled && composerFocused },
+    ).then(handleGateDispatch);
     if (!enabled || !composerFocused) {
       return;
     }
-    bindComposerFocusGeometry(
+    runOnUI(dispatchComposerFocusBind)(
       keyboardLifecycleGate,
-      reanimated.height.value,
-      reanimated.progress.value,
+      reanimated.height,
+      reanimated.progress,
     );
   }, [
     composerFocused,
@@ -117,6 +154,7 @@ export function InterfaceChatKeyboardFrame({
     keyboardLifecycleGate,
     reanimated.height,
     reanimated.progress,
+    handleGateDispatch,
   ]);
 
   useGenericKeyboardHandler(
@@ -125,43 +163,49 @@ export function InterfaceChatKeyboardFrame({
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
+          nativeCallbackEpoch,
           event.height,
           event.progress,
+          KEYBOARD_GEOMETRY_PLATFORM === "ios",
         );
       },
       onMove: (event) => {
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
+          nativeCallbackEpoch,
           event.height,
           event.progress,
+          KEYBOARD_GEOMETRY_PLATFORM === "android",
         );
       },
       onInteractive: (event) => {
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
+          nativeCallbackEpoch,
           event.height,
           event.progress,
+          true,
         );
       },
       onEnd: (event) => {
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
+          nativeCallbackEpoch,
           event.height,
           event.progress,
+          KEYBOARD_GEOMETRY_PLATFORM === "android",
         );
       },
     },
-    [keyboardLifecycleGate],
+    [keyboardLifecycleGate, nativeCallbackEpoch],
   );
 
   const overlayTranslateY = useDerivedValue(() => {
     return structuredChatGatedOverlayTranslateY({
       gate: keyboardLifecycleGate.value,
-      keyboardTranslation: reanimated.height.value,
-      keyboardProgress: reanimated.progress.value,
       keyboardVerticalOffset,
     });
   }, [keyboardLifecycleGate, keyboardVerticalOffset]);
@@ -171,9 +215,25 @@ export function InterfaceChatKeyboardFrame({
       overlayTranslateY.value,
     ),
   );
-  const stickyStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: overlayTranslateY.value }],
-  }));
+  // The overlay transform reads the gate shared value directly instead of an
+  // intermediate numeric derived value: an invalidation that lands while the
+  // app is backgrounded can lose its UI->Fabric style apply, and a later
+  // same-number write (0 === 0) is deduplicated so the style never re-applies.
+  // Reading the gate re-triggers the style mapper on every event (each reduce
+  // replaces the gate object), so a resume invalidation re-applies the
+  // collapsed translation after the suspension.
+  const stickyStyle = useAnimatedStyle(() => {
+    return {
+      transform: [
+        {
+          translateY: structuredChatGatedOverlayTranslateY({
+            gate: keyboardLifecycleGate.value,
+            keyboardVerticalOffset,
+          }),
+        },
+      ],
+    };
+  }, [keyboardLifecycleGate, keyboardVerticalOffset]);
   const canvasColor = resolveInterfaceChatCanvasColor(
     chrome.appBackground,
     chrome.surface,
@@ -228,31 +288,39 @@ export function InterfaceChatKeyboardFrame({
 
 function acceptNativeKeyboardSample(
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
+  sourceEpoch: number,
   height: number,
   progress: number,
+  updatesGeometry: boolean,
 ) {
   "worklet";
   keyboardLifecycleGate.value = reduceStructuredChatKeyboardLifecycleGate(
     keyboardLifecycleGate.value,
     {
       type: "native_sample",
+      sourceEpoch,
       height,
       progress,
+      updatesGeometry,
     },
   );
 }
 
-function bindComposerFocusGeometry(
+function dispatchComposerFocusBind(
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
-  height: number,
-  progress: number,
+  height: SharedValue<number>,
+  progress: SharedValue<number>,
 ) {
+  "worklet";
+  // Reads the live native values on the UI runtime: a JS-side read of
+  // reanimated.height/progress would see the stale copy and could bind the
+  // wrong geometry or miss a just-opened IME entirely.
   keyboardLifecycleGate.value = reduceStructuredChatKeyboardLifecycleGate(
     keyboardLifecycleGate.value,
     {
       type: "composer_focus_bind",
-      height,
-      progress,
+      height: height.value,
+      progress: progress.value,
     },
   );
 }
