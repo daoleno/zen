@@ -66,7 +66,7 @@ import { ProvidersPresentation } from "../components/providers/ProvidersPresenta
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
   resolveComposerModelControl,
-  sessionModelPickerChoices,
+  sessionProviderPickerGroups,
 } from "../services/providers/sessionModelHelpers";
 import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
@@ -588,11 +588,12 @@ function ComposerStatesDemo() {
     new Date(Date.now() - 43_000).toISOString(),
   );
   const modelControl = {
-    label: "claude-sonnet-4-5",
-    accessibilityLabel: "Open model selection, claude-sonnet-4-5, Claude",
+    label: "Claude Gateway · claude-sonnet-4-5",
+    accessibilityLabel:
+      "Open model selection, claude-sonnet-4-5, Claude Gateway",
   };
   const longModelControl = {
-    label: "gpt-5.1-codex-max-longhaul-8k-context",
+    label: "OpenAI · gpt-5.1-codex-max-longhaul-8k-context",
     accessibilityLabel:
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
   };
@@ -651,7 +652,7 @@ function ComposerStatesDemo() {
       c2: [{ id: "claude-sonnet-4-5", available: true, source: "bundled" }],
     },
   };
-  const demoChoices = sessionModelPickerChoices(demoCatalog, demoSelection);
+  const demoGroups = sessionProviderPickerGroups(demoCatalog, demoSelection);
   const narrowRow = (
     label: string,
     composer: React.ReactElement<typeof InterfaceChatComposer>,
@@ -973,7 +974,7 @@ function ComposerStatesDemo() {
         activating={false}
         error={null}
         selection={demoSelection}
-        choices={demoChoices}
+        groups={demoGroups}
         chrome={chrome}
         onClose={() => setDemoSheet(null)}
         onRetry={NOOP}

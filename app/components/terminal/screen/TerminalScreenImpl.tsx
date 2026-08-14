@@ -217,7 +217,7 @@ export default function TerminalScreen() {
       routeSheetActivating: routeSheet.activating,
       routeSheetError: routeSheet.error,
       routeSheetSelection: routeSheet.selection,
-      routeSheetChoices: routeSheet.choices,
+      routeSheetGroups: routeSheet.groups,
       createDurabilityWarning,
       onDismissCreateDurabilityWarning: dismissCreateDurabilityWarning,
       screenFocused,

@@ -15,13 +15,14 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { TypeScale, UiTextMetrics } from "../../constants/tokens";
 import type {
   ProviderError,
-  ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../services/providers";
+import type { ProviderPickerGroup } from "../../services/providers/sessionModelHelpers";
 import {
-  buildModelSheetRows,
+  buildSessionProviderPickerRows,
   resolveModelSheetListMaxHeight,
-  type SessionModelSheetRow,
+  sessionProviderPickerRowCount,
+  type SessionProviderPickerRow,
 } from "./sessionModelSheetModel";
 
 export type SessionModelChoice = {
@@ -35,8 +36,13 @@ interface SessionModelSheetProps {
   activating: boolean;
   error?: ProviderError | string | null;
   selection?: ProviderSessionSelection | null;
-  /** Models of this Session's bound connection only (never other connections). */
-  choices: ProviderModelChoice[];
+  /**
+   * Every saved Provider connection compatible with this Session's client,
+   * grouped by Provider Name with each Provider's enabled+available models
+   * beneath it. Uncredentialed and failed-discovery Providers appear with
+   * honest non-selectable states.
+   */
+  groups: ProviderPickerGroup[];
   chrome: TerminalThemeChrome;
   onRetry(): void;
   onClose(): void;
@@ -44,20 +50,25 @@ interface SessionModelSheetProps {
 }
 
 /**
- * Native bottom-sheet model picker for the current Session. Presented by the
- * platform sheet (SwiftUI on iOS, Material3 ModalBottomSheet on Android), so
- * safe areas, keyboard avoidance, scrim dismiss, and swipe-down dismissal are
- * handled natively — the sheet never positions itself on screen coordinates.
+ * Native bottom-sheet Provider + Model picker for the current Session.
+ * Presented by the platform sheet (SwiftUI on iOS, Material3
+ * ModalBottomSheet on Android), so safe areas, keyboard avoidance, scrim
+ * dismiss, and swipe-down dismissal are handled natively — the sheet never
+ * positions itself on screen coordinates.
  *
  * `visible` is the single open/close truth: opening presents the sheet,
  * closing dismisses it. Native dismissals (swipe, scrim tap, Android back)
  * arrive through `onClose`, and the sheet's closedRef guard keeps the
  * programmatic dismiss on the next `visible=false` from double-firing.
  *
- * Lists only the models of the bound connection with the current selection
- * checked; loading, error, and retry appear only when genuinely needed.
- * Provider configuration stays in Settings — this surface never lists
- * connections, shows Base URLs, or opens Provider Settings.
+ * Inventory is every saved Provider connection compatible with the Session
+ * client, grouped by Provider Name (Base-URL hostname secondary). Each
+ * selectable model row carries the exact stable (connection_id, model_id)
+ * pair and activates the current Session only — never other Sessions, never
+ * catalog defaults, and never a substituted model. The check appears only on
+ * the running pair. Uncredentialed, failed-discovery, unsupported and
+ * unavailable states are honest and non-selectable; the sheet never routes
+ * to Settings. Loading, error, and retry appear only when genuinely needed.
  */
 export function SessionModelSheet({
   visible,
@@ -65,7 +76,7 @@ export function SessionModelSheet({
   activating,
   error,
   selection,
-  choices,
+  groups,
   chrome,
   onRetry,
   onClose,
@@ -79,16 +90,20 @@ export function SessionModelSheet({
   const refreshable =
     typeof error === "object" && error != null ? error.refreshable : true;
   const rows = useMemo(
-    () => buildModelSheetRows(choices, activating),
-    [activating, choices],
+    () => buildSessionProviderPickerRows(groups, activating),
+    [activating, groups],
   );
   const listMaxHeight = useMemo(
     () =>
       resolveModelSheetListMaxHeight({
         windowHeight,
-        rowCount: rows.length,
+        groupCount: groups.length,
+        modelCount: groups.reduce(
+          (count, group) => count + group.models.length,
+          0,
+        ),
       }),
-    [rows.length, windowHeight],
+    [groups, windowHeight],
   );
 
   // Controlled open/close: the ref-driven native sheet follows `visible`.
@@ -107,7 +122,8 @@ export function SessionModelSheet({
   }, [onClose]);
 
   const handleActivateRow = useCallback(
-    (row: SessionModelSheetRow) => {
+    (row: SessionProviderPickerRow) => {
+      if (row.kind !== "model") return;
       onActivate({ connectionId: row.connectionId, modelId: row.modelId });
     },
     [onActivate],
@@ -128,10 +144,10 @@ export function SessionModelSheet({
           accessibilityRole="header"
           numberOfLines={1}
         >
-          Model
+          Provider & Model
         </Text>
         <Pressable
-          accessibilityLabel="Close model"
+          accessibilityLabel="Close model selection"
           accessibilityRole="button"
           style={[styles.close, { backgroundColor: chrome.surfaceMuted }]}
           onPress={handleClose}
@@ -149,7 +165,7 @@ export function SessionModelSheet({
         </View>
       ) : null}
 
-      {errorMessage && choices.length === 0 ? (
+      {errorMessage && groups.length === 0 ? (
         <View style={styles.stateBlock}>
           <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
             {errorMessage}
@@ -168,43 +184,101 @@ export function SessionModelSheet({
           contentContainerStyle={styles.body}
           showsVerticalScrollIndicator={false}
         >
-          {rows.map((row) => (
-            <Pressable
-              key={row.key}
-              style={[
-                styles.modelRow,
-                {
-                  backgroundColor: row.selected
-                    ? chrome.accentSoft
-                    : chrome.surfaceMuted,
-                  opacity: row.disabled && !row.selected ? 0.55 : 1,
-                },
-              ]}
-              disabled={row.disabled}
-              accessibilityRole="button"
-              accessibilityState={{
-                disabled: row.disabled,
-                selected: row.selected,
-              }}
-              accessibilityLabel={`Use ${row.modelId}`}
-              onPress={() => handleActivateRow(row)}
-            >
-              <Text
-                style={[styles.modelText, { color: chrome.text }]}
-                numberOfLines={1}
-                ellipsizeMode="tail"
+          {rows.map((row) =>
+            row.kind === "group" ? (
+              <View key={row.key} style={styles.groupBlock}>
+                <View
+                  style={[
+                    styles.groupHeader,
+                    rows[0] === row ? styles.firstGroupHeader : null,
+                  ]}
+                >
+                  <Text
+                    style={[styles.groupName, { color: chrome.text }]}
+                    accessibilityRole="header"
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {row.connectionName}
+                  </Text>
+                  {row.hostname ? (
+                    <Text
+                      style={[styles.groupHostname, { color: chrome.textMuted }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {row.hostname}
+                    </Text>
+                  ) : null}
+                  {!row.credentialReady ? (
+                    <View
+                      style={[
+                        styles.stateBadge,
+                        { backgroundColor: chrome.surfaceMuted },
+                      ]}
+                    >
+                      <Text
+                        style={[styles.stateBadgeText, { color: chrome.textMuted }]}
+                      >
+                        No API key
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+                {groupRowsEmpty(rows, row) ? (
+                  <Text
+                    style={[styles.groupEmpty, { color: chrome.textMuted }]}
+                  >
+                    No models discovered.
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <Pressable
+                key={row.key}
+                style={[
+                  styles.modelRow,
+                  {
+                    backgroundColor: row.selected
+                      ? chrome.accentSoft
+                      : chrome.surfaceMuted,
+                    opacity: row.disabled && !row.selected ? 0.55 : 1,
+                  },
+                ]}
+                disabled={row.disabled}
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled: row.disabled,
+                  selected: row.selected,
+                }}
+                accessibilityLabel={`Use ${row.modelId}`}
+                onPress={() => handleActivateRow(row)}
               >
-                {row.label}
-              </Text>
-              {row.selected ? (
-                <Ionicons
-                  name="checkmark"
-                  size={16}
-                  color={chrome.accent}
-                />
-              ) : null}
-            </Pressable>
-          ))}
+                <View style={styles.modelRowText}>
+                  <Text
+                    style={[styles.modelText, { color: chrome.text }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {row.label}
+                  </Text>
+                  {row.unavailableCurrent ? (
+                    <Text
+                      style={[
+                        styles.modelCaption,
+                        { color: chrome.textMuted },
+                      ]}
+                    >
+                      Currently running; no longer available for switching.
+                    </Text>
+                  ) : null}
+                </View>
+                {row.selected ? (
+                  <Ionicons name="checkmark" size={16} color={chrome.accent} />
+                ) : null}
+              </Pressable>
+            ),
+          )}
 
           {activating ? (
             <View style={styles.activatingRow}>
@@ -217,7 +291,7 @@ export function SessionModelSheet({
             </View>
           ) : null}
 
-          {errorMessage && choices.length > 0 ? (
+          {errorMessage && groups.length > 0 ? (
             <View style={styles.stateRow}>
               <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
                 {errorMessage}
@@ -232,15 +306,24 @@ export function SessionModelSheet({
             </View>
           ) : null}
 
-          {!activating && !errorMessage && choices.length === 0 ? (
+          {!activating && !errorMessage && groups.length === 0 ? (
             <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
-              No models discovered for this Session yet.
+              No Provider connections for this Session yet.
             </Text>
           ) : null}
         </BottomSheetScrollView>
       )}
     </BottomSheet>
   );
+}
+
+function groupRowsEmpty(
+  rows: SessionProviderPickerRow[],
+  row: SessionProviderPickerRow,
+): boolean {
+  if (row.kind !== "group") return false;
+  const next = rows[rows.indexOf(row) + 1];
+  return next === undefined || next.kind !== "model";
 }
 
 function createStyles(chrome: TerminalThemeChrome) {
@@ -273,6 +356,25 @@ function createStyles(chrome: TerminalThemeChrome) {
     stateBody: { ...TypeScale.body },
     link: { ...TypeScale.body, fontWeight: "600" },
     body: { paddingHorizontal: 16, gap: 6, paddingBottom: 16 },
+    groupBlock: { gap: 4 },
+    groupEmpty: { ...TypeScale.caption, paddingHorizontal: 4, paddingBottom: 2 },
+    groupHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 4,
+      paddingTop: 10,
+      paddingBottom: 2,
+    },
+    firstGroupHeader: { paddingTop: 2 },
+    groupName: { ...TypeScale.body, fontWeight: "600", flexShrink: 1 },
+    groupHostname: { ...TypeScale.caption, flexShrink: 1 },
+    stateBadge: {
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+    },
+    stateBadgeText: { ...TypeScale.caption },
     modelRow: {
       borderRadius: 10,
       paddingHorizontal: 12,
@@ -282,7 +384,9 @@ function createStyles(chrome: TerminalThemeChrome) {
       justifyContent: "space-between",
       gap: 8,
     },
+    modelRowText: { flexShrink: 1, gap: 2 },
     modelText: { ...TypeScale.body, flexShrink: 1 },
+    modelCaption: { ...TypeScale.caption },
     activatingRow: {
       flexDirection: "row",
       alignItems: "center",

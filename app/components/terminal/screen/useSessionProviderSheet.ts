@@ -7,7 +7,6 @@ import { useCallback, useEffect, useRef, useState } from "react";import {
   providerMutationRequiresRefresh,
   buildActivateSessionProviderRequest,
   type ProviderError as ProviderErrorType,
-  type ProviderModelChoice,
   type ProviderSessionSelection,
   type ProvidersSnapshot,
 } from "../../../services/providers";
@@ -19,8 +18,10 @@ import {
 import {
   resolveComposerModelControl,
   refetchFoundBindingNotSwitchable,
-  sessionModelPickerChoices,
+  sessionProviderPickerGroups,
+  activationTargetModel,
   type ComposerModelControlPresentation,
+  type ProviderPickerGroup,
 } from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
@@ -265,10 +266,10 @@ export function useSessionProviderSheet({
         setError("Refresh the current Model before activating.");
         return;
       }
-      const model = (catalog.models[choice.connectionId] ?? []).find(
-        (item) => item.id === choice.modelId && item.available,
-      );
-      if (!model) {
+      if (!activationTargetModel(catalog, choice)) {
+        // The catalog does not admit this exact pair (unknown connection,
+        // unknown model, or model no longer available). Refuse inline and
+        // keep the old route — never substitute another model.
         setError("That model is not available for this Session.");
         return;
       }
@@ -366,7 +367,7 @@ export function useSessionProviderSheet({
     ],
   );
 
-  const choices: ProviderModelChoice[] = sessionModelPickerChoices(
+  const groups: ProviderPickerGroup[] = sessionProviderPickerGroups(
     catalog,
     selection,
   );
@@ -391,7 +392,7 @@ export function useSessionProviderSheet({
     error,
     requiresRefreshBeforeMutation,
     selection,
-    choices,
+    groups,
     composerControl,
   };
 }

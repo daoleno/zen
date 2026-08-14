@@ -13,9 +13,9 @@ import type { PresentedAgent } from "../../../services/agentPresentation";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
   ProviderError,
-  ProviderModelChoice,
   ProviderSessionSelection,
 } from "../../../services/providers";
+import type { ProviderPickerGroup } from "../../../services/providers/sessionModelHelpers";
 import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
@@ -66,7 +66,7 @@ interface UseTerminalScreenLayoutPropsInput {
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
   routeSheetSelection?: ProviderSessionSelection | null;
-  routeSheetChoices: ProviderModelChoice[];
+  routeSheetGroups: ProviderPickerGroup[];
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   screenFocused: boolean;
@@ -140,7 +140,7 @@ export function useTerminalScreenLayoutProps({
   routeSheetActivating,
   routeSheetError,
   routeSheetSelection,
-  routeSheetChoices,
+  routeSheetGroups,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   screenFocused,
@@ -252,7 +252,7 @@ export function useTerminalScreenLayoutProps({
     routeSheetActivating,
     routeSheetError,
     routeSheetSelection,
-    routeSheetChoices,
+    routeSheetGroups,
     createDurabilityWarning,
     onDismissCreateDurabilityWarning,
     creatingSession,
