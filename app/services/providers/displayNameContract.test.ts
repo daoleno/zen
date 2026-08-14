@@ -137,3 +137,58 @@ describe("unified upsert credential contract", () => {
     expect(input.base_url).toBeUndefined();
   });
 });
+
+describe("masked credential hint stays presentation-only", () => {
+  test("parse keeps only the bounded hint, never a full key", () => {
+    const conn = parseProviderConnection({
+      id: "conn_h",
+      name: "Hinted",
+      preset_id: "custom",
+      clients: ["codex"],
+      base_url: "https://hinted.example/v1",
+      credential_ready: true,
+      advanced: true,
+      credential_hint: "sk-•••345",
+    });
+    expect(conn?.credential_hint).toBe("sk-•••345");
+    const bare = parseProviderConnection({
+      id: "conn_h2",
+      name: "No hint",
+      preset_id: "custom",
+      clients: ["codex"],
+      base_url: "https://hinted.example/v1",
+      credential_ready: true,
+      advanced: true,
+    });
+    expect(bare?.credential_hint).toBeUndefined();
+    // The daemon wire guarantee (proven daemon-side) is that only the bounded
+    // hint ever appears: the projection is parsed without retaining any
+    // credential-bearing key.
+    expect(JSON.stringify(conn)).not.toContain("sk-super-secret");
+  });
+
+  test("the save mutation never carries the hint or a stored key", () => {
+    // The unified save payload shape is name/baseUrl/apiKey only. The hint is
+    // adjacent presentation; an untouched input keeps the key by sending an
+    // empty apiKey, and the masked hint cannot be submitted as a credential.
+    const edit = advancedConnectionInput({
+      existingId: "conn_h",
+      name: "Hinted",
+      client: "codex",
+      baseUrl: "https://hinted.example/v1",
+      presetId: "custom",
+      advanced: true,
+    });
+    expect(edit).toMatchObject({
+      id: "conn_h",
+      name: "Hinted",
+      preset_id: "custom",
+      base_url: "https://hinted.example/v1",
+      advanced: true,
+    });
+    expect("credential" in edit).toBe(false);
+    expect("credential_hint" in edit).toBe(false);
+    expect("api_key" in edit).toBe(false);
+    expect("credential_value" in edit).toBe(false);
+  });
+});

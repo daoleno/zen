@@ -343,13 +343,39 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("firstSupportedModel(");
   });
 
-  test("rows show the bound model or a sync-models hint when none is bound", () => {
-    expect(presentationSource).toContain("boundModelForConnection(");
+  test("rows never display a single model; default-without-model shows a sync hint", () => {
+    // A Provider owns a supported-model catalog — one model on the row is
+    // misleading. Model selection lives in the Session model/provider picker.
+    expect(presentationSource).not.toContain("boundModelForConnection(");
+    expect(presentationSource).not.toContain("Model · ");
     expect(presentationSource).toContain("connectionRequiresModelSelection(");
-    expect(presentationSource).toContain("Model · ");
     expect(presentationSource).toContain("No model selected · Sync models");
     expect(screenSource).toContain(
       "onSelectModel={(client, connection, modelId)",
     );
+  });
+
+  test("every saved Provider overflow menu tests the exact stored connection", () => {
+    expect(presentationSource).toContain('"Test Connection"');
+    expect(presentationSource).toContain("onTestConnectionById(");
+    expect(presentationSource).toContain("handleTestConnection");
+    // The daemon resolves the persisted Base URL, protocol and active stored
+    // credential ref by stable Provider ID; the App never sends a key back.
+    expect(screenSource).toContain("wsClient.testSavedProviderConnection");
+    expect(screenSource).toContain("connection.id");
+    expect(presentationSource).toContain("Connected · ");
+    expect(presentationSource).toContain("models found");
+  });
+
+  test("Edit shows a masked stored-key hint; the input stays logically empty", () => {
+    expect(presentationSource).toContain("Stored key · ");
+    expect(presentationSource).toContain("connection.credential_hint");
+    // The hint is adjacent presentation, never the TextInput value, and the
+    // unified save payload carries only name/baseUrl/apiKey.
+    expect(presentationSource).toContain("name: name.trim()");
+    expect(presentationSource).not.toContain("credential_hint: apiKey");
+    expect(presentationSource).not.toMatch(/Replace key/);
+    expect(presentationSource).not.toMatch(/Edit key/);
+    expect(presentationSource).not.toMatch(/Clear key/i);
   });
 });

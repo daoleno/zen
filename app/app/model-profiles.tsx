@@ -636,6 +636,16 @@ export default function ProvidersScreen() {
           apiKey,
         });
       }}
+      onTestConnectionById={async (connection) => {
+        if (!currentServerId || !currentConnected) {
+          throw offlineProviderError();
+        }
+        return wsClient.testSavedProviderConnection(
+          currentServerId,
+          connection.id,
+          connection.clients[0] ?? "codex",
+        );
+      }}
       onSaveProvider={async ({ client, connection, name, baseUrl, apiKey }) => {
         const outcome = await saveProvider({
           client,

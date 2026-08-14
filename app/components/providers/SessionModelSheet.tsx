@@ -12,7 +12,7 @@ import BottomSheet, {
 } from "@expo/ui/community/bottom-sheet";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { TypeScale } from "../../constants/tokens";
+import { TypeScale, UiTextMetrics } from "../../constants/tokens";
 import type {
   ProviderError,
   ProviderModelChoice,
@@ -139,6 +139,9 @@ export function SessionModelSheet({
           <Ionicons name="close" size={18} color={chrome.textSubtle} />
         </Pressable>
       </View>
+      <Text style={[styles.nextMessageNote, { color: chrome.textMuted }]}>
+        Applies to the next message in this chat.
+      </Text>
 
       {loading && !selection ? (
         <View style={styles.center}>
@@ -251,6 +254,12 @@ function createStyles(chrome: TerminalThemeChrome) {
       gap: 10,
     },
     title: { ...TypeScale.title, flex: 1 },
+    nextMessageNote: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      paddingHorizontal: 16,
+      paddingBottom: 6,
+    },
     close: {
       width: 30,
       height: 30,

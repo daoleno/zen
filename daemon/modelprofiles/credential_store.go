@@ -76,6 +76,25 @@ func isProviderCredentialRef(ref string) bool {
 	return strings.HasPrefix(normalizeSpace(ref), "provider:")
 }
 
+// credentialHintMask is the fixed bullet center of a masked credential hint.
+const credentialHintMask = "•••"
+
+// credentialHintFor returns a conservative masked preview of a stored secret:
+// up to three leading and three trailing characters with a fixed three-dot
+// bullet center. The rendered hint always has the same display width, so the
+// real secret length is never derivable from it; secrets shorter than six
+// characters (or odd formats) get a generic bullets-only hint. Hints are
+// presentation only — the full value never leaves the private store and hints
+// never appear in logs or telemetry.
+func credentialHintFor(secret string) string {
+	secret = strings.TrimSpace(secret)
+	r := []rune(secret)
+	if len(r) < 6 {
+		return credentialHintMask + credentialHintMask
+	}
+	return string(r[:3]) + credentialHintMask + string(r[len(r)-3:])
+}
+
 // providerCredentialRefsForConnection returns the refs owned by one
 // connection: the canonical provider:<id> ref plus every staged/versioned
 // provider:<id>:<token> ref. refs is typically the store's Refs() listing.

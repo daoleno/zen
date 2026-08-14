@@ -294,3 +294,15 @@ describe("sessionModelSheetModel row→activation shape", () => {
     });
   });
 });
+
+describe("Session model sheet communicates next-message semantics", () => {
+  test("the sheet copy says the change applies to the next message", () => {
+    const sheetSource = source("./SessionModelSheet.tsx");
+    expect(sheetSource).toContain("Applies to the next message");
+    expect(sheetSource).toContain("Switching…");
+    // Switching never implies Session/process recreation and the Provider row
+    // never surfaces a single model.
+    expect(sheetSource).not.toMatch(/start a new Session/i);
+    expect(sheetSource).not.toMatch(/restart/i);
+  });
+});

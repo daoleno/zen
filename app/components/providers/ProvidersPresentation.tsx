@@ -25,7 +25,6 @@ import type {
   ProvidersSnapshot,
 } from "../../services/providers";
 import {
-  boundModelForConnection,
   connectionRequiresModelSelection,
   connectionsForClient,
   modelSupportChoices,
@@ -89,6 +88,14 @@ export interface ProvidersPresentationProps {
     baseUrl: string;
     apiKey: string;
   }): Promise<ProviderConnectionTestResult>;
+  /**
+   * Test the exact saved connection by stable Provider ID: the daemon resolves
+   * the persisted Base URL, protocol and active stored credential ref
+   * internally. Read-only — no secret leaves the daemon.
+   */
+  onTestConnectionById(
+    connection: ProviderConnection,
+  ): Promise<ProviderConnectionTestResult>;
   /** Unified Add/Edit Provider save: name, Base URL and API key atomically. */
   onSaveProvider(input: {
     client: ProviderClient;
@@ -124,6 +131,7 @@ export function ProvidersPresentation({
   onCloseModelPicker,
   onSelectModel,
   onTestConnection,
+  onTestConnectionById,
   onSaveProvider,
   apiKeyAutoFocus,
 }: ProvidersPresentationProps) {
@@ -224,6 +232,7 @@ export function ProvidersPresentation({
                 onOpenEditor={onOpenEditor}
                 onDelete={onDelete}
                 onDiscover={onDiscover}
+                onTestConnection={onTestConnectionById}
               />
             ))}
           </>
@@ -263,6 +272,7 @@ function ClientConnectionCard({
   onOpenEditor,
   onDelete,
   onDiscover,
+  onTestConnection,
 }: {
   client: ProviderClient;
   catalog: ProvidersSnapshot;
@@ -272,6 +282,7 @@ function ClientConnectionCard({
   onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
   onDelete(connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
+  onTestConnection(connection: ProviderConnection): Promise<ProviderConnectionTestResult>;
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -308,11 +319,6 @@ function ClientConnectionCard({
           isLast={connections.length === 0}
         />
         {connections.map((connection, index) => {
-          const boundModel = boundModelForConnection(
-            catalog,
-            client,
-            connection.id,
-          );
           const needsModel = connectionRequiresModelSelection(
             catalog,
             client,
@@ -326,12 +332,12 @@ function ClientConnectionCard({
               selected={selectedId === connection.id}
               disabled={disabled}
               isLast={index === connections.length - 1}
-              boundModel={boundModel}
               needsModel={needsModel}
               onSelect={() => onSetDefault(connection)}
               onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
               onDelete={() => onDelete(connection)}
               onDiscover={() => onDiscover(connection)}
+              onTestConnection={() => onTestConnection(connection)}
             />
           );
         })}
@@ -413,32 +419,56 @@ function ConnectionChoiceRow({
   selected,
   disabled,
   isLast,
-  boundModel,
   needsModel,
   onSelect,
   onOpenEditor,
   onDelete,
   onDiscover,
+  onTestConnection,
 }: {
   connection: ProviderConnection;
   catalog: ProvidersSnapshot;
   selected: boolean;
   disabled: boolean;
   isLast: boolean;
-  /** Model bound as this client default, when this connection is the default. */
-  boundModel: string | null;
   /** Default connection with no bound model: new Sessions would fail closed. */
   needsModel: boolean;
   onSelect(): void;
   onOpenEditor(): void;
   onDelete(): void;
   onDiscover(): void;
+  onTestConnection(): Promise<ProviderConnectionTestResult>;
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [expanded, setExpanded] = useState(false);
+  const [testState, setTestState] = useState<ConnectionTestState>({
+    kind: "idle",
+  });
   const ready = connection.credential_ready;
   const subtitle = connectionSubtitle(connection, catalog);
+  const testing = testState.kind === "testing";
+
+  const handleTestConnection = async () => {
+    if (testing) return;
+    setTestState({ kind: "testing" });
+    try {
+      const result = await onTestConnection();
+      setTestState({
+        kind: "success",
+        modelCount: result.modelCount,
+        latencyMs: result.latencyMs,
+      });
+    } catch (testError) {
+      setTestState({
+        kind: "error",
+        message:
+          testError instanceof Error
+            ? testError.message
+            : "Connection test failed.",
+      });
+    }
+  };
 
   return (
     <View style={!isLast ? styles.groupRowBorder : undefined}>
@@ -450,7 +480,7 @@ function ConnectionChoiceRow({
           disabled={disabled}
           accessibilityRole="radio"
           accessibilityState={{ checked: selected, disabled }}
-          accessibilityLabel={`${connection.name}, ${subtitle}, ${ready ? "connected" : "API key required"}${boundModel ? `, model ${boundModel}` : needsModel ? ", no model selected" : ""}`}
+          accessibilityLabel={`${connection.name}, ${subtitle}, ${ready ? "connected" : "API key required"}${needsModel ? ", no model selected" : ""}`}
           onPress={ready ? onSelect : onOpenEditor}
         >
           <View style={styles.radioOuter}>
@@ -463,11 +493,7 @@ function ConnectionChoiceRow({
             <Text style={styles.rowSubtitle} numberOfLines={1}>
               {subtitle}
             </Text>
-            {boundModel ? (
-              <Text style={styles.rowModel} numberOfLines={1}>
-                Model · {boundModel}
-              </Text>
-            ) : needsModel ? (
+            {needsModel ? (
               <Text style={styles.rowModelHint} numberOfLines={1}>
                 No model selected · Sync models
               </Text>
@@ -493,6 +519,11 @@ function ConnectionChoiceRow({
       </View>
       {expanded ? (
         <View style={styles.connectionActions}>
+          <ActionButton
+            label={testing ? "Testing…" : "Test Connection"}
+            onPress={() => void handleTestConnection()}
+            disabled={disabled || testing}
+          />
           {ready ? (
             <ActionButton label="Sync models" onPress={onDiscover} disabled={disabled} />
           ) : null}
@@ -503,6 +534,25 @@ function ConnectionChoiceRow({
             primary
           />
           <ActionButton label="Delete" onPress={onDelete} disabled={disabled} danger />
+        </View>
+      ) : null}
+      {testState.kind === "success" ? (
+        <View style={styles.testResult}>
+          <Ionicons name="checkmark-circle" size={15} color={colors.success} />
+          <Text style={[styles.testResultText, { color: colors.success }]}>
+            Connected · {testState.latencyMs} ms
+            {testState.modelCount > 0
+              ? ` · ${testState.modelCount} models found`
+              : ""}
+          </Text>
+        </View>
+      ) : null}
+      {testState.kind === "error" ? (
+        <View style={styles.testResult}>
+          <Ionicons name="alert-circle" size={15} color={colors.dangerText} />
+          <Text style={[styles.testResultText, { color: colors.dangerText }]}>
+            {testState.message}
+          </Text>
         </View>
       ) : null}
     </View>
@@ -574,6 +624,9 @@ type TestState =
   | { kind: "testing" }
   | { kind: "success"; modelCount: number; latencyMs: number }
   | { kind: "error"; message: string };
+
+/** Per-connection overflow-menu test state (saved-connection probe). */
+type ConnectionTestState = TestState;
 
 function ProviderEditorSheet({
   editor,
@@ -794,7 +847,11 @@ function ProviderEditorSheet({
           textContentType="none"
           containerStyle={styles.field}
         />
-        {editor?.kind === "edit" && connection?.credential_ready ? (
+        {editor?.kind === "edit" && connection?.credential_hint ? (
+          <Text style={styles.fieldHint} numberOfLines={1}>
+            Stored key · {connection.credential_hint} — leave empty to keep it
+          </Text>
+        ) : editor?.kind === "edit" && connection?.credential_ready ? (
           <Text style={styles.fieldHint}>
             Leave empty to keep the current key.
           </Text>
@@ -1067,7 +1124,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     rowCopy: { flex: 1, minWidth: 0 },
     rowTitle: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary },
     rowSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
-    rowModel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.accent, marginTop: 3 },
     rowModelHint: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, marginTop: 3 },
     keyRequired: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, paddingHorizontal: 4 },
     connectionActions: {

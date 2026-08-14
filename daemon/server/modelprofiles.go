@@ -191,6 +191,32 @@ func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMe
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 		return
 	}
+	// Saved-connection test: resolve the persisted Base URL, compiled protocol
+	// and active stored credential ref daemon-side by stable Provider ID. The
+	// App never supplies or receives the secret.
+	id := strings.TrimSpace(raw.ConnectionID)
+	if id == "" {
+		id = strings.TrimSpace(raw.ProfileID)
+	}
+	if id == "" {
+		id = strings.TrimSpace(raw.ID)
+	}
+	if id != "" {
+		result, err := owner.TestSavedProviderConnection(id)
+		if err != nil {
+			s.sendModelProfileError(conn, raw.RequestID, err)
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":          "provider_connection_test",
+			"request_id":    raw.RequestID,
+			"connection_id": id,
+			"client":        result.Client,
+			"model_count":   result.ModelCount,
+			"latency_ms":    result.LatencyMS,
+		})
+		return
+	}
 	in, err := providerInputFromMessage(raw)
 	if err != nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, err.Error())

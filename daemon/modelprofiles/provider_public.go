@@ -34,6 +34,12 @@ type ProviderPreset struct {
 // is the primary user-facing identity and is unique case-insensitively across
 // the Provider list. Multiple connections may share the same Base URL with
 // different API keys; they are distinguished by id and name, never by URL.
+//
+// CredentialHint is a conservative masked preview of the active stored secret
+// (small bounded prefix/suffix, fixed bullet center); the full key never
+// leaves the private credential store and no hint is emitted in logs or
+// telemetry. The editable API-key input stays logically empty — the hint is
+// presentation only and must never be submitted as a credential.
 type ProviderConnection struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
@@ -42,6 +48,7 @@ type ProviderConnection struct {
 	BaseURL         string   `json:"base_url,omitempty"`
 	ManualModelID   string   `json:"manual_model_id,omitempty"`
 	CredentialReady bool     `json:"credential_ready"`
+	CredentialHint  string   `json:"credential_hint,omitempty"`
 	Advanced        bool     `json:"advanced,omitempty"`
 }
 

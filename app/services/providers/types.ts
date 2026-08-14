@@ -19,6 +19,13 @@ export type ProviderConnection = {
   base_url?: string;
   /** Advanced/Custom only. Curated presentation must never render this. */
   manual_model_id?: string;
+  /**
+   * Conservative masked preview of the active stored secret (bounded
+   * prefix/suffix, fixed bullet center), daemon-generated from the private
+   * credential store. Presentation only: the editable API-key input stays
+   * logically empty and this value is never submitted as a credential.
+   */
+  credential_hint?: string;
 };
 
 export type ProviderPreset = {

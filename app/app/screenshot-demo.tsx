@@ -1129,6 +1129,11 @@ function ProvidersDemo() {
           modelCount: 3,
           latencyMs: 128,
         })}
+        onTestConnectionById={async () => ({
+          client: "codex",
+          modelCount: 3,
+          latencyMs: 128,
+        })}
         onSaveProvider={() => ({ status: "saved" })}
       />
     </SafeAreaView>

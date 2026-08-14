@@ -76,6 +76,7 @@ import {
   requireAppliedPersistence,
   type CreateSessionResult,
   type ProviderActivationResult,
+  type ProviderClient,
   type ProviderConnectionInput,
   type ProviderConnectionTestResult,
   type ProviderCredentialResult,
@@ -997,6 +998,91 @@ export class MultiServerWebSocketClient {
         reject,
       );
       transientCredential = "";
+    });
+  }
+
+  /**
+   * Test the exact saved connection by stable Provider ID. The daemon resolves
+   * the persisted Base URL, compiled protocol and active stored credential ref
+   * internally; the App never supplies or receives the secret.
+   */
+  testSavedProviderConnection(
+    serverId: string,
+    connectionId: string,
+    client: string = "codex",
+  ): Promise<ProviderConnectionTestResult> {
+    const id = connectionId.trim();
+    if (!id) {
+      return Promise.reject(
+        new ProviderError(
+          PROVIDER_ERROR_CODES.invalid,
+          "Provider id is required to test the saved connection.",
+          "invalid",
+          false,
+        ),
+      );
+    }
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("provider_connection_test", handleResult);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const parsed = parseProviderConnectionTestResult(payload, client);
+          if (!parsed) {
+            reject(invalidProviderReply("Daemon returned an invalid connection test result."));
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          reject(
+            error instanceof ProviderError
+              ? error
+              : invalidProviderReply(
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid connection test payload.",
+                ),
+          );
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(providerErrorFromPayload(payload, { credentialWrite: false }));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new ProviderError(
+            PROVIDER_ERROR_CODES.timeout,
+            "Connection test timed out.",
+            "timeout",
+            true,
+          ),
+        );
+      }, 20000);
+      this.on("provider_connection_test", handleResult);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "test_provider_connection",
+          request_id: requestId,
+          connection_id: id,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 

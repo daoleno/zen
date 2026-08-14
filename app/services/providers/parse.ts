@@ -105,6 +105,9 @@ export function parseProviderConnection(
     manual_model_id: advanced
       ? asString(record.manual_model_id) || undefined
       : undefined,
+    // Masked hint only: the daemon never projects the full stored secret, and
+    // the hint is presentation-only (never submitted as a credential).
+    credential_hint: asString(record.credential_hint) || undefined,
   };
 }
 

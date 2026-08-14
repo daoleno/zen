@@ -21,6 +21,7 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 	}
 	for _, view := range proj.Views {
 		conn := providerConnectionFromProfile(view.Profile, o.connectionReady(view.Profile))
+		conn.CredentialHint = o.providerCredentialHint(view.Profile)
 		out.Connections = append(out.Connections, conn)
 		entries, _ := o.modelsForConnection(view.Profile, false)
 		out.Models[conn.ID] = entries
@@ -64,6 +65,26 @@ func (o *Owner) connectionReady(profile Profile) bool {
 		return connectionCredentialReady(profile, nil, nil)
 	}
 	return connectionCredentialReady(profile, o.creds, o.lookup)
+}
+
+// providerCredentialHint returns the masked hint for the connection's active
+// stored secret, or "" when the secret lives outside Zen's private store (env
+// fallback) or no secret is stored. The hint is generated daemon-side from the
+// active credential ref; secrets never appear on the wire, in logs, or in
+// telemetry.
+func (o *Owner) providerCredentialHint(profile Profile) string {
+	if o == nil || o.creds == nil || !o.creds.Available() {
+		return ""
+	}
+	ref := activeCredentialRef(profile)
+	if ref == "" {
+		return ""
+	}
+	val, ok, err := o.creds.Get(ref)
+	if err != nil || !ok || strings.TrimSpace(val) == "" {
+		return ""
+	}
+	return credentialHintFor(val)
 }
 
 func connectionCredentialReady(profile Profile, store CredentialStore, lookup func(string) (string, bool)) bool {
