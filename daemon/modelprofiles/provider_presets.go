@@ -1,8 +1,12 @@
 package modelprofiles
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Curated Provider presets. Auth mode / credential env / protocol / client
@@ -152,8 +156,8 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 	if in.Name == "" {
 		in.Name = spec.Public.Label
 	}
-	if in.Name == "" {
-		return Profile{}, fmt.Errorf("%w: name is required", ErrInvalid)
+	if err := ValidateProviderName(in.Name); err != nil {
+		return Profile{}, fmt.Errorf("%w: name: %v", ErrInvalid, err)
 	}
 
 	client := clientFromExecutor(in.Client)
@@ -198,11 +202,9 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 
 	id := in.ID
 	if id == "" {
-		owner := "conn"
-		if hint != "" {
-			owner += "-" + clientFromExecutor(hint)
-		}
-		id = synthesizeConnectionID(owner, in.PresetID, in.Name)
+		// Stable random internal identity: never derived from name, Base URL,
+		// preset, or model so renames and same-URL connections stay distinct.
+		id = newConnectionID("conn")
 	}
 	label := spec.Public.Label
 	providerID := spec.ProviderID
@@ -377,6 +379,21 @@ func synthesizeConnectionID(executor, preset, model string) string {
 		return base
 	}
 	return base + "-" + normalizeID(m)
+}
+
+// newConnectionID returns a stable random internal connection id. IDs are
+// opaque internal identity and must never be derived from user-facing fields.
+func newConnectionID(prefix string) string {
+	prefix = normalizeID(prefix)
+	if prefix == "" {
+		prefix = "conn"
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is effectively unreachable; keep a unique id.
+		return prefix + "_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return prefix + "_" + hex.EncodeToString(b[:])
 }
 
 func requireTrustedOrFail(presetID, modelID string) error {

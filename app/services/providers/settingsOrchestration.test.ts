@@ -81,21 +81,23 @@ describe("Settings orchestration", () => {
     expect(input.model_id).toBeUndefined();
   });
 
-  test("custom gateway derives its label and persists the selected client", () => {
+  test("custom gateway keeps the user-provided name and the selected client", () => {
     const input = customGatewayCreateInput({
       client: "claude",
+      name: "Work gateway",
       baseUrl: "https://gateway.example/v1",
     });
     expect(input.advanced).toBe(true);
     expect(input.base_url).toContain("https://");
     expect(input.client).toBe("claude");
-    expect(input.name).toBe("gateway.example");
+    expect(input.name).toBe("Work gateway");
     expect(input.model_id).toBeUndefined();
   });
 
   test("custom gateway keeps the optional explicit upstream model when given", () => {
     const input = customGatewayCreateInput({
       client: "codex",
+      name: "CF fan",
       baseUrl: "https://cf.api.fan/v1",
       modelId: "gpt-5.6-sol",
     });
@@ -106,6 +108,7 @@ describe("Settings orchestration", () => {
   test("custom gateway drops a blank explicit model back to discovery-driven", () => {
     const input = customGatewayCreateInput({
       client: "codex",
+      name: "CF fan",
       baseUrl: "https://cf.api.fan/v1",
       modelId: "  ",
     });
@@ -116,6 +119,7 @@ describe("Settings orchestration", () => {
     expect(() =>
       customGatewayCreateInput({
         client: "codex",
+        name: "Bad",
         baseUrl: "file:///tmp/provider",
       }),
     ).toThrow(/HTTP or HTTPS/i);
@@ -125,6 +129,7 @@ describe("Settings orchestration", () => {
     expect(
       customGatewayCreateInput({
         client: "codex",
+        name: "LAN",
         baseUrl: "http://192.168.1.20:8080/v1",
       }).base_url,
     ).toBe("http://192.168.1.20:8080/v1");

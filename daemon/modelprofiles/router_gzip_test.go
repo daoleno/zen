@@ -178,7 +178,7 @@ func TestOwnerRouterServesGzipResponsesBody(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: upstream.URL + "/v1",
 		ModelID: "gpt-5.6-sol", Advanced: true,
-	}, 0, true); err != nil {
+	}, "", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunch(ExecutorCodex, "cf-api-fan", "codex")

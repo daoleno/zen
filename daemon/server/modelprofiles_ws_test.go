@@ -338,6 +338,7 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 	}
 	alt := profile
 	alt.ID = "codex-alt"
+	alt.Name = "Codex Alt"
 	alt.Model = "up-2"
 	if _, err := owner.UpsertProfile(alt, 1, true); err != nil {
 		t.Fatal(err)

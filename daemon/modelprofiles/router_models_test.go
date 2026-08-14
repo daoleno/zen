@@ -202,7 +202,7 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 		ID: "conn-a", Name: "gateway-a.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: upstream.URL + "/v1",
 		ModelID: "gpt-5.6-sol", Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 		ID: "conn-b", Name: "gateway-b.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: upstream.URL + "/v1",
 		ModelID: "gpt-5.6-sol", Advanced: true,
-	}, proj.Revision, true); err != nil {
+	}, "", proj.Revision, true); err != nil {
 		t.Fatal(err)
 	}
 

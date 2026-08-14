@@ -16,7 +16,7 @@ func TestCustomConnectionWithoutModelCannotBind(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestSetProviderDefaultAllowsEmptyModelBeforeDiscovery(t *testing.T) {
 		ID: "custom-gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestLaunchFallsBackToFirstSupportedModel(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCustomConnectionExplicitModelBinds(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		ModelID: "gpt-5.6-sol", Advanced: true,
-	}, 0, true); err != nil {
+	}, "", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunch(ExecutorCodex, "cf-api-fan", "codex")
@@ -170,7 +170,7 @@ func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
 		ID: "custom-gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 1, true); err != nil {
+	}, "", 1, true); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunch(ExecutorCodex, a.ID, "codex")

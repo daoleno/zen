@@ -602,10 +602,12 @@ describe("Provider transport source contract", () => {
       "get_session_provider",
       "activate_session_provider",
       "set_provider_credential",
-      "clear_provider_credential",
     ]) {
       expect(source).toContain(`"${method}"`);
     }
+    // The unified Edit Provider form owns the API key: the App never ships a
+    // separate Clear Key wire action.
+    expect(source).not.toContain(`"clear_provider_credential"`);
     for (const banned of [
       "list_model_profiles",
       "get_model_profile",

@@ -14,7 +14,7 @@ func TestLaunchCarriesSelectedModelGpt56SolEndToEnd(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestModelSupportAllowlistSurvivesRefresh(t *testing.T) {
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestLaunchFailsClosedWhenAllModelsDisabled(t *testing.T) {
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true); err != nil {
+	}, "", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	owner.mu.Lock()
@@ -188,7 +188,7 @@ func TestCodexRoutedDefaultAuthoritativeForStats(t *testing.T) {
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true); err != nil {
+	}, "", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	owner.mu.Lock()
@@ -226,7 +226,7 @@ func TestSetProviderDefaultPreservesSelectedModel(t *testing.T) {
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

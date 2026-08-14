@@ -32,6 +32,7 @@ type Request struct {
 	Operation            string                                 `json:"operation,omitempty"`
 	AgentID              string                                 `json:"agent_id,omitempty"`
 	Client               string                                 `json:"client,omitempty"`
+	Credential           string                                 `json:"credential,omitempty"`
 	Status               string                                 `json:"status,omitempty"`
 	Phase                string                                 `json:"phase,omitempty"`
 	Attention            string                                 `json:"attention,omitempty"`

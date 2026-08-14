@@ -17,7 +17,7 @@ func TestPrepareLaunchCustomConnectionUsesStoreCredential(t *testing.T) {
 		ID: "custom-gw", Name: "Custom Gateway", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		ModelID: "up-1", Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestPrepareLaunchCustomConnectionFailClosedWithoutStoreOrEnv(t *testing.T) 
 		ID: "custom-gw", Name: "Custom Gateway", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		ModelID: "up-1", Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

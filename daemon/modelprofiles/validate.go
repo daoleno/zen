@@ -24,6 +24,25 @@ func normalizeSpace(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// ValidateProviderName checks the user-facing Provider display name: trimmed,
+// non-empty, length-bounded, and free of control characters. Uniqueness
+// (case-insensitive) is enforced by the Store against the live catalog.
+func ValidateProviderName(name string) error {
+	name = normalizeSpace(name)
+	if name == "" {
+		return fmt.Errorf("%w: provider name is required", ErrInvalid)
+	}
+	if len([]rune(name)) > MaxProviderNameLength {
+		return fmt.Errorf("%w: provider name exceeds %d characters", ErrInvalid, MaxProviderNameLength)
+	}
+	for _, r := range name {
+		if r == 0 || unicode.IsControl(r) {
+			return fmt.Errorf("%w: provider name must not contain control characters", ErrInvalid)
+		}
+	}
+	return nil
+}
+
 // ValidateProfile checks durable profile fields without reading secret values.
 func ValidateProfile(profile Profile) error {
 	if isAccountConnection(profile) {
@@ -35,6 +54,9 @@ func ValidateProfile(profile Profile) error {
 	}
 	if normalizeSpace(profile.Name) == "" {
 		return fmt.Errorf("%w: profile name is required", ErrInvalid)
+	}
+	if err := ValidateProviderName(profile.Name); err != nil {
+		return fmt.Errorf("%w: name: %v", ErrInvalid, err)
 	}
 	executorID := normalizeID(profile.ExecutorID)
 	if !SupportsExecutor(executorID) {

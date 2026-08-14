@@ -1129,8 +1129,7 @@ function ProvidersDemo() {
           modelCount: 3,
           latencyMs: 128,
         })}
-        onSaveCustom={() => ({ status: "saved" })}
-        onSaveCredential={() => ({ status: "saved" })}
+        onSaveProvider={() => ({ status: "saved" })}
       />
     </SafeAreaView>
   );

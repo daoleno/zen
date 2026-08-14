@@ -65,6 +65,11 @@ const EnvAnthropicBaseURL = "ANTHROPIC_BASE_URL"
 // MaxModelIDLength caps opaque model identifiers (including org/model forms).
 const MaxModelIDLength = 256
 
+// MaxProviderNameLength caps the user-facing Provider display name. Names are
+// the primary user-facing identity and are unique case-insensitively across
+// the Provider list.
+const MaxProviderNameLength = 64
+
 // MaxRouteHistoryEvents bounds in-memory / durable activation history growth.
 const MaxRouteHistoryEvents = 64
 
@@ -89,6 +94,9 @@ var (
 	ErrUnsupportedExecutor        = errors.New("executor does not support model profiles")
 	ErrUnsupportedProtocol        = errors.New("protocol is not supported for executor")
 	ErrDuplicateID                = errors.New("model profile id already exists")
+	// ErrDuplicateName means another Provider already uses the same display
+	// name (case-insensitive). Names are the user-facing identity.
+	ErrDuplicateName = errors.New("provider name already exists")
 	ErrRouteRequired              = errors.New("zen loopback route url is required")
 	ErrBindingNotFound            = errors.New("session route binding not found")
 	ErrBindingConflict            = errors.New("session route binding generation conflict")

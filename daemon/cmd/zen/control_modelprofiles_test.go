@@ -122,6 +122,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 
 	alt := profile
 	alt.ID = "codex-alt"
+	alt.Name = "Codex Alt"
 	alt.Model = "up-2"
 	if resp := app.HandleControlRequest(control.Request{
 		Type: "provider_upsert", Operation: "create", Revision: 1, ProviderConnection: ptrConn(providerConnFromProfile(alt)),
@@ -262,6 +263,7 @@ func TestControlActivateAppliedButNotDurableKeepsSession(t *testing.T) {
 	}
 	alt := profile
 	alt.ID = "codex-alt"
+	alt.Name = "Codex Alt"
 	alt.Model = "up-2"
 	if _, err := owner.UpsertProfile(alt, 1, true); err != nil {
 		t.Fatal(err)

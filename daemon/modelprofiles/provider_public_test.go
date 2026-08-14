@@ -301,7 +301,7 @@ func TestUpsertCustomAccountConnectionViaOwner(t *testing.T) {
 		ID: "codex-main", Name: "Codex Main", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		ModelID: "up-1", Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestUpsertCustomAccountConnectionViaOwner(t *testing.T) {
 		ID: "other", Name: "X", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		ModelID: "up-2", Advanced: true,
-	}, 99, true)
+	}, "", 99, true)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("want conflict got %v", err)
 	}
@@ -387,7 +387,7 @@ func TestDiscoverCustomAccountConnectionWithoutModelID(t *testing.T) {
 				PresetID: ProviderPresetCustom,
 				BaseURL:  srv.URL + "/v1",
 				Advanced: true,
-			}, 0, true)
+			}, "", 0, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -455,7 +455,7 @@ func TestCustomDefaultDoesNotFabricateDiscoveredModel(t *testing.T) {
 		PresetID: ProviderPresetCustom,
 		BaseURL:  "https://gateway.example/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -119,16 +119,19 @@ describe("screenshot demo isolation", () => {
     expect(connected.editor).toBeNull();
 
     const direct = resolveScreenshotProvidersDemo({ editor: "codex" });
-    expect(direct.editor).toEqual({ kind: "custom", client: "codex" });
+    expect(direct.editor).toEqual({ kind: "create", client: "codex" });
 
     const custom = resolveScreenshotProvidersDemo({ editor: "custom" });
-    expect(custom.editor).toEqual({ kind: "custom", client: "codex" });
+    expect(custom.editor).toEqual({ kind: "create", client: "codex" });
+
+    const create = resolveScreenshotProvidersDemo({ editor: "create" });
+    expect(create.editor).toEqual({ kind: "create", client: "codex" });
 
     const retry = resolveScreenshotProvidersDemo({ editor: "retry" });
-    expect(retry.editor).toMatchObject({ kind: "credential", retry: true });
+    expect(retry.editor).toMatchObject({ kind: "edit", retry: true });
 
     const needsKey = resolveScreenshotProvidersDemo({ editor: "needs-key" });
-    expect(needsKey.editor).toMatchObject({ kind: "credential" });
+    expect(needsKey.editor).toMatchObject({ kind: "edit" });
     expect(needsKey.editor).not.toMatchObject({ retry: true });
 
     const keyboard = resolveScreenshotProvidersDemo({ keyboard: "1" });
@@ -137,7 +140,7 @@ describe("screenshot demo isolation", () => {
     expect(
       resolveScreenshotProvidersDemo({ editor: "codex", fixture: "empty" })
         .editor,
-    ).toEqual({ kind: "custom", client: "codex" });
+    ).toEqual({ kind: "create", client: "codex" });
     expect(
       resolveScreenshotProvidersDemo({ editor: "does-not-exist" }).editor,
     ).toBeNull();

@@ -224,17 +224,86 @@ func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnecti
 	return conn
 }
 
-// UpsertProviderConnection creates/updates a connection via public input.
-func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, revision int64, create bool) (ProviderCatalogProjection, error) {
+// UpsertProviderConnection creates/updates a connection via public input and
+// optionally writes its API key in the same Owner.mu transaction. An empty
+// apiKey preserves the existing stored secret; a non-empty value replaces it
+// as part of the edit. Validation happens before any write, and a credential
+// write failure rolls the catalog back, so a failed edit never leaves a
+// partial name/URL/key state behind.
+func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey string, revision int64, create bool) (ProviderCatalogProjection, error) {
+	if o == nil || !o.started || o.store == nil {
+		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	// Update requires the stable internal id so a rename can never drift into
+	// a new connection. Fail before any write.
+	if !create && normalizeID(in.ID) == "" {
+		return ProviderCatalogProjection{}, fmt.Errorf("%w: connection_id is required for update", ErrInvalid)
+	}
 	profile, err := CompileProviderConnection(in)
 	if err != nil {
 		return ProviderCatalogProjection{}, err
 	}
-	if _, err := o.UpsertProfile(profile, revision, create); err != nil {
-		empty, _ := o.ProjectProviders()
-		return empty, err
+	apiKey = strings.TrimSpace(apiKey)
+
+	o.mu.Lock()
+	applyErr := func() error {
+		var previous Profile
+		var err error
+		if !create {
+			previous, err = o.store.Get(profile.ID)
+			if err != nil {
+				return err
+			}
+		}
+		// Fail before any write when the edit includes a key the store cannot take.
+		if apiKey != "" && (o.creds == nil || !o.creds.Available()) {
+			return ErrCredentialStoreUnavailable
+		}
+
+		if create {
+			_, err = o.store.Create(profile, revision)
+		} else {
+			_, err = o.store.Update(profile, revision)
+		}
+		if err != nil && !errors.Is(err, ErrPersistDirSync) {
+			return err
+		}
+		if apiKey != "" {
+			if serr := o.creds.Set(CredentialRefFor(profile.ID), apiKey); serr != nil {
+				// Roll the catalog back so the edit applied nothing: Delete the
+				// fresh connection or restore the previous row. A rollback
+				// persist failure leaves the connection changed but key-less
+				// (recoverable via Edit; no orphaned secret exists).
+				if create {
+					if _, rerr := o.store.Delete(profile.ID, o.store.Revision()); rerr != nil && !errors.Is(rerr, ErrPersistDirSync) {
+						return errors.Join(serr, rerr)
+					}
+				} else {
+					if _, rerr := o.store.Update(previous, o.store.Revision()); rerr != nil && !errors.Is(rerr, ErrPersistDirSync) {
+						return errors.Join(serr, rerr)
+					}
+				}
+				return serr
+			}
+		}
+		// ErrPersistDirSync means the rename committed: applied-with-warning.
+		return err
+	}()
+	o.mu.Unlock()
+	if applyErr != nil {
+		// ErrPersistDirSync means the write committed: return the live catalog
+		// so the client sees the applied state with the durability warning.
+		proj, perr := o.ProjectProviders()
+		if perr != nil {
+			return ProviderCatalogProjection{}, errors.Join(applyErr, perr)
+		}
+		return proj, applyErr
 	}
-	return o.ProjectProviders()
+	proj, perr := o.ProjectProviders()
+	if perr != nil {
+		return ProviderCatalogProjection{}, perr
+	}
+	return proj, nil
 }
 
 // DeleteProviderConnection removes a connection after non-orphaning credential

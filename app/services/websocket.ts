@@ -751,25 +751,38 @@ export class MultiServerWebSocketClient {
     ).then((result) => result.snapshot);
   }
 
+  /**
+   * Create/update a Provider connection. The optional credential is written
+   * atomically with the connection: empty omits the key (preserving any
+   * stored secret), non-empty replaces it. The value is scrubbed after send.
+   */
   upsertProviderConnection(
     serverId: string,
     input: {
       connection: ProviderConnectionInput;
       revision: number;
       operation?: "create" | "update";
+      credential?: string;
     },
   ): Promise<ProvidersMutationResult> {
+    let transientCredential = input.credential?.trim() ?? "";
+    const body: Record<string, unknown> = {
+      type: "upsert_provider_connection",
+      provider_connection: input.connection,
+      revision: input.revision,
+      operation: input.operation ?? "update",
+    };
+    if (transientCredential) {
+      body.credential = transientCredential;
+    }
     return this.requestProvidersCatalog(
       serverId,
-      {
-        type: "upsert_provider_connection",
-        provider_connection: input.connection,
-        revision: input.revision,
-        operation: input.operation ?? "update",
-      },
+      body,
       "Timed out while saving Provider connection.",
       false,
-    );
+    ).finally(() => {
+      transientCredential = "";
+    });
   }
 
   deleteProviderConnection(
@@ -1229,77 +1242,6 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  clearProviderCredential(
-    serverId: string,
-    connectionId: string,
-  ): Promise<ProviderCredentialResult> {
-    const requestId = newProviderRequestId();
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("provider_credential", handleResult);
-        this.off("error", handleError);
-      };
-      const handleResult = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        try {
-          const parsed = parseProviderCredentialResult(payload, connectionId);
-          if (!parsed) {
-            reject(
-              invalidProviderReply(
-                "Daemon returned an invalid credential result.",
-              ),
-            );
-            return;
-          }
-          resolve(parsed);
-        } catch (error) {
-          reject(
-            error instanceof ProviderError
-              ? error
-              : invalidProviderReply(
-                  error instanceof Error
-                    ? error.message
-                    : "Invalid credential payload.",
-                ),
-          );
-        }
-      };
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(providerErrorFromPayload(payload, { credentialWrite: true }));
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(
-          new ProviderError(
-            PROVIDER_ERROR_CODES.timeout,
-            "Timed out while clearing API key.",
-            "timeout",
-            true,
-          ),
-        );
-      }, 15000);
-      this.on("provider_credential", handleResult);
-      this.on("error", handleError);
-      this.sendRequestNow(
-        serverId,
-        {
-          type: "clear_provider_credential",
-          request_id: requestId,
-          connection_id: connectionId,
-        },
-        cleanup,
-        reject,
-      );
-    });
-  }
 
   private requestProvidersCatalog(
     serverId: string,

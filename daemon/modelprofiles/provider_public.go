@@ -29,6 +29,11 @@ type ProviderPreset struct {
 // ProviderConnection is one Settings-managed Provider account connection.
 // Curated public shape: {id,name,preset_id,clients?,credential_ready}.
 // BaseURL and ManualModelID appear only for Custom/Advanced.
+//
+// id is the stable internal identity (never derived from name/URL/key); name
+// is the primary user-facing identity and is unique case-insensitively across
+// the Provider list. Multiple connections may share the same Base URL with
+// different API keys; they are distinguished by id and name, never by URL.
 type ProviderConnection struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`

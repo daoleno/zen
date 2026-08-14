@@ -105,7 +105,11 @@ func (s *Server) handleUpsertProviderConnection(conn *websocket.Conn, raw client
 			create = true
 		}
 	}
-	proj, err := owner.UpsertProviderConnection(in, raw.Revision, create)
+	apiKey := strings.TrimSpace(raw.Credential)
+	// Never accept body aliases for secrets and never retain the value.
+	raw.Credential = ""
+	proj, err := owner.UpsertProviderConnection(in, apiKey, raw.Revision, create)
+	apiKey = ""
 	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
 }
 

@@ -1699,7 +1699,10 @@ func (a *controlApp) handleProviderUpsert(req control.Request) control.Response 
 			create = true
 		}
 	}
-	proj, err := a.profiles.UpsertProviderConnection(*req.ProviderConnection, req.Revision, create)
+	apiKey := strings.TrimSpace(req.Credential)
+	req.Credential = ""
+	proj, err := a.profiles.UpsertProviderConnection(*req.ProviderConnection, apiKey, req.Revision, create)
+	apiKey = ""
 	return a.providersMutationResponse(proj, err)
 }
 

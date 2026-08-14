@@ -3,6 +3,7 @@ package modelprofiles
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -327,6 +328,22 @@ func (s *Store) SetClientDefault(client, connectionID, modelID string, expectedR
 	return s.applyPersist(err, nextRev, nextProfiles, nextDefaults, nextModels)
 }
 
+// nameInUseLocked reports whether another profile already owns the same
+// display name (case-insensitive). Caller must hold s.mu. Names are the
+// user-facing identity, so duplicates are invalid state.
+func (s *Store) nameInUseLocked(name, exceptID string) bool {
+	name = normalizeSpace(name)
+	for id, existing := range s.profiles {
+		if id == normalizeID(exceptID) {
+			continue
+		}
+		if strings.EqualFold(existing.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // Create inserts a profile. expectedRevision must match the current revision.
 func (s *Store) Create(profile Profile, expectedRevision int64) (Catalog, error) {
 	if s == nil {
@@ -344,6 +361,9 @@ func (s *Store) Create(profile Profile, expectedRevision int64) (Catalog, error)
 	}
 	if _, exists := s.profiles[profile.ID]; exists {
 		return Catalog{}, fmt.Errorf("%w: %s", ErrDuplicateID, profile.ID)
+	}
+	if s.nameInUseLocked(profile.Name, "") {
+		return Catalog{}, fmt.Errorf("%w: %q", ErrDuplicateName, profile.Name)
 	}
 	next := cloneProfiles(s.profiles)
 	next[profile.ID] = profile
@@ -370,6 +390,9 @@ func (s *Store) Update(profile Profile, expectedRevision int64) (Catalog, error)
 	existing, ok := s.profiles[profile.ID]
 	if !ok {
 		return Catalog{}, fmt.Errorf("%w: %s", ErrNotFound, profile.ID)
+	}
+	if s.nameInUseLocked(profile.Name, profile.ID) {
+		return Catalog{}, fmt.Errorf("%w: %q", ErrDuplicateName, profile.Name)
 	}
 	if normalizeID(existing.Scope) != normalizeID(profile.Scope) {
 		return Catalog{}, fmt.Errorf("%w: connection scope is immutable for profile %s", ErrInvalid, profile.ID)
@@ -506,15 +529,43 @@ func (s *Store) load() error {
 	profiles := map[string]Profile{}
 	for _, profile := range doc.Profiles {
 		profile = normalizeProfile(profile)
-		if err := ValidateProfile(profile); err != nil {
-			return fmt.Errorf("profile %q: %w", profile.ID, err)
-		}
 		if _, exists := profiles[profile.ID]; exists {
 			return fmt.Errorf("%w: %s", ErrDuplicateID, profile.ID)
 		}
 		profiles[profile.ID] = profile
 	}
-	defaults := map[string]string{}
+	defaults, defaultModels, err := s.parseCatalogExtras(doc, profiles)
+	if err != nil {
+		return err
+	}
+	// Deterministic display-name migration: every Provider needs a valid,
+	// case-insensitively unique name. Empty names become the Base-URL host (or
+	// "Provider <id>"); duplicates get " (2)", " (3)", … in ID order; over-long
+	// names are truncated. IDs, defaults, revisions and credentials are never
+	// touched, so a failed rewrite simply re-runs identically next start.
+	if migrateProviderDisplayNames(profiles) {
+		if perr := s.persistLocked(doc.Revision, profiles, defaults, defaultModels); perr != nil {
+			// Best-effort: keep the corrected names in memory; the migration is
+			// deterministic and re-applies on the next load.
+			_ = perr
+		}
+	}
+	for _, profile := range profiles {
+		if err := ValidateProfile(profile); err != nil {
+			return fmt.Errorf("profile %q: %w", profile.ID, err)
+		}
+	}
+	s.revision = doc.Revision
+	s.profiles = profiles
+	s.defaults = defaults
+	s.defaultModels = defaultModels
+	return nil
+}
+
+// parseCatalogExtras validates and returns the durable defaults maps. It runs
+// before display-name migration so the rewrite can persist them unchanged.
+func (s *Store) parseCatalogExtras(doc fileDocument, profiles map[string]Profile) (defaults, defaultModels map[string]string, err error) {
+	defaults = map[string]string{}
 	for executorID, profileID := range doc.Defaults {
 		executorID = normalizeID(executorID)
 		profileID = normalizeID(profileID)
@@ -524,24 +575,24 @@ func (s *Store) load() error {
 		client := clientFromExecutor(executorID)
 		ex := executorFromClient(client)
 		if !SupportsExecutor(ex) {
-			return fmt.Errorf("%w: default executor %s", ErrUnsupportedExecutor, executorID)
+			return nil, nil, fmt.Errorf("%w: default executor %s", ErrUnsupportedExecutor, executorID)
 		}
 		profile, ok := profiles[profileID]
 		if !ok {
-			return fmt.Errorf("%w: default profile %s for %s", ErrNotFound, profileID, executorID)
+			return nil, nil, fmt.Errorf("%w: default profile %s for %s", ErrNotFound, profileID, executorID)
 		}
 		if isAccountConnection(profile) {
 			spec, ok := lookupPreset(inferPresetID(profile))
 			if !ok || !presetSupportsClient(spec, ex) {
-				return fmt.Errorf("%w: default connection %s does not support client %s", ErrInvalid, profileID, client)
+				return nil, nil, fmt.Errorf("%w: default connection %s does not support client %s", ErrInvalid, profileID, client)
 			}
 		} else if profile.ExecutorID != ex {
-			return fmt.Errorf("%w: default profile %s belongs to %s, not %s", ErrInvalid, profileID, profile.ExecutorID, ex)
+			return nil, nil, fmt.Errorf("%w: default profile %s belongs to %s, not %s", ErrInvalid, profileID, profile.ExecutorID, ex)
 		}
 		defaults[client] = profileID
 		defaults[ex] = profileID
 	}
-	defaultModels := map[string]string{}
+	defaultModels = map[string]string{}
 	for client, modelID := range doc.DefaultModels {
 		client = clientFromExecutor(client)
 		modelID = normalizeSpace(modelID)
@@ -550,11 +601,71 @@ func (s *Store) load() error {
 		}
 		defaultModels[client] = modelID
 	}
-	s.revision = doc.Revision
-	s.profiles = profiles
-	s.defaults = defaults
-	s.defaultModels = defaultModels
-	return nil
+	return defaults, defaultModels, nil
+}
+
+// migrateProviderDisplayNames deterministically repairs Provider display names
+// on load: empty names get a Base-URL-host (or "Provider <id>") name, over-long
+// names are truncated, and case-insensitive duplicates get " (2)", " (3)", …
+// suffixes in sorted-ID order. Returns true when any name changed so callers
+// can rewrite the durable file at the same revision.
+func migrateProviderDisplayNames(profiles map[string]Profile) bool {
+	changed := false
+	used := map[string]struct{}{}
+	for _, id := range sortedProfileIDs(profiles) {
+		profile := profiles[id]
+		name := normalizeSpace(profile.Name)
+		if name == "" {
+			name = providerNameFromBaseURL(profile.BaseURL)
+			if name == "" {
+				name = "Provider " + id
+			}
+			profile.Name = name
+			changed = true
+		}
+		if r := []rune(name); len(r) > MaxProviderNameLength {
+			name = string(r[:MaxProviderNameLength])
+			profile.Name = name
+			changed = true
+		}
+		base := name
+		for suffix := 2; ; suffix++ {
+			if _, taken := used[strings.ToLower(name)]; !taken {
+				break
+			}
+			next := fmt.Sprintf("%s (%d)", base, suffix)
+			if r := []rune(next); len(r) > MaxProviderNameLength {
+				suffixLen := len([]rune(fmt.Sprintf(" (%d)", suffix)))
+				trim := MaxProviderNameLength - suffixLen
+				if trim < 1 {
+					break
+				}
+				next = string([]rune(base)[:trim]) + fmt.Sprintf(" (%d)", suffix)
+			}
+			name = next
+		}
+		if name != profile.Name {
+			profile.Name = name
+			changed = true
+		}
+		used[strings.ToLower(name)] = struct{}{}
+		profiles[id] = profile
+	}
+	return changed
+}
+
+// providerNameFromBaseURL derives a human-readable fallback display name from
+// a connection's Base URL host (no scheme, no port, no path).
+func providerNameFromBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 func (s *Store) persistLocked(revision int64, profiles map[string]Profile, defaults, defaultModels map[string]string) error {

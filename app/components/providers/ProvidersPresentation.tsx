@@ -29,13 +29,19 @@ import {
   connectionRequiresModelSelection,
   connectionsForClient,
   modelSupportChoices,
+  providerBaseUrlHostname,
   providerClientLabel,
+  providerNameIssue,
 } from "../../services/providers";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { RisingSheet } from "../ui/RisingSheet";
 import {
+  providerEditorAfterSave,
   providerEditorCanSave,
+  providerEditorInitialBaseUrl,
+  providerEditorInitialName,
+  providerEditorRequiresBaseUrl,
   providerEditorSessionKey,
   providerEditorShouldResetFields,
   type ModelSyncPickerState,
@@ -83,15 +89,14 @@ export interface ProvidersPresentationProps {
     baseUrl: string;
     apiKey: string;
   }): Promise<ProviderConnectionTestResult>;
-  onSaveCustom(input: {
+  /** Unified Add/Edit Provider save: name, Base URL and API key atomically. */
+  onSaveProvider(input: {
     client: ProviderClient;
+    connection?: ProviderConnection;
+    name: string;
     baseUrl: string;
     apiKey: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
-  onSaveCredential(
-    connection: ProviderConnection,
-    apiKey: string,
-  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   apiKeyAutoFocus?: boolean;
 }
 
@@ -119,8 +124,7 @@ export function ProvidersPresentation({
   onCloseModelPicker,
   onSelectModel,
   onTestConnection,
-  onSaveCustom,
-  onSaveCredential,
+  onSaveProvider,
   apiKeyAutoFocus,
 }: ProvidersPresentationProps) {
   const colors = useAppColors();
@@ -228,12 +232,12 @@ export function ProvidersPresentation({
 
       <ProviderEditorSheet
         editor={editor}
+        catalog={catalog}
         mutating={mutating}
         apiKeyAutoFocus={apiKeyAutoFocus}
         onClose={onCloseEditor}
         onTestConnection={onTestConnection}
-        onSaveCustom={onSaveCustom}
-        onSaveCredential={onSaveCredential}
+        onSaveProvider={onSaveProvider}
       />
 
       {modelPicker && catalog ? (
@@ -318,15 +322,14 @@ function ClientConnectionCard({
             <ConnectionChoiceRow
               key={connection.id}
               connection={connection}
+              catalog={catalog}
               selected={selectedId === connection.id}
               disabled={disabled}
               isLast={index === connections.length - 1}
               boundModel={boundModel}
               needsModel={needsModel}
               onSelect={() => onSetDefault(connection)}
-              onOpenCredential={() =>
-                onOpenEditor({ kind: "credential", connection })
-              }
+              onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
               onDelete={() => onDelete(connection)}
               onDiscover={() => onDiscover(connection)}
             />
@@ -342,7 +345,7 @@ function ClientConnectionCard({
         accessibilityRole="button"
         accessibilityLabel={`Add ${label} endpoint`}
         accessibilityState={{ disabled }}
-        onPress={() => onOpenEditor({ kind: "custom", client })}
+        onPress={() => onOpenEditor({ kind: "create", client })}
       >
         <Ionicons name="add" size={18} color={colors.accentStrong} />
         <Text style={styles.addEndpointText}>Add custom endpoint</Text>
@@ -389,19 +392,36 @@ function ChoiceRow({
   );
 }
 
+/** Secondary identity: Base-URL hostname for custom gateways, preset label
+ *  for curated connections (daemon-provided, never hardcoded). */
+function connectionSubtitle(
+  connection: ProviderConnection,
+  catalog: ProvidersSnapshot | null,
+): string {
+  if (connection.base_url) {
+    return providerBaseUrlHostname(connection.base_url);
+  }
+  const preset = catalog?.presets.find(
+    (item) => item.id === connection.preset_id,
+  );
+  return preset?.label ?? "Official endpoint";
+}
+
 function ConnectionChoiceRow({
   connection,
+  catalog,
   selected,
   disabled,
   isLast,
   boundModel,
   needsModel,
   onSelect,
-  onOpenCredential,
+  onOpenEditor,
   onDelete,
   onDiscover,
 }: {
   connection: ProviderConnection;
+  catalog: ProvidersSnapshot;
   selected: boolean;
   disabled: boolean;
   isLast: boolean;
@@ -410,7 +430,7 @@ function ConnectionChoiceRow({
   /** Default connection with no bound model: new Sessions would fail closed. */
   needsModel: boolean;
   onSelect(): void;
-  onOpenCredential(): void;
+  onOpenEditor(): void;
   onDelete(): void;
   onDiscover(): void;
 }) {
@@ -418,7 +438,7 @@ function ConnectionChoiceRow({
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [expanded, setExpanded] = useState(false);
   const ready = connection.credential_ready;
-  const subtitle = connection.base_url ?? connection.name;
+  const subtitle = connectionSubtitle(connection, catalog);
 
   return (
     <View style={!isLast ? styles.groupRowBorder : undefined}>
@@ -430,8 +450,8 @@ function ConnectionChoiceRow({
           disabled={disabled}
           accessibilityRole="radio"
           accessibilityState={{ checked: selected, disabled }}
-          accessibilityLabel={`${connection.name}, ${ready ? "connected" : "API key required"}${boundModel ? `, model ${boundModel}` : needsModel ? ", no model selected" : ""}`}
-          onPress={ready ? onSelect : onOpenCredential}
+          accessibilityLabel={`${connection.name}, ${subtitle}, ${ready ? "connected" : "API key required"}${boundModel ? `, model ${boundModel}` : needsModel ? ", no model selected" : ""}`}
+          onPress={ready ? onSelect : onOpenEditor}
         >
           <View style={styles.radioOuter}>
             {selected ? <View style={styles.radioInner} /> : null}
@@ -477,8 +497,8 @@ function ConnectionChoiceRow({
             <ActionButton label="Sync models" onPress={onDiscover} disabled={disabled} />
           ) : null}
           <ActionButton
-            label={ready ? "Replace key" : "Add API key"}
-            onPress={onOpenCredential}
+            label="Edit"
+            onPress={onOpenEditor}
             disabled={disabled}
             primary
           />
@@ -531,6 +551,7 @@ function ActionButton({
 
 interface ProviderEditorSheetProps {
   editor: ProvidersEditorState;
+  catalog: ProvidersSnapshot | null;
   mutating: boolean;
   apiKeyAutoFocus?: boolean;
   onClose(): void;
@@ -539,15 +560,13 @@ interface ProviderEditorSheetProps {
     baseUrl: string;
     apiKey: string;
   }): Promise<ProviderConnectionTestResult>;
-  onSaveCustom(input: {
+  onSaveProvider(input: {
     client: ProviderClient;
+    connection?: ProviderConnection;
+    name: string;
     baseUrl: string;
     apiKey: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
-  onSaveCredential(
-    connection: ProviderConnection,
-    apiKey: string,
-  ): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
 }
 
 type TestState =
@@ -558,18 +577,19 @@ type TestState =
 
 function ProviderEditorSheet({
   editor,
+  catalog,
   mutating,
   apiKeyAutoFocus,
   onClose,
   onTestConnection,
-  onSaveCustom,
-  onSaveCredential,
+  onSaveProvider,
 }: ProviderEditorSheetProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [name, setName] = useState("");
   const [testState, setTestState] = useState<TestState>({ kind: "idle" });
   const sessionKey = providerEditorSessionKey(editor);
   const prevSessionKeyRef = useRef(sessionKey);
@@ -579,33 +599,46 @@ function ProviderEditorSheet({
     prevSessionKeyRef.current = sessionKey;
     if (providerEditorShouldResetFields(previous, sessionKey)) {
       setApiKey("");
-      setBaseUrl("");
+      setBaseUrl(providerEditorInitialBaseUrl(editor));
+      setName(providerEditorInitialName(editor));
       setTestState({ kind: "idle" });
     }
-  }, [sessionKey]);
+  }, [editor, sessionKey]);
 
   const resetFields = () => {
     setApiKey("");
     setBaseUrl("");
+    setName("");
     setTestState({ kind: "idle" });
   };
   const handleClose = () => {
     resetFields();
     onClose();
   };
-  const connection = editor?.kind === "credential" ? editor.connection : null;
-  const custom = editor?.kind === "custom" ? editor : null;
-  const client = custom?.client ?? connection?.clients[0];
+  const connection = editor?.kind === "edit" ? editor.connection : null;
+  const createClient = editor?.kind === "create" ? editor.client : null;
+  const client = createClient ?? connection?.clients[0] ?? null;
   const normalizedClient =
     client === "codex" || client === "claude" ? client : null;
-  const endpoint = custom ? baseUrl : connection?.base_url ?? "";
+  const requiresBaseUrl = providerEditorRequiresBaseUrl(editor);
+  const endpoint = requiresBaseUrl
+    ? baseUrl.trim()
+    : connection?.base_url ?? "";
   const testing = testState.kind === "testing";
+  const nameIssue = providerNameIssue({
+    name,
+    snapshot: catalog,
+    exceptConnectionId: connection?.id,
+  });
   const canSave = providerEditorCanSave({
     mutating: mutating || testing,
-    apiKey,
-    credentialMode: connection != null,
-    customMode: custom != null,
+    name,
     baseUrl,
+    apiKey,
+    nameIssue,
+    createMode: editor?.kind === "create",
+    editMode: editor?.kind === "edit",
+    requiresBaseUrl,
   });
   const canTest =
     !mutating &&
@@ -613,15 +646,17 @@ function ProviderEditorSheet({
     normalizedClient != null &&
     endpoint.trim().length > 0 &&
     apiKey.trim().length > 0;
-  const title = connection
-    ? connection.credential_ready
-      ? "Replace API key"
-      : editor?.kind === "credential" && editor.retry
-        ? "Retry API key"
-        : "Add API key"
-    : custom
-      ? `Connect ${providerClientLabel(custom.client)}`
-      : "Connect client";
+  const title =
+    editor?.kind === "edit"
+      ? "Edit Provider"
+      : editor?.kind === "create"
+        ? "Add Provider"
+        : "Provider";
+  const saveLabel = mutating
+    ? "Saving…"
+    : editor?.kind === "create"
+      ? "Add Provider"
+      : "Save changes";
 
   const updateBaseUrl = (value: string) => {
     setBaseUrl(value);
@@ -656,17 +691,15 @@ function ProviderEditorSheet({
   };
 
   const handleSave = async () => {
-    if (!canSave) return;
-    const outcome = connection
-      ? await onSaveCredential(connection, apiKey)
-      : custom
-        ? await onSaveCustom({
-            client: custom.client,
-            baseUrl: baseUrl.trim(),
-            apiKey,
-          })
-        : null;
-    if (outcome?.status === "saved") resetFields();
+    if (!canSave || !normalizedClient) return;
+    const outcome = await onSaveProvider({
+      client: normalizedClient,
+      connection: connection ?? undefined,
+      name: name.trim(),
+      baseUrl: baseUrl.trim(),
+      apiKey,
+    });
+    if (outcome.status === "saved") resetFields();
   };
 
   return (
@@ -700,27 +733,32 @@ function ProviderEditorSheet({
           </Pressable>
         </View>
 
-        {custom ? (
-          <Text style={styles.editorHint}>
-            This endpoint applies only to Zen-launched {providerClientLabel(custom.client)} Sessions. Official login remains available as a direct option.
+        {editor?.kind === "edit" && editor.retry ? (
+          <Text style={styles.editorRetryHint}>
+            The API key was not saved. Check it and try again.
           </Text>
         ) : null}
 
-        {connection ? (
-          <>
-            <Text style={styles.editorProviderName}>{connection.name}</Text>
-            {connection.base_url ? (
-              <Text style={styles.editorEndpoint}>{connection.base_url}</Text>
-            ) : null}
-            {editor?.kind === "credential" && editor.retry ? (
-              <Text style={styles.editorRetryHint}>
-                The API key was not saved. Check it and try again.
-              </Text>
-            ) : null}
-          </>
+        <Text style={styles.fieldLabel}>Provider name</Text>
+        <MobileSingleLineInput
+          value={name}
+          onChangeText={(value) => {
+            setName(value);
+            setTestState({ kind: "idle" });
+          }}
+          editable={!mutating && !testing}
+          placeholder="e.g. Work gateway"
+          placeholderTextColor={colors.textSecondary}
+          accessibilityLabel="Provider name"
+          autoCapitalize="words"
+          autoCorrect={false}
+          containerStyle={styles.field}
+        />
+        {nameIssue ? (
+          <Text style={styles.fieldError}>{nameIssue}</Text>
         ) : null}
 
-        {custom ? (
+        {requiresBaseUrl ? (
           <>
             <Text style={styles.fieldLabel}>Base URL</Text>
             <MobileSingleLineInput
@@ -745,7 +783,7 @@ function ProviderEditorSheet({
           value={apiKey}
           onChangeText={updateApiKey}
           editable={!mutating && !testing}
-          autoFocus={apiKeyAutoFocus && !mutating}
+          autoFocus={apiKeyAutoFocus && editor?.kind === "create" && !mutating}
           placeholder="Paste API key"
           placeholderTextColor={colors.textSecondary}
           accessibilityLabel="API Key"
@@ -756,6 +794,11 @@ function ProviderEditorSheet({
           textContentType="none"
           containerStyle={styles.field}
         />
+        {editor?.kind === "edit" && connection?.credential_ready ? (
+          <Text style={styles.fieldHint}>
+            Leave empty to keep the current key.
+          </Text>
+        ) : null}
 
         {endpoint && normalizedClient ? (
           <AnimatedPressable
@@ -807,13 +850,7 @@ function ProviderEditorSheet({
           accessibilityState={{ disabled: !canSave, busy: mutating }}
           onPress={() => void handleSave()}
         >
-          <Text style={styles.saveButtonText}>
-            {mutating
-              ? "Saving…"
-              : connection
-                ? "Save API key"
-                : "Save connection"}
-          </Text>
+          <Text style={styles.saveButtonText}>{saveLabel}</Text>
         </AnimatedPressable>
       </ScrollView>
     </RisingSheet>
@@ -1159,10 +1196,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       textAlign: "center",
       paddingVertical: 20,
     },
-    editorHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textSecondary, marginBottom: 4 },
-    editorProviderName: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary, fontWeight: "600" },
-    editorEndpoint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary },
-    editorRetryHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.warning, marginTop: 4 },
+    editorRetryHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.warning, marginBottom: 4 },
     fieldLabel: { ...UiTextMetrics, ...TypeScale.label, color: colors.textSecondary, marginTop: 8, marginBottom: 2, marginHorizontal: 2 },
     field: {
       borderRadius: Radii.xs,
@@ -1170,6 +1204,8 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
     },
+    fieldError: { ...UiTextMetrics, ...TypeScale.caption, color: colors.dangerText, marginHorizontal: 2, marginTop: 3 },
+    fieldHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginHorizontal: 2, marginTop: 3 },
     testButton: {
       minHeight: 46,
       marginTop: 8,

@@ -90,10 +90,10 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 
 /**
  * Providers demo state: `fixture=empty` shows the empty surface, otherwise the
- * connected fixture renders. `editor=custom` binds the custom endpoint form,
- * `editor=retry` rebinds the Anthropic connection for a failed-save retry, and
- * any other value is treated as a curated preset id. `keyboard=1` autofocuses
- * the API key field to capture the keyboard state.
+ * connected fixture renders. `editor=create` binds the Add Provider form,
+ * `editor=retry` rebinds the Anthropic connection for a failed-save retry,
+ * and any other value is treated as a curated preset id. `keyboard=1`
+ * autofocuses the API key field to capture the keyboard state.
  */
 export function resolveScreenshotProvidersDemo(input: {
   fixture?: string | string[] | undefined;
@@ -120,17 +120,17 @@ export function resolveScreenshotProvidersEditor(
   value: string | undefined,
   catalog: ProvidersSnapshot,
 ): ProvidersEditorState {
-  if (value === "custom" || value === "codex") {
-    return { kind: "custom", client: "codex" };
+  if (value === "custom" || value === "create" || value === "codex") {
+    return { kind: "create", client: "codex" };
   }
-  if (value === "claude") return { kind: "custom", client: "claude" };
+  if (value === "claude") return { kind: "create", client: "claude" };
   if (value === "retry" || value === "needs-key") {
     const connection =
       catalog.connections.find(
         (candidate) => candidate.preset_id === "anthropic",
       ) ?? catalog.connections[0];
     if (!connection) return null;
-    return { kind: "credential", connection, retry: value === "retry" };
+    return { kind: "edit", connection, retry: value === "retry" };
   }
   return null;
 }

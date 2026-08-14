@@ -32,7 +32,7 @@ func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: upstream.URL + "/v1",
 		Advanced: true,
-	}, 0, true)
+	}, "", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

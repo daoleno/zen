@@ -652,6 +652,7 @@ func TestBuiltinSameContractHotSwitchAndHistoryDomains(t *testing.T) {
 	}
 	b := a
 	b.ID = "b"
+	b.Name = "B"
 	b.Model = "vendor/b"
 	ca, err := v.VerifyProfileContract(a)
 	if err != nil {

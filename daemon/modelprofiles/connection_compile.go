@@ -123,6 +123,9 @@ func validateAccountConnection(profile Profile) error {
 	if normalizeSpace(profile.Name) == "" {
 		return fmt.Errorf("%w: profile name is required", ErrInvalid)
 	}
+	if err := ValidateProviderName(profile.Name); err != nil {
+		return fmt.Errorf("%w: name: %v", ErrInvalid, err)
+	}
 	if normalizeID(profile.ExecutorID) != "" || normalizeID(profile.Protocol) != "" || normalizeSpace(profile.ClientModel) != "" {
 		return fmt.Errorf("%w: account connections must not store executor/protocol/client_model", ErrInvalid)
 	}

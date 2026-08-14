@@ -11,20 +11,17 @@ import { providerEditorAfterSave } from "../components/providers/providersPresen
 import {
   ProviderError,
   ProviderRequestOwner,
+  advancedConnectionInput,
   assertNoCredentialRetention,
   classifyMutationPersistence,
   clientForConnection,
-  customGatewayCreateInput,
   durabilityWarningMessage,
   firstSupportedModel,
-  mayDiscoverAfterCredential,
   offlineProviderError,
-  planAfterCredentialWrite,
   presentProviderError,
   providerMutationRequiresRefresh,
   providersScreenAfterBlur,
   resolveCreatedConnection,
-  settleCredentialPersistence,
   toggleModelSupport,
   type ProviderConnection,
   type ProviderClient,
@@ -225,66 +222,134 @@ export default function ProvidersScreen() {
     }
   };
 
-  const saveCredential = async (
-    connectionId: string,
-    apiKey: string,
-  ): Promise<boolean> => {
-    if (!currentServerId || !currentConnected) return false;
+  /**
+   * Unified Add/Edit Provider save: Name, Base URL and API key are written
+   * atomically by the daemon in one upsert. An empty apiKey preserves the
+   * stored secret (edit mode); a non-empty key replaces it as part of the
+   * edit. There is no separate Replace/Clear key flow.
+   */
+  const saveProvider = async (input: {
+    client: ProviderClient;
+    connection?: ProviderConnection;
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<ProviderSaveOutcome> => {
+    const previous = catalogRef.current;
+    if (!currentServerId || !currentConnected || !previous) {
+      return { status: "create_failed" };
+    }
     if (ownerRef.current.catalogRequiresRefresh()) {
       syncWriteLockUi();
       Alert.alert(
         "Refresh required",
-        "Refresh Providers before saving an API key.",
+        "Refresh Providers before saving.",
         [{ text: "Refresh", onPress: () => void loadCatalog({ soft: true }) }],
       );
-      return false;
+      return { status: "create_failed" };
     }
     const admission = ownerRef.current.admitCatalogMutation();
     if (!admission.ok) {
       Alert.alert("Busy", admission.reason);
-      return false;
+      return { status: "create_failed" };
     }
     const token = admission.token;
-    let transientApiKey = apiKey;
+    let transientApiKey = input.apiKey;
     setMutating(true);
     try {
-      const result = await wsClient.setProviderCredential(
+      const result = await wsClient.upsertProviderConnection(
         currentServerId,
-        connectionId,
-        transientApiKey,
+        {
+          revision,
+          operation: input.connection ? "update" : "create",
+          connection: advancedConnectionInput({
+            existingId: input.connection?.id,
+            name: input.name,
+            client: input.client,
+            baseUrl: input.baseUrl,
+            presetId: input.connection?.preset_id,
+            // Curated connections keep the official endpoint; only
+            // custom/advanced connections carry an editable Base URL.
+            advanced: input.connection
+              ? Boolean(input.connection.base_url)
+              : true,
+          }),
+          credential: transientApiKey.trim() || undefined,
+        },
       );
       transientApiKey = "";
-      assertNoCredentialRetention(result);
-      if (!ownerRef.current.isCurrent(token)) return false;
-      const settled = settleCredentialPersistence(result.persistence);
+      assertNoCredentialRetention(result.snapshot);
+      if (!ownerRef.current.isCurrent(token)) return { status: "create_failed" };
+      const classification = classifyMutationPersistence(result.persistence);
       ownerRef.current.settleCatalogMutation(token, {
-        refreshRequired: settled.refreshRequired,
+        refreshRequired:
+          classification === "applied_uncertain" ||
+          classification === "ambiguous",
+        revision: result.snapshot.revision,
       });
+      if (classification === "ambiguous") {
+        syncWriteLockUi();
+        Alert.alert(
+          "Refresh required",
+          "Provider write settled ambiguously. Refresh before mutating again.",
+        );
+        void loadCatalog({ soft: true });
+        return { status: "create_failed" };
+      }
+      setCatalog(result.snapshot);
+      setDurabilityWarning(
+        classification === "applied_uncertain"
+          ? durabilityWarningMessage(result.persistence)
+          : null,
+      );
       syncWriteLockUi();
-      const followUp = planAfterCredentialWrite({ connectionId, result });
-      if (followUp.kind === "refresh_lock") {
-        setDurabilityWarning(followUp.reason);
-        await loadCatalog({ soft: true });
-        return result.credential_ready;
+
+      // The saved connection: an update is the target row; a create must be
+      // identified uniquely from the revision diff.
+      let connection: ProviderConnection;
+      if (input.connection) {
+        connection = result.snapshot.connections.find(
+          (item) => item.id === input.connection?.id,
+        ) ?? input.connection;
+      } else {
+        try {
+          connection = resolveCreatedConnection({
+            previous,
+            next: result.snapshot,
+            presetId: "custom",
+          });
+        } catch (identityError) {
+          ownerRef.current.requireCatalogRefresh();
+          syncWriteLockUi();
+          const presented = presentProviderError(identityError);
+          Alert.alert(presented.title, presented.message);
+          void loadCatalog({ soft: true });
+          return { status: "create_failed" };
+        }
       }
-      if (followUp.kind === "retry_key") {
-        Alert.alert("API key not ready", followUp.reason);
+
+      const submittedKey = input.apiKey.trim().length > 0;
+      const saved = result.snapshot.connections.find(
+        (item) => item.id === connection.id,
+      );
+      if (submittedKey && saved && !saved.credential_ready) {
+        // The edit applied but the key did not take effect: rebind the editor
+        // for a retry of the same unified form.
         await loadCatalog({ soft: true });
-        return false;
+        return { status: "credential_failed", connection: saved };
       }
-      if (
-        mayDiscoverAfterCredential({
-          catalogRefreshRequired: ownerRef.current.catalogRequiresRefresh(),
-          followUp,
-        })
-      ) {
+
+      // A fresh connection with a saved key proceeds straight into discovery
+      // so the model support picker can open.
+      if (!input.connection && saved?.credential_ready) {
+        const client = clientForConnection(saved);
         const discoverAdmission = ownerRef.current.admitCatalogMutation();
-        if (discoverAdmission.ok) {
+        if (client && discoverAdmission.ok) {
           const discoverToken = discoverAdmission.token;
           try {
             const discovery = await wsClient.discoverProviderModels(
               currentServerId,
-              connectionId,
+              saved.id,
             );
             assertNoCredentialRetention(discovery);
             if (ownerRef.current.isCurrent(discoverToken)) {
@@ -294,38 +359,51 @@ export default function ProvidersScreen() {
                     discovery.persistenceDurable === false,
                 ),
               });
-              if (discovery.persistenceWarning || discovery.discoveryWarning) {
+              if (
+                discovery.persistenceWarning ||
+                discovery.discoveryWarning
+              ) {
                 setDurabilityWarning(
                   discovery.persistenceWarning ??
                     discovery.discoveryWarning ??
                     null,
                 );
               }
+              if (discovery.models.length > 0) {
+                setModelPicker({
+                  client,
+                  connection: saved,
+                  models: discovery.models,
+                });
+              }
             }
           } catch (discoveryError) {
-            if (!ownerRef.current.isCurrent(discoverToken)) return false;
+            if (!ownerRef.current.isCurrent(discoverToken)) {
+              return { status: "saved" };
+            }
             ownerRef.current.settleCatalogMutation(discoverToken, {
               refreshRequired: providerMutationRequiresRefresh(discoveryError),
             });
             const presented = presentProviderError(discoveryError);
             setDurabilityWarning(
-              `API key saved. Model discovery can be retried: ${presented.message}`,
+              `Provider saved. Model discovery can be retried: ${presented.message}`,
             );
           }
         }
       }
       await loadCatalog({ soft: true });
-      return true;
-    } catch (credentialError) {
-      if (!ownerRef.current.isCurrent(token)) return false;
+      return { status: "saved" };
+    } catch (saveError) {
+      transientApiKey = "";
+      if (!ownerRef.current.isCurrent(token)) return { status: "create_failed" };
       ownerRef.current.settleCatalogMutation(token, {
-        refreshRequired: providerMutationRequiresRefresh(credentialError),
+        refreshRequired: providerMutationRequiresRefresh(saveError),
       });
       syncWriteLockUi();
-      const presented = presentProviderError(credentialError);
+      const presented = presentProviderError(saveError);
       Alert.alert(presented.title, presented.message);
       await loadCatalog({ soft: true });
-      return false;
+      return { status: "create_failed" };
     } finally {
       transientApiKey = "";
       if (currentServerIdRef.current === currentServerId) {
@@ -558,44 +636,14 @@ export default function ProvidersScreen() {
           apiKey,
         });
       }}
-      onSaveCustom={async ({ client, baseUrl, apiKey }) => {
-        const previous = catalogRef.current;
-        if (!previous) return { status: "create_failed" as const };
-        const created = await runMutation(() =>
-          wsClient.upsertProviderConnection(currentServerId!, {
-            revision,
-            operation: "create",
-            connection: customGatewayCreateInput({ client, baseUrl }),
-          }),
-        );
-        if (!created) return { status: "create_failed" as const };
-        let connection: ProviderConnection;
-        try {
-          connection = resolveCreatedConnection({
-            previous,
-            next: created.snapshot,
-            presetId: "custom",
-          });
-        } catch (identityError) {
-          ownerRef.current.requireCatalogRefresh();
-          syncWriteLockUi();
-          const presented = presentProviderError(identityError);
-          Alert.alert(presented.title, presented.message);
-          void loadCatalog({ soft: true });
-          return { status: "create_failed" as const };
-        }
-        const ok = await saveCredential(connection.id, apiKey);
-        const outcome: ProviderSaveOutcome = ok
-          ? { status: "saved" }
-          : { status: "credential_failed", connection };
-        applySaveOutcome(outcome);
-        return outcome;
-      }}
-      onSaveCredential={async (connection, apiKey) => {
-        const ok = await saveCredential(connection.id, apiKey);
-        const outcome: ProviderSaveOutcome = ok
-          ? { status: "saved" }
-          : { status: "credential_failed", connection };
+      onSaveProvider={async ({ client, connection, name, baseUrl, apiKey }) => {
+        const outcome = await saveProvider({
+          client,
+          connection,
+          name,
+          baseUrl,
+          apiKey,
+        });
         applySaveOutcome(outcome);
         return outcome;
       }}
