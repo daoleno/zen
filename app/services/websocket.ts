@@ -3063,8 +3063,18 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  killAgent(serverId: string, agentId: string) {
-    this.send(serverId, { type: "kill_agent", agent_id: agentId });
+  /**
+   * Fire-and-forget terminate: the daemon tears the Session down and the
+   * authoritative removal arrives via `agent_session_archived` or the next
+   * full `agent_session_list`. An optional request_id correlates the
+   * `error` reply for batch termination; success has no reply.
+   */
+  killAgent(serverId: string, agentId: string, requestId?: string) {
+    this.send(serverId, {
+      type: "kill_agent",
+      agent_id: agentId,
+      ...(requestId ? { request_id: requestId } : {}),
+    });
   }
 
   listAgentSessions(serverId: string) {

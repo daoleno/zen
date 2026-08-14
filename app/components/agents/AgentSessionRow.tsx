@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   Colors,
   TypeScale,
@@ -29,6 +30,12 @@ interface AgentSessionRowProps {
   showBrainBadge?: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  /** Selection mode: taps toggle selection instead of opening the Session. */
+  selectionMode?: boolean;
+  selected?: boolean;
+  /** Row cannot be terminated (e.g. daemon offline): disabled inside selection. */
+  selectionDisabled?: boolean;
+  onToggleSelection?: () => void;
 }
 
 export function AgentSessionRow({
@@ -43,6 +50,10 @@ export function AgentSessionRow({
   showBrainBadge = false,
   onPress,
   onLongPress,
+  selectionMode = false,
+  selected = false,
+  selectionDisabled = false,
+  onToggleSelection,
 }: AgentSessionRowProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -50,20 +61,47 @@ export function AgentSessionRow({
   const statusColor = agentStatusColor(status, colors);
   const statusLabel = agentStatusLabel(status);
   const activelyRunning = isAgentActivelyRunning(status);
+  const inSelectionMode = selectionMode;
+  const rowDisabled = inSelectionMode && selectionDisabled;
 
   return (
     <AnimatedPressable
-      style={[styles.row, activelyRunning && styles.rowActive]}
+      style={[
+        styles.row,
+        (activelyRunning || (inSelectionMode && selected)) && styles.rowActive,
+      ]}
       preset="card"
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={inSelectionMode ? onToggleSelection : onPress}
+      onLongPress={inSelectionMode ? undefined : onLongPress}
       delayLongPress={400}
-      accessibilityRole="button"
+      disabled={rowDisabled}
+      accessibilityRole={inSelectionMode ? 'checkbox' : 'button'}
       accessibilityLabel={`${title}, ${statusLabel}, ${preview}${activelyRunning ? '' : `, ${timeLabel}`}`}
-      accessibilityHint="Opens the terminal session"
-      accessibilityState={{ busy: activelyRunning }}
+      accessibilityHint={
+        inSelectionMode
+          ? 'Double tap to toggle selection'
+          : 'Opens the terminal session'
+      }
+      accessibilityState={{
+        busy: activelyRunning,
+        checked: inSelectionMode ? selected : undefined,
+        disabled: rowDisabled,
+      }}
     >
       <View style={styles.iconSlot}>
+        {inSelectionMode ? (
+          <View
+            style={styles.selectionBadge}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            <Ionicons
+              name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+              size={22}
+              color={selected ? colors.accent : colors.textTertiary}
+            />
+          </View>
+        ) : null}
         <AgentKindIcon kind={kind} flavor={terminalFlavor} size={36} />
       </View>
       <View style={styles.body}>
@@ -147,6 +185,20 @@ function createStyles(colors: typeof Colors) {
       height: 44,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    selectionBadge: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.bgPrimary,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+      zIndex: 2,
     },
     row: {
       flexDirection: 'row',

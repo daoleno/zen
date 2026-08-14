@@ -32,6 +32,10 @@ import {
   PrimarySurfaceInteractionProvider,
 } from "./PrimarySurfaceInteraction";
 import { PrimaryTopSwitch } from "./PrimaryTopSwitch";
+import {
+  PrimarySelectionBarProvider,
+  usePrimarySelectionBarContent,
+} from "./PrimarySelectionBar";
 import { resolvePrimaryAppBarGeometry } from "./primaryAppBarGeometry";
 import { useDrawerFocusContainment } from "./useDrawerFocusContainment";
 import { usePrimaryDrawerBack } from "./usePrimaryDrawerBack";
@@ -72,6 +76,25 @@ function PrimaryAppBar({
   const colors = useAppColors();
   const geometry = resolvePrimaryAppBarGeometry(topInset);
   const showBrainCanvas = activePrimaryRoute === "brain";
+  const selectionBar = usePrimarySelectionBarContent();
+  if (selectionBar != null) {
+    return (
+      <View
+        style={[
+          styles.appBar,
+          styles.appBarOverlay,
+          {
+            paddingTop: geometry.safeAreaTop,
+            minHeight: geometry.contentInset,
+            backgroundColor: colors.bgPrimary,
+            borderBottomColor: colors.borderSubtle,
+          },
+        ]}
+      >
+        <View style={styles.selectionBarSlot}>{selectionBar}</View>
+      </View>
+    );
+  }
   return (
     <View
       style={[
@@ -253,6 +276,7 @@ export function PrimaryDrawerShell({
 
   return (
     <PrimaryPageActionProvider>
+      <PrimarySelectionBarProvider>
       <PrimarySurfaceInteractionProvider
         drawerPhase={drawerOpen ? "open" : "closed"}
         routeFocused={routeFocused}
@@ -303,6 +327,7 @@ export function PrimaryDrawerShell({
           </View>
         </Drawer>
       </PrimarySurfaceInteractionProvider>
+      </PrimarySelectionBarProvider>
     </PrimaryPageActionProvider>
   );
 }
@@ -344,6 +369,11 @@ const styles = StyleSheet.create({
   },
   pressedIcon: {
     opacity: 0.55,
+  },
+  selectionBarSlot: {
+    flex: 1,
+    alignSelf: "stretch",
+    minWidth: 0,
   },
   drawerContent: {
     flex: 1,

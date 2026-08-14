@@ -196,9 +196,11 @@ describe("Interface Composer initial focus", () => {
 
   test("only successful create navigation carries the one-shot route fact", () => {
     const sessions = source("../../app/(primary)/list.tsx");
+    // The row context-menu symbol is gone (long press now enters selection
+    // mode); the existing-open region ends where the create flow starts.
     const existingOpen = sessions.slice(
       sessions.indexOf("const openAgent"),
-      sessions.indexOf("const openContextMenu"),
+      sessions.indexOf("const finishCreateTerminal"),
     );
     const createdOpen = sessions.slice(
       sessions.indexOf("const finishCreateTerminal"),

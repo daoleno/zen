@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -7,11 +7,10 @@ import {
   SectionList,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useIsFocused, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -50,13 +49,15 @@ import {
 import { RisingSheet } from "../../components/ui/RisingSheet";
 import { Enter } from "../../components/ui/Enter";
 import { AgentListRowContainer } from "../../components/agents/AgentListRowContainer";
+import { AgentSessionSelectionBar } from "../../components/agents/AgentSessionSelectionBar";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { SessionServicesSheet } from "../../components/SessionServicesSheet";
+import { usePrimarySelectionBar } from "../../components/navigation/PrimarySelectionBar";
+import { usePrimaryDrawerBack } from "../../components/navigation/usePrimaryDrawerBack";
 import {
   getAgentAliases,
   getServers,
   markAgentOpened,
-  setAgentAlias,
   StoredAgentAliases,
   StoredServer,
 } from "../../services/storage";
@@ -75,6 +76,24 @@ import {
 import { isAgentSessionListFreshForConnection } from "../../store/agents";
 import { makeSessionKey } from "../../services/sessionKeys";
 import { presentAgent } from "../../services/agentPresentation";
+import {
+  addSessionToSelection,
+  countSelectionServers,
+  countSessionSelection,
+  EMPTY_SESSION_SELECTION,
+  isSessionTerminable,
+  pruneSessionSelection,
+  removeSessionsFromSelection,
+  toggleSessionSelection,
+  type SessionSelection,
+} from "../../services/sessionSelection";
+import {
+  createSessionTerminationEntries,
+  SessionTerminationBatch,
+  sessionTerminationConfirmMessage,
+  sessionTerminationSummaryMessage,
+  type SessionTerminationSummary,
+} from "../../services/sessionBulkTerminate";
 import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
@@ -132,6 +151,13 @@ export default function InboxScreen() {
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
   const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<SessionSelection>(
+    EMPTY_SESSION_SELECTION,
+  );
+  const [terminationRunning, setTerminationRunning] = useState(false);
+  const terminationBatchRef = useRef<SessionTerminationBatch | null>(null);
+  const submittedKeysRef = useRef<string[]>([]);
   const workObservatoryPullDistance = useSharedValue(0);
   const sessionListScrollOffsetY = useSharedValue(0);
   const workObservatoryTouchStartX = useSharedValue(0);
@@ -142,10 +168,17 @@ export default function InboxScreen() {
     [servers, state.hydratedServers],
   );
 
-  const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
-  const [renameVisible, setRenameVisible] = useState(false);
-  const [renameDraft, setRenameDraft] = useState("");
-  const [renameAgentKey, setRenameAgentKey] = useState<string | null>(null);
+  const agentsByKey = useMemo(() => {
+    const byKey: Record<string, Agent> = {};
+    for (const agent of state.agents) {
+      byKey[agent.key] = agent;
+    }
+    return byKey;
+  }, [state.agents]);
+  const agentsByKeyRef = useRef(agentsByKey);
+  agentsByKeyRef.current = agentsByKey;
+  const agentAliasesRef = useRef(agentAliases);
+  agentAliasesRef.current = agentAliases;
 
   useEffect(() => {
     let cancelled = false;
@@ -276,34 +309,152 @@ export default function InboxScreen() {
     [router],
   );
 
-  const openContextMenu = useCallback((agent: Agent) => {
-    setMenuAgent(agent);
-  }, []);
+  const exitSelectionMode = useCallback(() => {
+    if (terminationRunning) {
+      return;
+    }
+    setSelectionMode(false);
+    setSelectedKeys(EMPTY_SESSION_SELECTION);
+  }, [terminationRunning]);
 
-  const closeContextMenu = () => {
-    setMenuAgent(null);
-  };
+  const enterSelectionMode = useCallback(
+    (agent: Agent) => {
+      if (terminationRunning || selectionMode) {
+        return;
+      }
+      if (!isSessionTerminable(agent, state.serverConnections)) {
+        return;
+      }
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setSelectionMode(true);
+      setSelectedKeys(
+        addSessionToSelection(EMPTY_SESSION_SELECTION, agent.key),
+      );
+    },
+    [selectionMode, state.serverConnections, terminationRunning],
+  );
 
-  const openRename = () => {
-    if (!menuAgent) return;
-    setRenameAgentKey(menuAgent.key);
-    setRenameDraft(agentAliases[menuAgent.key] || menuAgent.name);
-    setMenuAgent(null);
-    setRenameVisible(true);
-  };
+  const toggleSelection = useCallback(
+    (agent: Agent) => {
+      if (!selectionMode || terminationRunning) {
+        return;
+      }
+      if (!isSessionTerminable(agent, state.serverConnections)) {
+        return;
+      }
+      setSelectedKeys((current) =>
+        toggleSessionSelection(current, agent.key),
+      );
+    },
+    [selectionMode, state.serverConnections, terminationRunning],
+  );
 
-  const handleRename = async () => {
-    if (!renameAgentKey) return;
-    const updated = await setAgentAlias(renameAgentKey, renameDraft);
-    setAgentAliases(updated);
-    setRenameVisible(false);
-    setRenameAgentKey(null);
-  };
+  const handleBatchSettled = useCallback(
+    (summary: SessionTerminationSummary) => {
+      if (summary.pending > 0) {
+        return;
+      }
+      terminationBatchRef.current?.dispose();
+      terminationBatchRef.current = null;
+      setTerminationRunning(false);
+      // Successes leave selection; failures stay selected for retry.
+      setSelectedKeys((current) => {
+        let next = removeSessionsFromSelection(
+          current,
+          submittedKeysRef.current,
+        );
+        for (const entry of summary.failedEntries) {
+          next = addSessionToSelection(next, entry.sessionKey);
+        }
+        return next;
+      });
+      submittedKeysRef.current = [];
+      if (summary.failed > 0) {
+        const failedTitles = summary.failedEntries.map((entry) => {
+          const agent = agentsByKeyRef.current[entry.sessionKey];
+          return agent
+            ? presentAgent(agent, agentAliasesRef.current[entry.sessionKey])
+                .title
+            : entry.sessionKey;
+        });
+        Alert.alert(
+          summary.succeeded > 0
+            ? "Some sessions could not be terminated"
+            : "Could not terminate sessions",
+          sessionTerminationSummaryMessage(summary, failedTitles),
+        );
+      } else {
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
+      }
+    },
+    [],
+  );
 
-  const closeRename = () => {
-    setRenameVisible(false);
-    setRenameAgentKey(null);
-  };
+  const selectedAgents = useMemo(
+    () => sortedAgents.filter((agent) => selectedKeys.has(agent.key)),
+    [selectedKeys, sortedAgents],
+  );
+
+  const runTerminateSelection = useCallback(() => {
+    if (terminationRunning || selectedAgents.length === 0) {
+      return;
+    }
+    const entries = createSessionTerminationEntries(
+      selectedAgents.map((agent) => ({
+        sessionKey: agent.key,
+        serverId: agent.serverId,
+        agentId: agent.id,
+      })),
+    );
+    submittedKeysRef.current = entries.map((entry) => entry.sessionKey);
+    const batch = new SessionTerminationBatch({
+      transport: wsClient,
+      entries,
+      onSettled: handleBatchSettled,
+    });
+    terminationBatchRef.current?.dispose();
+    terminationBatchRef.current = batch;
+    setTerminationRunning(true);
+    let started = false;
+    try {
+      started = batch.start();
+    } catch {
+      batch.dispose();
+      terminationBatchRef.current = null;
+      submittedKeysRef.current = [];
+      setTerminationRunning(false);
+      return;
+    }
+    if (!started) {
+      // Duplicate-prevention guard: never submit the same batch twice.
+      batch.dispose();
+      terminationBatchRef.current = null;
+      submittedKeysRef.current = [];
+      setTerminationRunning(false);
+    }
+  }, [handleBatchSettled, selectedAgents, terminationRunning]);
+
+  const confirmTerminateSelection = useCallback(() => {
+    if (terminationRunning || selectedAgents.length === 0) {
+      return;
+    }
+    const count = selectedAgents.length;
+    const serverCount = countSelectionServers(selectedAgents);
+    Alert.alert(
+      count === 1 ? "Terminate session?" : "Terminate sessions?",
+      sessionTerminationConfirmMessage(count, serverCount),
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Terminate",
+          style: "destructive",
+          onPress: () => runTerminateSelection(),
+        },
+      ],
+    );
+  }, [runTerminateSelection, selectedAgents, terminationRunning]);
 
   const finishCreateTerminal = async (
     serverId: string,
@@ -582,7 +733,7 @@ export default function InboxScreen() {
   const workObservatoryPullGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!workObservatoryVisible)
+        .enabled(!workObservatoryVisible && !selectionMode)
         .manualActivation(true)
         .maxPointers(1)
         .enableTrackpadTwoFingerGesture(false)
@@ -661,6 +812,7 @@ export default function InboxScreen() {
         }),
     [
       openWorkObservatory,
+      selectionMode,
       sessionListScrollOffsetY,
       workObservatoryGestureActivated,
       workObservatoryPullDistance,
@@ -709,40 +861,6 @@ export default function InboxScreen() {
     wsClient.requestBrainSnapshot(selectedCreateServerId);
   }, [createSheetVisible, selectedCreateServerId]);
 
-  const handleTerminateAgent = () => {
-    if (!menuAgent) return;
-
-    const target = menuAgent;
-    closeContextMenu();
-
-    if (state.serverConnections[target.serverId] !== "connected") {
-      Alert.alert(
-        "Daemon unavailable",
-        "Reconnect to that daemon before terminating the agent.",
-      );
-      return;
-    }
-
-    Alert.alert(
-      "Terminate?",
-      "This will terminate " +
-        presentAgent(target, agentAliases[target.key]).title +
-        " on " +
-        target.serverName +
-        ".",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Terminate",
-          style: "destructive",
-          onPress: () => {
-            wsClient.killAgent(target.serverId, target.id);
-          },
-        },
-      ],
-    );
-  };
-
   const openServerSettings = (addServer: boolean) => {
     router.push({
       pathname: "/settings",
@@ -776,11 +894,27 @@ export default function InboxScreen() {
         alias={agentAliases[item.key]}
         linkedWorkTitle={agentWorkMap[`${item.serverId}:${item.id}`]?.title}
         showServerName={showServerNames}
+        selectionMode={selectionMode}
+        selected={selectedKeys.has(item.key)}
+        selectionDisabled={
+          !isSessionTerminable(item, state.serverConnections)
+        }
         onOpenAgent={openAgent}
-        onOpenContextMenu={openContextMenu}
+        onEnterSelection={enterSelectionMode}
+        onToggleSelection={toggleSelection}
       />
     ),
-    [agentAliases, agentWorkMap, openAgent, openContextMenu, showServerNames],
+    [
+      agentAliases,
+      agentWorkMap,
+      enterSelectionMode,
+      openAgent,
+      selectedKeys,
+      selectionMode,
+      showServerNames,
+      state.serverConnections,
+      toggleSelection,
+    ],
   );
 
   const renderListSectionHeader = useCallback(
@@ -823,6 +957,93 @@ export default function InboxScreen() {
     [openHeaderMenu, workObservatoryAccessibilityProps],
   );
   usePrimaryPageAction(listPageAction);
+
+  const focused = useIsFocused();
+  const authoritativeAgentKeySet = useMemo(
+    () => new Set(state.agents.map((agent) => agent.key)),
+    [state.agents],
+  );
+
+  // Selection survives reorder/live updates by stable key and is pruned only
+  // when the authoritative Session row disappears from the daemon store.
+  useEffect(() => {
+    if (!selectionMode) {
+      return;
+    }
+    setSelectedKeys((current) =>
+      pruneSessionSelection(current, authoritativeAgentKeySet),
+    );
+  }, [authoritativeAgentKeySet, selectionMode]);
+
+  // A Session that disappears while a termination batch is running is already
+  // settled: treat it as success so it can never be reported as failed.
+  useEffect(() => {
+    const batch = terminationBatchRef.current;
+    if (!selectionMode || !batch) {
+      return;
+    }
+    for (const sessionKey of selectedKeys) {
+      if (!authoritativeAgentKeySet.has(sessionKey)) {
+        batch.settleDisappeared(sessionKey);
+      }
+    }
+  }, [authoritativeAgentKeySet, selectedKeys, selectionMode]);
+
+  // Last deselection (or all-settled removal) exits selection mode.
+  useEffect(() => {
+    if (
+      selectionMode &&
+      !terminationRunning &&
+      countSessionSelection(selectedKeys) === 0
+    ) {
+      exitSelectionMode();
+    }
+  }, [exitSelectionMode, selectedKeys, selectionMode, terminationRunning]);
+
+  // Leaving the Sessions tab closes selection so the chrome can never show a
+  // selection bar without its owning list.
+  useEffect(() => {
+    if (!focused && selectionMode) {
+      exitSelectionMode();
+    }
+  }, [exitSelectionMode, focused, selectionMode]);
+
+  // Back exits selection without touching Sessions; disabled while a batch is
+  // in flight so the acknowledgement flow is never orphaned.
+  usePrimaryDrawerBack({
+    enabled: selectionMode && !terminationRunning,
+    onBack: exitSelectionMode,
+  });
+
+  // Unmount safety net: stop listening and drop timers of any in-flight batch.
+  useEffect(
+    () => () => {
+      terminationBatchRef.current?.dispose();
+      terminationBatchRef.current = null;
+    },
+    [],
+  );
+
+  // Telegram-style selection chrome: Cancel + selected count + Terminate.
+  const selectionBar = useMemo(
+    () =>
+      selectionMode ? (
+        <AgentSessionSelectionBar
+          count={countSessionSelection(selectedKeys)}
+          terminating={terminationRunning}
+          onCancel={exitSelectionMode}
+          onTerminate={confirmTerminateSelection}
+        />
+      ) : null,
+    [
+      confirmTerminateSelection,
+      exitSelectionMode,
+      selectedKeys,
+      selectionMode,
+      terminationRunning,
+    ],
+  );
+  usePrimarySelectionBar(selectionBar);
   const listContentContainerStyle = useMemo(
     () => [
       styles.promptContent,
@@ -1007,7 +1228,7 @@ export default function InboxScreen() {
           }}
         />
 
-        {sortedAgents.length > 0 ? (
+        {sortedAgents.length > 0 && !selectionMode ? (
           <AnimatedPressable
             style={[
               styles.listFab,
@@ -1082,105 +1303,6 @@ export default function InboxScreen() {
           </AnimatedPressable>
         </RisingSheet>
 
-        <RisingSheet
-          visible={menuAgent !== null && !renameVisible}
-          onClose={closeContextMenu}
-          cardStyle={styles.menuCard}
-          align="bottom"
-        >
-          <Text style={styles.menuTitle} numberOfLines={1}>
-            {menuAgent
-              ? presentAgent(menuAgent, agentAliases[menuAgent.key]).title
-              : ""}
-          </Text>
-
-          <AnimatedPressable
-            style={styles.menuItem}
-            preset="press"
-            scale={0.98}
-            onPress={openRename}
-          >
-            <Ionicons
-              name="pencil-outline"
-              size={16}
-              color={colors.textPrimary}
-            />
-            <Text style={styles.menuItemText}>Rename</Text>
-          </AnimatedPressable>
-
-          <AnimatedPressable
-            style={styles.menuItem}
-            preset="press"
-            scale={0.98}
-            onPress={() => {
-              if (menuAgent) openAgent(menuAgent);
-              closeContextMenu();
-            }}
-          >
-            <Ionicons
-              name="terminal-outline"
-              size={16}
-              color={colors.textPrimary}
-            />
-            <Text style={styles.menuItemText}>Open Terminal</Text>
-          </AnimatedPressable>
-
-          <AnimatedPressable
-            style={styles.menuItem}
-            preset="press"
-            scale={0.98}
-            onPress={handleTerminateAgent}
-          >
-            <Ionicons
-              name="power-outline"
-              size={16}
-              color={colors.dangerText}
-            />
-            <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>
-              Terminate
-            </Text>
-          </AnimatedPressable>
-        </RisingSheet>
-
-        <RisingSheet
-          visible={renameVisible}
-          onClose={closeRename}
-          cardStyle={styles.renameCard}
-          avoidKeyboard
-        >
-          <Text style={styles.renameTitle}>Rename</Text>
-          <TextInput
-            style={styles.renameInput}
-            value={renameDraft}
-            onChangeText={setRenameDraft}
-            placeholder="Agent name"
-            placeholderTextColor={colors.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoFocus
-            selectTextOnFocus
-          />
-          <View style={styles.renameActions}>
-            <AnimatedPressable
-              style={styles.renameBtn}
-              preset="press"
-              scale={0.94}
-              onPress={closeRename}
-            >
-              <Text style={styles.renameBtnText}>Cancel</Text>
-            </AnimatedPressable>
-            <AnimatedPressable
-              style={[styles.renameBtn, styles.renameBtnPrimary]}
-              preset="press"
-              scale={0.94}
-              onPress={handleRename}
-            >
-              <Text style={[styles.renameBtnText, styles.renameBtnPrimaryText]}>
-                Save
-              </Text>
-            </AnimatedPressable>
-          </View>
-        </RisingSheet>
       </SafeAreaView>
     </GestureDetector>
   );
@@ -1401,55 +1523,6 @@ function createStyles(theme: ResolvedZenTheme) {
       color: colors.dangerText,
     },
 
-    renameCard: {
-      borderRadius: 8,
-      padding: 20,
-      backgroundColor: colors.modalSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    renameTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.heading,
-      color: colors.textPrimary,
-      marginBottom: 16,
-    },
-    renameInput: {
-      ...UiTextMetrics,
-      ...TypeScale.mono,
-      backgroundColor: colors.inputBackground,
-      borderRadius: 8,
-      minHeight: 44,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      color: colors.textPrimary,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    renameActions: {
-      flexDirection: "row",
-      justifyContent: "flex-end",
-      gap: 10,
-      marginTop: 20,
-    },
-    renameBtn: {
-      minWidth: 76,
-      minHeight: 44,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfacePressed,
-    },
-    renameBtnPrimary: {
-      backgroundColor: colors.accent,
-    },
-    renameBtnText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textPrimary,
-    },
-    renameBtnPrimaryText: {
-      color: colors.textOnAccent,
-    },
+
   });
 }

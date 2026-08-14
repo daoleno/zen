@@ -1049,8 +1049,12 @@ function SessionsDemo() {
               key={agent.key}
               agent={agent}
               showServerName={false}
+              selectionMode={false}
+              selected={false}
+              selectionDisabled={false}
               onOpenAgent={NOOP}
-              onOpenContextMenu={NOOP}
+              onEnterSelection={NOOP}
+              onToggleSelection={NOOP}
             />
           ))}
         </ScrollView>
