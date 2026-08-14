@@ -184,12 +184,13 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	if err := contractsCompatible(current.Binding, draft); err != nil {
 		return SessionRouteState{}, err
 	}
-	// Cross-domain activate fails closed while any request is in-flight on this route.
-	if draft.HistoryDomain != current.Binding.HistoryDomain {
-		if n := len(t.inFlight[current.Binding.RouteID]); n > 0 {
-			return SessionRouteState{}, fmt.Errorf("%w: %d in-flight", ErrBindingBusy, n)
-		}
-	}
+	// The binding swap is atomic and is never blocked by in-flight requests: a
+	// request already admitted on this route keeps its immutable snapshot from
+	// BeginRouteFlight and may finish against the old upstream, while every
+	// later request admits under the new binding. A successful 2xx from the
+	// old snapshot still marks the Session's history opaque (the CLI retains
+	// that state), so cross-domain history guards keep applying to subsequent
+	// switches.
 
 	draft.SessionID = sessionID
 	draft.Generation = current.Generation + 1

@@ -321,16 +321,17 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	if got.Binding.HistoryState != HistoryStateEmpty {
 		t.Fatalf("in-flight must not mark history yet: %q", got.Binding.HistoryState)
 	}
+	// Cross-domain activation while a request is in-flight must swap the route
+	// atomically: the in-flight request keeps its immutable old snapshot and
+	// later requests admit under the new binding (never a busy/read-only
+	// Session).
 	changed := routedCodex(upstream.URL, "gpt-5", "model-b")
-	_, err = table.Activate("s", changed, 2, 1, verifiedAuth(changed))
-	if !errors.Is(err, ErrBindingBusy) {
+	got, err = table.Activate("s", changed, 2, 1, verifiedAuth(changed))
+	if err != nil {
 		t.Fatalf("cross-domain while in-flight err=%v", err)
 	}
-	same := routedCodex(upstream.URL, "gpt-5", "model-a")
-	same.ID = "p2"
-	_, err = table.Activate("s", same, 2, 1, verifiedAuth(same))
-	if err != nil {
-		t.Fatal(err)
+	if got.Binding.UpstreamModel != "model-b" || got.Binding.RouteID != state.Binding.RouteID {
+		t.Fatalf("route must swap atomically: %#v", got.Binding)
 	}
 	close(hold)
 	<-done
@@ -338,7 +339,8 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	if got.Binding.HistoryState != HistoryStateMayContainOpaque {
 		t.Fatalf("2xx should mark opaque: %q", got.Binding.HistoryState)
 	}
-	got, err = table.Activate("s", changed, 3, 2, verifiedAuth(changed))
+	next := routedCodex(upstream.URL, "gpt-5", "model-c")
+	got, err = table.Activate("s", next, 3, 2, verifiedAuth(next))
 	if err != nil {
 		t.Fatalf("opaque same-protocol portable activate err=%v", err)
 	}

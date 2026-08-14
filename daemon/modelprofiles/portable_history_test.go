@@ -266,7 +266,7 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 	}
 }
 
-func TestPortableHistoryActivatePreservesInFlightOnOldBinding(t *testing.T) {
+func TestPortableHistoryActivateWhileInFlightSwapsRouteAndMarksOpaque(t *testing.T) {
 	hold := make(chan struct{})
 	started := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -296,13 +296,24 @@ func TestPortableHistoryActivatePreservesInFlightOnOldBinding(t *testing.T) {
 		}
 	}()
 	<-started
-	// Mark opaque then try cross-domain while in-flight — must stay busy.
-	_ = table.MarkHistoryMayContainOpaque(state.Binding.RouteID)
+	// The in-flight request runs against its immutable old snapshot; a
+	// cross-domain activation must still swap the route so later requests use
+	// the new binding (never a busy/read-only Session).
 	b := routedCodex(up.URL, "gpt-5", "model-b")
-	_, err = table.Activate("s", b, 2, 1, verifiedAuth(b))
-	if !errors.Is(err, ErrBindingBusy) {
-		t.Fatalf("err=%v", err)
+	got, err := table.Activate("s", b, 2, 1, verifiedAuth(b))
+	if err != nil {
+		t.Fatalf("activate while in-flight err=%v", err)
+	}
+	if got.Binding.UpstreamModel != "model-b" || got.Binding.RouteID != state.Binding.RouteID {
+		t.Fatalf("route must swap atomically on the same route: %#v", got.Binding)
 	}
 	close(hold)
 	<-done
+	// The 2xx from the old snapshot still marks the Session's history opaque:
+	// the CLI retained that provider's opaque state, so cross-domain guards
+	// keep applying to the next switch.
+	got, _ = table.Get("s")
+	if got.Binding.HistoryState != HistoryStateMayContainOpaque {
+		t.Fatalf("2xx should mark opaque: %q", got.Binding.HistoryState)
+	}
 }

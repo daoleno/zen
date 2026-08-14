@@ -754,10 +754,36 @@ func (o *Owner) SessionProviderSelection(sessionID string) (ProviderSessionSelec
 	}, true
 }
 
+// activationModelAdmittedLocked fails closed when the target connection's
+// synced support allowlist does not admit the model being activated: the
+// client must fail inline and keep the old route — activation never silently
+// substitutes another model. A model is admitted when no synced allowlist
+// exists yet (discovery not run) or when it is present and available.
+// Caller must hold o.mu.
+func (o *Owner) activationModelAdmittedLocked(profile Profile, modelID string) error {
+	if o == nil || o.store == nil || normalizeSpace(modelID) == "" {
+		return nil
+	}
+	modelID = normalizeSpace(modelID)
+	entries, synced := o.syncedModelCatalogLocked(profile)
+	if !synced {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.ID == modelID && entry.Available {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: model %q is not available on connection %s; keep the current route and choose a supported model", ErrUpstreamModelRequired, modelID, profile.ID)
+}
+
 // ActivateSessionProvider atomically activates Provider+model for the next
 // admitted request on the existing routed Session (same RouteID). The model
 // override is ephemeral: catalog connection, defaults, revision, and other
-// Sessions are never mutated. Generation CAS is internal.
+// Sessions are never mutated. Generation CAS is internal. The selected model
+// must be admitted by the target connection's synced support allowlist;
+// otherwise the activation fails inline and the old route is kept — the daemon
+// never silently substitutes another model.
 func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID string) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
 	if o == nil || !o.started {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
@@ -780,6 +806,14 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID string)
 	target, err := CompileConnectionTarget(raw, state.Binding.ExecutorID, modelID)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+	}
+	if !target.ModelPlaceholder {
+		o.mu.Lock()
+		err = o.activationModelAdmittedLocked(raw, target.Model)
+		o.mu.Unlock()
+		if err != nil {
+			return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+		}
 	}
 	next, snap, persist, err := o.activateCompiledProfile(sessionID, target, state.Generation)
 	if !persist.Applied {
