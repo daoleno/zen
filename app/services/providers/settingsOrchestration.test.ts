@@ -5,11 +5,14 @@ import {
   customGatewayCreateInput,
   mayDiscoverAfterCredential,
   planAfterCredentialWrite,
+  planSettingsProviderSwitch,
   resolveCreatedConnection,
 } from "./settingsOrchestration";
 import type {
+  ProviderConnection,
   ProviderCredentialResult,
   ProviderPreset,
+  ProviderSessionSelection,
   ProvidersSnapshot,
 } from "./types";
 
@@ -201,5 +204,134 @@ describe("Settings orchestration", () => {
         credential: "sk-live",
       }),
     ).toThrow(/never enter/i);
+  });
+});
+
+describe("Settings-only Provider switch plan", () => {
+  const alpha: ProviderConnection = {
+    id: "c1",
+    name: "Alpha",
+    clients: ["codex"],
+    credential_ready: true,
+    advanced: false,
+    preset_id: "custom",
+  };
+  const beta: ProviderConnection = {
+    id: "c2",
+    name: "Beta",
+    clients: ["codex"],
+    credential_ready: true,
+    advanced: false,
+    preset_id: "custom",
+  };
+  const catalog = snapshot({
+    connections: [alpha, beta],
+    models: {
+      c1: [{ id: "model-a", available: true, source: "bundled" }],
+      c2: [
+        { id: "model-a", available: true, source: "bundled" },
+        { id: "model-b", available: true, source: "bundled" },
+      ],
+    },
+  });
+  const running: ProviderSessionSelection = {
+    session_id: "s1",
+    client: "codex",
+    connection_id: "c1",
+    connection_name: "Alpha",
+    model_id: "model-a",
+    credential_ready: true,
+    hot_switchable: true,
+  };
+
+  test("supported current model carries over to the exact preferred pair on the same Session", () => {
+    const plan = planSettingsProviderSwitch({
+      snapshot: catalog,
+      connection: beta,
+      currentSession: { agentId: "s1" },
+      currentSelection: running,
+    });
+    expect(plan.preferredConnectionId).toBe("c2");
+    expect(plan.unsupportedCurrentModel).toBe(false);
+    expect(plan.carryover).toEqual({
+      agentId: "s1",
+      connectionId: "c2",
+      modelId: "model-a",
+    });
+  });
+
+  test("unsupported current model never falls back and never plans an activation", () => {
+    const plan = planSettingsProviderSwitch({
+      snapshot: catalog,
+      connection: alpha,
+      currentSession: { agentId: "s1" },
+      currentSelection: { ...running, connection_id: "c2", model_id: "model-b" },
+    });
+    expect(plan.carryover).toBeNull();
+    expect(plan.unsupportedCurrentModel).toBe(true);
+  });
+
+  test("unknown allowlist defers to the daemon (activation still planned)", () => {
+    const unsynced = snapshot({ connections: [alpha, beta], models: {} });
+    const plan = planSettingsProviderSwitch({
+      snapshot: unsynced,
+      connection: beta,
+      currentSession: { agentId: "s1" },
+      currentSelection: running,
+    });
+    expect(plan.carryover).toEqual({
+      agentId: "s1",
+      connectionId: "c2",
+      modelId: "model-a",
+    });
+  });
+
+  test("re-selecting the Session's own Provider plans no activation", () => {
+    const plan = planSettingsProviderSwitch({
+      snapshot: catalog,
+      connection: alpha,
+      currentSession: { agentId: "s1" },
+      currentSelection: running,
+    });
+    expect(plan.carryover).toBeNull();
+    expect(plan.unsupportedCurrentModel).toBe(false);
+  });
+
+  test("no current Session or selection plans the preferred Provider only", () => {
+    expect(
+      planSettingsProviderSwitch({
+        snapshot: catalog,
+        connection: beta,
+        currentSession: null,
+        currentSelection: running,
+      }).carryover,
+    ).toBeNull();
+    expect(
+      planSettingsProviderSwitch({
+        snapshot: catalog,
+        connection: beta,
+        currentSession: { agentId: "s1" },
+        currentSelection: null,
+      }).carryover,
+    ).toBeNull();
+  });
+
+  test("read-only or model-less Sessions never plan an activation", () => {
+    expect(
+      planSettingsProviderSwitch({
+        snapshot: catalog,
+        connection: beta,
+        currentSession: { agentId: "s1" },
+        currentSelection: { ...running, hot_switchable: false },
+      }).carryover,
+    ).toBeNull();
+    expect(
+      planSettingsProviderSwitch({
+        snapshot: catalog,
+        connection: beta,
+        currentSession: { agentId: "s1" },
+        currentSelection: { ...running, model_id: "" },
+      }).carryover,
+    ).toBeNull();
   });
 });

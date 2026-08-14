@@ -1,7 +1,8 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect } from "react";
 import { useAgents } from "../../../store/agents";
 import { useBrain } from "../../../store/brain";
 import { useWork } from "../../../store/work";
+import { useCurrentSession } from "../../../store/currentSession";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
@@ -20,6 +21,7 @@ export default function TerminalScreen() {
   const { state } = useAgents();
   const { state: brainState } = useBrain();
   const { state: workState } = useWork();
+  const { setCurrentSession } = useCurrentSession();
   const {
     agentId,
     serverId,
@@ -43,6 +45,15 @@ export default function TerminalScreen() {
     terminalRef,
     skillsHandoffToken,
   } = useTerminalScreenLocalState();
+
+  // Last-focused routed Session: the current Session for cross-screen actions
+  // such as a Settings Provider switch activating the exact new Provider +
+  // current model on this Session. Kept across screen pop (never cleared) so
+  // opening Settings from anywhere targets the Session the user last viewed.
+  useEffect(() => {
+    if (!serverId || !agentId) return;
+    setCurrentSession({ serverId, agentId });
+  }, [agentId, serverId, setCurrentSession]);
   const chromeLayout = useTerminalScreenChrome({ sessionKey });
   const { closeMenu, menuPosition, menuVisible } = chromeLayout;
   const { agentByKey } = useTerminalAgentIndex({
@@ -163,6 +174,7 @@ export default function TerminalScreen() {
     capabilities: agent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
     eagerLoad: true,
+    focusActive: screenFocused,
   });
 
   const openModel = useCallback(() => {
@@ -217,7 +229,8 @@ export default function TerminalScreen() {
       routeSheetActivating: routeSheet.activating,
       routeSheetError: routeSheet.error,
       routeSheetSelection: routeSheet.selection,
-      routeSheetGroups: routeSheet.groups,
+      routeSheetRows: routeSheet.rows,
+      routeSheetModelRequired: routeSheet.modelRequired,
       createDurabilityWarning,
       onDismissCreateDurabilityWarning: dismissCreateDurabilityWarning,
       screenFocused,

@@ -66,7 +66,7 @@ import { ProvidersPresentation } from "../components/providers/ProvidersPresenta
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
   resolveComposerModelControl,
-  sessionProviderPickerGroups,
+  sessionModelSheetRows,
 } from "../services/providers/sessionModelHelpers";
 import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
@@ -588,14 +588,17 @@ function ComposerStatesDemo() {
     new Date(Date.now() - 43_000).toISOString(),
   );
   const modelControl = {
-    label: "Claude Gateway · claude-sonnet-4-5",
-    accessibilityLabel:
-      "Open model selection, claude-sonnet-4-5, Claude Gateway",
+    label: "claude-sonnet-4-5",
+    accessibilityLabel: "Open model selection, claude-sonnet-4-5",
+    modelRequired: false,
+    preferredConnectionId: "c2",
   };
   const longModelControl = {
-    label: "OpenAI · gpt-5.1-codex-max-longhaul-8k-context",
+    label: "gpt-5.1-codex-max-longhaul-8k-context",
     accessibilityLabel:
-      "Open model selection, gpt-5.1-codex-max-longhaul-8k-context, OpenAI",
+      "Open model selection, gpt-5.1-codex-max-longhaul-8k-context",
+    modelRequired: false,
+    preferredConnectionId: "c1",
   };
   const [demoSheet, setDemoSheet] = useState<null | "routed">(null);
   const [demoModelId, setDemoModelId] = useState("deepseek-chat");
@@ -622,6 +625,7 @@ function ComposerStatesDemo() {
     connectionConnected: true,
     selection: demoSelection,
     refreshRequired: false,
+    preferredConnectionId: "c1",
   });
   const demoCatalog: ProvidersSnapshot = {
     revision: 1,
@@ -642,7 +646,9 @@ function ComposerStatesDemo() {
         advanced: true,
       },
     ],
-    defaults: {},
+    defaults: {
+      codex: { connection_id: "c1", model_id: demoModelId },
+    },
     presets: [],
     models: {
       c1: [
@@ -652,7 +658,10 @@ function ComposerStatesDemo() {
       c2: [{ id: "claude-sonnet-4-5", available: true, source: "bundled" }],
     },
   };
-  const demoGroups = sessionProviderPickerGroups(demoCatalog, demoSelection);
+  const demoRows = sessionModelSheetRows({
+    snapshot: demoCatalog,
+    selection: demoSelection,
+  });
   const narrowRow = (
     label: string,
     composer: React.ReactElement<typeof InterfaceChatComposer>,
@@ -974,7 +983,8 @@ function ComposerStatesDemo() {
         activating={false}
         error={null}
         selection={demoSelection}
-        groups={demoGroups}
+        rows={demoRows}
+        modelRequired={false}
         chrome={chrome}
         onClose={() => setDemoSheet(null)}
         onRetry={NOOP}

@@ -18,10 +18,12 @@ import {
 import {
   resolveComposerModelControl,
   refetchFoundBindingNotSwitchable,
-  sessionProviderPickerGroups,
+  sessionModelRequired,
+  sessionModelSheetRows,
+  preferredProviderConnectionId,
   activationTargetModel,
   type ComposerModelControlPresentation,
-  type ProviderPickerGroup,
+  type ProviderPickerModelRow,
 } from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
@@ -40,14 +42,29 @@ interface UseSessionProviderSheetInput {
    * Composer control does not flicker away.
    */
   eagerLoad?: boolean;
+  /**
+   * Refetch the projection every time the hosting screen regains focus, so a
+   * Settings Provider switch performed elsewhere converges the Composer
+   * control (model-required state, preferred Provider inventory) when the
+   * user returns instead of showing a stale cached projection.
+   */
+  focusActive?: boolean;
 }
 
 /**
- * v2 Composer model picker state: one quiet control, one minimal picker, one
- * acknowledged live-switch path. Sessions without a daemon-acknowledged
- * hot-switch capability (direct official logins, OpenCode, Pi, managed
- * read-only, mismatch) keep the whole surface hidden — a dead Settings
- * explanation is never rendered.
+ * Composer model picker state: one quiet Model-only control, one minimal
+ * native sheet, one acknowledged live-switch path. Sessions without a
+ * daemon-acknowledged hot-switch capability (direct official logins, OpenCode,
+ * Pi, managed read-only, mismatch) keep the whole surface hidden — a dead
+ * Settings explanation is never rendered.
+ *
+ * Product boundary: Settings owns Provider selection; this hook owns only
+ * Model selection for the Settings-selected (preferred) Provider. Inventory
+ * is that Provider's enabled+available models — never every saved Provider.
+ * When the Session route still runs another Provider (pending switch), the
+ * Composer enters the model-required state: sending is blocked and the user
+ * must pick a model, which activates the exact preferred connection_id +
+ * model_id on the current Session. The daemon never falls back.
  */
 export function useSessionProviderSheet({
   serverId,
@@ -55,6 +72,7 @@ export function useSessionProviderSheet({
   capabilities,
   connectionConnected,
   eagerLoad = false,
+  focusActive = false,
 }: UseSessionProviderSheetInput) {
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -247,6 +265,26 @@ export function useSessionProviderSheet({
   ]);
 
   useEffect(() => {
+    // Converge after cross-screen changes (e.g. a Settings Provider switch
+    // while this Session was covered): refetch the projection each time the
+    // hosting screen regains focus so the Composer control and sheet show the
+    // fresh preferred Provider + model-required truth, never a stale cached
+    // projection.
+    if (!focusActive) return;
+    if (visible) return;
+    if (!managed || !serverId || !agentId || !connectionConnected) return;
+    void fetchProjection("eager");
+  }, [
+    agentId,
+    connectionConnected,
+    fetchProjection,
+    focusActive,
+    managed,
+    serverId,
+    visible,
+  ]);
+
+  useEffect(() => {
     // Clear on every identity rebind, even while the sheet stays closed: the
     // Composer control must never project the previous Session's model onto a
     // different server/agent epoch.
@@ -257,6 +295,38 @@ export function useSessionProviderSheet({
     }
   }, [agentId, clearProjection, serverId]);
 
+  /**
+   * Best-effort carryover of the client-selected model onto the preferred
+   * Provider's default after an acknowledged activation, so future Sessions
+   * and restart restoration stay deterministic (preferred model == route
+   * model in the steady state). Failure never blocks the acknowledged
+   * activation: the same-provider derivation keeps the UI consistent either
+   * way, and the next successful activation retries the carryover.
+   */
+  const carryPreferredModel = useCallback(
+    async (next: ProviderSessionSelection, currentCatalog: ProvidersSnapshot) => {
+      if (!serverId) return;
+      const preferredId = preferredProviderConnectionId(
+        currentCatalog,
+        next.client,
+      );
+      if (!preferredId || preferredId !== next.connection_id) return;
+      const modelId = next.model_id.trim();
+      if (!modelId) return;
+      try {
+        await wsClient.setProviderDefault(serverId, {
+          client: next.client,
+          connectionId: preferredId,
+          modelId,
+          revision: currentCatalog.revision,
+        });
+      } catch {
+        // Best-effort only; the activation itself is already acknowledged.
+      }
+    },
+    [serverId],
+  );
+
   const activate = useCallback(
     async (choice: SessionModelChoice) => {
       if (!serverId || !agentId || !activationCapable) {
@@ -266,10 +336,23 @@ export function useSessionProviderSheet({
         setError("Refresh the current Model before activating.");
         return;
       }
+      // The Composer owns Model selection only: the target connection must be
+      // the exact Settings-selected (preferred) Provider. Refuse anything else
+      // — the Composer never switches Providers.
+      const preferredId = preferredProviderConnectionId(
+        catalog,
+        selection.client,
+      );
+      if (
+        !preferredId ||
+        preferredId !== choice.connectionId
+      ) {
+        setError("Choose a model for the Provider selected in Settings.");
+        return;
+      }
       if (!activationTargetModel(catalog, choice)) {
-        // The catalog does not admit this exact pair (unknown connection,
-        // unknown model, or model no longer available). Refuse inline and
-        // keep the old route — never substitute another model.
+        // The catalog does not admit this exact pair (unknown model, or model
+        // no longer available). Refuse inline and keep the old route — never substitute another model.
         setError("That model is not available for this Session.");
         return;
       }
@@ -313,6 +396,7 @@ export function useSessionProviderSheet({
           setSelection(result.selection);
           fetchedEpochRef.current = { serverId, agentId };
           syncActivationLockUi();
+          void carryPreferredModel(result.selection, catalog);
           if (classification === "applied_durable") {
             // Acknowledgement received: same Session now runs the new model.
             setVisible(false);
@@ -361,16 +445,26 @@ export function useSessionProviderSheet({
       agentId,
       catalog,
       clearProjection,
+      carryPreferredModel,
       selection,
       serverId,
       syncActivationLockUi,
     ],
   );
 
-  const groups: ProviderPickerGroup[] = sessionProviderPickerGroups(
+  const preferredConnectionId = preferredProviderConnectionId(
     catalog,
-    selection,
+    selection?.client ?? "",
   );
+  const modelRequired = sessionModelRequired({
+    snapshot: catalog,
+    selection,
+  });
+  const rows: ProviderPickerModelRow[] = sessionModelSheetRows({
+    snapshot: catalog,
+    selection,
+    activating,
+  });
 
   const composerControl: ComposerModelControlPresentation | null =
     resolveComposerModelControl({
@@ -378,6 +472,7 @@ export function useSessionProviderSheet({
       connectionConnected,
       selection,
       refreshRequired: requiresRefreshBeforeMutation,
+      preferredConnectionId,
     });
 
   return {
@@ -392,7 +487,8 @@ export function useSessionProviderSheet({
     error,
     requiresRefreshBeforeMutation,
     selection,
-    groups,
+    rows,
+    modelRequired,
     composerControl,
   };
 }

@@ -17,13 +17,10 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../services/providers";
-import type { ProviderPickerGroup } from "../../services/providers/sessionModelHelpers";
-import {
-  buildSessionProviderPickerRows,
-  resolveModelSheetListMaxHeight,
-  sessionProviderPickerRowCount,
-  type SessionProviderPickerRow,
-} from "./sessionModelSheetModel";
+import type {
+  ProviderPickerModelRow,
+} from "../../services/providers/sessionModelHelpers";
+import { resolveModelSheetListMaxHeight } from "./sessionModelSheetModel";
 
 export type SessionModelChoice = {
   connectionId: string;
@@ -37,12 +34,17 @@ interface SessionModelSheetProps {
   error?: ProviderError | string | null;
   selection?: ProviderSessionSelection | null;
   /**
-   * Every saved Provider connection compatible with this Session's client,
-   * grouped by Provider Name with each Provider's enabled+available models
-   * beneath it. Uncredentialed and failed-discovery Providers appear with
-   * honest non-selectable states.
+   * Enabled+available Models of the Settings-selected (preferred) Provider
+   * only. No Provider groups, names, or cross-Provider inventory ever
+   * reaches this sheet.
    */
-  groups: ProviderPickerGroup[];
+  rows: ProviderPickerModelRow[];
+  /**
+   * Model-required state: the Session route still runs another Provider than
+   * the preferred one, so sending is blocked and the user must pick a model
+   * here to activate the exact preferred connection_id + model_id.
+   */
+  modelRequired: boolean;
   chrome: TerminalThemeChrome;
   onRetry(): void;
   onClose(): void;
@@ -50,25 +52,24 @@ interface SessionModelSheetProps {
 }
 
 /**
- * Native bottom-sheet Provider + Model picker for the current Session.
- * Presented by the platform sheet (SwiftUI on iOS, Material3
- * ModalBottomSheet on Android), so safe areas, keyboard avoidance, scrim
- * dismiss, and swipe-down dismissal are handled natively — the sheet never
- * positions itself on screen coordinates.
+ * Native bottom-sheet Model picker for the current Session. Presented by the
+ * platform sheet (SwiftUI on iOS, Material3 ModalBottomSheet on Android), so
+ * safe areas, keyboard avoidance, scrim dismiss, and swipe-down dismissal are
+ * handled natively — the sheet never positions itself on screen coordinates.
  *
  * `visible` is the single open/close truth: opening presents the sheet,
  * closing dismisses it. Native dismissals (swipe, scrim tap, Android back)
  * arrive through `onClose`, and the sheet's closedRef guard keeps the
  * programmatic dismiss on the next `visible=false` from double-firing.
  *
- * Inventory is every saved Provider connection compatible with the Session
- * client, grouped by Provider Name (Base-URL hostname secondary). Each
- * selectable model row carries the exact stable (connection_id, model_id)
- * pair and activates the current Session only — never other Sessions, never
- * catalog defaults, and never a substituted model. The check appears only on
- * the running pair. Uncredentialed, failed-discovery, unsupported and
- * unavailable states are honest and non-selectable; the sheet never routes
- * to Settings. Loading, error, and retry appear only when genuinely needed.
+ * Inventory is the Settings-selected (preferred) Provider's enabled+available
+ * Models only. Each selectable row carries the exact stable (connection_id,
+ * model_id) pair and activates the current Session only — never other
+ * Providers, never other Sessions, never catalog defaults, and never a
+ * substituted model. The check appears only on the running pair. In the
+ * model-required state nothing is checked and a concise request to choose a
+ * Model is shown; the daemon never falls back. Loading, error, and retry
+ * appear only when genuinely needed.
  */
 export function SessionModelSheet({
   visible,
@@ -76,7 +77,8 @@ export function SessionModelSheet({
   activating,
   error,
   selection,
-  groups,
+  rows,
+  modelRequired,
   chrome,
   onRetry,
   onClose,
@@ -89,21 +91,14 @@ export function SessionModelSheet({
     typeof error === "string" ? error : error?.message ?? null;
   const refreshable =
     typeof error === "object" && error != null ? error.refreshable : true;
-  const rows = useMemo(
-    () => buildSessionProviderPickerRows(groups, activating),
-    [activating, groups],
-  );
   const listMaxHeight = useMemo(
     () =>
       resolveModelSheetListMaxHeight({
         windowHeight,
-        groupCount: groups.length,
-        modelCount: groups.reduce(
-          (count, group) => count + group.models.length,
-          0,
-        ),
+        groupCount: 0,
+        modelCount: rows.length,
       }),
-    [groups, windowHeight],
+    [rows.length, windowHeight],
   );
 
   // Controlled open/close: the ref-driven native sheet follows `visible`.
@@ -122,8 +117,8 @@ export function SessionModelSheet({
   }, [onClose]);
 
   const handleActivateRow = useCallback(
-    (row: SessionProviderPickerRow) => {
-      if (row.kind !== "model") return;
+    (row: ProviderPickerModelRow) => {
+      if (row.disabled) return;
       onActivate({ connectionId: row.connectionId, modelId: row.modelId });
     },
     [onActivate],
@@ -144,7 +139,7 @@ export function SessionModelSheet({
           accessibilityRole="header"
           numberOfLines={1}
         >
-          Provider & Model
+          Model
         </Text>
         <Pressable
           accessibilityLabel="Close model selection"
@@ -165,7 +160,7 @@ export function SessionModelSheet({
         </View>
       ) : null}
 
-      {errorMessage && groups.length === 0 ? (
+      {errorMessage && rows.length === 0 ? (
         <View style={styles.stateBlock}>
           <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
             {errorMessage}
@@ -184,72 +179,39 @@ export function SessionModelSheet({
           contentContainerStyle={styles.body}
           showsVerticalScrollIndicator={false}
         >
-          {rows.map((row) =>
-            row.kind === "group" ? (
-              <View key={row.key} style={styles.groupBlock}>
-                <View
-                  style={[
-                    styles.groupHeader,
-                    rows[0] === row ? styles.firstGroupHeader : null,
-                  ]}
-                >
-                  <Text
-                    style={[styles.groupName, { color: chrome.text }]}
-                    accessibilityRole="header"
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
-                    {row.connectionName}
-                  </Text>
-                  {row.hostname ? (
-                    <Text
-                      style={[styles.groupHostname, { color: chrome.textMuted }]}
-                      numberOfLines={1}
-                      ellipsizeMode="tail"
-                    >
-                      {row.hostname}
-                    </Text>
-                  ) : null}
-                  {!row.credentialReady ? (
-                    <View
-                      style={[
-                        styles.stateBadge,
-                        { backgroundColor: chrome.surfaceMuted },
-                      ]}
-                    >
-                      <Text
-                        style={[styles.stateBadgeText, { color: chrome.textMuted }]}
-                      >
-                        No API key
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-                {groupRowsEmpty(rows, row) ? (
-                  <Text
-                    style={[styles.groupEmpty, { color: chrome.textMuted }]}
-                  >
-                    No models discovered.
-                  </Text>
-                ) : null}
-              </View>
-            ) : (
+          {modelRequired && rows.length > 0 ? (
+            <View style={styles.requiredBlock}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={16}
+                color={chrome.accent}
+              />
+              <Text style={[styles.requiredText, { color: chrome.text }]}>
+                Choose a model to continue this chat. Sending is paused until
+                you select one.
+              </Text>
+            </View>
+          ) : null}
+
+          {rows.map((row) => {
+            const checked = row.current && !modelRequired;
+            return (
               <Pressable
                 key={row.key}
                 style={[
                   styles.modelRow,
                   {
-                    backgroundColor: row.selected
+                    backgroundColor: checked
                       ? chrome.accentSoft
                       : chrome.surfaceMuted,
-                    opacity: row.disabled && !row.selected ? 0.55 : 1,
+                    opacity: row.disabled && !checked ? 0.55 : 1,
                   },
                 ]}
                 disabled={row.disabled}
                 accessibilityRole="button"
                 accessibilityState={{
                   disabled: row.disabled,
-                  selected: row.selected,
+                  selected: checked,
                 }}
                 accessibilityLabel={`Use ${row.modelId}`}
                 onPress={() => handleActivateRow(row)}
@@ -273,12 +235,12 @@ export function SessionModelSheet({
                     </Text>
                   ) : null}
                 </View>
-                {row.selected ? (
+                {checked ? (
                   <Ionicons name="checkmark" size={16} color={chrome.accent} />
                 ) : null}
               </Pressable>
-            ),
-          )}
+            );
+          })}
 
           {activating ? (
             <View style={styles.activatingRow}>
@@ -291,7 +253,7 @@ export function SessionModelSheet({
             </View>
           ) : null}
 
-          {errorMessage && groups.length > 0 ? (
+          {errorMessage && rows.length > 0 ? (
             <View style={styles.stateRow}>
               <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
                 {errorMessage}
@@ -306,24 +268,15 @@ export function SessionModelSheet({
             </View>
           ) : null}
 
-          {!activating && !errorMessage && groups.length === 0 ? (
+          {!activating && !errorMessage && rows.length === 0 ? (
             <Text style={[styles.stateBody, { color: chrome.textMuted }]}>
-              No Provider connections for this Session yet.
+              No models available yet. Sync models in Settings.
             </Text>
           ) : null}
         </BottomSheetScrollView>
       )}
     </BottomSheet>
   );
-}
-
-function groupRowsEmpty(
-  rows: SessionProviderPickerRow[],
-  row: SessionProviderPickerRow,
-): boolean {
-  if (row.kind !== "group") return false;
-  const next = rows[rows.indexOf(row) + 1];
-  return next === undefined || next.kind !== "model";
 }
 
 function createStyles(chrome: TerminalThemeChrome) {
@@ -356,25 +309,16 @@ function createStyles(chrome: TerminalThemeChrome) {
     stateBody: { ...TypeScale.body },
     link: { ...TypeScale.body, fontWeight: "600" },
     body: { paddingHorizontal: 16, gap: 6, paddingBottom: 16 },
-    groupBlock: { gap: 4 },
-    groupEmpty: { ...TypeScale.caption, paddingHorizontal: 4, paddingBottom: 2 },
-    groupHeader: {
+    requiredBlock: {
       flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      paddingHorizontal: 4,
-      paddingTop: 10,
-      paddingBottom: 2,
+      alignItems: "flex-start",
+      gap: 8,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: chrome.accentSoft,
     },
-    firstGroupHeader: { paddingTop: 2 },
-    groupName: { ...TypeScale.body, fontWeight: "600", flexShrink: 1 },
-    groupHostname: { ...TypeScale.caption, flexShrink: 1 },
-    stateBadge: {
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-    },
-    stateBadgeText: { ...TypeScale.caption },
+    requiredText: { ...TypeScale.body, flex: 1 },
     modelRow: {
       borderRadius: 10,
       paddingHorizontal: 12,

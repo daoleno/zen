@@ -4,7 +4,7 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../../services/providers";
-import type { ProviderPickerGroup } from "../../../services/providers/sessionModelHelpers";
+import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type {
   TerminalThemeChrome,
@@ -25,7 +25,8 @@ interface UseTerminalScreenOverlayPropsInput {
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
   routeSheetSelection?: ProviderSessionSelection | null;
-  routeSheetGroups: ProviderPickerGroup[];
+  routeSheetRows: ProviderPickerModelRow[];
+  routeSheetModelRequired: boolean;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -71,7 +72,8 @@ export function useTerminalScreenOverlayProps({
   routeSheetActivating,
   routeSheetError,
   routeSheetSelection,
-  routeSheetGroups,
+  routeSheetRows,
+  routeSheetModelRequired,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -136,7 +138,8 @@ export function useTerminalScreenOverlayProps({
       routeSheetActivating,
       routeSheetError,
       routeSheetSelection,
-      routeSheetGroups,
+      routeSheetRows,
+      routeSheetModelRequired,
       createDurabilityWarning,
       onDismissCreateDurabilityWarning,
       creatingSession,
@@ -206,7 +209,8 @@ export function useTerminalScreenOverlayProps({
       resourceSheetVisible,
       routeSheetActivating,
       routeSheetError,
-      routeSheetGroups,
+      routeSheetRows,
+      routeSheetModelRequired,
       routeSheetLoading,
       routeSheetSelection,
       routeSheetVisible,

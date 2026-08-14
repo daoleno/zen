@@ -153,6 +153,7 @@ export default function BrainScreen() {
     capabilities: hostAgent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
     eagerLoad: true,
+    focusActive: screenFocused,
   });
   const canUseStructuredBrainInterface = Boolean(
     ready && hostAdapter?.capabilities?.structured_events,
@@ -515,7 +516,8 @@ export default function BrainScreen() {
         activating={brainModelSheet.activating}
         error={brainModelSheet.error}
         selection={brainModelSheet.selection}
-        groups={brainModelSheet.groups}
+        rows={brainModelSheet.rows}
+        modelRequired={brainModelSheet.modelRequired}
         chrome={chrome}
         onClose={brainModelSheet.close}
         onRetry={brainModelSheet.retry}

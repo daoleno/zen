@@ -479,7 +479,10 @@ export function useInterfaceChatSurfaceState({
     runningActivity,
     attachmentCount: attachments.length,
     interrupting: controller.interrupting,
-    canSend: controller.canSend,
+    // Model-required state (a Settings Provider switch pending an explicit
+    // model choice) blocks sending until the user picks a model in the
+    // Composer sheet; the daemon never falls back to another model.
+    canSend: controller.canSend && !(composerModelControl?.modelRequired === true),
     elapsedStartedAt: runningActivity?.started_at,
     actionMenuPinned,
     safeAreaBottom: insets.bottom,

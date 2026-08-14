@@ -10,7 +10,7 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../../services/providers";
-import type { ProviderPickerGroup } from "../../../services/providers/sessionModelHelpers";
+import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
 import {
   SessionModelSheet,
   type SessionModelChoice,
@@ -36,7 +36,8 @@ export interface TerminalScreenOverlaysProps {
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
   routeSheetSelection?: ProviderSessionSelection | null;
-  routeSheetGroups: ProviderPickerGroup[];
+  routeSheetRows: ProviderPickerModelRow[];
+  routeSheetModelRequired: boolean;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -84,7 +85,8 @@ export function TerminalScreenOverlays({
   routeSheetActivating,
   routeSheetError,
   routeSheetSelection,
-  routeSheetGroups,
+  routeSheetRows,
+  routeSheetModelRequired,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -164,7 +166,8 @@ export function TerminalScreenOverlays({
         activating={routeSheetActivating}
         error={routeSheetError}
         selection={routeSheetSelection}
-        groups={routeSheetGroups}
+        rows={routeSheetRows}
+        modelRequired={routeSheetModelRequired}
         chrome={chrome}
         onClose={onCloseRouteSheet}
         onRetry={onRetryRouteSheet}

@@ -28,14 +28,20 @@ import {
   type ProvidersMutationResult,
   type ProvidersSnapshot,
 } from "../services/providers";
+import {
+  currentSessionForClient,
+} from "../services/providers/sessionModelHelpers";
+import { planSettingsProviderSwitch } from "../services/providers/settingsOrchestration";
 import { wsClient } from "../services/websocket";
 import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
+import { useCurrentSession } from "../store/currentSession";
 
 export default function ProvidersScreen() {
   const router = useRouter();
   const { state } = useAgents();
   const { currentServer } = useCurrentServer();
+  const { currentSession } = useCurrentSession();
   const currentServerId = currentServer?.id ?? null;
   const currentConnected = Boolean(
     currentServerId && state.serverConnections[currentServerId] === "connected",
@@ -523,6 +529,122 @@ export default function ProvidersScreen() {
   const offline = !currentConnected;
   const unavailable = error?.kind === "unavailable";
 
+  /**
+   * Settings-only Provider switch: the single surface that changes which
+   * Provider a client prefers.
+   *
+   * 1. Persist the preferred Provider (catalog client default) with NO
+   *    fabricated model — a new default connection starts model-required
+   *    until the client chooses a model (the daemon keeps the recorded
+   *    selection when the same connection is re-selected).
+   * 2. Painless carryover: when the exact current compatible routed Session
+   *    runs a model that is enabled+available on the new Provider, activate
+   *    the exact new Provider + current Model pair on that same Session — no
+   *    new Session, no restart.
+   * 3. Never a fallback: an unsupported current model leaves the preferred
+   *    Provider recorded without a model, the Session keeps its old route,
+   *    and the Composer enters the explicit model-required state (sending
+   *    blocked until the user picks a model).
+   * 4. On acknowledged activation, carry the model into the preferred
+   *    Provider's recorded selection (best-effort) so future Sessions and
+   *    restart restoration stay deterministic.
+   */
+  const switchPreferredProvider = useCallback(
+    async (client: ProviderClient, connection: ProviderConnection) => {
+      if (!currentServerId || !currentConnected) return;
+      const result = await runMutation(() =>
+        wsClient.setProviderDefault(currentServerId!, {
+          client,
+          connectionId: connection.id,
+          modelId: undefined,
+          revision,
+        }),
+      );
+      if (!result) return;
+      const snapshot = result.snapshot;
+
+      // The current compatible routed Session for this client (last-focused
+      // managed Session on the current server). Without one the switch only
+      // persists the preferred Provider; the Composer of that client's
+      // Sessions then shows the model-required state.
+      const target = currentSessionForClient({
+        agents: state.agents,
+        currentSession,
+        client,
+      });
+      if (!target) return;
+
+      let currentSelection;
+      try {
+        currentSelection = await wsClient.getSessionProvider(
+          currentServerId!,
+          target.agentId,
+        );
+      } catch {
+        // Session vanished or no longer managed: preferred already recorded.
+        return;
+      }
+
+      const plan = planSettingsProviderSwitch({
+        snapshot,
+        connection,
+        currentSession: target,
+        currentSelection,
+      });
+      if (plan.unsupportedCurrentModel) {
+        Alert.alert(
+          "Model required",
+          `${currentSelection.model_id.trim()} is not available on ${connection.name}. Pick a model in the chat to finish switching.`,
+        );
+        return;
+      }
+      const carryover = plan.carryover;
+      if (!carryover) return;
+      try {
+        const activated = await wsClient.activateSessionProvider(
+          currentServerId!,
+          carryover,
+        );
+        const classification = classifyMutationPersistence(
+          activated.persistence,
+        );
+        if (
+          classification === "applied_durable" ||
+          classification === "applied_uncertain"
+        ) {
+          // Carryover: record the carried model as the client-selected model
+          // of the preferred Provider (best-effort; a stale revision simply
+          // skips it and the next Composer activation retries).
+          try {
+            await wsClient.setProviderDefault(currentServerId!, {
+              client,
+              connectionId: connection.id,
+              modelId: carryover.modelId,
+              revision: snapshot.revision,
+            });
+          } catch {
+            // Best-effort only; the activation itself is acknowledged.
+          }
+        }
+      } catch (activateError) {
+        // The daemon failed inline (e.g. the model is no longer admitted):
+        // the preferred Provider stays recorded, the Session keeps its old
+        // route, and the Composer enters the model-required state. Recover
+        // by choosing a model there.
+        const presented = presentProviderError(activateError);
+        Alert.alert(presented.title, presented.message);
+      }
+    },
+    [
+      currentConnected,
+      currentServerId,
+      currentSession,
+      revision,
+      runMutation,
+      state.agents,
+    ],
+  );
+
   const closeEditor = useCallback(() => {
     setEditor(null);
   }, []);
@@ -592,28 +714,7 @@ export default function ProvidersScreen() {
         );
       }}
       onSetDefault={(client, connection) => {
-        // Selecting a connection is a provider choice; the client-selected
-        // model for new Sessions is the existing selection when this
-        // connection already owns it, else the deterministic first supported
-        // model of the allowlist (never a gateway-owned default).
-        const current = catalogRef.current;
-        const entry = current?.defaults[client];
-        const keepModel =
-          entry?.connection_id === connection.id
-            ? entry.model_id?.trim()
-            : undefined;
-        const modelId =
-          keepModel ||
-          firstSupportedModel(current, connection.id) ||
-          undefined;
-        void runMutation(() =>
-          wsClient.setProviderDefault(currentServerId!, {
-            client,
-            connectionId: connection.id,
-            modelId,
-            revision,
-          }),
-        );
+        void switchPreferredProvider(client, connection);
       }}
       onDiscover={(connection) => {
         void runDiscover(connection);

@@ -26,6 +26,9 @@ import { BrainProvider, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
 import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
 import {
+  CurrentSessionProvider,
+} from "../store/currentSession";
+import {
   CurrentServerProvider,
   useCurrentServer,
 } from "../store/currentServer";
@@ -806,16 +809,18 @@ export default function RootLayout() {
         <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
           <AgentProvider>
             <CurrentServerProvider>
-              <BrainProvider>
-                <WorkProvider>
-                  <CalendarProvider>
-                    <SafeAreaProvider>
-                      <ThemedStatusBar />
-                      <AppRuntime />
-                    </SafeAreaProvider>
-                  </CalendarProvider>
-                </WorkProvider>
-              </BrainProvider>
+              <CurrentSessionProvider>
+                <BrainProvider>
+                  <WorkProvider>
+                    <CalendarProvider>
+                      <SafeAreaProvider>
+                        <ThemedStatusBar />
+                        <AppRuntime />
+                      </SafeAreaProvider>
+                    </CalendarProvider>
+                  </WorkProvider>
+                </BrainProvider>
+              </CurrentSessionProvider>
             </CurrentServerProvider>
           </AgentProvider>
         </KeyboardProvider>

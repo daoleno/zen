@@ -37,7 +37,7 @@ export function ComposerModelChip({
     <TouchableOpacity
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint="Opens the Session Provider and model selection"
+      accessibilityHint="Opens the Model selection for this chat"
       style={[styles.control, { height: COMPOSER_MODEL_CONTROL_HEIGHT }]}
       onPress={onPress}
       activeOpacity={0.7}

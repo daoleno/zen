@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
   activationTargetModel,
   buildActivateSessionProviderRequest,
+  currentSessionForClient,
+  modelSupportedOnConnection,
+  preferredProviderConnectionId,
   refetchFoundBindingNotSwitchable,
   resolveComposerModelControl,
-  sessionProviderPickerGroups,
+  sessionModelRequired,
+  sessionModelSheetRows,
 } from "./sessionModelHelpers";
 import type {
   ProviderSessionSelection,
@@ -49,7 +53,9 @@ const snapshot: ProvidersSnapshot = {
       preset_id: "openai",
     },
   ],
-  defaults: {},
+  defaults: {
+    codex: { connection_id: "c1", model_id: "deepseek-chat" },
+  },
   presets: [],
   models: {
     c1: [
@@ -61,31 +67,95 @@ const snapshot: ProvidersSnapshot = {
   },
 };
 
-describe("Session Provider+Model picker inventory", () => {
-  test("lists every saved Provider compatible with the Session client, grouped by Provider Name", () => {
-    const groups = sessionProviderPickerGroups(snapshot, selection);
-    expect(groups.map((g) => g.connectionId)).toEqual(["c1", "c3"]);
-    expect(groups.map((g) => g.connectionName)).toEqual([
-      "DeepSeek",
-      "Not ready",
-    ]);
-    // The Claude-only connection is never offered to a Codex Session.
-    expect(groups.some((g) => g.connectionId === "c2")).toBe(false);
+describe("Preferred Provider resolution (Settings-selected)", () => {
+  test("the preferred Provider is the catalog client default", () => {
+    expect(preferredProviderConnectionId(snapshot, "codex")).toBe("c1");
+    expect(preferredProviderConnectionId(snapshot, "claude")).toBe("");
+    expect(preferredProviderConnectionId(null, "codex")).toBe("");
+    expect(preferredProviderConnectionId(snapshot, "")).toBe("");
   });
 
-  test("groups are sorted deterministically by Provider Name", () => {
-    const shuffled: ProvidersSnapshot = {
+  test("an empty default means no preferred Provider (direct login)", () => {
+    const direct: ProvidersSnapshot = { ...snapshot, defaults: {} };
+    expect(preferredProviderConnectionId(direct, "codex")).toBe("");
+  });
+});
+
+describe("Model-required truth (route provider != preferred provider)", () => {
+  test("route on the preferred Provider is never model-required", () => {
+    expect(
+      sessionModelRequired({ snapshot, selection }),
+    ).toBe(false);
+  });
+
+  test("route on another Provider is model-required", () => {
+    const switched: ProvidersSnapshot = {
       ...snapshot,
-      connections: [...snapshot.connections].reverse(),
+      defaults: { codex: { connection_id: "c3" } },
     };
-    const groups = sessionProviderPickerGroups(shuffled, selection);
-    expect(groups.map((g) => g.connectionName)).toEqual([
-      "DeepSeek",
-      "Not ready",
-    ]);
+    expect(
+      sessionModelRequired({ snapshot: switched, selection }),
+    ).toBe(true);
   });
 
-  test("same Base URL, different keys: two stable groups with distinct ids", () => {
+  test("missing catalog or selection is never model-required", () => {
+    expect(sessionModelRequired({ snapshot: null, selection })).toBe(false);
+    expect(sessionModelRequired({ snapshot, selection: null })).toBe(false);
+  });
+
+  test("no preferred Provider is never model-required (control hidden)", () => {
+    const direct: ProvidersSnapshot = { ...snapshot, defaults: {} };
+    expect(sessionModelRequired({ snapshot: direct, selection })).toBe(false);
+  });
+});
+
+describe("Support admission on a connection (never a fallback)", () => {
+  test("an enabled+available model is supported", () => {
+    expect(
+      modelSupportedOnConnection(snapshot, "c1", "deepseek-reasoner"),
+    ).toBe(true);
+  });
+
+  test("a disabled model is not supported", () => {
+    const disabled: ProvidersSnapshot = {
+      ...snapshot,
+      models: {
+        ...snapshot.models,
+        c1: [
+          { id: "deepseek-reasoner", available: false, source: "lkg" },
+        ],
+      },
+    };
+    expect(
+      modelSupportedOnConnection(disabled, "c1", "deepseek-reasoner"),
+    ).toBe(false);
+  });
+
+  test("a model absent from a synced allowlist is not supported", () => {
+    expect(modelSupportedOnConnection(snapshot, "c1", "gpt-5")).toBe(false);
+  });
+
+  test("an empty/unknown allowlist defers to daemon admission", () => {
+    const unsynced: ProvidersSnapshot = { ...snapshot, models: {} };
+    expect(modelSupportedOnConnection(unsynced, "c1", "anything")).toBeNull();
+  });
+});
+
+describe("Session Model inventory (preferred Provider only)", () => {
+  test("lists only the Settings-selected Provider's enabled+available models", () => {
+    const rows = sessionModelSheetRows({ snapshot, selection });
+    expect(rows.map((row) => row.connectionId)).toEqual(["c1", "c1"]);
+    expect(rows.map((row) => row.modelId)).toEqual([
+      "deepseek-chat",
+      "deepseek-reasoner",
+    ]);
+    // Other Providers never appear — no cross-Provider inventory.
+    expect(rows.some((row) => row.connectionId === "c2")).toBe(false);
+    expect(rows.some((row) => row.connectionId === "c3")).toBe(false);
+    expect(rows.some((row) => row.modelId === "gone")).toBe(false);
+  });
+
+  test("same Base URL, different keys: only the preferred key's models appear", () => {
     const dual: ProvidersSnapshot = {
       ...snapshot,
       connections: [
@@ -106,109 +176,74 @@ describe("Session Provider+Model picker inventory", () => {
           base_url: "https://gate.example.com",
         },
       ],
+      defaults: {
+        codex: { connection_id: "gate-b", model_id: "beta-1" },
+      },
       models: {
         "gate-a": [{ id: "alpha-1", available: true, source: "bundled" }],
         "gate-b": [{ id: "beta-1", available: true, source: "bundled" }],
       },
     };
-    const groups = sessionProviderPickerGroups(dual, {
-      ...selection,
-      connection_id: "gate-a",
-      connection_name: "Alpha Gateway",
-      model_id: "alpha-1",
+    const rows = sessionModelSheetRows({
+      snapshot: dual,
+      selection: {
+        ...selection,
+        connection_id: "gate-a",
+        connection_name: "Alpha Gateway",
+        model_id: "alpha-1",
+      },
     });
-    expect(groups.map((g) => g.connectionId)).toEqual(["gate-a", "gate-b"]);
-    expect(groups.map((g) => g.hostname)).toEqual([
-      "gate.example.com",
-      "gate.example.com",
-    ]);
-    // Every selectable row carries its own Provider's stable id.
-    const rows = groups.flatMap((g) => g.models);
-    expect(rows.map((r) => [r.connectionId, r.modelId])).toEqual([
-      ["gate-a", "alpha-1"],
+    expect(rows.map((row) => [row.connectionId, row.modelId])).toEqual([
       ["gate-b", "beta-1"],
     ]);
-    // Only the exact running pair is marked current.
-    expect(rows.map((r) => r.current)).toEqual([true, false]);
-  });
-
-  test("offers only enabled+available models; other Providers' models never appear", () => {
-    const groups = sessionProviderPickerGroups(snapshot, selection);
-    expect(groups[0].models.map((m) => m.modelId)).toEqual([
-      "deepseek-chat",
-      "deepseek-reasoner",
-    ]);
-    expect(groups.some((g) => g.models.some((m) => m.modelId === "gone"))).toBe(
-      false,
-    );
-    expect(groups.some((g) => g.connectionId === "c2")).toBe(false);
   });
 
   test("marks exactly the current (connection_id, model_id) pair", () => {
-    const groups = sessionProviderPickerGroups(snapshot, selection);
-    const rows = groups.flatMap((g) => g.models);
-    const current = rows.filter((m) => m.current);
+    const rows = sessionModelSheetRows({ snapshot, selection });
+    const current = rows.filter((row) => row.current);
     expect(current).toHaveLength(1);
     expect(current[0].connectionId).toBe("c1");
     expect(current[0].modelId).toBe("deepseek-chat");
   });
 
-  test("cross-Provider activation targets the tapped Provider's stable pair", () => {
-    const groups = sessionProviderPickerGroups(snapshot, selection);
-    // The current Session runs DeepSeek; the other compatible Provider is
-    // "Not ready" (c3). Its rows carry c3's exact ids even though the
-    // selection is on c1.
-    const other = groups.find((g) => g.connectionId === "c3");
-    expect(other?.models[0]).toMatchObject({
-      connectionId: "c3",
-      modelId: "gpt-x",
-      current: false,
+  test("model-required state checks nothing", () => {
+    const switched: ProvidersSnapshot = {
+      ...snapshot,
+      defaults: { codex: { connection_id: "c3", model_id: "" } },
+    };
+    const rows = sessionModelSheetRows({
+      snapshot: switched,
+      selection,
     });
+    expect(rows.every((row) => !row.current)).toBe(true);
   });
 
-  test("uncredentialed Providers stay visible with non-selectable models", () => {
-    const groups = sessionProviderPickerGroups(snapshot, selection);
-    const unready = groups.find((g) => g.connectionId === "c3");
-    expect(unready?.credentialReady).toBe(false);
-    expect(unready?.models).toHaveLength(1);
-    expect(unready?.models[0].disabled).toBe(true);
-    expect(unready?.models[0].current).toBe(false);
+  test("uncredentialed preferred Provider stays visible with non-selectable models", () => {
+    const unready: ProvidersSnapshot = {
+      ...snapshot,
+      defaults: { codex: { connection_id: "c3", model_id: "gpt-x" } },
+    };
+    const rows = sessionModelSheetRows({
+      snapshot: unready,
+      selection: { ...selection, connection_id: "c3", model_id: "gpt-x" },
+    });
+    expect(rows.map((row) => row.modelId)).toEqual(["gpt-x"]);
+    expect(rows[0].disabled).toBe(true);
   });
 
   test("empty and failed discovery are honest and never selectable", () => {
     const noDiscovery: ProvidersSnapshot = {
       ...snapshot,
-      models: { c3: [] }, // c1's discovery is gone too (record replaced)
+      models: { c1: [] },
     };
-    const groups = sessionProviderPickerGroups(noDiscovery, selection);
-    const empty = groups.find((g) => g.connectionId === "c3");
-    expect(empty?.models).toEqual([]);
-    // The running Provider still shows its checked pair from the selection
-    // when discovery is empty — never substituted and never hidden.
-    const running = groups.find((g) => g.connectionId === "c1");
-    expect(running?.models.map((m) => m.modelId)).toEqual(["deepseek-chat"]);
-    expect(running?.models[0]).toMatchObject({ current: true, disabled: true });
-  });
-
-  test("current pair missing from discovery renders checked and non-selectable", () => {
-    const stale: ProvidersSnapshot = {
-      ...snapshot,
-      models: {
-        c1: [{ id: "deepseek-reasoner", available: true, source: "bundled" }],
-        c3: [],
-      },
-    };
-    const groups = sessionProviderPickerGroups(stale, selection);
-    const running = groups.find((g) => g.connectionId === "c1");
-    const rows = running?.models ?? [];
-    expect(rows.map((m) => m.modelId)).toEqual([
-      "deepseek-reasoner",
-      "deepseek-chat",
-    ]);
-    const current = rows.find((m) => m.current);
-    expect(current).toMatchObject({
+    const rows = sessionModelSheetRows({ snapshot: noDiscovery, selection });
+    // The running pair on the preferred Provider stays visible from the
+    // selection itself — checked and non-selectable, never substituted.
+    expect(rows.map((row) => row.modelId)).toEqual(["deepseek-chat"]);
+    expect(rows[0]).toMatchObject({
       connectionId: "c1",
       modelId: "deepseek-chat",
+      current: true,
       disabled: true,
       unavailableCurrent: true,
     });
@@ -219,13 +254,10 @@ describe("Session Provider+Model picker inventory", () => {
       ...snapshot,
       models: {
         c1: [{ id: "deepseek-chat", available: false, source: "lkg" }],
-        c3: [],
       },
     };
-    const groups = sessionProviderPickerGroups(stale, selection);
-    const running = groups.find((g) => g.connectionId === "c1");
-    const rows = running?.models ?? [];
-    expect(rows.map((m) => m.modelId)).toEqual(["deepseek-chat"]);
+    const rows = sessionModelSheetRows({ snapshot: stale, selection });
+    expect(rows.map((row) => row.modelId)).toEqual(["deepseek-chat"]);
     expect(rows[0]).toMatchObject({
       current: true,
       disabled: true,
@@ -233,40 +265,37 @@ describe("Session Provider+Model picker inventory", () => {
     });
   });
 
-  test("a live route whose connection left the catalog still shows its running pair", () => {
+  test("a route on a deleted connection stays honest: no inventory, model-required", () => {
     const removed: ProvidersSnapshot = {
       ...snapshot,
       connections: [snapshot.connections[1]], // only c2 (Claude) remains
+      defaults: { codex: { connection_id: "c3", model_id: "" } },
       models: {},
     };
-    const groups = sessionProviderPickerGroups(removed, selection);
-    const unbound = groups.find((g) => g.connectionId === "c1");
-    expect(unbound?.connectionName).toBe("DeepSeek");
-    expect(unbound?.models).toHaveLength(1);
-    expect(unbound?.models[0]).toMatchObject({
-      connectionId: "c1",
-      modelId: "deepseek-chat",
-      current: true,
-      disabled: true,
-      unavailableCurrent: true,
-    });
+    // The route runs c1 which left the catalog; the preferred Provider c3 has
+    // no synced models. Nothing is fabricated.
+    expect(sessionModelRequired({ snapshot: removed, selection })).toBe(true);
+    expect(sessionModelSheetRows({ snapshot: removed, selection })).toEqual([]);
   });
 
-  test("empty catalog, missing selection, or missing bound connection yields no groups", () => {
-    expect(sessionProviderPickerGroups(null, selection)).toEqual([]);
-    expect(sessionProviderPickerGroups(snapshot, null)).toEqual([]);
+  test("empty catalog, missing selection, or missing preferred yields no rows", () => {
+    expect(sessionModelSheetRows({ snapshot: null, selection })).toEqual([]);
+    expect(sessionModelSheetRows({ snapshot, selection: null })).toEqual([]);
+    const direct: ProvidersSnapshot = { ...snapshot, defaults: {} };
+    expect(sessionModelSheetRows({ snapshot: direct, selection })).toEqual([]);
   });
 });
 
 describe("Exact ID propagation", () => {
+  const LONG_IDS = [
+    "gpt-5.6-sol",
+    "gpt-5.1-codex-max-longhaul-8k-context",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "deepseek-r1-0528-ultra",
+    "openai/gpt-oss-120b-consistency",
+  ];
+
   test("long model ids survive unchanged, including the last row", () => {
-    const LONG_IDS = [
-      "gpt-5.6-sol",
-      "gpt-5.1-codex-max-longhaul-8k-context",
-      "anthropic/claude-sonnet-4-5-20250929",
-      "deepseek-r1-0528-ultra",
-      "openai/gpt-oss-120b-consistency",
-    ];
     const many: ProvidersSnapshot = {
       ...snapshot,
       models: {
@@ -277,11 +306,10 @@ describe("Exact ID propagation", () => {
         })),
       },
     };
-    const groups = sessionProviderPickerGroups(many, {
-      ...selection,
-      model_id: LONG_IDS[0],
+    const rows = sessionModelSheetRows({
+      snapshot: many,
+      selection: { ...selection, model_id: LONG_IDS[0] },
     });
-    const rows = groups[0].models;
     expect(rows).toHaveLength(LONG_IDS.length);
     rows.forEach((row, index) => {
       expect(row.modelId).toBe(LONG_IDS[index]);
@@ -304,14 +332,14 @@ describe("Exact ID propagation", () => {
         })),
       },
     };
-    const groups = sessionProviderPickerGroups(many, {
-      ...selection,
-      model_id: "model-0",
+    const rows = sessionModelSheetRows({
+      snapshot: many,
+      selection: { ...selection, model_id: "model-0" },
     });
-    const rows = groups[0].models;
     expect(rows).toHaveLength(60);
     expect(new Set(rows.map((row) => row.key)).size).toBe(60);
     expect(rows[59].modelId).toBe("model-59");
+    expect(rows[59].disabled).toBe(false);
   });
 });
 
@@ -371,43 +399,66 @@ describe("Composer model control truth", () => {
     model_profile_active_switch: true,
   };
 
-  test("ready only when the exact Session can activate now; label shows Provider + Model", () => {
+  test("ready only when the exact Session can activate now; label is Model only", () => {
     const control = resolveComposerModelControl({
       capabilities: managedSwitch,
       connectionConnected: true,
       selection,
       refreshRequired: false,
+      preferredConnectionId: "c1",
     });
     expect(control).toEqual({
-      label: "DeepSeek · deepseek-chat",
-      accessibilityLabel:
-        "Open model selection, deepseek-chat, DeepSeek",
+      label: "deepseek-chat",
+      accessibilityLabel: "Open model selection, deepseek-chat",
+      modelRequired: false,
+      preferredConnectionId: "c1",
     });
   });
 
-  test("Provider identity distinguishes same-host/different-key connections", () => {
+  test("never embeds a Provider name or hostname in the label", () => {
     const control = resolveComposerModelControl({
       capabilities: managedSwitch,
       connectionConnected: true,
       selection: {
         ...selection,
+        connection_id: "gate-a",
         connection_name: "Alpha Gateway",
         model_id: "alpha-1",
       },
       refreshRequired: false,
+      preferredConnectionId: "gate-a",
     });
-    expect(control?.label).toBe("Alpha Gateway · alpha-1");
+    expect(control?.label).toBe("alpha-1");
+    expect(control?.label).not.toContain("Alpha Gateway");
   });
 
-  test("falls back to the Provider name when the model label is empty", () => {
+  test("a pending Provider switch is an explicit model-required request", () => {
+    const control = resolveComposerModelControl({
+      capabilities: managedSwitch,
+      connectionConnected: true,
+      selection,
+      refreshRequired: false,
+      preferredConnectionId: "c3",
+    });
+    expect(control).toEqual({
+      label: "Choose model",
+      accessibilityLabel:
+        "Choose a model. Sending is paused until a model is selected.",
+      modelRequired: true,
+      preferredConnectionId: "c3",
+    });
+  });
+
+  test("omits when no preferred Provider exists (direct official login)", () => {
     expect(
       resolveComposerModelControl({
         capabilities: managedSwitch,
         connectionConnected: true,
-        selection: { ...selection, model_id: "" },
+        selection,
         refreshRequired: false,
-      })?.label,
-    ).toBe("DeepSeek");
+        preferredConnectionId: "",
+      }),
+    ).toBeNull();
   });
 
   test("omits when capability is unsupported", () => {
@@ -421,6 +472,7 @@ describe("Composer model control truth", () => {
         connectionConnected: true,
         selection,
         refreshRequired: false,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -436,6 +488,7 @@ describe("Composer model control truth", () => {
         connectionConnected: true,
         selection,
         refreshRequired: false,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -447,6 +500,7 @@ describe("Composer model control truth", () => {
         connectionConnected: false,
         selection,
         refreshRequired: false,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -458,6 +512,7 @@ describe("Composer model control truth", () => {
         connectionConnected: true,
         selection: null,
         refreshRequired: false,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -469,6 +524,7 @@ describe("Composer model control truth", () => {
         connectionConnected: true,
         selection: { ...selection, hot_switchable: false },
         refreshRequired: false,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -480,6 +536,7 @@ describe("Composer model control truth", () => {
         connectionConnected: true,
         selection,
         refreshRequired: true,
+        preferredConnectionId: "c1",
       }),
     ).toBeNull();
   });
@@ -499,14 +556,118 @@ describe("Refetch transition: binding lost live switching", () => {
         hotSwitchable: false,
       }),
     ).toBe(true);
-    // A Session that never admitted activation is not a "lost" transition;
-    // the picker was already hidden for it.
     expect(
       refetchFoundBindingNotSwitchable({
         activationCapable: false,
         hotSwitchable: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("Current compatible routed Session for a Settings switch", () => {
+  const agents = [
+    {
+      id: "s-codex",
+      serverId: "srv",
+      command: "codex",
+      capabilities: {
+        structured_events: true,
+        model_profile_managed: true,
+        model_profile_active_switch: true,
+      },
+    },
+    {
+      id: "s-claude",
+      serverId: "srv",
+      command: "claude",
+      capabilities: {
+        structured_events: true,
+        model_profile_managed: true,
+        model_profile_active_switch: true,
+      },
+    },
+    {
+      id: "s-readonly",
+      serverId: "srv",
+      command: "codex",
+      capabilities: {
+        structured_events: true,
+        model_profile_managed: true,
+        model_profile_active_switch: false,
+      },
+    },
+    {
+      id: "s-pi",
+      serverId: "srv",
+      command: "pi",
+      capabilities: {
+        structured_events: true,
+        model_profile_managed: false,
+        model_profile_active_switch: false,
+      },
+    },
+  ];
+
+  test("resolves the last-focused managed Session of the matching client", () => {
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: { serverId: "srv", agentId: "s-codex" },
+        client: "codex",
+      }),
+    ).toEqual({ agentId: "s-codex" });
+  });
+
+  test("never targets another client's Session", () => {
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: { serverId: "srv", agentId: "s-claude" },
+        client: "codex",
+      }),
+    ).toBeNull();
+  });
+
+  test("never targets read-only or unmanaged Sessions", () => {
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: { serverId: "srv", agentId: "s-readonly" },
+        client: "codex",
+      }),
+    ).toBeNull();
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: { serverId: "srv", agentId: "s-pi" },
+        client: "codex",
+      }),
+    ).toBeNull();
+  });
+
+  test("requires a current Session and a matching server epoch", () => {
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: null,
+        client: "codex",
+      }),
+    ).toBeNull();
+    expect(
+      currentSessionForClient({
+        agents,
+        currentSession: { serverId: "other", agentId: "s-codex" },
+        client: "codex",
+      }),
+    ).toBeNull();
+    expect(
+      currentSessionForClient({
+        agents: [],
+        currentSession: { serverId: "srv", agentId: "s-codex" },
+        client: "codex",
+      }),
+    ).toBeNull();
   });
 });
 
@@ -527,5 +688,22 @@ describe("Activation contract", () => {
       "connectionId",
       "modelId",
     ]);
+  });
+
+  test("missing fields refuse to build", () => {
+    expect(() =>
+      buildActivateSessionProviderRequest({
+        agentId: "",
+        connectionId: "c1",
+        modelId: "m",
+      }),
+    ).toThrow();
+    expect(() =>
+      buildActivateSessionProviderRequest({
+        agentId: "a",
+        connectionId: " ",
+        modelId: "m",
+      }),
+    ).toThrow();
   });
 });
