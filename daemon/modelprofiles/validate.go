@@ -14,6 +14,7 @@ var (
 	profileIDRE     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	providerIDRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	credentialEnvRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	credentialRefRE = regexp.MustCompile(`^provider:[a-z][a-z0-9_-]{0,63}(:[a-z0-9_-]{1,64})?$`)
 )
 
 func normalizeID(value string) string {
@@ -92,6 +93,10 @@ func ValidateProfile(profile Profile) error {
 		authMode = AuthModeNone
 	}
 	if err := ValidateAuthMode(authMode, profile.CredentialEnv, profile.BaseURL, protocol); err != nil {
+		return err
+	}
+
+	if err := validateCredentialRef(profile.CredentialRef); err != nil {
 		return err
 	}
 
@@ -226,6 +231,20 @@ func ValidateCredentialEnv(name string) error {
 	return nil
 }
 
+// validateCredentialRef accepts an empty ref (legacy canonical provider:<id>)
+// or an opaque Zen provider ref. Refs are internal and secret-free; this is
+// defense-in-depth against malformed durable rows.
+func validateCredentialRef(ref string) error {
+	ref = normalizeSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	if !credentialRefRE.MatchString(ref) {
+		return fmt.Errorf("%w: credential_ref must match %s", ErrInvalid, credentialRefRE.String())
+	}
+	return nil
+}
+
 // ValidateUpstreamBaseURL accepts explicitly configured HTTP(S) gateways while
 // rejecting malformed URLs and infrastructure metadata targets.
 func ValidateUpstreamBaseURL(raw string) error {
@@ -315,7 +334,7 @@ func connectionAuthReady(profile Profile, store CredentialStore, lookup func(str
 	case "", AuthModeNone, AuthModeNativePassthrough:
 		return true
 	case AuthModeBearerEnv, AuthModeXAPIKeyEnv:
-		return providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup)
+		return providerCredentialReady(profile, store, lookup)
 	default:
 		return false
 	}
@@ -338,7 +357,7 @@ func requireAuthReady(profile Profile, store CredentialStore, lookup func(string
 		if err := ValidateCredentialEnv(profile.CredentialEnv); err != nil {
 			return err
 		}
-		if !providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup) {
+		if !providerCredentialReady(profile, store, lookup) {
 			return fmt.Errorf("%w: %s", ErrCredentialNotReady, profile.CredentialEnv)
 		}
 		return nil
@@ -365,6 +384,7 @@ func normalizeProfile(profile Profile) Profile {
 		profile.AuthMode = AuthModeNone
 	}
 	profile.CredentialEnv = normalizeSpace(profile.CredentialEnv)
+	profile.CredentialRef = normalizeSpace(profile.CredentialRef)
 	profile.HistoryDomain = normalizeID(profile.HistoryDomain)
 	return profile
 }

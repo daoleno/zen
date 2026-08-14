@@ -94,6 +94,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 	target.Scope = "" // ephemeral target is executor-scoped for routing
 	target.Client = ""
 	target.CredentialEnv = conn.CredentialEnv
+	target.CredentialRef = conn.CredentialRef
 	return target, nil
 }
 
@@ -153,6 +154,9 @@ func validateAccountConnection(profile Profile) error {
 		if err := ValidateCredentialEnv(env); err != nil {
 			return err
 		}
+	}
+	if err := validateCredentialRef(profile.CredentialRef); err != nil {
+		return err
 	}
 	auth := normalizeID(profile.AuthMode)
 	if auth != "" && auth != AuthModeNone {

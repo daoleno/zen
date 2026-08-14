@@ -62,6 +62,8 @@ func (b *barrierCredStore) Delete(ref string) error {
 	return b.inner.Delete(ref)
 }
 
+func (b *barrierCredStore) Refs() ([]string, error) { return b.inner.Refs() }
+
 func (b *barrierCredStore) SnapshotRefs() []string { return b.inner.SnapshotRefs() }
 
 func (b *barrierCredStore) armSet() (entered, release chan struct{}) {
@@ -115,7 +117,7 @@ func TestCredentialSetDeleteSerializationNoOrphan(t *testing.T) {
 		store := newBarrierCredStore()
 		owner.SetCredentialStore(store)
 
-		conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
+		conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -156,6 +156,15 @@ func codexCustomInput(id, name, baseURL string) ProviderConnectionInput {
 	}
 }
 
+func profileFor(t *testing.T, owner *Owner, id string) Profile {
+	t.Helper()
+	profile, err := owner.GetProfile(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}
+
 // TestSameBaseURLDifferentKeysCoexistAndRouteIndependently proves I3: two
 // Providers with the same Base URL and different API keys are distinct rows
 // with independent credentials, discovery catalogs and route bindings, and the
@@ -259,8 +268,8 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if planA.State.Binding.CredentialRef != CredentialRefFor(connA.ID) ||
-		planB.State.Binding.CredentialRef != CredentialRefFor(connBID) {
+	if planA.State.Binding.CredentialRef != activeCredentialRef(gotA) ||
+		planB.State.Binding.CredentialRef != activeCredentialRef(gotB) {
 		t.Fatalf("credential refs A=%q B=%q", planA.State.Binding.CredentialRef, planB.State.Binding.CredentialRef)
 	}
 
@@ -321,7 +330,7 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 	if _, ok := byName["Beta gateway"]; !ok {
 		t.Fatalf("Beta gateway lost on restart: %#v", proj2.Connections)
 	}
-	refA, refB := CredentialRefFor(byName["Alpha gateway"].ID), CredentialRefFor(byName["Beta gateway"].ID)
+	refA, refB := activeCredentialRef(gotA), activeCredentialRef(gotB)
 	valA, okA, _ := creds.Get(refA)
 	valB, okB, _ := creds.Get(refB)
 	if !okA || !okB || valA != "key-alpha" || valB != "key-beta" {
@@ -410,7 +419,7 @@ func TestRenamePreservesIdentityModelsDefaultsHistory(t *testing.T) {
 	if got.Name != "New name" || got.BaseURL != "https://gateway.example/v1" {
 		t.Fatalf("renamed profile=%#v", got)
 	}
-	secret, ok, _ := creds.Get(CredentialRefFor(connID))
+	secret, ok, _ := creds.Get(activeCredentialRef(got))
 	if !ok || secret != "sk-rename-secret" {
 		t.Fatalf("secret lost on rename: %q/%v", secret, ok)
 	}
@@ -429,7 +438,7 @@ func TestRenamePreservesIdentityModelsDefaultsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.State.Binding.ProfileName != "New name" || plan.State.Binding.CredentialRef != CredentialRefFor(connID) {
+	if plan.State.Binding.ProfileName != "New name" || plan.State.Binding.CredentialRef != activeCredentialRef(got) {
 		t.Fatalf("binding after rename=%#v", plan.State.Binding)
 	}
 }
@@ -461,13 +470,13 @@ func TestUpsertValidationFailureAppliesNothing(t *testing.T) {
 	if got.Name != "First" || got.BaseURL != "https://one.example/v1" {
 		t.Fatalf("partial update applied: %#v", got)
 	}
-	secret, ok, _ := creds.Get(CredentialRefFor(first.ID))
+	secret, ok, _ := creds.Get(activeCredentialRef(got))
 	if !ok || secret != "sk-first" {
 		t.Fatalf("credential mutated by failed edit: %q/%v", secret, ok)
 	}
-	// Empty-name and over-long-name edits also apply nothing. The daemon keeps
-	// its legacy default (preset label) for blank names, so blank is not a
-	// validation failure; length is.
+	// Blank, whitespace-only, and over-long name edits also apply nothing: the
+	// daemon requires an explicit non-empty trimmed name on every mutation
+	// (only load-time migration may synthesize names).
 	badName := strings.Repeat("y", MaxProviderNameLength+1)
 	if _, err := owner.UpsertProviderConnection(
 		codexCustomInput(first.ID, badName, "https://changed.example/v1"), "sk-attacker", owner.Catalog().Revision, false); !errors.Is(err, ErrInvalid) {
@@ -481,8 +490,8 @@ func TestUpsertValidationFailureAppliesNothing(t *testing.T) {
 }
 
 // TestUpsertKeyReplaceAndPreserve proves I4: an empty key preserves the stored
-// secret; a non-empty key replaces it; a credential-store failure rolls the
-// catalog write back.
+// secret; a non-empty key replaces it via the staged-ref commit (no partial
+// state, no credential-store rollback window).
 func TestUpsertKeyReplaceAndPreserve(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	creds := NewMemoryCredentialStore()
@@ -494,25 +503,30 @@ func TestUpsertKeyReplaceAndPreserve(t *testing.T) {
 		t.Fatal(err)
 	}
 	connID := proj.Connections[0].ID
-	secret, ok, _ := creds.Get(CredentialRefFor(connID))
+	secret, ok, _ := creds.Get(activeCredentialRef(profileFor(t, owner, connID)))
 	if !ok || secret != "sk-v1" {
 		t.Fatalf("initial key=%q/%v", secret, ok)
 	}
-	// Empty key on edit preserves the secret.
+	// Empty key on edit preserves the secret and the active ref.
+	refBefore := activeCredentialRef(profileFor(t, owner, connID))
 	if _, err := owner.UpsertProviderConnection(
 		codexCustomInput(connID, "Keyed", "https://keyed.example/v1"), "", proj.Revision, false); err != nil {
 		t.Fatal(err)
 	}
-	secret, _, _ = creds.Get(CredentialRefFor(connID))
+	secret, _, _ = creds.Get(activeCredentialRef(profileFor(t, owner, connID)))
 	if secret != "sk-v1" {
 		t.Fatalf("preserve key=%q", secret)
 	}
-	// New key replaces it atomically with the rename.
+	if got := activeCredentialRef(profileFor(t, owner, connID)); got != refBefore {
+		t.Fatalf("rename without key must keep the active ref: %q -> %q", refBefore, got)
+	}
+	// New key replaces it atomically with the rename; the old ref is cleaned up.
 	if _, err := owner.UpsertProviderConnection(
 		codexCustomInput(connID, "Keyed v2", "https://keyed2.example/v1"), "sk-v2", owner.Catalog().Revision, false); err != nil {
 		t.Fatal(err)
 	}
-	secret, _, _ = creds.Get(CredentialRefFor(connID))
+	gotProfile := profileFor(t, owner, connID)
+	secret, _, _ = creds.Get(activeCredentialRef(gotProfile))
 	if secret != "sk-v2" {
 		t.Fatalf("replace key=%q", secret)
 	}
@@ -522,9 +536,10 @@ func TestUpsertKeyReplaceAndPreserve(t *testing.T) {
 	}
 }
 
-// TestUpsertCredentialStoreFailureRollsBackCatalog proves the credential half
-// of a unified edit cannot leave a partial name/URL/key state behind.
-func TestUpsertCredentialStoreFailureRollsBackCatalog(t *testing.T) {
+// TestUpsertCredentialStoreFailureAppliesNothing proves the staged-ref design:
+// a credential-store failure happens before the catalog write (stage-first), so
+// the edit applies zero writes and leaves no staged or orphaned secret behind.
+func TestUpsertCredentialStoreFailureAppliesNothing(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	creds := NewMemoryCredentialStore()
 	owner.SetCredentialStore(creds)
@@ -537,8 +552,8 @@ func TestUpsertCredentialStoreFailureRollsBackCatalog(t *testing.T) {
 
 	failStore := &failingCredentialStore{inner: NewMemoryCredentialStore(), failAll: true}
 	owner.SetCredentialStore(failStore)
-	// Update with a new key: catalog write commits, credential write fails, the
-	// catalog row is restored to the pre-edit state.
+	// Update with a new key: the stage fails before the catalog write, so the
+	// row keeps its old name/URL/ref and no staged ref exists.
 	_, err = owner.UpsertProviderConnection(
 		codexCustomInput(connID, "Mutated", "https://mutated.example/v1"), "sk-new", owner.Catalog().Revision, false)
 	if !errors.Is(err, ErrCredentialStoreFailed) {
@@ -546,10 +561,14 @@ func TestUpsertCredentialStoreFailureRollsBackCatalog(t *testing.T) {
 	}
 	got, _ := owner.GetProfile(connID)
 	if got.Name != "Stable" || got.BaseURL != "https://stable.example/v1" {
-		t.Fatalf("catalog rollback failed: %#v", got)
+		t.Fatalf("catalog mutated by failed stage: %#v", got)
+	}
+	if refs, _ := failStore.Refs(); len(refs) != 0 {
+		t.Fatalf("staged refs after failed stage: %v", refs)
 	}
 
-	// Create with a key whose write fails leaves no orphan connection.
+	// Create with a key whose stage fails leaves no orphan connection and no
+	// credential refs.
 	before := len(owner.Catalog().Profiles)
 	_, err = owner.UpsertProviderConnection(
 		codexCustomInput("", "Doomed", "https://doomed.example/v1"), "sk-new", owner.Catalog().Revision, true)
@@ -558,6 +577,32 @@ func TestUpsertCredentialStoreFailureRollsBackCatalog(t *testing.T) {
 	}
 	if got := len(owner.Catalog().Profiles); got != before {
 		t.Fatalf("orphan connection created: %d -> %d", before, got)
+	}
+	if refs, _ := failStore.Refs(); len(refs) != 0 {
+		t.Fatalf("staged refs after failed create: %v", refs)
+	}
+}
+
+// TestUpsertCatalogFailureRetractsStagedSecret proves a not-applied catalog
+// commit (revision conflict) retracts the private staged secret so a failed
+// edit cannot leave an orphaned secret in the vault.
+func TestUpsertCatalogFailureRetractsStagedSecret(t *testing.T) {
+	owner := startTestOwner(t, readyLookup("x"))
+	creds := NewMemoryCredentialStore()
+	owner.SetCredentialStore(creds)
+
+	// Stage succeeds (store accepts), but the catalog create conflicts: the
+	// staged secret must be retracted.
+	_, err := owner.UpsertProviderConnection(
+		codexCustomInput("", "Conflicted", "https://conflict.example/v1"), "sk-staged", 99, true)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("want conflict got %v", err)
+	}
+	if refs, _ := creds.Refs(); len(refs) != 0 {
+		t.Fatalf("staged secret not retracted: %v", refs)
+	}
+	if got := len(owner.Catalog().Profiles); got != 0 {
+		t.Fatalf("orphan connection created: %d", got)
 	}
 }
 
@@ -572,6 +617,7 @@ func (f *failingCredentialStore) Get(ref string) (string, bool, error) {
 	return f.inner.Get(ref)
 }
 func (f *failingCredentialStore) Delete(ref string) error { return f.inner.Delete(ref) }
+func (f *failingCredentialStore) Refs() ([]string, error) { return f.inner.Refs() }
 func (f *failingCredentialStore) Set(ref, secret string) error {
 	if f.failAll || f.failNext {
 		f.failNext = false

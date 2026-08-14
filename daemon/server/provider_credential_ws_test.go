@@ -72,6 +72,10 @@ func (r *recordingCredStore) Delete(ref string) error {
 	return r.inner.Delete(ref)
 }
 
+func (r *recordingCredStore) Refs() ([]string, error) {
+	return r.inner.Refs()
+}
+
 func (r *recordingCredStore) setCounts() (sets, deletes int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -141,8 +145,8 @@ func TestProviderCredentialWebSocketAuthenticatedHTTPAndWire(t *testing.T) {
 	if err := conn.WriteJSON(map[string]any{
 		"type": "upsert_provider_connection", "request_id": "create-1", "operation": "create",
 		"revision": 0, "provider_connection": map[string]any{
-			"preset_id": modelprofiles.ProviderPresetDeepSeek,
-			"client":    modelprofiles.ClientCodex,
+			"preset_id": modelprofiles.ProviderPresetDeepSeek, "name": "DeepSeek",
+			"client": modelprofiles.ClientCodex,
 		},
 	}); err != nil {
 		t.Fatal(err)

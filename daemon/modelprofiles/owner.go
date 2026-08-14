@@ -93,6 +93,13 @@ type Owner struct {
 	discovery            *modelDiscoveryCache
 	discoveryPath        string
 	discoveryLoadWarning error
+	// editHook is a test failpoint seam for Provider edit transactions
+	// (before_stage/after_stage/before_commit/after_commit/before_cleanup/
+	// after_cleanup); it never runs in production.
+	editHook func(phase string) error
+	// credentialSweepWarning records a best-effort orphan-sweep failure; the
+	// sweep is deterministic and retried on the next start.
+	credentialSweepWarning error
 }
 
 // SessionLaunchPlan is the secret-free result of resolving a profile for create.
@@ -211,6 +218,10 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		}
 	}
 	o.mu.Lock()
+	// Deterministic crash recovery for the unified Provider edit: remove every
+	// provider:* credential ref that no catalog row or route binding references
+	// (staged secrets from crashed edits, old secrets whose cleanup did not run).
+	o.sweepOrphanProviderCredentialsLocked()
 	sweepErr := o.sweepProvisionalRoutesLocked()
 	hasRoutes := o.table.Len() > 0
 	var listenErr error

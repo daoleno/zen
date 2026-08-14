@@ -100,7 +100,7 @@ func TestCredentialStoreMatrix(t *testing.T) {
 	owner.creds = store
 	owner.router.creds = store
 
-	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
+	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}

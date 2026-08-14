@@ -138,6 +138,11 @@ func presetSupportsClient(spec presetSpec, client string) bool {
 
 // CompileProviderConnection builds a durable account-scoped connection from a
 // public input. Per-client Profile targets are compiled via CompileConnectionTarget.
+//
+// The mutation contract requires an explicit non-empty trimmed display name:
+// a blank Name fails before any catalog or credential write. Only load-time
+// migration of legacy persisted records may synthesize names; the App may
+// prefill a preset label in the form, but the submitted mutation must carry it.
 func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 	in.ID = normalizeID(in.ID)
 	in.Name = normalizeSpace(in.Name)
@@ -152,9 +157,6 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 	spec, ok := lookupPreset(in.PresetID)
 	if !ok {
 		return Profile{}, fmt.Errorf("%w: unknown provider preset %q", ErrInvalid, in.PresetID)
-	}
-	if in.Name == "" {
-		in.Name = spec.Public.Label
 	}
 	if err := ValidateProviderName(in.Name); err != nil {
 		return Profile{}, fmt.Errorf("%w: name: %v", ErrInvalid, err)
@@ -324,6 +326,9 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 		return Profile{}, fmt.Errorf("%w: deepseek-v4-pro is not yet supported on DeepSeek Responses for Codex; use deepseek-v4-flash", ErrInvalid)
 	}
 
+	// Durable account records always carry an explicit non-empty name (migration
+	// guarantees it on load; mutations require it), so no preset-label fallback
+	// exists here: a blank name fails ValidateProfile below.
 	id := in.ID
 	if id == "" {
 		id = synthesizeConnectionID(executor, in.PresetID, modelID)
@@ -336,10 +341,6 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 			label = "Custom"
 		}
 	}
-	if in.Name == "" {
-		in.Name = label
-	}
-
 	profile := Profile{
 		ID:                    id,
 		Name:                  in.Name,

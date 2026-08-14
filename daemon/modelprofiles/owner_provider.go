@@ -68,9 +68,9 @@ func (o *Owner) connectionReady(profile Profile) bool {
 
 func connectionCredentialReady(profile Profile, store CredentialStore, lookup func(string) (string, bool)) bool {
 	if isAccountConnection(profile) {
-		return providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup)
+		return providerCredentialReady(profile, store, lookup)
 	}
-	if providerCredentialReady(profile.ID, profile.CredentialEnv, store, lookup) {
+	if providerCredentialReady(profile, store, lookup) {
 		return true
 	}
 	return AuthReady(profile.AuthMode, profile.CredentialEnv, lookup)
@@ -225,11 +225,24 @@ func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnecti
 }
 
 // UpsertProviderConnection creates/updates a connection via public input and
-// optionally writes its API key in the same Owner.mu transaction. An empty
-// apiKey preserves the existing stored secret; a non-empty value replaces it
-// as part of the edit. Validation happens before any write, and a credential
-// write failure rolls the catalog back, so a failed edit never leaves a
-// partial name/URL/key state behind.
+// optionally rotates its API key as part of the same crash-recoverable edit.
+// An empty apiKey preserves the existing stored secret; a non-empty value
+// replaces it atomically with the whole Provider edit.
+//
+// Durability design (versioned credential reference):
+//  1. VALIDATE first — any validation failure applies zero writes.
+//  2. STAGE — when the edit carries a new key, write it privately under a
+//     fresh staged ref (provider:<id>:<token>) that no catalog row references
+//     yet. The old secret stays active and routing still resolves the old ref.
+//  3. COMMIT — the single atomic catalog write flips Name/Base URL AND the
+//     active credential ref together. Before it, router/launch observe the
+//     complete old version; after it, the complete new version. A crash can
+//     never expose a mixed Name/Base URL/API key state.
+//  4. CLEANUP — delete the old ref once nothing references it (a crash here
+//     leaves an inactive secret only; the deterministic StartOwner orphan
+//     sweep removes every provider:* ref no catalog row or route binding
+//     references). Secrets never enter the catalog, journal, logs, or
+//     telemetry — the catalog stores only the opaque secret-free ref.
 func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey string, revision int64, create bool) (ProviderCatalogProjection, error) {
 	if o == nil || !o.started || o.store == nil {
 		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
@@ -248,16 +261,40 @@ func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey stri
 	o.mu.Lock()
 	applyErr := func() error {
 		var previous Profile
-		var err error
 		if !create {
 			previous, err = o.store.Get(profile.ID)
 			if err != nil {
 				return err
 			}
+			// Preserve the active credential slot across edits that do not
+			// rotate the key; only a staged-ref commit may change it.
+			profile.CredentialRef = previous.CredentialRef
 		}
-		// Fail before any write when the edit includes a key the store cannot take.
-		if apiKey != "" && (o.creds == nil || !o.creds.Available()) {
-			return ErrCredentialStoreUnavailable
+
+		stagedRef := ""
+		if apiKey != "" {
+			// Fail before any write when the edit includes a key the store
+			// cannot take.
+			if o.creds == nil || !o.creds.Available() {
+				return ErrCredentialStoreUnavailable
+			}
+			stagedRef = newStagedCredentialRef(profile.ID)
+			if stagedRef == "" {
+				return fmt.Errorf("%w: cannot stage credential for empty connection id", ErrInvalid)
+			}
+			if err := o.runEditHook("before_stage"); err != nil {
+				return err
+			}
+			if serr := o.creds.Set(stagedRef, apiKey); serr != nil {
+				return serr
+			}
+			if err := o.runEditHook("after_stage"); err != nil {
+				return err
+			}
+			profile.CredentialRef = stagedRef
+		}
+		if err := o.runEditHook("before_commit"); err != nil {
+			return err
 		}
 
 		if create {
@@ -266,27 +303,35 @@ func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey stri
 			_, err = o.store.Update(profile, revision)
 		}
 		if err != nil && !errors.Is(err, ErrPersistDirSync) {
+			// Not applied: retract the private staged secret so no orphaned
+			// secret outlives the failed edit (best-effort; the startup sweep
+			// is the deterministic backstop).
+			if stagedRef != "" {
+				_ = o.creds.Delete(stagedRef)
+			}
 			return err
 		}
-		if apiKey != "" {
-			if serr := o.creds.Set(CredentialRefFor(profile.ID), apiKey); serr != nil {
-				// Roll the catalog back so the edit applied nothing: Delete the
-				// fresh connection or restore the previous row. A rollback
-				// persist failure leaves the connection changed but key-less
-				// (recoverable via Edit; no orphaned secret exists).
-				if create {
-					if _, rerr := o.store.Delete(profile.ID, o.store.Revision()); rerr != nil && !errors.Is(rerr, ErrPersistDirSync) {
-						return errors.Join(serr, rerr)
-					}
-				} else {
-					if _, rerr := o.store.Update(previous, o.store.Revision()); rerr != nil && !errors.Is(rerr, ErrPersistDirSync) {
-						return errors.Join(serr, rerr)
-					}
-				}
-				return serr
+		// The catalog commit is the single visibility flip; the edit is
+		// applied (ErrPersistDirSync means applied-with-warning).
+		if err := o.runEditHook("after_commit"); err != nil {
+			return err
+		}
+		if stagedRef != "" {
+			if err := o.runEditHook("before_cleanup"); err != nil {
+				return err
+			}
+			oldRef := activeCredentialRef(previous)
+			if oldRef != "" && oldRef != stagedRef && !o.bindingUsesCredentialRefLocked(oldRef) {
+				// Best-effort: a leftover old secret is inactive (the row no
+				// longer references it) and the startup sweep removes it
+				// deterministically. Old secrets referenced by a live binding
+				// are the complete old version and stay until the binding ends.
+				_ = o.creds.Delete(oldRef)
+			}
+			if err := o.runEditHook("after_cleanup"); err != nil {
+				return err
 			}
 		}
-		// ErrPersistDirSync means the rename committed: applied-with-warning.
 		return err
 	}()
 	o.mu.Unlock()
@@ -304,6 +349,105 @@ func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey stri
 		return ProviderCatalogProjection{}, perr
 	}
 	return proj, nil
+}
+
+// SetEditHook installs a test failpoint seam for Provider edit transactions.
+// Phases: before_stage, after_stage, before_commit, after_commit,
+// before_cleanup, after_cleanup. Returning an error aborts the transaction at
+// that point exactly as a process crash would: every durable write before the
+// phase stays on disk and recovery is exercised by the next StartOwner.
+func (o *Owner) SetEditHook(hook func(phase string) error) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.editHook = hook
+}
+
+func (o *Owner) runEditHook(phase string) error {
+	if o == nil || o.editHook == nil {
+		return nil
+	}
+	return o.editHook(phase)
+}
+
+// bindingUsesCredentialRefLocked reports whether any current, launched, or
+// history binding resolves the given credential ref. Caller must hold o.mu.
+func (o *Owner) bindingUsesCredentialRefLocked(ref string) bool {
+	ref = normalizeSpace(ref)
+	if ref == "" || o == nil || o.table == nil {
+		return false
+	}
+	for _, state := range o.table.Snapshot() {
+		if bindingUsesCredentialRef(state.Binding, ref) || bindingUsesCredentialRef(state.Launched, ref) {
+			return true
+		}
+		for _, event := range state.History {
+			if bindingUsesCredentialRef(event.To, ref) || bindingUsesCredentialRef(event.From, ref) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func bindingUsesCredentialRef(b RouteBinding, ref string) bool {
+	return normalizeSpace(b.CredentialRef) != "" && normalizeSpace(b.CredentialRef) == normalizeSpace(ref)
+}
+
+// sweepOrphanProviderCredentialsLocked deterministically recovers credential
+// state after a crash: every provider:* ref that no catalog row and no route
+// binding references is deleted. This is the durable backstop for staged
+// secrets whose edit crashed before the catalog commit and for old secrets
+// whose cleanup did not run. Best-effort: a failure is recorded as a warning
+// and retried on the next start; secrets are never logged. Caller must hold
+// o.mu.
+func (o *Owner) sweepOrphanProviderCredentialsLocked() {
+	if o == nil || o.creds == nil || !o.creds.Available() || o.store == nil {
+		return
+	}
+	o.credentialSweepWarning = nil
+	refs, err := o.creds.Refs()
+	if err != nil {
+		o.credentialSweepWarning = fmt.Errorf("%w: list credential refs: %v", ErrCredentialStoreFailed, err)
+		return
+	}
+	referenced := map[string]struct{}{}
+	for _, profile := range o.store.Catalog().Profiles {
+		referenced[activeCredentialRef(profile)] = struct{}{}
+	}
+	if o.table != nil {
+		for _, state := range o.table.Snapshot() {
+			mark := func(b RouteBinding) {
+				if r := normalizeSpace(b.CredentialRef); r != "" {
+					referenced[r] = struct{}{}
+				}
+			}
+			mark(state.Binding)
+			mark(state.Launched)
+			for _, event := range state.History {
+				mark(event.To)
+				mark(event.From)
+			}
+		}
+	}
+	var firstErr error
+	for _, ref := range refs {
+		ref = normalizeSpace(ref)
+		if !isProviderCredentialRef(ref) {
+			continue
+		}
+		if _, keep := referenced[ref]; keep {
+			continue
+		}
+		if derr := o.creds.Delete(ref); derr != nil && firstErr == nil {
+			firstErr = derr
+		}
+	}
+	if firstErr != nil {
+		o.credentialSweepWarning = fmt.Errorf("%w: sweep orphan credential refs: %v", ErrCredentialStoreFailed, firstErr)
+	}
 }
 
 // DeleteProviderConnection removes a connection after non-orphaning credential
@@ -330,8 +474,34 @@ func (o *Owner) DeleteProviderConnection(id string, revision int64) (ProviderCat
 		delErr = fmt.Errorf("%w: profile %s is bound to %d session(s)", ErrProfileInUse, id, len(users))
 	} else {
 		if o.creds != nil {
-			if err := o.creds.Delete(CredentialRefFor(id)); err != nil {
-				delErr = err
+			profile, gerr := o.store.Get(id)
+			if gerr != nil {
+				delErr = gerr
+			} else {
+				// Delete the active ref first: a failure there is not-applied
+				// (catalog/revision/defaults/key all unchanged). Staged or
+				// leftover refs for this connection are then removed
+				// best-effort; the startup sweep is the deterministic backstop
+				// for anything that remains (inactive, never routed).
+				refs := []string{activeCredentialRef(profile)}
+				if listed, lerr := o.creds.Refs(); lerr == nil {
+					for _, extra := range providerCredentialRefsForConnection(id, listed) {
+						if extra != refs[0] {
+							refs = append(refs, extra)
+						}
+					}
+				}
+				for i, ref := range refs {
+					if ref == "" {
+						continue
+					}
+					if derr := o.creds.Delete(ref); derr != nil {
+						if i == 0 {
+							delErr = derr
+						}
+						break
+					}
+				}
 			}
 		}
 		if delErr == nil {
@@ -519,7 +689,7 @@ func (o *Owner) SetProviderCredential(connectionID, secret string) (ProviderCred
 	if creds == nil || !creds.Available() {
 		return ProviderCredentialResult{}, ErrCredentialStoreUnavailable
 	}
-	if err := creds.Set(CredentialRefFor(connectionID), secret); err != nil {
+	if err := creds.Set(activeCredentialRef(profile), secret); err != nil {
 		return ProviderCredentialResult{}, err
 	}
 	ready := connectionCredentialReady(profile, creds, o.lookup)
@@ -553,7 +723,7 @@ func (o *Owner) ClearProviderCredential(connectionID string) (ProviderCredential
 	if creds == nil || !creds.Available() {
 		return ProviderCredentialResult{}, ErrCredentialStoreUnavailable
 	}
-	if err := creds.Delete(CredentialRefFor(connectionID)); err != nil {
+	if err := creds.Delete(activeCredentialRef(profile)); err != nil {
 		return ProviderCredentialResult{}, err
 	}
 	ready := connectionCredentialReady(profile, creds, o.lookup)

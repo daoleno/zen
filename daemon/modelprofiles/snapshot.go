@@ -268,6 +268,7 @@ func profileFromBinding(b RouteBinding) Profile {
 		BaseURL:               b.UpstreamBaseURL,
 		AuthMode:              b.AuthMode,
 		CredentialEnv:         b.CredentialEnv,
+		CredentialRef:         b.CredentialRef,
 	}
 }
 

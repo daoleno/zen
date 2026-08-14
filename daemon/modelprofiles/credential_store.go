@@ -1,24 +1,30 @@
 package modelprofiles
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CredentialStore is the daemon secret vault for Provider API keys.
 // Implementations must never log, serialize, or return secrets through public
-// projections — only Set/Get/Delete of opaque refs.
+// projections — only Set/Get/Delete/Refs of opaque refs.
 type CredentialStore interface {
 	// Available reports whether the backend can accept writes.
 	Available() bool
 	Set(ref, secret string) error
 	Get(ref string) (string, bool, error)
 	Delete(ref string) error
+	// Refs returns the opaque refs currently stored (never secret values).
+	Refs() ([]string, error)
 }
 
 // CredentialRefFor returns the opaque credential key for a connection.
@@ -29,6 +35,62 @@ func CredentialRefFor(connectionID string) string {
 		return ""
 	}
 	return "provider:" + id
+}
+
+// activeCredentialRef returns the credential ref a connection currently
+// resolves: the durable versioned ref when the catalog row carries one, else
+// the canonical legacy provider:<id> ref.
+func activeCredentialRef(profile Profile) string {
+	profile = normalizeProfile(profile)
+	if ref := normalizeSpace(profile.CredentialRef); ref != "" {
+		return ref
+	}
+	return CredentialRefFor(profile.ID)
+}
+
+// newStagedCredentialRef builds a private, not-yet-active credential ref for a
+// connection edit. The secret staged under this ref is invisible to routing
+// until the single catalog commit flips the row to reference it, so an
+// observer always sees either the complete old version or the complete new
+// version of (Name, Base URL, active key).
+func newStagedCredentialRef(connectionID string) string {
+	id := normalizeID(connectionID)
+	if id == "" {
+		return ""
+	}
+	return "provider:" + id + ":" + hex.EncodeToString(randomTokenBytes())
+}
+
+func randomTokenBytes() []byte {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is effectively unreachable; keep a unique token.
+		return []byte(fmt.Sprintf("%x", time.Now().UnixNano()))
+	}
+	return b[:]
+}
+
+// isProviderCredentialRef reports whether a ref belongs to Zen's Provider
+// credential namespace (safe to sweep/delete).
+func isProviderCredentialRef(ref string) bool {
+	return strings.HasPrefix(normalizeSpace(ref), "provider:")
+}
+
+// providerCredentialRefsForConnection returns the refs owned by one
+// connection: the canonical provider:<id> ref plus every staged/versioned
+// provider:<id>:<token> ref. refs is typically the store's Refs() listing.
+func providerCredentialRefsForConnection(connectionID string, refs []string) []string {
+	id := normalizeID(connectionID)
+	out := make([]string, 0, len(refs))
+	canonical := "provider:" + id
+	prefix := canonical + ":"
+	for _, ref := range refs {
+		ref = normalizeSpace(ref)
+		if ref == canonical || strings.HasPrefix(ref, prefix) {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 const credentialFileSchemaVersion = 1
@@ -139,6 +201,21 @@ func (s *FileCredentialStore) Delete(ref string) error {
 		return err
 	}
 	return nil
+}
+
+// Refs returns the stored refs sorted (never secret values).
+func (s *FileCredentialStore) Refs() ([]string, error) {
+	if !s.Available() {
+		return nil, ErrCredentialStoreUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.secrets))
+	for ref := range s.secrets {
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (s *FileCredentialStore) saveLocked() error {
@@ -294,6 +371,21 @@ func (m *MemoryCredentialStore) Delete(ref string) error {
 	return nil
 }
 
+// Refs returns the stored refs sorted (never secret values).
+func (m *MemoryCredentialStore) Refs() ([]string, error) {
+	if m == nil || !m.Available() {
+		return nil, ErrCredentialStoreUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.secrets))
+	for ref := range m.secrets {
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // SnapshotRefs returns stored refs only (never secret values) for tests.
 func (m *MemoryCredentialStore) SnapshotRefs() []string {
 	if m == nil {
@@ -327,15 +419,17 @@ func resolveProviderSecret(ref, envName string, store CredentialStore, lookup fu
 }
 
 // providerCredentialReady reports readiness without exposing secret material.
-func providerCredentialReady(connectionID, envName string, store CredentialStore, lookup func(string) (string, bool)) bool {
-	ref := CredentialRefFor(connectionID)
+// The connection's active credential ref is resolved from the durable row so
+// readiness always matches the version the catalog currently references.
+func providerCredentialReady(profile Profile, store CredentialStore, lookup func(string) (string, bool)) bool {
+	ref := activeCredentialRef(profile)
 	if store != nil && ref != "" {
 		if val, ok, err := store.Get(ref); err == nil && ok && strings.TrimSpace(val) != "" {
 			return true
 		}
 	}
-	if normalizeSpace(envName) == "" {
+	if normalizeSpace(profile.CredentialEnv) == "" {
 		return true
 	}
-	return CredentialReady(envName, lookup)
+	return CredentialReady(profile.CredentialEnv, lookup)
 }

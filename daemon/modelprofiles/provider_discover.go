@@ -518,14 +518,14 @@ func applyDiscoveryAuth(req *http.Request, profile Profile, store CredentialStor
 	case AuthModeNone, AuthModeNativePassthrough:
 		return nil
 	case AuthModeBearerEnv:
-		val, err := resolveProviderSecret(CredentialRefFor(profile.ID), profile.CredentialEnv, store, lookup)
+		val, err := resolveProviderSecret(activeCredentialRef(profile), profile.CredentialEnv, store, lookup)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(val))
 		return nil
 	case AuthModeXAPIKeyEnv:
-		val, err := resolveProviderSecret(CredentialRefFor(profile.ID), profile.CredentialEnv, store, lookup)
+		val, err := resolveProviderSecret(activeCredentialRef(profile), profile.CredentialEnv, store, lookup)
 		if err != nil {
 			return err
 		}

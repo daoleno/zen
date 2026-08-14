@@ -193,6 +193,13 @@ type Profile struct {
 	BaseURL          string `toml:"base_url,omitempty" json:"base_url,omitempty"`
 	AuthMode         string `toml:"auth_mode,omitempty" json:"auth_mode,omitempty"`
 	CredentialEnv    string `toml:"credential_env,omitempty" json:"credential_env,omitempty"`
+	// CredentialRef is the opaque active credential-slot reference (never a
+	// secret). Legacy rows leave it empty and resolve the canonical
+	// provider:<id> ref; unified edits stage a fresh provider:<id>:<token> ref
+	// and flip this field in the same atomic catalog commit that changes
+	// Name/Base URL, so routing observes either the complete old version or
+	// the complete new version.
+	CredentialRef string `toml:"credential_ref,omitempty" json:"credential_ref,omitempty"`
 	// HistoryDomain is optional durable description only — never authorization.
 	HistoryDomain string `toml:"history_domain,omitempty" json:"history_domain,omitempty"`
 }
@@ -462,7 +469,7 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 		UpstreamEnvelope:      admitted.UpstreamEnvelope,
 		AuthMode:              profile.AuthMode,
 		CredentialEnv:         profile.CredentialEnv,
-		CredentialRef:         CredentialRefFor(profile.ID),
+		CredentialRef:         activeCredentialRef(profile),
 		CredentialReady:       ready,
 		CatalogRevision:       catalogRevision,
 		Activation:            activation,

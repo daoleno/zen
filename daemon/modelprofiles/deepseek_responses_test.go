@@ -328,6 +328,7 @@ func assertJSONKeysPresent(t *testing.T, raw []byte, keys ...string) {
 
 func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 	conn, err := CompileProviderConnection(ProviderConnectionInput{
+		Name:     "DeepSeek",
 		PresetID: ProviderPresetDeepSeek,
 		Client:   ClientCodex,
 	})
@@ -335,7 +336,16 @@ func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if conn.Name != "DeepSeek" {
-		t.Fatalf("name derived from preset label: %q", conn.Name)
+		t.Fatalf("explicit name preserved: %q", conn.Name)
+	}
+	// Mutations must carry an explicit non-empty name: a blank name fails
+	// before any catalog or credential write (only load-time migration of
+	// legacy persisted records may synthesize names).
+	if _, err := CompileProviderConnection(ProviderConnectionInput{
+		PresetID: ProviderPresetDeepSeek,
+		Client:   ClientCodex,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("blank name must fail compile: %v", err)
 	}
 	if !isAccountConnection(conn) || conn.ExecutorID != "" || conn.Protocol != "" || conn.Model != "" {
 		t.Fatalf("account=%#v", conn)
@@ -377,7 +387,7 @@ func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 
 func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
-	conn, err := CompileProviderConnection(ProviderConnectionInput{PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
+	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
 		t.Fatal(err)
 	}
