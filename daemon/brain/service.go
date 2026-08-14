@@ -1652,6 +1652,11 @@ func (s *Service) deliverClaimedReviewLocked(action WorkReviewAction) (bool, err
 // PrepareHostUserInput before provider mutation. Reconciling here first means
 // an internal Event admitted at an idle boundary is delivered before this
 // message can overtake it.
+//
+// A background lane error (review delivery failure, liveness probe error) is
+// never authority over a foreground user send: the failed background work
+// keeps its own durable quarantine while the send proceeds through the
+// per-Session input owner and the admission gates below.
 func (s *Service) NoteUserSteering(agentID string) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, nil
@@ -1661,10 +1666,10 @@ func (s *Service) NoteUserSteering(agentID string) (bool, error) {
 		return false, err
 	}
 	s.dispatchMu.Lock()
-	defer s.dispatchMu.Unlock()
 	_, reconcileErr := s.reconcileHostLaneLocked()
+	s.dispatchMu.Unlock()
 	if reconcileErr != nil {
-		return false, reconcileErr
+		log.Printf("brain user steering lane reconciliation failed (foreground send proceeds): %v", reconcileErr)
 	}
 	return true, nil
 }
@@ -2043,7 +2048,9 @@ func (s *Service) hostOwnedGeneration(hostSessionID string) (string, error) {
 
 // PrepareHostUserInput persists the one exact no-replay intent before Session
 // Input may mutate the provider. created=false means this request/thread was
-// already pending or accepted and must not be submitted again.
+// already pending or accepted and must not be submitted again; a durably
+// NotSubmitted row (provider provably never mutated) is the same logical input
+// retried and is re-armed in place by PrepareBrainInputAdmission.
 func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversationScopeKey string) (BrainInputAdmission, bool, error) {
 	if s == nil || s.store == nil {
 		return BrainInputAdmission{}, false, nil
@@ -2063,7 +2070,13 @@ func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversati
 			existing.DisplayBody != strings.TrimSpace(displayBody) {
 			return BrainInputAdmission{}, false, fmt.Errorf("Brain input admission identity belongs to different input")
 		}
-		return existing, false, nil
+		if existing.State != BrainInputAdmissionNotSubmitted {
+			// Pending/Accepted/Uncertain stay terminal for this identity.
+			return existing, false, nil
+		}
+		// NotSubmitted is the same logical input retried after a proven
+		// non-mutation: fall through so the store re-arms the exact row with
+		// the caller's current host generation.
 	}
 	admission, hostInput, err := s.hostUserInputAdmission(agentID, receipt, displayBody, conversationScopeKey)
 	if err != nil || !hostInput {
@@ -2073,13 +2086,16 @@ func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversati
 	// reconciliation runs first (an internal Event admitted at an idle
 	// boundary cannot be overtaken), then the pending admission is persisted
 	// as the durable user-steering gate that blocks further lane admissions
-	// while the user's input is in flight.
+	// while the user's input is in flight. A background lane error is logged
+	// and never blocks the foreground send: the admission itself is the
+	// durable gate, and the per-Session input owner serializes provider
+	// mutation.
 	s.dispatchMu.Lock()
-	defer s.dispatchMu.Unlock()
 	if _, reconcileErr := s.reconcileHostLaneLocked(); reconcileErr != nil {
-		return admission, false, reconcileErr
+		log.Printf("brain user input lane reconciliation failed (admission proceeds): %v", reconcileErr)
 	}
 	prepared, created, err := s.store.PrepareBrainInputAdmission(admission)
+	s.dispatchMu.Unlock()
 	if err == nil && created {
 		s.inFlightHostInputs[hostInputAttemptKey(prepared.RequestID, prepared.ThreadID)] = struct{}{}
 	}
@@ -2087,38 +2103,48 @@ func (s *Service) PrepareHostUserInput(agentID, receipt, displayBody, conversati
 }
 
 // AbortHostUserInput terminalizes only a pending intent after Session Input
-// proves no provider mutation began, then immediately re-drives the lane.
+// proves no provider mutation began, then re-drives the lane. A background
+// lane error is logged, never returned: the terminalization is the authority
+// the server needs to acknowledge the definite non-submission.
 func (s *Service) AbortHostUserInput(requestID, threadID string) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	s.dispatchMu.Lock()
-	defer s.dispatchMu.Unlock()
 	delete(s.inFlightHostInputs, hostInputAttemptKey(requestID, threadID))
 	if err := s.store.AbortBrainInputAdmission(requestID, threadID); err != nil {
+		s.dispatchMu.Unlock()
 		return err
 	}
-	_, err := s.reconcileHostLaneLocked()
-	return err
+	if _, err := s.reconcileHostLaneLocked(); err != nil {
+		log.Printf("brain post-abort lane reconciliation failed (non-submission stands): %v", err)
+	}
+	s.dispatchMu.Unlock()
+	return nil
 }
 
 // ReleaseHostUserInputAttempt ends the live mutation critical section when the
 // provider outcome is ambiguous. The reducer reads the exact durable receipt,
-// records uncertain without replay, and frees unrelated lane work.
+// records uncertain without replay, and frees unrelated lane work. A background
+// lane error is logged, never returned: the ambiguous settlement is the
+// authority the server needs to keep the outcome no-replay.
 func (s *Service) ReleaseHostUserInputAttempt(requestID, threadID string) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	s.dispatchMu.Lock()
-	defer s.dispatchMu.Unlock()
 	delete(s.inFlightHostInputs, hostInputAttemptKey(requestID, threadID))
 	if _, _, err := s.store.SettleBrainInputAdmission(
 		requestID, threadID, BrainInputAdmissionUncertain, false,
 	); err != nil {
+		s.dispatchMu.Unlock()
 		return err
 	}
-	_, err := s.reconcileHostLaneLocked()
-	return err
+	if _, err := s.reconcileHostLaneLocked(); err != nil {
+		log.Printf("brain post-uncertain lane reconciliation failed (uncertain stands): %v", err)
+	}
+	s.dispatchMu.Unlock()
+	return nil
 }
 
 // AdmitHostUserInput makes provider acceptance and every matching user_input
@@ -2154,10 +2180,14 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 		s.dispatchMu.Unlock()
 		return err
 	}
-	_, dispatchErr := s.reconcileHostLaneLocked()
+	if _, dispatchErr := s.reconcileHostLaneLocked(); dispatchErr != nil {
+		// Acceptance is already durable; the lane re-drive is background work
+		// and must not turn a successful user send into a pending outcome.
+		log.Printf("brain post-accept lane reconciliation failed (accepted input stands): %v", dispatchErr)
+	}
 	s.dispatchMu.Unlock()
 	projectionErr := s.store.ProjectBrainInputAdmission(accepted)
-	return errors.Join(dispatchErr, projectionErr)
+	return projectionErr
 }
 
 func hostInputAttemptKey(requestID, threadID string) string {

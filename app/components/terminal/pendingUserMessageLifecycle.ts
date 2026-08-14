@@ -11,6 +11,8 @@ export type PendingUserMessageLifecycleFields = {
   failureMessage?: string;
   createdAfterMaxSeq?: number;
   createdAfterEventIds?: string[];
+  /** True after one transparent stale-receipt auto-retry with a fresh identity. */
+  staleReceiptAutoRetried?: boolean;
 };
 
 export function beginPendingUserMessageAttempt<
@@ -22,6 +24,7 @@ export function beginPendingUserMessageAttempt<
     dispatchAttemptOrder: number;
     createdAfterMaxSeq?: number;
     createdAfterEventIds?: string[];
+    staleReceiptAutoRetried?: boolean;
   },
 ): T {
   return {
@@ -33,6 +36,8 @@ export function beginPendingUserMessageAttempt<
     failureMessage: undefined,
     createdAfterMaxSeq: attempt.createdAfterMaxSeq,
     createdAfterEventIds: attempt.createdAfterEventIds,
+    staleReceiptAutoRetried:
+      attempt.staleReceiptAutoRetried ?? message.staleReceiptAutoRetried,
   };
 }
 
@@ -88,6 +93,31 @@ export function showsPendingSendStatusMark(args: {
   lifecycle?: PendingUserMessageLifecycle;
 }): boolean {
   return Boolean(args.pending) && args.lifecycle !== "failed";
+}
+
+/**
+ * The stale-receipt auto-retry bound. A `stale_receipt_invalidated` failure
+ * means the daemon found a legacy receipt binding for a different payload and
+ * proved no provider mutation: the app invalidates that identity and
+ * transparently resubmits the same logical input once with a fresh identity.
+ * Any later stale failure for the same row is surfaced to the user instead.
+ */
+export function staleReceiptAutoRetryPolicy(
+  message: Pick<
+    PendingUserMessageLifecycleFields,
+    "staleReceiptAutoRetried"
+  >,
+  failure: { code?: string },
+):
+  | { autoRetry: false; reason: "not_stale" | "already_retried" }
+  | { autoRetry: true } {
+  if (failure.code !== "stale_receipt_invalidated") {
+    return { autoRetry: false, reason: "not_stale" };
+  }
+  if (message.staleReceiptAutoRetried) {
+    return { autoRetry: false, reason: "already_retried" };
+  }
+  return { autoRetry: true };
 }
 
 export type ReconcileUserEvent = {

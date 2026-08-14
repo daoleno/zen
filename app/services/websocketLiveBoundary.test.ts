@@ -1262,3 +1262,67 @@ describe("Skills management transport", () => {
     client.disconnectAll();
   });
 });
+
+describe("structured input identity reuse", () => {
+  test("a retry reuses its stable request id while a new input stays fresh", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const retry = client.sendInput(server.id, "agent-a", "same\n", {
+      displayBody: "same",
+      requestId: "request-stable",
+    });
+    expect(retry.requestId).toBe("request-stable");
+    const next = client.sendInput(server.id, "agent-a", "different\n");
+    expect(next.requestId).not.toBe("request-stable");
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      {
+        type: "send_input",
+        request_id: "request-stable",
+        agent_id: "agent-a",
+        text: "same\n",
+        display_body: "same",
+      },
+      {
+        type: "send_input",
+        request_id: next.requestId,
+        agent_id: "agent-a",
+        text: "different\n",
+      },
+    ]);
+    socket.receive({ type: "input_sent", request_id: "request-stable" });
+    socket.receive({ type: "input_sent", request_id: next.requestId });
+    expect(await retry.outcome).toEqual({ kind: "sent" });
+    expect(await next.outcome).toEqual({ kind: "sent" });
+    client.disconnectAll();
+  });
+
+  test("late ack for a reused identity settles only that logical input", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const first = client.sendInput(server.id, "agent-a", "same\n", {
+      requestId: "request-reused",
+    });
+    socket.receive({ type: "input_failed", request_id: "request-reused" });
+    expect(await first.outcome).toEqual({
+      kind: "failed",
+      failure: {
+        requestId: "request-reused",
+        code: "command_failed",
+        message: "The provider command failed.",
+      },
+    });
+    const second = client.sendInput(server.id, "agent-a", "same\n", {
+      requestId: "request-reused",
+    });
+    // A late duplicate failure for the same identity settles the retry
+    // outcome; the daemon correlates by the stable identity, never by
+    // attempt order.
+    socket.receive({ type: "input_sent", request_id: "request-reused" });
+    expect(await second.outcome).toEqual({ kind: "sent" });
+    client.disconnectAll();
+  });
+});

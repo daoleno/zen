@@ -2600,8 +2600,86 @@ func TestSessionInputReceiptPayloadMismatchFailsAfterRestart(t *testing.T) {
 	)
 	if InputOutcomeFromError(err) != InputNotSubmitted ||
 		!strings.Contains(err.Error(), "different input") ||
+		!IsStaleReceiptMismatch(err) ||
 		len(io.queues) != 1 {
-		t.Fatalf("mismatched restart retry: outcome=%s queues=%d err=%v", InputOutcomeFromError(err), len(io.queues), err)
+		t.Fatalf("mismatched restart retry: outcome=%s queues=%d stale=%v err=%v", InputOutcomeFromError(err), len(io.queues), IsStaleReceiptMismatch(err), err)
+	}
+	// The stale binding is never weakened: the same receipt still fails
+	// closed for the different payload after restart, and a fresh identity
+	// for the new logical input submits normally.
+	rechecked := newSessionInputOwner(io)
+	if _, again := rechecked.submit(
+		"agent:@1", identity, resolver, identity.Command, "different", "same-receipt",
+	); !IsStaleReceiptMismatch(again) {
+		t.Fatalf("stale receipt became reusable: err=%v", again)
+	}
+	fresh := newSessionInputOwner(io)
+	if _, freshErr := fresh.submit(
+		"agent:@1", identity, resolver, identity.Command, "different", "fresh-receipt",
+	); freshErr != nil {
+		t.Fatalf("fresh identity for the new payload failed: %v", freshErr)
+	}
+	if len(io.queues) != 2 {
+		t.Fatalf("fresh identity did not submit exactly once: queues=%d", len(io.queues))
+	}
+}
+
+func TestSessionInputStaleReceiptMismatchFailsClosedLiveAndRecoversWithFreshIdentity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	if _, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "payload A", "receipt-live",
+	); err != nil {
+		t.Fatal(err)
+	}
+	// The same receipt submitted with a different payload in the same owner
+	// (rapid consecutive misuse) fails closed before any new mutation and is
+	// typed as the stale mismatch.
+	_, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "payload B", "receipt-live",
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted || !IsStaleReceiptMismatch(err) {
+		t.Fatalf("live stale mismatch: outcome=%s stale=%v err=%v", InputOutcomeFromError(err), IsStaleReceiptMismatch(err), err)
+	}
+	// The fresh identity for payload B submits exactly once more.
+	if _, freshErr := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "payload B", "receipt-fresh",
+	); freshErr != nil {
+		t.Fatalf("fresh identity submit failed: %v", freshErr)
+	}
+	if len(io.queues) != 2 {
+		t.Fatalf("queues=%d want exactly two mutations", len(io.queues))
+	}
+}
+
+func TestSessionInputSameReceiptSamePayloadRetryIsIdempotentAcrossRapidConsecutiveSends(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	// Two rapid consecutive sends are distinct logical inputs: both submit.
+	if _, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "message one", "receipt-one",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "message two", "receipt-two",
+	); err != nil {
+		t.Fatal(err)
+	}
+	// A retry of the exact first input reuses its identity idempotently and
+	// never mutates the provider again.
+	result, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "message one", "receipt-one",
+	)
+	if err != nil || !result.Duplicate || result.Outcome != InputAccepted {
+		t.Fatalf("exact retry: result=%+v err=%v", result, err)
+	}
+	if len(io.queues) != 2 {
+		t.Fatalf("exact retry replayed provider input: queues=%d", len(io.queues))
 	}
 }
 
@@ -2870,5 +2948,78 @@ func TestWatcherPollResolvesOnlyExactPendingRowAmongCoexistingRows(t *testing.T)
 	}
 	if turn, hasTurn, err := ledger.Turn(sessionID); err != nil || !hasTurn || turn.TurnID != sessionID+":turn:B" {
 		t.Fatalf("canonical Turn=%+v hasTurn=%v err=%v", turn, hasTurn, err)
+	}
+}
+
+func TestSessionInputWorkWakeAndForegroundChatIsolateReceiptIdentities(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	owner.ledger = ledger
+	acceptedAt := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	settledAt := acceptedAt.Add(time.Minute)
+	ledger.seed("agent:@1", TurnSnapshot{
+		SessionID:  "agent:@1",
+		TurnID:     "turn-prior",
+		Status:     TurnDone,
+		AcceptedAt: acceptedAt,
+		SettledAt:  &settledAt,
+		ActivityID: "activity-prior",
+	})
+
+	// Background Work wake: one immutable Event identity, delivered as a
+	// delegated Host input with the Event receipt.
+	wake := delegatedTurnDraft{
+		WorkID: "work-review", ID: "turn-wake", Receipt: "event-wake",
+		AcceptedAt: settledAt.Add(time.Second), ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	wakeResult, err := owner.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "wake payload", wake,
+		scriptedActivityTransitionAdmission(
+			"wake payload",
+			ProviderActivityObservation{
+				ID: "activity-prior", Status: "completed",
+				StartedAt: acceptedAt, SettledAt: settledAt,
+			},
+			"activity-wake",
+		),
+	)
+	if err != nil || wakeResult.Outcome != InputAccepted || wakeResult.Receipt != "event-wake" {
+		t.Fatalf("Work wake submit = (%+v, %v)", wakeResult, err)
+	}
+
+	// The user's foreground chat message is a distinct logical input with its
+	// own request identity; it must never collide with the wake receipt.
+	userResult, err := owner.submit(
+		"agent:@1", identity, resolver, identity.Command, "user message", "request-user",
+	)
+	if err != nil || userResult.Outcome != InputAccepted || userResult.Duplicate {
+		t.Fatalf("foreground chat submit = (%+v, %v)", userResult, err)
+	}
+
+	// Ambiguous-outcome recovery of the exact wake reuses the Event receipt
+	// idempotently: acknowledged from the durable ledger, never replayed.
+	recovered, err := owner.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "wake payload", wake,
+		delegatedInputConfirmer{},
+	)
+	if err != nil || !recovered.Duplicate || recovered.Outcome != InputAccepted {
+		t.Fatalf("Work wake recovery = (%+v, %v)", recovered, err)
+	}
+
+	if len(io.queues) != 2 {
+		t.Fatalf("provider queues=%d want exactly two mutations (wake + chat)", len(io.queues))
+	}
+	wakeEntry, wakeFound := io.ledger.entry("event-wake")
+	userEntry, userFound := io.ledger.entry("request-user")
+	if !wakeFound || !userFound ||
+		wakeEntry.PayloadSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("wake payload"))) ||
+		userEntry.PayloadSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("user message"))) {
+		t.Fatalf("ledger bindings wake=%+v/%v user=%+v/%v", wakeEntry, wakeFound, userEntry, userFound)
+	}
+	if _, found, err := ledger.TurnSubmission("agent:@1", "turn-wake"); err != nil || !found {
+		t.Fatalf("wake canonical submission is missing: found=%v err=%v", found, err)
 	}
 }

@@ -91,6 +91,27 @@ type delegatedReuseDecision struct {
 
 var errDelegatedProviderOwnershipMismatch = errors.New("delegated provider activity ownership mismatch")
 
+// ErrReceiptBelongsToDifferentInput is the fail-closed mismatch raised when a
+// receipt identity is submitted with a payload different from the immutable
+// payload it was durably bound to. It is detected strictly before provider
+// mutation, so the input was definitely not submitted. The receipt value is a
+// stale/legacy binding: the caller must discard it and allocate a fresh
+// identity for the new logical input; reusing it is and remains impossible.
+var ErrReceiptBelongsToDifferentInput = errors.New("receipt already belongs to different input")
+
+// IsStaleReceiptMismatch reports whether err is the definite non-submission
+// caused by a receipt durably bound to a different payload. The caller may
+// invalidate that stale receipt identity and transparently resubmit the new
+// logical input once with a fresh identity; it must never reuse the stale
+// receipt for a different payload.
+func IsStaleReceiptMismatch(err error) bool {
+	var submissionErr *InputSubmissionError
+	if !errors.As(err, &submissionErr) {
+		return false
+	}
+	return errors.Is(submissionErr.Cause, ErrReceiptBelongsToDifferentInput)
+}
+
 type delegatedInputConfirmer struct {
 	baseline func() (delegatedInputBaseline, error)
 	confirm  func(
@@ -559,7 +580,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 		if entry, found := ledger.entry(result.Receipt); found {
 			if entry.PayloadSHA256 != payloadDigest {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("receipt already belongs to different input"))
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("%w", ErrReceiptBelongsToDifferentInput))
 			}
 			result.Outcome = entry.Outcome
 			if turn != nil {

@@ -32,6 +32,13 @@ type thinProxyInputCall struct {
 	text    string
 }
 
+func definitelyNotSubmittedTestError(receipt string) error {
+	return &watcher.InputSubmissionError{
+		Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt},
+		Cause:  errors.New("target pane generation could not be proven"),
+	}
+}
+
 func TestInboundSendInputCallsProviderOnceAndAcknowledges(t *testing.T) {
 	calls := make(chan thinProxyInputCall, 3)
 	srv := &Server{
@@ -745,4 +752,213 @@ func sendThinProxyRequest(t *testing.T, conn *websocket.Conn, request clientMess
 	}
 	response.FieldCount = len(fields)
 	return response
+}
+
+func TestSendInputStaleReceiptMismatchReturnsTypedCodeAndFreesTheAdmission(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@stale-receipt"
+	threadID := "thread-stale-receipt"
+	requestID := "request-stale-receipt"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	watcherFixture := &brainServiceTestWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+		},
+		turnStore: store,
+	}
+	service := brain.NewService(store, watcherFixture, nil)
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: service,
+		sendInputWithReceiptOverride: func(_, _, receipt string) error {
+			providerCalls.Add(1)
+			if receipt == requestID {
+				// The durable receipt ledger already binds this receipt to a
+				// different payload (legacy/stale binding): the watcher fails
+				// closed strictly before provider mutation.
+				return &watcher.InputSubmissionError{
+					Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt},
+					Cause:  fmt.Errorf("%w", watcher.ErrReceiptBelongsToDifferentInput),
+				}
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "edited message",
+		DisplayBody: "edited message", ConversationScopeKey: "brain-thread:" + threadID,
+	}
+	response := sendThinProxyRequest(t, conn, request)
+	if response.Type != "input_failed" || response.Code != "stale_receipt_invalidated" ||
+		response.RequestID != requestID {
+		t.Fatalf("stale mismatch response=%#v", response)
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionNotSubmitted {
+		t.Fatalf("stale mismatch admission found=%v row=%+v err=%v", found, admission, err)
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider calls=%d want exactly one fail-closed attempt", providerCalls.Load())
+	}
+	// The app discards the stale identity and resubmits the same logical input
+	// with a fresh identity: a new admission is prepared and the provider
+	// mutation boundary is crossed exactly once more.
+	freshRequestID := "request-stale-receipt-fresh"
+	fresh := sendThinProxyRequest(t, conn, clientMessage{
+		Type: "send_input", RequestID: freshRequestID, AgentID: hostID, Text: "edited message",
+		DisplayBody: "edited message", ConversationScopeKey: "brain-thread:" + threadID,
+	})
+	if fresh.Type != "input_sent" || fresh.RequestID != freshRequestID {
+		t.Fatalf("fresh-identity retry response=%#v", fresh)
+	}
+	if providerCalls.Load() != 2 {
+		t.Fatalf("fresh-identity retry provider calls=%d want 2", providerCalls.Load())
+	}
+	freshAdmission, found, err := store.BrainInputAdmission(freshRequestID, threadID)
+	if err != nil || !found || freshAdmission.State != brain.BrainInputAdmissionAccepted {
+		t.Fatalf("fresh-identity admission found=%v row=%+v err=%v", found, freshAdmission, err)
+	}
+	// The stale identity stays terminal at the payload-binding guard: reusing
+	// it re-arms the never-mutated admission but still fails closed before any
+	// provider mutation. The app-side auto-retry bound is what stops the loop.
+	staleAgain := sendThinProxyRequest(t, conn, request)
+	if staleAgain.Type != "input_failed" || staleAgain.Code != "stale_receipt_invalidated" {
+		t.Fatalf("stale identity reuse response=%#v", staleAgain)
+	}
+}
+
+func TestSendInputLaneErrorNeverBlocksForegroundSend(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@lane-error"
+	threadID := "thread-lane-error"
+	requestID := "request-lane-error"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	// The lane reducer fails hard (host liveness probe error) before the
+	// foreground send. Background reconciliation errors must never block an
+	// unrelated foreground user message.
+	watcherFixture := &failingLaneWatcher{
+		brainServiceTestWatcher: &brainServiceTestWatcher{
+			sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+			},
+			turnStore: store,
+		},
+	}
+	service := brain.NewService(store, watcherFixture, nil)
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: service,
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != hostID || text != "user message" || receipt != requestID {
+				t.Fatalf("provider call=%q %q %q", agentID, text, receipt)
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "user message",
+		DisplayBody: "user message", ConversationScopeKey: "brain-thread:" + threadID,
+	})
+	if response.Type != "input_sent" || response.RequestID != requestID {
+		t.Fatalf("foreground send behind lane error response=%#v", response)
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider calls=%d want 1", providerCalls.Load())
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionAccepted {
+		t.Fatalf("admission found=%v row=%+v err=%v", found, admission, err)
+	}
+}
+
+func TestSendInputSameIdentityRetryAfterNotSubmittedRearmsAndSubmits(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-host:@retry-identity"
+	threadID := "thread-retry-identity"
+	requestID := "request-retry-identity"
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	watcherFixture := &brainServiceTestWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
+		},
+		turnStore: store,
+	}
+	service := brain.NewService(store, watcherFixture, nil)
+	failFirst := atomic.Bool{}
+	failFirst.Store(true)
+	var providerCalls atomic.Int32
+	srv := &Server{
+		brain: service,
+		sendInputWithReceiptOverride: func(agentID, text, receipt string) error {
+			providerCalls.Add(1)
+			if agentID != hostID || text != "same message" || receipt != requestID {
+				t.Fatalf("provider call=%q %q %q", agentID, text, receipt)
+			}
+			if failFirst.CompareAndSwap(true, false) {
+				return definitelyNotSubmittedTestError(receipt)
+			}
+			return nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "same message",
+		DisplayBody: "same message", ConversationScopeKey: "brain-thread:" + threadID,
+	}
+	first := sendThinProxyRequest(t, conn, request)
+	if first.Type != "input_failed" || first.Code != "input_not_submitted" {
+		t.Fatalf("first response=%#v", first)
+	}
+	admission, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionNotSubmitted {
+		t.Fatalf("first admission found=%v row=%+v err=%v", found, admission, err)
+	}
+	// Retrying the exact logical input reuses its identity: the daemon re-arms
+	// the never-mutated admission and submits exactly once more.
+	retry := sendThinProxyRequest(t, conn, request)
+	if retry.Type != "input_sent" || retry.RequestID != requestID {
+		t.Fatalf("retry response=%#v", retry)
+	}
+	if providerCalls.Load() != 2 {
+		t.Fatalf("provider calls=%d want exactly two (one per mutation boundary)", providerCalls.Load())
+	}
+	admission, found, err = store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || admission.State != brain.BrainInputAdmissionAccepted {
+		t.Fatalf("retry admission found=%v row=%+v err=%v", found, admission, err)
+	}
+}
+
+type failingLaneWatcher struct {
+	*brainServiceTestWatcher
+}
+
+func (w *failingLaneWatcher) ProbeSession(string) (watcher.SessionPresence, error) {
+	return watcher.SessionPresenceUnknown, errors.New("host liveness probe failed")
 }

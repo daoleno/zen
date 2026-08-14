@@ -2762,6 +2762,7 @@ export class MultiServerWebSocketClient {
     options?: {
       displayBody?: string;
       conversationScopeKey?: string;
+      requestId?: string;
     },
   ): StructuredCommandReceipt {
     const socket = this.connections.get(serverId);
@@ -2769,7 +2770,12 @@ export class MultiServerWebSocketClient {
       throw new Error("Daemon is not connected.");
     }
 
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    // Retries of the exact same logical input reuse its stable request id so
+    // the daemon's durable receipt ledger stays idempotent; a new or edited
+    // input omits requestId and receives a fresh identity.
+    const requestId =
+      options?.requestId ||
+      `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return dispatchStructuredCommand({
       requestId,
       eventSource: this,

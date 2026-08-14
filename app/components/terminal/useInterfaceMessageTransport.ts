@@ -18,6 +18,7 @@ import type {
   PendingUserMessageRejection,
 } from "./InterfaceChatSession";
 import { beginLiveMessageAttempt } from "./messageSendRecovery";
+import { staleReceiptAutoRetryPolicy } from "./pendingUserMessageLifecycle";
 import { submitProviderCommandAsUserInput } from "./providerCommandSubmission";
 import {
   beginComposerStop,
@@ -75,8 +76,10 @@ export function useInterfaceMessageTransport({
   const interruptActivityIdRef = useRef<string | undefined>(undefined);
   const currentDraftRef = useRef(draft);
   const currentAttachmentsRef = useRef(attachments);
+  const pendingUserMessagesRef = useRef(pendingUserMessages);
   currentDraftRef.current = draft;
   currentAttachmentsRef.current = attachments;
+  pendingUserMessagesRef.current = pendingUserMessages;
 
   const unlockSend = useCallback(() => {
     sendLockedRef.current = false;
@@ -107,23 +110,115 @@ export function useInterfaceMessageTransport({
     setOperationalError(undefined);
   }, [agentId, conversationScopeKey, serverId]);
 
+  const dispatchPendingUserMessageRef = useRef<
+    (
+      message: PendingUserMessage,
+      options: { reuseIdentity: boolean; staleAutoRetry: boolean },
+    ) => boolean
+  >(() => false);
+
   const observeInputOutcome = useCallback(
     (
       pendingMessageId: string,
       receipt: ReturnType<typeof wsClient.sendInput>,
     ) => {
       void receipt.outcome.then((outcome) => {
-        if (outcome.kind === "failed") {
-          rejectPendingUserMessage(pendingMessageId, {
-            requestId: outcome.failure.requestId,
-            code: outcome.failure.code,
-            message: outcome.failure.message,
-          });
+        if (outcome.kind !== "failed") {
+          return;
         }
+        const message = pendingUserMessagesRef.current.find(
+          (candidate) => candidate.id === pendingMessageId,
+        );
+        if (
+          message &&
+          staleReceiptAutoRetryPolicy(message, outcome.failure).autoRetry
+        ) {
+          // Legacy/stale receipt binding for this logical input: the daemon
+          // proved no provider mutation. Invalidate the stale identity and
+          // transparently resubmit the same payload once with a fresh
+          // identity; the row flag bounds the recovery to one attempt. If the
+          // composer is mid-send, surface the failure instead of stranding
+          // the row pending.
+          if (
+            dispatchPendingUserMessageRef.current(message, {
+              reuseIdentity: false,
+              staleAutoRetry: true,
+            })
+          ) {
+            return;
+          }
+        }
+        rejectPendingUserMessage(pendingMessageId, {
+          requestId: outcome.failure.requestId,
+          code: outcome.failure.code,
+          message: outcome.failure.message,
+        });
       });
     },
     [rejectPendingUserMessage],
   );
+
+  const dispatchPendingUserMessage = useCallback(
+    (
+      message: PendingUserMessage,
+      options: { reuseIdentity: boolean; staleAutoRetry: boolean } = {
+        reuseIdentity: true,
+        staleAutoRetry: false,
+      },
+    ) => {
+      if (sendLockedRef.current) {
+        return false;
+      }
+      sendLockedRef.current = true;
+      setSending(true);
+      setOperationalError(undefined);
+      let receipt: ReturnType<typeof wsClient.sendInput>;
+      try {
+        receipt = wsClient.sendInput(
+          serverId,
+          agentId,
+          `${message.sentText}\n`,
+          {
+            displayBody: message.sentText,
+            conversationScopeKey,
+            // Retries of the exact same logical input reuse its stable
+            // identity so the daemon receipt ledger stays idempotent; a
+            // stale-receipt recovery mints a fresh identity.
+            requestId: options.reuseIdentity
+              ? message.dispatchRequestId
+              : undefined,
+          },
+        );
+      } catch (error: any) {
+        setOperationalError(
+          error?.message || "Retry was not dispatched. Try again.",
+        );
+        unlockSend();
+        return false;
+      }
+      beginPendingUserMessageAttempt(message.id, {
+        requestId: receipt.requestId,
+        ...(options.staleAutoRetry
+          ? { staleReceiptAutoRetried: true }
+          : {}),
+      });
+      unlockSend();
+      observeInputOutcome(message.id, receipt);
+      return true;
+    },
+    [
+      agentId,
+      beginPendingUserMessageAttempt,
+      conversationScopeKey,
+      observeInputOutcome,
+      serverId,
+      unlockSend,
+    ],
+  );
+
+  useEffect(() => {
+    dispatchPendingUserMessageRef.current = dispatchPendingUserMessage;
+  }, [dispatchPendingUserMessage]);
 
   const submitTextToInterface = useCallback(
     (
@@ -212,42 +307,16 @@ export function useInterfaceMessageTransport({
       if (!message) {
         return;
       }
-      sendLockedRef.current = true;
-      setSending(true);
-      setOperationalError(undefined);
-      let receipt: ReturnType<typeof wsClient.sendInput>;
-      try {
-        receipt = wsClient.sendInput(
-          serverId,
-          agentId,
-          `${message.sentText}\n`,
-          {
-            displayBody: message.sentText,
-            conversationScopeKey,
-          },
-        );
-      } catch (error: any) {
-        setOperationalError(
-          error?.message || "Retry was not dispatched. Try again.",
-        );
-        unlockSend();
-        return;
-      }
-      beginPendingUserMessageAttempt(pendingMessageId, {
-        requestId: receipt.requestId,
+      // Retry is the exact same logical input: reuse its stable identity so
+      // the daemon receipt ledger stays idempotent (an accepted retry is
+      // acknowledged without replay; a proven non-mutation is re-armed and
+      // submitted exactly once more).
+      dispatchPendingUserMessage(message, {
+        reuseIdentity: true,
+        staleAutoRetry: false,
       });
-      unlockSend();
-      observeInputOutcome(pendingMessageId, receipt);
     },
-    [
-      agentId,
-      beginPendingUserMessageAttempt,
-      conversationScopeKey,
-      observeInputOutcome,
-      pendingUserMessages,
-      serverId,
-      unlockSend,
-    ],
+    [dispatchPendingUserMessage, pendingUserMessages],
   );
 
   const startNewInterfaceChat = useCallback(

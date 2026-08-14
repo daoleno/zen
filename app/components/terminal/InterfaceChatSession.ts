@@ -64,6 +64,7 @@ export type PendingUserMessage = {
   failureMessage?: string;
   createdAfterMaxSeq?: number;
   createdAfterEventIds?: string[];
+  staleReceiptAutoRetried?: boolean;
 };
 
 export type PendingUserMessageInput = Omit<
@@ -77,6 +78,7 @@ export type PendingUserMessageInput = Omit<
 
 export type PendingUserMessageAttempt = {
   requestId: string;
+  staleReceiptAutoRetried?: boolean;
 };
 
 export type PendingUserMessageRejection = {
@@ -154,6 +156,7 @@ type InterfaceChatThreadAction =
       type: "begin_pending_user_message_attempt";
       id: string;
       requestId: string;
+      staleReceiptAutoRetried?: boolean;
     }
   | {
       type: "reject_pending_user_message";
@@ -268,6 +271,7 @@ export function interfaceChatThreadReducer(
           dispatchAttemptOrder,
           createdAfterMaxSeq,
           createdAfterEventIds,
+          staleReceiptAutoRetried: action.staleReceiptAutoRetried,
         });
       });
       return changed ? { ...state, pendingUserMessages } : state;

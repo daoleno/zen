@@ -2167,6 +2167,13 @@ func samePreparedBrainInputAdmission(left, right BrainInputAdmission) bool {
 // PrepareBrainInputAdmission persists the exact no-replay intent before the
 // provider mutation boundary. Duplicate request/thread identities are returned
 // without another write and must never cause another provider submission.
+//
+// One exception is the retry contract: an admission durably settled as
+// NotSubmitted (the provider provably never mutated) is the same logical input
+// retried. It is re-armed in place (same request id, same payload identity)
+// with the caller's current host generation so the retry may cross the
+// mutation boundary again. Accepted and Uncertain are monotonic and are never
+// re-armed; a different payload with the same identity still fails closed.
 func (s *Store) PrepareBrainInputAdmission(candidate BrainInputAdmission) (BrainInputAdmission, bool, error) {
 	var err error
 	candidate, err = normalizeBrainInputAdmission(candidate, s.nowUTC())
@@ -2181,8 +2188,33 @@ func (s *Store) PrepareBrainInputAdmission(candidate BrainInputAdmission) (Brain
 	}
 	if index := brainInputAdmissionIndex(database.BrainInputAdmissions, candidate.RequestID, candidate.ThreadID); index >= 0 {
 		existing := database.BrainInputAdmissions[index]
-		if !sameBrainInputAdmission(existing, candidate) {
+		samePayload := existing.RequestID == candidate.RequestID && existing.ThreadID == candidate.ThreadID &&
+			existing.HostSessionID == candidate.HostSessionID && existing.SessionID == candidate.SessionID &&
+			existing.DisplayBody == candidate.DisplayBody && existing.BodySHA256 == candidate.BodySHA256
+		if !samePayload {
 			return BrainInputAdmission{}, false, fmt.Errorf("Brain input admission identity belongs to different input")
+		}
+		if existing.State == BrainInputAdmissionNotSubmitted {
+			// Re-arm the exact never-mutated intent. Host generation/turn are
+			// ambient session identity, not payload identity: the retry adopts
+			// the caller's current generation so a replaced host pane does not
+			// permanently strand the same logical input.
+			rearmed := existing
+			rearmed.State = BrainInputAdmissionPending
+			rearmed.SettledAt = nil
+			rearmed.HostGeneration = candidate.HostGeneration
+			rearmed.HostTurnID = candidate.HostTurnID
+			if candidate.HostGeneration != "" {
+				if active := database.HostForegroundTurn; active != nil &&
+					active.HostSessionID == candidate.HostSessionID && active.HostGeneration == candidate.HostGeneration {
+					rearmed.HostTurnID = active.HostTurnID
+				}
+			}
+			database.BrainInputAdmissions[index] = rearmed
+			if err := s.persistOrchestrationLocked(database); err != nil {
+				return BrainInputAdmission{}, false, err
+			}
+			return rearmed, true, nil
 		}
 		return existing, false, nil
 	}

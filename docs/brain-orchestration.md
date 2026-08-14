@@ -139,6 +139,26 @@ the same inventory or reopening the store is a no-op. Present
 later unowned Sessions. This convergence uses the one current state model; it
 does not add a migration, compatibility channel, or second scheduler.
 
+## Foreground chat input identity
+
+The composer's logical-input identity is one immutable payload bound to one
+receipt. The App mints a fresh receipt for every new or edited message; the
+retry of the exact same failed message reuses its stable receipt so the
+receiver-side tmux ledger stays idempotent (an accepted retry is acknowledged
+without replay, and a provably never-mutated attempt is re-armed in place and
+crosses the mutation boundary exactly once more). A different payload under
+the same receipt fails closed with the typed `stale_receipt_invalidated`
+outcome; the App then discards that stale identity and transparently resubmits
+the same logical input once with a fresh identity. Accepted and Uncertain
+Brain admissions are monotonic and are never re-armed; only durably proven
+non-submission is retryable, and only for the exact same payload identity.
+
+Background lane reconciliation (Work review delivery, liveness probes) is
+never authority over a foreground user send: a lane error is logged while the
+send proceeds through the per-Session input serializer and the durable
+admission gates. The Work wake and review receipts are distinct Event
+identities and never share, reserve, or block the foreground submit identity.
+
 ## Event sources
 
 Watcher transitions are projected only when the Session already owns Work.

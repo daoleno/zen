@@ -886,6 +886,32 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
 		if err != nil {
 			inputOutcome := watcher.InputOutcomeFromError(err)
+			if watcher.IsStaleReceiptMismatch(err) {
+				// The receipt is durably bound to a different payload: a
+				// legacy/stale binding detected strictly before provider
+				// mutation. The daemon keeps the fail-closed guard; the app
+				// invalidates this stale identity and transparently resubmits
+				// the same logical input once with a fresh identity.
+				if brainSteering {
+					if abortErr := s.brain.AbortHostUserInput(brainAdmission.RequestID, brainAdmission.ThreadID); abortErr != nil {
+						log.Printf("brain abort stale user input error: %v", abortErr)
+						s.brain.CancelUserSteering(raw.AgentID)
+						s.sendJSON(conn, map[string]any{
+							"type":       "input_pending",
+							"request_id": raw.RequestID,
+						})
+						break
+					}
+					s.brain.CancelUserSteering(raw.AgentID)
+				}
+				s.sendJSON(conn, map[string]any{
+					"type":       "input_failed",
+					"request_id": raw.RequestID,
+					"code":       "stale_receipt_invalidated",
+					"message":    err.Error(),
+				})
+				break
+			}
 			if inputOutcome == watcher.InputAmbiguous {
 				if brainSteering {
 					if releaseErr := s.brain.ReleaseHostUserInputAttempt(brainAdmission.RequestID, brainAdmission.ThreadID); releaseErr != nil {

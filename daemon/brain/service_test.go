@@ -573,14 +573,76 @@ func TestHostInputAdmissionLiveCriticalSectionAndRestartSettlement(t *testing.T)
 	if woke, err := NewService(reopenedAgain, fw, nil).ReconcileHostLane(); err != nil || woke {
 		t.Fatalf("second restart woke=%v err=%v", woke, err)
 	}
+	// The same logical input retried after a proven non-mutation is re-armed
+	// (same identity, same payload, current generation): the retry may cross
+	// the mutation boundary again, and no provider input is replayed by the
+	// reconciliation itself.
 	duplicate, duplicateCreated, err := NewService(reopenedAgain, fw, nil).PrepareHostUserInput(
 		hostID, requestID, "do not race the provider call", "brain-thread:"+threadID,
 	)
-	if err != nil || duplicateCreated || duplicate.State != BrainInputAdmissionNotSubmitted {
-		t.Fatalf("terminal duplicate created=%v admission=%+v err=%v", duplicateCreated, duplicate, err)
+	if err != nil || !duplicateCreated || duplicate.State != BrainInputAdmissionPending {
+		t.Fatalf("same-input retry re-arm created=%v admission=%+v err=%v", duplicateCreated, duplicate, err)
+	}
+	if duplicate.RequestID != requestID || duplicate.BodySHA256 != AdmissionDigest("do not race the provider call") {
+		t.Fatalf("re-armed retry lost the logical input identity: %+v", duplicate)
+	}
+	if duplicate.HostGeneration != "host-generation-one" {
+		t.Fatalf("re-armed retry did not adopt the current host generation: %+v", duplicate)
 	}
 	if len(fw.sentCalls) != 0 {
 		t.Fatalf("restart settlement replayed provider input: %+v", fw.sentCalls)
+	}
+}
+
+func TestHostInputAdmissionDifferentPayloadNeverRearmsSameIdentity(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID    = "brain-host:@input-edited-retry"
+		threadID  = "thread-input-edited-retry"
+		requestID = "request-input-edited-retry"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "host-generation-one"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	prepared, created, err := service.PrepareHostUserInput(
+		hostID, requestID, "original message", "brain-thread:"+threadID,
+	)
+	if err != nil || !created || prepared.State != BrainInputAdmissionPending {
+		t.Fatalf("prepare created=%v admission=%+v err=%v", created, prepared, err)
+	}
+	if err := service.AbortHostUserInput(prepared.RequestID, prepared.ThreadID); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	settled, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || settled.State != BrainInputAdmissionNotSubmitted {
+		t.Fatalf("abort settlement found=%v admission=%+v err=%v", found, settled, err)
+	}
+	// An edited payload under the same identity is a different logical input:
+	// it must fail closed and never re-arm the original row.
+	if _, _, err := service.PrepareHostUserInput(
+		hostID, requestID, "edited message", "brain-thread:"+threadID,
+	); err == nil || !strings.Contains(err.Error(), "belongs to different input") {
+		t.Fatalf("edited payload under same identity did not fail closed: %v", err)
+	}
+	retained, found, err := store.BrainInputAdmission(requestID, threadID)
+	if err != nil || !found || retained.State != BrainInputAdmissionNotSubmitted {
+		t.Fatalf("failed edited retry mutated the original row: found=%v admission=%+v err=%v", found, retained, err)
 	}
 }
 
