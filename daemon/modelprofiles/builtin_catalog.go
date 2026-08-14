@@ -3,10 +3,19 @@ package modelprofiles
 import "sort"
 
 // Builtin client compatibility catalog for production contract admission.
-// Profile TOML never authorizes envelopes. Daemon admits known Codex/Claude
-// ClientModel contracts only; Provider/Gateway/upstream model IDs may be any
-// ValidateProfile-legal values and inherit the selected client contract envelope
-// as a configured compatibility mapping (not discovered upstream capability).
+// Profile TOML never authorizes envelopes.
+//
+// Codex: the daemon-owned versioned model catalog (model_catalog.go) is the
+// ONLY Codex admission source. The exact selected model slug is the Codex
+// session model AND the routed upstream model — there is no hidden
+// compatibility model. Unknown models fail closed for managed Codex.
+//
+// Claude: daemon-known ClientModel contracts remain the admission source;
+// Claude connections already run the exact selected model identity.
+//
+// Reasoning Effort contracts live on the same model catalog entries. Only
+// models with a pinned contract expose an Effort control; unknown models hide
+// it (never speculate). Non-Codex executors (Claude) have no effort contract.
 
 // ClientContractDescriptor is the secret-free App-facing description of one
 // daemon-known Codex/Claude client compatibility contract.
@@ -18,32 +27,16 @@ type ClientContractDescriptor struct {
 }
 
 // ProfileEditorSchema is the App-facing vocabulary for the profile editor.
-// Provider ID/label, Gateway URL, and upstream model remain freely configurable;
-// only client_model must choose a daemon-known contract ID for the executor.
+// Provider ID/label, Gateway URL, and model remain freely configurable; the
+// model must choose a daemon-known identity for the executor.
 type ProfileEditorSchema struct {
 	SupportedClientContracts []ClientContractDescriptor `json:"supported_client_contracts"`
 	FreelyConfigurable       []string                   `json:"freely_configurable"`
 }
 
-func envelopeCodexGPT5() CapabilityEnvelope {
-	return CapabilityEnvelope{
-		ContextWindowTokens: 400000,
-		ReasoningClass:      ReasoningClassExtended,
-		ThinkingClass:       ThinkingClassNone,
-		ToolClass:           ToolClassFunction,
-		Modalities:          []string{ModalityText, ModalityImage},
-	}
-}
-
-func envelopeCodexOSeries() CapabilityEnvelope {
-	return CapabilityEnvelope{
-		ContextWindowTokens: 200000,
-		ReasoningClass:      ReasoningClassExtended,
-		ThinkingClass:       ThinkingClassNone,
-		ToolClass:           ToolClassFunction,
-		Modalities:          []string{ModalityText},
-	}
-}
+// envelopeCodexGPT5 etc. are retained as legacy family descriptors for the
+// pre-catalog Codex client keys. The model catalog is the authoritative
+// source; these only back the editor vocabulary for legacy slugs.
 
 func envelopeClaudeSonnet() CapabilityEnvelope {
 	return CapabilityEnvelope{
@@ -75,16 +68,7 @@ func envelopeClaudeHaiku() CapabilityEnvelope {
 	}
 }
 
-// builtinClientKey -> daemon-owned ClientModelContract envelope for Codex.
-var builtinCodexClients = map[string]CapabilityEnvelope{
-	"gpt-5":       envelopeCodexGPT5(),
-	"gpt-5.1":     envelopeCodexGPT5(),
-	"gpt-5-codex": envelopeCodexGPT5(),
-	"o3":          envelopeCodexOSeries(),
-	"o4-mini":     envelopeCodexOSeries(),
-}
-
-// builtinClientKey -> daemon-owned ClientModelContract envelope for Claude Code.
+// builtinClientKey -> daemon-owned ClientModelContract envelope for Claude.
 var builtinClaudeClients = map[string]CapabilityEnvelope{
 	"claude-sonnet-4-6": envelopeClaudeSonnet(),
 	"claude-sonnet-4-5": envelopeClaudeSonnet(),
@@ -93,11 +77,18 @@ var builtinClaudeClients = map[string]CapabilityEnvelope{
 	"claude-haiku-4-5":  envelopeClaudeHaiku(),
 }
 
+// lookupBuiltinClient resolves the daemon-owned envelope for one client model
+// identity. Codex resolves through the versioned model catalog by EXACT slug
+// (unknown models fail closed); Claude resolves through the daemon-known
+// Claude contracts.
 func lookupBuiltinClient(executorID, clientModel string) (CapabilityEnvelope, bool) {
 	switch normalizeID(executorID) {
 	case ExecutorCodex:
-		env, ok := builtinCodexClients[normalizeSpace(clientModel)]
-		return env, ok
+		entry, ok := lookupCodexModelMetadata(clientModel)
+		if !ok {
+			return CapabilityEnvelope{}, false
+		}
+		return entry.Envelope, true
 	case ExecutorClaude:
 		env, ok := builtinClaudeClients[normalizeSpace(clientModel)]
 		return env, ok
@@ -107,15 +98,18 @@ func lookupBuiltinClient(executorID, clientModel string) (CapabilityEnvelope, bo
 }
 
 // BuiltinClientContractDescriptors returns the daemon-owned client contract
-// vocabulary for App editors (secret-free).
+// vocabulary for App editors (secret-free). Codex descriptors come from the
+// versioned model catalog; Claude descriptors from the Claude contracts.
 func BuiltinClientContractDescriptors() []ClientContractDescriptor {
-	out := make([]ClientContractDescriptor, 0, len(builtinCodexClients)+len(builtinClaudeClients))
-	for _, id := range sortedClientKeys(builtinCodexClients) {
+	var out []ClientContractDescriptor
+	for _, entry := range CodexModelCatalogEntries() {
+		envelope := entry.Envelope
+		envelope.Modalities = append([]string(nil), entry.Envelope.Modalities...)
 		out = append(out, ClientContractDescriptor{
 			ExecutorID:  ExecutorCodex,
-			ClientModel: id,
-			Provenance:  ContractProvenanceConfiguredCompatibility,
-			Envelope:    normalizeEnvelope(builtinCodexClients[id]),
+			ClientModel: entry.Slug,
+			Provenance:  firstNonEmpty(entry.Provenance, ContractProvenanceConfiguredCompatibility),
+			Envelope:    envelope,
 		})
 	}
 	for _, id := range sortedClientKeys(builtinClaudeClients) {

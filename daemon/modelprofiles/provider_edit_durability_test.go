@@ -223,7 +223,7 @@ func TestEditCrashPreservesOldSecretWhileLiveBindingReferencesIt(t *testing.T) {
 		Client:   ClientCodex,
 		PresetID: ProviderPresetCustom,
 		BaseURL:  "https://one.example/v1",
-		ModelID:  "alpha-model",
+		ModelID:  "gpt-5.6-sol",
 		Advanced: true,
 	}, "sk-1", 0, true)
 	if err != nil {

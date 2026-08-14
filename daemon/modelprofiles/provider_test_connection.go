@@ -74,7 +74,7 @@ func (o *Owner) TestSavedProviderConnection(connectionID string) (ProviderConnec
 	}
 	// Compile the exact saved endpoint/protocol for this client; the model
 	// stays a probe placeholder — testing never selects or mutates a model.
-	profile, err := CompileConnectionTarget(raw, executorFromClient(client), "")
+	profile, err := CompileConnectionTarget(raw, executorFromClient(client), "", "")
 	if err != nil {
 		return out, err
 	}

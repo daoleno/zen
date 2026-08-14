@@ -30,7 +30,7 @@ func TestCustomConnectionWithoutModelCannotBind(t *testing.T) {
 
 	// Probe compile (discovery / test-connection) still succeeds with the
 	// placeholder — it never creates a binding.
-	target, err := CompileConnectionTarget(conn, ClientCodex, "")
+	target, err := CompileConnectionTarget(conn, ClientCodex, "", "")
 	if err != nil {
 		t.Fatalf("probe compile: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Session activation with no model must not fabricate gpt-5 into the route.
-	_, _, _, err = owner.ActivateSessionProvider("s1", "custom-gw", "")
+	_, _, _, err = owner.ActivateSessionProvider("s1", "custom-gw", "", "")
 	if !errors.Is(err, ErrUpstreamModelRequired) {
 		t.Fatalf("want ErrUpstreamModelRequired got %v", err)
 	}
@@ -191,7 +191,7 @@ func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
 		t.Fatalf("session binding changed after failed activate: %#v", state)
 	}
 	// Activation with an explicit discovered model succeeds.
-	state, _, persist, err := owner.ActivateSessionProvider("s1", "custom-gw", "gpt-5.6-sol")
+	state, _, persist, err := owner.ActivateSessionProvider("s1", "custom-gw", "gpt-5.6-sol", "")
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate with model err=%v persist=%#v", err, persist)
 	}

@@ -322,7 +322,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	probe := profile
 	if isAccountConnection(profile) {
 		client := executorFromClient(profile.Client)
-		compiled, cErr := CompileConnectionTarget(profile, client, "")
+		compiled, cErr := CompileConnectionTarget(profile, client, "", "")
 		if cErr != nil {
 			out.Entries = projectModelEntries(trusted, manual, nil, nil, nil, false)
 			return out, cErr

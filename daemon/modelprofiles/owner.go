@@ -32,6 +32,8 @@ const (
 	CodeBindingNotRouted           = "route_binding_not_routed"
 	CodeContractUnverified         = "model_profile_contract_unverified"
 	CodeUpstreamModelRequired      = "upstream_model_required"
+	CodeModelUnsupported           = "model_unsupported"
+	CodeReasoningEffortUnsupported = "reasoning_effort_unsupported"
 	CodeDiscoveryCacheInvalid      = "provider_discovery_cache_invalid"
 	CodeRouteListenerFailed        = "route_listener_failed"
 	CodeRouteSnapshotInvalid       = "route_snapshot_invalid"
@@ -211,7 +213,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		discovery:     newModelDiscoveryCache(),
 		discoveryPath: strings.TrimSpace(cfg.DiscoveryPath),
 	}
-	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute))
+	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelAdoption(o.AdoptSessionModel), WithRouterHandoffPending(o.handoffPending))
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {
 			o.discoveryLoadWarning = fmt.Errorf("%w: %v", ErrDiscoveryCacheInvalid, err)
@@ -366,7 +368,7 @@ func (o *Owner) ensureListenerLocked(sticky bool) (PersistResult, error) {
 	}
 
 	if o.router == nil {
-		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterModelCatalog(o.modelsForRoute))
+		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelAdoption(o.AdoptSessionModel), WithRouterHandoffPending(o.handoffPending))
 	}
 	srv := &http.Server{
 		Handler:           o.router.Handler(),
@@ -812,6 +814,15 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 		return SessionLaunchPlan{}, fmt.Errorf("%w: connection %s has no supported models enabled", ErrUpstreamModelRequired, profile.ID)
 	}
 
+	// Deterministic per-connection Codex model catalog for this route: known
+	// metadata + discovery availability, written before compile so the launch
+	// command can reference it. Fail closed when the catalog cannot be written.
+	if normalizeID(profile.ExecutorID) == ExecutorCodex && normalizeID(profile.Protocol) != ProtocolOpenAINative {
+		if err := o.writeCodexModelCatalogLocked(profile); err != nil {
+			return SessionLaunchPlan{}, err
+		}
+	}
+
 	auth := ContractAuth{Verifier: o.verifier}
 	provisional := "pending:" + uuid.NewString()
 	var state SessionRouteState
@@ -849,11 +860,12 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 			}
 		}
 		compiled, compileErr := Compile(baseCommand, profile, CompileOptions{
-			LoopbackRouteURL: loopbackURL,
-			CatalogRevision:  o.store.Revision(),
-			Lookup:           o.lookup,
-			Credentials:      o.creds,
-			Verifier:         o.verifier,
+			LoopbackRouteURL:      loopbackURL,
+			CatalogRevision:       o.store.Revision(),
+			CodexModelCatalogPath: o.CodexModelCatalogPath(profile.ID),
+			Lookup:                o.lookup,
+			Credentials:           o.creds,
+			Verifier:              o.verifier,
 		})
 		if compileErr != nil {
 			return compileErr
@@ -1357,6 +1369,10 @@ func ControlErrorCode(err error) string {
 		return CodeContractUnverified
 	case errors.Is(err, ErrUpstreamModelRequired):
 		return CodeUpstreamModelRequired
+	case errors.Is(err, ErrModelUnsupported):
+		return CodeModelUnsupported
+	case errors.Is(err, ErrReasoningEffortUnsupported):
+		return CodeReasoningEffortUnsupported
 	case errors.Is(err, ErrDiscoveryCacheInvalid):
 		return CodeDiscoveryCacheInvalid
 	case errors.Is(err, ErrRouteSnapshotInvalid):

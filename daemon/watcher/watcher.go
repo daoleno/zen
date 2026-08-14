@@ -2363,6 +2363,73 @@ func allowedTmuxKey(key string) bool {
 	}
 }
 
+// SendControlKey sends one allowlisted control key to a session pane (used by
+// the managed Codex handoff to interrupt a running turn). Only "C-c" is
+// admitted; every other key keeps the tight WS surface.
+func (w *Watcher) SendControlKey(sessionID, key string) error {
+	if key != "C-c" {
+		return fmt.Errorf("unsupported control key %q", key)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("missing session id")
+	}
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; control key was not sent")
+	}
+	resolver := w.targetForSession
+	action := func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return err
+		}
+		return tmuxCommand(w.socketPathFor(sessionID), "send-keys", "-t", sessionID, key).Run()
+	}
+	return w.sessionInputOwner().serialized(sessionID, action)
+}
+
+// WaitForPaneProcessExit waits until the pane's provider process (processID)
+// is gone or the timeout elapses. Returns true only when the process exited.
+func (w *Watcher) WaitForPaneProcessExit(sessionID string, processID int, timeout time.Duration) bool {
+	if w == nil || processID <= 0 {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	deadline := time.Now().Add(timeout)
+	for {
+		processes := snapshotProcesses()
+		if _, alive := processes[processID]; !alive {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// WaitForPaneCommand waits until the pane's provider process executable base
+// matches commandBase (e.g. "codex") or the timeout elapses.
+func (w *Watcher) WaitForPaneCommand(sessionID, commandBase string, timeout time.Duration) bool {
+	if w == nil || w.targetProcessResolver == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	commandBase = strings.TrimSpace(commandBase)
+	deadline := time.Now().Add(timeout)
+	for {
+		if identity, ok := w.targetProcessResolver(sessionID); ok {
+			if commandExecutableBase(identity.Command) == commandBase {
+				return true
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func allowedLiteralKeyByte(key byte) bool {
 	return (key >= '1' && key <= '9') ||
 		(key >= 'a' && key <= 'z') ||

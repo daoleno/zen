@@ -23,6 +23,12 @@ type Router struct {
 	// models resolves a route's connection to its synced model catalog for the
 	// local GET /v1/models surface. Nil means the surface is unavailable.
 	models func(profileID string) ([]ProviderModelEntry, error)
+	// adopt converges the route binding when a request carries a different
+	// model/effort than the binding (Codex TUI /model change).
+	adopt func(routeID, modelID, effort string, effortPresent bool) error
+	// handoffPending reports whether a Zen-initiated model switch is still in
+	// its process-handoff transition (binding wins until it completes).
+	handoffPending func(routeID string) bool
 }
 
 // RouterOption configures Router construction.
@@ -68,6 +74,24 @@ func WithRouterMaxBody(n int64) RouterOption {
 func WithRouterModelCatalog(models func(profileID string) ([]ProviderModelEntry, error)) RouterOption {
 	return func(r *Router) {
 		r.models = models
+	}
+}
+
+// WithRouterModelAdoption installs the daemon-side adoption path for request
+// model/effort values that differ from the route binding (a Codex TUI /model
+// change). The router forwards the request's own identity and converges the
+// binding when the daemon admits it; a nil hook disables adoption (pass-through).
+func WithRouterModelAdoption(adopt func(routeID, modelID, effort string, effortPresent bool) error) RouterOption {
+	return func(r *Router) {
+		r.adopt = adopt
+	}
+}
+
+// WithRouterHandoffPending installs the pending-handoff observer (Zen-initiated
+// model switch whose Codex process handoff is still in flight).
+func WithRouterHandoffPending(pending func(routeID string) bool) RouterOption {
+	return func(r *Router) {
+		r.handoffPending = pending
 	}
 }
 
@@ -174,10 +198,62 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	rewritten := body
 	if len(body) > 0 && (parsed.Endpoint == EndpointResponses || parsed.Endpoint == EndpointAnthropicMessages || parsed.Endpoint == EndpointAnthropicCountTokens) {
-		rewritten, err = rewriteRequestModel(body, binding.UpstreamModel)
-		if err != nil {
+		requestModel, modelErr := requestModelFromBody(body)
+		if modelErr != nil {
 			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 			return
+		}
+		requestEffort, requestEffortPresent := requestEffortFromBody(body)
+
+		// Unified model identity semantics (never silently override a visible
+		// model):
+		//   - request identity == the binding snapshot (the normal case: the CLI
+		//     runs the route's model) -> forward untouched.
+		//   - mismatch while a Zen-initiated handoff is pending -> the binding
+		//     wins for the next admitted request (the process is being replaced).
+		//   - mismatch otherwise -> the CLI changed its own identity (Codex TUI
+		//     /model): forward the CLI's identity and adopt it into the binding
+		//     when the daemon admits it (Terminal -> Zen convergence); a
+		//     rejected identity is still forwarded as-is — Zen never rewrites a
+		//     different visible model silently, and never claims convergence
+		//     it did not apply.
+		bindingModel := normalizeSpace(binding.UpstreamModel)
+		bindingEffort := normalizeID(binding.ReasoningEffort)
+		pending := r.handoffPending != nil && r.handoffPending(binding.RouteID)
+		switch {
+		case requestModel == bindingModel:
+			rewritten = body
+		case pending:
+			// Zen-initiated switch in transition: the next admitted request runs
+			// the new binding identity (snapshot remains immutable for the
+			// in-flight request already admitted under the old one).
+			rewritten, err = rewriteRequestModel(body, bindingModel)
+			if err != nil {
+				writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+				return
+			}
+		default:
+			// CLI-initiated identity: forward as-is; converge the binding when
+			// the daemon admits the request identity. Admission failures never
+			// block the request (it was admitted under the flight snapshot).
+			if r.adopt != nil && parsed.Endpoint == EndpointResponses {
+				_ = r.adopt(binding.RouteID, requestModel, requestEffort, requestEffortPresent)
+			}
+			rewritten = body
+		}
+		// Effort convergence mirrors the model policy (Responses only — Codex):
+		// equal values pass through; a binding override wins during a pending
+		// handoff; otherwise the request's effort is adopted/forwarded as-is.
+		if parsed.Endpoint == EndpointResponses && bindingEffort != "" && requestEffort != bindingEffort {
+			if pending {
+				rewritten, err = rewriteRequestEffort(rewritten, bindingEffort)
+				if err != nil {
+					writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+					return
+				}
+			} else if r.adopt != nil && requestModel == bindingModel {
+				_ = r.adopt(binding.RouteID, requestModel, requestEffort, requestEffortPresent)
+			}
 		}
 		if normalizeID(binding.HistoryPortability) == HistoryPortabilityStripOpaque {
 			rewritten, _, err = normalizePortableHistoryBody(binding.RouteProtocol, rewritten)
@@ -268,6 +344,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // serveLocalModels answers GET /v1/models with the synced model catalog of
 // the route's connection as a standard OpenAI list payload. Only available
 // models are listed — the same set the App picker and default binding use.
+// serveLocalModels serves the Codex-expected ModelsResponse shape
+// (`{"models":[...]}` — NOT the OpenAI list `data` shape): daemon-known
+// metadata for the route connection's available models. Unknown models are
+// never projected; the Codex picker therefore only ever offers identities the
+// daemon can launch and route truthfully.
 func (r *Router) serveLocalModels(w http.ResponseWriter, binding RouteBinding) {
 	if r.models == nil {
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog not configured", ErrInvalid))
@@ -283,7 +364,17 @@ func (r *Router) serveLocalModels(w http.ResponseWriter, binding RouteBinding) {
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog: %v", ErrInvalid, err))
 		return
 	}
-	payload, err := modelsListPayload(entries)
+	var ids []string
+	for _, entry := range entries {
+		if entry.Available {
+			ids = append(ids, entry.ID)
+		}
+	}
+	// The running identity always appears so the CLI never loses it.
+	if normalizeSpace(binding.UpstreamModel) != "" && codexModelKnown(binding.UpstreamModel) {
+		ids = append(ids, binding.UpstreamModel)
+	}
+	payload, err := json.Marshal(CodexModelsResponseForModels(ids))
 	if err != nil {
 		writeRouteError(w, http.StatusInternalServerError, fmt.Errorf("%w: model list encode: %v", ErrInvalid, err))
 		return
@@ -304,21 +395,6 @@ type openAIModelObj struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
-}
-
-func modelsListPayload(entries []ProviderModelEntry) ([]byte, error) {
-	data := make([]openAIModelObj, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.Available {
-			continue
-		}
-		data = append(data, openAIModelObj{
-			ID:      entry.ID,
-			Object:  "model",
-			OwnedBy: "zen",
-		})
-	}
-	return json.Marshal(openAIModelList{Object: "list", Data: data})
 }
 
 func isWebSocketUpgrade(req *http.Request) bool {

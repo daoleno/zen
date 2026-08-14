@@ -1838,7 +1838,7 @@ func (a *controlApp) handleSessionProviderActivate(req control.Request) control.
 	if connectionID == "" {
 		connectionID = strings.TrimSpace(req.ProfileID)
 	}
-	_, snap, persist, err := a.profiles.ActivateSessionProvider(sessionID, connectionID, req.ModelID)
+	_, snap, persist, err := a.profiles.ActivateSessionProvider(sessionID, connectionID, req.ModelID, strings.TrimSpace(req.ReasoningEffort))
 	if !persist.Applied {
 		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
 	}
@@ -1847,14 +1847,17 @@ func (a *controlApp) handleSessionProviderActivate(req control.Request) control.
 	}
 	binding := *snap.Current
 	sel := modelprofiles.ProviderSessionSelection{
-		SessionID:       binding.SessionID,
-		Client:          binding.Client,
-		ConnectionID:    binding.ConnectionID,
-		ConnectionName:  binding.ConnectionName,
-		ProviderLabel:   binding.ProviderLabel,
-		ModelID:         binding.ModelID,
-		CredentialReady: binding.CredentialReady,
-		HotSwitchable:   binding.HotSwitchable,
+		SessionID:              binding.SessionID,
+		Client:                 binding.Client,
+		ConnectionID:           binding.ConnectionID,
+		ConnectionName:         binding.ConnectionName,
+		ProviderLabel:          binding.ProviderLabel,
+		ModelID:                binding.ModelID,
+		ReasoningEffort:        binding.ReasoningEffort,
+		ReasoningEffortDefault: binding.ReasoningEffortDefault,
+		ReasoningEfforts:       append([]string(nil), binding.ReasoningEfforts...),
+		CredentialReady:        binding.CredentialReady,
+		HotSwitchable:          binding.HotSwitchable,
 	}
 	response := control.Response{OK: true, SessionProvider: &sel, SessionRoute: &snap, Binding: &binding}
 	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {

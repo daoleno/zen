@@ -88,15 +88,15 @@ const (
 // isNativePassthroughHost (immutable). Do not export a mutable allowlist map.
 
 var (
-	ErrNotFound                   = errors.New("model profile not found")
-	ErrConflict                   = errors.New("model profile revision conflict")
-	ErrInvalid                    = errors.New("invalid model profile")
-	ErrUnsupportedExecutor        = errors.New("executor does not support model profiles")
-	ErrUnsupportedProtocol        = errors.New("protocol is not supported for executor")
-	ErrDuplicateID                = errors.New("model profile id already exists")
+	ErrNotFound            = errors.New("model profile not found")
+	ErrConflict            = errors.New("model profile revision conflict")
+	ErrInvalid             = errors.New("invalid model profile")
+	ErrUnsupportedExecutor = errors.New("executor does not support model profiles")
+	ErrUnsupportedProtocol = errors.New("protocol is not supported for executor")
+	ErrDuplicateID         = errors.New("model profile id already exists")
 	// ErrDuplicateName means another Provider already uses the same display
 	// name (case-insensitive). Names are the user-facing identity.
-	ErrDuplicateName = errors.New("provider name already exists")
+	ErrDuplicateName              = errors.New("provider name already exists")
 	ErrRouteRequired              = errors.New("zen loopback route url is required")
 	ErrBindingNotFound            = errors.New("session route binding not found")
 	ErrBindingConflict            = errors.New("session route binding generation conflict")
@@ -132,13 +132,23 @@ var (
 	// ErrUpstreamModelRequired means a connection has no explicit upstream model:
 	// compile produced only a probe placeholder (client contract id), which must
 	// never enter a RouteBinding. Run discovery and select a model first.
-	ErrUpstreamModelRequired   = errors.New("connection has no upstream model; run discovery and select a model")
-	ErrUpstreamSSRF            = errors.New("upstream address blocked")
-	ErrUpstreamRedirect        = errors.New("upstream redirect rejected")
-	ErrRouteSnapshotInvalid    = errors.New("route snapshot invalid")
-	ErrProfileInUse            = errors.New("model profile is in use by a session")
-	ErrListenerFailed          = errors.New("route listener failed")
-	ErrLaunchCleanupIncomplete = errors.New("launch cleanup incomplete")
+	ErrUpstreamModelRequired = errors.New("connection has no upstream model; run discovery and select a model")
+	// ErrModelUnsupported means the selected model has no daemon-owned metadata
+	// (not in the versioned Codex model catalog). Managed Codex fails closed:
+	// an unknown model is never launched, activated, or routed under a hidden
+	// compatibility identity.
+	ErrModelUnsupported = errors.New("model is not supported for managed Codex")
+	// ErrReasoningEffortUnsupported means the requested Reasoning Effort is not
+	// admitted by the target Codex client model's daemon-owned effort contract.
+	// Activation fails inline and the old route is kept — an invalid effort is
+	// never sent upstream.
+	ErrReasoningEffortUnsupported = errors.New("reasoning effort is not supported by the client model")
+	ErrUpstreamSSRF               = errors.New("upstream address blocked")
+	ErrUpstreamRedirect           = errors.New("upstream redirect rejected")
+	ErrRouteSnapshotInvalid       = errors.New("route snapshot invalid")
+	ErrProfileInUse               = errors.New("model profile is in use by a session")
+	ErrListenerFailed             = errors.New("route listener failed")
+	ErrLaunchCleanupIncomplete    = errors.New("launch cleanup incomplete")
 	// ErrSessionStillLive means KillSession failed and the Session is still
 	// confirmed present — route ownership must be preserved.
 	ErrSessionStillLive = errors.New("session still live after kill failure")
@@ -155,6 +165,18 @@ const (
 	SessionLivenessUnknown SessionLiveness = iota
 	SessionLivenessPresent
 	SessionLivenessAbsent
+)
+
+// Codex Reasoning Effort values (OpenAI Responses API `reasoning.effort`,
+// mirrored by Codex `model_reasoning_effort`). `none`/`max`/`ultra` are
+// ChatGPT-tier presets and are never Zen-admitted Session efforts.
+const (
+	ReasoningEffortMinimal = "minimal"
+	ReasoningEffortLow     = "low"
+	ReasoningEffortMedium  = "medium"
+	ReasoningEffortHigh    = "high"
+	ReasoningEffortXHigh   = "xhigh"
+	ReasoningEffortMax     = "max"
 )
 
 // Profile is durable catalog upstream metadata (secret-free values only).
@@ -184,6 +206,11 @@ type Profile struct {
 	// Session activation own model selection. Legacy executor-scoped profiles
 	// may still store a catalog model.
 	Model string `toml:"model,omitempty" json:"model,omitempty"`
+	// ReasoningEffort is an ephemeral compile-only carrier for Session effort
+	// activation (same pattern as ModelPlaceholder). It is never durable and
+	// never a connection setting: the Session route owns the override and
+	// Settings stays Provider/Model-only. Empty means no override.
+	ReasoningEffort string `toml:"-" json:"-"`
 	// ModelPlaceholder is an internal compile-only marker set when a Custom/
 	// Advanced connection had no explicit upstream model and compilation fell
 	// back to the ClientModel contract id (probe validation only). It is never
@@ -240,6 +267,7 @@ type ExecutorCapabilities struct {
 type CompileOptions struct {
 	LoopbackRouteURL        string
 	CatalogRevision         int64
+	CodexModelCatalogPath   string // per-connection Codex ModelsResponse JSON (responses protocol)
 	Lookup                  func(string) (string, bool)
 	Credentials             CredentialStore
 	Verifier                ProfileContractVerifier
@@ -272,6 +300,12 @@ type RouteBinding struct {
 	// CredentialRef is an opaque private-store reference (never a secret).
 	CredentialRef   string
 	CredentialReady bool
+	// ReasoningEffort is the Session's daemon-owned Codex effort override
+	// (empty = no override; the CLI/model default applies). Set only by Session
+	// activation against the client model's daemon-owned effort contract; it is
+	// snapshotted per request flight (in-flight immutability) and persisted with
+	// the route state (restart restoration). Never a connection setting.
+	ReasoningEffort string
 	Generation      int64
 	CatalogRevision int64
 	Activation      string
@@ -300,15 +334,23 @@ type SessionRouteState struct {
 // Protocol, client_model, envelopes, auth_mode, credential_env, generation,
 // history portability/degradation, provider_id, and route internals are never
 // exposed here.
+//
+// Reasoning Effort projection: reasoning_effort is the Session's current
+// daemon-owned override (empty = no override, the CLI/model default applies).
+// reasoning_effort_default and reasoning_efforts are the client model's
+// daemon-owned effort contract (absent for unsupported clients/models).
 type WireBinding struct {
-	SessionID       string `json:"session_id"`
-	Client          string `json:"client"`
-	ConnectionID    string `json:"connection_id"`
-	ConnectionName  string `json:"connection_name"`
-	ProviderLabel   string `json:"provider_label,omitempty"`
-	ModelID         string `json:"model_id"`
-	CredentialReady bool   `json:"credential_ready"`
-	HotSwitchable   bool   `json:"hot_switchable"`
+	SessionID              string   `json:"session_id"`
+	Client                 string   `json:"client"`
+	ConnectionID           string   `json:"connection_id"`
+	ConnectionName         string   `json:"connection_name"`
+	ProviderLabel          string   `json:"provider_label,omitempty"`
+	ModelID                string   `json:"model_id"`
+	ReasoningEffort        string   `json:"reasoning_effort,omitempty"`
+	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+	CredentialReady        bool     `json:"credential_ready"`
+	HotSwitchable          bool     `json:"hot_switchable"`
 }
 
 // WireActivationEvent is retained for internal audit helpers only. Ordinary
@@ -421,7 +463,7 @@ func ContractFromProfile(profile Profile, auth ContractAuth) (VerifiedProfileCon
 // This checks vocabulary for daemon-admitted identities; it does not trust TOML self-claims.
 func RequireContractProvenance(provenance string) error {
 	switch normalizeID(provenance) {
-	case ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility:
+	case ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog:
 		return nil
 	case "":
 		return fmt.Errorf("%w: client_model_provenance is required", ErrContractUnverified)
@@ -463,6 +505,7 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 		ClientModelProvenance: admitted.Provenance,
 		UpstreamBaseURL:       profile.BaseURL,
 		UpstreamModel:         admitted.UpstreamModelID,
+		ReasoningEffort:       normalizeID(profile.ReasoningEffort),
 		HistoryDomain:         admitted.HistoryDomain,
 		HistoryState:          HistoryStateEmpty,
 		ClientEnvelope:        admitted.ClientEnvelope,
@@ -477,17 +520,26 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 }
 
 // ToWire projects an internal binding to the App/control Provider-first DTO.
+// Reasoning Effort projects the daemon-owned override plus the client model's
+// effort contract (absent for unsupported clients/models).
 func (b RouteBinding) ToWire() WireBinding {
-	return WireBinding{
+	entry, known := lookupCodexModelMetadata(b.ClientModel)
+	wire := WireBinding{
 		SessionID:       b.SessionID,
 		Client:          clientFromExecutor(b.ExecutorID),
 		ConnectionID:    b.ProfileID,
 		ConnectionName:  b.ProfileName,
 		ProviderLabel:   b.ProviderLabel,
 		ModelID:         b.UpstreamModel,
+		ReasoningEffort: normalizeID(b.ReasoningEffort),
 		CredentialReady: b.CredentialReady,
 		HotSwitchable:   b.RouteID != "" && b.RouteProtocol != "",
 	}
+	if known && entry.Effort != nil {
+		wire.ReasoningEffortDefault = entry.Effort.defaultEffort
+		wire.ReasoningEfforts = append([]string(nil), entry.Effort.supported...)
+	}
+	return wire
 }
 
 // WireHistory projects internal activation history without generation/degradation.
@@ -518,17 +570,13 @@ func (s SessionRouteState) ToWire() WireSessionState {
 	}
 }
 
-// contractsCompatible enforces immutable client envelope/identity and history rules.
+// contractsCompatible enforces route/protocol/history invariants across an
+// activation. The unified model identity (ClientModel == UpstreamModel == the
+// selected model) and its envelope MAY change on a model switch; the route
+// protocol, executor protocol, and history-domain rules are immutable.
 func contractsCompatible(current, next RouteBinding) error {
-	if normalizeSpace(current.ClientModel) != normalizeSpace(next.ClientModel) ||
-		normalizeID(current.ClientModelProvenance) != normalizeID(next.ClientModelProvenance) {
-		return fmt.Errorf("%w: client_model %q -> %q", ErrBindingContractChange, current.ClientModel, next.ClientModel)
-	}
-	if !envelopesEqual(current.ClientEnvelope, next.ClientEnvelope) {
-		return fmt.Errorf("%w: client capability envelope changed", ErrBindingContractChange)
-	}
-	if err := envelopeSupports(next.UpstreamEnvelope, current.ClientEnvelope); err != nil {
-		return fmt.Errorf("%w: %v", ErrEnvelopeIncompatible, err)
+	if normalizeID(current.ExecutorID) != normalizeID(next.ExecutorID) {
+		return fmt.Errorf("%w: %s -> %s", ErrBindingExecutorMismatch, current.ExecutorID, next.ExecutorID)
 	}
 	if current.RouteProtocol != next.RouteProtocol {
 		return fmt.Errorf("%w: %s -> %s", ErrBindingProtocolChange, current.RouteProtocol, next.RouteProtocol)

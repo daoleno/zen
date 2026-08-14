@@ -26,6 +26,7 @@ type Request struct {
 	ProfileID            string                                 `json:"profile_id,omitempty"`
 	ConnectionID         string                                 `json:"connection_id,omitempty"`
 	ModelID              string                                 `json:"model_id,omitempty"`
+	ReasoningEffort      string                                 `json:"reasoning_effort,omitempty"`
 	ModelIDs             []string                               `json:"model_ids,omitempty"`
 	ProviderConnection   *modelprofiles.ProviderConnectionInput `json:"provider_connection,omitempty"`
 	Generation           int64                                  `json:"generation,omitempty"` // internal CAS only; ignored on Provider activate

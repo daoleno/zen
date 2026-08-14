@@ -305,14 +305,23 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 	if clientModel == "" {
 		return Profile{}, fmt.Errorf("%w: preset missing client contract for %s", ErrInvalid, executor)
 	}
-	// Upstream model for the ephemeral client Profile. Account connections and
-	// custom presets may omit model_id; the gateway never owns a default model,
-	// so an omitted model stays a compile-only probe placeholder (never the
-	// route's UpstreamModel) until the client selects one from the synced
-	// support allowlist or sets it explicitly.
+	// Unified identity for managed Codex: the selected model slug IS the Codex
+	// session model (client_model) and the routed upstream model — no hidden
+	// compatibility model. The daemon-owned model catalog admits the exact
+	// slug (unknown models fail closed at contract admission). For curated
+	// presets the preset's default model is the identity; an omitted model
+	// stays a compile-only probe placeholder (never the route's UpstreamModel)
+	// until the client selects one from the synced support allowlist.
 	modelID := in.ModelID
 	modelPlaceholder := false
-	if modelID == "" {
+	if executor == ExecutorCodex {
+		if modelID = normalizeSpace(modelID); modelID != "" {
+			clientModel = modelID
+		} else {
+			modelID = clientModel
+			modelPlaceholder = true
+		}
+	} else if modelID == "" {
 		modelID = clientModel
 		modelPlaceholder = true
 	}

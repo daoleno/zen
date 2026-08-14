@@ -1,8 +1,12 @@
 package modelprofiles
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -24,7 +28,7 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		conn.CredentialHint = o.providerCredentialHint(view.Profile)
 		out.Connections = append(out.Connections, conn)
 		entries, _ := o.modelsForConnection(view.Profile, false)
-		out.Models[conn.ID] = entries
+		out.Models[conn.ID] = stampModelKnown(entries, view.Profile.ExecutorID)
 	}
 	for key, profileID := range proj.Catalog.Defaults {
 		profileID = normalizeID(profileID)
@@ -51,6 +55,19 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		}
 	}
 	return out, nil
+}
+
+// stampModelKnown marks each entry with the daemon-owned metadata knowledge
+// for managed Codex (unknown gateway-only models are clearly unsupported, not
+// hidden); Claude entries are always daemon-known via their client contracts.
+func stampModelKnown(entries []ProviderModelEntry, executorID string) []ProviderModelEntry {
+	codex := normalizeID(executorID) == ExecutorCodex
+	out := make([]ProviderModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.Known = !codex || codexModelKnown(entry.ID)
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (o *Owner) defaultModelLocked(client string) string {
@@ -170,6 +187,65 @@ func (o *Owner) syncedModelCatalogLocked(profile Profile) ([]ProviderModelEntry,
 // with every model disabled fails closed. Legacy executor-scoped profiles own
 // an explicit model and are untouched. Returns (profile, false) when the
 // caller must fail closed.
+// CodexModelCatalogPath returns the stable per-connection Codex ModelsResponse
+// catalog file path (empty when the owner has no routes path).
+func (o *Owner) CodexModelCatalogPath(connectionID string) string {
+	if o == nil || o.routes == nil {
+		return ""
+	}
+	dir := filepath.Dir(o.routes.Path())
+	return filepath.Join(dir, "codex-model-catalog", normalizeID(connectionID)+".json")
+}
+
+// writeCodexModelCatalogLocked writes the deterministic per-connection Codex
+// model catalog (ModelsResponse shape): daemon-known metadata for the
+// connection's available models (discovery availability ∩ known metadata).
+// The launch model is always included when known so the CLI resolves the
+// running identity even before discovery syncs. Caller must hold o.mu.
+func (o *Owner) writeCodexModelCatalogLocked(profile Profile) error {
+	if o == nil || o.routes == nil {
+		return nil
+	}
+	path := o.CodexModelCatalogPath(profile.ID)
+	if path == "" {
+		return nil
+	}
+	known := map[string]struct{}{}
+	if !profile.ModelPlaceholder && codexModelKnown(profile.Model) {
+		known[normalizeSpace(profile.Model)] = struct{}{}
+	}
+	if durable, err := o.store.Get(profile.ID); err == nil && isAccountConnection(durable) {
+		if entries, synced := o.syncedModelCatalogLocked(durable); synced {
+			for _, entry := range entries {
+				if !entry.Available || !codexModelKnown(entry.ID) {
+					continue
+				}
+				known[normalizeSpace(entry.ID)] = struct{}{}
+			}
+		}
+	}
+	models := make([]string, 0, len(known))
+	for id := range known {
+		models = append(models, id)
+	}
+	sort.Strings(models)
+	raw, err := json.MarshalIndent(CodexModelsResponseForModels(models), "", "  ")
+	if err != nil {
+		return fmt.Errorf("%w: encode codex model catalog: %v", ErrInvalid, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("%w: codex model catalog dir: %v", ErrInvalid, err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("%w: write codex model catalog: %v", ErrInvalid, err)
+	}
+	return nil
+}
+
+// resolveSupportedLaunchModelLocked applies the connection's synced support
+// allowlist to the launch model. When the model is resolved/fallback-selected
+// here, the unified Codex identity is kept: ClientModel == Model (the Codex
+// session model IS the routed model).
 func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, bool) {
 	// The ephemeral launch target loses account scope during compile; the
 	// durable connection record decides whether the allowlist applies.
@@ -194,6 +270,16 @@ func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, boo
 		}
 	}
 
+	resolve := func(profile Profile, model string) Profile {
+		profile.Model = model
+		profile.ModelPlaceholder = false
+		if normalizeID(profile.ExecutorID) == ExecutorCodex {
+			// Unified identity: the Codex session model is the routed model.
+			profile.ClientModel = model
+		}
+		return profile
+	}
+
 	if candidate != "" {
 		if _, ok := supportedSet[candidate]; ok || !synced {
 			// The client's explicit selection is still supported, or no synced
@@ -203,9 +289,7 @@ func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, boo
 		// The selected model is no longer supported: deterministic visible
 		// fallback to the first supported model.
 		if firstSupported != "" {
-			profile.Model = firstSupported
-			profile.ModelPlaceholder = false
-			return profile, true
+			return resolve(profile, firstSupported), true
 		}
 		// A synced allowlist exists but every model is disabled: fail closed
 		// rather than route a model the client turned off.
@@ -214,9 +298,7 @@ func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, boo
 
 	// No client selection: deterministic fallback from the allowlist.
 	if firstSupported != "" {
-		profile.Model = firstSupported
-		profile.ModelPlaceholder = false
-		return profile, true
+		return resolve(profile, firstSupported), true
 	}
 	return profile, false
 }
@@ -578,7 +660,7 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 			}
 		}
 		if modelID != "" {
-			target, err := CompileConnectionTarget(raw, client, modelID)
+			target, err := CompileConnectionTarget(raw, client, modelID, "")
 			if err != nil {
 				return ProviderCatalogProjection{}, err
 			}
@@ -764,14 +846,17 @@ func (o *Owner) SessionProviderSelection(sessionID string) (ProviderSessionSelec
 	}
 	c := snap.Current
 	return ProviderSessionSelection{
-		SessionID:       c.SessionID,
-		Client:          c.Client,
-		ConnectionID:    c.ConnectionID,
-		ConnectionName:  c.ConnectionName,
-		ProviderLabel:   c.ProviderLabel,
-		ModelID:         c.ModelID,
-		CredentialReady: c.CredentialReady,
-		HotSwitchable:   c.HotSwitchable,
+		SessionID:              c.SessionID,
+		Client:                 c.Client,
+		ConnectionID:           c.ConnectionID,
+		ConnectionName:         c.ConnectionName,
+		ProviderLabel:          c.ProviderLabel,
+		ModelID:                c.ModelID,
+		ReasoningEffort:        c.ReasoningEffort,
+		ReasoningEffortDefault: c.ReasoningEffortDefault,
+		ReasoningEfforts:       append([]string(nil), c.ReasoningEfforts...),
+		CredentialReady:        c.CredentialReady,
+		HotSwitchable:          c.HotSwitchable,
 	}, true
 }
 
@@ -798,20 +883,113 @@ func (o *Owner) activationModelAdmittedLocked(profile Profile, modelID string) e
 	return fmt.Errorf("%w: model %q is not available on connection %s; keep the current route and choose a supported model", ErrUpstreamModelRequired, modelID, profile.ID)
 }
 
-// ActivateSessionProvider atomically activates Provider+model for the next
-// admitted request on the existing routed Session (same RouteID). The model
-// override is ephemeral: catalog connection, defaults, revision, and other
-// Sessions are never mutated. Generation CAS is internal. The selected model
-// must be admitted by the target connection's synced support allowlist;
-// otherwise the activation fails inline and the old route is kept — the daemon
-// never silently substitutes another model.
-func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID string) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+// handoffPending reports whether the route is in a Zen-initiated handoff
+// transition (used by the router).
+func (o *Owner) handoffPending(routeID string) bool {
+	if o == nil || o.table == nil {
+		return false
+	}
+	return o.table.HandoffPending(routeID)
+}
+
+// SetSessionHandoffPending marks/unmarks the route's process-handoff
+// transition (transient; used by the server handoff orchestrator).
+func (o *Owner) SetSessionHandoffPending(routeID string, pending bool) {
+	if o == nil || o.table == nil {
+		return
+	}
+	o.table.SetHandoffPending(routeID, pending)
+}
+
+// AdoptSessionModel converges the route binding to a request-carried model +
+// effort identity (a Codex TUI /model change on the running Session). The
+// request identity must resolve through the daemon-owned catalog and the
+// route connection's synced allowlist; anything else fails closed and leaves
+// the binding untouched (the request still passes through as-is — Zen never
+// rewrites a different visible model silently). effortPresent=false clears a
+// stale override when the CLI carries none.
+func (o *Owner) AdoptSessionModel(routeID, modelID, effortOverride string, effortPresent bool) error {
+	if o == nil || !o.started || o.table == nil {
+		return fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	routeID = strings.TrimSpace(routeID)
+	modelID = normalizeSpace(modelID)
+	effortOverride = normalizeID(effortOverride)
+	if routeID == "" || modelID == "" {
+		return fmt.Errorf("%w: route and model are required", ErrInvalid)
+	}
+
+	state, ok := o.table.GetByRouteID(routeID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrBindingNotFound, routeID)
+	}
+	if normalizeID(state.ExecutorID) != ExecutorCodex || normalizeID(state.RouteProtocol) != RouteProtocolResponses {
+		// Non-Codex/routed sessions never adopt request identities.
+		return fmt.Errorf("%w: session does not support request identity adoption", ErrInvalid)
+	}
+	if normalizeSpace(state.UpstreamModel) == modelID && normalizeID(state.ReasoningEffort) == effortOverride && effortPresent {
+		return nil // already converged
+	}
+
+	// The request identity must be daemon-known and admitted by the route
+	// connection's synced allowlist (fail closed; never guess capabilities).
+	if !codexModelKnown(modelID) {
+		return errUnknownCodexModel(modelID)
+	}
+	if effortOverride != "" && !codexEffortSupported(modelID, effortOverride) {
+		return fmt.Errorf("%w: client model %s does not support effort %q", ErrReasoningEffortUnsupported, modelID, effortOverride)
+	}
+	raw, err := o.GetProfile(state.ProfileID)
+	if err != nil {
+		return err
+	}
+	o.mu.Lock()
+	if !effortPresent {
+		effortOverride = ""
+	}
+	target, err := CompileConnectionTarget(raw, ExecutorCodex, modelID, effortOverride)
+	if err != nil {
+		o.mu.Unlock()
+		return err
+	}
+	if !target.ModelPlaceholder {
+		if err := o.activationModelAdmittedLocked(raw, target.Model); err != nil {
+			o.mu.Unlock()
+			return err
+		}
+	}
+	_, _, persist, err := o.activateCompiledProfileLocked(state.SessionID, target, state.Generation)
+	o.mu.Unlock()
+	if !persist.Applied {
+		return err
+	}
+	return nil
+}
+
+// ActivateSessionProvider atomically activates Provider+model (+ optional
+// Reasoning Effort) for the next admitted request on the existing routed
+// Session (same RouteID). The model/effort override is ephemeral: catalog
+// connection, defaults, revision, and other Sessions are never mutated.
+// Generation CAS is internal. The selected model must be admitted by the
+// target connection's synced support allowlist; otherwise the activation fails
+// inline and the old route is kept — the daemon never silently substitutes
+// another model.
+//
+// Reasoning Effort semantics (never send an invalid effort upstream):
+//   - effortOverride empty: PRESERVE the Session's current override when the
+//     target client model's daemon-owned contract supports it, else clear it
+//     (the model's documented default applies). Compatible model switches keep
+//     the user's effort; incompatible switches fall back to the safe default.
+//   - effortOverride set: must be in the daemon Codex vocabulary AND supported
+//     by the target client model; otherwise the activation fails inline.
+func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID, effortOverride string) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
 	if o == nil || !o.started {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	connectionID = normalizeID(connectionID)
 	modelID = normalizeSpace(modelID)
+	effortOverride = normalizeID(effortOverride)
 
 	state, ok := o.table.Get(sessionID)
 	if !ok {
@@ -824,7 +1002,7 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID string)
 	beforeRev := o.Catalog().Revision
 	beforeModel := normalizeSpace(raw.Model)
 
-	target, err := CompileConnectionTarget(raw, state.Binding.ExecutorID, modelID)
+	target, err := CompileConnectionTarget(raw, state.Binding.ExecutorID, modelID, effortOverride)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 	}
@@ -836,6 +1014,24 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID string)
 			return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 		}
 	}
+	// Explicit effort: admit against the TARGET model's daemon-owned contract
+	// (fail closed; an unsupported effort never reaches the route or the
+	// upstream). Omitted effort: PRESERVE the current override when the target
+	// model supports it (compatible model switch); otherwise clear it so the
+	// target model's documented default applies (safe fallback — never an
+	// invalid value).
+	if effortOverride != "" {
+		if !codexEffortSupported(target.ClientModel, effortOverride) {
+			return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: client model %s does not support effort %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
+		}
+	} else if currentEffort := normalizeID(state.Binding.ReasoningEffort); currentEffort != "" {
+		if codexEffortSupported(target.ClientModel, currentEffort) {
+			// Compatible model switch: keep the user's effort.
+			effortOverride = currentEffort
+		}
+		// Incompatible: fall through with an empty override (model default).
+	}
+	target.ReasoningEffort = effortOverride
 	next, snap, persist, err := o.activateCompiledProfile(sessionID, target, state.Generation)
 	if !persist.Applied {
 		return SessionRouteState{}, WireSessionSnapshot{}, persist, err

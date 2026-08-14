@@ -312,6 +312,7 @@ type clientMessage struct {
 	ProfileID            string                                 `json:"profile_id"`
 	ConnectionID         string                                 `json:"connection_id"`
 	ModelID              string                                 `json:"model_id"`
+	ReasoningEffort      string                                 `json:"reasoning_effort"`
 	Credential           string                                 `json:"credential"`
 	ProviderConnection   *modelprofiles.ProviderConnectionInput `json:"provider_connection"`
 }

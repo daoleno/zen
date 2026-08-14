@@ -87,13 +87,13 @@ func seedModelCatalogs(t *testing.T, owner *Owner, models map[string][]string) {
 
 // postLoopback routes one request through the Zen loopback and asserts the
 // response is 200.
-func postLoopback(t *testing.T, routerAddr, routeID string) {
+func postLoopback(t *testing.T, routerAddr, routeID, model string) {
 	t.Helper()
 	base, err := LoopbackCodexBaseURL(routerAddr, routeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewReader([]byte(`{"model":"cli","input":[]}`)))
+	req, _ := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewReader([]byte(`{"model":"`+model+`","input":[]}`)))
 	req.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -163,31 +163,31 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	owner := start()
 	t.Cleanup(func() { _ = owner.Close() })
 
-	// Provider A (shared URL, key-a, model-a), B (SAME URL, key-b, model-b),
-	// C (different URL, key-c, model-c).
-	projA, err := owner.UpsertProviderConnection(e2eCustomInput("", "Alpha", sharedURL, "model-a"), "key-a", 0, true)
+	// Provider A (shared URL, key-a, gpt-5.6-sol), B (SAME URL, key-b, gpt-5.5),
+	// C (different URL, key-c, gpt-5.4).
+	projA, err := owner.UpsertProviderConnection(e2eCustomInput("", "Alpha", sharedURL, "gpt-5.6-sol"), "key-a", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connA := projA.Connections[0]
-	projB, err := owner.UpsertProviderConnection(e2eCustomInput("", "Beta", sharedURL, "model-b"), "key-b", projA.Revision, true)
+	projB, err := owner.UpsertProviderConnection(e2eCustomInput("", "Beta", sharedURL, "gpt-5.5"), "key-b", projA.Revision, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connB := connectionByName(t, projB, "Beta")
-	projC, err := owner.UpsertProviderConnection(e2eCustomInput("", "Gamma", otherURL, "model-c"), "key-c", projB.Revision, true)
+	projC, err := owner.UpsertProviderConnection(e2eCustomInput("", "Gamma", otherURL, "gpt-5.4"), "key-c", projB.Revision, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connC := connectionByName(t, projC, "Gamma")
 	seedModelCatalogs(t, owner, map[string][]string{
-		connA.ID: {"model-a"},
-		connB.ID: {"model-b"},
-		connC.ID: {"model-c"},
+		connA.ID: {"gpt-5.6-sol"},
+		connB.ID: {"gpt-5.5"},
+		connC.ID: {"gpt-5.4"},
 	})
 	// A routed Codex default exists, so official-subscription stats must be
 	// suppressed and attributed to the serving routed Provider.
-	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "model-a", projC.Revision); err != nil {
+	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "gpt-5.6-sol", projC.Revision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,9 +213,9 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	t.Cleanup(routerSrv.Close)
 	routerAddr := routerSrv.Listener.Addr().String()
 
-	// Request 1: served by A with key-a and model-a.
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "model-a" {
+	// Request 1: served by A with key-a and gpt-5.6-sol.
+	postLoopback(t, routerAddr, routeID, "gpt-5.6-sol")
+	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "gpt-5.6-sol" {
 		t.Fatalf("request 1 must be A: %#v", got)
 	}
 
@@ -223,14 +223,14 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	// prove B while the Session/route stay identical.
 	beforeRev := owner.Catalog().Revision
 	beforeDefaults := owner.MustProjectForTest(t).Defaults
-	state, snap, persist, err := owner.ActivateSessionProvider("s-live", connB.ID, "model-b")
+	state, snap, persist, err := owner.ActivateSessionProvider("s-live", connB.ID, "gpt-5.5", "")
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate B err=%v persist=%#v", err, persist)
 	}
-	if state.Binding.RouteID != routeID || state.Binding.ProfileID != connB.ID || state.Binding.UpstreamModel != "model-b" {
+	if state.Binding.RouteID != routeID || state.Binding.ProfileID != connB.ID || state.Binding.UpstreamModel != "gpt-5.5" {
 		t.Fatalf("activate B binding=%#v", state.Binding)
 	}
-	if snap.Current == nil || snap.Current.ConnectionID != connB.ID || snap.Current.ModelID != "model-b" {
+	if snap.Current == nil || snap.Current.ConnectionID != connB.ID || snap.Current.ModelID != "gpt-5.5" {
 		t.Fatalf("activate B snap=%#v", snap)
 	}
 	if owner.Catalog().Revision != beforeRev {
@@ -240,25 +240,25 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	if len(afterDefaults) != len(beforeDefaults) {
 		t.Fatalf("activation mutated defaults: %#v -> %#v", beforeDefaults, afterDefaults)
 	}
-	if sel, ok := owner.SessionProviderSelection("s-live"); !ok || sel.ConnectionName != "Beta" || sel.ModelID != "model-b" {
+	if sel, ok := owner.SessionProviderSelection("s-live"); !ok || sel.ConnectionName != "Beta" || sel.ModelID != "gpt-5.5" {
 		t.Fatalf("session attribution after B: %#v ok=%v", sel, ok)
 	}
 
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := shared.last(); got.auth != "Bearer key-b" || got.model != "model-b" {
+	postLoopback(t, routerAddr, routeID, "gpt-5.5")
+	if got, _ := shared.last(); got.auth != "Bearer key-b" || got.model != "gpt-5.5" {
 		t.Fatalf("request 2 must be B: %#v", got)
 	}
 
 	// Activate C: different URL, key and model; the next request reaches the
-	// other upstream with key-c/model-c.
-	if _, _, _, err := owner.ActivateSessionProvider("s-live", connC.ID, "model-c"); err != nil {
+	// other upstream with key-c/gpt-5.4.
+	if _, _, _, err := owner.ActivateSessionProvider("s-live", connC.ID, "gpt-5.4", ""); err != nil {
 		t.Fatal(err)
 	}
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "model-c" {
+	postLoopback(t, routerAddr, routeID, "gpt-5.4")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
 		t.Fatalf("request 3 must be C: %#v", got)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-live"); sel.ConnectionName != "Gamma" || sel.ModelID != "model-c" {
+	if sel, _ := owner.SessionProviderSelection("s-live"); sel.ConnectionName != "Gamma" || sel.ModelID != "gpt-5.4" {
 		t.Fatalf("session attribution after C: %#v", sel)
 	}
 	if !owner.CodexRoutedDefault() {
@@ -267,16 +267,16 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 
 	// Failure rollback: an unsupported model fails inline and keeps the old
 	// route; the daemon never substitutes another model.
-	_, _, _, err = owner.ActivateSessionProvider("s-live", connC.ID, "bogus-model")
+	_, _, _, err = owner.ActivateSessionProvider("s-live", connC.ID, "bogus-model", "")
 	if !errors.Is(err, ErrUpstreamModelRequired) {
 		t.Fatalf("unsupported model err=%v", err)
 	}
 	state, _ = owner.Table().Get("s-live")
-	if state.Binding.ProfileID != connC.ID || state.Binding.UpstreamModel != "model-c" {
+	if state.Binding.ProfileID != connC.ID || state.Binding.UpstreamModel != "gpt-5.4" {
 		t.Fatalf("failed activation must keep the old route: %#v", state.Binding)
 	}
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "model-c" {
+	postLoopback(t, routerAddr, routeID, "gpt-5.4")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
 		t.Fatalf("request after rollback must stay C: %#v", got)
 	}
 
@@ -288,16 +288,16 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan2.ProvisionalID, "s-other"); err != nil {
 		t.Fatal(err)
 	}
-	postLoopback(t, routerAddr, plan2.State.Binding.RouteID)
-	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "model-a" {
+	postLoopback(t, routerAddr, plan2.State.Binding.RouteID, "gpt-5.6-sol")
+	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "gpt-5.6-sol" {
 		t.Fatalf("s2 must stay on A: %#v", got)
 	}
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "model-c" {
+	postLoopback(t, routerAddr, routeID, "gpt-5.4")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
 		t.Fatalf("s1 must stay on C: %#v", got)
 	}
 
-	// Restart restoration: the active route (s1 -> C, model-c) survives a
+	// Restart restoration: the active route (s1 -> C, gpt-5.4) survives a
 	// daemon restart and the next request still routes with C's auth/model.
 	_ = owner.Close()
 	owner2 := start()
@@ -305,20 +305,20 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	routerSrv2 := httptest.NewServer(owner2.router.Handler())
 	t.Cleanup(routerSrv2.Close)
 	state2, ok := owner2.Table().Get("s-live")
-	if !ok || state2.Binding.ProfileID != connC.ID || state2.Binding.UpstreamModel != "model-c" {
+	if !ok || state2.Binding.ProfileID != connC.ID || state2.Binding.UpstreamModel != "gpt-5.4" {
 		t.Fatalf("restored binding lost activation: %#v ok=%v", state2.Binding, ok)
 	}
-	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID)
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "model-c" {
+	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5.4")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
 		t.Fatalf("request after restart must stay C: %#v", got)
 	}
 	// The restored binding also survives a further activation on the restarted
 	// daemon (generation and catalog restored).
-	if _, _, _, err := owner2.ActivateSessionProvider("s-live", connA.ID, "model-a"); err != nil {
+	if _, _, _, err := owner2.ActivateSessionProvider("s-live", connA.ID, "gpt-5.6-sol", ""); err != nil {
 		t.Fatalf("activate after restart err=%v", err)
 	}
-	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID)
-	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "model-a" {
+	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5.6-sol")
+	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "gpt-5.6-sol" {
 		t.Fatalf("request after restart+activate must be A: %#v", got)
 	}
 }
@@ -370,19 +370,19 @@ func TestSessionProviderActivationInFlightSwitch(t *testing.T) {
 	}
 	owner.SetCredentialStore(creds)
 
-	projA, err := owner.UpsertProviderConnection(e2eCustomInput("", "Alpha", shared.server.URL+"/v1", "model-a"), "key-a", 0, true)
+	projA, err := owner.UpsertProviderConnection(e2eCustomInput("", "Alpha", shared.server.URL+"/v1", "gpt-5.6-sol"), "key-a", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connA := projA.Connections[0]
-	projB, err := owner.UpsertProviderConnection(e2eCustomInput("", "Beta", shared.server.URL+"/v1", "model-b"), "key-b", projA.Revision, true)
+	projB, err := owner.UpsertProviderConnection(e2eCustomInput("", "Beta", shared.server.URL+"/v1", "gpt-5.5"), "key-b", projA.Revision, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connB := connectionByName(t, projB, "Beta")
 	seedModelCatalogs(t, owner, map[string][]string{
-		connA.ID: {"model-a"},
-		connB.ID: {"model-b"},
+		connA.ID: {"gpt-5.6-sol"},
+		connB.ID: {"gpt-5.5"},
 	})
 	plan, err := owner.PrepareLaunch(ExecutorCodex, connA.ID, "codex")
 	if err != nil {
@@ -400,23 +400,23 @@ func TestSessionProviderActivationInFlightSwitch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		postLoopback(t, routerAddr, routeID)
+		postLoopback(t, routerAddr, routeID, "gpt-5.6-sol")
 	}()
 	<-started
 
 	// Activate B while A's request is in flight: must succeed immediately.
-	if _, _, _, err := owner.ActivateSessionProvider("s-inflight", connB.ID, "model-b"); err != nil {
+	if _, _, _, err := owner.ActivateSessionProvider("s-inflight", connB.ID, "gpt-5.5", ""); err != nil {
 		t.Fatalf("activate while in-flight err=%v", err)
 	}
 	// The in-flight request still finishes on the old snapshot (key-a).
 	close(hold)
 	<-done
-	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "model-a" {
+	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "gpt-5.6-sol" {
 		t.Fatalf("in-flight request must finish on old snapshot: %#v", got)
 	}
 	// The next request uses the new route (key-b).
-	postLoopback(t, routerAddr, routeID)
-	if got, _ := shared.last(); got.auth != "Bearer key-b" || got.model != "model-b" {
+	postLoopback(t, routerAddr, routeID, "gpt-5.5")
+	if got, _ := shared.last(); got.auth != "Bearer key-b" || got.model != "gpt-5.5" {
 		t.Fatalf("next request must use new route: %#v", got)
 	}
 }

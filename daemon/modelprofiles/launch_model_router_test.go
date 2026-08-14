@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-// Controlled integration proof for the reported regression: a new Session
-// launched with the UI-selected gpt-5.6-sol carries that exact model into the
-// routed Codex request body — the CLI's client contract model (gpt-5) is
-// replaced by the selected upstream model before anything reaches the gateway.
+// Controlled integration proof for the unified identity invariant: a new
+// Session launched with the UI-selected gpt-5.6-sol runs that EXACT model as
+// the Codex session model (launch argv), the routed upstream model, and the
+// model the CLI sends in request bodies — no hidden compatibility model.
 func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 	var upstreamModel string
 	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -50,8 +50,8 @@ func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.State.Binding.UpstreamModel != "gpt-5.6-sol" {
-		t.Fatalf("binding upstream_model=%q want gpt-5.6-sol", plan.State.Binding.UpstreamModel)
+	if plan.State.Binding.UpstreamModel != "gpt-5.6-sol" || plan.State.Binding.ClientModel != "gpt-5.6-sol" {
+		t.Fatalf("binding model identity=%q/%q want gpt-5.6-sol/gpt-5.6-sol", plan.State.Binding.ClientModel, plan.State.Binding.UpstreamModel)
 	}
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s1"); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	req, _ := http.NewRequest(http.MethodPost, base+"/responses",
-		bytes.NewReader([]byte(`{"model":"gpt-5","input":"hello"}`)))
+		bytes.NewReader([]byte(`{"model":"gpt-5.6-sol","input":"hello"}`)))
 	// The Codex CLI authenticates to the loopback with the placeholder; the
 	// router strips it and injects the real upstream credential (AuthModeNone
 	// here, so no auth header is forwarded upstream).
@@ -78,9 +78,18 @@ func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 	if upstreamModel != "gpt-5.6-sol" {
-		t.Fatalf("upstream received model=%q want gpt-5.6-sol (CLI contract model was %q)", upstreamModel, "gpt-5")
+		t.Fatalf("upstream received model=%q want gpt-5.6-sol (unified identity)", upstreamModel)
 	}
-	if strings.Contains(plan.Command, "gpt-5.6-sol") {
-		t.Fatalf("launch command must keep the client contract model, not the upstream: %q", plan.Command)
+	// The launch command carries the exact selected model as the Codex session
+	// model, plus the deterministic per-route model catalog (no gpt-5 contract
+	// anywhere).
+	if !strings.Contains(plan.Command, "--model gpt-5.6-sol") {
+		t.Fatalf("launch command must run the selected model: %q", plan.Command)
+	}
+	if !strings.Contains(plan.Command, "model_catalog_json=") {
+		t.Fatalf("launch command must reference the per-route model catalog: %q", plan.Command)
+	}
+	if strings.Contains(plan.Command, "--model gpt-5 ") {
+		t.Fatalf("launch command must not masquerade under gpt-5: %q", plan.Command)
 	}
 }

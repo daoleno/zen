@@ -198,7 +198,7 @@ func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride str
 		return Profile{}, fmt.Errorf("%w: %s", ErrNotFound, profileID)
 	}
 	if isAccountConnection(profile) {
-		return CompileConnectionTarget(profile, executorID, modelOverride)
+		return CompileConnectionTarget(profile, executorID, modelOverride, "")
 	}
 	if executorID != "" && profile.ExecutorID != executorID {
 		return Profile{}, fmt.Errorf("%w: profile %s belongs to executor %s, not %s", ErrInvalid, profileID, profile.ExecutorID, executorID)

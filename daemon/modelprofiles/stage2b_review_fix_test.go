@@ -83,7 +83,7 @@ func TestPrepareLaunchCompileFailureReleasesIdleListener(t *testing.T) {
 	ok := Profile{
 		ID: "ok", Name: "OK", ExecutorID: ExecutorCodex,
 		ProviderID: "openrouter", ProviderLabel: "OR",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "vendor/x",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5.6-sol", Model: "gpt-5.6-sol",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		BaseURL:               "https://openrouter.ai/api/v1",
 		AuthMode:              AuthModeBearerEnv,
@@ -380,10 +380,10 @@ func TestUpsertRejectsUnknownClientContract(t *testing.T) {
 		CredentialEnv:         "OPENROUTER_API_KEY",
 	}
 	_, err = owner.UpsertProfile(bad, 0, true)
-	if !errors.Is(err, ErrContractUnverified) {
+	if !errors.Is(err, ErrModelUnsupported) && !errors.Is(err, ErrContractUnverified) {
 		t.Fatalf("err=%v", err)
 	}
-	if ControlErrorCode(err) != CodeContractUnverified {
+	if ControlErrorCode(err) != CodeModelUnsupported && ControlErrorCode(err) != CodeContractUnverified {
 		t.Fatalf("code=%s", ControlErrorCode(err))
 	}
 	after := owner.Catalog()
@@ -391,8 +391,8 @@ func TestUpsertRejectsUnknownClientContract(t *testing.T) {
 		t.Fatalf("catalog mutated: before=%#v after=%#v", before, after)
 	}
 	ok := bad
-	ok.ClientModel = "gpt-5"
-	ok.Model = "openrouter/custom-alias"
+	ok.ClientModel = "gpt-5.6-sol"
+	ok.Model = "gpt-5.6-sol"
 	if _, err := owner.UpsertProfile(ok, 0, true); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestUpsertRejectsVerifierProfileMismatch(t *testing.T) {
 		CredentialEnv:         "OPENROUTER_API_KEY",
 	}
 	_, err = owner.UpsertProfile(p, 0, true)
-	if !errors.Is(err, ErrContractUnverified) {
+	if !errors.Is(err, ErrModelUnsupported) && !errors.Is(err, ErrContractUnverified) {
 		t.Fatalf("err=%v", err)
 	}
 	if len(owner.Catalog().Profiles) != 0 {
@@ -818,7 +818,10 @@ func TestCorruptV4LaunchedRejected(t *testing.T) {
 		{"route_id", func(s *SessionRouteState) { s.Launched.RouteID = "route_other" }},
 		{"executor", func(s *SessionRouteState) { s.Launched.ExecutorID = ExecutorClaude }},
 		{"protocol", func(s *SessionRouteState) { s.Launched.Protocol = ProtocolAnthropicMessages }},
-		{"client_model", func(s *SessionRouteState) { s.Launched.ClientModel = "gpt-5-codex" }},
+		// A launched model switch is legal under the unified identity, so the
+		// corruption fixture uses the launched provenance (must stay a known
+		// daemon label) instead of the client model.
+		{"launched_provenance", func(s *SessionRouteState) { s.Launched.ClientModelProvenance = "forged" }},
 		{"generation", func(s *SessionRouteState) { s.Launched.Generation = 2 }},
 		{"activation", func(s *SessionRouteState) { s.Launched.Activation = ActivationActiveSession }},
 	}

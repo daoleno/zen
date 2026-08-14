@@ -49,6 +49,13 @@ func ValidateProfile(profile Profile) error {
 	if isAccountConnection(profile) {
 		return validateAccountConnection(profile)
 	}
+	// ReasoningEffort is an ephemeral compile-only carrier; when present it must
+	// be in the daemon-owned Codex vocabulary (fail closed — an unknown value
+	// can never reach a RouteBinding). Support per client model is admitted by
+	// the caller against the effort contract.
+	if effort := normalizeID(profile.ReasoningEffort); effort != "" && !isCodexReasoningEffortValue(effort) {
+		return fmt.Errorf("%w: %q is not a known Codex reasoning effort", ErrReasoningEffortUnsupported, effort)
+	}
 	id := normalizeID(profile.ID)
 	if !profileIDRE.MatchString(id) {
 		return fmt.Errorf("%w: profile id must match %s", ErrInvalid, profileIDRE.String())
@@ -130,7 +137,7 @@ func ValidateProfile(profile Profile) error {
 // Presence of a known label is not authorization.
 func validateProvenanceLabel(provenance string) error {
 	switch normalizeID(provenance) {
-	case "", ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility:
+	case "", ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog:
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown client_model_provenance %q", ErrInvalid, provenance)

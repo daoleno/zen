@@ -121,7 +121,7 @@ func TestNormalizeAnthropicThinkingOnlyKeepsRoleAdjacency(t *testing.T) {
 
 func TestPortableHistoryStickySurvivesDurableRestore(t *testing.T) {
 	table := NewRouteTable()
-	a := routedCodex("http://127.0.0.1:9/v1", "gpt-5", "model-a")
+	a := routedCodex("http://127.0.0.1:9/v1", "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("sticky", a, 1, verifiedAuth(a))
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestPortableHistoryStickySurvivesDurableRestore(t *testing.T) {
 	if err := table.MarkHistoryMayContainOpaque(state.Binding.RouteID); err != nil {
 		t.Fatal(err)
 	}
-	b := routedCodex("http://127.0.0.1:9/v1", "gpt-5", "model-b")
+	b := routedCodex("http://127.0.0.1:9/v1", "gpt-5.5", "gpt-5.5")
 	got, err := table.Activate("sticky", b, 2, state.Generation, verifiedAuth(b))
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 
 	table := NewRouteTable()
 	table.SetLookup(func(string) (string, bool) { return "ready", true })
-	a := routedCodex(upA.URL, "gpt-5", "model-a")
+	a := routedCodex(upA.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("sess", a, 1, verifiedAuth(a))
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body1 := `{"model":"cli","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"alpha"}]}]}`
+	body1 := `{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"alpha"}]}]}`
 	resp, err := http.Post(base+"/responses", "application/json", strings.NewReader(body1))
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +218,7 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	b := routedCodex(upB.URL, "gpt-5", "model-b")
+	b := routedCodex(upB.URL, "gpt-5.5", "gpt-5.5")
 	got, err := table.Activate("sess", b, 2, 1, verifiedAuth(b))
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 	}
 
 	body2 := `{
-	  "model":"cli",
+	  "model":"gpt-5.5",
 	  "previous_response_id":"resp_a",
 	  "input":[
 	    {"type":"message","role":"user","content":[{"type":"input_text","text":"alpha"}]},
@@ -255,13 +255,13 @@ func TestPortableHistoryHotSwitchRouterAThenB(t *testing.T) {
 	if len(hitA) != 1 || len(hitB) != 1 {
 		t.Fatalf("hitA=%d hitB=%d", len(hitA), len(hitB))
 	}
-	if !strings.Contains(hitA[0], `"model-a"`) && !strings.Contains(hitA[0], "alpha") {
+	if !strings.Contains(hitA[0], `"gpt-5.6-sol"`) && !strings.Contains(hitA[0], "alpha") {
 		t.Fatalf("gateway A body=%s", hitA[0])
 	}
 	if strings.Contains(hitB[0], "previous_response_id") || strings.Contains(hitB[0], "encrypted_content") {
 		t.Fatalf("gateway B received opaque: %s", hitB[0])
 	}
-	if !strings.Contains(hitB[0], `"model-b"`) || !strings.Contains(hitB[0], "token-1") || !strings.Contains(hitB[0], "beta") {
+	if !strings.Contains(hitB[0], `"gpt-5.5"`) || !strings.Contains(hitB[0], "token-1") || !strings.Contains(hitB[0], "beta") {
 		t.Fatalf("gateway B missing portable continuity: %s", hitB[0])
 	}
 }
@@ -277,7 +277,7 @@ func TestPortableHistoryActivateWhileInFlightSwapsRouteAndMarksOpaque(t *testing
 	}))
 	defer up.Close()
 	table := NewRouteTable()
-	a := routedCodex(up.URL, "gpt-5", "model-a")
+	a := routedCodex(up.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", a, 1, verifiedAuth(a))
 	if err != nil {
 		t.Fatal(err)
@@ -299,12 +299,12 @@ func TestPortableHistoryActivateWhileInFlightSwapsRouteAndMarksOpaque(t *testing
 	// The in-flight request runs against its immutable old snapshot; a
 	// cross-domain activation must still swap the route so later requests use
 	// the new binding (never a busy/read-only Session).
-	b := routedCodex(up.URL, "gpt-5", "model-b")
+	b := routedCodex(up.URL, "gpt-5.5", "gpt-5.5")
 	got, err := table.Activate("s", b, 2, 1, verifiedAuth(b))
 	if err != nil {
 		t.Fatalf("activate while in-flight err=%v", err)
 	}
-	if got.Binding.UpstreamModel != "model-b" || got.Binding.RouteID != state.Binding.RouteID {
+	if got.Binding.UpstreamModel != "gpt-5.5" || got.Binding.RouteID != state.Binding.RouteID {
 		t.Fatalf("route must swap atomically on the same route: %#v", got.Binding)
 	}
 	close(hold)

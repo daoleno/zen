@@ -23,7 +23,7 @@ func TestCompileProviderConnectionPresetsHideInternalFields(t *testing.T) {
 	if !isAccountConnection(profile) || profile.CredentialEnv == "" || profile.Model != "" {
 		t.Fatalf("account compile=%#v", profile)
 	}
-	target, err := CompileConnectionTarget(profile, ClientCodex, "gpt-5")
+	target, err := CompileConnectionTarget(profile, ClientCodex, "gpt-5", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestActivateSessionProviderUsesCurrentGenerationAtomically(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s1"); err != nil {
 		t.Fatal(err)
 	}
-	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "up-b")
+	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "up-b", "")
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate err=%v persist=%#v", err, persist)
 	}
@@ -311,7 +311,7 @@ func TestUpsertCustomAccountConnectionViaOwner(t *testing.T) {
 	if got := proj.Connections[0].Clients; len(got) != 1 || got[0] != ClientCodex {
 		t.Fatalf("client scope=%#v", got)
 	}
-	if _, err := CompileConnectionTarget(owner.Catalog().Profiles[0], ClientClaude, "up-1"); !errors.Is(err, ErrBindingExecutorMismatch) {
+	if _, err := CompileConnectionTarget(owner.Catalog().Profiles[0], ClientClaude, "up-1", ""); !errors.Is(err, ErrBindingExecutorMismatch) {
 		t.Fatalf("cross-client compile err=%v", err)
 	}
 	// conflict revision
@@ -403,7 +403,7 @@ func TestDiscoverCustomAccountConnectionWithoutModelID(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			target, err := CompileConnectionTarget(conn, client, "")
+			target, err := CompileConnectionTarget(conn, client, "", "")
 			if err != nil {
 				t.Fatalf("empty-model compile probe: %v", err)
 			}

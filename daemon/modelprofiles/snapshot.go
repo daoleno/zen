@@ -41,6 +41,7 @@ type durableSessionRoute struct {
 	ClientModelProvenance string                `json:"client_model_provenance"`
 	UpstreamBaseURL       string                `json:"upstream_base_url"`
 	UpstreamModel         string                `json:"upstream_model"`
+	ReasoningEffort       string                `json:"reasoning_effort,omitempty"`
 	HistoryDomain         string                `json:"history_domain"`
 	HistoryState          string                `json:"history_state"`
 	HistoryPortability    string                `json:"history_portability,omitempty"`
@@ -79,6 +80,7 @@ type durableRouteFields struct {
 	ClientModelProvenance string          `json:"client_model_provenance"`
 	UpstreamBaseURL       string          `json:"upstream_base_url"`
 	UpstreamModel         string          `json:"upstream_model"`
+	ReasoningEffort       string          `json:"reasoning_effort,omitempty"`
 	HistoryDomain         string          `json:"history_domain"`
 	HistoryState          string          `json:"history_state"`
 	HistoryPortability    string          `json:"history_portability,omitempty"`
@@ -381,15 +383,11 @@ func validateLaunchedAgainstCurrent(state SessionRouteState) error {
 	if normalizeID(l.Protocol) != normalizeID(b.Protocol) {
 		return fmt.Errorf("%w: launched protocol drift", ErrRouteSnapshotInvalid)
 	}
-	if l.ClientModel != b.ClientModel {
-		return fmt.Errorf("%w: launched client_model drift", ErrRouteSnapshotInvalid)
-	}
-	if normalizeID(l.ClientModelProvenance) != normalizeID(b.ClientModelProvenance) {
-		return fmt.Errorf("%w: launched provenance drift", ErrRouteSnapshotInvalid)
-	}
-	if !envelopesEqual(l.ClientEnvelope, b.ClientEnvelope) {
-		return fmt.Errorf("%w: launched client envelope drift", ErrRouteSnapshotInvalid)
-	}
+	// Unified model identity: the launched binding keeps the ORIGINAL launch
+	// model (the CLI process was launched with it); the current binding may
+	// legitimately hold a different model after an acknowledged model switch.
+	// Each binding is re-verified against the daemon catalog independently on
+	// Restore, so no equality between them is required.
 	if l.Generation != 1 {
 		return fmt.Errorf("%w: launched generation must be 1", ErrRouteSnapshotInvalid)
 	}
@@ -433,6 +431,7 @@ func sessionStateToDurable(state SessionRouteState) (durableSessionRoute, error)
 		ClientModelProvenance: b.ClientModelProvenance,
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
+		ReasoningEffort:       normalizeID(b.ReasoningEffort),
 		HistoryDomain:         b.HistoryDomain,
 		HistoryState:          b.HistoryState,
 		HistoryPortability:    b.HistoryPortability,
@@ -478,6 +477,7 @@ func durableToSessionState(rec durableSessionRoute) (SessionRouteState, error) {
 		ClientModelProvenance: normalizeID(rec.ClientModelProvenance),
 		UpstreamBaseURL:       normalizeSpace(rec.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(rec.UpstreamModel),
+		ReasoningEffort:       normalizeID(rec.ReasoningEffort),
 		HistoryDomain:         normalizeSpace(rec.HistoryDomain),
 		HistoryState:          normalizeID(rec.HistoryState),
 		HistoryPortability:    normalizeID(rec.HistoryPortability),
@@ -490,6 +490,12 @@ func durableToSessionState(rec durableSessionRoute) (SessionRouteState, error) {
 		Generation:            rec.Generation,
 		CatalogRevision:       rec.CatalogRevision,
 		Activation:            normalizeSpace(rec.Activation),
+	}
+	// Fail closed on corrupt/unknown persisted effort values: a value outside
+	// the daemon-owned Codex vocabulary must never be restored into a live
+	// route (it would be forwarded upstream).
+	if binding.ReasoningEffort != "" && !isCodexReasoningEffortValue(binding.ReasoningEffort) {
+		return SessionRouteState{}, fmt.Errorf("%w: unknown persisted reasoning effort %q", ErrRouteSnapshotInvalid, binding.ReasoningEffort)
 	}
 	if binding.AuthMode == "" {
 		binding.AuthMode = AuthModeNone
@@ -569,6 +575,7 @@ func bindingToDurableFields(b RouteBinding) durableRouteFields {
 		ClientModelProvenance: b.ClientModelProvenance,
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
+		ReasoningEffort:       normalizeID(b.ReasoningEffort),
 		HistoryDomain:         b.HistoryDomain,
 		HistoryState:          b.HistoryState,
 		HistoryPortability:    b.HistoryPortability,
@@ -610,6 +617,7 @@ func durableFieldsToBinding(f durableRouteFields) RouteBinding {
 		ClientModelProvenance: normalizeID(f.ClientModelProvenance),
 		UpstreamBaseURL:       normalizeSpace(f.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(f.UpstreamModel),
+		ReasoningEffort:       normalizeID(f.ReasoningEffort),
 		HistoryDomain:         normalizeSpace(f.HistoryDomain),
 		HistoryState:          hs,
 		HistoryPortability:    normalizeID(f.HistoryPortability),

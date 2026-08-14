@@ -550,7 +550,7 @@ func TestBuiltinVerifierKnownAndUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Provenance != ContractProvenanceConfiguredCompatibility {
+	if got.Provenance != ContractProvenanceCodexCatalog {
 		t.Fatalf("provenance=%q", got.Provenance)
 	}
 	claude := Profile{
@@ -568,8 +568,8 @@ func TestBuiltinVerifierKnownAndUnknown(t *testing.T) {
 	unknown := okProfile
 	unknown.ClientModel = "gpt-99-invented"
 	unknown.Model = "gpt-99-invented"
-	if _, err := v.VerifyProfileContract(unknown); !errors.Is(err, ErrContractUnverified) {
-		t.Fatalf("unknown client err=%v", err)
+	if _, err := v.VerifyProfileContract(unknown); !errors.Is(err, ErrModelUnsupported) {
+		t.Fatalf("unknown model must fail closed, err=%v", err)
 	}
 }
 
@@ -578,7 +578,7 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 	openrouter := Profile{
 		ID: "or-codex", Name: "OpenRouter", ExecutorID: ExecutorCodex,
 		ProviderID: "openrouter", ProviderLabel: "OpenRouter",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "openai/gpt-5-pro",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "openai/gpt-5", Model: "openai/gpt-5",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		BaseURL:               "https://openrouter.ai/api/v1",
 		AuthMode:              AuthModeBearerEnv,
@@ -588,7 +588,7 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ProviderID != "openrouter" || got.UpstreamModelID != "openai/gpt-5-pro" {
+	if got.ProviderID != "openrouter" || got.UpstreamModelID != "openai/gpt-5" {
 		t.Fatalf("got=%#v", got)
 	}
 	if got.Provenance != ContractProvenanceConfiguredCompatibility {
@@ -597,12 +597,15 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 	if got.UpstreamEnvelope.ContextWindowTokens != got.ClientEnvelope.ContextWindowTokens {
 		t.Fatal("upstream envelope must mirror selected client contract")
 	}
+	// Custom gateway serving a daemon-known model: the exact slug is the single
+	// identity (client_model == model); unknown gateway-only slugs fail closed.
 	customGW := openrouter
 	customGW.ID = "custom-gw"
 	customGW.ProviderID = "acme-gateway"
 	customGW.ProviderLabel = "Acme Gateway"
 	customGW.BaseURL = "https://gateway.acme.example/v1"
-	customGW.Model = "acme/alias-gpt5"
+	customGW.ClientModel = "gpt-5.6-sol"
+	customGW.Model = "gpt-5.6-sol"
 	customGW.CredentialEnv = "ACME_KEY"
 	got2, err := v.VerifyProfileContract(customGW)
 	if err != nil {
@@ -627,15 +630,17 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 			t.Fatal("expected executor/protocol mismatch fail closed")
 		}
 	}
+	// Unified identity: openai_native with a mismatched (but known) model is
+	// rejected; the exact slug is the only admitted shape.
 	native := Profile{
 		ID: "native", Name: "Native", ExecutorID: ExecutorCodex,
 		ProviderID: "openai", ProviderLabel: "OpenAI",
-		Protocol: ProtocolOpenAINative, ClientModel: "gpt-5", Model: "other-upstream",
+		Protocol: ProtocolOpenAINative, ClientModel: "gpt-5", Model: "gpt-5.1",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		AuthMode:              AuthModeNone,
 	}
 	if _, err := v.VerifyProfileContract(native); !errors.Is(err, ErrContractUnverified) {
-		t.Fatalf("openai_native upstream!=client err=%v", err)
+		t.Fatalf("openai_native identity mismatch err=%v", err)
 	}
 }
 
@@ -644,7 +649,7 @@ func TestBuiltinSameContractHotSwitchAndHistoryDomains(t *testing.T) {
 	a := Profile{
 		ID: "a", Name: "A", ExecutorID: ExecutorCodex,
 		ProviderID: "openrouter", ProviderLabel: "OpenRouter",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "vendor/a",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5.6-sol", Model: "gpt-5.6-sol",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		BaseURL:               "https://openrouter.ai/api/v1",
 		AuthMode:              AuthModeBearerEnv,
@@ -653,7 +658,8 @@ func TestBuiltinSameContractHotSwitchAndHistoryDomains(t *testing.T) {
 	b := a
 	b.ID = "b"
 	b.Name = "B"
-	b.Model = "vendor/b"
+	b.ClientModel = "gpt-5.5"
+	b.Model = "gpt-5.5"
 	ca, err := v.VerifyProfileContract(a)
 	if err != nil {
 		t.Fatal(err)
@@ -662,11 +668,12 @@ func TestBuiltinSameContractHotSwitchAndHistoryDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ca.ClientModelID != cb.ClientModelID {
-		t.Fatal("same client contract expected")
+	// Unified identity: each model is its own contract identity.
+	if ca.ClientModelID != "gpt-5.6-sol" || cb.ClientModelID != "gpt-5.5" {
+		t.Fatalf("client identities=%q/%q", ca.ClientModelID, cb.ClientModelID)
 	}
 	if ca.HistoryDomain == cb.HistoryDomain {
-		t.Fatal("different upstream models must yield different history domains")
+		t.Fatal("different models must yield different history domains")
 	}
 
 	profiles, routes, listener := stage2bRoot(t)
@@ -734,7 +741,7 @@ func TestBuiltinRestoreReverify(t *testing.T) {
 	profile := Profile{
 		ID: "codex-main", Name: "Codex", ExecutorID: ExecutorCodex,
 		ProviderID: "openai", ProviderLabel: "OpenAI",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "gpt-5.1",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5.1", Model: "gpt-5.1",
 		ClientModelProvenance: ContractProvenanceBuiltinCatalog,
 		BaseURL:               "https://api.openai.com/v1",
 		AuthMode:              AuthModeBearerEnv,
@@ -767,7 +774,7 @@ func TestBuiltinRestoreReverify(t *testing.T) {
 		t.Fatalf("port changed %s -> %s", addr, owner2.ListenAddr())
 	}
 	state, ok := owner2.Table().Get("s1")
-	if !ok || state.Binding.ClientModel != "gpt-5" || state.Binding.UpstreamModel != "gpt-5.1" {
+	if !ok || state.Binding.ClientModel != "gpt-5.1" || state.Binding.UpstreamModel != "gpt-5.1" {
 		t.Fatalf("restored=%#v", state)
 	}
 }

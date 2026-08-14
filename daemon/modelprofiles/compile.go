@@ -49,7 +49,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 
 	switch profile.ExecutorID {
 	case ExecutorCodex:
-		command, env, note, err := compileCodex(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL)
+		command, env, note, err := compileCodex(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL, opts.CodexModelCatalogPath)
 		if err != nil {
 			return ResolvedLaunch{}, err
 		}
@@ -92,7 +92,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 	}
 }
 
-func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRouteURL string) (command string, env map[string]string, wsNote string, err error) {
+func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRouteURL, modelCatalogPath string) (command string, env map[string]string, wsNote string, err error) {
 	switch profile.Protocol {
 	case ProtocolOpenAINative:
 		return appendArgv(baseCommand, "--model", clientModel), nil, "", nil
@@ -100,6 +100,13 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 		command := appendArgv(baseCommand, "--model", clientModel)
 		command = appendConfig(command, `model_provider="openai"`)
 		command = appendConfig(command, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
+		// Deterministic per-connection Codex model catalog (ModelsResponse
+		// shape, daemon-owned metadata + discovery availability): the Codex
+		// thread model picker and metadata resolve the exact models of this
+		// route instead of a provider-agnostic (possibly poisoned) cache.
+		if path := normalizeSpace(modelCatalogPath); path != "" {
+			command = appendConfig(command, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
+		}
 		// Do not emit no-op --disable flags. Router rejects WebSocket Upgrade with
 		// 501; installed Codex falls back to POST /v1/responses (see package report).
 		wsNote = "codex_ws_reject_501_then_post_responses_fallback_observed"
@@ -129,6 +136,80 @@ func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRou
 		env[EnvAnthropicAuthToken] = LoopbackAuthPlaceholder
 	}
 	return command, env, nil
+}
+
+// CompileCodexResume builds the managed-handoff resume command: the Codex TUI
+// exposes NO external mutation protocol for a running thread, so a
+// Zen-initiated model/effort change on a live Session is applied truthfully by
+// resuming the SAME thread with the new identity (`codex resume <thread>
+// -c model=... -c model_reasoning_effort=...`). History is preserved (the
+// thread/rollout continues); the Zen Session/route is not recreated.
+func CompileCodexResume(threadID, modelID, effortOverride, loopbackRouteURL, modelCatalogPath string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	modelID = normalizeSpace(modelID)
+	effortOverride = normalizeID(effortOverride)
+	if threadID == "" {
+		return "", fmt.Errorf("%w: codex thread id is required for resume", ErrInvalid)
+	}
+	if !codexModelKnown(modelID) {
+		return "", errUnknownCodexModel(modelID)
+	}
+	if effortOverride != "" && !codexEffortSupported(modelID, effortOverride) {
+		return "", fmt.Errorf("%w: client model %s does not support effort %q", ErrReasoningEffortUnsupported, modelID, effortOverride)
+	}
+	command := appendArgv("codex", "resume", threadID)
+	command = appendConfig(command, fmt.Sprintf("model=%s", tomlString(modelID)))
+	if effortOverride != "" {
+		command = appendConfig(command, fmt.Sprintf("model_reasoning_effort=%s", tomlString(effortOverride)))
+	}
+	command = appendConfig(command, `model_provider="openai"`)
+	command = appendConfig(command, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
+	if path := normalizeSpace(modelCatalogPath); path != "" {
+		command = appendConfig(command, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
+	}
+	return command, nil
+}
+
+// CodexResumeCommand builds the managed-handoff resume command for a live
+// Session (same route, new model/effort). Fails closed when the Session is not
+// a routed Codex Session or the identity is not daemon-admitted.
+func (o *Owner) CodexResumeCommand(sessionID, threadID, modelID, effortOverride string) (string, error) {
+	if o == nil || !o.started {
+		return "", fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	state, ok := o.table.Get(strings.TrimSpace(sessionID))
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
+	}
+	if normalizeID(state.Binding.ExecutorID) != ExecutorCodex || normalizeID(state.Binding.RouteProtocol) != RouteProtocolResponses {
+		return "", fmt.Errorf("%w: session is not a routed managed Codex Session", ErrInvalid)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	loopbackURL := ""
+	if state.Binding.RouteID != "" {
+		var err error
+		loopbackURL, err = LoopbackCodexBaseURL(o.addr, state.Binding.RouteID)
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := o.writeCodexModelCatalogLocked(profileFromBinding(state.Binding)); err != nil {
+		return "", err
+	}
+	return CompileCodexResume(threadID, modelID, effortOverride, loopbackURL, o.CodexModelCatalogPath(state.Binding.ProfileID))
+}
+
+// RouteIDForSession returns the route id for a Session (empty when unbounded).
+func (o *Owner) RouteIDForSession(sessionID string) string {
+	if o == nil || o.table == nil {
+		return ""
+	}
+	state, ok := o.table.Get(strings.TrimSpace(sessionID))
+	if !ok {
+		return ""
+	}
+	return state.Binding.RouteID
 }
 
 func assertNoUpstreamLeak(command string, env map[string]string, profile Profile) error {

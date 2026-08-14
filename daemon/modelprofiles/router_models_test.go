@@ -57,28 +57,22 @@ func TestRouterServesLocalModelsList(t *testing.T) {
 			t.Fatalf("Content-Type=%q", got)
 		}
 		var list struct {
-			Object string `json:"object"`
-			Data   []struct {
-				ID      string `json:"id"`
-				Object  string `json:"object"`
-				OwnedBy string `json:"owned_by"`
-			} `json:"data"`
+			Models []struct {
+				Slug string `json:"slug"`
+			} `json:"models"`
 		}
 		if err := json.Unmarshal(raw, &list); err != nil {
 			t.Fatalf("invalid payload: %v", err)
 		}
-		if list.Object != "list" {
-			t.Fatalf("object=%q want list", list.Object)
-		}
-		ids := make([]string, 0, len(list.Data))
-		for _, entry := range list.Data {
-			ids = append(ids, entry.ID)
-			if entry.Object != "model" {
-				t.Fatalf("entry object=%q", entry.Object)
-			}
+		ids := make([]string, 0, len(list.Models))
+		for _, entry := range list.Models {
+			ids = append(ids, entry.Slug)
 		}
 		if strings.Join(ids, ",") != "gpt-5.6-sol,gpt-5.4-mini" {
-			t.Fatalf("ids=%v want available models only", ids)
+			t.Fatalf("ids=%v want available known models only", ids)
+		}
+		if !strings.Contains(string(raw), `"slug"`) || strings.Contains(string(raw), `"data"`) {
+			t.Fatalf("payload must be the Codex ModelsResponse shape: %s", raw)
 		}
 	}
 	if gotProfileID != state.Binding.ProfileID {
@@ -89,7 +83,7 @@ func TestRouterServesLocalModelsList(t *testing.T) {
 // The catalog surface is GET-only; every other endpoint stays POST-only.
 func TestRouterModelsMethodGate(t *testing.T) {
 	table := NewRouteTable()
-	profile := routedCodex("https://gateway.example/v1", "gpt-5", "up-m")
+	profile := routedCodex("https://gateway.example/v1", "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +124,7 @@ func TestRouterModelsMethodGate(t *testing.T) {
 // No synced models yet is a valid empty catalog, not an error.
 func TestRouterModelsEmptyCatalog(t *testing.T) {
 	table := NewRouteTable()
-	profile := routedCodex("https://gateway.example/v1", "gpt-5", "up-m")
+	profile := routedCodex("https://gateway.example/v1", "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -151,19 +145,19 @@ func TestRouterModelsEmptyCatalog(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, raw)
 	}
-	var list openAIModelList
+	var list CodexModelsResponse
 	if err := json.Unmarshal(raw, &list); err != nil {
 		t.Fatal(err)
 	}
-	if list.Object != "list" || len(list.Data) != 0 {
-		t.Fatalf("payload=%s want empty list", raw)
+	if len(list.Models) != 1 || list.Models[0].Slug != "gpt-5.6-sol" {
+		t.Fatalf("payload=%s want only the running identity", raw)
 	}
 }
 
 // A failing catalog resolver is a server-side condition, not a body error.
 func TestRouterModelsCatalogError(t *testing.T) {
 	table := NewRouteTable()
-	profile := routedCodex("https://gateway.example/v1", "gpt-5", "up-m")
+	profile := routedCodex("https://gateway.example/v1", "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +214,7 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 	owner.mu.Lock()
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("conn-a", []string{"gpt-5.6-sol", "gpt-5.4-mini"}, nil)
-	owner.discovery.put("conn-b", []string{"gpt-5.6-sol", "claude-sonnet-4"}, nil)
+	owner.discovery.put("conn-b", []string{"gpt-5.6-sol", "gpt-5.5"}, nil)
 	owner.mu.Unlock()
 
 	planA, err := owner.PrepareLaunch(ExecutorCodex, "conn-a", "codex")
@@ -251,7 +245,7 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 
 	want := map[string]string{
 		baseA + "/models": "gpt-5.6-sol,gpt-5.4-mini",
-		baseB + "/models": "gpt-5.6-sol,claude-sonnet-4",
+		baseB + "/models": "gpt-5.6-sol,gpt-5.5",
 	}
 	for url, wantIDs := range want {
 		resp, err := http.Get(url)
@@ -263,13 +257,13 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s status=%d body=%s", url, resp.StatusCode, raw)
 		}
-		var list openAIModelList
+		var list CodexModelsResponse
 		if err := json.Unmarshal(raw, &list); err != nil {
 			t.Fatal(err)
 		}
-		ids := make([]string, 0, len(list.Data))
-		for _, entry := range list.Data {
-			ids = append(ids, entry.ID)
+		ids := make([]string, 0, len(list.Models))
+		for _, entry := range list.Models {
+			ids = append(ids, entry.Slug)
 		}
 		if strings.Join(ids, ",") != wantIDs {
 			t.Fatalf("GET %s ids=%v want %q", url, ids, wantIDs)

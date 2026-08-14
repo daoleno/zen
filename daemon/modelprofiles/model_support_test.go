@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// The exact reported regression: the UI-selected gpt-5.6-sol must reach the
-// Codex launch configuration unchanged (route binding UpstreamModel), never a
-// fabricated gpt-5 preset default.
+// The exact reported regression: the UI-selected gpt-5.6-sol must be the ONE
+// model identity end to end — Codex session model (launch argv), route
+// binding, wire projection, and upstream — never a fabricated gpt-5 preset
+// default.
 func TestLaunchCarriesSelectedModelGpt56SolEndToEnd(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
@@ -38,23 +39,19 @@ func TestLaunchCarriesSelectedModelGpt56SolEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch with selected model: %v", err)
 	}
-	if plan.State.Binding.UpstreamModel != "gpt-5.6-sol" {
-		t.Fatalf("binding upstream_model=%q want gpt-5.6-sol", plan.State.Binding.UpstreamModel)
+	if plan.State.Binding.UpstreamModel != "gpt-5.6-sol" || plan.State.Binding.ClientModel != "gpt-5.6-sol" {
+		t.Fatalf("binding model identity=%q/%q want gpt-5.6-sol/gpt-5.6-sol", plan.State.Binding.ClientModel, plan.State.Binding.UpstreamModel)
 	}
 	if plan.Wire.ModelID != "gpt-5.6-sol" {
 		t.Fatalf("wire model_id=%q want gpt-5.6-sol", plan.Wire.ModelID)
 	}
-	if !strings.Contains(plan.Command, "gpt-5") {
-		t.Fatalf("launch command must carry the client contract model: %q", plan.Command)
-	}
-	// The CLI contract model may differ from the upstream model; the route
-	// binding owns the real upstream model.
-	if plan.State.Binding.ClientModel == plan.State.Binding.UpstreamModel {
-		t.Fatalf("client contract must stay distinct from upstream: %q", plan.State.Binding.UpstreamModel)
+	// The launch command runs the exact selected model (unified identity).
+	if !strings.Contains(plan.Command, "--model gpt-5.6-sol") {
+		t.Fatalf("launch command must run the selected model: %q", plan.Command)
 	}
 	// A stale preset default (gpt-5) must never be fabricated into the launch.
-	if plan.State.Binding.UpstreamModel == "gpt-5" {
-		t.Fatal("fabricated preset default gpt-5 reached the binding")
+	if plan.State.Binding.UpstreamModel == "gpt-5" || strings.Contains(plan.Command, "--model gpt-5 ") {
+		t.Fatal("fabricated preset default gpt-5 reached the launch")
 	}
 }
 

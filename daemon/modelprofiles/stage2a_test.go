@@ -39,7 +39,7 @@ func TestRouterCodexResponsesModelRewrite(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var obj map[string]any
 		_ = json.Unmarshal(body, &obj)
-		if obj["model"] != "upstream-model-v2" {
+		if obj["model"] != "gpt-5.6-sol" {
 			t.Errorf("model=%v", obj["model"])
 		}
 		if got := r.Header.Get("Authorization"); got != "" {
@@ -54,7 +54,7 @@ func TestRouterCodexResponsesModelRewrite(t *testing.T) {
 	defer upstream.Close()
 
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "upstream-model-v2")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s1", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestRouterCodexResponsesModelRewrite(t *testing.T) {
 	srv := httptest.NewServer(router.Handler())
 	defer srv.Close()
 	base, _ := LoopbackCodexBaseURL(srv.Listener.Addr().String(), state.Binding.RouteID)
-	req, _ := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewReader([]byte(`{"model":"cli-model","keep":"yes"}`)))
+	req, _ := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewReader([]byte(`{"model":"gpt-5.6-sol","keep":"yes"}`)))
 	req.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 	root, _ := LoopbackClaudeRootURL(srv.Listener.Addr().String(), state.Binding.RouteID)
 
 	// /v1/messages?beta=true
-	req, _ := http.NewRequest(http.MethodPost, root+"/v1/messages?beta=true", bytes.NewReader([]byte(`{"model":"cli","max_tokens":1}`)))
+	req, _ := http.NewRequest(http.MethodPost, root+"/v1/messages?beta=true", bytes.NewReader([]byte(`{"model":"claude-upstream","max_tokens":1}`)))
 	req.Header.Set("X-Api-Key", LoopbackAuthPlaceholder)
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	resp, err := http.DefaultClient.Do(req)
@@ -139,7 +139,7 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 	}
 
 	// dedicated count_tokens
-	req, _ = http.NewRequest(http.MethodPost, root+"/v1/messages/count_tokens?beta=true", bytes.NewReader([]byte(`{"model":"cli"}`)))
+	req, _ = http.NewRequest(http.MethodPost, root+"/v1/messages/count_tokens?beta=true", bytes.NewReader([]byte(`{"model":"claude-upstream"}`)))
 	req.Header.Set("X-Api-Key", "client-must-strip")
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	resp, err = http.DefaultClient.Do(req)
@@ -165,7 +165,7 @@ func TestRouterRejectsWebSocketUpgrade(t *testing.T) {
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "m")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestResponseStripsDynamicConnectionHop(t *testing.T) {
 			})
 			defer upstream.Close()
 			table := NewRouteTable()
-			profile := routedCodex(upstream.URL, "gpt-5", "m")
+			profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 			state, _ := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 			router := NewRouter(table)
 			srv := httptest.NewServer(router.Handler())
@@ -289,7 +289,7 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	defer upstream.Close()
 
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "model-a")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		resp, err := http.Post(base+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"cli"}`)))
+		resp, err := http.Post(base+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"claude-upstream"}`)))
 		if err != nil {
 			t.Errorf("first: %v", err)
 			return
@@ -325,12 +325,12 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	// atomically: the in-flight request keeps its immutable old snapshot and
 	// later requests admit under the new binding (never a busy/read-only
 	// Session).
-	changed := routedCodex(upstream.URL, "gpt-5", "model-b")
+	changed := routedCodex(upstream.URL, "gpt-5.5", "gpt-5.5")
 	got, err = table.Activate("s", changed, 2, 1, verifiedAuth(changed))
 	if err != nil {
 		t.Fatalf("cross-domain while in-flight err=%v", err)
 	}
-	if got.Binding.UpstreamModel != "model-b" || got.Binding.RouteID != state.Binding.RouteID {
+	if got.Binding.UpstreamModel != "gpt-5.5" || got.Binding.RouteID != state.Binding.RouteID {
 		t.Fatalf("route must swap atomically: %#v", got.Binding)
 	}
 	close(hold)
@@ -339,7 +339,7 @@ func TestRouterActivateNextRequestSemantics(t *testing.T) {
 	if got.Binding.HistoryState != HistoryStateMayContainOpaque {
 		t.Fatalf("2xx should mark opaque: %q", got.Binding.HistoryState)
 	}
-	next := routedCodex(upstream.URL, "gpt-5", "model-c")
+	next := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	got, err = table.Activate("s", next, 3, 2, verifiedAuth(next))
 	if err != nil {
 		t.Fatalf("opaque same-protocol portable activate err=%v", err)
@@ -358,7 +358,7 @@ func TestHistoryStaysEmptyOnLocalAndNetworkFailures(t *testing.T) {
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "m")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestHistoryStaysEmptyOnLocalAndNetworkFailures(t *testing.T) {
 	// Credential fail
 	table2 := NewRouteTable()
 	table2.SetLookup(func(string) (string, bool) { return "ready", true })
-	p2 := routedCodex(upstream.URL, "gpt-5", "m")
+	p2 := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	p2.AuthMode = AuthModeBearerEnv
 	p2.CredentialEnv = "K"
 	state2, err := table2.BindLaunch("s2", p2, 1, verifiedAuth(p2))
@@ -410,7 +410,7 @@ func TestHistoryStaysEmptyOnLocalAndNetworkFailures(t *testing.T) {
 	closedURL := "http://" + ln.Addr().String()
 	_ = ln.Close()
 	table3 := NewRouteTable()
-	p3 := routedCodex(closedURL, "gpt-5", "m")
+	p3 := routedCodex(closedURL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state3, err := table3.BindLaunch("s3", p3, 1, verifiedAuth(p3))
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestHistoryStaysEmptyOnLocalAndNetworkFailures(t *testing.T) {
 	}
 
 	// After failures, empty history may still switch domain.
-	next := routedCodex(closedURL, "gpt-5", "m2")
+	next := routedCodex(closedURL, "gpt-5.5", "gpt-5.5")
 	if _, err := table3.Activate("s3", next, 2, 1, verifiedAuth(next)); err != nil {
 		t.Fatalf("empty history domain switch: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestRouterStreamingFirstByteAndCancel(t *testing.T) {
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "m")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +499,7 @@ func TestRouterNoAmbientProxy(t *testing.T) {
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5", "m")
+	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 	state, _ := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	router := NewRouter(table)
 	srv := httptest.NewServer(router.Handler())
@@ -594,8 +594,8 @@ func TestRouterConcurrentCrossSessionIsolation(t *testing.T) {
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	pa := routedCodex(upstream.URL, "gpt-5", "model-a")
-	pb := routedCodex(upstream.URL, "gpt-5", "model-b")
+	pa := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
+	pb := routedCodex(upstream.URL, "gpt-5.5", "gpt-5.5")
 	s1, err := table.BindLaunch("a", pa, 1, verifiedAuth(pa))
 	if err != nil {
 		t.Fatal(err)
@@ -614,25 +614,25 @@ func TestRouterConcurrentCrossSessionIsolation(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			resp, err := http.Post(base1+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"x"}`)))
+			resp, err := http.Post(base1+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"gpt-5.6-sol"}`)))
 			if err == nil {
 				resp.Body.Close()
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			resp, err := http.Post(base2+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"x"}`)))
+			resp, err := http.Post(base2+"/responses", "application/json", bytes.NewReader([]byte(`{"model":"gpt-5.5"}`)))
 			if err == nil {
 				resp.Body.Close()
 			}
 		}()
 	}
 	wg.Wait()
-	if _, ok := hits.Load("model-a"); !ok {
-		t.Fatal("missing model-a")
+	if _, ok := hits.Load("gpt-5.6-sol"); !ok {
+		t.Fatal("missing gpt-5.6-sol")
 	}
-	if _, ok := hits.Load("model-b"); !ok {
-		t.Fatal("missing model-b")
+	if _, ok := hits.Load("gpt-5.5"); !ok {
+		t.Fatal("missing gpt-5.5")
 	}
 }
 

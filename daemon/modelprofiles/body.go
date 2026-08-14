@@ -183,6 +183,58 @@ func boundedReadAll(r io.Reader, max int64, codec string) ([]byte, error) {
 	return out, nil
 }
 
+// requestModelFromBody extracts the top-level JSON "model" field (the CLI's
+// own model identity). Fail closed on malformed/non-object bodies or a missing
+// model: the router never guesses an identity.
+func requestModelFromBody(body []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var obj map[string]json.RawMessage
+	if err := dec.Decode(&obj); err != nil {
+		return "", err
+	}
+	if obj == nil {
+		return "", fmt.Errorf("body must be a json object")
+	}
+	raw, ok := obj["model"]
+	if !ok {
+		return "", fmt.Errorf("body model is required")
+	}
+	var model string
+	if err := json.Unmarshal(raw, &model); err != nil {
+		return "", fmt.Errorf("body model must be a string")
+	}
+	return strings.TrimSpace(model), nil
+}
+
+// requestEffortFromBody extracts the top-level JSON "reasoning.effort" field.
+// present=false when the body has no reasoning object or no effort key.
+func requestEffortFromBody(body []byte) (effort string, present bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var obj map[string]json.RawMessage
+	if err := dec.Decode(&obj); err != nil || obj == nil {
+		return "", false
+	}
+	raw, ok := obj["reasoning"]
+	if !ok {
+		return "", false
+	}
+	var reasoning map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &reasoning); err != nil {
+		return "", false
+	}
+	effortRaw, ok := reasoning["effort"]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(effortRaw, &value); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(value), true
+}
+
 // rewriteRequestModel replaces only the top-level JSON "model" field.
 func rewriteRequestModel(body []byte, upstreamModel string) ([]byte, error) {
 	if err := ValidateModelID(upstreamModel); err != nil {
@@ -210,6 +262,57 @@ func rewriteRequestModel(body []byte, upstreamModel string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: re-encode: %v", ErrRequestBodyMalformed, err)
 	}
 	return out, nil
+}
+
+// rewriteRequestEffort replaces only the top-level JSON "reasoning.effort"
+// field, preserving every other key of the reasoning object (e.g. summary).
+// The value must be in the daemon-owned Codex effort vocabulary (fail closed —
+// an unknown value is never forwarded upstream).
+func rewriteRequestEffort(body []byte, effort string) ([]byte, error) {
+	effort = normalizeID(effort)
+	if effort == "" {
+		return body, nil
+	}
+	if !isCodexReasoningEffortValue(effort) {
+		return nil, fmt.Errorf("%w: unknown reasoning effort %q", ErrRequestBodyMalformed, effort)
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var obj map[string]json.RawMessage
+	if err := dec.Decode(&obj); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRequestBodyMalformed, err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("%w: trailing junk after json object", ErrRequestBodyMalformed)
+	}
+	if obj == nil {
+		return nil, fmt.Errorf("%w: body must be a json object", ErrRequestBodyMalformed)
+	}
+	reasoning := map[string]json.RawMessage{}
+	if raw, ok := obj["reasoning"]; ok && len(bytes.TrimSpace(raw)) > 0 && string(bytes.TrimSpace(raw)) != "null" {
+		if err := json.Unmarshal(raw, &reasoning); err != nil {
+			return nil, fmt.Errorf("%w: reasoning: %v", ErrRequestBodyMalformed, err)
+		}
+	}
+	effortBytes, err := json.Marshal(effort)
+	if err != nil {
+		return nil, fmt.Errorf("%w: effort encode: %v", ErrRequestBodyMalformed, err)
+	}
+	reasoning["effort"] = json.RawMessage(effortBytes)
+	obj["reasoning"] = mustRawMessage(reasoning)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("%w: re-encode: %v", ErrRequestBodyMalformed, err)
+	}
+	return out, nil
+}
+
+func mustRawMessage(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err) // unreachable for map[string]json.RawMessage
+	}
+	return raw
 }
 
 func stripInboundAuthAndHopByHop(h http.Header) {

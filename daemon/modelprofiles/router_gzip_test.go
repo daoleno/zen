@@ -31,7 +31,7 @@ func TestRouterGzipResponsesBodyForwarded(t *testing.T) {
 				if err := json.Unmarshal(body, &obj); err != nil {
 					t.Fatalf("upstream body is not plain JSON: %v", err)
 				}
-				if obj["model"] != "upstream-model-v2" {
+				if obj["model"] != "gpt-5.6-sol" {
 					t.Errorf("model=%v", obj["model"])
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -41,7 +41,7 @@ func TestRouterGzipResponsesBodyForwarded(t *testing.T) {
 			defer upstream.Close()
 
 			table := NewRouteTable()
-			profile := routedCodex(upstream.URL, "gpt-5", "upstream-model-v2")
+			profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 			state, err := table.BindLaunch("s1", profile, 1, verifiedAuth(profile))
 			if err != nil {
 				t.Fatal(err)
@@ -56,7 +56,7 @@ func TestRouterGzipResponsesBodyForwarded(t *testing.T) {
 
 			var buf bytes.Buffer
 			zw := gzip.NewWriter(&buf)
-			if _, err := zw.Write([]byte(`{"model":"cli-picked","input":"hi"}`)); err != nil {
+			if _, err := zw.Write([]byte(`{"model":"gpt-5.6-sol","input":"hi"}`)); err != nil {
 				t.Fatal(err)
 			}
 			if err := zw.Close(); err != nil {
@@ -196,7 +196,7 @@ func TestOwnerRouterServesGzipResponsesBody(t *testing.T) {
 
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write([]byte(`{"model":"cli-picked","input":"hi"}`)); err != nil {
+	if _, err := zw.Write([]byte(`{"model":"gpt-5.6-sol","input":"hi"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_ = zw.Close()
@@ -317,7 +317,7 @@ func TestRouterCodecResponsesBodyForwarded(t *testing.T) {
 				if err := json.Unmarshal(body, &obj); err != nil {
 					t.Fatalf("upstream body is not plain JSON: %v", err)
 				}
-				if obj["model"] != "upstream-model-v2" {
+				if obj["model"] != "gpt-5.6-sol" {
 					t.Errorf("model=%v", obj["model"])
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -327,7 +327,7 @@ func TestRouterCodecResponsesBodyForwarded(t *testing.T) {
 			defer upstream.Close()
 
 			table := NewRouteTable()
-			profile := routedCodex(upstream.URL, "gpt-5", "upstream-model-v2")
+			profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 			state, err := table.BindLaunch("s1", profile, 1, verifiedAuth(profile))
 			if err != nil {
 				t.Fatal(err)
@@ -343,7 +343,7 @@ func TestRouterCodecResponsesBodyForwarded(t *testing.T) {
 			req, err := http.NewRequest(
 				http.MethodPost,
 				base+"/responses",
-				bytes.NewReader(compressBodyForTest(t, tc.compact, `{"model":"cli-picked","input":"hi"}`)),
+				bytes.NewReader(compressBodyForTest(t, tc.compact, `{"model":"gpt-5.6-sol","input":"hi"}`)),
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -384,7 +384,7 @@ func TestRouterStackedCodingsResponsesBodyForwarded(t *testing.T) {
 				if err := json.Unmarshal(body, &obj); err != nil {
 					t.Fatalf("upstream body is not plain JSON: %v", err)
 				}
-				if obj["model"] != "upstream-model-v2" {
+				if obj["model"] != "gpt-5.6-sol" {
 					t.Errorf("model=%v", obj["model"])
 				}
 				w.WriteHeader(http.StatusOK)
@@ -393,7 +393,7 @@ func TestRouterStackedCodingsResponsesBodyForwarded(t *testing.T) {
 			defer upstream.Close()
 
 			table := NewRouteTable()
-			profile := routedCodex(upstream.URL, "gpt-5", "upstream-model-v2")
+			profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
 			state, err := table.BindLaunch("s1", profile, 1, verifiedAuth(profile))
 			if err != nil {
 				t.Fatal(err)
@@ -409,7 +409,7 @@ func TestRouterStackedCodingsResponsesBodyForwarded(t *testing.T) {
 			req, err := http.NewRequest(
 				http.MethodPost,
 				base+"/responses",
-				bytes.NewReader(compressStackedForTest(t, tc.codings, `{"model":"cli-picked","input":"hi"}`)),
+				bytes.NewReader(compressStackedForTest(t, tc.codings, `{"model":"gpt-5.6-sol","input":"hi"}`)),
 			)
 			if err != nil {
 				t.Fatal(err)

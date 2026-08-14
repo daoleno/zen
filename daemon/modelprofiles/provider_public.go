@@ -63,6 +63,9 @@ type ProviderModelEntry struct {
 	ID        string `json:"id"`
 	Available bool   `json:"available"`
 	Source    string `json:"source"` // bundled | discovered | lkg | manual
+	// Known marks daemon-owned metadata for managed Codex. Unknown gateway-only
+	// models are clearly unsupported (never masqueraded under another identity).
+	Known bool `json:"known,omitempty"`
 }
 
 // ProviderCatalogProjection is the Settings list payload.
@@ -88,16 +91,21 @@ type ProviderConnectionInput struct {
 }
 
 // ProviderSessionSelection is the Plus-menu current-Session projection.
-// Ordinary public wire omits provider_id.
+// Ordinary public wire omits provider_id. Reasoning Effort fields mirror
+// WireBinding: the current override plus the client model's daemon-owned
+// effort contract (absent for unsupported clients/models).
 type ProviderSessionSelection struct {
-	SessionID       string `json:"session_id"`
-	Client          string `json:"client"`
-	ConnectionID    string `json:"connection_id"`
-	ConnectionName  string `json:"connection_name"`
-	ProviderLabel   string `json:"provider_label,omitempty"`
-	ModelID         string `json:"model_id"`
-	CredentialReady bool   `json:"credential_ready"`
-	HotSwitchable   bool   `json:"hot_switchable"`
+	SessionID              string   `json:"session_id"`
+	Client                 string   `json:"client"`
+	ConnectionID           string   `json:"connection_id"`
+	ConnectionName         string   `json:"connection_name"`
+	ProviderLabel          string   `json:"provider_label,omitempty"`
+	ModelID                string   `json:"model_id"`
+	ReasoningEffort        string   `json:"reasoning_effort,omitempty"`
+	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+	CredentialReady        bool     `json:"credential_ready"`
+	HotSwitchable          bool     `json:"hot_switchable"`
 }
 
 // ProviderCredentialResult is the write-only credential mutation reply.

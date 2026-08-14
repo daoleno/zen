@@ -245,8 +245,8 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 	// Independent per-connection discovery catalogs.
 	owner.mu.Lock()
 	owner.discovery = newModelDiscoveryCache()
-	owner.discovery.put(connA.ID, []string{"alpha-model-1", "alpha-model-2"}, nil)
-	owner.discovery.put(connBID, []string{"beta-model-1"}, nil)
+	owner.discovery.put(connA.ID, []string{"gpt-5.6-sol", "gpt-5.4-mini"}, nil)
+	owner.discovery.put(connBID, []string{"gpt-5.5"}, nil)
 	if owner.discoveryPath != "" {
 		if serr := owner.discovery.save(owner.discoveryPath); serr != nil {
 			t.Fatal(serr)
@@ -255,7 +255,7 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 	owner.mu.Unlock()
 	modelsA := owner.supportedModelEntriesLocked(gotA)
 	modelsB := owner.supportedModelEntriesLocked(gotB)
-	if len(modelsA) != 2 || len(modelsB) != 1 || modelsA[0].ID != "alpha-model-1" || modelsB[0].ID != "beta-model-1" {
+	if len(modelsA) != 2 || len(modelsB) != 1 || modelsA[0].ID != "gpt-5.6-sol" || modelsB[0].ID != "gpt-5.5" {
 		t.Fatalf("catalog isolation A=%#v B=%#v", modelsA, modelsB)
 	}
 
@@ -343,7 +343,7 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 		t.Fatal(gerr)
 	}
 	entriesA, _ := owner2.modelsForConnection(alphaProfile, false)
-	if len(entriesA) != 2 || entriesA[0].ID != "alpha-model-1" {
+	if len(entriesA) != 2 || entriesA[0].ID != "gpt-5.6-sol" {
 		t.Fatalf("restart catalog A=%#v", entriesA)
 	}
 }
@@ -391,10 +391,10 @@ func TestRenamePreservesIdentityModelsDefaultsHistory(t *testing.T) {
 	// Discovery catalog, default selection and credential exist before rename.
 	owner.mu.Lock()
 	owner.discovery = newModelDiscoveryCache()
-	owner.discovery.put(connID, []string{"m1", "m2"}, nil)
+	owner.discovery.put(connID, []string{"gpt-5.5", "m2"}, nil)
 	owner.discovery.setDisabled(connID, []string{"m2"})
 	owner.mu.Unlock()
-	proj, err = owner.SetProviderDefault(ClientCodex, connID, "m1", proj.Revision)
+	proj, err = owner.SetProviderDefault(ClientCodex, connID, "gpt-5.5", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,12 +425,12 @@ func TestRenamePreservesIdentityModelsDefaultsHistory(t *testing.T) {
 	}
 	// Models and support toggles survived (disabled m2 stays disabled).
 	entries := owner.supportedModelEntriesLocked(got)
-	if len(entries) != 1 || entries[0].ID != "m1" {
+	if len(entries) != 1 || entries[0].ID != "gpt-5.5" {
 		t.Fatalf("support allowlist after rename=%#v", entries)
 	}
 	// Client default still references the same ID.
 	dflt := owner.MustProjectForTest(t).Defaults[ClientCodex]
-	if dflt.ConnectionID != connID || dflt.ModelID != "m1" {
+	if dflt.ConnectionID != connID || dflt.ModelID != "gpt-5.5" {
 		t.Fatalf("default after rename=%#v", dflt)
 	}
 	// Launch routes the renamed provider with the preserved credential.

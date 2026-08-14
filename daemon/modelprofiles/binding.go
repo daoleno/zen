@@ -19,6 +19,10 @@ type RouteTable struct {
 	verifier  ProfileContractVerifier
 	// inFlight tracks per-route request leases until Release/Complete.
 	inFlight map[string]map[string]routeFlight // routeID -> token -> meta
+	// handoffPending marks routes whose Zen-initiated model switch is still in
+	// its process-handoff transition (transient, never persisted: after a
+	// daemon restart no handoff task runs).
+	handoffPending map[string]bool
 }
 
 type routeFlight struct {
@@ -30,11 +34,12 @@ type routeFlight struct {
 // NewRouteTable constructs an empty in-memory route binding owner.
 func NewRouteTable() *RouteTable {
 	return &RouteTable{
-		bySession: map[string]SessionRouteState{},
-		byRoute:   map[string]string{},
-		lookup:    lookupEnv,
-		newRoute:  newOpaqueRouteID,
-		inFlight:  map[string]map[string]routeFlight{},
+		bySession:      map[string]SessionRouteState{},
+		byRoute:        map[string]string{},
+		lookup:         lookupEnv,
+		newRoute:       newOpaqueRouteID,
+		inFlight:       map[string]map[string]routeFlight{},
+		handoffPending: map[string]bool{},
 	}
 }
 
@@ -196,10 +201,10 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	draft.Generation = current.Generation + 1
 	draft.RouteID = current.Binding.RouteID
 	draft.RouteProtocol = current.Binding.RouteProtocol
-	draft.ClientModel = current.Binding.ClientModel
-	draft.ClientModelProvenance = current.Binding.ClientModelProvenance
-	draft.ClientEnvelope = current.Binding.ClientEnvelope
-	draft.Protocol = current.Binding.Protocol
+	// Unified model identity: the new binding carries the newly selected
+	// model's own client identity + envelope (a model switch legitimately
+	// changes them). Protocol/route identity and history rules are preserved
+	// below via contractsCompatible + the opaque-cross-domain guard.
 	draft.HistoryState = current.Binding.HistoryState
 	// Sticky portability once enabled — CLIs may resent old opaque blocks forever.
 	draft.HistoryPortability = current.Binding.HistoryPortability
@@ -230,6 +235,37 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	}
 	t.bySession[sessionID] = cloneSessionState(next)
 	return cloneSessionState(next), nil
+}
+
+// SetHandoffPending marks/unmarks a route's Zen-initiated process-handoff
+// transition. Transient only — never persisted.
+func (t *RouteTable) SetHandoffPending(routeID string, pending bool) {
+	if t == nil {
+		return
+	}
+	routeID = strings.TrimSpace(routeID)
+	if routeID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if pending {
+		t.handoffPending[routeID] = true
+	} else {
+		delete(t.handoffPending, routeID)
+	}
+}
+
+// HandoffPending reports whether the route is in a Zen-initiated handoff
+// transition (binding wins over request identities until it completes).
+func (t *RouteTable) HandoffPending(routeID string) bool {
+	if t == nil {
+		return false
+	}
+	routeID = strings.TrimSpace(routeID)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.handoffPending[routeID]
 }
 
 // BeginRouteFlight atomically snapshots the binding and registers an in-flight lease.

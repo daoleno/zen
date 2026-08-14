@@ -350,14 +350,14 @@ func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 	if !isAccountConnection(conn) || conn.ExecutorID != "" || conn.Protocol != "" || conn.Model != "" {
 		t.Fatalf("account=%#v", conn)
 	}
-	codex, err := CompileConnectionTarget(conn, ClientCodex, "deepseek-v4-flash")
+	codex, err := CompileConnectionTarget(conn, ClientCodex, "deepseek-v4-flash", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if codex.Protocol != ProtocolOpenAIResponses || codex.BaseURL != "https://api.deepseek.com" {
 		t.Fatalf("codex=%#v", codex)
 	}
-	if _, err := CompileConnectionTarget(conn, ClientClaude, "deepseek-v4-flash"); !errors.Is(err, ErrBindingExecutorMismatch) {
+	if _, err := CompileConnectionTarget(conn, ClientClaude, "deepseek-v4-flash", ""); !errors.Is(err, ErrBindingExecutorMismatch) {
 		t.Fatalf("cross-client compile err=%v", err)
 	}
 	claudeConn, err := CompileProviderConnection(ProviderConnectionInput{
@@ -366,7 +366,7 @@ func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claude, err := CompileConnectionTarget(claudeConn, ClientClaude, "deepseek-v4-flash")
+	claude, err := CompileConnectionTarget(claudeConn, ClientClaude, "deepseek-v4-flash", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestActivateSessionProviderDoesNotMutateCatalog(t *testing.T) {
 	}
 	beforeRev := owner.Catalog().Revision
 	beforeModel := b.Model
-	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "session-only-model")
+	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "session-only-model", "")
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate err=%v persist=%#v", err, persist)
 	}
@@ -493,7 +493,7 @@ func TestDeepSeekPortableActivateSetsStripOpaque(t *testing.T) {
 
 	ds := Profile{
 		ID: "ds", Name: "DeepSeek", ExecutorID: ExecutorCodex, ProviderID: "deepseek", ProviderLabel: "DeepSeek",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "deepseek-v4-flash",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "deepseek-v4-flash", Model: "deepseek-v4-flash",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		BaseURL:               "https://api.deepseek.com", AuthMode: AuthModeNone,
 	}
@@ -519,7 +519,7 @@ func TestDeepSeekRouterForwardsCodexShapedRequest(t *testing.T) {
 	auth := ContractAuth{Verifier: BuiltinEnvelopeVerifier{}}
 	p := Profile{
 		ID: "ds", Name: "DS", ExecutorID: ExecutorCodex, ProviderID: "deepseek", ProviderLabel: "DeepSeek",
-		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "deepseek-v4-flash",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "deepseek-v4-flash", Model: "deepseek-v4-flash",
 		ClientModelProvenance: ContractProvenanceConfiguredCompatibility,
 		BaseURL:               strings.TrimSuffix(up.URL, "/"), AuthMode: AuthModeNone,
 	}
@@ -530,7 +530,7 @@ func TestDeepSeekRouterForwardsCodexShapedRequest(t *testing.T) {
 	st.Binding.HistoryPortability = HistoryPortabilityStripOpaque
 	table.bySession["s1"] = st
 	router := NewRouter(table)
-	body := []byte(`{"model":"gpt-5","previous_response_id":"resp_old","store":false,"include":["reasoning.encrypted_content"],"parallel_tool_calls":false,"reasoning":{"summary":"auto"},"prompt_cache_key":"ck","client_metadata":{"cli":"codex"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object"}},{"type":"namespace","name":"ns","tools":[]}],"stream":true}`)
+	body := []byte(`{"model":"deepseek-v4-flash","previous_response_id":"resp_old","store":false,"include":["reasoning.encrypted_content"],"parallel_tool_calls":false,"reasoning":{"summary":"auto"},"prompt_cache_key":"ck","client_metadata":{"cli":"codex"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object"}},{"type":"namespace","name":"ns","tools":[]}],"stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/r/"+st.Binding.RouteID+"/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "127.0.0.1:1"

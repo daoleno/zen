@@ -45,8 +45,10 @@ func executorFromClient(client string) string {
 
 // CompileConnectionTarget builds an ephemeral internal Profile for one client
 // from a durable account connection or internal executor profile. modelOverride
-// is session-only and never written back to the catalog.
-func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride string) (Profile, error) {
+// and effortOverride are session-only and never written back to the catalog.
+// A non-empty effortOverride must be in the daemon-owned Codex vocabulary; the
+// target client model's support is admitted by the caller (ActivateSessionProvider).
+func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride, effortOverride string) (Profile, error) {
 	conn = normalizeProfile(conn)
 	client := executorFromClient(clientOrExecutor)
 	if client == "" {
@@ -54,6 +56,10 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 	}
 	if !SupportsExecutor(client) {
 		return Profile{}, fmt.Errorf("%w: %s", ErrUnsupportedExecutor, client)
+	}
+	effortOverride = normalizeID(effortOverride)
+	if effortOverride != "" && !isCodexReasoningEffortValue(effortOverride) {
+		return Profile{}, fmt.Errorf("%w: %q is not a known Codex reasoning effort", ErrReasoningEffortUnsupported, effortOverride)
 	}
 
 	if !isAccountConnection(conn) {
@@ -64,6 +70,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 		if modelOverride = normalizeSpace(modelOverride); modelOverride != "" {
 			out.Model = modelOverride
 		}
+		out.ReasoningEffort = effortOverride
 		if err := ValidateProfile(out); err != nil {
 			return Profile{}, err
 		}
@@ -95,6 +102,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride strin
 	target.Client = ""
 	target.CredentialEnv = conn.CredentialEnv
 	target.CredentialRef = conn.CredentialRef
+	target.ReasoningEffort = effortOverride
 	return target, nil
 }
 

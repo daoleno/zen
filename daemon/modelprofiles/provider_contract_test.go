@@ -205,7 +205,7 @@ func TestDeleteProviderConnectionNonOrphaning(t *testing.T) {
 		owner.creds = store
 		owner.router.creds = store
 		conn := seed(t, owner, store, "inuse")
-		target, err := CompileConnectionTarget(conn, ClientCodex, "deepseek-v4-flash")
+		target, err := CompileConnectionTarget(conn, ClientCodex, "deepseek-v4-flash", "")
 		if err != nil {
 			t.Fatal(err)
 		}

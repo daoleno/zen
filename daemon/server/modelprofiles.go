@@ -285,7 +285,7 @@ func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientM
 	if connectionID == "" {
 		connectionID = strings.TrimSpace(raw.ProfileID)
 	}
-	_, snap, persist, err := owner.ActivateSessionProvider(sessionID, connectionID, raw.ModelID)
+	_, snap, persist, err := owner.ActivateSessionProvider(sessionID, connectionID, raw.ModelID, strings.TrimSpace(raw.ReasoningEffort))
 	if !persist.Applied {
 		s.sendModelProfileError(conn, raw.RequestID, err)
 		return
@@ -294,23 +294,35 @@ func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientM
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeBindingNotFound, "session provider binding not found after activate")
 		return
 	}
+	// Truthful live-Codex semantics: the TUI has no external mutation protocol,
+	// so a Zen-initiated model/effort change on a live managed Codex Session
+	// runs the managed resume handoff (same thread, new identity). The handoff
+	// state is reported; the route activation above is authoritative either way.
+	handoff := codexHandoffState{}
+	if s.handoffTargetForActivation(sessionID, snap.Current) {
+		handoff = s.handoffManagedCodex(sessionID, snap.Current.ModelID, snap.Current.ReasoningEffort)
+	}
 	outcome, durable := modelprofiles.WirePersistFields(persist)
 	payload := map[string]any{
 		"type":       "session_provider_activated",
 		"request_id": raw.RequestID,
 		"agent_id":   sessionID,
 		"selection": map[string]any{
-			"session_id":       snap.Current.SessionID,
-			"client":           snap.Current.Client,
-			"connection_id":    snap.Current.ConnectionID,
-			"connection_name":  snap.Current.ConnectionName,
-			"provider_label":   snap.Current.ProviderLabel,
-			"model_id":         snap.Current.ModelID,
-			"credential_ready": snap.Current.CredentialReady,
-			"hot_switchable":   snap.Current.HotSwitchable,
+			"session_id":               snap.Current.SessionID,
+			"client":                   snap.Current.Client,
+			"connection_id":            snap.Current.ConnectionID,
+			"connection_name":          snap.Current.ConnectionName,
+			"provider_label":           snap.Current.ProviderLabel,
+			"model_id":                 snap.Current.ModelID,
+			"reasoning_effort":         snap.Current.ReasoningEffort,
+			"reasoning_effort_default": snap.Current.ReasoningEffortDefault,
+			"reasoning_efforts":        snap.Current.ReasoningEfforts,
+			"credential_ready":         snap.Current.CredentialReady,
+			"hot_switchable":           snap.Current.HotSwitchable,
 		},
 		"persistence_outcome": outcome,
 		"persistence_durable": durable,
+		"handoff":             handoff,
 	}
 	if snap.Launched != nil {
 		payload["launched"] = snap.Launched
