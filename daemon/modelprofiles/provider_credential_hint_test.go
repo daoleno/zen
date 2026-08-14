@@ -46,7 +46,7 @@ func TestCredentialHintProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	short := proj2.Connections[0]
+	short := connectionByName(t, proj2, "Short")
 	if short.CredentialHint != "••••••" {
 		t.Fatalf("short hint=%q want %q", short.CredentialHint, "••••••")
 	}
