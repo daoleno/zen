@@ -985,6 +985,9 @@ function ComposerStatesDemo() {
         selection={demoSelection}
         rows={demoRows}
         modelRequired={false}
+        effortContract={null}
+        effortChoice=""
+        onEffortChange={NOOP}
         chrome={chrome}
         onClose={() => setDemoSheet(null)}
         onRetry={NOOP}

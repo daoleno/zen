@@ -10,7 +10,10 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../../services/providers";
-import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
+import type {
+  ProviderPickerModelRow,
+  SessionEffortContract,
+} from "../../../services/providers/sessionModelHelpers";
 import {
   SessionModelSheet,
   type SessionModelChoice,
@@ -38,6 +41,11 @@ export interface TerminalScreenOverlaysProps {
   routeSheetSelection?: ProviderSessionSelection | null;
   routeSheetRows: ProviderPickerModelRow[];
   routeSheetModelRequired: boolean;
+  routeSheetEffortContract?: SessionEffortContract | null;
+  routeSheetEffortChoice?: string;
+  routeSheetEffortDisabled?: boolean;
+  routeSheetHandoffWarning?: string | null;
+  onRouteSheetEffortChange?(value: string): void;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -87,6 +95,11 @@ export function TerminalScreenOverlays({
   routeSheetSelection,
   routeSheetRows,
   routeSheetModelRequired,
+  routeSheetEffortContract,
+  routeSheetEffortChoice,
+  routeSheetEffortDisabled,
+  routeSheetHandoffWarning,
+  onRouteSheetEffortChange,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -168,6 +181,11 @@ export function TerminalScreenOverlays({
         selection={routeSheetSelection}
         rows={routeSheetRows}
         modelRequired={routeSheetModelRequired}
+        effortContract={routeSheetEffortContract}
+        effortChoice={routeSheetEffortChoice}
+        effortDisabled={routeSheetEffortDisabled}
+        onEffortChange={(value) => onRouteSheetEffortChange?.(value)}
+        handoffWarning={routeSheetHandoffWarning}
         chrome={chrome}
         onClose={onCloseRouteSheet}
         onRetry={onRetryRouteSheet}

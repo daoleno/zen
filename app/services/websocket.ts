@@ -71,6 +71,7 @@ import {
   parseProviderConnectionTestResult,
   parseProviderModelsResult,
   parseProviderSessionSelection,
+  parseCodexHandoffState,
   parseProvidersSnapshot,
   providerErrorFromPayload,
   requireAppliedPersistence,
@@ -1163,7 +1164,13 @@ export class MultiServerWebSocketClient {
 
   activateSessionProvider(
     serverId: string,
-    input: { agentId: string; connectionId: string; modelId: string },
+    input: {
+      agentId: string;
+      connectionId: string;
+      modelId: string;
+      /** Optional Reasoning Effort override; omitted = daemon preservation rule. */
+      reasoningEffort?: string;
+    },
   ): Promise<ProviderActivationResult> {
     const requestId = newProviderRequestId();
     return new Promise((resolve, reject) => {
@@ -1194,7 +1201,13 @@ export class MultiServerWebSocketClient {
             );
             return;
           }
-          resolve({ selection, persistence });
+          resolve({
+            selection,
+            persistence,
+            ...(parseCodexHandoffState(payload.handoff)
+              ? { handoff: parseCodexHandoffState(payload.handoff) }
+              : {}),
+          });
         } catch (error) {
           reject(
             error instanceof ProviderError
@@ -1235,6 +1248,9 @@ export class MultiServerWebSocketClient {
           agent_id: input.agentId,
           connection_id: input.connectionId,
           model_id: input.modelId,
+          ...(input.reasoningEffort?.trim()
+            ? { reasoning_effort: input.reasoningEffort.trim() }
+            : {}),
         },
         cleanup,
         reject,

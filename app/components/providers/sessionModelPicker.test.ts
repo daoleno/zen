@@ -7,6 +7,8 @@ import {
   MODEL_SHEET_MAX_LIST_FRACTION,
   MODEL_SHEET_MIN_LIST_HEIGHT,
   MODEL_SHEET_ROW_HEIGHT,
+  EFFORT_SHEET_HEADER_HEIGHT,
+  EFFORT_SHEET_ROW_HEIGHT,
   resolveModelSheetListMaxHeight,
   sessionModelSheetRowCount,
 } from "./sessionModelSheetModel";
@@ -403,6 +405,7 @@ describe("sessionModelSheetRows (preferred-Provider Model inventory)", () => {
         current: true,
         disabled: true,
         unavailableCurrent: true,
+        unsupported: false,
       },
     ]);
   });
@@ -426,6 +429,7 @@ describe("sessionModelSheetModel list height (size changes)", () => {
         windowHeight: 800,
         groupCount: 0,
         modelCount: 2,
+        effortCount: 0,
       }),
     ).toBe(
       MODEL_SHEET_HEADER_HEIGHT +
@@ -437,6 +441,7 @@ describe("sessionModelSheetModel list height (size changes)", () => {
         windowHeight: 800,
         groupCount: 0,
         modelCount: 0,
+        effortCount: 0,
       }),
     ).toBe(MODEL_SHEET_MIN_LIST_HEIGHT);
   });
@@ -451,6 +456,7 @@ describe("sessionModelSheetModel list height (size changes)", () => {
       windowHeight: 800,
       groupCount: 0,
       modelCount: 56,
+      effortCount: 0,
     });
     expect(tall).toBe(Math.floor(800 * MODEL_SHEET_MAX_LIST_FRACTION));
     expect(tall).toBeLessThan(800);
@@ -461,11 +467,13 @@ describe("sessionModelSheetModel list height (size changes)", () => {
       windowHeight: 480,
       groupCount: 0,
       modelCount: 56,
+      effortCount: 0,
     });
     const wide = resolveModelSheetListMaxHeight({
       windowHeight: 800,
       groupCount: 0,
       modelCount: 56,
+      effortCount: 0,
     });
     expect(narrow).toBe(Math.floor(480 * MODEL_SHEET_MAX_LIST_FRACTION));
     expect(narrow).toBeLessThan(wide);
@@ -477,6 +485,34 @@ describe("sessionModelSheetModel list height (size changes)", () => {
         windowHeight: 100,
         groupCount: 0,
         modelCount: 56,
+        effortCount: 0,
+      }),
+    ).toBe(MODEL_SHEET_MIN_LIST_HEIGHT);
+  });
+
+  test("the effort section counts toward the list height and stays reachable", () => {
+    const withEffort = resolveModelSheetListMaxHeight({
+      windowHeight: 800,
+      groupCount: 0,
+      modelCount: 2,
+      effortCount: 3,
+    });
+    const without = resolveModelSheetListMaxHeight({
+      windowHeight: 800,
+      groupCount: 0,
+      modelCount: 2,
+      effortCount: 0,
+    });
+    expect(withEffort).toBe(
+      without + EFFORT_SHEET_HEADER_HEIGHT + 3 * EFFORT_SHEET_ROW_HEIGHT,
+    );
+    // On a very short window the floor still guarantees a usable list.
+    expect(
+      resolveModelSheetListMaxHeight({
+        windowHeight: 100,
+        groupCount: 0,
+        modelCount: 2,
+        effortCount: 4,
       }),
     ).toBe(MODEL_SHEET_MIN_LIST_HEIGHT);
   });
@@ -489,6 +525,18 @@ describe("Session model sheet communicates next-message semantics", () => {
     expect(sheetSource).toContain("Switching…");
     expect(sheetSource).not.toMatch(/start a new Session/i);
     expect(sheetSource).not.toMatch(/restart/i);
+  });
+
+  test("the Reasoning Effort section projects the daemon contract only", () => {
+    const sheetSource = source("./SessionModelSheet.tsx");
+    expect(sheetSource).toContain("Reasoning Effort");
+    expect(sheetSource).toContain("Model default");
+    expect(sheetSource).toContain("reasoningEffortLabel(value)");
+    expect(sheetSource).toContain("onEffortChange(value)");
+    // No fabricated values: the section renders only the projected contract.
+    expect(sheetSource).not.toMatch(/effortContract.*\|\s*\[\s*["']/);
+    // Truthful handoff warning copy never claims live UI convergence.
+    expect(sheetSource).toContain("handoffWarning");
   });
 
   test("model-required copy is a concise choose-a-model request", () => {

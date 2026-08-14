@@ -34,6 +34,29 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const item of value) {
+    const text = typeof item === "string" ? item.trim() : "";
+    if (text && !out.includes(text)) out.push(text);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Parses the optional managed-Codex handoff state from an activation reply.
+ * Unknown states parse to undefined (callers surface the raw state string).
+ */
+export function parseCodexHandoffState(raw: unknown): import("./types").CodexHandoffState | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const state = asString(record.state);
+  if (!state) return undefined;
+  const message = asString(record.message);
+  return { state, ...(message ? { message } : {}) };
+}
+
 function asRevision(value: unknown): number | null {
   return typeof value === "number" &&
     Number.isInteger(value) &&
@@ -134,7 +157,12 @@ export function parseProviderModel(raw: unknown): ProviderModel | null {
   const id = asString(record.id);
   const source = asString(record.source);
   if (!id || !source || typeof record.available !== "boolean") return null;
-  return { id, source, available: record.available };
+  return {
+    id,
+    source,
+    available: record.available,
+    known: record.known === true ? true : undefined,
+  };
 }
 
 export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
@@ -223,6 +251,9 @@ export function parseProviderSessionSelection(
     connection_name: asString(record.connection_name),
     provider_label: asString(record.provider_label) || undefined,
     model_id: asString(record.model_id),
+    reasoning_effort: asString(record.reasoning_effort) || undefined,
+    reasoning_effort_default: asString(record.reasoning_effort_default) || undefined,
+    reasoning_efforts: asStringArray(record.reasoning_efforts),
     credential_ready: record.credential_ready === true,
     hot_switchable: record.hot_switchable === true,
   };

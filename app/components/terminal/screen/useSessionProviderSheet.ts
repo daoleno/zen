@@ -22,8 +22,11 @@ import {
   sessionModelSheetRows,
   preferredProviderConnectionId,
   activationTargetModel,
+  sessionEffortContract,
+  resolveEffortChoiceForModel,
   type ComposerModelControlPresentation,
   type ProviderPickerModelRow,
+  type SessionEffortContract,
 } from "../../../services/providers/sessionModelHelpers";
 import { wsClient } from "../../../services/websocket";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
@@ -84,6 +87,14 @@ export function useSessionProviderSheet({
     null,
   );
   const [catalog, setCatalog] = useState<ProvidersSnapshot | null>(null);
+  // Transient sheet-local effort choice, initialized from the authoritative
+  // daemon projection (override ?? model default); reset whenever the
+  // projection changes so the sheet never invents its own state.
+  const [effortChoice, setEffortChoice] = useState<string | null>(null);
+  // Last managed-Codex handoff outcome of an activation (truthful display:
+  // the route activation is authoritative; a failed handoff means the running
+  // Codex window may still show the previous identity).
+  const [handoffWarning, setHandoffWarning] = useState<string | null>(null);
   const ownerRef = useRef(new ProviderRequestOwner());
   const fetchedEpochRef = useRef<{ serverId: string; agentId: string } | null>(
     null,
@@ -106,6 +117,8 @@ export function useSessionProviderSheet({
     setRequiresRefreshBeforeMutation(false);
     setLoading(false);
     setActivating(false);
+    setEffortChoice(null);
+    setHandoffWarning(null);
   }, []);
 
   const close = useCallback(() => {
@@ -193,6 +206,23 @@ export function useSessionProviderSheet({
         }
 
         setSelection(nextSelection);
+        // Rebase the transient effort choice on the authoritative projection
+        // (override ?? model default); a changed selection must never leave a
+        // stale effort choice visible.
+        const contract = sessionEffortContract(nextSelection);
+        setEffortChoice((current) => {
+          const base = contract?.current ?? "";
+          if (current === null) return base || null;
+          if (contract && !contract.supported.includes(current)) {
+            return resolveEffortChoiceForModel({
+              currentChoice: current,
+              targetSupported: contract.supported,
+              targetDefault: contract.defaultEffort,
+            });
+          }
+          return current;
+        });
+        setHandoffWarning(null);
 
         try {
           const nextCatalog = await wsClient.listProviders(serverId);
@@ -343,10 +373,7 @@ export function useSessionProviderSheet({
         catalog,
         selection.client,
       );
-      if (
-        !preferredId ||
-        preferredId !== choice.connectionId
-      ) {
+      if (!preferredId || preferredId !== choice.connectionId) {
         setError("Choose a model for the Provider selected in Settings.");
         return;
       }
@@ -356,6 +383,19 @@ export function useSessionProviderSheet({
         setError("That model is not available for this Session.");
         return;
       }
+      // Reasoning Effort rides the same acknowledged activation: the resolved
+      // choice is the transient sheet selection rebased on the authoritative
+      // projection (override ?? model default), so a compatible model switch
+      // preserves the current effort and the daemon enforces the contract.
+      const effortContract = sessionEffortContract(selection);
+      const resolvedEffort =
+        effortChoice !== null && effortContract
+          ? resolveEffortChoiceForModel({
+              currentChoice: effortChoice,
+              targetSupported: effortContract.supported,
+              targetDefault: effortContract.defaultEffort,
+            })
+          : (effortContract?.current ?? "");
       if (ownerRef.current.activationRequiresRefresh()) {
         syncActivationLockUi();
         setError("Refresh required before switching model.");
@@ -369,6 +409,7 @@ export function useSessionProviderSheet({
       const token = admission.token;
       setActivating(true);
       setError(null);
+      setHandoffWarning(null);
       try {
         const result = await wsClient.activateSessionProvider(
           serverId,
@@ -376,6 +417,7 @@ export function useSessionProviderSheet({
             agentId,
             connectionId: choice.connectionId,
             modelId: choice.modelId,
+            reasoningEffort: resolvedEffort,
           }),
         );
         if (!ownerRef.current.isCurrent(token)) return;
@@ -397,6 +439,20 @@ export function useSessionProviderSheet({
           fetchedEpochRef.current = { serverId, agentId };
           syncActivationLockUi();
           void carryPreferredModel(result.selection, catalog);
+          // Truthful live-Codex display: a failed/partial handoff means the
+          // running Codex window may still show the previous identity even
+          // though the Session route already runs the new one. Never claim
+          // UI convergence that was not proven.
+          if (result.handoff && result.handoff.state !== "applied") {
+            const reason =
+              result.handoff.message ??
+              (result.handoff.state === "failed"
+                ? "The Codex window could not be switched to the new model; the switch applies to the next message, and the window will show the previous model until it reloads."
+                : "The Codex window was not restarted; the switch applies to the next message.");
+            setHandoffWarning(reason);
+          } else {
+            setHandoffWarning(null);
+          }
           if (classification === "applied_durable") {
             // Acknowledgement received: same Session now runs the new model.
             setVisible(false);
@@ -465,6 +521,15 @@ export function useSessionProviderSheet({
     selection,
     activating,
   });
+  const effortContract: SessionEffortContract | null =
+    sessionEffortContract(selection);
+  const effectiveEffortChoice = effortContract
+    ? resolveEffortChoiceForModel({
+        currentChoice: effortChoice ?? effortContract.current,
+        targetSupported: effortContract.supported,
+        targetDefault: effortContract.defaultEffort,
+      })
+    : "";
 
   const composerControl: ComposerModelControlPresentation | null =
     resolveComposerModelControl({
@@ -490,5 +555,9 @@ export function useSessionProviderSheet({
     rows,
     modelRequired,
     composerControl,
+    effortContract,
+    effortChoice: effectiveEffortChoice,
+    selectEffort: setEffortChoice,
+    handoffWarning,
   };
 }

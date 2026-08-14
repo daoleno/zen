@@ -44,6 +44,12 @@ export type ProviderModel = {
   id: string;
   available: boolean;
   source: string;
+  /**
+   * Daemon-owned metadata known for this model identity on managed Codex.
+   * Unknown gateway-only models are clearly unsupported (fail closed), never
+   * masqueraded under a compatibility identity.
+   */
+  known?: boolean;
 };
 
 export type ProviderModelEntry = ProviderModel;
@@ -82,6 +88,15 @@ export type ProviderSessionSelection = {
   connection_name: string;
   provider_label?: string;
   model_id: string;
+  /**
+   * Daemon-owned Reasoning Effort override for this Session ("" = none; the
+   * model/CLI default applies). Terminal and Interface project the same value.
+   */
+  reasoning_effort?: string;
+  /** Documented model default effort (present only when the model has an effort contract). */
+  reasoning_effort_default?: string;
+  /** Supported effort values of the Session's model (present only when configurable). */
+  reasoning_efforts?: string[];
   credential_ready: boolean;
   hot_switchable: boolean;
 };
@@ -118,9 +133,22 @@ export type ProvidersMutationResult = {
   persistence: import("./persistence").MutationPersistence;
 };
 
+export type CodexHandoffState = {
+  /** applied | failed | skipped */
+  state: string;
+  message?: string;
+};
+
 export type ProviderActivationResult = {
   selection: ProviderSessionSelection;
   persistence: import("./persistence").MutationPersistence;
+  /**
+   * Managed Codex process-handoff outcome after a Zen-initiated model/effort
+   * switch on a live TUI Session. Missing = no handoff attempted. The route
+   * activation is authoritative regardless; the handoff only proves the
+   * running Codex process shows the new identity too.
+   */
+  handoff?: CodexHandoffState;
 };
 
 export type SessionProviderActivationResult = ProviderActivationResult;

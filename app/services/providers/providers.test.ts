@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  parseCodexHandoffState,
   parseProviderCredentialResult,
   parseProviderConnectionTestResult,
+  parseProviderModel,
   parseProvidersSnapshot,
   parseProviderSessionSelection,
   connectionsForSession,
@@ -163,6 +165,7 @@ describe("Provider DTO parse", () => {
       hot_switchable: true,
     });
     expect(selection?.connection_id).toBe("c1");
+    expect(selection?.reasoning_efforts).toBeUndefined();
 
     const cred = parseProviderCredentialResult(
       {
@@ -175,6 +178,60 @@ describe("Provider DTO parse", () => {
     );
     expect(cred?.credential_ready).toBe(true);
     expect((cred as any).credential).toBeUndefined();
+  });
+
+  test("session selection parses the Reasoning Effort projection", () => {
+    const selection = parseProviderSessionSelection({
+      session_id: "tmux:@1",
+      client: "codex",
+      connection_id: "c1",
+      connection_name: "Gateway",
+      model_id: "gpt-5.6-sol",
+      reasoning_effort: "high",
+      reasoning_effort_default: "medium",
+      reasoning_efforts: ["low", "medium", "high", "xhigh", "max"],
+      credential_ready: true,
+      hot_switchable: true,
+    });
+    expect(selection?.reasoning_effort).toBe("high");
+    expect(selection?.reasoning_effort_default).toBe("medium");
+    expect(selection?.reasoning_efforts).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
+
+  test("activation replies parse the managed-Codex handoff state", () => {
+    expect(parseCodexHandoffState({ state: "applied" })).toEqual({
+      state: "applied",
+    });
+    expect(
+      parseCodexHandoffState({
+        state: "failed",
+        message: "the TUI did not exit",
+      }),
+    ).toEqual({ state: "failed", message: "the TUI did not exit" });
+    expect(parseCodexHandoffState(undefined)).toBeUndefined();
+    expect(parseCodexHandoffState({})).toBeUndefined();
+  });
+
+  test("model entries parse the daemon-known flag", () => {
+    const parsed = parseProviderModel({
+      id: "gateway-only-model",
+      available: true,
+      source: "discovered",
+    });
+    expect(parsed?.known).toBeUndefined();
+    const known = parseProviderModel({
+      id: "gpt-5.6-sol",
+      available: true,
+      source: "discovered",
+      known: true,
+    });
+    expect(known?.known).toBe(true);
   });
 
   test("credential result parser never retains secret fields", () => {

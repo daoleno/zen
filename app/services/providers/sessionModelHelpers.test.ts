@@ -5,8 +5,11 @@ import {
   currentSessionForClient,
   modelSupportedOnConnection,
   preferredProviderConnectionId,
+  reasoningEffortLabel,
   refetchFoundBindingNotSwitchable,
   resolveComposerModelControl,
+  resolveEffortChoiceForModel,
+  sessionEffortContract,
   sessionModelRequired,
   sessionModelSheetRows,
 } from "./sessionModelHelpers";
@@ -340,6 +343,146 @@ describe("Exact ID propagation", () => {
     expect(new Set(rows.map((row) => row.key)).size).toBe(60);
     expect(rows[59].modelId).toBe("model-59");
     expect(rows[59].disabled).toBe(false);
+  });
+});
+
+describe("Reasoning Effort contract (daemon projection only)", () => {
+  test("the contract projects override, default, and supported values", () => {
+    const contract = sessionEffortContract({
+      ...selection,
+      reasoning_effort: "high",
+      reasoning_effort_default: "medium",
+      reasoning_efforts: ["low", "medium", "high"],
+    });
+    expect(contract).toEqual({
+      current: "high",
+      override: "high",
+      defaultEffort: "medium",
+      supported: ["low", "medium", "high"],
+    });
+  });
+
+  test("no override falls back to the documented model default", () => {
+    const contract = sessionEffortContract({
+      ...selection,
+      reasoning_effort: "",
+      reasoning_effort_default: "medium",
+      reasoning_efforts: ["low", "medium", "high"],
+    });
+    expect(contract?.current).toBe("medium");
+  });
+
+  test("no effort surface yields null (the UI hides the control)", () => {
+    expect(sessionEffortContract(selection)).toBeNull();
+    expect(
+      sessionEffortContract({
+        ...selection,
+        reasoning_effort_default: "medium",
+        reasoning_efforts: [],
+      }),
+    ).toBeNull();
+    expect(sessionEffortContract(null)).toBeNull();
+  });
+
+  test("compatible switches preserve the current effort; incompatible use the documented default", () => {
+    expect(
+      resolveEffortChoiceForModel({
+        currentChoice: "high",
+        targetSupported: ["low", "medium", "high"],
+        targetDefault: "medium",
+      }),
+    ).toBe("high");
+    expect(
+      resolveEffortChoiceForModel({
+        currentChoice: "high",
+        targetSupported: ["low", "medium"],
+        targetDefault: "medium",
+      }),
+    ).toBe("medium");
+    expect(
+      resolveEffortChoiceForModel({
+        currentChoice: "",
+        targetSupported: ["low", "medium"],
+        targetDefault: "medium",
+      }),
+    ).toBe("medium");
+  });
+
+  test("display labels are presentation only; wire values are untouched", () => {
+    expect(reasoningEffortLabel("xhigh")).toBe("XHigh");
+    expect(reasoningEffortLabel("max")).toBe("Max");
+    expect(reasoningEffortLabel("custom-slug")).toBe("custom-slug");
+  });
+});
+
+describe("Unknown model admission (fail closed, never masquerade)", () => {
+  const unknownSelection: ProviderSessionSelection = {
+    ...selection,
+    model_id: "deepseek-chat",
+  };
+  const unknownSnapshot: ProvidersSnapshot = {
+    ...snapshot,
+    models: {
+      c1: [
+        {
+          id: "gateway-only-model",
+          available: true,
+          source: "discovered",
+          known: false,
+        },
+      ],
+    },
+  };
+
+  test("rows for unknown models are disabled and marked unsupported", () => {
+    const rows = sessionModelSheetRows({
+      snapshot: unknownSnapshot,
+      selection: unknownSelection,
+    });
+    expect(rows[0].modelId).toBe("gateway-only-model");
+    expect(rows[0].disabled).toBe(true);
+    expect(rows[0].unsupported).toBe(true);
+    expect(rows[0].current).toBe(false);
+  });
+
+  test("activation admission refuses unknown models (never substitutes)", () => {
+    expect(
+      activationTargetModel(unknownSnapshot, {
+        connectionId: "c1",
+        modelId: "gateway-only-model",
+      }),
+    ).toBeNull();
+    expect(
+      activationTargetModel(snapshot, {
+        connectionId: "c1",
+        modelId: "deepseek-chat",
+      }),
+    ).not.toBeNull();
+  });
+
+  test("the activation request carries an optional effort override", () => {
+    const request = buildActivateSessionProviderRequest({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-chat",
+      reasoningEffort: "high",
+    });
+    expect(request).toEqual({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-chat",
+      reasoningEffort: "high",
+    });
+    const without = buildActivateSessionProviderRequest({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-chat",
+    });
+    expect(without).toEqual({
+      agentId: "tmux:@1",
+      connectionId: "c1",
+      modelId: "deepseek-chat",
+    });
   });
 });
 

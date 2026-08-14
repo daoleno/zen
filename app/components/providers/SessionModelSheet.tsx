@@ -17,8 +17,10 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../services/providers";
-import type {
-  ProviderPickerModelRow,
+import {
+  reasoningEffortLabel,
+  type ProviderPickerModelRow,
+  type SessionEffortContract,
 } from "../../services/providers/sessionModelHelpers";
 import { resolveModelSheetListMaxHeight } from "./sessionModelSheetModel";
 
@@ -38,13 +40,28 @@ interface SessionModelSheetProps {
    * only. No Provider groups, names, or cross-Provider inventory ever
    * reaches this sheet.
    */
-  rows: ProviderPickerModelRow[];
-  /**
+  rows: ProviderPickerModelRow[];  /**
    * Model-required state: the Session route still runs another Provider than
    * the preferred one, so sending is blocked and the user must pick a model
    * here to activate the exact preferred connection_id + model_id.
    */
   modelRequired: boolean;
+  /**
+   * Authoritative daemon-projected Reasoning Effort contract of the Session's
+   * model. Null hides the section entirely (unsupported client/model) — a
+   * dead or misleading Effort control is never rendered.
+   */
+  effortContract?: SessionEffortContract | null;
+  /** Current effort choice (daemon projection rebased; wire value). */
+  effortChoice?: string;
+  /** True while an activation is in flight (effort rows disabled). */
+  effortDisabled?: boolean;
+  onEffortChange(value: string): void;
+  /**
+   * Truthful managed-Codex handoff warning: the route switched, but the
+   * running Codex window could not be switched to the new identity.
+   */
+  handoffWarning?: string | null;
   chrome: TerminalThemeChrome;
   onRetry(): void;
   onClose(): void;
@@ -79,6 +96,11 @@ export function SessionModelSheet({
   selection,
   rows,
   modelRequired,
+  effortContract,
+  effortChoice = "",
+  effortDisabled = false,
+  onEffortChange,
+  handoffWarning,
   chrome,
   onRetry,
   onClose,
@@ -91,14 +113,16 @@ export function SessionModelSheet({
     typeof error === "string" ? error : error?.message ?? null;
   const refreshable =
     typeof error === "object" && error != null ? error.refreshable : true;
+  const effortCount = effortContract?.supported.length ?? 0;
   const listMaxHeight = useMemo(
     () =>
       resolveModelSheetListMaxHeight({
         windowHeight,
         groupCount: 0,
         modelCount: rows.length,
+        effortCount,
       }),
-    [rows.length, windowHeight],
+    [rows.length, windowHeight, effortCount],
   );
 
   // Controlled open/close: the ref-driven native sheet follows `visible`.
@@ -234,6 +258,16 @@ export function SessionModelSheet({
                       Currently running; no longer available for switching.
                     </Text>
                   ) : null}
+                  {row.unsupported ? (
+                    <Text
+                      style={[
+                        styles.modelCaption,
+                        { color: chrome.textMuted },
+                      ]}
+                    >
+                      Not supported by Zen for managed Codex.
+                    </Text>
+                  ) : null}
                 </View>
                 {checked ? (
                   <Ionicons name="checkmark" size={16} color={chrome.accent} />
@@ -241,6 +275,78 @@ export function SessionModelSheet({
               </Pressable>
             );
           })}
+
+          {!modelRequired && effortContract && effortCount > 0 ? (
+            <View style={styles.effortSection}>
+              <Text
+                style={[styles.effortHeader, { color: chrome.textMuted }]}
+                accessibilityRole="header"
+              >
+                Reasoning Effort
+              </Text>
+              {effortContract.supported.map((value) => {
+                const checked = effortChoice === value;
+                const disabled = effortDisabled;
+                return (
+                  <Pressable
+                    key={`effort:${value}`}
+                    style={[
+                      styles.effortRow,
+                      {
+                        backgroundColor: checked
+                          ? chrome.accentSoft
+                          : chrome.surfaceMuted,
+                        opacity: disabled && !checked ? 0.55 : 1,
+                      },
+                    ]}
+                    disabled={disabled}
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      disabled,
+                      selected: checked,
+                    }}
+                    accessibilityLabel={`Reasoning effort ${reasoningEffortLabel(value)}`}
+                    onPress={() => onEffortChange(value)}
+                  >
+                    <Text
+                      style={[styles.effortText, { color: chrome.text }]}
+                      numberOfLines={1}
+                    >
+                      {reasoningEffortLabel(value)}
+                    </Text>
+                    {value === effortContract.defaultEffort &&
+                    effortContract.override === "" ? (
+                      <Text
+                        style={[
+                          styles.effortCaption,
+                          { color: chrome.textMuted },
+                        ]}
+                      >
+                        Model default
+                      </Text>
+                    ) : null}
+                    {checked ? (
+                      <Ionicons
+                        name="checkmark"
+                        size={16}
+                        color={chrome.accent}
+                      />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+              {handoffWarning ? (
+                <View style={styles.stateRow}>
+                  <Text
+                    style={[styles.stateBody, { color: chrome.textMuted }]}
+                    accessibilityRole="summary"
+                  >
+                    {handoffWarning}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
 
           {activating ? (
             <View style={styles.activatingRow}>
@@ -331,6 +437,19 @@ function createStyles(chrome: TerminalThemeChrome) {
     modelRowText: { flexShrink: 1, gap: 2 },
     modelText: { ...TypeScale.body, flexShrink: 1 },
     modelCaption: { ...TypeScale.caption },
+    effortSection: { gap: 6, marginTop: 10 },
+    effortHeader: { ...TypeScale.caption, fontWeight: "600", paddingLeft: 2 },
+    effortRow: {
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+    },
+    effortText: { ...TypeScale.body, flexShrink: 1 },
+    effortCaption: { ...TypeScale.caption },
     activatingRow: {
       flexDirection: "row",
       alignItems: "center",

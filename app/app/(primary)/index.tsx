@@ -518,6 +518,11 @@ export default function BrainScreen() {
         selection={brainModelSheet.selection}
         rows={brainModelSheet.rows}
         modelRequired={brainModelSheet.modelRequired}
+        effortContract={brainModelSheet.effortContract}
+        effortChoice={brainModelSheet.effortChoice}
+        effortDisabled={brainModelSheet.activating}
+        onEffortChange={(value) => brainModelSheet.selectEffort(value)}
+        handoffWarning={brainModelSheet.handoffWarning}
         chrome={chrome}
         onClose={brainModelSheet.close}
         onRetry={brainModelSheet.retry}

@@ -47,4 +47,20 @@ describe("useSessionProviderSheet projection lifecycle", () => {
     expect(sheet).toContain("refreshRequired: requiresRefreshBeforeMutation,");
     expect(sheet).toContain("composerControl,");
   });
+
+  test("the effort choice is a transient rebase of the daemon projection", () => {
+    expect(sheet).toContain("sessionEffortContract(nextSelection)");
+    expect(sheet).toContain("resolveEffortChoiceForModel({");
+    expect(sheet).toContain("const [effortChoice, setEffortChoice] = useState");
+    expect(sheet).toContain("effortContract?.current ?? \"\"");
+  });
+
+  test("activation carries the resolved effort and surfaces the handoff truthfully", () => {
+    expect(sheet).toContain("reasoningEffort: resolvedEffort,");
+    expect(sheet).toContain("result.handoff && result.handoff.state !== \"applied\"");
+    expect(sheet).toContain("setHandoffWarning(reason);");
+    // Never claims live UI convergence without proof.
+    expect(sheet).toContain("Never claim");
+    expect(sheet).toContain("UI convergence that was not proven");
+  });
 });

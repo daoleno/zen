@@ -74,8 +74,9 @@ export type ProviderPickerModelRow = {
   current: boolean;
   /**
    * Honest non-selectability: the preferred Provider is uncredentialed, a
-   * switch is in flight, or the running pair is no longer available for
-   * activation. Never used to hide a row.
+   * switch is in flight, the running pair is no longer available for
+   * activation, or the model has no daemon-owned metadata (managed Codex
+   * fails closed on unknown models). Never used to hide a row.
    */
   disabled: boolean;
   /**
@@ -83,6 +84,11 @@ export type ProviderPickerModelRow = {
    * Rendered checked and non-selectable with a concise caption.
    */
   unavailableCurrent: boolean;
+  /**
+   * The model has no daemon-owned metadata (managed Codex fails closed on
+   * unknown gateway-only models). Rendered disabled with a concise caption.
+   */
+  unsupported: boolean;
 };
 
 /**
@@ -178,14 +184,18 @@ export function sessionModelSheetRows(input: {
       routeOnPreferred &&
       runningModelId !== "" &&
       normalizeProviderId(model.id) === runningModelId;
+    const unsupported = model.known === false;
     rows.push({
       key: `${preferredId}:${model.id}`,
       connectionId: preferredId,
       modelId: model.id,
       label: model.id,
       current,
-      disabled: !credentialReady || Boolean(input.activating),
+      // Unknown models fail closed for managed Codex; they are clearly
+      // unsupported, never selectable, never substituted.
+      disabled: !credentialReady || Boolean(input.activating) || unsupported,
       unavailableCurrent: false,
+      unsupported,
     });
   }
   // The running pair is always visible on the preferred Provider: when the
@@ -201,6 +211,7 @@ export function sessionModelSheetRows(input: {
       current: true,
       disabled: true,
       unavailableCurrent: true,
+      unsupported: false,
     });
   }
   return rows;
@@ -235,7 +246,9 @@ export function activationTargetModel(
   const model = (catalog.models[connectionId] ?? []).find(
     (item) => normalizeProviderId(item.id) === modelId,
   );
-  if (!model || !model.available) return null;
+  // The model must be available AND daemon-known: unknown gateway-only models
+  // fail closed for managed Codex (never substituted, never guessed).
+  if (!model || !model.available || model.known === false) return null;
   return model;
 }
 
@@ -317,16 +330,20 @@ export type ActivateSessionProviderRequest = {
   agentId: string;
   connectionId: string;
   modelId: string;
+  /** Optional Reasoning Effort override; omitted = daemon preservation rule. */
+  reasoningEffort?: string;
 };
 
 /**
  * Build the activate_session_provider request. Intentionally omits generation
- * and any Profile-era fields.
+ * and any Profile-era fields. The effort override is included only when the
+ * caller resolved an explicit value (the daemon preserves/clears otherwise).
  */
 export function buildActivateSessionProviderRequest(input: {
   agentId: string;
   connectionId: string;
   modelId: string;
+  reasoningEffort?: string;
 }): ActivateSessionProviderRequest {
   const agentId = input.agentId.trim();
   const connectionId = input.connectionId.trim();
@@ -334,5 +351,83 @@ export function buildActivateSessionProviderRequest(input: {
   if (!agentId || !connectionId || !modelId) {
     throw new Error("agent_id, connection_id, and model_id are required.");
   }
-  return { agentId, connectionId, modelId };
+  const reasoningEffort = input.reasoningEffort?.trim() ?? "";
+  return {
+    agentId,
+    connectionId,
+    modelId,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
+/**
+ * Authoritative Reasoning Effort projection for the current Session — derived
+ * ONLY from the daemon selection (no UI-only state): the daemon-owned override
+ * ("" = none) plus the model's daemon-owned effort contract. Null when the
+ * Session/client/model has no effort surface — the UI must hide the control.
+ */
+export type SessionEffortContract = {
+  /** Effective current value: daemon override ?? documented model default. */
+  current: string;
+  /** Daemon-owned override ("" when the model/CLI default applies). */
+  override: string;
+  /** Documented model default effort. */
+  defaultEffort: string;
+  /** Supported effort values in display order (daemon projection). */
+  supported: string[];
+};
+
+export function sessionEffortContract(
+  selection: ProviderSessionSelection | null | undefined,
+): SessionEffortContract | null {
+  if (!selection) return null;
+  const supported = selection.reasoning_efforts ?? [];
+  const defaultEffort = selection.reasoning_effort_default?.trim() ?? "";
+  if (supported.length === 0 || !defaultEffort) return null;
+  const override = selection.reasoning_effort?.trim() ?? "";
+  return {
+    current: override || defaultEffort,
+    override,
+    defaultEffort,
+    supported,
+  };
+}
+
+/**
+ * Resolve the effort choice for a target model: preserve the current choice
+ * when the target supports it, else the target's documented default (the safe
+ * fallback — never an invalid effort). Mirrors the daemon preservation rule.
+ */
+export function resolveEffortChoiceForModel(input: {
+  currentChoice: string;
+  targetSupported: string[];
+  targetDefault: string;
+}): string {
+  const { currentChoice, targetSupported, targetDefault } = input;
+  const choice = currentChoice.trim();
+  if (choice && targetSupported.includes(choice)) return choice;
+  return targetDefault;
+}
+
+/**
+ * Display label for a Codex effort value (e.g. "xhigh" -> "XHigh"). The wire
+ * value is always what gets sent; the label is presentation only.
+ */
+export function reasoningEffortLabel(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case "minimal":
+      return "Minimal";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "XHigh";
+    case "max":
+      return "Max";
+    default:
+      return value.trim();
+  }
 }

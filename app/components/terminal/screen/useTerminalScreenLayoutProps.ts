@@ -15,7 +15,10 @@ import type {
   ProviderError,
   ProviderSessionSelection,
 } from "../../../services/providers";
-import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
+import type {
+  ProviderPickerModelRow,
+  SessionEffortContract,
+} from "../../../services/providers/sessionModelHelpers";
 import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
 import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
@@ -68,6 +71,11 @@ interface UseTerminalScreenLayoutPropsInput {
   routeSheetSelection?: ProviderSessionSelection | null;
   routeSheetRows: ProviderPickerModelRow[];
   routeSheetModelRequired: boolean;
+  routeSheetEffortContract?: SessionEffortContract | null;
+  routeSheetEffortChoice?: string;
+  routeSheetEffortDisabled?: boolean;
+  routeSheetHandoffWarning?: string | null;
+  onRouteSheetEffortChange?(value: string): void;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   screenFocused: boolean;
@@ -143,6 +151,11 @@ export function useTerminalScreenLayoutProps({
   routeSheetSelection,
   routeSheetRows,
   routeSheetModelRequired,
+  routeSheetEffortContract,
+  routeSheetEffortChoice,
+  routeSheetEffortDisabled,
+  routeSheetHandoffWarning,
+  onRouteSheetEffortChange,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   screenFocused,
@@ -256,6 +269,11 @@ export function useTerminalScreenLayoutProps({
     routeSheetSelection,
     routeSheetRows,
     routeSheetModelRequired,
+    routeSheetEffortContract,
+    routeSheetEffortChoice,
+    routeSheetEffortDisabled,
+    routeSheetHandoffWarning,
+    onRouteSheetEffortChange,
     createDurabilityWarning,
     onDismissCreateDurabilityWarning,
     creatingSession,

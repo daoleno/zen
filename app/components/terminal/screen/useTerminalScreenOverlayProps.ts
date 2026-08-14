@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
+import type { SessionEffortContract } from "../../../services/providers/sessionModelHelpers";
 import type {
   ProviderError,
   ProviderSessionSelection,
@@ -27,6 +28,11 @@ interface UseTerminalScreenOverlayPropsInput {
   routeSheetSelection?: ProviderSessionSelection | null;
   routeSheetRows: ProviderPickerModelRow[];
   routeSheetModelRequired: boolean;
+  routeSheetEffortContract?: SessionEffortContract | null;
+  routeSheetEffortChoice?: string;
+  routeSheetEffortDisabled?: boolean;
+  routeSheetHandoffWarning?: string | null;
+  onRouteSheetEffortChange?(value: string): void;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -74,6 +80,11 @@ export function useTerminalScreenOverlayProps({
   routeSheetSelection,
   routeSheetRows,
   routeSheetModelRequired,
+  routeSheetEffortContract,
+  routeSheetEffortChoice,
+  routeSheetEffortDisabled,
+  routeSheetHandoffWarning,
+  onRouteSheetEffortChange,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -140,6 +151,11 @@ export function useTerminalScreenOverlayProps({
       routeSheetSelection,
       routeSheetRows,
       routeSheetModelRequired,
+      routeSheetEffortContract,
+      routeSheetEffortChoice,
+      routeSheetEffortDisabled,
+      routeSheetHandoffWarning,
+      onRouteSheetEffortChange,
       createDurabilityWarning,
       onDismissCreateDurabilityWarning,
       creatingSession,
