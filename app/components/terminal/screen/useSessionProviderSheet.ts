@@ -386,16 +386,23 @@ export function useSessionProviderSheet({
       // Reasoning Effort rides the same acknowledged activation: the resolved
       // choice is the transient sheet selection rebased on the authoritative
       // projection (override ?? model default), so a compatible model switch
-      // preserves the current effort and the daemon enforces the contract.
+      // preserves the current effort and the daemon enforces the contract. In
+      // the model-required state the target contract is not this Session's
+      // yet — omit the effort so the daemon's preservation rule applies
+      // (preserve when the target supports it, else its documented default).
       const effortContract = sessionEffortContract(selection);
+      const targetModelRequired = sessionModelRequired({
+        snapshot: catalog,
+        selection,
+      });
       const resolvedEffort =
-        effortChoice !== null && effortContract
-          ? resolveEffortChoiceForModel({
-              currentChoice: effortChoice,
+        targetModelRequired || !effortContract
+          ? ""
+          : resolveEffortChoiceForModel({
+              currentChoice: effortChoice ?? effortContract.current,
               targetSupported: effortContract.supported,
               targetDefault: effortContract.defaultEffort,
-            })
-          : (effortContract?.current ?? "");
+            });
       if (ownerRef.current.activationRequiresRefresh()) {
         syncActivationLockUi();
         setError("Refresh required before switching model.");

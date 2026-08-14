@@ -52,7 +52,10 @@ describe("useSessionProviderSheet projection lifecycle", () => {
     expect(sheet).toContain("sessionEffortContract(nextSelection)");
     expect(sheet).toContain("resolveEffortChoiceForModel({");
     expect(sheet).toContain("const [effortChoice, setEffortChoice] = useState");
-    expect(sheet).toContain("effortContract?.current ?? \"\"");
+    expect(sheet).toContain("effortChoice ?? effortContract.current");
+    // Model-required (cross-connection) switches omit the effort so the
+    // daemon's preservation rule applies.
+    expect(sheet).toContain("targetModelRequired || !effortContract");
   });
 
   test("activation carries the resolved effort and surfaces the handoff truthfully", () => {
