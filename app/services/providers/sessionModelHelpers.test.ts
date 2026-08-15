@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CODEX_REASONING_EFFECT_VOCABULARY,
   resolveComposerModelControl,
   runtimeChoiceForRow,
   threadRuntimeRows,
@@ -100,7 +99,7 @@ describe("thread runtime picker model", () => {
     expect(row?.disabled).toBe(false);
   });
 
-  test("unknown Codex models remain selectable and use wire vocabulary", () => {
+  test("unknown Codex models remain selectable with Default only", () => {
     const unknownSnapshot: ProvidersSnapshot = {
       ...snapshot,
       models: {
@@ -119,6 +118,25 @@ describe("thread runtime picker model", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.disabled).toBe(false);
     expect(rows[0]?.unsupported).toBe(false);
-    expect(rows[0]?.effects).toEqual(["", ...CODEX_REASONING_EFFECT_VOCABULARY]);
+    expect(rows[0]?.effects).toEqual([""]);
+  });
+
+  test("daemon display metadata labels the exact model slug", () => {
+    const rows = threadRuntimeRows({
+      snapshot: {
+        ...snapshot,
+        models: {
+          a: [{
+            id: "gpt-5.6",
+            display_name: "GPT 5.6 Preview",
+            available: true,
+            source: "codex_cache",
+          }],
+        },
+      },
+      selection: { ...selection, model_id: "gpt-5.6" },
+    });
+    expect(rows[0]?.modelId).toBe("gpt-5.6");
+    expect(rows[0]?.label).toBe("GPT 5.6 Preview");
   });
 });

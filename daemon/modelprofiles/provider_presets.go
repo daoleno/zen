@@ -21,7 +21,6 @@ type presetSpec struct {
 	CredentialEnv  string
 	ClientModel    map[string]string // executor -> default client contract id
 	DefaultModel   map[string]string // executor -> default upstream model id
-	TrustedModels  []string          // bundled model ids for discovery intersect
 }
 
 var curatedPresets = []presetSpec{
@@ -37,7 +36,6 @@ var curatedPresets = []presetSpec{
 		CredentialEnv:  "OPENAI_API_KEY",
 		ClientModel:    map[string]string{ExecutorCodex: "gpt-5"},
 		DefaultModel:   map[string]string{ExecutorCodex: "gpt-5"},
-		TrustedModels:  []string{"gpt-5", "gpt-5.1", "gpt-5-codex", "o3", "o4-mini"},
 	},
 	{
 		Public: ProviderPreset{
@@ -51,7 +49,6 @@ var curatedPresets = []presetSpec{
 		CredentialEnv:  "OPENROUTER_API_KEY",
 		ClientModel:    map[string]string{ExecutorCodex: "gpt-5"},
 		DefaultModel:   map[string]string{ExecutorCodex: "openai/gpt-5"},
-		TrustedModels:  []string{"openai/gpt-5", "openai/gpt-5.1", "openai/o3", "openai/o4-mini", "anthropic/claude-sonnet-4"},
 	},
 	{
 		Public: ProviderPreset{
@@ -65,7 +62,6 @@ var curatedPresets = []presetSpec{
 		CredentialEnv:  "ANTHROPIC_API_KEY",
 		ClientModel:    map[string]string{ExecutorClaude: "claude-sonnet-4-6"},
 		DefaultModel:   map[string]string{ExecutorClaude: "claude-sonnet-4-6"},
-		TrustedModels:  []string{"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-opus-4-1", "claude-opus-4", "claude-haiku-4-5"},
 	},
 	{
 		Public: ProviderPreset{
@@ -85,7 +81,6 @@ var curatedPresets = []presetSpec{
 			ExecutorCodex:  "deepseek-v4-flash",
 			ExecutorClaude: "deepseek-v4-flash",
 		},
-		TrustedModels: []string{"deepseek-v4-flash", "deepseek-v4-pro"},
 	},
 	{
 		Public: ProviderPreset{
@@ -102,8 +97,7 @@ var curatedPresets = []presetSpec{
 			ExecutorCodex:  "gpt-5",
 			ExecutorClaude: "claude-sonnet-4-6",
 		},
-		DefaultModel:  map[string]string{},
-		TrustedModels: nil,
+		DefaultModel: map[string]string{},
 	},
 }
 
@@ -325,12 +319,6 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 		modelID = clientModel
 		modelPlaceholder = true
 	}
-	if executor != ExecutorCodex && !in.Advanced && normalizeID(in.PresetID) != ProviderPresetCustom {
-		if err := requireTrustedOrFail(in.PresetID, modelID); err != nil {
-			return Profile{}, err
-		}
-	}
-
 	// Durable account records always carry an explicit non-empty name (migration
 	// guarantees it on load; mutations require it), so no preset-label fallback
 	// exists here: a blank name fails ValidateProfile below.
@@ -400,32 +388,6 @@ func newConnectionID(prefix string) string {
 		return prefix + "_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 	return prefix + "_" + hex.EncodeToString(b[:])
-}
-
-func requireTrustedOrFail(presetID, modelID string) error {
-	spec, ok := lookupPreset(presetID)
-	if !ok {
-		return fmt.Errorf("%w: unknown preset", ErrInvalid)
-	}
-	if len(spec.TrustedModels) == 0 {
-		return nil
-	}
-	for _, id := range spec.TrustedModels {
-		if normalizeSpace(id) == normalizeSpace(modelID) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: model %q is not in the trusted catalog for preset %s (use Advanced for manual ids)", ErrInvalid, modelID, presetID)
-}
-
-func presetTrustedModels(presetID string) []string {
-	spec, ok := lookupPreset(presetID)
-	if !ok {
-		return nil
-	}
-	out := make([]string, len(spec.TrustedModels))
-	copy(out, spec.TrustedModels)
-	return out
 }
 
 func inferPresetID(profile Profile) string {

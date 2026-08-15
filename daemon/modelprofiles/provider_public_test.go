@@ -52,12 +52,21 @@ func TestCompileProviderConnectionRequiresOneExplicitClient(t *testing.T) {
 	}
 }
 
-func TestCompileProviderConnectionRejectsUntrustedModelUnlessAdvanced(t *testing.T) {
-	_, err := CompileProviderConnection(ProviderConnectionInput{
-		Name: "OR", PresetID: ProviderPresetOpenRouter, Client: ClientCodex, ModelID: "invented/model",
-	})
-	if err == nil {
-		t.Fatal("expected curated model_id rejection")
+func TestCompileProviderConnectionPassesThroughAnyValidModelSlug(t *testing.T) {
+	owner := startTestOwner(t, readyLookup("x"))
+	owner.SetCredentialStore(NewMemoryCredentialStore())
+	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "or", Name: "OR", PresetID: ProviderPresetOpenRouter, Client: ClientCodex,
+	}, "key", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err = owner.SetProviderDefault(ClientCodex, "or", "invented/model", projection.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Defaults[ClientCodex].ModelID; got != "invented/model" {
+		t.Fatalf("curated default model=%q", got)
 	}
 	profile, err := CompileProviderConnection(ProviderConnectionInput{
 		Name: "Custom", Client: ClientCodex, PresetID: ProviderPresetCustom,
@@ -97,6 +106,9 @@ func TestProjectModelEntriesCustomUsesDiscoveredCatalog(t *testing.T) {
 }
 
 func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
+	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
+		testCodexCacheEntry("cache-fallback", "Cache fallback", ""),
+	})
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -154,14 +166,14 @@ func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	if hits != 2 {
 		t.Fatalf("forced refresh hits=%d", hits)
 	}
-	foundLKG := false
+	foundCache := false
 	for _, e := range third {
-		if e.ID == "gpt-5" && e.Source == ModelSourceLKG && e.Available {
-			foundLKG = true
+		if e.ID == "cache-fallback" && e.Source == ModelSourceCodexCache && e.Available {
+			foundCache = true
 		}
 	}
-	if !foundLKG {
-		t.Fatalf("expected LKG after failure: %#v", third)
+	if !foundCache {
+		t.Fatalf("expected installed Codex cache after failure: %#v", third)
 	}
 }
 

@@ -146,6 +146,7 @@ export function parseProviderModel(raw: unknown): ProviderModel | null {
   if (!id || !source || typeof record.available !== "boolean") return null;
   return {
     id,
+    display_name: asString(record.display_name) || undefined,
     source,
     available: record.available,
     known: record.known === true ? true : undefined,

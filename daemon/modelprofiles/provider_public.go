@@ -61,8 +61,9 @@ type ProviderDefault struct {
 // ProviderModelEntry is a catalog/discovery model id with availability only.
 type ProviderModelEntry struct {
 	ID                     string   `json:"id"`
+	DisplayName            string   `json:"display_name,omitempty"`
 	Available              bool     `json:"available"`
-	Source                 string   `json:"source"` // bundled | discovered | lkg | manual
+	Source                 string   `json:"source"` // codex_cache | discovered | lkg | manual
 	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
 	// Known marks daemon-owned display/effect metadata for managed Codex.
@@ -149,4 +150,5 @@ const (
 	ModelSourceDiscovered = "discovered"
 	ModelSourceLKG        = "lkg"
 	ModelSourceManual     = "manual"
+	ModelSourceCodexCache = "codex_cache"
 )

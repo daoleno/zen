@@ -550,7 +550,7 @@ func TestBuiltinVerifierKnownAndUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Provenance != ContractProvenanceCodexCatalog {
+	if got.Provenance != ContractProvenanceOpaquePassthrough {
 		t.Fatalf("provenance=%q", got.Provenance)
 	}
 	claude := Profile{
@@ -595,7 +595,7 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 	if got.ProviderID != "openrouter" || got.UpstreamModelID != "openai/gpt-5" {
 		t.Fatalf("got=%#v", got)
 	}
-	if got.Provenance != ContractProvenanceConfiguredCompatibility {
+	if got.Provenance != ContractProvenanceOpaquePassthrough {
 		t.Fatalf("provenance=%q", got.Provenance)
 	}
 	if got.UpstreamEnvelope.ContextWindowTokens != got.ClientEnvelope.ContextWindowTokens {

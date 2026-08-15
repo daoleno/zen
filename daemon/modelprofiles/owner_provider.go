@@ -28,11 +28,7 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		conn.CredentialHint = o.providerCredentialHint(view.Profile)
 		out.Connections = append(out.Connections, conn)
 		entries, _ := o.modelsForConnection(view.Profile, false)
-		executorID := view.Profile.ExecutorID
-		if isAccountConnection(view.Profile) {
-			executorID = executorFromClient(view.Profile.Client)
-		}
-		out.Models[conn.ID] = stampModelKnown(entries, executorID)
+		out.Models[conn.ID] = entries
 	}
 	for key, profileID := range proj.Catalog.Defaults {
 		profileID = normalizeID(profileID)
@@ -59,28 +55,6 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		}
 	}
 	return out, nil
-}
-
-// stampModelKnown marks whether daemon-owned display/effect metadata exists.
-// Unknown Codex models remain selectable opaque identities; Known is metadata,
-// never an admission decision.
-func stampModelKnown(entries []ProviderModelEntry, executorID string) []ProviderModelEntry {
-	codex := normalizeID(executorID) == ExecutorCodex
-	out := make([]ProviderModelEntry, 0, len(entries))
-	for _, entry := range entries {
-		entry.Known = !codex || codexModelKnown(entry.ID)
-		if codex && entry.Known {
-			entry.ReasoningEffortDefault = codexEffortDefault(entry.ID)
-			for _, contract := range CodexEffortContractSnapshots() {
-				if contract.ClientModel == entry.ID {
-					entry.ReasoningEfforts = append([]string(nil), contract.Supported...)
-					break
-				}
-			}
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func (o *Owner) defaultModelLocked(client string) string {
@@ -128,14 +102,8 @@ func connectionCredentialReady(profile Profile, store CredentialStore, lookup fu
 }
 
 func (o *Owner) modelsForConnection(profile Profile, forceDiscover bool) ([]ProviderModelEntry, error) {
-	presetID := inferPresetID(profile)
-	trusted := presetTrustedModels(presetID)
-	manual := ""
-	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
-		manual = normalizeSpace(profile.Model)
-	}
 	if o == nil {
-		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
+		return nil, nil
 	}
 	if !forceDiscover {
 		o.mu.Lock()
@@ -143,16 +111,128 @@ func (o *Owner) modelsForConnection(profile Profile, forceDiscover bool) ([]Prov
 		o.mu.Unlock()
 		if cache != nil {
 			if e, ok := cache.get(profile.ID); ok {
-				return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == "" && len(e.IDs) > 0), nil
+				return o.projectConnectionModels(profile, e), nil
 			}
 		}
-		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
+		return o.projectConnectionModels(profile, discoveryEntry{}), nil
 	}
 	entries, err := o.DiscoverProviderModels(profile.ID, true)
 	if err != nil && len(entries) == 0 {
-		return projectModelEntries(trusted, manual, nil, nil, nil, false), nil
+		return o.projectConnectionModels(profile, discoveryEntry{}), nil
 	}
 	return entries, nil
+}
+
+func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEntry) []ProviderModelEntry {
+	executorID := normalizeID(profile.ExecutorID)
+	if isAccountConnection(profile) {
+		executorID = executorFromClient(profile.Client)
+	}
+	localIDs, localMetadata, _ := loadInstalledCodexModelCatalog()
+	ids := discovered.IDs
+	metadata := cloneModelMetadataMap(discovered.Metadata)
+	source := ModelSourceDiscovered
+	if discovered.Err != "" || len(ids) == 0 {
+		if executorID == ExecutorCodex {
+			ids = localIDs
+			metadata = localMetadata
+			source = ModelSourceCodexCache
+		} else {
+			ids = discovered.LastGood
+			metadata = cloneModelMetadataMap(discovered.LastGoodMeta)
+			source = ModelSourceLKG
+		}
+	} else if executorID == ExecutorCodex {
+		for _, id := range ids {
+			metadata[id] = mergeModelPresentationMetadata(metadata[id], localMetadata[id])
+		}
+	}
+	required := o.connectionRequiredModels(profile)
+	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, localMetadata, executorID == ExecutorCodex)
+}
+
+func (o *Owner) connectionRequiredModels(profile Profile) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(model string) {
+		model = normalizeSpace(model)
+		if err := ValidateModelID(model); err != nil {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	if !profile.ModelPlaceholder {
+		add(profile.Model)
+	}
+	if o != nil && o.store != nil {
+		for _, client := range []string{ClientCodex, ClientClaude} {
+			connectionID, modelID := o.store.ClientDefault(client)
+			if normalizeID(connectionID) == normalizeID(profile.ID) {
+				add(modelID)
+			}
+		}
+	}
+	if o != nil && o.table != nil {
+		for _, state := range o.table.Snapshot() {
+			if normalizeID(state.Binding.ProfileID) != normalizeID(profile.ID) {
+				continue
+			}
+			add(state.Binding.ClientModel)
+		}
+	}
+	return out
+}
+
+func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentationMetadata, source string, disabled, required []string, fallbackMetadata map[string]modelPresentationMetadata, codex bool) []ProviderModelEntry {
+	disabledSet := map[string]struct{}{}
+	for _, id := range disabled {
+		disabledSet[normalizeSpace(id)] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	out := make([]ProviderModelEntry, 0, len(ids)+len(required))
+	add := func(id, entrySource string, forceAvailable bool) {
+		id = normalizeSpace(id)
+		if err := ValidateModelID(id); err != nil {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			if forceAvailable {
+				for i := range out {
+					if out[i].ID == id {
+						out[i].Available = true
+					}
+				}
+			}
+			return
+		}
+		seen[id] = struct{}{}
+		available := true
+		if _, off := disabledSet[id]; off && !forceAvailable {
+			available = false
+		}
+		entry := ProviderModelEntry{ID: id, Available: available, Source: entrySource}
+		if codex {
+			modelMetadata := mergeModelPresentationMetadata(metadata[id], fallbackMetadata[id])
+			entry.DisplayName = modelMetadata.DisplayName
+			entry.ReasoningEffortDefault = modelMetadata.DefaultReasoningLevel
+			for _, preset := range modelMetadata.SupportedReasoningLevels {
+				entry.ReasoningEfforts = append(entry.ReasoningEfforts, preset.Effort)
+			}
+			entry.Known = entry.DisplayName != "" || entry.ReasoningEffortDefault != "" || len(entry.ReasoningEfforts) > 0 || modelMetadata.ContextWindow > 0
+		}
+		out = append(out, entry)
+	}
+	for _, id := range ids {
+		add(id, source, false)
+	}
+	for _, id := range required {
+		add(id, ModelSourceManual, true)
+	}
+	return out
 }
 
 // supportedModelEntriesLocked projects the synced support allowlist of a
@@ -177,12 +257,6 @@ func (o *Owner) supportedModelEntriesLocked(profile Profile) []ProviderModelEntr
 // (with per-model availability) and reports whether a discovery cache entry
 // exists. Never syncs and never reaches upstream.
 func (o *Owner) syncedModelCatalogLocked(profile Profile) ([]ProviderModelEntry, bool) {
-	presetID := inferPresetID(profile)
-	trusted := presetTrustedModels(presetID)
-	manual := ""
-	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
-		manual = normalizeSpace(profile.Model)
-	}
 	if o == nil || o.discovery == nil {
 		return nil, false
 	}
@@ -190,7 +264,7 @@ func (o *Owner) syncedModelCatalogLocked(profile Profile) ([]ProviderModelEntry,
 	if !ok || len(e.IDs) == 0 {
 		return nil, false
 	}
-	return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == ""), true
+	return o.projectConnectionModels(profile, e), true
 }
 
 // CodexModelCatalogPath returns the stable per-connection Codex ModelsResponse
@@ -216,9 +290,9 @@ func (o *Owner) writeCodexModelCatalogLocked(profile Profile) error {
 	if path == "" {
 		return nil
 	}
-	known := map[string]struct{}{}
+	known := map[string]ProviderModelEntry{}
 	if !profile.ModelPlaceholder {
-		known[normalizeSpace(profile.Model)] = struct{}{}
+		known[normalizeSpace(profile.Model)] = ProviderModelEntry{ID: normalizeSpace(profile.Model), Available: true, Source: ModelSourceManual}
 	}
 	if durable, err := o.store.Get(profile.ID); err == nil && isAccountConnection(durable) {
 		if entries, synced := o.syncedModelCatalogLocked(durable); synced {
@@ -226,16 +300,16 @@ func (o *Owner) writeCodexModelCatalogLocked(profile Profile) error {
 				if !entry.Available {
 					continue
 				}
-				known[normalizeSpace(entry.ID)] = struct{}{}
+				known[normalizeSpace(entry.ID)] = entry
 			}
 		}
 	}
-	models := make([]string, 0, len(known))
-	for id := range known {
-		models = append(models, id)
+	models := make([]ProviderModelEntry, 0, len(known))
+	for _, entry := range known {
+		models = append(models, entry)
 	}
-	sort.Strings(models)
-	raw, err := json.MarshalIndent(CodexModelsResponseForModels(models), "", "  ")
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	raw, err := json.MarshalIndent(CodexModelsResponseForEntries(models), "", "  ")
 	if err != nil {
 		return fmt.Errorf("%w: encode codex model catalog: %v", ErrInvalid, err)
 	}
@@ -679,13 +753,6 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 	if err != nil {
 		return ProviderCatalogProjection{}, PersistResult{}, err
 	}
-	presetID := inferPresetID(profile)
-	trusted := presetTrustedModels(presetID)
-	manual := ""
-	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
-		manual = normalizeSpace(profile.Model)
-	}
-
 	o.mu.Lock()
 	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
 		o.mu.Unlock()
@@ -726,9 +793,9 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 			)
 		}
 	}
-	// The reference catalog is the full projected id set (trusted + discovered
-	// + LKG + manual). Disabled = reference minus the client's enabled set.
-	reference := projectModelEntries(trusted, manual, e.IDs, e.LastGood, nil, e.Err == "")
+	// Discovery/cache entries are presentation choices only. Persist support
+	// toggles without treating the set as model identity admission.
+	reference := o.projectConnectionModels(profile, e)
 	disabled := make([]string, 0, len(reference))
 	for _, entry := range reference {
 		if _, on := enabledSet[entry.ID]; !on {
@@ -853,7 +920,7 @@ func (o *Owner) ThreadRuntime(sessionID string) (ThreadRuntimeSelection, bool) {
 		return ThreadRuntimeSelection{}, false
 	}
 	c := snap.Current
-	return ThreadRuntimeSelection{
+	selection := ThreadRuntimeSelection{
 		SessionID:              c.SessionID,
 		Client:                 c.Client,
 		ConnectionID:           c.ConnectionID,
@@ -865,7 +932,20 @@ func (o *Owner) ThreadRuntime(sessionID string) (ThreadRuntimeSelection, bool) {
 		ReasoningEfforts:       append([]string(nil), c.ReasoningEfforts...),
 		CredentialReady:        c.CredentialReady,
 		HotSwitchable:          c.HotSwitchable,
-	}, true
+	}
+	if profile, err := o.GetProfile(c.ConnectionID); err == nil {
+		if entries, _ := o.modelsForConnection(profile, false); len(entries) > 0 {
+			for _, entry := range entries {
+				if normalizeSpace(entry.ID) != normalizeSpace(c.ModelID) {
+					continue
+				}
+				selection.ReasoningEffortDefault = entry.ReasoningEffortDefault
+				selection.ReasoningEfforts = append([]string(nil), entry.ReasoningEfforts...)
+				break
+			}
+		}
+	}
+	return selection, true
 }
 
 // SetThreadRuntime atomically activates Provider+model (+ optional Effect)

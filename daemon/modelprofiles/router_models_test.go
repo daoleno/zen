@@ -68,8 +68,8 @@ func TestRouterServesLocalModelsList(t *testing.T) {
 		for _, entry := range list.Models {
 			ids = append(ids, entry.Slug)
 		}
-		if strings.Join(ids, ",") != "gpt-5.6-sol,gpt-5.4-mini" {
-			t.Fatalf("ids=%v want available known models only", ids)
+		if strings.Join(ids, ",") != "gpt-5.6-sol,gpt-5.4-mini,upstream-model-v2" {
+			t.Fatalf("ids=%v want available choices plus exact running slug", ids)
 		}
 		if !strings.Contains(string(raw), `"slug"`) || strings.Contains(string(raw), `"data"`) {
 			t.Fatalf("payload must be the Codex ModelsResponse shape: %s", raw)

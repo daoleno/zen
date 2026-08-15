@@ -28,22 +28,10 @@ export type ProviderPickerModelRow = {
   currentEffect: string;
 };
 
-export const CODEX_REASONING_EFFECT_VOCABULARY = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
 function modelEffectChoices(client: string, effects: string[]): string[] {
   if (client !== "codex") return [];
-  const choices = effects.length > 0
-    ? effects
-    : [...CODEX_REASONING_EFFECT_VOCABULARY];
-  return ["", ...choices.filter((effect, index) =>
-    effect.trim() !== "" && choices.indexOf(effect) === index
+  return ["", ...effects.filter((effect, index) =>
+    effect.trim() !== "" && effects.indexOf(effect) === index
   )];
 }
 
@@ -75,7 +63,7 @@ export function threadRuntimeRows(input: {
         key: `${connectionId}:${model.id}`,
         connectionId,
         modelId: model.id,
-        label: model.id,
+        label: model.display_name?.trim() || model.id,
         current:
           connectionId === normalizeProviderId(selection.connection_id) &&
           normalizeProviderId(model.id) === normalizeProviderId(selection.model_id),

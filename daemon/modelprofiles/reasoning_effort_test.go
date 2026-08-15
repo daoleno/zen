@@ -286,6 +286,9 @@ func TestRewriteRequestEffort(t *testing.T) {
 // override; the override survives restart; concurrent Sessions and the
 // catalog are untouched; Claude Sessions never admit effort.
 func TestReasoningEffortActivationE2E(t *testing.T) {
+	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
+		testCodexCacheEntry("gpt-5-codex", "GPT-5 Codex", ReasoningEffortMedium, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh),
+	})
 	root := t.TempDir()
 	codexUpstream := newReasoningEffortUpstream(t, nil)
 	codexURL := codexUpstream.server.URL + "/v1"
@@ -394,19 +397,18 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Explicit unsupported effort (xhigh is not in the gpt-5-codex contract)
-	// fails inline and keeps the old route + old override; an invalid effort
-	// never reaches the upstream.
+	// Catalog choices are presentation metadata, not runtime admission. Any
+	// valid wire effort passes through and the upstream decides support.
 	_, _, _, err = owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortXHigh})
-	if !errors.Is(err, ErrReasoningEffortUnsupported) {
+	if err != nil {
 		t.Fatalf("xhigh err=%v", err)
 	}
 	state, _ = owner.Table().Get("s-effort")
-	if state.Binding.ReasoningEffort != ReasoningEffortHigh {
-		t.Fatalf("failed activation must keep the old override: %#v", state.Binding)
+	if state.Binding.ReasoningEffort != ReasoningEffortXHigh {
+		t.Fatalf("valid wire effort must pass through: %#v", state.Binding)
 	}
-	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
-		t.Fatalf("selection must keep the old override: %#v", sel)
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortXHigh {
+		t.Fatalf("selection must project the new override: %#v", sel)
 	}
 
 	// Unknown vocabulary values fail closed too.
@@ -437,14 +439,14 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	routerSrv2 := httptest.NewServer(owner2.router.Handler())
 	t.Cleanup(routerSrv2.Close)
 	state2, ok := owner2.Table().Get("s-effort")
-	if !ok || state2.Binding.ReasoningEffort != ReasoningEffortHigh {
+	if !ok || state2.Binding.ReasoningEffort != ReasoningEffortXHigh {
 		t.Fatalf("restored binding lost override: %#v ok=%v", state2.Binding, ok)
 	}
-	if sel, _ := owner2.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
+	if sel, _ := owner2.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortXHigh {
 		t.Fatalf("restored selection lost override: %#v", sel)
 	}
-	postEffortRequestWithEffort(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5-codex", ReasoningEffortHigh)
-	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortHigh {
+	postEffortRequestWithEffort(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5-codex", ReasoningEffortXHigh)
+	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortXHigh {
 		t.Fatalf("request after restart lost override=%#v", got)
 	}
 }

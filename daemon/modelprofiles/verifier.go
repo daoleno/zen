@@ -38,13 +38,8 @@ func (BuiltinEnvelopeVerifier) VerifyProfileContract(profile Profile) (VerifiedP
 		if normalizeSpace(profile.ClientModel) != normalizeSpace(profile.Model) {
 			return VerifiedProfileContract{}, fmt.Errorf("%w: managed Codex client_model %q must equal the selected model %q (single identity; no hidden compatibility model)", ErrContractUnverified, profile.ClientModel, profile.Model)
 		}
-		entry, known := lookupCodexModelMetadata(profile.Model)
 		envelope := opaqueCodexPassthroughEnvelope()
 		provenance := ContractProvenanceOpaquePassthrough
-		if known {
-			envelope = entry.Envelope
-			provenance = entry.Provenance
-		}
 		return VerifiedProfileContract{
 			Provenance:       provenance,
 			ClientModelID:    profile.Model,

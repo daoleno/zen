@@ -308,11 +308,6 @@ func (s *Store) SetClientDefault(client, connectionID, modelID string, expectedR
 			if err := ValidateModelID(modelID); err != nil {
 				return Catalog{}, fmt.Errorf("%w: model: %v", ErrInvalid, err)
 			}
-			if isAccountConnection(profile) && !accountLooksAdvanced(profile, inferPresetID(profile)) {
-				if err := requireTrustedOrFail(inferPresetID(profile), modelID); err != nil {
-					return Catalog{}, err
-				}
-			}
 		}
 		nextDefaults[client] = connectionID
 		nextDefaults[executorID] = connectionID

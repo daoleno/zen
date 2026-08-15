@@ -999,7 +999,7 @@ function ModelSyncSheet({
                 disabled: chipDisabled,
                 busy: saving,
               }}
-              accessibilityLabel={`${choice.model.id}, ${
+              accessibilityLabel={`${choice.model.display_name?.trim() || choice.model.id}, ${
                 selectingDefault
                   ? selected
                     ? "selected default"
@@ -1024,7 +1024,7 @@ function ModelSyncSheet({
                 ]}
                 numberOfLines={1}
               >
-                {choice.model.id}
+                {choice.model.display_name?.trim() || choice.model.id}
               </Text>
             </Pressable>
           );

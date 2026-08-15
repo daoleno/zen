@@ -32,9 +32,11 @@ type modelDiscoveryCache struct {
 }
 
 type discoveryEntry struct {
-	IDs       []string  `json:"ids,omitempty"`
-	FetchedAt time.Time `json:"fetched_at"`
-	LastGood  []string  `json:"last_good,omitempty"`
+	IDs          []string                             `json:"ids,omitempty"`
+	Metadata     map[string]modelPresentationMetadata `json:"metadata,omitempty"`
+	FetchedAt    time.Time                            `json:"fetched_at"`
+	LastGood     []string                             `json:"last_good,omitempty"`
+	LastGoodMeta map[string]modelPresentationMetadata `json:"last_good_metadata,omitempty"`
 	// Disabled is the durable client-side support allowlist: model ids the
 	// client explicitly turned off. Everything discovered is supported unless
 	// listed here, so a catalog refresh never silently re-enables an
@@ -199,10 +201,23 @@ func (c *modelDiscoveryCache) get(key string) (discoveryEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
+	e.IDs = append([]string(nil), e.IDs...)
+	e.LastGood = append([]string(nil), e.LastGood...)
+	e.Disabled = append([]string(nil), e.Disabled...)
+	e.Metadata = cloneModelMetadataMap(e.Metadata)
+	e.LastGoodMeta = cloneModelMetadataMap(e.LastGoodMeta)
 	return e, ok
 }
 
 func (c *modelDiscoveryCache) put(key string, ids []string, fetchErr error) {
+	metadata := make(map[string]modelPresentationMetadata, len(ids))
+	for _, id := range ids {
+		metadata[normalizeSpace(id)] = modelPresentationMetadata{}
+	}
+	c.putModels(key, ids, metadata, fetchErr)
+}
+
+func (c *modelDiscoveryCache) putModels(key string, ids []string, metadata map[string]modelPresentationMetadata, fetchErr error) {
 	if c == nil {
 		return
 	}
@@ -216,15 +231,32 @@ func (c *modelDiscoveryCache) put(key string, ids []string, fetchErr error) {
 	if fetchErr != nil {
 		next.Err = fetchErr.Error()
 		next.LastGood = append([]string{}, prev.LastGood...)
+		next.LastGoodMeta = cloneModelMetadataMap(prev.LastGoodMeta)
 		if len(next.LastGood) == 0 {
 			next.LastGood = append([]string{}, prev.IDs...)
+			next.LastGoodMeta = cloneModelMetadataMap(prev.Metadata)
 		}
 		next.IDs = append([]string{}, next.LastGood...)
+		next.Metadata = cloneModelMetadataMap(next.LastGoodMeta)
 	} else {
 		next.IDs = append([]string{}, ids...)
+		next.Metadata = cloneModelMetadataMap(metadata)
 		next.LastGood = append([]string{}, ids...)
+		next.LastGoodMeta = cloneModelMetadataMap(metadata)
 	}
 	c.entries[key] = next
+}
+
+func cloneModelMetadataMap(input map[string]modelPresentationMetadata) map[string]modelPresentationMetadata {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]modelPresentationMetadata, len(input))
+	for id, metadata := range input {
+		metadata.SupportedReasoningLevels = append([]CodexReasoningEffortPreset(nil), metadata.SupportedReasoningLevels...)
+		out[id] = metadata
+	}
+	return out
 }
 
 // setDisabled replaces the durable support allowlist (disabled ids) of one
@@ -288,13 +320,6 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	if err != nil {
 		return out, err
 	}
-	presetID := inferPresetID(profile)
-	trusted := presetTrustedModels(presetID)
-	manual := ""
-	if accountLooksAdvanced(profile, presetID) || normalizeID(presetID) == ProviderPresetCustom {
-		manual = normalizeSpace(profile.Model)
-	}
-
 	o.mu.Lock()
 	if o.discovery == nil {
 		o.discovery = newModelDiscoveryCache()
@@ -314,7 +339,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 	key := connectionID
 	if !force && cache.fresh(key) {
 		e, _ := cache.get(key)
-		out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == "")
+		out.Entries = o.projectConnectionModels(profile, e)
 		out.PersistenceDurable = len(e.LastGood) > 0 && out.PersistenceWarning == ""
 		return out, nil
 	}
@@ -324,14 +349,14 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 		client := executorFromClient(profile.Client)
 		compiled, cErr := CompileConnectionTarget(profile, client, "", "")
 		if cErr != nil {
-			out.Entries = projectModelEntries(trusted, manual, nil, nil, nil, false)
+			out.Entries = o.projectConnectionModels(profile, discoveryEntry{})
 			return out, cErr
 		}
 		probe = compiled
 	}
 
-	ids, discoverErr := fetchUpstreamModelIDs(context.Background(), cache.client, probe, o.creds, o.lookup)
-	cache.put(key, ids, discoverErr)
+	ids, metadata, discoverErr := fetchUpstreamModels(context.Background(), cache.client, probe, o.creds, o.lookup)
+	cache.putModels(key, ids, metadata, discoverErr)
 	if o.discoveryPath != "" {
 		if serr := cache.save(o.discoveryPath); serr != nil {
 			out.PersistenceDurable = false
@@ -342,7 +367,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 		}
 	}
 	e, _ := cache.get(key)
-	out.Entries = projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, discoverErr == nil)
+	out.Entries = o.projectConnectionModels(profile, e)
 	if !out.PersistenceDurable {
 		// Never claim LKG source durability when write failed — force bundled
 		// labels for entries that would otherwise say lkg from this refresh.
@@ -358,7 +383,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 			}
 		}
 	}
-	if discoverErr != nil && len(e.LastGood) == 0 && len(trusted) == 0 {
+	if discoverErr != nil && len(out.Entries) == 0 {
 		return out, discoverErr
 	}
 	return out, nil
@@ -448,29 +473,34 @@ func projectModelEntries(trusted []string, manual string, discovered, lkg, disab
 }
 
 func fetchUpstreamModelIDs(ctx context.Context, client *http.Client, profile Profile, store CredentialStore, lookup func(string) (string, bool)) ([]string, error) {
+	ids, _, err := fetchUpstreamModels(ctx, client, profile, store, lookup)
+	return ids, err
+}
+
+func fetchUpstreamModels(ctx context.Context, client *http.Client, profile Profile, store CredentialStore, lookup func(string) (string, bool)) ([]string, map[string]modelPresentationMetadata, error) {
 	if client == nil {
 		client = NewSafeHTTPClient(15 * time.Second)
 	}
 	base := strings.TrimRight(normalizeSpace(profile.BaseURL), "/")
 	if base == "" {
-		return nil, fmt.Errorf("%w: base_url required for discovery", ErrInvalid)
+		return nil, nil, fmt.Errorf("%w: base_url required for discovery", ErrInvalid)
 	}
 	if err := ValidateUpstreamBaseURL(base); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	candidates := modelDiscoveryURLs(base, profile.Protocol)
 	var lastErr error
 	for _, endpoint := range candidates {
-		ids, err := getModelsOnce(ctx, client, endpoint, profile, store, lookup)
+		ids, metadata, err := getModelsOnce(ctx, client, endpoint, profile, store, lookup)
 		if err == nil {
-			return ids, nil
+			return ids, metadata, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("%w: discovery failed", ErrUpstreamInvalid)
 	}
-	return nil, lastErr
+	return nil, nil, lastErr
 }
 
 func modelDiscoveryURLs(base, protocol string) []string {
@@ -486,31 +516,31 @@ func modelDiscoveryURLs(base, protocol string) []string {
 	}
 }
 
-func getModelsOnce(ctx context.Context, client *http.Client, endpoint string, profile Profile, store CredentialStore, lookup func(string) (string, bool)) ([]string, error) {
+func getModelsOnce(ctx context.Context, client *http.Client, endpoint string, profile Profile, store CredentialStore, lookup func(string) (string, bool)) ([]string, map[string]modelPresentationMetadata, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := applyDiscoveryAuth(req, profile, store, lookup); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: discovery status %d", ErrUpstreamInvalid, resp.StatusCode)
+		return nil, nil, fmt.Errorf("%w: discovery status %d", ErrUpstreamInvalid, resp.StatusCode)
 	}
-	return parseModelsResponse(body)
+	return parseModelsCatalogResponse(body)
 }
 
 func applyDiscoveryAuth(req *http.Request, profile Profile, store CredentialStore, lookup func(string) (string, bool)) error {
@@ -538,22 +568,36 @@ func applyDiscoveryAuth(req *http.Request, profile Profile, store CredentialStor
 }
 
 func parseModelsResponse(body []byte) ([]string, error) {
+	ids, _, err := parseModelsCatalogResponse(body)
+	return ids, err
+}
+
+func parseModelsCatalogResponse(body []byte) ([]string, map[string]modelPresentationMetadata, error) {
+	type modelRecord struct {
+		ID                       string                       `json:"id"`
+		Slug                     string                       `json:"slug"`
+		DisplayName              string                       `json:"display_name"`
+		DefaultReasoningLevel    string                       `json:"default_reasoning_level"`
+		SupportedReasoningLevels []CodexReasoningEffortPreset `json:"supported_reasoning_levels"`
+		ContextWindow            int64                        `json:"context_window"`
+	}
 	var obj struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
+		Data   []modelRecord `json:"data"`
+		Models []modelRecord `json:"models"`
 	}
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return nil, fmt.Errorf("%w: models json: %v", ErrRequestBodyMalformed, err)
+		return nil, nil, fmt.Errorf("%w: models json: %v", ErrRequestBodyMalformed, err)
 	}
 	out := make([]string, 0, len(obj.Data)+len(obj.Models))
+	metadata := map[string]modelPresentationMetadata{}
 	seen := map[string]struct{}{}
-	add := func(id string) {
+	add := func(record modelRecord) {
+		id := record.ID
+		if normalizeSpace(id) == "" {
+			id = record.Slug
+		}
 		id = normalizeSpace(id)
-		if id == "" {
+		if err := ValidateModelID(id); err != nil {
 			return
 		}
 		if _, ok := seen[id]; ok {
@@ -561,12 +605,18 @@ func parseModelsResponse(body []byte) ([]string, error) {
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+		metadata[id] = normalizeModelPresentationMetadata(modelPresentationMetadata{
+			DisplayName:              record.DisplayName,
+			DefaultReasoningLevel:    record.DefaultReasoningLevel,
+			SupportedReasoningLevels: record.SupportedReasoningLevels,
+			ContextWindow:            record.ContextWindow,
+		})
 	}
 	for _, m := range obj.Data {
-		add(m.ID)
+		add(m)
 	}
 	for _, m := range obj.Models {
-		add(m.ID)
+		add(m)
 	}
-	return out, nil
+	return out, metadata, nil
 }

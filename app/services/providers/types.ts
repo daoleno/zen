@@ -42,6 +42,7 @@ export type ProviderDefault = {
 
 export type ProviderModel = {
   id: string;
+  display_name?: string;
   available: boolean;
   source: string;
   reasoning_effort_default?: string;

@@ -240,9 +240,8 @@ var codexModelCatalog = []CodexModelMetadata{
 		Provenance: ContractProvenanceCodexCatalog,
 	},
 	{
-		// OpenRouter canonical aliases for known OpenAI models (gateway slugs
-		// pinned by the OpenRouter preset TrustedModels). Same capabilities as
-		// the base model; configured-compatibility provenance.
+		// OpenRouter canonical aliases for known OpenAI models. Same capabilities
+		// as the base model; configured-compatibility provenance.
 		Slug: "openai/gpt-5", DisplayName: "openai/gpt-5",
 		Envelope: CapabilityEnvelope{
 			ContextWindowTokens: 272000, ReasoningClass: ReasoningClassExtended,
@@ -380,15 +379,11 @@ func codexEffortSupported(model, effort string) bool {
 	return false
 }
 
-// codexEffortAdmitted validates explicit wire values without turning known
-// model metadata into an identity allowlist. Known models keep their exact
-// documented choices; unknown models admit any valid Codex effort vocabulary
-// and let the upstream decide whether that model supports it.
+// codexEffortAdmitted validates only the Codex wire vocabulary. Catalog
+// metadata drives suggestions, never local admission; upstream decides whether
+// an exact model supports the selected value.
 func codexEffortAdmitted(model, effort string) bool {
-	if _, known := lookupCodexModelMetadata(model); !known {
-		return isCodexReasoningEffortValue(effort)
-	}
-	return codexEffortSupported(model, effort)
+	return isCodexReasoningEffortValue(effort)
 }
 
 // codexEffortDefault returns the model's documented default effort ("" when
@@ -497,55 +492,23 @@ func codexEffortPresetDescription(effort string) string {
 // tokens-mode truncation at 10k, parallel tool calls for these models, no
 // experimental tools, and no verbosity surface (Zen does not route it).
 func codexWireEntryForModel(model string) (CodexModelCatalogWireEntry, bool) {
-	entry, ok := lookupCodexModelMetadata(model)
-	if !ok {
-		model = normalizeSpace(model)
-		if err := ValidateModelID(model); err != nil {
-			return CodexModelCatalogWireEntry{}, false
-		}
-		entry = CodexModelMetadata{
-			Slug:        model,
-			DisplayName: model,
-			Envelope:    opaqueCodexPassthroughEnvelope(),
-			Provenance:  ContractProvenanceOpaquePassthrough,
-		}
-	}
-	wire := CodexModelCatalogWireEntry{
-		Slug:                       entry.Slug,
-		DisplayName:                entry.DisplayName,
-		ContextWindow:              entry.Envelope.ContextWindowTokens,
-		ShellType:                  "shell_command",
-		Visibility:                 "list",
-		SupportedInAPI:             true,
-		Priority:                   10,
-		BaseInstructions:           codexCatalogBaseInstructions,
-		SupportVerbosity:           false,
-		TruncationPolicy:           CodexTruncationPolicyConfig{Mode: "tokens", Limit: 10_000},
-		SupportsParallelToolCalls:  true,
-		ExperimentalSupportedTools: []string{},
-		// The Codex ModelInfo contract requires supported_reasoning_levels to
-		// be present; a nil slice would marshal as JSON null and fail parse,
-		// so the field always carries an explicit (possibly empty) sequence.
-		SupportedReasoningLevels: []CodexReasoningEffortPreset{},
-	}
-	if entry.Effort != nil {
-		wire.DefaultReasoningLevel = entry.Effort.defaultEffort
-		for _, effort := range entry.Effort.supported {
-			wire.SupportedReasoningLevels = append(wire.SupportedReasoningLevels, CodexReasoningEffortPreset{
-				Effort:      effort,
-				Description: codexEffortPresetDescription(effort),
-			})
-		}
-	}
-	return wire, true
+	return codexWireEntryForModelMetadata(model, modelPresentationMetadata{})
 }
 
 // CodexModelsResponseForModels projects the exact known-model subset.
 func CodexModelsResponseForModels(models []string) CodexModelsResponse {
+	entries := make([]ProviderModelEntry, 0, len(models))
+	for _, model := range models {
+		entries = append(entries, ProviderModelEntry{ID: model})
+	}
+	return CodexModelsResponseForEntries(entries)
+}
+
+func CodexModelsResponseForEntries(entries []ProviderModelEntry) CodexModelsResponse {
 	seen := map[string]struct{}{}
 	resp := CodexModelsResponse{Models: []CodexModelCatalogWireEntry{}}
-	for _, model := range models {
-		model = normalizeSpace(model)
+	for _, entry := range entries {
+		model := normalizeSpace(entry.ID)
 		if model == "" {
 			continue
 		}
@@ -553,7 +516,16 @@ func CodexModelsResponseForModels(models []string) CodexModelsResponse {
 			continue
 		}
 		seen[model] = struct{}{}
-		if wire, ok := codexWireEntryForModel(model); ok {
+		metadata := modelPresentationMetadata{
+			DisplayName:           entry.DisplayName,
+			DefaultReasoningLevel: entry.ReasoningEffortDefault,
+		}
+		for _, effort := range entry.ReasoningEfforts {
+			metadata.SupportedReasoningLevels = append(metadata.SupportedReasoningLevels, CodexReasoningEffortPreset{
+				Effort: effort, Description: codexEffortPresetDescription(effort),
+			})
+		}
+		if wire, ok := codexWireEntryForModelMetadata(model, metadata); ok {
 			resp.Models = append(resp.Models, wire)
 		}
 	}

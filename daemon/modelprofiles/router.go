@@ -365,17 +365,21 @@ func (r *Router) serveLocalModels(w http.ResponseWriter, binding RouteBinding) {
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog: %v", ErrInvalid, err))
 		return
 	}
-	var ids []string
+	available := make([]ProviderModelEntry, 0, len(entries)+1)
+	seen := map[string]struct{}{}
 	for _, entry := range entries {
 		if entry.Available {
-			ids = append(ids, entry.ID)
+			available = append(available, entry)
+			seen[normalizeSpace(entry.ID)] = struct{}{}
 		}
 	}
 	// The running identity always appears so the CLI never loses it.
-	if normalizeSpace(binding.UpstreamModel) != "" && codexModelKnown(binding.UpstreamModel) {
-		ids = append(ids, binding.UpstreamModel)
+	if model := normalizeSpace(binding.UpstreamModel); model != "" {
+		if _, ok := seen[model]; !ok {
+			available = append(available, ProviderModelEntry{ID: model, Available: true, Source: ModelSourceManual})
+		}
 	}
-	payload, err := json.Marshal(CodexModelsResponseForModels(ids))
+	payload, err := json.Marshal(CodexModelsResponseForEntries(available))
 	if err != nil {
 		writeRouteError(w, http.StatusInternalServerError, fmt.Errorf("%w: model list encode: %v", ErrInvalid, err))
 		return
