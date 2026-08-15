@@ -405,16 +405,14 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	}
 	rev = owner.Catalog().Revision
 
-	_, err = owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-pro", rev)
-	if err == nil {
-		t.Fatal("unsupported Codex model must reject before persistence")
+	proj, err = owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-pro", rev)
+	if err != nil {
+		t.Fatalf("Codex model slug must pass through curated preset: %v", err)
 	}
-	if owner.Catalog().Revision != rev {
-		t.Fatalf("revision mutated on unsupported model: %d", owner.Catalog().Revision)
+	if owner.store.DefaultModelID(ClientCodex) != "deepseek-v4-pro" || proj.Defaults[ClientCodex].ModelID != "deepseek-v4-pro" {
+		t.Fatalf("default model was not preserved: store=%q projection=%#v", owner.store.DefaultModelID(ClientCodex), proj.Defaults[ClientCodex])
 	}
-	if owner.store.DefaultModelID(ClientCodex) != "deepseek-v4-flash" {
-		t.Fatalf("default mutated: %q", owner.store.DefaultModelID(ClientCodex))
-	}
+	rev = owner.Catalog().Revision
 
 	claudeConn, err := CompileProviderConnection(ProviderConnectionInput{
 		Name: "DeepSeek Claude", PresetID: ProviderPresetDeepSeek, Client: ClientClaude,

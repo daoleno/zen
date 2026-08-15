@@ -304,7 +304,7 @@ func TestSwitchProviderRetargetsSessionsAndPreservesInFlightRequests(t *testing.
 	}
 }
 
-func TestSwitchProviderValidationFailureChangesNothing(t *testing.T) {
+func TestSwitchProviderIgnoresTargetDiscoveryAndPreservesModels(t *testing.T) {
 	root := t.TempDir()
 	owner := startSettingsSwitchOwner(t, root)
 	t.Cleanup(func() { _ = owner.Close() })
@@ -343,12 +343,24 @@ func TestSwitchProviderValidationFailureChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := captureProviderSwitchSnapshot(owner)
-	if _, err := owner.SwitchProvider(ClientCodex, connectionB.ID, before.Revision); !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("switch error=%v want unsupported preserved model", err)
+	if _, err := owner.SwitchProvider(ClientCodex, connectionB.ID, before.Revision); err != nil {
+		t.Fatalf("provider-only switch must ignore target discovery: %v", err)
 	}
-	assertProviderSwitchSnapshot(t, captureProviderSwitchSnapshot(owner), before)
+	after := captureProviderSwitchSnapshot(owner)
+	if after.Defaults[ClientCodex] != connectionB.ID || after.DefaultModels[ClientCodex] != before.DefaultModels[ClientCodex] {
+		t.Fatalf("default model was not preserved: before=%#v after=%#v", before, after)
+	}
+	for _, sessionID := range []string{"validation-thread-1", "validation-thread-2"} {
+		runtime, ok := owner.ThreadRuntime(sessionID)
+		if !ok || runtime.ConnectionID != connectionB.ID {
+			t.Fatalf("runtime %s not retargeted: %#v", sessionID, runtime)
+		}
+	}
+	if runtime, _ := owner.ThreadRuntime("validation-thread-2"); runtime.ModelID != "gpt-5.5" || runtime.ReasoningEffort != ReasoningEffortLow {
+		t.Fatalf("preserved runtime changed: %#v", runtime)
+	}
 	if _, err := os.Stat(filepath.Join(root, providerSwitchJournalFileName)); !os.IsNotExist(err) {
-		t.Fatalf("validation failure wrote a transaction journal: %v", err)
+		t.Fatalf("completed switch left a transaction journal: %v", err)
 	}
 }
 

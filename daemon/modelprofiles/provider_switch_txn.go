@@ -414,11 +414,8 @@ func (o *Owner) admitProviderSwitchTargetLocked(connection, target Profile) (Ver
 	if target.ModelPlaceholder || normalizeSpace(target.Model) == "" {
 		return VerifiedProfileContract{}, ErrUpstreamModelRequired
 	}
-	if err := o.activationModelAdmittedLocked(connection, target.Model); err != nil {
-		return VerifiedProfileContract{}, err
-	}
 	if effort := normalizeID(target.ReasoningEffort); effort != "" {
-		if normalizeID(target.ExecutorID) != ExecutorCodex || !codexEffortSupported(target.ClientModel, effort) {
+		if normalizeID(target.ExecutorID) != ExecutorCodex || !codexEffortAdmitted(target.ClientModel, effort) {
 			return VerifiedProfileContract{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effort)
 		}
 	}

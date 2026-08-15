@@ -137,7 +137,7 @@ func ValidateProfile(profile Profile) error {
 // Presence of a known label is not authorization.
 func validateProvenanceLabel(provenance string) error {
 	switch normalizeID(provenance) {
-	case "", ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog:
+	case "", ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog, ContractProvenanceOpaquePassthrough:
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown client_model_provenance %q", ErrInvalid, provenance)

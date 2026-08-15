@@ -260,11 +260,11 @@ func TestSameBaseURLDifferentKeysCoexistAndRouteIndependently(t *testing.T) {
 	}
 
 	// Independent route bindings carry the right credential refs.
-	planA, err := owner.PrepareLaunch(ExecutorCodex, connA.ID, "codex")
+	planA, err := owner.PrepareLaunchModel(ExecutorCodex, connA.ID, "gpt-5.6-sol", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	planB, err := owner.PrepareLaunch(ExecutorCodex, connBID, "codex")
+	planB, err := owner.PrepareLaunchModel(ExecutorCodex, connBID, "gpt-5.5", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}

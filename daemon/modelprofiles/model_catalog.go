@@ -2,7 +2,6 @@ package modelprofiles
 
 import (
 	_ "embed"
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -302,8 +301,8 @@ var codexModelCatalogIndex = func() map[string]CodexModelMetadata {
 }()
 
 // lookupCodexModelMetadata resolves the daemon-owned metadata for one exact
-// Codex model identity. Unknown models resolve nowhere — callers must fail
-// closed (never masquerade under another identity).
+// Codex model identity. Unknown models have no daemon-owned metadata, but are
+// still valid opaque identities for launch and routing.
 func lookupCodexModelMetadata(model string) (CodexModelMetadata, bool) {
 	entry, ok := codexModelCatalogIndex[normalizeSpace(model)]
 	return entry, ok
@@ -381,6 +380,17 @@ func codexEffortSupported(model, effort string) bool {
 	return false
 }
 
+// codexEffortAdmitted validates explicit wire values without turning known
+// model metadata into an identity allowlist. Known models keep their exact
+// documented choices; unknown models admit any valid Codex effort vocabulary
+// and let the upstream decide whether that model supports it.
+func codexEffortAdmitted(model, effort string) bool {
+	if _, known := lookupCodexModelMetadata(model); !known {
+		return isCodexReasoningEffortValue(effort)
+	}
+	return codexEffortSupported(model, effort)
+}
+
 // codexEffortDefault returns the model's documented default effort ("" when
 // the model has no effort contract).
 func codexEffortDefault(model string) string {
@@ -397,10 +407,17 @@ func codexModelKnown(model string) bool {
 	return ok
 }
 
-// errUnknownCodexModel builds the fail-closed error for a model without
-// daemon-owned metadata.
-func errUnknownCodexModel(model string) error {
-	return fmt.Errorf("%w: model %q is not in the Zen Codex model catalog; choose a known Codex model", ErrModelUnsupported, model)
+// opaqueCodexPassthroughEnvelope is deliberately conservative metadata for an
+// unknown model identity. It authorizes transport of the exact slug without
+// claiming model-specific context, reasoning, image, or tool capabilities.
+func opaqueCodexPassthroughEnvelope() CapabilityEnvelope {
+	return CapabilityEnvelope{
+		ContextWindowTokens: 1,
+		ReasoningClass:      ReasoningClassNone,
+		ThinkingClass:       ThinkingClassNone,
+		ToolClass:           ToolClassNone,
+		Modalities:          []string{ModalityText},
+	}
 }
 
 // CodexReasoningEffortPreset mirrors the Codex model catalog entry shape
@@ -472,14 +489,26 @@ func codexEffortPresetDescription(effort string) string {
 	}
 }
 
-// codexWireEntryForModel projects one known model into the Codex wire shape.
+// codexWireEntryForModel projects any valid model slug into the Codex wire
+// shape. Known models receive their pinned metadata; unknown models receive a
+// minimal generic entry so model_catalog_json cannot become an identity
+// allowlist that prevents the CLI from sending the selected slug.
 // Values mirror the Codex CLI 0.147 reference catalog: supported_in_api=true,
 // tokens-mode truncation at 10k, parallel tool calls for these models, no
 // experimental tools, and no verbosity surface (Zen does not route it).
 func codexWireEntryForModel(model string) (CodexModelCatalogWireEntry, bool) {
 	entry, ok := lookupCodexModelMetadata(model)
 	if !ok {
-		return CodexModelCatalogWireEntry{}, false
+		model = normalizeSpace(model)
+		if err := ValidateModelID(model); err != nil {
+			return CodexModelCatalogWireEntry{}, false
+		}
+		entry = CodexModelMetadata{
+			Slug:        model,
+			DisplayName: model,
+			Envelope:    opaqueCodexPassthroughEnvelope(),
+			Provenance:  ContractProvenanceOpaquePassthrough,
+		}
 	}
 	wire := CodexModelCatalogWireEntry{
 		Slug:                       entry.Slug,

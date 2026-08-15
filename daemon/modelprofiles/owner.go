@@ -819,9 +819,8 @@ func (o *Owner) PrepareLaunch(executorID, profileID, baseCommand string) (Sessio
 
 // PrepareLaunchModel is PrepareLaunch with an explicit client model override
 // (create_session's connection_id + model_id). The gateway never owns a model:
-// the launch model is the explicit override, else the client-selected model,
-// else a deterministic fallback chosen from the connection's supported
-// allowlist; with no supported models the launch fails closed.
+// the launch model is the explicit override or the exact client-selected
+// default. Discovery and local catalogs never replace or reject that identity.
 func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCommand string) (SessionLaunchPlan, error) {
 	if o == nil || !o.started {
 		return SessionLaunchPlan{}, fmt.Errorf("%w: owner not started", ErrInvalid)
@@ -854,12 +853,6 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 		}
 		return SessionLaunchPlan{}, err
 	}
-	if resolved, ok := o.resolveSupportedLaunchModelLocked(profile); ok {
-		profile = resolved
-	} else {
-		return SessionLaunchPlan{}, fmt.Errorf("%w: connection %s has no supported models enabled", ErrUpstreamModelRequired, profile.ID)
-	}
-
 	// Deterministic per-connection Codex model catalog for this route: known
 	// metadata + discovery availability, written before compile so the launch
 	// command can reference it. Fail closed when the catalog cannot be written.

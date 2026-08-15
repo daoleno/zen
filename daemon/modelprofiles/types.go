@@ -82,6 +82,9 @@ const (
 	// daemon-owned ClientModelContract envelope applied as a configured
 	// compatibility mapping — not a claim that upstream capabilities were probed.
 	ContractProvenanceConfiguredCompatibility = "configured_compatibility"
+	// ContractProvenanceOpaquePassthrough admits an exact, syntactically valid
+	// model slug without claiming daemon-owned capability metadata for it.
+	ContractProvenanceOpaquePassthrough = "opaque_passthrough"
 )
 
 // Official upstream hosts for AuthModeNativePassthrough are decided by
@@ -463,7 +466,7 @@ func ContractFromProfile(profile Profile, auth ContractAuth) (VerifiedProfileCon
 // This checks vocabulary for daemon-admitted identities; it does not trust TOML self-claims.
 func RequireContractProvenance(provenance string) error {
 	switch normalizeID(provenance) {
-	case ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog:
+	case ContractProvenanceBuiltinCatalog, ContractProvenanceVerifiedAlias, ContractProvenanceConfiguredCompatibility, ContractProvenanceCodexCatalog, ContractProvenanceOpaquePassthrough:
 		return nil
 	case "":
 		return fmt.Errorf("%w: client_model_provenance is required", ErrContractUnverified)

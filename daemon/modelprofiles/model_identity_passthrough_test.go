@@ -1,0 +1,120 @@
+package modelprofiles
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func startBuiltinVerifierOwner(t *testing.T) *Owner {
+	t.Helper()
+	root := t.TempDir()
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
+		RoutesPath:   filepath.Join(root, "route-bindings.json"),
+		ListenerPath: filepath.Join(root, "route-listener.json"),
+		Lookup:       readyLookup("x"),
+		Verifier:     BuiltinEnvelopeVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	return owner
+}
+
+func TestUnknownCodexModelLaunchAndCatalogPassThrough(t *testing.T) {
+	const model = "vendor/private-alpha"
+	owner := startBuiltinVerifierOwner(t)
+	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "opaque-gateway", Name: "Opaque gateway", Client: ClientCodex,
+		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
+		Advanced: true,
+	}, "", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	owner.discovery = newModelDiscoveryCache()
+	owner.discovery.put("opaque-gateway", []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil)
+	owner.mu.Unlock()
+
+	projection, err = owner.SetProviderDefault(ClientCodex, "opaque-gateway", model, projection.Revision)
+	if err != nil {
+		t.Fatalf("set opaque default: %v", err)
+	}
+	plan, err := owner.PrepareLaunchModel(ExecutorCodex, "opaque-gateway", model, "codex")
+	if err != nil {
+		t.Fatalf("launch opaque model: %v", err)
+	}
+	if plan.State.Binding.ClientModel != model || plan.State.Binding.UpstreamModel != model {
+		t.Fatalf("model identity changed: %#v", plan.State.Binding)
+	}
+	if plan.State.Binding.ClientModelProvenance != ContractProvenanceOpaquePassthrough {
+		t.Fatalf("provenance=%q", plan.State.Binding.ClientModelProvenance)
+	}
+	if !strings.Contains(plan.Command, "--model "+model) {
+		t.Fatalf("launch command=%q", plan.Command)
+	}
+
+	raw, err := json.Marshal(CodexModelsResponseForModels([]string{model}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response CodexModelsResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("generic catalog entry must parse: %v", err)
+	}
+	if len(response.Models) != 1 || response.Models[0].Slug != model || response.Models[0].DisplayName != model {
+		t.Fatalf("catalog response=%#v", response)
+	}
+	if response.Models[0].SupportedReasoningLevels == nil {
+		t.Fatal("generic catalog reasoning levels must be an explicit sequence")
+	}
+}
+
+func TestUnknownCodexModelRuntimeAndEffectPassThrough(t *testing.T) {
+	owner := startBuiltinVerifierOwner(t)
+	projection, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "opaque-gateway", Name: "Opaque gateway", Client: ClientCodex,
+		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
+		Advanced: true,
+	}, "", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err = owner.SetProviderDefault(ClientCodex, "opaque-gateway", "gpt-5.4", projection.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := owner.PrepareLaunch(ExecutorCodex, "opaque-gateway", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "opaque-runtime"); err != nil {
+		t.Fatal(err)
+	}
+
+	state, runtime, persist, err := owner.SetThreadRuntime("opaque-runtime", ThreadRuntimeChoice{
+		ConnectionID: "opaque-gateway",
+		ModelID:      "gpt-5.6",
+		Effect:       ReasoningEffortMax,
+	})
+	if err != nil || !persist.Applied {
+		t.Fatalf("runtime passthrough persist=%#v err=%v", persist, err)
+	}
+	if state.Binding.ClientModel != "gpt-5.6" || state.Binding.UpstreamModel != "gpt-5.6" || state.Binding.ReasoningEffort != ReasoningEffortMax {
+		t.Fatalf("binding=%#v", state.Binding)
+	}
+	if runtime.Current == nil || runtime.Current.ModelID != "gpt-5.6" || runtime.Current.ReasoningEffort != ReasoningEffortMax {
+		t.Fatalf("runtime=%#v", runtime.Current)
+	}
+	if _, _, _, err := owner.SetThreadRuntime("opaque-runtime", ThreadRuntimeChoice{
+		ConnectionID: "opaque-gateway",
+		ModelID:      "gpt-5.6",
+		Effect:       "turbo",
+	}); err == nil {
+		t.Fatal("invalid effect vocabulary was admitted")
+	}
+}

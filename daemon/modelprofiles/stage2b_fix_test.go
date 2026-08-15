@@ -568,8 +568,12 @@ func TestBuiltinVerifierKnownAndUnknown(t *testing.T) {
 	unknown := okProfile
 	unknown.ClientModel = "gpt-99-invented"
 	unknown.Model = "gpt-99-invented"
-	if _, err := v.VerifyProfileContract(unknown); !errors.Is(err, ErrModelUnsupported) {
-		t.Fatalf("unknown model must fail closed, err=%v", err)
+	unknownContract, err := v.VerifyProfileContract(unknown)
+	if err != nil {
+		t.Fatalf("unknown valid model must be admitted unchanged: %v", err)
+	}
+	if unknownContract.ClientModelID != unknown.Model || unknownContract.UpstreamModelID != unknown.Model || unknownContract.Provenance != ContractProvenanceOpaquePassthrough {
+		t.Fatalf("opaque contract=%#v", unknownContract)
 	}
 }
 

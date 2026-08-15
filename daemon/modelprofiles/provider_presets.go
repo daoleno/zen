@@ -307,11 +307,11 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 	}
 	// Unified identity for managed Codex: the selected model slug IS the Codex
 	// session model (client_model) and the routed upstream model — no hidden
-	// compatibility model. The daemon-owned model catalog admits the exact
-	// slug (unknown models fail closed at contract admission). For curated
+	// compatibility model. The daemon-owned model catalog supplies suggestions
+	// and metadata but never admits or rejects the exact slug. For curated
 	// presets the preset's default model is the identity; an omitted model
 	// stays a compile-only probe placeholder (never the route's UpstreamModel)
-	// until the client selects one from the synced support allowlist.
+	// until the client selects one explicitly.
 	modelID := in.ModelID
 	modelPlaceholder := false
 	if executor == ExecutorCodex {
@@ -325,14 +325,10 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 		modelID = clientModel
 		modelPlaceholder = true
 	}
-	if !in.Advanced && normalizeID(in.PresetID) != ProviderPresetCustom {
+	if executor != ExecutorCodex && !in.Advanced && normalizeID(in.PresetID) != ProviderPresetCustom {
 		if err := requireTrustedOrFail(in.PresetID, modelID); err != nil {
 			return Profile{}, err
 		}
-	}
-	if normalizeID(in.PresetID) == ProviderPresetDeepSeek && executor == ExecutorCodex &&
-		normalizeSpace(modelID) == "deepseek-v4-pro" && !in.Advanced {
-		return Profile{}, fmt.Errorf("%w: deepseek-v4-pro is not yet supported on DeepSeek Responses for Codex; use deepseek-v4-flash", ErrInvalid)
 	}
 
 	// Durable account records always carry an explicit non-empty name (migration

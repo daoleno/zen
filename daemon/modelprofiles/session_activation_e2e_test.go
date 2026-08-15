@@ -3,7 +3,6 @@ package modelprofiles
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,8 +133,8 @@ func e2eCustomInput(id, name, baseURL, model string) ProviderConnectionInput {
 // then C (different URL/key/model) on the same Session without recreation; the
 // next request after each activation carries the new Provider's auth, upstream
 // and model; in-flight requests finish on the immutable old snapshot; the
-// active route survives restart; unsupported models fail inline keeping the
-// old route; concurrent Sessions and catalog defaults are untouched; the
+// active route survives restart; unknown models pass through unchanged;
+// concurrent Sessions and catalog defaults are untouched; the
 // serving Provider is attributed on the Session selection.
 func TestThreadRuntimeSwitchE2E(t *testing.T) {
 	root := t.TempDir()
@@ -269,19 +268,19 @@ func TestThreadRuntimeSwitchE2E(t *testing.T) {
 		t.Fatal("routed Codex default must suppress official-subscription stats")
 	}
 
-	// Failure rollback: an unsupported model fails inline and keeps the old
-	// route; the daemon never substitutes another model.
+	// Unknown model identities are passed through unchanged; discovery and the
+	// local catalog are suggestions/metadata only.
 	_, _, _, err = owner.SetThreadRuntime("s-live", ThreadRuntimeChoice{ConnectionID: connC.ID, ModelID: "bogus-model", Effect: ""})
-	if !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("unsupported model err=%v", err)
+	if err != nil {
+		t.Fatalf("opaque model activation: %v", err)
 	}
 	state, _ = owner.Table().Get("s-live")
-	if state.Binding.ProfileID != connC.ID || state.Binding.UpstreamModel != "gpt-5.4" {
-		t.Fatalf("failed activation must keep the old route: %#v", state.Binding)
+	if state.Binding.ProfileID != connC.ID || state.Binding.UpstreamModel != "bogus-model" {
+		t.Fatalf("opaque activation must preserve exact slug: %#v", state.Binding)
 	}
-	postLoopback(t, routerAddr, routeID, "gpt-5.4")
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
-		t.Fatalf("request after rollback must stay C: %#v", got)
+	postLoopback(t, routerAddr, routeID, "bogus-model")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "bogus-model" {
+		t.Fatalf("opaque model must reach upstream unchanged: %#v", got)
 	}
 
 	// Concurrent Sessions: s2 on A is untouched by s1's activations.
@@ -296,12 +295,12 @@ func TestThreadRuntimeSwitchE2E(t *testing.T) {
 	if got, _ := shared.last(); got.auth != "Bearer key-a" || got.model != "gpt-5.6-sol" {
 		t.Fatalf("s2 must stay on A: %#v", got)
 	}
-	postLoopback(t, routerAddr, routeID, "gpt-5.4")
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
+	postLoopback(t, routerAddr, routeID, "bogus-model")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "bogus-model" {
 		t.Fatalf("s1 must stay on C: %#v", got)
 	}
 
-	// Restart restoration: the active route (s1 -> C, gpt-5.4) survives a
+	// Restart restoration: the active route (s1 -> C, bogus-model) survives a
 	// daemon restart and the next request still routes with C's auth/model.
 	_ = owner.Close()
 	owner2 := start()
@@ -309,11 +308,11 @@ func TestThreadRuntimeSwitchE2E(t *testing.T) {
 	routerSrv2 := httptest.NewServer(owner2.router.Handler())
 	t.Cleanup(routerSrv2.Close)
 	state2, ok := owner2.Table().Get("s-live")
-	if !ok || state2.Binding.ProfileID != connC.ID || state2.Binding.UpstreamModel != "gpt-5.4" {
+	if !ok || state2.Binding.ProfileID != connC.ID || state2.Binding.UpstreamModel != "bogus-model" {
 		t.Fatalf("restored binding lost activation: %#v ok=%v", state2.Binding, ok)
 	}
-	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5.4")
-	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
+	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID, "bogus-model")
+	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "bogus-model" {
 		t.Fatalf("request after restart must stay C: %#v", got)
 	}
 	// The restored binding also survives a further activation on the restarted

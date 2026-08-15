@@ -97,7 +97,7 @@ func TestSetProviderDefaultPreservesCompleteSeedAndRejectsIncompleteSwitch(t *te
 	}
 }
 
-func TestLaunchRejectsExplicitDefaultThatIsNoLongerSupported(t *testing.T) {
+func TestLaunchPreservesExplicitDefaultAbsentFromDiscovery(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
@@ -115,9 +115,6 @@ func TestLaunchRejectsExplicitDefaultThatIsNoLongerSupported(t *testing.T) {
 	}, nil)
 	owner.mu.Unlock()
 
-	// No client-selected model: the connection can still become the default
-	// (connection selection is not a model choice), and launch falls back to
-	// the first supported model deterministically.
 	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "gpt-5.6-sol", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
@@ -137,16 +134,18 @@ func TestLaunchRejectsExplicitDefaultThatIsNoLongerSupported(t *testing.T) {
 		t.Fatalf("wire model_id=%q", plan.Wire.ModelID)
 	}
 
-	// An unsupported model cannot replace the complete default seed.
-	if _, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "retired-model", proj.Revision); !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("retired explicit default must be refused: %v", err)
+	// A syntactically valid model absent from discovery replaces the default
+	// unchanged. Upstream support is authoritative.
+	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "retired-model", proj.Revision)
+	if err != nil {
+		t.Fatalf("opaque explicit default: %v", err)
 	}
 	plan, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Wire.ModelID != "gpt-5.6-sol" {
-		t.Fatalf("refused update changed default model: %q", plan.Wire.ModelID)
+	if plan.Wire.ModelID != "retired-model" {
+		t.Fatalf("opaque default was changed: %q", plan.Wire.ModelID)
 	}
 }
 

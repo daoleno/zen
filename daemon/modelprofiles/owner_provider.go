@@ -189,13 +189,6 @@ func (o *Owner) syncedModelCatalogLocked(profile Profile) ([]ProviderModelEntry,
 	return projectModelEntries(trusted, manual, e.IDs, e.LastGood, e.Disabled, e.Err == ""), true
 }
 
-// resolveSupportedLaunchModelLocked applies the deterministic launch-model rule
-// for Provider account connections: the client-selected model is used while it
-// stays in the synced support allowlist; an unsupported or missing selection
-// falls back to the first supported model (catalog order); a synced allowlist
-// with every model disabled fails closed. Legacy executor-scoped profiles own
-// an explicit model and are untouched. Returns (profile, false) when the
-// caller must fail closed.
 // CodexModelCatalogPath returns the stable per-connection Codex ModelsResponse
 // catalog file path (empty when the owner has no routes path).
 func (o *Owner) CodexModelCatalogPath(connectionID string) string {
@@ -220,13 +213,13 @@ func (o *Owner) writeCodexModelCatalogLocked(profile Profile) error {
 		return nil
 	}
 	known := map[string]struct{}{}
-	if !profile.ModelPlaceholder && codexModelKnown(profile.Model) {
+	if !profile.ModelPlaceholder {
 		known[normalizeSpace(profile.Model)] = struct{}{}
 	}
 	if durable, err := o.store.Get(profile.ID); err == nil && isAccountConnection(durable) {
 		if entries, synced := o.syncedModelCatalogLocked(durable); synced {
 			for _, entry := range entries {
-				if !entry.Available || !codexModelKnown(entry.ID) {
+				if !entry.Available {
 					continue
 				}
 				known[normalizeSpace(entry.ID)] = struct{}{}
@@ -249,71 +242,6 @@ func (o *Owner) writeCodexModelCatalogLocked(profile Profile) error {
 		return fmt.Errorf("%w: write codex model catalog: %v", ErrInvalid, err)
 	}
 	return nil
-}
-
-// resolveSupportedLaunchModelLocked applies the connection's synced support
-// allowlist to the launch model. When the model is resolved/fallback-selected
-// here, the unified Codex identity is kept: ClientModel == Model (the Codex
-// session model IS the routed model).
-func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, bool) {
-	// The ephemeral launch target loses account scope during compile; the
-	// durable connection record decides whether the allowlist applies.
-	durable, err := o.store.Get(profile.ID)
-	if err != nil || !isAccountConnection(durable) {
-		return profile, true
-	}
-	entries, synced := o.syncedModelCatalogLocked(durable)
-	candidate := ""
-	if !profile.ModelPlaceholder {
-		candidate = normalizeSpace(profile.Model)
-	}
-	firstSupported := ""
-	supportedSet := map[string]struct{}{}
-	for _, entry := range entries {
-		if !entry.Available {
-			continue
-		}
-		supportedSet[entry.ID] = struct{}{}
-		// The deterministic fallback may only select an identity the daemon
-		// can actually compile (a provider may advertise review/audio models
-		// that are not in the Zen Codex catalog); the explicit candidate check
-		// below still honors any discovered id the client selected.
-		if firstSupported == "" && codexModelKnown(entry.ID) {
-			firstSupported = entry.ID
-		}
-	}
-
-	resolve := func(profile Profile, model string) Profile {
-		profile.Model = model
-		profile.ModelPlaceholder = false
-		if normalizeID(profile.ExecutorID) == ExecutorCodex {
-			// Unified identity: the Codex session model is the routed model.
-			profile.ClientModel = model
-		}
-		return profile
-	}
-
-	if candidate != "" {
-		if _, ok := supportedSet[candidate]; ok || !synced {
-			// The client's explicit selection is still supported, or no synced
-			// allowlist exists to contradict it: use it unchanged.
-			return profile, true
-		}
-		// The selected model is no longer supported: deterministic visible
-		// fallback to the first supported model.
-		if firstSupported != "" {
-			return resolve(profile, firstSupported), true
-		}
-		// A synced allowlist exists but every model is disabled: fail closed
-		// rather than route a model the client turned off.
-		return profile, false
-	}
-
-	// No client selection: deterministic fallback from the allowlist.
-	if firstSupported != "" {
-		return resolve(profile, firstSupported), true
-	}
-	return profile, false
 }
 
 func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnection {
@@ -700,9 +628,6 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 		if target.ModelPlaceholder {
 			return ErrUpstreamModelRequired
 		}
-		if err := o.activationModelAdmittedLocked(raw, target.Model); err != nil {
-			return err
-		}
 		_, err = o.store.SetClientDefault(client, connectionID, modelID, revision)
 		return err
 	}()
@@ -939,29 +864,6 @@ func (o *Owner) ThreadRuntime(sessionID string) (ThreadRuntimeSelection, bool) {
 	}, true
 }
 
-// activationModelAdmittedLocked fails closed when the target connection's
-// synced support allowlist does not admit the model being activated: the
-// client must fail inline and keep the old route — activation never silently
-// substitutes another model. A model is admitted when no synced allowlist
-// exists yet (discovery not run) or when it is present and available.
-// Caller must hold o.mu.
-func (o *Owner) activationModelAdmittedLocked(profile Profile, modelID string) error {
-	if o == nil || o.store == nil || normalizeSpace(modelID) == "" {
-		return nil
-	}
-	modelID = normalizeSpace(modelID)
-	entries, synced := o.syncedModelCatalogLocked(profile)
-	if !synced {
-		return nil
-	}
-	for _, entry := range entries {
-		if entry.ID == modelID && entry.Available {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: model %q is not available on connection %s; keep the current route and choose a supported model", ErrUpstreamModelRequired, modelID, profile.ID)
-}
-
 // SetThreadRuntime atomically activates Provider+model (+ optional Effect)
 // for the next admitted request on the existing routed
 // Session (same RouteID). The model/effort override is ephemeral: catalog
@@ -1006,12 +908,6 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 	if err != nil {
 		return preparedThreadRuntime{}, err
 	}
-	if !target.ModelPlaceholder {
-		err = o.activationModelAdmittedLocked(raw, target.Model)
-		if err != nil {
-			return preparedThreadRuntime{}, err
-		}
-	}
 	// Explicit effort: admit against the TARGET model's daemon-owned contract
 	// (fail closed; an unsupported effort never reaches the route or the
 	// upstream). Omitted effort: PRESERVE the current override when the target
@@ -1019,12 +915,12 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 	// target model's documented default applies (safe fallback — never an
 	// invalid value).
 	if effortOverride != "" {
-		if !codexEffortSupported(target.ClientModel, effortOverride) {
+		if normalizeID(target.ExecutorID) != ExecutorCodex || !codexEffortAdmitted(target.ClientModel, effortOverride) {
 			return preparedThreadRuntime{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
 		}
 	} else if preserveOmittedEffect {
 		currentEffort := normalizeID(state.Binding.ReasoningEffort)
-		if codexEffortSupported(target.ClientModel, currentEffort) {
+		if normalizeID(target.ExecutorID) == ExecutorCodex && codexEffortAdmitted(target.ClientModel, currentEffort) {
 			// Compatible model switch: keep the user's effort.
 			effortOverride = currentEffort
 		}

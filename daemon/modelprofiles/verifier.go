@@ -13,13 +13,13 @@ import (
 // Profile TOML provenance/capability/history claims are never trusted.
 type BuiltinEnvelopeVerifier struct{}
 
-// VerifyProfileContract admits a profile when the model identity resolves
-// through the daemon-owned catalog and executor/protocol pairing is supported.
+// VerifyProfileContract admits every syntactically valid model identity when
+// the executor/protocol pairing is supported. The daemon-owned catalog adds
+// metadata for known models; it is never an identity allowlist.
 //
 // Unified identity: for managed Codex the selected model slug is BOTH the
 // Codex session model (ClientModelID) and the routed upstream model
 // (UpstreamModelID) — the daemon never admits a hidden compatibility model.
-// Unknown models fail closed.
 func (BuiltinEnvelopeVerifier) VerifyProfileContract(profile Profile) (VerifiedProfileContract, error) {
 	profile = normalizeProfile(profile)
 	if err := ValidateProfile(profile); err != nil {
@@ -35,18 +35,18 @@ func (BuiltinEnvelopeVerifier) VerifyProfileContract(profile Profile) (VerifiedP
 
 	switch normalizeID(profile.ExecutorID) {
 	case ExecutorCodex:
-		// The selected model must have daemon-owned metadata. Fail closed for
-		// unknown models: never masquerade under a compatibility identity.
-		entry, ok := lookupCodexModelMetadata(profile.Model)
-		if !ok {
-			return VerifiedProfileContract{}, errUnknownCodexModel(profile.Model)
-		}
 		if normalizeSpace(profile.ClientModel) != normalizeSpace(profile.Model) {
 			return VerifiedProfileContract{}, fmt.Errorf("%w: managed Codex client_model %q must equal the selected model %q (single identity; no hidden compatibility model)", ErrContractUnverified, profile.ClientModel, profile.Model)
 		}
-		envelope := entry.Envelope
+		entry, known := lookupCodexModelMetadata(profile.Model)
+		envelope := opaqueCodexPassthroughEnvelope()
+		provenance := ContractProvenanceOpaquePassthrough
+		if known {
+			envelope = entry.Envelope
+			provenance = entry.Provenance
+		}
 		return VerifiedProfileContract{
-			Provenance:       entry.Provenance,
+			Provenance:       provenance,
 			ClientModelID:    profile.Model,
 			UpstreamModelID:  profile.Model,
 			ExecutorID:       profile.ExecutorID,

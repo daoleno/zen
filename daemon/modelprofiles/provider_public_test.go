@@ -468,12 +468,8 @@ func TestCustomDefaultDoesNotFabricateDiscoveredModel(t *testing.T) {
 	if _, err := owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision); err == nil {
 		t.Fatal("empty default runtime was accepted")
 	}
-	// Launch still resolves deterministically from the support allowlist.
-	plan, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.State.Binding.UpstreamModel != "deepseek-v4-flash" {
-		t.Fatalf("binding upstream_model=%q", plan.State.Binding.UpstreamModel)
+	// Discovery remains suggestions-only and must not fabricate a launch model.
+	if _, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex"); !errors.Is(err, ErrUpstreamModelRequired) {
+		t.Fatalf("launch without explicit model must fail, got %v", err)
 	}
 }

@@ -6,9 +6,9 @@ import "sort"
 // Profile TOML never authorizes envelopes.
 //
 // Codex: the daemon-owned versioned model catalog (model_catalog.go) is the
-// ONLY Codex admission source. The exact selected model slug is the Codex
-// session model AND the routed upstream model — there is no hidden
-// compatibility model. Unknown models fail closed for managed Codex.
+// metadata source. The exact selected model slug is the Codex session model
+// AND the routed upstream model — there is no hidden compatibility model.
+// Unknown models remain valid opaque passthrough identities.
 //
 // Claude: daemon-known ClientModel contracts remain the admission source;
 // Claude connections already run the exact selected model identity.
@@ -28,7 +28,7 @@ type ClientContractDescriptor struct {
 
 // ProfileEditorSchema is the App-facing vocabulary for the profile editor.
 // Provider ID/label, Gateway URL, and model remain freely configurable; the
-// model must choose a daemon-known identity for the executor.
+// catalog is suggestions and metadata, not an identity allowlist.
 type ProfileEditorSchema struct {
 	SupportedClientContracts []ClientContractDescriptor `json:"supported_client_contracts"`
 	FreelyConfigurable       []string                   `json:"freely_configurable"`
@@ -78,15 +78,17 @@ var builtinClaudeClients = map[string]CapabilityEnvelope{
 }
 
 // lookupBuiltinClient resolves the daemon-owned envelope for one client model
-// identity. Codex resolves through the versioned model catalog by EXACT slug
-// (unknown models fail closed); Claude resolves through the daemon-known
-// Claude contracts.
+// identity. Codex returns conservative opaque metadata for unknown exact slugs;
+// Claude resolves through the daemon-known Claude contracts.
 func lookupBuiltinClient(executorID, clientModel string) (CapabilityEnvelope, bool) {
 	switch normalizeID(executorID) {
 	case ExecutorCodex:
 		entry, ok := lookupCodexModelMetadata(clientModel)
 		if !ok {
-			return CapabilityEnvelope{}, false
+			if err := ValidateModelID(clientModel); err != nil {
+				return CapabilityEnvelope{}, false
+			}
+			return opaqueCodexPassthroughEnvelope(), true
 		}
 		return entry.Envelope, true
 	case ExecutorClaude:
