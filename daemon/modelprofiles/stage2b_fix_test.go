@@ -783,8 +783,8 @@ func TestBuiltinRestoreReverify(t *testing.T) {
 // a durable route written under an older client contract no longer verifies
 // under the current daemon authority. StartOwner must keep the stale route
 // live (restore it, report the drift, keep the loopback listener on the same
-// port) instead of refusing to start or dropping the Session — the running
-// CLI's own request identity stays authoritative and converges via adoption.
+// port) instead of refusing to start or dropping the Session. The restored
+// binding stays authoritative and normalizes stale request input.
 func TestStartOwnerKeepsStaleContractRoutes(t *testing.T) {
 	profiles, routes, listener := stage2bRoot(t)
 	owner, err := StartOwner(OwnerConfig{

@@ -44,19 +44,6 @@ function asStringArray(value: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-/**
- * Parses the optional managed-Codex handoff state from a runtime-switch reply.
- * Unknown states parse to undefined (callers surface the raw state string).
- */
-export function parseCodexHandoffState(raw: unknown): import("./types").CodexHandoffState | undefined {
-  const record = asRecord(raw);
-  if (!record) return undefined;
-  const state = asString(record.state);
-  if (!state) return undefined;
-  const message = asString(record.message);
-  return { state, ...(message ? { message } : {}) };
-}
-
 function asRevision(value: unknown): number | null {
   return typeof value === "number" &&
     Number.isInteger(value) &&

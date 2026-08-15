@@ -263,6 +263,19 @@ func TestRewriteRequestEffort(t *testing.T) {
 	if _, err := rewriteRequestEffort([]byte(`{"reasoning":42}`), ReasoningEffortLow); !errors.Is(err, ErrRequestBodyMalformed) {
 		t.Fatalf("non-object reasoning err=%v", err)
 	}
+	cleared, err := clearRequestEffort([]byte(`{"model":"cli","reasoning":{"effort":"high","summary":"auto"},"input":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clearedObj struct {
+		Reasoning struct {
+			Effort  string `json:"effort"`
+			Summary string `json:"summary"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(cleared, &clearedObj); err != nil || clearedObj.Reasoning.Effort != "" || clearedObj.Reasoning.Summary != "auto" {
+		t.Fatalf("clear effort corrupted body: %s err=%v", cleared, err)
+	}
 }
 
 // TestReasoningEffortActivationE2E proves the Session effort lifecycle on one
@@ -317,10 +330,9 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 		t.Fatalf("no override must not rewrite effort: %#v", got)
 	}
 
-	// Acknowledged activation: same model, explicit effort high. During the
-	// handoff transition (binding wins) the next admitted request carries
-	// reasoning.effort=high; the Session is not recreated (same route id) and
-	// the catalog is untouched.
+	// Acknowledged activation: same model, explicit effort high. The next
+	// admitted request is normalized to the binding even when the unchanged
+	// CLI still sends its old effort; the Session is not recreated.
 	beforeRev := owner.Catalog().Revision
 	state, snap, persist, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh})
 	if err != nil || !persist.Applied {
@@ -335,27 +347,17 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if owner.Catalog().Revision != beforeRev {
 		t.Fatal("activation mutated the catalog")
 	}
-	owner.SetSessionHandoffPending(routeID, true)
-	postEffortRequest(t, routerAddr, routeID, "gpt-5-codex")
-	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortHigh || got.model != "gpt-5-codex" {
-		t.Fatalf("request during handoff transition=%#v", got)
-	}
-
-	// Handoff completed: the CLI now carries its own values; a request with a
-	// different effort converges the binding (Terminal -> Zen), never a silent
-	// rewrite.
-	owner.SetSessionHandoffPending(routeID, false)
 	postEffortRequestWithEffort(t, routerAddr, routeID, "gpt-5-codex", ReasoningEffortLow)
-	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortLow {
-		t.Fatalf("CLI effort must pass through: %#v", got)
+	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortHigh || got.model != "gpt-5-codex" {
+		t.Fatalf("stale CLI effort was not normalized to binding=%#v", got)
 	}
-	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortLow {
-		t.Fatalf("CLI effort must be adopted: %#v", sel)
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
+		t.Fatalf("request mismatch mutated the binding: %#v", sel)
 	}
-	// A request without effort clears the stale override (the CLI has none).
+	// A request without effort receives the acknowledged override too.
 	postEffortRequest(t, routerAddr, routeID, "gpt-5-codex")
-	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != "" {
-		t.Fatalf("missing CLI effort must clear the override: %#v", sel)
+	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortHigh {
+		t.Fatalf("missing CLI effort was not normalized: %#v", got)
 	}
 
 	// Omitted effort on a compatible model switch preserves the override.
@@ -405,9 +407,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 		t.Fatalf("concurrent session request must not carry effort: %#v", got)
 	}
 
-	// Restart restoration: the override survives and is still projected; the
-	// transient handoff-pending marker is not restored (no handoff task runs
-	// after restart), so requests converge via adoption.
+	// Restart restoration: the override survives and remains authoritative.
 	_ = owner.Close()
 	owner2 := effortOwner(t, root)
 	t.Cleanup(func() { _ = owner2.Close() })
@@ -416,9 +416,6 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	state2, ok := owner2.Table().Get("s-effort")
 	if !ok || state2.Binding.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("restored binding lost override: %#v ok=%v", state2.Binding, ok)
-	}
-	if owner2.handoffPending(routeID) {
-		t.Fatal("handoff-pending must not survive restart")
 	}
 	if sel, _ := owner2.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("restored selection lost override: %#v", sel)
@@ -486,10 +483,6 @@ func TestReasoningEffortInFlightImmutable(t *testing.T) {
 	if _, _, _, err := owner.SetThreadRuntime("s-inflight", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh}); err != nil {
 		t.Fatal(err)
 	}
-	// The Zen-initiated switch is in its handoff transition: the binding wins
-	// for admitted requests until the handoff completes.
-	owner.SetSessionHandoffPending(plan.State.Binding.RouteID, true)
-
 	// Request A admits under high and is held upstream.
 	doneA := make(chan struct{})
 	go func() {

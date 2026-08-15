@@ -162,6 +162,10 @@ func (t *RouteTable) ReplaceSnapshot(states []SessionRouteState) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.replaceSnapshotLocked(states)
+}
+
+func (t *RouteTable) replaceSnapshotLocked(states []SessionRouteState) {
 	bySession := map[string]SessionRouteState{}
 	byRoute := map[string]string{}
 	for _, state := range states {
@@ -188,6 +192,10 @@ func (t *RouteTable) Snapshot() []SessionRouteState {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.snapshotLocked()
+}
+
+func (t *RouteTable) snapshotLocked() []SessionRouteState {
 	out := make([]SessionRouteState, 0, len(t.bySession))
 	for _, state := range t.bySession {
 		out = append(out, cloneSessionState(state))
@@ -199,10 +207,8 @@ func (t *RouteTable) Snapshot() []SessionRouteState {
 // longer matches what the current daemon authority would admit (for example
 // after a daemon upgrade tightened the client contract). The route is still
 // restored and keeps serving — notices are advisory only, for startup logging.
-// The running CLI's own request identity stays authoritative: a drifted binding
-// either converges through request-identity adoption on the next request or
-// surfaces a natural upstream error; the daemon never drops a live Session and
-// never silently rewrites a visible model. Secret-free.
+// The restored binding stays authoritative at the router boundary; a stale CLI
+// request is normalized to that binding. Secret-free.
 type RestoreContractNotice struct {
 	SessionID string
 	RouteID   string
@@ -217,8 +223,8 @@ type RestoreContractNotice struct {
 //
 // Every structurally valid route is restored and kept serving — contract drift
 // never drops a live Session. The report lists drifted bindings for logging;
-// convergence happens on the client's own terms (request-identity adoption) or
-// not at all. Structural failures (validateRestorableState) remain fatal —
+// request admission keeps using the restored binding. Structural failures
+// (validateRestorableState) remain fatal —
 // corrupt or foreign data is never silently discarded.
 func (t *RouteTable) Restore(states []SessionRouteState, verifier ProfileContractVerifier) ([]RestoreContractNotice, error) {
 	if t == nil {

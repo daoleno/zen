@@ -37,7 +37,7 @@ describe("thread runtime picker model", () => {
   test("Settings default mismatch never changes acknowledged current runtime", () => {
     const rows = threadRuntimeRows({ snapshot, selection });
     expect(rows.find((row) => row.current)?.key).toBe("a:gpt-5.4");
-    expect(rows.map((row) => row.connectionId)).toEqual(["a", "b"]);
+    expect(rows.map((row) => row.connectionId)).toEqual(["a"]);
     expect(resolveComposerModelControl({
       capabilities: {
         structured_events: true,
@@ -48,10 +48,33 @@ describe("thread runtime picker model", () => {
       selection,
       refreshRequired: false,
     })?.label).toBe("gpt-5.4");
+    expect(resolveComposerModelControl({
+      capabilities: {
+        structured_events: true,
+        model_profile_managed: true,
+        model_profile_active_switch: true,
+      },
+      connectionConnected: true,
+      selection,
+      refreshRequired: false,
+    })?.accessibilityLabel).toContain("Open model and effect");
   });
 
   test("runtime choice is atomic and rejects unsupported effects", () => {
-    const target = threadRuntimeRows({ snapshot, selection })[1];
+    const target = {
+      key: "b:gpt-5.5",
+      connectionId: "b",
+      connectionName: "Beta",
+      modelId: "gpt-5.5",
+      label: "gpt-5.5",
+      current: false,
+      disabled: false,
+      unsupported: false,
+      unavailableCurrent: false,
+      effectDefault: "medium",
+      effects: ["low", "medium", "high", "xhigh"],
+      currentEffect: "",
+    };
     expect(runtimeChoiceForRow(target, "xhigh")).toEqual({
       connectionId: "b",
       modelId: "gpt-5.5",

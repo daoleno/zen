@@ -19,7 +19,6 @@ import {
 } from "../../services/providers/sessionModelHelpers";
 import {
   effectRowsForRuntime,
-  groupRuntimeRows,
   resolveModelSheetListMaxHeight,
   runtimeRowSurfaceKey,
 } from "./sessionModelSheetModel";
@@ -51,8 +50,7 @@ export function SessionModelSheet({
   const [effectTarget, setEffectTarget] = useState<ProviderPickerModelRow | null>(null);
   const styles = useMemo(() => createStyles(), []);
   const { height: windowHeight } = useWindowDimensions();
-  const groups = useMemo(() => groupRuntimeRows(rows), [rows]);
-  const rowCount = effectTarget ? effectTarget.effects.length : rows.length + groups.length;
+  const rowCount = effectTarget ? effectTarget.effects.length : rows.length;
   const listMaxHeight = resolveModelSheetListMaxHeight({ windowHeight, rowCount });
   const errorMessage = typeof error === "string" ? error : error?.message ?? null;
 
@@ -90,13 +88,13 @@ export function SessionModelSheet({
             style={styles.iconButton}
             onPress={() => setEffectTarget(null)}
             accessibilityRole="button"
-            accessibilityLabel="Back to Provider and Model"
+            accessibilityLabel="Back to Model and Effect"
           >
             <Ionicons name="chevron-back" size={20} color={chrome.text} />
           </Pressable>
         ) : null}
         <Text style={[styles.title, { color: chrome.text }]}>
-          {effectTarget ? "Effect" : "Provider & Model"}
+          {effectTarget ? "Effect" : "Model & Effect"}
         </Text>
         <Pressable
           style={styles.iconButton}
@@ -121,7 +119,7 @@ export function SessionModelSheet({
           {effectTarget ? (
             <>
               <Text style={[styles.context, { color: chrome.textMuted }]}>
-                {effectTarget.connectionName} · {effectTarget.modelId}
+                {effectTarget.modelId}
               </Text>
               {effectRowsForRuntime(effectTarget).map(({ key, effect, selected }) => {
                 return (
@@ -153,53 +151,46 @@ export function SessionModelSheet({
               })}
             </>
           ) : (
-            groups.map((group) => (
-              <View key={group.connectionId} style={styles.group}>
-                <Text style={[styles.groupTitle, { color: chrome.textMuted }]}>
-                  {group.connectionName}
-                </Text>
-                {group.rows.map((row) => (
-                  <Pressable
-                    key={row.key}
-                    style={[
-                      styles.row,
-                      {
-                        backgroundColor: chrome[runtimeRowSurfaceKey(row.current)],
-                        opacity: row.disabled && !row.current ? 0.55 : 1,
-                      },
-                    ]}
-                    disabled={row.disabled}
-                    accessibilityRole="button"
-                    accessibilityState={{
-                      selected: row.current,
-                      disabled: row.disabled,
-                    }}
-                    accessibilityLabel={`Use ${group.connectionName}, ${row.modelId}`}
-                    onPress={() => activateRow(row)}
-                  >
-                    <View style={styles.rowCopy}>
-                      <Text style={[styles.rowText, { color: chrome.text }]} numberOfLines={1}>
-                        {row.label}
-                      </Text>
-                      {row.unavailableCurrent ? (
-                        <Text style={[styles.caption, { color: chrome.textMuted }]}>
-                          Current runtime is no longer selectable.
-                        </Text>
-                      ) : null}
-                      {row.unsupported ? (
-                        <Text style={[styles.caption, { color: chrome.textMuted }]}>
-                          Unsupported by Zen.
-                        </Text>
-                      ) : null}
-                    </View>
-                    {row.effects.length > 0 ? (
-                      <Ionicons name="chevron-forward" size={16} color={chrome.textMuted} />
-                    ) : row.current ? (
-                      <Ionicons name="checkmark" size={16} color={chrome.accent} />
-                    ) : null}
-                  </Pressable>
-                ))}
-              </View>
+            rows.map((row) => (
+              <Pressable
+                key={row.key}
+                style={[
+                  styles.row,
+                  {
+                    backgroundColor: chrome[runtimeRowSurfaceKey(row.current)],
+                    opacity: row.disabled && !row.current ? 0.55 : 1,
+                  },
+                ]}
+                disabled={row.disabled}
+                accessibilityRole="button"
+                accessibilityState={{
+                  selected: row.current,
+                  disabled: row.disabled,
+                }}
+                accessibilityLabel={`Use ${row.modelId} model`}
+                onPress={() => activateRow(row)}
+              >
+                <View style={styles.rowCopy}>
+                  <Text style={[styles.rowText, { color: chrome.text }]} numberOfLines={1}>
+                    {row.label}
+                  </Text>
+                  {row.unavailableCurrent ? (
+                    <Text style={[styles.caption, { color: chrome.textMuted }]}>
+                      Current runtime is no longer selectable.
+                    </Text>
+                  ) : null}
+                  {row.unsupported ? (
+                    <Text style={[styles.caption, { color: chrome.textMuted }]}>
+                      Unsupported by Zen.
+                    </Text>
+                  ) : null}
+                </View>
+                {row.effects.length > 0 ? (
+                  <Ionicons name="chevron-forward" size={16} color={chrome.textMuted} />
+                ) : row.current ? (
+                  <Ionicons name="checkmark" size={16} color={chrome.accent} />
+                ) : null}
+              </Pressable>
             ))
           )}
 
@@ -236,8 +227,6 @@ function createStyles() {
     center: { paddingVertical: 32, alignItems: "center" },
     body: { paddingHorizontal: 16, gap: 10, paddingBottom: 16 },
     context: { ...TypeScale.caption, paddingHorizontal: 2 },
-    group: { gap: 6 },
-    groupTitle: { ...TypeScale.caption, fontWeight: "600", paddingHorizontal: 2 },
     row: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
     rowCopy: { flex: 1, minWidth: 0, gap: 2 },
     rowText: { ...TypeScale.body },

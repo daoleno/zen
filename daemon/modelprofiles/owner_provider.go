@@ -376,6 +376,9 @@ func (o *Owner) UpsertProviderConnection(in ProviderConnectionInput, apiKey stri
 
 	o.mu.Lock()
 	applyErr := func() error {
+		if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+			return fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+		}
 		var previous Profile
 		if !create {
 			previous, err = o.store.Get(profile.ID)
@@ -584,7 +587,9 @@ func (o *Owner) DeleteProviderConnection(id string, revision int64) (ProviderCat
 	// only after unlock (ProjectCatalog also takes Owner.mu).
 	o.mu.Lock()
 	var delErr error
-	if err := o.store.PreflightDelete(id, revision); err != nil {
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		delErr = fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	} else if err := o.store.PreflightDelete(id, revision); err != nil {
 		delErr = err
 	} else if users := o.table.SessionsUsingProfile(id); len(users) > 0 {
 		delErr = fmt.Errorf("%w: profile %s is bound to %d session(s)", ErrProfileInUse, id, len(users))
@@ -655,13 +660,24 @@ func (o *Owner) CodexRoutedDefault() bool {
 // modelID preserves the existing client-selected model when the same connection
 // stays default. A different connection must provide its model atomically.
 func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID string, revision int64) (ProviderCatalogProjection, error) {
+	if o == nil || !o.started || o.store == nil {
+		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
 	client := clientFromExecutor(clientOrExecutor)
 	connectionID = normalizeID(connectionID)
 	modelID = normalizeSpace(modelID)
-	if connectionID != "" {
-		raw, err := o.GetProfile(connectionID)
+	o.mu.Lock()
+	applyErr := func() error {
+		if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+			return fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+		}
+		if connectionID == "" {
+			_, err := o.store.SetClientDefault(client, connectionID, modelID, revision)
+			return err
+		}
+		raw, err := o.store.Get(connectionID)
 		if err != nil {
-			return ProviderCatalogProjection{}, err
+			return err
 		}
 		if modelID == "" {
 			// Keep a complete existing seed only when the same connection remains
@@ -671,33 +687,51 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 				modelID = normalizeSpace(currentModel)
 			}
 			if modelID == "" {
-				return ProviderCatalogProjection{}, fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
+				return fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
 			}
 		}
-		if modelID != "" {
-			target, err := CompileConnectionTarget(raw, client, modelID, "")
-			if err != nil {
-				return ProviderCatalogProjection{}, err
-			}
-			// Fail closed: never persist a client default whose model is only a
-			// compile probe placeholder (connection with no explicit model). The
-			// launch path resolves a deterministic supported model instead.
-			if target.ModelPlaceholder {
-				return ProviderCatalogProjection{}, ErrUpstreamModelRequired
-			}
-			o.mu.Lock()
-			err = o.activationModelAdmittedLocked(raw, target.Model)
-			o.mu.Unlock()
-			if err != nil {
-				return ProviderCatalogProjection{}, err
-			}
+		target, err := CompileConnectionTarget(raw, client, modelID, "")
+		if err != nil {
+			return err
 		}
+		// Fail closed: never persist a client default whose model is only a
+		// compile probe placeholder (connection with no explicit model). The
+		// launch path resolves a deterministic supported model instead.
+		if target.ModelPlaceholder {
+			return ErrUpstreamModelRequired
+		}
+		if err := o.activationModelAdmittedLocked(raw, target.Model); err != nil {
+			return err
+		}
+		_, err = o.store.SetClientDefault(client, connectionID, modelID, revision)
+		return err
+	}()
+	o.mu.Unlock()
+	projection, projectionErr := o.ProjectProviders()
+	if projectionErr != nil {
+		return ProviderCatalogProjection{}, projectionErr
 	}
-	if _, err := o.store.SetClientDefault(client, connectionID, modelID, revision); err != nil {
-		empty, _ := o.ProjectProviders()
-		return empty, err
+	return projection, applyErr
+}
+
+// SwitchProvider atomically updates the future-launch default Provider and
+// retargets every currently running routed Session for the same client without
+// changing each Session's selected model or effect.
+func (o *Owner) SwitchProvider(clientOrExecutor, connectionID string, revision int64) (ProviderCatalogProjection, error) {
+	if o == nil || !o.started || o.store == nil || o.table == nil || o.routes == nil {
+		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
-	return o.ProjectProviders()
+	o.mu.Lock()
+	persist, err := o.switchProviderLocked(clientOrExecutor, connectionID, revision)
+	o.mu.Unlock()
+	if !persist.Applied {
+		return ProviderCatalogProjection{}, err
+	}
+	projection, projectionErr := o.ProjectProviders()
+	if projectionErr != nil {
+		return ProviderCatalogProjection{}, projectionErr
+	}
+	return projection, err
 }
 
 // SetProviderModelSupport persists the client-side model support allowlist of
@@ -724,6 +758,10 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 	}
 
 	o.mu.Lock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		o.mu.Unlock()
+		return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	if o.discovery == nil {
 		o.discovery = newModelDiscoveryCache()
 		if o.discoveryPath != "" {
@@ -818,6 +856,9 @@ func (o *Owner) SetProviderCredential(connectionID, secret string) (ProviderCred
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return ProviderCredentialResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 
 	profile, err := o.store.Get(connectionID)
 	if err != nil {
@@ -852,6 +893,9 @@ func (o *Owner) ClearProviderCredential(connectionID string) (ProviderCredential
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return ProviderCredentialResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 
 	profile, err := o.store.Get(connectionID)
 	if err != nil {
@@ -918,89 +962,6 @@ func (o *Owner) activationModelAdmittedLocked(profile Profile, modelID string) e
 	return fmt.Errorf("%w: model %q is not available on connection %s; keep the current route and choose a supported model", ErrUpstreamModelRequired, modelID, profile.ID)
 }
 
-// handoffPending reports whether the route is in a Zen-initiated handoff
-// transition (used by the router).
-func (o *Owner) handoffPending(routeID string) bool {
-	if o == nil || o.table == nil {
-		return false
-	}
-	return o.table.HandoffPending(routeID)
-}
-
-// SetSessionHandoffPending marks/unmarks the route's process-handoff
-// transition (transient; used by the server handoff orchestrator).
-func (o *Owner) SetSessionHandoffPending(routeID string, pending bool) {
-	if o == nil || o.table == nil {
-		return
-	}
-	o.table.SetHandoffPending(routeID, pending)
-}
-
-// AdoptSessionModel converges the route binding to a request-carried model +
-// effort identity (a Codex TUI /model change on the running Session). The
-// request identity must resolve through the daemon-owned catalog and the
-// route connection's synced allowlist; anything else fails closed and leaves
-// the binding untouched (the request still passes through as-is — Zen never
-// rewrites a different visible model silently). effortPresent=false clears a
-// stale override when the CLI carries none.
-func (o *Owner) AdoptSessionModel(routeID, modelID, effortOverride string, effortPresent bool) error {
-	if o == nil || !o.started || o.table == nil {
-		return fmt.Errorf("%w: owner not started", ErrInvalid)
-	}
-	routeID = strings.TrimSpace(routeID)
-	modelID = normalizeSpace(modelID)
-	effortOverride = normalizeID(effortOverride)
-	if routeID == "" || modelID == "" {
-		return fmt.Errorf("%w: route and model are required", ErrInvalid)
-	}
-
-	state, ok := o.table.GetByRouteID(routeID)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrBindingNotFound, routeID)
-	}
-	if normalizeID(state.ExecutorID) != ExecutorCodex || normalizeID(state.RouteProtocol) != RouteProtocolResponses {
-		// Non-Codex/routed sessions never adopt request identities.
-		return fmt.Errorf("%w: session does not support request identity adoption", ErrInvalid)
-	}
-	if normalizeSpace(state.UpstreamModel) == modelID && normalizeID(state.ReasoningEffort) == effortOverride && effortPresent {
-		return nil // already converged
-	}
-
-	// The request identity must be daemon-known and admitted by the route
-	// connection's synced allowlist (fail closed; never guess capabilities).
-	if !codexModelKnown(modelID) {
-		return errUnknownCodexModel(modelID)
-	}
-	if effortOverride != "" && !codexEffortSupported(modelID, effortOverride) {
-		return fmt.Errorf("%w: client model %s does not support effort %q", ErrReasoningEffortUnsupported, modelID, effortOverride)
-	}
-	raw, err := o.GetProfile(state.ProfileID)
-	if err != nil {
-		return err
-	}
-	o.mu.Lock()
-	if !effortPresent {
-		effortOverride = ""
-	}
-	target, err := CompileConnectionTarget(raw, ExecutorCodex, modelID, effortOverride)
-	if err != nil {
-		o.mu.Unlock()
-		return err
-	}
-	if !target.ModelPlaceholder {
-		if err := o.activationModelAdmittedLocked(raw, target.Model); err != nil {
-			o.mu.Unlock()
-			return err
-		}
-	}
-	_, _, persist, err := o.activateCompiledProfileLocked(state.SessionID, target, state.Generation)
-	o.mu.Unlock()
-	if !persist.Applied {
-		return err
-	}
-	return nil
-}
-
 // SetThreadRuntime atomically activates Provider+model (+ optional Effect)
 // for the next admitted request on the existing routed
 // Session (same RouteID). The model/effort override is ephemeral: catalog
@@ -1017,37 +978,38 @@ func (o *Owner) AdoptSessionModel(routeID, modelID, effortOverride string, effor
 //     the user's effort; incompatible switches fall back to the safe default.
 //   - effortOverride set: must be in the daemon Codex vocabulary AND supported
 //     by the target client model; otherwise the activation fails inline.
-func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (PreparedThreadRuntime, error) {
-	if o == nil || !o.started {
-		return PreparedThreadRuntime{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+//
+// prepareThreadRuntimeLocked resolves one exact route mutation target from a
+// single Owner transaction. Caller holds Owner.mu.
+func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntimeChoice, preserveOmittedEffect bool) (preparedThreadRuntime, error) {
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return preparedThreadRuntime{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	connectionID := normalizeID(choice.ConnectionID)
 	modelID := normalizeSpace(choice.ModelID)
 	effortOverride := normalizeID(choice.Effect)
 	if connectionID == "" || modelID == "" {
-		return PreparedThreadRuntime{}, fmt.Errorf("%w: runtime connection_id and model_id are required", ErrInvalid)
+		return preparedThreadRuntime{}, fmt.Errorf("%w: runtime connection_id and model_id are required", ErrInvalid)
 	}
 
 	state, ok := o.table.Get(sessionID)
 	if !ok {
-		return PreparedThreadRuntime{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
+		return preparedThreadRuntime{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
 	}
 	raw, err := o.GetProfile(connectionID)
 	if err != nil {
-		return PreparedThreadRuntime{}, err
+		return preparedThreadRuntime{}, err
 	}
 
 	target, err := CompileConnectionTarget(raw, state.Binding.ExecutorID, modelID, effortOverride)
 	if err != nil {
-		return PreparedThreadRuntime{}, err
+		return preparedThreadRuntime{}, err
 	}
 	if !target.ModelPlaceholder {
-		o.mu.Lock()
 		err = o.activationModelAdmittedLocked(raw, target.Model)
-		o.mu.Unlock()
 		if err != nil {
-			return PreparedThreadRuntime{}, err
+			return preparedThreadRuntime{}, err
 		}
 	}
 	// Explicit effort: admit against the TARGET model's daemon-owned contract
@@ -1058,9 +1020,10 @@ func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoic
 	// invalid value).
 	if effortOverride != "" {
 		if !codexEffortSupported(target.ClientModel, effortOverride) {
-			return PreparedThreadRuntime{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
+			return preparedThreadRuntime{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
 		}
-	} else if currentEffort := normalizeID(state.Binding.ReasoningEffort); currentEffort != "" {
+	} else if preserveOmittedEffect {
+		currentEffort := normalizeID(state.Binding.ReasoningEffort)
 		if codexEffortSupported(target.ClientModel, currentEffort) {
 			// Compatible model switch: keep the user's effort.
 			effortOverride = currentEffort
@@ -1068,14 +1031,8 @@ func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoic
 		// Incompatible: fall through with an empty override (model default).
 	}
 	target.ReasoningEffort = effortOverride
-	return PreparedThreadRuntime{
+	return preparedThreadRuntime{
 		SessionID: sessionID,
-		RouteID:   state.Binding.RouteID,
-		Previous: ThreadRuntimeChoice{
-			ConnectionID: state.Binding.ProfileID,
-			ModelID:      state.Binding.ClientModel,
-			Effect:       state.Binding.ReasoningEffort,
-		},
 		Target: ThreadRuntimeChoice{
 			ConnectionID: connectionID,
 			ModelID:      target.ClientModel,
@@ -1086,35 +1043,87 @@ func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoic
 	}, nil
 }
 
-// CommitThreadRuntime publishes one previously prepared target. Generation
-// CAS prevents a stale process handoff from overwriting a newer runtime.
-func (o *Owner) CommitThreadRuntime(plan PreparedThreadRuntime) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
-	beforeRev := o.Catalog().Revision
-	raw, err := o.GetProfile(plan.Target.ConnectionID)
+type preparedThreadRuntime struct {
+	SessionID          string
+	Target             ThreadRuntimeChoice
+	expectedGeneration int64
+	targetProfile      Profile
+}
+
+// ApplyTerminalModelSwitch applies only Codex's explicit reserved model-switch
+// signal through the same route mutation and durable projection used by the
+// Interface picker. A bare request-body mismatch never calls this operation.
+func (o *Owner) ApplyTerminalModelSwitch(routeID, modelID, effort string, effortPresent bool) error {
+	if o == nil || !o.started || o.table == nil {
+		return fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
+	binding, ok := o.table.GetByRouteID(routeID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrBindingNotFound, routeID)
+	}
+	choice := ThreadRuntimeChoice{
+		ConnectionID: binding.ProfileID,
+		ModelID:      modelID,
+	}
+	if effortPresent {
+		choice.Effect = effort
+	}
+	if normalizeSpace(binding.ClientModel) == normalizeSpace(modelID) &&
+		((effortPresent && normalizeID(binding.ReasoningEffort) == normalizeID(effort)) ||
+			(!effortPresent && normalizeID(binding.ReasoningEffort) == "")) {
+		return nil
+	}
+	plan, err := o.prepareThreadRuntimeLocked(binding.SessionID, choice, false)
+	if err != nil {
+		return err
+	}
+	_, _, persist, err := o.commitThreadRuntimeLocked(plan)
+	if !persist.Applied {
+		return err
+	}
+	return nil
+}
+
+// commitThreadRuntimeLocked publishes a prepared mutation while holding the
+// same Owner transaction that selected its Provider/model/effect target.
+// Caller holds Owner.mu.
+func (o *Owner) commitThreadRuntimeLocked(plan preparedThreadRuntime) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+	beforeRev := o.store.Revision()
+	raw, err := o.store.Get(plan.Target.ConnectionID)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 	}
 	beforeModel := normalizeSpace(raw.Model)
-	next, snap, persist, err := o.activateCompiledProfile(plan.SessionID, plan.targetProfile, plan.expectedGeneration)
+	next, snap, persist, err := o.activateCompiledProfileLocked(plan.SessionID, plan.targetProfile, plan.expectedGeneration)
 	if !persist.Applied {
 		return SessionRouteState{}, WireSessionSnapshot{}, persist, err
 	}
 	// Fail closed if Plus-menu activation mutated the catalog (regression guard).
-	if o.Catalog().Revision != beforeRev {
+	if o.store.Revision() != beforeRev {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: activate must not mutate provider catalog", ErrInvalid)
 	}
-	if got, gerr := o.GetProfile(plan.Target.ConnectionID); gerr == nil && normalizeSpace(got.Model) != beforeModel {
+	if got, gerr := o.store.Get(plan.Target.ConnectionID); gerr == nil && normalizeSpace(got.Model) != beforeModel {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: activate must not mutate connection model", ErrInvalid)
 	}
 	return next, snap, persist, err
 }
 
-// SetThreadRuntime validates and commits one runtime without process staging.
-// Server-managed live Codex Sessions use Prepare/Commit around lane handoff.
+// SetThreadRuntime validates and commits one runtime without process staging,
+// process replacement, or resume input.
 func (o *Owner) SetThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
-	plan, err := o.PrepareThreadRuntime(sessionID, choice)
+	if o == nil || !o.started {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	plan, err := o.prepareThreadRuntimeLocked(sessionID, choice, true)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 	}
-	return o.CommitThreadRuntime(plan)
+	return o.commitThreadRuntimeLocked(plan)
 }

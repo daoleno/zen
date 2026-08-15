@@ -13,8 +13,8 @@ import (
 	"testing"
 )
 
-// e2eUpstream records (Authorization, rewritten model) pairs of every request
-// it serves and answers 2xx like a real Responses endpoint.
+// e2eUpstream records the rewritten runtime identity of every request it
+// serves and answers 2xx like a real Responses endpoint.
 type e2eUpstream struct {
 	mu     sync.Mutex
 	calls  []upstreamCall
@@ -24,8 +24,9 @@ type e2eUpstream struct {
 }
 
 type upstreamCall struct {
-	auth  string
-	model string
+	auth   string
+	model  string
+	effort string
 }
 
 func newE2EUpstream(t *testing.T, hold chan struct{}) *e2eUpstream {
@@ -34,11 +35,14 @@ func newE2EUpstream(t *testing.T, hold chan struct{}) *e2eUpstream {
 	u.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		var obj struct {
-			Model string `json:"model"`
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
 		}
 		_ = json.Unmarshal(body, &obj)
 		u.mu.Lock()
-		u.calls = append(u.calls, upstreamCall{auth: r.Header.Get("Authorization"), model: obj.Model})
+		u.calls = append(u.calls, upstreamCall{auth: r.Header.Get("Authorization"), model: obj.Model, effort: obj.Reasoning.Effort})
 		u.mu.Unlock()
 		if hold != nil {
 			<-hold

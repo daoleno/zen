@@ -96,8 +96,6 @@ type Server struct {
 	hasSessionOverride           func(agentID string) bool
 	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
 	getAgentOverride             func(agentID string) *classifier.Agent
-	stageRuntimeOverride         func(agentID string, plan modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState)
-	compensateRuntimeOverride    func(agentID string, plan modelprofiles.PreparedThreadRuntime, stage codexRuntimeStage, cause error) error
 	brainSnapshotBroadcastHook   func(payload map[string]any)
 	uploadDir                    string
 	uploadMu                     sync.Mutex

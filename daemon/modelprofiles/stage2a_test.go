@@ -553,8 +553,8 @@ func TestDurableSnapshotRestoreReverify(t *testing.T) {
 
 	// Forged disk model is kept serving with an advisory drift notice: contract
 	// drift never drops a live Session, never bricks restore. The daemon starts
-	// with every structurally valid route; the CLI's own request identity stays
-	// authoritative and converges via adoption (or errors upstream).
+	// with every structurally valid route; the restored binding stays
+	// authoritative and normalizes stale request payloads (or errors upstream).
 	forged := states
 	forged[0].Binding.UpstreamModel = "forged"
 	clean := NewRouteTable()

@@ -44,6 +44,9 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "set_provider_default":
 		s.handleSetProviderDefault(conn, raw)
 		return true
+	case "switch_provider":
+		s.handleSwitchProvider(conn, raw)
+		return true
 	case "set_provider_models":
 		s.handleSetProviderModels(conn, raw)
 		return true
@@ -151,6 +154,27 @@ func (s *Server) handleSetProviderDefault(conn *websocket.Conn, raw clientMessag
 		connectionID = strings.TrimSpace(raw.ProfileID)
 	}
 	proj, err := owner.SetProviderDefault(executorID, connectionID, raw.ModelID, raw.Revision)
+	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
+}
+
+func (s *Server) handleSwitchProvider(conn *websocket.Conn, raw clientMessage) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	executorID := strings.TrimSpace(raw.ExecutorID)
+	if executorID == "" {
+		executorID = strings.TrimSpace(raw.Executor)
+	}
+	if executorID == "" {
+		executorID = strings.TrimSpace(raw.Client)
+	}
+	connectionID := strings.TrimSpace(raw.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(raw.ProfileID)
+	}
+	proj, err := owner.SwitchProvider(executorID, connectionID, raw.Revision)
 	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
 }
 
@@ -310,7 +334,7 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, "runtime is required")
 		return
 	}
-	snap, persist, handoff, err := s.SetThreadRuntime(sessionID, *raw.Runtime)
+	snap, persist, err := s.SetThreadRuntime(sessionID, *raw.Runtime)
 	if !persist.Applied {
 		s.sendModelProfileError(conn, raw.RequestID, err)
 		return
@@ -339,7 +363,6 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 		},
 		"persistence_outcome": outcome,
 		"persistence_durable": durable,
-		"handoff":             handoff,
 	}
 	if snap.Launched != nil {
 		payload["launched"] = snap.Launched
@@ -351,32 +374,18 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 }
 
 // SetThreadRuntime is the single daemon transaction for an acknowledged
-// current-thread runtime. Every transport must call this operation so live
-// Codex lane convergence and route publication cannot diverge.
-func (s *Server) SetThreadRuntime(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, codexHandoffState, error) {
+// current-thread runtime. It changes only the route binding and durable
+// runtime projection; the existing process and conversation remain untouched.
+func (s *Server) SetThreadRuntime(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 	owner := s.modelProfiles()
 	if owner == nil {
-		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, fmt.Errorf("%w: Providers are not available", modelprofiles.ErrInvalid)
+		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, fmt.Errorf("%w: Providers are not available", modelprofiles.ErrInvalid)
 	}
-	plan, err := owner.PrepareThreadRuntime(sessionID, choice)
-	if err != nil {
-		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, err
-	}
-	if _, ok := owner.ThreadRuntime(sessionID); !ok {
-		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, modelprofiles.ErrBindingNotFound
-	}
-	// Provider/model activation is a route swap, not a native CLI handoff.
-	// Keep the existing process and conversation alive: requests already
-	// admitted before the commit retain their old route snapshot, while later
-	// requests use the new binding. Native Codex restart/resume here used to
-	// turn a harmless Provider switch into an apparent Session exit.
-	handoff := codexHandoffState{State: codexHandoffSkipped, Message: "live Session retained; route switched without CLI restart"}
-	_, snap, persist, err := owner.CommitThreadRuntime(plan)
+	_, snap, persist, err := owner.SetThreadRuntime(sessionID, choice)
 	if !persist.Applied {
-		return modelprofiles.WireSessionSnapshot{}, persist, handoff, err
+		return modelprofiles.WireSessionSnapshot{}, persist, err
 	}
-	owner.SetSessionHandoffPending(plan.RouteID, false)
-	return snap, persist, handoff, err
+	return snap, persist, err
 }
 
 func (s *Server) handleSetProviderCredential(conn *websocket.Conn, raw clientMessage) {

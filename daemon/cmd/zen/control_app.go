@@ -137,6 +137,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleProviderDelete(req)
 	case "provider_set_default":
 		return a.handleProviderSetDefault(req)
+	case "provider_switch":
+		return a.handleProviderSwitch(req)
 	case "provider_set_models":
 		return a.handleProviderSetModels(req)
 	case "provider_discover":
@@ -1741,6 +1743,25 @@ func (a *controlApp) handleProviderSetDefault(req control.Request) control.Respo
 		connectionID = strings.TrimSpace(req.ProfileID)
 	}
 	proj, err := a.profiles.SetProviderDefault(executorID, connectionID, req.ModelID, req.Revision)
+	return a.providersMutationResponse(proj, err)
+}
+
+func (a *controlApp) handleProviderSwitch(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	executorID := strings.TrimSpace(req.Client)
+	if executorID == "" {
+		executorID = strings.TrimSpace(req.ExecutorID)
+	}
+	if executorID == "" {
+		executorID = strings.TrimSpace(req.Executor)
+	}
+	connectionID := strings.TrimSpace(req.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(req.ProfileID)
+	}
+	proj, err := a.profiles.SwitchProvider(executorID, connectionID, req.Revision)
 	return a.providersMutationResponse(proj, err)
 }
 

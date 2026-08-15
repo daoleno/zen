@@ -83,6 +83,12 @@ export type ProviderDefaultInput = {
   revision: number;
 };
 
+export type ProviderSwitchInput = {
+  client: ProviderClient | string;
+  connectionId: string;
+  revision: number;
+};
+
 export type ThreadRuntimeSelection = {
   session_id: string;
   client: string;
@@ -135,12 +141,6 @@ export type ProvidersMutationResult = {
   persistence: import("./persistence").MutationPersistence;
 };
 
-export type CodexHandoffState = {
-  /** applied | failed | skipped */
-  state: string;
-  message?: string;
-};
-
 export type ThreadRuntimeChoice = {
   connectionId: string;
   modelId: string;
@@ -150,7 +150,6 @@ export type ThreadRuntimeChoice = {
 export type ThreadRuntimeMutationResult = {
   runtime: ThreadRuntimeSelection;
   persistence: import("./persistence").MutationPersistence;
-  handoff?: CodexHandoffState;
 };
 export type ProviderModelsDiscoveryResult = ProviderModelsResult;
 

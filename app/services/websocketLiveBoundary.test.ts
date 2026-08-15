@@ -858,6 +858,32 @@ describe("Provider public WebSocket boundary", () => {
     await expect(defaultPending).resolves.toMatchObject({
       snapshot: { revision: 5 },
     });
+
+    const switchPending = client.switchProvider(server.id, {
+      client: "codex",
+      connectionId: "deepseek-main",
+      revision: 5,
+    });
+    const switchProvider = JSON.parse(socket.sent.at(-1)!);
+    expect(switchProvider).toEqual({
+      type: "switch_provider",
+      request_id: switchProvider.request_id,
+      client: "codex",
+      executor_id: "codex",
+      connection_id: "deepseek-main",
+      revision: 5,
+    });
+    expect(switchProvider.model_id).toBeUndefined();
+    expect(switchProvider.profile_id).toBeUndefined();
+    socket.receive({
+      ...providerCatalogPayload(switchProvider.request_id, 6),
+      persistence_outcome: "applied",
+      persistence_durable: true,
+    });
+    await expect(switchPending).resolves.toMatchObject({
+      snapshot: { revision: 6 },
+      persistence: { applied: true, durable: true },
+    });
     client.disconnectAll();
   });
 

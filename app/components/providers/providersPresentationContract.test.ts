@@ -323,8 +323,12 @@ describe("client-first Providers surface contract", () => {
     expect(presentationSource).toContain("onPress={onDiscover}");
     expect(presentationSource).toContain("Test connection");
     expect(screenSource).toContain("discoverProviderModels");
-    expect(screenSource).toContain("setModelPicker({");
     expect(screenSource).toContain("clientForConnection(");
+  });
+
+  test("settings switches the active provider without opening a default-model picker", () => {
+    expect(screenSource).toContain("wsClient.switchProvider");
+    expect(screenSource).not.toContain('purpose: "default"');
   });
 
   test("model chips select the exact default model for the current Provider", () => {
@@ -346,6 +350,7 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("runSetModels");
     expect(screenSource).toContain("wsClient.setProviderModels");
     expect(screenSource).toContain("wsClient.setProviderDefault");
+    expect(screenSource).toContain("wsClient.switchProvider");
     expect(screenSource).toContain("toggleModelSupport(");
     expect(screenSource).not.toContain("firstSupportedModel(");
   });

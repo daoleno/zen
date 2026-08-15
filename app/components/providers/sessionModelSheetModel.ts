@@ -17,23 +17,6 @@ export function effectRowsForRuntime(row: ProviderPickerModelRow) {
   }));
 }
 
-export function groupRuntimeRows(rows: ProviderPickerModelRow[]) {
-  const groups: Array<{ connectionId: string; connectionName: string; rows: ProviderPickerModelRow[] }> = [];
-  for (const row of rows) {
-    const current = groups.at(-1);
-    if (!current || current.connectionId !== row.connectionId) {
-      groups.push({
-        connectionId: row.connectionId,
-        connectionName: row.connectionName,
-        rows: [row],
-      });
-    } else {
-      current.rows.push(row);
-    }
-  }
-  return groups;
-}
-
 export function resolveModelSheetListMaxHeight(input: {
   windowHeight: number;
   rowCount: number;

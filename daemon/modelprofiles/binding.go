@@ -19,10 +19,6 @@ type RouteTable struct {
 	verifier  ProfileContractVerifier
 	// inFlight tracks per-route request leases until Release/Complete.
 	inFlight map[string]map[string]routeFlight // routeID -> token -> meta
-	// handoffPending marks routes whose Zen-initiated model switch is still in
-	// its process-handoff transition (transient, never persisted: after a
-	// daemon restart no handoff task runs).
-	handoffPending map[string]bool
 }
 
 type routeFlight struct {
@@ -34,12 +30,11 @@ type routeFlight struct {
 // NewRouteTable constructs an empty in-memory route binding owner.
 func NewRouteTable() *RouteTable {
 	return &RouteTable{
-		bySession:      map[string]SessionRouteState{},
-		byRoute:        map[string]string{},
-		lookup:         lookupEnv,
-		newRoute:       newOpaqueRouteID,
-		inFlight:       map[string]map[string]routeFlight{},
-		handoffPending: map[string]bool{},
+		bySession: map[string]SessionRouteState{},
+		byRoute:   map[string]string{},
+		lookup:    lookupEnv,
+		newRoute:  newOpaqueRouteID,
+		inFlight:  map[string]map[string]routeFlight{},
 	}
 }
 
@@ -165,6 +160,21 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	if !ok {
 		return SessionRouteState{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
 	}
+	next, err := t.activateStateLocked(current, profile, catalogRevision, expectedGeneration, admitted)
+	if err != nil {
+		return SessionRouteState{}, err
+	}
+	t.bySession[sessionID] = cloneSessionState(next)
+	return cloneSessionState(next), nil
+}
+
+// activateStateLocked builds the next routed state for one Session without
+// mutating the table. Caller must hold t.mu.
+func (t *RouteTable) activateStateLocked(current SessionRouteState, profile Profile, catalogRevision, expectedGeneration int64, admitted VerifiedProfileContract) (SessionRouteState, error) {
+	sessionID := strings.TrimSpace(current.Binding.SessionID)
+	if sessionID == "" {
+		return SessionRouteState{}, ErrBindingSessionRequired
+	}
 	if expectedGeneration != current.Generation {
 		return SessionRouteState{}, fmt.Errorf("%w: expected generation %d, have %d", ErrBindingConflict, expectedGeneration, current.Generation)
 	}
@@ -209,6 +219,17 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 	// Sticky portability once enabled — CLIs may resent old opaque blocks forever.
 	draft.HistoryPortability = current.Binding.HistoryPortability
 	historyDegradation := ""
+	// A request admitted under an older binding may still return provider-opaque
+	// history after this activation publishes. Persist that possibility now,
+	// inside the same route transaction. Cross-domain flights force stripping
+	// before the next request; same-domain flights only mark possible opacity.
+	for _, flight := range t.inFlight[current.Binding.RouteID] {
+		draft.HistoryState = HistoryStateMayContainOpaque
+		if flight.historyDomain != draft.HistoryDomain {
+			draft.HistoryPortability = HistoryPortabilityStripOpaque
+			historyDegradation = HistoryDegradationStripOpaque
+		}
+	}
 	opaqueCrossDomain := normalizeID(current.Binding.HistoryState) == HistoryStateMayContainOpaque &&
 		current.Binding.HistoryDomain != draft.HistoryDomain
 	if opaqueCrossDomain {
@@ -227,45 +248,12 @@ func (t *RouteTable) Activate(sessionID string, profile Profile, catalogRevision
 		From:               current.Binding,
 		To:                 draft,
 	}
-	next := SessionRouteState{
+	return SessionRouteState{
 		Binding:    draft,
 		Launched:   current.Launched,
 		Generation: draft.Generation,
 		History:    trimHistory(append(append([]RouteActivationEvent{}, current.History...), event)),
-	}
-	t.bySession[sessionID] = cloneSessionState(next)
-	return cloneSessionState(next), nil
-}
-
-// SetHandoffPending marks/unmarks a route's Zen-initiated process-handoff
-// transition. Transient only — never persisted.
-func (t *RouteTable) SetHandoffPending(routeID string, pending bool) {
-	if t == nil {
-		return
-	}
-	routeID = strings.TrimSpace(routeID)
-	if routeID == "" {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if pending {
-		t.handoffPending[routeID] = true
-	} else {
-		delete(t.handoffPending, routeID)
-	}
-}
-
-// HandoffPending reports whether the route is in a Zen-initiated handoff
-// transition (binding wins over request identities until it completes).
-func (t *RouteTable) HandoffPending(routeID string) bool {
-	if t == nil {
-		return false
-	}
-	routeID = strings.TrimSpace(routeID)
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.handoffPending[routeID]
+	}, nil
 }
 
 // BeginRouteFlight atomically snapshots the binding and registers an in-flight lease.

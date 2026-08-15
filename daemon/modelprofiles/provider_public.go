@@ -119,18 +119,6 @@ type ThreadRuntimeChoice struct {
 	Effect       string `json:"effect,omitempty"`
 }
 
-// PreparedThreadRuntime is an opaque, generation-bound runtime transaction.
-// The target has been fully validated but is not acknowledged or persisted
-// until CommitThreadRuntime succeeds.
-type PreparedThreadRuntime struct {
-	SessionID          string
-	RouteID            string
-	Previous           ThreadRuntimeChoice
-	Target             ThreadRuntimeChoice
-	expectedGeneration int64
-	targetProfile      Profile
-}
-
 // ProviderCredentialResult is the write-only credential mutation reply.
 type ProviderCredentialResult struct {
 	ConnectionID       string `json:"connection_id"`

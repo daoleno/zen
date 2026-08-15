@@ -16,7 +16,6 @@ import {
   classifyMutationPersistence,
   clientForConnection,
   durabilityWarningMessage,
-  defaultRuntimeSeedAction,
   modelSupportChangeKeepsDefaultValid,
   offlineProviderError,
   presentProviderError,
@@ -508,27 +507,15 @@ export default function ProvidersScreen() {
   const switchPreferredProvider = useCallback(
     (client: ProviderClient, connection: ProviderConnection) => {
       if (!catalog) return;
-      const action = defaultRuntimeSeedAction({
-        snapshot: catalog,
-        client,
-        connectionId: connection.id,
-      });
-      if (action.kind === "preserve") return;
-      if (action.kind === "unavailable") {
-        Alert.alert(
-          "Sync models first",
-          "A default runtime requires both a Provider and a valid model.",
-        );
-        return;
-      }
-      setModelPicker({
-        purpose: "default",
-        client,
-        connection,
-        models: action.models,
-      });
+      void runMutation(() =>
+        wsClient.switchProvider(currentServerId!, {
+          client,
+          connectionId: connection.id,
+          revision,
+        }),
+      );
     },
-    [catalog],
+    [catalog, currentServerId, revision, runMutation],
   );
 
   const closeEditor = useCallback(() => {
@@ -608,21 +595,7 @@ export default function ProvidersScreen() {
       modelPicker={modelPicker}
       onCloseModelPicker={() => setModelPicker(null)}
       onSelectModel={(client, connection, modelId) => {
-        if (modelPicker?.purpose === "default") {
-          void runMutation(() =>
-            wsClient.setProviderDefault(currentServerId!, {
-              client,
-              connectionId: connection.id,
-              modelId,
-              revision,
-            }),
-          ).then((result) => {
-            if (result) setModelPicker(null);
-          });
-          return;
-        }
         const enabledIds = toggleModelSupport(catalog, connection.id, modelId);
-        const currentDefault = catalog?.defaults[client];
         if (!modelSupportChangeKeepsDefaultValid({
           snapshot: catalog!,
           client,

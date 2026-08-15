@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  parseCodexHandoffState,
   parseProviderCredentialResult,
   parseProviderConnectionTestResult,
   parseProviderModel,
@@ -202,20 +201,6 @@ describe("Provider DTO parse", () => {
       "xhigh",
       "max",
     ]);
-  });
-
-  test("runtime-switch replies parse the managed-Codex handoff state", () => {
-    expect(parseCodexHandoffState({ state: "applied" })).toEqual({
-      state: "applied",
-    });
-    expect(
-      parseCodexHandoffState({
-        state: "failed",
-        message: "the TUI did not exit",
-      }),
-    ).toEqual({ state: "failed", message: "the TUI did not exit" });
-    expect(parseCodexHandoffState(undefined)).toBeUndefined();
-    expect(parseCodexHandoffState({})).toBeUndefined();
   });
 
   test("model entries parse the daemon-known flag", () => {

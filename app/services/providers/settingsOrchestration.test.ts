@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  defaultRuntimeSeedAction,
-  modelSupportChangeKeepsDefaultValid,
-} from "./settingsOrchestration";
+import { modelSupportChangeKeepsDefaultValid } from "./settingsOrchestration";
 import type { ProvidersSnapshot } from "./types";
 
 const snapshot: ProvidersSnapshot = {
@@ -19,21 +16,7 @@ const snapshot: ProvidersSnapshot = {
   },
 };
 
-describe("future-thread default runtime seed", () => {
-  test("preserves a valid model on the same Provider", () => {
-    expect(defaultRuntimeSeedAction({ snapshot, client: "codex", connectionId: "a" })).toEqual({
-      kind: "preserve",
-      modelId: "m1",
-    });
-  });
-
-  test("requires model selection before a different Provider is persisted", () => {
-    expect(defaultRuntimeSeedAction({ snapshot, client: "codex", connectionId: "b" })).toEqual({
-      kind: "choose",
-      models: snapshot.models.b,
-    });
-  });
-
+describe("future-thread default runtime policy", () => {
   test("refuses support changes that disable the selected default model", () => {
     expect(modelSupportChangeKeepsDefaultValid({
       snapshot,

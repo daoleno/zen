@@ -155,10 +155,10 @@ func (o *Owner) RestoreContractNotices() []RestoreContractNotice {
 // longer verifies under the current daemon authority are still restored and
 // kept serving — drift is advisory (reported via RestoreContractNotices for
 // startup logging), never destructive, so a snapshot written under an older
-// daemon contract can never brick startup nor drop a live Session. The CLI's
-// own request identity remains authoritative: a drifted binding converges via
-// request-identity adoption on the next request or surfaces a natural upstream
-// error; the daemon never rewrites a visible model silently.
+// daemon contract can never brick startup nor drop a live Session. The restored
+// binding remains authoritative at the Router boundary: stale request payloads
+// are normalized to it, while only an explicit Codex model-switch signal may
+// mutate the Session runtime.
 //
 // Listener semantics:
 //   - Live (committed) routes: bind the persisted (or PreferAddr) port or fail
@@ -240,7 +240,11 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		discoveryPath:  strings.TrimSpace(cfg.DiscoveryPath),
 		restoreNotices: notices,
 	}
-	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelAdoption(o.AdoptSessionModel), WithRouterHandoffPending(o.handoffPending))
+	if err := o.recoverProviderSwitchJournal(); err != nil {
+		_ = o.Close()
+		return nil, err
+	}
+	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch))
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {
 			o.discoveryLoadWarning = fmt.Errorf("%w: %v", ErrDiscoveryCacheInvalid, err)
@@ -395,7 +399,7 @@ func (o *Owner) ensureListenerLocked(sticky bool) (PersistResult, error) {
 	}
 
 	if o.router == nil {
-		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelAdoption(o.AdoptSessionModel), WithRouterHandoffPending(o.handoffPending))
+		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterCredentials(o.creds), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch))
 	}
 	srv := &http.Server{
 		Handler:           o.router.Handler(),
@@ -637,6 +641,9 @@ func (o *Owner) UpsertProfile(profile Profile, expectedRevision int64, create bo
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return CatalogProjection{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	profile = normalizeProfile(profile)
 	if err := ValidateProfile(profile); err != nil {
 		return CatalogProjection{}, err
@@ -668,6 +675,9 @@ func (o *Owner) DeleteProfile(id string, expectedRevision int64) (CatalogProject
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return CatalogProjection{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	if users := o.table.SessionsUsingProfile(id); len(users) > 0 {
 		return CatalogProjection{}, fmt.Errorf("%w: profile %s is bound to %d session(s)", ErrProfileInUse, normalizeID(id), len(users))
 	}
@@ -687,6 +697,9 @@ func (o *Owner) SetDefault(executorID, profileID string, expectedRevision int64)
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return CatalogProjection{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	_, err := o.store.SetDefault(executorID, profileID, expectedRevision)
 	if err != nil && !errors.Is(err, ErrPersistDirSync) {
 		return CatalogProjection{}, err
@@ -772,6 +785,9 @@ const controlPersistenceApplied = "applied"
 // Rename-committed durability uncertainty keeps memory at `after` and returns
 // Applied=true, Durable=false with ErrPersistDirSync.
 func (o *Owner) mutateAndPersistLocked(mut func() error) (PersistResult, error) {
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return PersistResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	before := o.table.Snapshot()
 	if err := mut(); err != nil {
 		o.table.ReplaceSnapshot(before)
@@ -812,6 +828,9 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return SessionLaunchPlan{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 
 	baseCommand = strings.TrimSpace(baseCommand)
 	executorID = normalizeID(executorID)
@@ -996,6 +1015,9 @@ func (o *Owner) ActivateSession(sessionID, profileID string, expectedGeneration 
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	current, ok := o.table.Get(sessionID)
 	if !ok {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
@@ -1014,6 +1036,9 @@ func (o *Owner) activateCompiledProfile(sessionID string, profile Profile, expec
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
+	}
 	return o.activateCompiledProfileLocked(sessionID, profile, expectedGeneration)
 }
 
@@ -1038,6 +1063,8 @@ func (o *Owner) SessionSnapshot(sessionID string) (WireSessionSnapshot, bool) {
 	if o == nil {
 		return WireSessionSnapshot{}, false
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	state, ok := o.table.Get(sessionID)
 	if !ok {
 		return WireSessionSnapshot{}, false

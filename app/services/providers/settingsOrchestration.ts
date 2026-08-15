@@ -21,31 +21,6 @@ import {
   curatedConnectionInput,
 } from "./presentation";
 
-export type DefaultRuntimeSeedAction =
-  | { kind: "preserve"; modelId: string }
-  | { kind: "choose"; models: ProviderModelsResult["models"] }
-  | { kind: "unavailable" };
-
-export function defaultRuntimeSeedAction(input: {
-  snapshot: ProvidersSnapshot;
-  client: string;
-  connectionId: string;
-}): DefaultRuntimeSeedAction {
-  const current = input.snapshot.defaults[input.client];
-  const available = (input.snapshot.models[input.connectionId] ?? []).filter(
-    (model) => model.available && model.known !== false,
-  );
-  if (
-    current?.connection_id === input.connectionId &&
-    current.model_id &&
-    available.some((model) => model.id === current.model_id)
-  ) {
-    return { kind: "preserve", modelId: current.model_id };
-  }
-  if (available.length === 0) return { kind: "unavailable" };
-  return { kind: "choose", models: available };
-}
-
 export function modelSupportChangeKeepsDefaultValid(input: {
   snapshot: ProvidersSnapshot;
   client: string;

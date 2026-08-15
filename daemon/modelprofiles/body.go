@@ -235,6 +235,77 @@ func requestEffortFromBody(body []byte) (effort string, present bool) {
 	return strings.TrimSpace(value), true
 }
 
+// requestHasModelSwitchSignal reports Codex's reserved model-switch fragment
+// only when it appears in the current developer-owned input suffix. Historical
+// fragments before any model-produced response item are ignored, as are user
+// messages, so neither retained history nor prompt text can authorize a fresh
+// runtime mutation.
+func requestHasModelSwitchSignal(body []byte) (bool, error) {
+	obj, err := decodeJSONObject(body)
+	if err != nil {
+		return false, err
+	}
+	rawInput, ok := obj["input"]
+	if !ok {
+		return false, nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(rawInput, &items); err != nil {
+		return false, nil
+	}
+	currentSuffixStart := 0
+	for index, item := range items {
+		var header struct {
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(item, &header); err != nil {
+			continue
+		}
+		itemType := normalizeID(header.Type)
+		role := normalizeID(header.Role)
+		if itemType != "message" || (role != "user" && role != "developer" && role != "system") {
+			currentSuffixStart = index + 1
+		}
+	}
+	for _, item := range items[currentSuffixStart:] {
+		var message struct {
+			Type    string            `json:"type"`
+			Role    string            `json:"role"`
+			Content []json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(item, &message); err != nil || normalizeID(message.Type) != "message" {
+			continue
+		}
+		if normalizeID(message.Role) != "developer" {
+			continue
+		}
+		for _, part := range message.Content {
+			var textPart struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(part, &textPart); err == nil && normalizeID(textPart.Type) == "input_text" && hasCompleteModelSwitchFragment(textPart.Text) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func hasCompleteModelSwitchFragment(value string) bool {
+	const open = "<model_switch>"
+	const close = "</model_switch>"
+	const preamble = "The user was previously using a different model."
+	start := strings.Index(value, open)
+	if start < 0 {
+		return false
+	}
+	body := value[start+len(open):]
+	end := strings.Index(body, close)
+	return end >= 0 && strings.Contains(body[:end], preamble)
+}
+
 // rewriteRequestModel replaces only the top-level JSON "model" field.
 func rewriteRequestModel(body []byte, upstreamModel string) ([]byte, error) {
 	if err := ValidateModelID(upstreamModel); err != nil {
@@ -300,6 +371,42 @@ func rewriteRequestEffort(body []byte, effort string) ([]byte, error) {
 	}
 	reasoning["effort"] = json.RawMessage(effortBytes)
 	obj["reasoning"] = mustRawMessage(reasoning)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("%w: re-encode: %v", ErrRequestBodyMalformed, err)
+	}
+	return out, nil
+}
+
+// clearRequestEffort removes the top-level reasoning.effort override while
+// preserving other reasoning fields.
+func clearRequestEffort(body []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var obj map[string]json.RawMessage
+	if err := dec.Decode(&obj); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRequestBodyMalformed, err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("%w: trailing junk after json object", ErrRequestBodyMalformed)
+	}
+	if obj == nil {
+		return nil, fmt.Errorf("%w: body must be a json object", ErrRequestBodyMalformed)
+	}
+	raw, ok := obj["reasoning"]
+	if !ok || len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return body, nil
+	}
+	reasoning := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &reasoning); err != nil {
+		return nil, fmt.Errorf("%w: reasoning: %v", ErrRequestBodyMalformed, err)
+	}
+	delete(reasoning, "effort")
+	if len(reasoning) == 0 {
+		delete(obj, "reasoning")
+	} else {
+		obj["reasoning"] = mustRawMessage(reasoning)
+	}
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return nil, fmt.Errorf("%w: re-encode: %v", ErrRequestBodyMalformed, err)

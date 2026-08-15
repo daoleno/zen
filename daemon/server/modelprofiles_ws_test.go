@@ -229,7 +229,7 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	}
 }
 
-func TestSetThreadRuntimeCommitFailureRestoresPreviousLaneAndRoute(t *testing.T) {
+func TestSetThreadRuntimeCommitFailureKeepsPreviousRouteSendable(t *testing.T) {
 	var upstreamModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -277,28 +277,6 @@ func TestSetThreadRuntimeCommitFailureRestoresPreviousLaneAndRoute(t *testing.T)
 
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
-	srv.getAgentOverride = func(string) *classifier.Agent {
-		return &classifier.Agent{ID: sessionID, ProcessID: 42}
-	}
-	targetStarted := false
-	previousRestored := false
-	srv.stageRuntimeOverride = func(agentID string, plan modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState) {
-		if agentID != sessionID || plan.Target.ConnectionID != profileB.ID {
-			t.Fatalf("unexpected stage: agent=%q plan=%#v", agentID, plan)
-		}
-		targetStarted = true
-		return codexRuntimeStage{previousCommand: "resume-previous", targetProcessID: 84}, codexHandoffState{State: codexHandoffApplied}
-	}
-	srv.compensateRuntimeOverride = func(agentID string, plan modelprofiles.PreparedThreadRuntime, stage codexRuntimeStage, cause error) error {
-		if !targetStarted || agentID != sessionID || stage.targetProcessID != 84 {
-			t.Fatalf("compensation did not target the proven new process: agent=%q stage=%#v", agentID, stage)
-		}
-		if plan.Previous.ConnectionID != profileA.ID || plan.Previous.ModelID != "gpt-5.4" {
-			t.Fatalf("previous runtime snapshot=%#v", plan.Previous)
-		}
-		previousRestored = true
-		return cause
-	}
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "before_write" {
 			return errors.New("injected runtime commit failure")
@@ -306,16 +284,13 @@ func TestSetThreadRuntimeCommitFailureRestoresPreviousLaneAndRoute(t *testing.T)
 		return nil
 	})
 
-	_, persist, handoff, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
+	_, persist, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
 		ConnectionID: profileB.ID,
 		ModelID:      "gpt-5.5",
 	})
 	owner.RoutesFile().SetPersistHook(nil)
 	if err == nil || persist.Applied {
 		t.Fatalf("commit failure must remain unapplied: persist=%#v err=%v", persist, err)
-	}
-	if handoff.State != codexHandoffSkipped || targetStarted || previousRestored {
-		t.Fatalf("handoff=%#v targetStarted=%v previousRestored=%v", handoff, targetStarted, previousRestored)
 	}
 	runtime, ok := owner.ThreadRuntime(sessionID)
 	if !ok || runtime.ConnectionID != profileA.ID || runtime.ModelID != "gpt-5.4" {
@@ -372,30 +347,40 @@ func TestSetThreadRuntimeDoesNotRestartLiveCodexSession(t *testing.T) {
 
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
-	stageCalled := false
-	srv.stageRuntimeOverride = func(string, modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState) {
-		stageCalled = true
-		return codexRuntimeStage{}, codexHandoffState{State: codexHandoffFailed}
+	killCalled := false
+	inputCalled := false
+	srv.killSessionOverride = func(string) error {
+		killCalled = true
+		return errors.New("must not kill")
 	}
-	_, persist, handoff, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
+	srv.sendInputOverride = func(string, string) error {
+		inputCalled = true
+		return errors.New("must not send resume input")
+	}
+	before, ok := owner.Table().Get(sessionID)
+	if !ok {
+		t.Fatal("missing route before switch")
+	}
+	_, persist, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
 		ConnectionID: target.ID,
 		ModelID:      target.Model,
 	})
 	if err != nil || !persist.Applied {
 		t.Fatalf("switch err=%v persist=%#v", err, persist)
 	}
-	if stageCalled {
-		t.Fatal("Provider switch must not stage or restart the live CLI")
-	}
-	if handoff.State != codexHandoffSkipped {
-		t.Fatalf("handoff=%#v", handoff)
+	if killCalled || inputCalled {
+		t.Fatalf("runtime switch touched live process: kill=%v input=%v", killCalled, inputCalled)
 	}
 	runtime, ok := owner.ThreadRuntime(sessionID)
 	if !ok || runtime.ConnectionID != target.ID || runtime.ModelID != target.Model {
 		t.Fatalf("runtime=%#v", runtime)
 	}
-	if _, ok := owner.Table().Get(sessionID); !ok {
+	after, ok := owner.Table().Get(sessionID)
+	if !ok {
 		t.Fatal("live Session route was removed")
+	}
+	if after.Binding.RouteID != before.Binding.RouteID || after.Binding.SessionID != before.Binding.SessionID {
+		t.Fatalf("runtime switch replaced Session identity: before=%#v after=%#v", before.Binding, after.Binding)
 	}
 }
 

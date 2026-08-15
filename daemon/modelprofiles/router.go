@@ -23,12 +23,10 @@ type Router struct {
 	// models resolves a route's connection to its synced model catalog for the
 	// local GET /v1/models surface. Nil means the surface is unavailable.
 	models func(profileID string) ([]ProviderModelEntry, error)
-	// adopt converges the route binding when a request carries a different
-	// model/effort than the binding (Codex TUI /model change).
-	adopt func(routeID, modelID, effort string, effortPresent bool) error
-	// handoffPending reports whether a Zen-initiated model switch is still in
-	// its process-handoff transition (binding wins until it completes).
-	handoffPending func(routeID string) bool
+	// modelSwitch applies a model/effect identity carried with Codex's reserved
+	// explicit model-switch contextual signal. Bare request mismatches never
+	// call this hook.
+	modelSwitch func(routeID, modelID, effort string, effortPresent bool) error
 }
 
 // RouterOption configures Router construction.
@@ -77,21 +75,10 @@ func WithRouterModelCatalog(models func(profileID string) ([]ProviderModelEntry,
 	}
 }
 
-// WithRouterModelAdoption installs the daemon-side adoption path for request
-// model/effort values that differ from the route binding (a Codex TUI /model
-// change). The router forwards the request's own identity and converges the
-// binding when the daemon admits it; a nil hook disables adoption (pass-through).
-func WithRouterModelAdoption(adopt func(routeID, modelID, effort string, effortPresent bool) error) RouterOption {
+// WithRouterModelSwitch installs the explicit Terminal /model mutation path.
+func WithRouterModelSwitch(apply func(routeID, modelID, effort string, effortPresent bool) error) RouterOption {
 	return func(r *Router) {
-		r.adopt = adopt
-	}
-}
-
-// WithRouterHandoffPending installs the pending-handoff observer (Zen-initiated
-// model switch whose Codex process handoff is still in flight).
-func WithRouterHandoffPending(pending func(routeID string) bool) RouterOption {
-	return func(r *Router) {
-		r.handoffPending = pending
+		r.modelSwitch = apply
 	}
 }
 
@@ -203,56 +190,70 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 			return
 		}
-		requestEffort, requestEffortPresent := requestEffortFromBody(body)
 
-		// Unified model identity semantics (never silently override a visible
-		// model):
-		//   - request identity == the binding snapshot (the normal case: the CLI
-		//     runs the route's model) -> forward untouched.
-		//   - mismatch while a Zen-initiated handoff is pending -> the binding
-		//     wins for the next admitted request (the process is being replaced).
-		//   - mismatch otherwise -> the CLI changed its own identity (Codex TUI
-		//     /model): forward the CLI's identity and adopt it into the binding
-		//     when the daemon admits it (Terminal -> Zen convergence); a
-		//     rejected identity is still forwarded as-is — Zen never rewrites a
-		//     different visible model silently, and never claims convergence
-		//     it did not apply.
+		requestEffort, requestEffortPresent := requestEffortFromBody(body)
+		explicitModelSwitch, signalErr := requestHasModelSwitchSignal(body)
+		if signalErr != nil {
+			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+			return
+		}
+		if explicitModelSwitch && parsed.Endpoint == EndpointResponses {
+			if r.modelSwitch == nil {
+				writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: terminal model switch unavailable", ErrInvalid))
+				return
+			}
+			// This lease has not reached an upstream. Release it before applying
+			// the explicit mutation so route activation cannot mistake the local
+			// Router parse phase for an old-provider in-flight response and enable
+			// portable-history degradation unnecessarily.
+			if err := r.table.EndRouteFlight(parsed.RouteID, flightToken, false); err != nil {
+				writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
+				return
+			}
+			completed = true
+			if err := r.modelSwitch(binding.RouteID, requestModel, requestEffort, requestEffortPresent); err != nil {
+				writeRouteError(w, http.StatusBadRequest, fmt.Errorf("%w: terminal model switch: %v", ErrInvalid, err))
+				return
+			}
+			binding, flightToken, err = r.table.BeginRouteFlight(parsed.RouteID)
+			if err != nil {
+				writeRouteError(w, http.StatusNotFound, ErrRouteNotFound)
+				return
+			}
+			completed = false
+		}
+
+		// The route binding is the acknowledged Session runtime. A request body
+		// is a transport payload from a potentially stale CLI process, not an
+		// intent signal. Normalize it to the immutable flight snapshot instead of
+		// guessing whether a mismatch came from a stale request or /model.
 		bindingModel := normalizeSpace(binding.UpstreamModel)
 		bindingEffort := normalizeID(binding.ReasoningEffort)
-		pending := r.handoffPending != nil && r.handoffPending(binding.RouteID)
-		switch {
-		case requestModel == bindingModel:
-			rewritten = body
-		case pending:
-			// Zen-initiated switch in transition: the next admitted request runs
-			// the new binding identity (snapshot remains immutable for the
-			// in-flight request already admitted under the old one).
+		if requestModel != bindingModel {
 			rewritten, err = rewriteRequestModel(body, bindingModel)
 			if err != nil {
 				writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 				return
 			}
-		default:
-			// CLI-initiated identity: forward as-is; converge the binding when
-			// the daemon admits the request identity. Admission failures never
-			// block the request (it was admitted under the flight snapshot).
-			if r.adopt != nil && parsed.Endpoint == EndpointResponses {
-				_ = r.adopt(binding.RouteID, requestModel, requestEffort, requestEffortPresent)
-			}
-			rewritten = body
 		}
-		// Effort convergence mirrors the model policy (Responses only — Codex):
-		// equal values pass through; a binding override wins during a pending
-		// handoff; otherwise the request's effort is adopted/forwarded as-is.
-		if parsed.Endpoint == EndpointResponses && bindingEffort != "" && requestEffort != bindingEffort {
-			if pending {
-				rewritten, err = rewriteRequestEffort(rewritten, bindingEffort)
+		if parsed.Endpoint == EndpointResponses {
+			requestEffort, requestEffortPresent = requestEffortFromBody(rewritten)
+			if bindingEffort != "" {
+				if !requestEffortPresent || requestEffort != bindingEffort {
+					rewritten, err = rewriteRequestEffort(rewritten, bindingEffort)
+					if err != nil {
+						writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+						return
+					}
+				}
+			} else if requestEffortPresent {
+				// An empty binding means the model's default effect. Remove a
+				// stale explicit effect rather than letting it mutate the Session.
+				rewritten, err = clearRequestEffort(rewritten)
 				if err != nil {
 					writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 					return
 				}
-			} else if r.adopt != nil && requestModel == bindingModel {
-				_ = r.adopt(binding.RouteID, requestModel, requestEffort, requestEffortPresent)
 			}
 		}
 		if normalizeID(binding.HistoryPortability) == HistoryPortabilityStripOpaque {

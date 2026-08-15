@@ -71,7 +71,6 @@ import {
   parseProviderConnectionTestResult,
   parseProviderModelsResult,
   parseThreadRuntimeSelection,
-  parseCodexHandoffState,
   parseProvidersSnapshot,
   providerErrorFromPayload,
   requireAppliedPersistence,
@@ -83,6 +82,7 @@ import {
   type ProviderCredentialResult,
   type ProviderDefaultInput,
   type ProviderModelsResult,
+  type ProviderSwitchInput,
   type ThreadRuntimeSelection,
   type ProvidersMutationResult,
   type ProvidersSnapshot,
@@ -825,6 +825,24 @@ export class MultiServerWebSocketClient {
     );
   }
 
+  switchProvider(
+    serverId: string,
+    input: ProviderSwitchInput,
+  ): Promise<ProvidersMutationResult> {
+    return this.requestProvidersCatalog(
+      serverId,
+      {
+        type: "switch_provider",
+        client: input.client,
+        executor_id: input.client,
+        connection_id: input.connectionId,
+        revision: input.revision,
+      },
+      "Timed out while switching Provider.",
+      false,
+    );
+  }
+
   /**
    * Persist the client-side model support allowlist of one connection: the
    * full set of discovered models the client wants exposed. The gateway never
@@ -1198,13 +1216,7 @@ export class MultiServerWebSocketClient {
             );
             return;
           }
-          resolve({
-            runtime: selection,
-            persistence,
-            ...(parseCodexHandoffState(payload.handoff)
-              ? { handoff: parseCodexHandoffState(payload.handoff) }
-              : {}),
-          });
+          resolve({ runtime: selection, persistence });
         } catch (error) {
           reject(
             error instanceof ProviderError

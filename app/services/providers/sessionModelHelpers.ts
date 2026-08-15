@@ -17,7 +17,6 @@ export type ComposerModelControlPresentation = {
 export type ProviderPickerModelRow = {
   key: string;
   connectionId: string;
-  connectionName: string;
   modelId: string;
   label: string;
   current: boolean;
@@ -44,17 +43,18 @@ export function threadRuntimeRows(input: {
   const { snapshot, selection } = input;
   if (!snapshot || !selection) return [];
   const client = normalizeProviderClient(selection.client);
+  const currentConnectionId = normalizeProviderId(selection.connection_id);
   const rows: ProviderPickerModelRow[] = [];
   for (const connection of snapshot.connections) {
     if (!connection.clients.map(normalizeProviderClient).includes(client)) continue;
     const connectionId = normalizeProviderId(connection.id);
+    if (connectionId !== currentConnectionId) continue;
     for (const model of snapshot.models[connectionId] ?? []) {
       if (!model.available) continue;
       const unsupported = model.known === false;
       rows.push({
         key: `${connectionId}:${model.id}`,
         connectionId,
-        connectionName: connection.name,
         modelId: model.id,
         label: model.id,
         current:
@@ -81,7 +81,6 @@ export function threadRuntimeRows(input: {
     rows.unshift({
       key: `${selection.connection_id}:${selection.model_id}:current`,
       connectionId: selection.connection_id,
-      connectionName: selection.connection_name,
       modelId: selection.model_id,
       label: selection.model_id,
       current: true,
@@ -126,7 +125,7 @@ export function resolveComposerModelControl(input: {
   if (!label) return null;
   return {
     label,
-    accessibilityLabel: `Open runtime selection, ${selection.connection_name}, ${label}`,
+    accessibilityLabel: `Open model and effect, ${label}`,
   };
 }
 
