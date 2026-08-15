@@ -198,8 +198,22 @@ func (m *Monitor) applyNotification(params json.RawMessage) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Only the attached thread's applied settings are authoritative for this
+	// route. A session-scoped socket can serve more than one loaded thread
+	// (e.g. a side conversation), and another thread's settings notification
+	// must never pollute this snapshot — nor retarget the snapshot's
+	// ThreadID to the payload value. Empty or mismatched ThreadID: ignore
+	// (fail closed; the snapshot stays as attached).
+	//
+	// Ordering/lock safety: tryAttach and applyNotification both run in the
+	// single pump goroutine (attach completes before notifications are
+	// consumed) and both serialize on m.mu, so the attached-ThreadID
+	// comparison here is race-free.
+	if !m.attached || payload.ThreadID != m.current.ThreadID {
+		return
+	}
 	m.current = NativeSettings{
-		ThreadID: payload.ThreadID,
+		ThreadID: m.current.ThreadID,
 		Model:    strings.TrimSpace(payload.Settings.Model),
 		Effort:   normalizeNativeEffort(payload.Settings.Effort),
 	}

@@ -40,7 +40,14 @@ type fakeAppServer struct {
 
 func startFakeAppServer(t *testing.T) *fakeAppServer {
 	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "codex-ctl.sock")
+	// Short socket path: the deep test tmpdir can exceed the unix socket
+	// path limit (SUN_LEN).
+	shortDir, err := os.MkdirTemp(os.TempDir(), "cz-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortDir) })
+	socketPath := filepath.Join(shortDir, "codex-ctl.sock")
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatal(err)
