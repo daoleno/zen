@@ -370,6 +370,29 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("omitted effort must preserve the override: %#v", sel)
 	}
+	// Interface Default is explicit and clears the override rather than using
+	// the omitted-effect preserve behavior.
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{
+		ConnectionID:     conn.ID,
+		ModelID:          "gpt-5-codex",
+		UseDefaultEffect: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != "" {
+		t.Fatalf("explicit Default must clear the override: %#v", sel)
+	}
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{
+		ConnectionID:     conn.ID,
+		ModelID:          "gpt-5-codex",
+		Effect:           ReasoningEffortHigh,
+		UseDefaultEffect: true,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("conflicting default and explicit effect err=%v", err)
+	}
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Explicit unsupported effort (xhigh is not in the gpt-5-codex contract)
 	// fails inline and keeps the old route + old override; an invalid effort

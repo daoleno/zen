@@ -179,11 +179,6 @@ export function SessionModelSheet({
                       Current runtime is no longer selectable.
                     </Text>
                   ) : null}
-                  {row.unsupported ? (
-                    <Text style={[styles.caption, { color: chrome.textMuted }]}>
-                      Unsupported by Zen.
-                    </Text>
-                  ) : null}
                 </View>
                 {row.effects.length > 0 ? (
                   <Ionicons name="chevron-forward" size={16} color={chrome.textMuted} />

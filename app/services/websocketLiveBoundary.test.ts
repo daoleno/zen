@@ -939,6 +939,31 @@ describe("Provider public WebSocket boundary", () => {
         model_id: "deepseek-chat",
       },
     });
+
+    const defaultEffectPending = client.setThreadRuntime(server.id, {
+      agentId: "agent-a",
+      runtime: {
+        connectionId: "deepseek-main",
+        modelId: "deepseek-chat",
+        useDefaultEffect: true,
+      },
+    });
+    const defaultEffect = JSON.parse(socket.sent.at(-1)!);
+    expect(defaultEffect.runtime).toEqual({
+      connection_id: "deepseek-main",
+      model_id: "deepseek-chat",
+      use_default_effect: true,
+    });
+    socket.receive({
+      type: "thread_runtime_set",
+      request_id: defaultEffect.request_id,
+      runtime: providerSelection({ reasoning_effort: undefined }),
+      persistence_outcome: "applied",
+      persistence_durable: true,
+    });
+    await expect(defaultEffectPending).resolves.toMatchObject({
+      runtime: { reasoning_effort: undefined },
+    });
     client.disconnectAll();
   });
 

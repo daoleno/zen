@@ -47,9 +47,8 @@ export type ProviderModel = {
   reasoning_effort_default?: string;
   reasoning_efforts?: string[];
   /**
-   * Daemon-owned metadata known for this model identity on managed Codex.
-   * Unknown gateway-only models are clearly unsupported (fail closed), never
-   * masqueraded under a compatibility identity.
+   * Whether daemon-owned display/effect metadata exists for this model.
+   * Unknown gateway-only models remain selectable opaque identities.
    */
   known?: boolean;
 };
@@ -145,6 +144,7 @@ export type ThreadRuntimeChoice = {
   connectionId: string;
   modelId: string;
   effect?: string;
+  useDefaultEffect?: boolean;
 };
 
 export type ThreadRuntimeMutationResult = {

@@ -28,6 +28,25 @@ export type ProviderPickerModelRow = {
   currentEffect: string;
 };
 
+export const CODEX_REASONING_EFFECT_VOCABULARY = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+function modelEffectChoices(client: string, effects: string[]): string[] {
+  if (client !== "codex") return [];
+  const choices = effects.length > 0
+    ? effects
+    : [...CODEX_REASONING_EFFECT_VOCABULARY];
+  return ["", ...choices.filter((effect, index) =>
+    effect.trim() !== "" && choices.indexOf(effect) === index
+  )];
+}
+
 export type SessionEffortContract = {
   current: string;
   override: string;
@@ -51,7 +70,7 @@ export function threadRuntimeRows(input: {
     if (connectionId !== currentConnectionId) continue;
     for (const model of snapshot.models[connectionId] ?? []) {
       if (!model.available) continue;
-      const unsupported = model.known === false;
+      const effects = modelEffectChoices(client, [...(model.reasoning_efforts ?? [])]);
       rows.push({
         key: `${connectionId}:${model.id}`,
         connectionId,
@@ -61,38 +80,38 @@ export function threadRuntimeRows(input: {
           connectionId === normalizeProviderId(selection.connection_id) &&
           normalizeProviderId(model.id) === normalizeProviderId(selection.model_id),
         disabled:
-          !connection.credential_ready || Boolean(input.activating) || unsupported,
-        unsupported,
+          !connection.credential_ready || Boolean(input.activating),
+        unsupported: false,
         unavailableCurrent: false,
         effectDefault: model.reasoning_effort_default?.trim() ?? "",
-        effects: [...(model.reasoning_efforts ?? [])],
+        effects,
         currentEffect:
           connectionId === normalizeProviderId(selection.connection_id) &&
           normalizeProviderId(model.id) === normalizeProviderId(selection.model_id)
-            ? selection.reasoning_effort?.trim() ||
-              selection.reasoning_effort_default?.trim() ||
-              ""
+            ? selection.reasoning_effort?.trim() || ""
             : "",
       });
     }
   }
   const currentShown = rows.some((row) => row.current);
   if (!currentShown && selection.connection_id && selection.model_id) {
+    const currentConnection = snapshot.connections.find(
+      (connection) => normalizeProviderId(connection.id) === currentConnectionId,
+    );
     rows.unshift({
       key: `${selection.connection_id}:${selection.model_id}:current`,
       connectionId: selection.connection_id,
       modelId: selection.model_id,
       label: selection.model_id,
       current: true,
-      disabled: true,
+      disabled:
+        currentConnection?.credential_ready !== true || Boolean(input.activating),
       unsupported: false,
       unavailableCurrent: true,
       effectDefault: selection.reasoning_effort_default?.trim() ?? "",
-      effects: [...(selection.reasoning_efforts ?? [])],
+      effects: modelEffectChoices(client, [...(selection.reasoning_efforts ?? [])]),
       currentEffect:
-        selection.reasoning_effort?.trim() ||
-        selection.reasoning_effort_default?.trim() ||
-        "",
+        selection.reasoning_effort?.trim() || "",
     });
   }
   return rows;
@@ -107,7 +126,11 @@ export function runtimeChoiceForRow(
   return {
     connectionId: row.connectionId,
     modelId: row.modelId,
-    ...(selectedEffect ? { effect: selectedEffect } : {}),
+    ...(effect === ""
+      ? { useDefaultEffect: true }
+      : selectedEffect
+        ? { effect: selectedEffect }
+        : {}),
   };
 }
 
@@ -154,6 +177,8 @@ export function sessionEffortContract(
 
 export function reasoningEffortLabel(value: string): string {
   switch (value.trim().toLowerCase()) {
+    case "":
+      return "Default";
     case "minimal":
       return "Minimal";
     case "low":

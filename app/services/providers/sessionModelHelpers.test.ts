@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CODEX_REASONING_EFFECT_VOCABULARY,
   resolveComposerModelControl,
   runtimeChoiceForRow,
   threadRuntimeRows,
@@ -80,6 +81,44 @@ describe("thread runtime picker model", () => {
       modelId: "gpt-5.5",
       effect: "xhigh",
     });
+    expect(runtimeChoiceForRow(target, "")).toEqual({
+      connectionId: "b",
+      modelId: "gpt-5.5",
+      useDefaultEffect: true,
+    });
     expect(runtimeChoiceForRow(target, "turbo")).toBeNull();
+  });
+
+  test("known Codex models expose Default plus exact effect metadata", () => {
+    const rows = threadRuntimeRows({
+      snapshot,
+      selection: { ...selection, reasoning_effort: undefined },
+    });
+    const row = rows.find((candidate) => candidate.current);
+    expect(row?.effects).toEqual(["", "low", "medium", "high"]);
+    expect(row?.currentEffect).toBe("");
+    expect(row?.disabled).toBe(false);
+  });
+
+  test("unknown Codex models remain selectable and use wire vocabulary", () => {
+    const unknownSnapshot: ProvidersSnapshot = {
+      ...snapshot,
+      models: {
+        a: [{
+          id: "vendor/private-alpha",
+          available: true,
+          source: "discovered",
+          known: false,
+        }],
+      },
+    };
+    const rows = threadRuntimeRows({
+      snapshot: unknownSnapshot,
+      selection: { ...selection, model_id: "vendor/private-alpha", reasoning_effort: undefined, reasoning_effort_default: undefined, reasoning_efforts: undefined },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.disabled).toBe(false);
+    expect(rows[0]?.unsupported).toBe(false);
+    expect(rows[0]?.effects).toEqual(["", ...CODEX_REASONING_EFFECT_VOCABULARY]);
   });
 });

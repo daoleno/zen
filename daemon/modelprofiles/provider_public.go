@@ -65,8 +65,8 @@ type ProviderModelEntry struct {
 	Source                 string   `json:"source"` // bundled | discovered | lkg | manual
 	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
-	// Known marks daemon-owned metadata for managed Codex. Unknown gateway-only
-	// models are clearly unsupported (never masqueraded under another identity).
+	// Known marks daemon-owned display/effect metadata for managed Codex.
+	// Unknown gateway-only models remain valid opaque identities.
 	Known bool `json:"known,omitempty"`
 }
 
@@ -114,9 +114,10 @@ type ThreadRuntimeSelection struct {
 // existing Zen thread lane. Connection, model, and optional effect are
 // validated together; callers cannot mutate any component independently.
 type ThreadRuntimeChoice struct {
-	ConnectionID string `json:"connection_id"`
-	ModelID      string `json:"model_id"`
-	Effect       string `json:"effect,omitempty"`
+	ConnectionID     string `json:"connection_id"`
+	ModelID          string `json:"model_id"`
+	Effect           string `json:"effect,omitempty"`
+	UseDefaultEffect bool   `json:"use_default_effect,omitempty"`
 }
 
 // ProviderCredentialResult is the write-only credential mutation reply.

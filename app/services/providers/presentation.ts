@@ -208,20 +208,6 @@ export function toggleModelSupport(
     .filter((id) => current.has(id));
 }
 
-/**
- * Deterministic visible fallback / initial selection: the first supported
- * model of a connection in catalog order, or null when none exists.
- */
-export function firstSupportedModel(
-  snapshot: ProvidersSnapshot | null | undefined,
-  connectionId: string,
-): string | null {
-  for (const model of snapshot?.models[connectionId] ?? []) {
-    if (model.available) return model.id;
-  }
-  return null;
-}
-
 export function connectionIsFutureDefault(
   snapshot: ProvidersSnapshot,
   connectionId: string,

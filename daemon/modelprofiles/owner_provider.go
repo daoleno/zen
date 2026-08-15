@@ -28,7 +28,11 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		conn.CredentialHint = o.providerCredentialHint(view.Profile)
 		out.Connections = append(out.Connections, conn)
 		entries, _ := o.modelsForConnection(view.Profile, false)
-		out.Models[conn.ID] = stampModelKnown(entries, view.Profile.ExecutorID)
+		executorID := view.Profile.ExecutorID
+		if isAccountConnection(view.Profile) {
+			executorID = executorFromClient(view.Profile.Client)
+		}
+		out.Models[conn.ID] = stampModelKnown(entries, executorID)
 	}
 	for key, profileID := range proj.Catalog.Defaults {
 		profileID = normalizeID(profileID)
@@ -57,9 +61,9 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 	return out, nil
 }
 
-// stampModelKnown marks each entry with the daemon-owned metadata knowledge
-// for managed Codex (unknown gateway-only models are clearly unsupported, not
-// hidden); Claude entries are always daemon-known via their client contracts.
+// stampModelKnown marks whether daemon-owned display/effect metadata exists.
+// Unknown Codex models remain selectable opaque identities; Known is metadata,
+// never an admission decision.
 func stampModelKnown(entries []ProviderModelEntry, executorID string) []ProviderModelEntry {
 	codex := normalizeID(executorID) == ExecutorCodex
 	out := make([]ProviderModelEntry, 0, len(entries))
@@ -891,6 +895,9 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 	connectionID := normalizeID(choice.ConnectionID)
 	modelID := normalizeSpace(choice.ModelID)
 	effortOverride := normalizeID(choice.Effect)
+	if choice.UseDefaultEffect && effortOverride != "" {
+		return preparedThreadRuntime{}, fmt.Errorf("%w: effect and use_default_effect are mutually exclusive", ErrInvalid)
+	}
 	if connectionID == "" || modelID == "" {
 		return preparedThreadRuntime{}, fmt.Errorf("%w: runtime connection_id and model_id are required", ErrInvalid)
 	}
@@ -1017,7 +1024,7 @@ func (o *Owner) SetThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	plan, err := o.prepareThreadRuntimeLocked(sessionID, choice, true)
+	plan, err := o.prepareThreadRuntimeLocked(sessionID, choice, !choice.UseDefaultEffect)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 	}

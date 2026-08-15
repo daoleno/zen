@@ -11,7 +11,7 @@ export function runtimeRowSurfaceKey(selected: boolean): RuntimeRowSurfaceKey {
 
 export function effectRowsForRuntime(row: ProviderPickerModelRow) {
   return row.effects.map((effect) => ({
-    key: effect,
+    key: effect || "default",
     effect,
     selected: row.current && row.currentEffect === effect,
   }));

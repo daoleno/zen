@@ -21,7 +21,6 @@ import {
   clientForConnection,
   connectionRequiresModelSelection,
   enabledModelIds,
-  firstSupportedModel,
   launchSelectionFromSnapshot,
   modelSupportChoices,
   providerClientForCommand,
@@ -563,19 +562,6 @@ describe("Model sync and default binding policy", () => {
       "gpt-5.6-sol",
     );
     expect(reenabled).toEqual(["gpt-5.6-sol"]);
-  });
-
-  test("firstSupportedModel is the deterministic launch fallback", () => {
-    const snapshot = providerSnapshot({
-      models: {
-        c1: [
-          { id: "gpt-5.6-sol", available: false, source: "discovered" },
-          { id: "gpt-5.4-mini", available: true, source: "discovered" },
-        ],
-      },
-    });
-    expect(firstSupportedModel(snapshot, "c1")).toBe("gpt-5.4-mini");
-    expect(firstSupportedModel(snapshot, "missing")).toBeNull();
   });
 
   test("launch selection carries the client's connection and model", () => {

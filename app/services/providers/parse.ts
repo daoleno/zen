@@ -356,14 +356,16 @@ export function assertThreadRuntimeMatches(
   selection: ThreadRuntimeSelection,
   input: {
     agentId: string;
-    runtime: { connectionId: string; modelId: string; effect?: string };
+    runtime: { connectionId: string; modelId: string; effect?: string; useDefaultEffect?: boolean };
   },
 ): boolean {
   return (
     selection.session_id === normalizeProviderId(input.agentId) &&
     selection.connection_id === normalizeProviderId(input.runtime.connectionId) &&
     selection.model_id === normalizeProviderId(input.runtime.modelId) &&
-    (!input.runtime.effect ||
-      selection.reasoning_effort === normalizeProviderId(input.runtime.effect))
+    (input.runtime.useDefaultEffect
+      ? !selection.reasoning_effort
+      : !input.runtime.effect ||
+        selection.reasoning_effort === normalizeProviderId(input.runtime.effect))
   );
 }

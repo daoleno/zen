@@ -9,7 +9,7 @@ import {
 import type { ProviderPickerModelRow } from "../../services/providers/sessionModelHelpers";
 
 const rows: ProviderPickerModelRow[] = [
-  { key: "a:m1", connectionId: "a", modelId: "m1", label: "m1", current: true, disabled: false, unsupported: false, unavailableCurrent: false, effectDefault: "medium", currentEffect: "medium", effects: ["low", "medium"] },
+  { key: "a:m1", connectionId: "a", modelId: "m1", label: "m1", current: true, disabled: false, unsupported: false, unavailableCurrent: false, effectDefault: "medium", currentEffect: "", effects: ["", "low", "medium"] },
   { key: "a:m2", connectionId: "a", modelId: "m2", label: "m2", current: false, disabled: false, unsupported: false, unavailableCurrent: false, effectDefault: "", currentEffect: "", effects: [] },
   { key: "b:m3", connectionId: "b", modelId: "m3", label: "m3", current: false, disabled: false, unsupported: false, unavailableCurrent: false, effectDefault: "", currentEffect: "", effects: [] },
 ];
@@ -27,9 +27,15 @@ describe("SessionModelSheet hierarchy", () => {
   test("Effect is a separate drill-down and never a model-list row", () => {
     expect(rows.map((row) => row.modelId)).toEqual(["m1", "m2", "m3"]);
     expect(effectRowsForRuntime(rows[0])).toEqual([
+      { key: "default", effect: "", selected: true },
       { key: "low", effect: "low", selected: false },
-      { key: "medium", effect: "medium", selected: true },
+      { key: "medium", effect: "medium", selected: false },
     ]);
+    expect(sheetSource).toContain("setEffectTarget(row)");
+    expect(sheetSource).toContain("if (row.effects.length > 0)");
+    expect(sheetSource.indexOf("setEffectTarget(row)")).toBeLessThan(
+      sheetSource.indexOf("runtimeChoiceForRow(row)"),
+    );
   });
 
   test("Provider identity is not part of the Interface hierarchy", () => {

@@ -1261,6 +1261,9 @@ export class MultiServerWebSocketClient {
             ...(input.runtime.effect?.trim()
               ? { effect: input.runtime.effect.trim() }
               : {}),
+            ...(input.runtime.useDefaultEffect
+              ? { use_default_effect: true }
+              : {}),
           },
         },
         cleanup,
