@@ -980,6 +980,11 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 	connectionID := normalizeID(choice.ConnectionID)
 	modelID := normalizeSpace(choice.ModelID)
 	effortOverride := normalizeID(choice.Effect)
+	// The native wire value "none" is Codex's model-default effort; it is the
+	// same state as Zen's empty override and never a selectable explicit value.
+	if effortOverride == ReasoningEffortNone {
+		effortOverride = ""
+	}
 	if choice.UseDefaultEffect && effortOverride != "" {
 		return preparedThreadRuntime{}, fmt.Errorf("%w: effect and use_default_effect are mutually exclusive", ErrInvalid)
 	}

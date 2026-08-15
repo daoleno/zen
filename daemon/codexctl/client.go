@@ -461,7 +461,15 @@ func threadRank(t ThreadInfo) int {
 // `thread/settings/update` and blocks until the `thread/settings/updated`
 // notification acknowledges the exact applied settings. The returned revert
 // closure re-applies previousSettings best-effort (idempotent; safe to call
-// once). A nil effort means "leave the thread's current effort unchanged".
+// once).
+//
+// Effort semantics match Codex 0.147 exactly: the native wire value "none"
+// (ReasoningEffort::None, shown as "default" in the TUI footer) is the
+// supported representation of "model default effort" — it is what the TUI
+// itself sends when the user picks the default. A nil effort therefore maps
+// to `"effort": "none"` rather than omitting the field: omission leaves the
+// thread's current effort unchanged, which would acknowledge a state Zen's
+// projection cannot hold.
 //
 // The applied-settings notification is delivered only to connections attached
 // to the thread, so the client first attaches with the native `thread/resume`
@@ -483,6 +491,9 @@ func (c *Client) ApplySettings(ctx context.Context, threadID, model string, effo
 	}
 	if effort != nil && strings.TrimSpace(*effort) != "" {
 		params["effort"] = strings.TrimSpace(*effort)
+	} else {
+		// Zen's "model default" is the native ReasoningEffort::None.
+		params["effort"] = "none"
 	}
 	if _, err := c.call(ctx, methodThreadSettingsUpd, params); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrApply, err)
@@ -521,13 +532,20 @@ func (c *Client) AttachThread(ctx context.Context, threadID string) error {
 }
 
 // applySettingsOnly sends thread/settings/update without waiting for the
-// applied-settings acknowledgement (used by best-effort rollback).
+// applied-settings acknowledgement (used by best-effort rollback). A nil
+// effort maps to the native model-default value "none", exactly like
+// ApplySettings.
 func (c *Client) applySettingsOnly(ctx context.Context, threadID, model string, effort *string) error {
-	if _, err := c.call(ctx, methodThreadSettingsUpd, map[string]any{
+	params := map[string]any{
 		"threadId": threadID,
 		"model":    model,
-		"effort":   effort,
-	}); err != nil {
+	}
+	if effort != nil && strings.TrimSpace(*effort) != "" {
+		params["effort"] = strings.TrimSpace(*effort)
+	} else {
+		params["effort"] = "none"
+	}
+	if _, err := c.call(ctx, methodThreadSettingsUpd, params); err != nil {
 		return fmt.Errorf("%w: %v", ErrApply, err)
 	}
 	return nil
@@ -572,10 +590,22 @@ func (c *Client) waitSettingsAck(ctx context.Context, threadID, model string, ef
 			if strings.TrimSpace(payload.Settings.Model) != strings.TrimSpace(model) {
 				continue
 			}
-			if effort != nil && strings.TrimSpace(*effort) != "" && strings.TrimSpace(payload.Settings.Effort) != strings.TrimSpace(*effort) {
+			appliedEffort := strings.TrimSpace(payload.Settings.Effort)
+			if effort != nil && strings.TrimSpace(*effort) != "" {
+				if appliedEffort != strings.TrimSpace(*effort) {
+					continue
+				}
+			} else if appliedEffort != "" && normalizeEffort(appliedEffort) != "none" {
+				// Model-default request: the applied effort must be the native
+				// "none" (or an absent/null effort).
 				continue
 			}
 			return nil
 		}
 	}
+}
+
+// normalizeEffort trims and lowercases a native effort value.
+func normalizeEffort(effort string) string {
+	return strings.ToLower(strings.TrimSpace(effort))
 }

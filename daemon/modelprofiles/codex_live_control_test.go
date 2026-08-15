@@ -26,8 +26,17 @@ func TestCompileCodexLiveControlWrapper(t *testing.T) {
 		t.Fatalf("app-server half missing: %q", command)
 	}
 	// TUI client attaches to the same socket via --remote and execs the shell.
-	if !strings.Contains(command, "& exec codex --remote unix:///tmp/zen/codex-ctl-abc.sock") {
+	if !strings.Contains(command, "; exec codex --remote unix:///tmp/zen/codex-ctl-abc.sock") {
 		t.Fatalf("tui --remote half missing: %q", command)
+	}
+	// Lifecycle: job control is disabled so the app server shares the pane's
+	// process group (pty hangup kills it with the pane — no orphan), and the
+	// app-server PID is recorded for daemon teardown/sweep.
+	if !strings.HasPrefix(command, "set +m; ") {
+		t.Fatalf("wrapper must disable job control: %q", command)
+	}
+	if !strings.Contains(command, "echo $! > /tmp/zen/codex-ctl-abc.sock.pid") {
+		t.Fatalf("wrapper must record the app-server pid: %q", command)
 	}
 	// Model identity: the TUI carries --model; the app server receives the
 	// same model as a config override (app-server has no --model flag).
@@ -144,10 +153,10 @@ func TestPrepareLaunchAllocatesControlSocketOnlyWithControlDir(t *testing.T) {
 	if plan.CodexControlSocket == "" {
 		t.Fatal("live-control launch must allocate a control socket")
 	}
-	if !strings.HasPrefix(plan.Command, "codex app-server --listen unix://") {
+	if !strings.HasPrefix(plan.Command, "set +m; codex app-server --listen unix://") {
 		t.Fatalf("launch command must be app-server wrapper: %q", plan.Command)
 	}
-	if !strings.Contains(plan.Command, "& exec codex --remote unix://") {
+	if !strings.Contains(plan.Command, "; exec codex --remote unix://") {
 		t.Fatalf("launch command must attach TUI via --remote: %q", plan.Command)
 	}
 	state, ok := owner.Table().Get(plan.ProvisionalID)

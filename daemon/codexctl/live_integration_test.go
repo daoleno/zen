@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -93,6 +94,11 @@ func TestLiveNativeThreadSettings(t *testing.T) {
 		t.Fatalf("start app-server: %v", err)
 	}
 	t.Cleanup(func() {
+		// SIGTERM first: the node wrapper forwards it to the native codex
+		// child. SIGKILL would orphan the child (unforwardable), which is
+		// exactly the lifecycle failure this suite must not create.
+		_ = appServer.Process.Signal(syscall.SIGTERM)
+		waitProcessExit(appServer, 5*time.Second)
 		_ = appServer.Process.Kill()
 		_, _ = appServer.Process.Wait()
 	})
@@ -174,6 +180,48 @@ func TestLiveNativeThreadSettings(t *testing.T) {
 	// signal Zen's router uses to converge the Interface projection.
 	if !strings.Contains(secondBody, "<model_switch>") || !strings.Contains(secondBody, "previously using a different model") {
 		t.Fatalf("native model_switch signal missing from next request: %s", trimTail(secondBody, 600))
+	}
+
+	// Effort reset to model default: Zen's "default" maps to the native
+	// ReasoningEffort::None. The footer must show "default" and the next
+	// request must carry the native default effort value "none" — one state
+	// everywhere, never a stale explicit effort.
+	revert, err = client.ApplySettings(ctx, threadID, "gpt-5.5", nil, codexctl.Settings{ThreadID: threadID, Model: "gpt-5.5", Effort: "high"}, codexctl.DefaultAckTimeout)
+	if err != nil {
+		t.Fatalf("apply default effort: %v", err)
+	}
+	if revert == nil {
+		t.Fatal("missing default revert closure")
+	}
+	waitPaneContains(t, sess, "gpt-5.5 default", 30*time.Second)
+	sendTmuxLine(t, sess, "Reply with exactly: delta")
+	waitHits(t, &mu, &hits, len(hits)+1, 60*time.Second)
+	mu.Lock()
+	defaultBody := string(hits[len(hits)-1])
+	mu.Unlock()
+	assertBodyModelEffort(t, defaultBody, "gpt-5.5", "none")
+	if after := panePID(t, sess); after != before {
+		t.Fatalf("process identity changed across default-effort mutation: %d -> %d", before, after)
+	}
+
+	// Explicit effort again: default -> high round-trip keeps one state.
+	effort = "high"
+	revert, err = client.ApplySettings(ctx, threadID, "gpt-5.5", &effort, codexctl.Settings{ThreadID: threadID, Model: "gpt-5.5"}, codexctl.DefaultAckTimeout)
+	if err != nil {
+		t.Fatalf("re-apply high effort: %v", err)
+	}
+	if revert == nil {
+		t.Fatal("missing re-apply revert closure")
+	}
+	waitPaneContains(t, sess, "gpt-5.5 high", 30*time.Second)
+	sendTmuxLine(t, sess, "Reply with exactly: epsilon")
+	waitHits(t, &mu, &hits, len(hits)+1, 60*time.Second)
+	mu.Lock()
+	highBody := string(hits[len(hits)-1])
+	mu.Unlock()
+	assertBodyModelEffort(t, highBody, "gpt-5.5", "high")
+	if after := panePID(t, sess); after != before {
+		t.Fatalf("process identity changed across high-effort mutation: %d -> %d", before, after)
 	}
 
 	// Rejected native mutation keeps the thread untouched: an unknown thread id
@@ -355,4 +403,182 @@ func trimTail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// TestLiveControlWrapperLifecycle proves the production launch wrapper cannot
+// orphan the app-server: `set +m` keeps the app server in the pane's process
+// group, so killing the tmux Session (pty hangup) reaps every process, and
+// the recorded pid file survives for daemon-side artifact cleanup.
+//
+//	ZEN_CODEX_LIVE_CONTROL=1 go test ./codexctl -run TestLiveControlWrapperLifecycle -count=1 -timeout 180s -v
+func TestLiveControlWrapperLifecycle(t *testing.T) {
+	if os.Getenv("ZEN_CODEX_LIVE_CONTROL") == "" {
+		t.Skip("set ZEN_CODEX_LIVE_CONTROL=1 for the live Codex app-server proof")
+	}
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatalf("codex not on PATH: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Fatalf("tmux not on PATH: %v", err)
+	}
+	artRoot := filepath.Join(os.Getenv("TMPDIR"), "zen-codex-live-ctl-lifecycle")
+	_ = os.RemoveAll(artRoot)
+	for _, dir := range []string{filepath.Join(artRoot, "codex-home"), filepath.Join(artRoot, "cwd"), filepath.Join(artRoot, "ctl")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	codexHome := filepath.Join(artRoot, "codex-home")
+	cwd := filepath.Join(artRoot, "cwd")
+	if err := exec.Command("git", "init", "-q", cwd).Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"OPENAI_API_KEY":"zen-loopback-placeholder-not-a-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(artRoot, "ctl", "codex-ctl-lifecycle.sock")
+	pidPath := socketPath + ".pid"
+	logPath := strings.TrimSuffix(socketPath, filepath.Ext(socketPath)) + ".log"
+	// The exact wrapper shape compileCodexAppServerLive produces.
+	wrapper := "set +m; " + shellQuoteWord(codexPath) + " app-server --listen unix://" + socketPath +
+		" --config 'model=\"gpt-5\"' --config 'model_provider=\"openai\"' > " + shellQuoteWord(logPath) +
+		" 2>&1 & echo $! > " + shellQuoteWord(pidPath) + "; exec " + shellQuoteWord(codexPath) +
+		" --remote unix://" + socketPath + " --model gpt-5 --config 'model_provider=\"openai\"'"
+	sess := fmt.Sprintf("zen-codex-live-lifecycle-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", sess).Run() })
+	// The watcher passes the wrapper as a shell command string; source a script
+	// so the test shell (non-interactive) cannot interfere. The wrapper's own
+	// `set +m` guarantees one process group in any shell.
+	wrapperScript := filepath.Join(artRoot, "ctl", "wrapper.sh")
+	if err := os.WriteFile(wrapperScript, []byte(wrapper+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launch := func() error {
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", sess, "-c", cwd,
+			"-e", "CODEX_HOME="+codexHome,
+			"-e", "HOME="+artRoot,
+			"-e", "OPENAI_API_KEY=zen-loopback-placeholder-not-a-secret",
+			"-e", "TERM=xterm-256color",
+			"--", "exec '/bin/sh' -c 'source "+wrapperScript+"'",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("tmux new-session: %v (%s)", err, out)
+		}
+		return nil
+	}
+	if err := launch(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSocketErr(socketPath, 15*time.Second); err != nil {
+		// The app-server's sqlite state init is occasionally flaky on a fresh
+		// scratch home; retry the launch once from clean dirs before failing.
+		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+		time.Sleep(500 * time.Millisecond)
+		_ = os.RemoveAll(artRoot)
+		for _, dir := range []string{filepath.Join(artRoot, "codex-home"), filepath.Join(artRoot, "cwd"), filepath.Join(artRoot, "ctl")} {
+			if mkErr := os.MkdirAll(dir, 0o700); mkErr != nil {
+				t.Fatal(mkErr)
+			}
+		}
+		codexHome = filepath.Join(artRoot, "codex-home")
+		if writeErr := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"OPENAI_API_KEY":"zen-loopback-placeholder-not-a-secret"}`), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if writeErr := os.WriteFile(wrapperScript, []byte(wrapper+"\n"), 0o700); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if retryErr := launch(); retryErr != nil {
+			t.Fatal(retryErr)
+		}
+		if retryErr := waitSocketErr(socketPath, 15*time.Second); retryErr != nil {
+			t.Fatalf("app-server control socket never appeared: %v\npane:\n%s\nlog:\n%s", retryErr, capturePane(t, sess), tailFile(t, logPath))
+		}
+	}
+	time.Sleep(3 * time.Second)
+	if raw, err := os.ReadFile(pidPath); err != nil || strings.TrimSpace(string(raw)) == "" {
+		t.Fatalf("app-server pid file missing: %q err=%v", raw, err)
+	}
+	appServerPID, _ := strconv.Atoi(strings.TrimSpace(string(mustReadLive(t, pidPath))))
+	if appServerPID <= 0 {
+		t.Fatal("invalid app-server pid")
+	}
+	// Same process group: the pty hangup must reach the app server.
+	pgrepOut, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(appServerPID)).Output()
+	if err != nil {
+		t.Fatalf("ps pgid: %v", err)
+	}
+	panePIDValue := panePID(t, sess)
+	t.Logf("app-server pid=%d pgid=%s pane_pid=%d", appServerPID, strings.TrimSpace(string(pgrepOut)), panePIDValue)
+	if strings.TrimSpace(string(pgrepOut)) == "" {
+		t.Fatal("app-server pgid unreadable")
+	}
+
+	// Killing the tmux Session must not orphan the app-server or the TUI.
+	_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAliveLive(appServerPID) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if processAliveLive(appServerPID) {
+		ps, _ := exec.Command("ps", "-o", "pid,args", "-p", strconv.Itoa(appServerPID)).Output()
+		t.Fatalf("app-server orphaned after kill-session: %s", ps)
+	}
+	t.Logf("lifecycle ok: app-server pid=%d reaped with the session", appServerPID)
+}
+
+func waitSocketErr(socketPath string, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(socketPath); err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("socket %s missing", socketPath)
+}
+
+func tailFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(no log)"
+	}
+	if len(raw) > 3000 {
+		raw = raw[len(raw)-3000:]
+	}
+	return string(raw)
+}
+
+func waitProcessExit(cmd *exec.Cmd, d time.Duration) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cmd.ProcessState != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func mustReadLive(t *testing.T, path string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func processAliveLive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
+func shellQuoteWord(value string) string {
+	if !strings.ContainsAny(value, " \t\n\"'\\$`|&;()<>!*?[]{}~#") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

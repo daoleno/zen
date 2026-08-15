@@ -135,8 +135,36 @@ func TestAgentSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	routed := srv.agentSessionWire(&classifier.Agent{ID: "tmux:@routed", Name: "zsh notes", Command: "zsh"})
-	if !routed.Capabilities.ModelProfileManaged || !routed.Capabilities.ModelProfileActiveSwitch {
-		t.Fatalf("routed capabilities %#v", routed.Capabilities)
+	// This owner has no live-control dir: the routed Codex session is a
+	// pre-feature embedded session — managed but NOT active-switchable (a
+	// switch could never reach the native thread without a restart).
+	if !routed.Capabilities.ModelProfileManaged || routed.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("embedded routed capabilities %#v", routed.Capabilities)
+	}
+	// A live-control launch (control socket) advertises active switching.
+	liveOwner := startLiveProfileOwner(t)
+	liveSrv := &Server{}
+	liveSrv.SetModelProfiles(liveOwner)
+	liveProfile := routedProfile
+	liveProfile.ID = "codex-live"
+	liveProfile.ClientModel = "gpt-5"
+	liveProfile.Model = "gpt-5"
+	if _, err := liveOwner.UpsertProfile(liveProfile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	livePlan, err := liveOwner.PrepareLaunch(modelprofiles.ExecutorCodex, liveProfile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if livePlan.CodexControlSocket == "" {
+		t.Fatal("live-control owner must allocate a socket")
+	}
+	if _, _, _, err := liveOwner.CommitLaunch(livePlan.ProvisionalID, "tmux:@live-routed"); err != nil {
+		t.Fatal(err)
+	}
+	liveRouted := liveSrv.agentSessionWire(&classifier.Agent{ID: "tmux:@live-routed", Name: "zsh notes", Command: "zsh"})
+	if !liveRouted.Capabilities.ModelProfileManaged || !liveRouted.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("live-control routed capabilities %#v", liveRouted.Capabilities)
 	}
 	// Must not infer from command/name — zsh command with route still authorized by table only.
 	if routed.Capabilities.StructuredEvents {
@@ -199,8 +227,8 @@ func TestAgentSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 	if len(list) != 4 {
 		t.Fatalf("list len=%d", len(list))
 	}
-	if !list[0].Capabilities.ModelProfileManaged || !list[0].Capabilities.ModelProfileActiveSwitch {
-		t.Fatalf("list responses %#v", list[0].Capabilities)
+	if !list[0].Capabilities.ModelProfileManaged || list[0].Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("list responses (embedded codex) must be managed-only: %#v", list[0].Capabilities)
 	}
 	if !list[1].Capabilities.ModelProfileManaged || list[1].Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("list native %#v", list[1].Capabilities)
@@ -231,8 +259,10 @@ func TestAgentSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 	srv2 := &Server{}
 	srv2.SetModelProfiles(owner2)
 	restarted := srv2.agentSessionWire(&classifier.Agent{ID: "tmux:@routed", Command: "zsh"})
-	if !restarted.Capabilities.ModelProfileManaged || !restarted.Capabilities.ModelProfileActiveSwitch {
-		t.Fatalf("restart routed %#v", restarted.Capabilities)
+	// The embedded (socket-less) binding survives restart as managed-only —
+	// never advertising a switch that could not reach the native thread.
+	if !restarted.Capabilities.ModelProfileManaged || restarted.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("restart routed (embedded) must be managed-only: %#v", restarted.Capabilities)
 	}
 	restartNative := srv2.agentSessionWire(&classifier.Agent{ID: "tmux:@native", Command: "codex"})
 	if !restartNative.Capabilities.ModelProfileManaged || restartNative.Capabilities.ModelProfileActiveSwitch {

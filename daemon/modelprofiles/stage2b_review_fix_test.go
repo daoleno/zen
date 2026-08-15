@@ -1404,9 +1404,28 @@ func TestSessionRouteCapabilitiesManagedAndActiveSwitch(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s-routed"); err != nil {
 		t.Fatal(err)
 	}
+	// Without a live-control socket the Codex session is a pre-feature
+	// embedded session: managed but never advertised as active-switchable.
 	caps := owner.SessionRouteCapabilities("s-routed")
-	if !caps.Managed || !caps.ActiveSwitch {
-		t.Fatalf("responses managed=true switch=true: %#v", caps)
+	if !caps.Managed || caps.ActiveSwitch {
+		t.Fatalf("embedded codex managed=true switch=false: %#v", caps)
+	}
+	// A live-control launch (control socket) advertises active switching.
+	liveOwner := startTestOwnerWithControlDir(t, readyLookup("x"))
+	liveRouted := codexResponsesProfile("live-routed", "gpt-5", "gpt-5")
+	if _, err := liveOwner.UpsertProfile(liveRouted, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	livePlan, err := liveOwner.PrepareLaunch(ExecutorCodex, liveRouted.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := liveOwner.CommitLaunch(livePlan.ProvisionalID, "s-live-routed"); err != nil {
+		t.Fatal(err)
+	}
+	liveCaps := liveOwner.SessionRouteCapabilities("s-live-routed")
+	if !liveCaps.Managed || !liveCaps.ActiveSwitch {
+		t.Fatalf("live-control codex managed=true switch=true: %#v", liveCaps)
 	}
 	if owner.SessionRouteCapabilities("missing").Managed || owner.SessionRouteCapabilities("missing").ActiveSwitch {
 		t.Fatal("ordinary session must be false/false")

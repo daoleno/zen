@@ -294,9 +294,33 @@ func TestApplySettingsSendsExactParamsAndAcks(t *testing.T) {
 	}
 }
 
-func TestApplySettingsOmitsEffortWhenNil(t *testing.T) {
+func TestApplySettingsMapsNilEffortToNativeDefault(t *testing.T) {
 	f := startFakeAppServer(t)
 	c := openFake(t, f)
+	f.settingsUpdateHook = func(f *fakeAppServer, params map[string]any) {
+		f.broadcast(notifThreadSettingsUpd, map[string]any{
+			"threadId": "t-main",
+			"threadSettings": map[string]any{
+				"model":  "gpt-5.5",
+				"effort": "none",
+			},
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ApplySettings(ctx, "t-main", "gpt-5.5", nil, Settings{ThreadID: "t-main", Model: "gpt-5.4"}, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	params := f.lastParams(methodThreadSettingsUpd)
+	if params["effort"] != "none" {
+		t.Fatalf("nil effort must map to the native model-default value 'none': %#v", params)
+	}
+}
+
+func TestApplySettingsDefaultAckAcceptsAbsentEffort(t *testing.T) {
+	f := startFakeAppServer(t)
+	c := openFake(t, f)
+	// Defensive: some native snapshots may report a null effort for default.
 	f.settingsUpdateHook = func(f *fakeAppServer, params map[string]any) {
 		f.broadcast(notifThreadSettingsUpd, map[string]any{
 			"threadId": "t-main",
@@ -311,9 +335,25 @@ func TestApplySettingsOmitsEffortWhenNil(t *testing.T) {
 	if _, err := c.ApplySettings(ctx, "t-main", "gpt-5.5", nil, Settings{ThreadID: "t-main", Model: "gpt-5.4"}, 3*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	params := f.lastParams(methodThreadSettingsUpd)
-	if _, present := params["effort"]; present {
-		t.Fatalf("effort must be omitted when nil: %#v", params)
+}
+
+func TestApplySettingsDefaultAckRejectsMismatchedEffort(t *testing.T) {
+	f := startFakeAppServer(t)
+	c := openFake(t, f)
+	f.settingsUpdateHook = func(f *fakeAppServer, params map[string]any) {
+		f.broadcast(notifThreadSettingsUpd, map[string]any{
+			"threadId": "t-main",
+			"threadSettings": map[string]any{
+				"model":  "gpt-5.5",
+				"effort": "high",
+			},
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := c.ApplySettings(ctx, "t-main", "gpt-5.5", nil, Settings{ThreadID: "t-main", Model: "gpt-5.4"}, 300*time.Millisecond)
+	if !errors.Is(err, ErrNoSettings) {
+		t.Fatalf("err = %v, want ErrNoSettings (default ack must match 'none')", err)
 	}
 }
 

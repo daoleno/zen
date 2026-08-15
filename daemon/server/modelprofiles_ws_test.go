@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/gorilla/websocket"
@@ -70,8 +72,11 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	if _, err := authManager.EnrollDevice(pairing.Value, authManager.DaemonID(), authManager.PublicKeyHex(), deviceID, "phone", hex.EncodeToString(publicKey)); err != nil {
 		t.Fatal(err)
 	}
-	owner := startProfileOwner(t)
+	owner := startLiveProfileOwner(t)
 	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	srv.codexLiveDial = func(ctx context.Context, socketPath string) (codexctl.LiveControl, error) {
+		return &fakeLiveControl{}, nil
+	}
 	srv.SetModelProfiles(owner)
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
 	t.Cleanup(httpServer.Close)
@@ -385,7 +390,9 @@ func TestSetThreadRuntimeDoesNotRestartLiveCodexSession(t *testing.T) {
 }
 
 func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
-	owner := startProfileOwner(t)
+	// Live-control owner: managed Codex launches carry the app-server socket,
+	// so the post-commit capabilities must advertise active switching.
+	owner := startLiveProfileOwner(t)
 	profile := modelprofiles.Profile{
 		ID: "codex-main", Name: "Codex Main", ExecutorID: modelprofiles.ExecutorCodex,
 		ProviderID: "acme", ProviderLabel: "Acme",
@@ -412,6 +419,41 @@ func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
 	wire := srv.agentSessionWire(&classifier.Agent{ID: agentID, Command: "zsh", Name: "Codex"})
 	if wire == nil || !wire.Capabilities.ModelProfileManaged || !wire.Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("post-commit agent_session caps %#v", wire)
+	}
+	if plan.CodexControlSocket == "" {
+		t.Fatal("live-control owner must allocate a socket")
+	}
+	// A pre-feature embedded Codex session (no socket) must not advertise
+	// active switching.
+	embeddedOwner := startProfileOwner(t)
+	embeddedProfile := modelprofiles.Profile{
+		ID: "codex-embedded", Name: "Codex Embedded", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "acme", ProviderLabel: "Acme",
+		Protocol: modelprofiles.ProtocolOpenAIResponses, ClientModel: "gpt-5", Model: "gpt-5",
+		ClientModelProvenance: modelprofiles.ContractProvenanceBuiltinCatalog,
+		BaseURL:               "https://gateway.example/v1",
+		AuthMode:              modelprofiles.AuthModeBearerEnv,
+		CredentialEnv:         "ACME_KEY",
+	}
+	if _, err := embeddedOwner.UpsertProfile(embeddedProfile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	embeddedPlan, err := embeddedOwner.PrepareLaunch(modelprofiles.ExecutorCodex, embeddedProfile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embeddedPlan.CodexControlSocket != "" {
+		t.Fatalf("embedded owner must not allocate a socket: %q", embeddedPlan.CodexControlSocket)
+	}
+	const embeddedAgentID = "tmux:@caps-embedded"
+	if _, _, _, err := embeddedOwner.CommitLaunch(embeddedPlan.ProvisionalID, embeddedAgentID); err != nil {
+		t.Fatal(err)
+	}
+	embeddedSrv := &Server{}
+	embeddedSrv.SetModelProfiles(embeddedOwner)
+	embeddedWire := embeddedSrv.agentSessionWire(&classifier.Agent{ID: embeddedAgentID, Command: "zsh", Name: "Codex"})
+	if embeddedWire == nil || !embeddedWire.Capabilities.ModelProfileManaged || embeddedWire.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("embedded codex session caps must be managed but not active-switchable: %#v", embeddedWire)
 	}
 	raw, _ := json.Marshal(wire.Capabilities)
 	if strings.Contains(string(raw), "gateway") || strings.Contains(string(raw), "ACME_KEY") || strings.Contains(string(raw), "history") {
@@ -482,7 +524,7 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 	if _, err := authManager.EnrollDevice(pairing.Value, authManager.DaemonID(), authManager.PublicKeyHex(), deviceID, "phone", hex.EncodeToString(publicKey)); err != nil {
 		t.Fatal(err)
 	}
-	owner := startProfileOwner(t)
+	owner := startLiveProfileOwner(t)
 	profile := modelprofiles.Profile{
 		ID: "codex-main", Name: "Codex Main", ExecutorID: modelprofiles.ExecutorCodex,
 		ProviderID: "acme", ProviderLabel: "Acme",
@@ -511,6 +553,9 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 	}
 
 	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	srv.codexLiveDial = func(ctx context.Context, socketPath string) (codexctl.LiveControl, error) {
+		return &fakeLiveControl{}, nil
+	}
 	srv.SetModelProfiles(owner)
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
 	t.Cleanup(httpServer.Close)
@@ -739,7 +784,8 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 	lookup := func(string) (string, bool) { return "ready", true }
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: profiles, RoutesPath: routes, ListenerPath: listener,
-		Lookup: lookup, Verifier: wsProfileVerifier{},
+		CodexControlDir: filepath.Join(root, "codex-ctl"),
+		Lookup:          lookup, Verifier: wsProfileVerifier{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -775,6 +821,9 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	srv.codexLiveDial = func(ctx context.Context, socketPath string) (codexctl.LiveControl, error) {
+		return &fakeLiveControl{}, nil
+	}
 	srv.SetModelProfiles(owner)
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
 	header := http.Header{}

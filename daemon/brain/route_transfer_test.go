@@ -44,6 +44,13 @@ type fakeRouteLifecycle struct {
 	abortCalls    []string
 	abortPersist  modelprofiles.PersistResult
 	abortErr      error
+	// controlSocket, when set, is returned by CodexControlSocket (teardown
+	// artifact-cleanup assertions).
+	controlSocket string
+}
+
+func (f *fakeRouteLifecycle) CodexControlSocket(sessionID string) string {
+	return f.controlSocket
 }
 
 func (f *fakeRouteLifecycle) TransferSession(fromID, toID string) (modelprofiles.PersistResult, error) {

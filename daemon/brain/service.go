@@ -78,6 +78,9 @@ type SessionRouteLifecycle interface {
 	PrepareLaunch(executorID, profileID, baseCommand string) (modelprofiles.SessionLaunchPlan, error)
 	CommitLaunch(provisionalID, sessionID string) (modelprofiles.SessionRouteState, modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error)
 	AbortLaunch(provisionalID string) (modelprofiles.PersistResult, error)
+	// CodexControlSocket returns the Session's live-control app-server socket
+	// (empty when the Session has none).
+	CodexControlSocket(sessionID string) string
 }
 
 // SetSessionRouteLifecycle installs optional Model Profiles resume support.
@@ -112,10 +115,19 @@ func (s *Service) teardownOwnedSession(sessionID string) error {
 		return nil
 	}
 	var release func(string) (modelprofiles.PersistResult, error)
+	controlSocket := ""
 	if routes := s.sessionRoutes(); routes != nil {
 		release = routes.ReleaseSession
+		controlSocket = routes.CodexControlSocket(sessionID)
 	}
 	result := modelprofiles.TeardownSession(sessionID, s.watcher.KillSession, s.sessionLivenessProbe, release)
+	if result.Err == nil && controlSocket != "" {
+		// Session confirmed dead: kill any orphaned Codex app-server and
+		// remove daemon-owned socket/pid/log artifacts.
+		if cleanupErr := modelprofiles.CleanupCodexControlArtifacts(controlSocket); cleanupErr != nil {
+			log.Printf("cleanup codex control artifacts for %s: %v", sessionID, cleanupErr)
+		}
+	}
 	return result.Err
 }
 

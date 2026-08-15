@@ -257,3 +257,186 @@ func TestRouterExplicitModelSwitchDoesNotCountLocalLeaseAsOldUpstreamTraffic(t *
 		t.Fatalf("new-model upstream completion produced wrong history state: %#v", state.Binding)
 	}
 }
+
+func TestRouterTerminalModelSwitchWithNativeDefaultEffortClearsBinding(t *testing.T) {
+	type received struct {
+		Model     string `json:"model"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	root := t.TempDir()
+	owner := startSettingsSwitchOwner(t, root)
+	t.Cleanup(func() { _ = owner.Close() })
+	connectionProjection, err := owner.UpsertProviderConnection(
+		e2eCustomInput("", "Codex", upstream.URL+"/v1", "gpt-5.4"),
+		"key-a",
+		0,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := connectionProjection.Connections[0]
+	seedModelCatalogs(t, owner, map[string][]string{
+		connection.ID: {"gpt-5.4", "gpt-5.5"},
+	})
+	if _, err := owner.SetProviderDefault(ClientCodex, connection.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(ExecutorCodex, connection.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "terminal-default-effort"); err != nil {
+		t.Fatal(err)
+	}
+	// Start with an explicit Interface-set effort.
+	if _, _, _, err := owner.SetThreadRuntime("terminal-default-effort", ThreadRuntimeChoice{
+		ConnectionID: connection.ID,
+		ModelID:      "gpt-5.5",
+		Effect:       ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launch.State.Binding.RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responseBody, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+		}
+	}
+
+	// Native /model to a model with default effort: Codex 0.147 sends the
+	// reserved model-switch fragment with reasoning.effort "none". This must
+	// converge the route binding to model default (empty override) — never be
+	// rejected as an unsupported effort and never rewrite the body to a stale
+	// explicit effort.
+	post(`{"model":"gpt-5.5","reasoning":{"effort":"none"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<model_switch>\nThe user was previously using a different model. Please continue the conversation according to the following instructions:\n\nUse the newly selected model.\n</model_switch>"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	runtime, ok := owner.ThreadRuntime("terminal-default-effort")
+	if !ok || runtime.ModelID != "gpt-5.5" {
+		t.Fatalf("native default switch must keep the model: %#v", runtime)
+	}
+	if runtime.ReasoningEffort != "" {
+		t.Fatalf("native default switch must clear the effort override: %#v", runtime)
+	}
+	if len(calls) != 1 || calls[0].Reasoning.Effort != "" {
+		t.Fatalf("upstream body must carry no explicit effort: %#v", calls)
+	}
+}
+
+func TestRouterNativeEffortOnlyChangeStaysBindingAuthoritative(t *testing.T) {
+	// An effort-only native change carries no model-switch fragment (the
+	// fragment is model-change-only), so there is no native signal to converge
+	// on. The router must normalize the request to the binding instead of
+	// acknowledging the stale native effort.
+	type received struct {
+		Model     string `json:"model"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	root := t.TempDir()
+	owner := startSettingsSwitchOwner(t, root)
+	t.Cleanup(func() { _ = owner.Close() })
+	connectionProjection, err := owner.UpsertProviderConnection(
+		e2eCustomInput("", "Codex", upstream.URL+"/v1", "gpt-5.4"),
+		"key-a",
+		0,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := connectionProjection.Connections[0]
+	seedModelCatalogs(t, owner, map[string][]string{
+		connection.ID: {"gpt-5.4", "gpt-5.5"},
+	})
+	if _, err := owner.SetProviderDefault(ClientCodex, connection.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(ExecutorCodex, connection.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "effort-only-native"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.SetThreadRuntime("effort-only-native", ThreadRuntimeChoice{
+		ConnectionID: connection.ID,
+		ModelID:      "gpt-5.4",
+		Effect:       ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launch.State.Binding.RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewBufferString(`{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+	}
+	if len(calls) != 1 || calls[0].Reasoning.Effort != ReasoningEffortHigh {
+		t.Fatalf("effort-only native change must be normalized to the binding: %#v", calls)
+	}
+	if runtime, ok := owner.ThreadRuntime("effort-only-native"); !ok || runtime.ReasoningEffort != ReasoningEffortHigh {
+		t.Fatalf("effort-only native change must not mutate the route: %#v", runtime)
+	}
+}

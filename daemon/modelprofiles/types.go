@@ -174,6 +174,14 @@ const (
 // mirrored by Codex `model_reasoning_effort`). `none`/`max`/`ultra` are
 // ChatGPT-tier presets and are never Zen-admitted Session efforts.
 const (
+	// ReasoningEffortNone is the native Codex wire value for "no explicit
+	// effort" (the model's documented default applies). Codex 0.147 models the
+	// default as ReasoningEffort::None ("none" on the wire, "default" in the
+	// TUI footer) and it is the ONLY native value that resets an explicit
+	// thread effort. Zen's empty-effort (model default) semantic maps to this
+	// value at every native boundary and is normalized back to "" at every
+	// Zen boundary.
+	ReasoningEffortNone    = "none"
 	ReasoningEffortMinimal = "minimal"
 	ReasoningEffortLow     = "low"
 	ReasoningEffortMedium  = "medium"
@@ -431,6 +439,19 @@ func ProfileHotSwitchable(profileProtocol string) bool {
 	return ok
 }
 
+// bindingHotSwitchable reports whether a Session's runtime can be switched
+// without a process restart. Managed Codex requires the live-control app-server
+// socket: a pre-feature embedded Codex session cannot adopt native
+// synchronization without restarting the Codex process, so it must never be
+// advertised as hot-switchable. Non-Codex executors keep the route-only
+// contract.
+func bindingHotSwitchable(b RouteBinding) bool {
+	if normalizeID(b.ExecutorID) != ExecutorCodex {
+		return true
+	}
+	return normalizeSpace(b.CodexControlSocket) != ""
+}
+
 // CapabilitiesFor returns honest launch/route/switch capabilities.
 func CapabilitiesFor(executorID string) ExecutorCapabilities {
 	executorID = normalizeID(executorID)
@@ -550,7 +571,7 @@ func (b RouteBinding) ToWire() WireBinding {
 		ModelID:         b.UpstreamModel,
 		ReasoningEffort: normalizeID(b.ReasoningEffort),
 		CredentialReady: b.CredentialReady,
-		HotSwitchable:   b.RouteID != "" && b.RouteProtocol != "",
+		HotSwitchable:   b.RouteID != "" && b.RouteProtocol != "" && bindingHotSwitchable(b),
 	}
 	if known && entry.Effort != nil {
 		wire.ReasoningEffortDefault = entry.Effort.defaultEffort

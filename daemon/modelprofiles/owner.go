@@ -76,23 +76,23 @@ type OwnerConfig struct {
 // first managed launch. Cold installs with an empty catalog and no routes stay
 // inert: no listen socket and no listener-state file write.
 type Owner struct {
-	mu            sync.Mutex
-	store         *Store
-	table         *RouteTable
+	mu              sync.Mutex
+	store           *Store
+	table           *RouteTable
 	codexControlDir string
-	router        *Router
-	routes        *RouteStateFile
-	listener      *ListenerFile
-	ln            net.Listener
-	srv           *http.Server
-	addr          string
-	listenNetwork string
-	preferAddr    string
-	lookup        func(string) (string, bool)
-	creds         CredentialStore
-	verifier      ProfileContractVerifier
-	started       bool
-	closed        bool
+	router          *Router
+	routes          *RouteStateFile
+	listener        *ListenerFile
+	ln              net.Listener
+	srv             *http.Server
+	addr            string
+	listenNetwork   string
+	preferAddr      string
+	lookup          func(string) (string, bool)
+	creds           CredentialStore
+	verifier        ProfileContractVerifier
+	started         bool
+	closed          bool
 	// idleListenerOwned is true when this Owner started the loopback listener
 	// from an inert (no live routes) state and may tear it down on failed first
 	// launch / last Abort when no routes remain.
@@ -269,6 +269,13 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	// (staged secrets from crashed edits, old secrets whose cleanup did not run).
 	o.sweepOrphanProviderCredentialsLocked()
 	sweepErr := o.sweepProvisionalRoutesLocked()
+	// Stale live-control artifacts: restored bindings whose recorded app-server
+	// pid is dead (or no longer matches) leave daemon-owned socket/pid/log
+	// files behind. Remove them so sessions restart clean; a live matching
+	// app server (daemon restart while the pane survives) is left untouched.
+	for _, state := range o.table.Snapshot() {
+		SweepCodexControlArtifacts(state.Binding.CodexControlSocket)
+	}
 	hasRoutes := o.table.Len() > 0
 	var listenErr error
 	if sweepErr == nil {
@@ -1133,7 +1140,8 @@ func (o *Owner) SessionRouteCapabilities(sessionID string) SessionRouteCapabilit
 	}
 	activeSwitch := strings.TrimSpace(state.Binding.RouteID) != "" &&
 		normalizeID(state.Binding.RouteProtocol) != "" &&
-		ProfileHotSwitchable(state.Binding.Protocol)
+		ProfileHotSwitchable(state.Binding.Protocol) &&
+		bindingHotSwitchable(state.Binding)
 	return SessionRouteCapabilities{Managed: true, ActiveSwitch: activeSwitch}
 }
 

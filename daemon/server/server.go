@@ -101,15 +101,15 @@ type Server struct {
 	// a Session's control socket. Nil (tests, legacy embedded sessions) keeps
 	// SetThreadRuntime on the route-only path. Production New installs the
 	// codexctl client.
-	codexLiveDial func(ctx context.Context, socketPath string) (codexctl.LiveControl, error)
-	brainSnapshotBroadcastHook   func(payload map[string]any)
-	uploadDir                    string
-	uploadMu                     sync.Mutex
-	sessionFileAgentLoader       func(agentID string) *classifier.Agent
-	sessionFileCapabilityClock   func() time.Time
-	authRevocationUnsubscribe    func()
-	runtimeClosing               bool
-	terminalCleanup              terminalCleanupOwner
+	codexLiveDial              func(ctx context.Context, socketPath string) (codexctl.LiveControl, error)
+	brainSnapshotBroadcastHook func(payload map[string]any)
+	uploadDir                  string
+	uploadMu                   sync.Mutex
+	sessionFileAgentLoader     func(agentID string) *classifier.Agent
+	sessionFileCapabilityClock func() time.Time
+	authRevocationUnsubscribe  func()
+	runtimeClosing             bool
+	terminalCleanup            terminalCleanupOwner
 
 	workSubID                   int
 	workSub                     <-chan work.Event

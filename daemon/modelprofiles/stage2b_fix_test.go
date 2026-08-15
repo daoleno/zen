@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -884,4 +885,28 @@ func TestStartOwnerKeepsStaleContractRoutes(t *testing.T) {
 	if len(states2) != 1 || states2[0].Binding.UpstreamModel != "codex-auto-review" {
 		t.Fatalf("route file must be untouched: %#v", states2)
 	}
+}
+
+// startTestOwnerWithControlDir is startTestOwner with live-control socket
+// allocation enabled (managed Codex launches advertise active switching).
+func startTestOwnerWithControlDir(t *testing.T, lookup func(string) (string, bool)) *Owner {
+	t.Helper()
+	profiles, routes, listener := stage2bRoot(t)
+	if lookup == nil {
+		lookup = readyLookup("secret-value-never-on-wire")
+	}
+	controlDir := filepath.Join(t.TempDir(), "codex-ctl")
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath:    profiles,
+		RoutesPath:      routes,
+		ListenerPath:    listener,
+		CodexControlDir: controlDir,
+		Lookup:          lookup,
+		Verifier:        lifecycleTestVerifier{},
+	})
+	if err != nil {
+		t.Fatalf("StartOwner: %v", err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	return owner
 }

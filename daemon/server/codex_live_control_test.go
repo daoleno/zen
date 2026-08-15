@@ -2,14 +2,28 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/daoleno/zen/daemon/modelprofiles"
+	"github.com/daoleno/zen/daemon/watcher"
+	"github.com/gorilla/websocket"
 )
 
 // fakeLiveControl records native thread-settings applications exactly like the
@@ -346,9 +360,11 @@ func TestSetThreadRuntimeLiveRouteCommitFailureRevertsNative(t *testing.T) {
 	}
 }
 
-func TestSetThreadRuntimeLegacyEmbeddedNoLiveControl(t *testing.T) {
-	// An owner without a control dir produces embedded launches (no socket);
-	// SetThreadRuntime must stay route-only and never dial.
+func TestSetThreadRuntimeLegacyEmbeddedCodexRejectedHonestly(t *testing.T) {
+	// A pre-feature embedded Codex session (no app-server socket) cannot adopt
+	// native synchronization without restarting the Codex process. The
+	// Interface mutation must be rejected — never silently route-only — and
+	// the projection must not advertise hot switching.
 	owner := startProfileOwner(t)
 	const sessionID = "tmux:@embedded"
 	profileA := modelprofiles.Profile{
@@ -401,8 +417,11 @@ func TestSetThreadRuntimeLegacyEmbeddedNoLiveControl(t *testing.T) {
 		ConnectionID: target.ID,
 		ModelID:      target.Model,
 	})
-	if err != nil || !persist.Applied {
-		t.Fatalf("embedded switch err=%v persist=%#v", err, persist)
+	if err == nil || persist.Applied {
+		t.Fatalf("embedded codex switch must be rejected: persist=%#v err=%v", persist, err)
+	}
+	if !strings.Contains(err.Error(), "live-control") {
+		t.Fatalf("rejection must name the migration limitation: %v", err)
 	}
 	if killCalled || inputCalled {
 		t.Fatalf("embedded switch touched terminal: kill=%v input=%v", killCalled, inputCalled)
@@ -411,5 +430,237 @@ func TestSetThreadRuntimeLegacyEmbeddedNoLiveControl(t *testing.T) {
 	defer live.mu.Unlock()
 	if live.dialCount != 0 {
 		t.Fatalf("embedded session must not dial live control: %d", live.dialCount)
+	}
+	// The projection must not claim hot switching for the embedded session.
+	runtime, ok := owner.ThreadRuntime(sessionID)
+	if !ok || runtime.ModelID != "gpt-5.4" {
+		t.Fatalf("rejected switch must keep the old runtime: %#v", runtime)
+	}
+	if runtime.HotSwitchable {
+		t.Fatalf("embedded codex session must not advertise hot switching: %#v", runtime)
+	}
+	if caps := owner.SessionRouteCapabilities(sessionID); caps.ActiveSwitch {
+		t.Fatalf("embedded codex session must not advertise active switch: %#v", caps)
+	}
+}
+
+func TestSetThreadRuntimeLiveSessionAdvertisesHotSwitch(t *testing.T) {
+	owner := startLiveProfileOwner(t)
+	const sessionID = "tmux:@hot-switch-advert"
+	bindLiveCodexSession(t, owner, sessionID)
+	runtime, ok := owner.ThreadRuntime(sessionID)
+	if !ok || !runtime.HotSwitchable {
+		t.Fatalf("live-control codex session must advertise hot switching: %#v", runtime)
+	}
+	if caps := owner.SessionRouteCapabilities(sessionID); !caps.ActiveSwitch {
+		t.Fatalf("live-control codex session must advertise active switch: %#v", caps)
+	}
+}
+
+// TestTerminalModelSwitchConvergesInterfaceProjection proves the native
+// Terminal /model -> Interface convergence end-to-end: a request carrying
+// Codex's reserved model-switch signal (model + effort, including the native
+// default effort "none") updates the authoritative route binding, and the
+// Interface's get_thread_runtime WebSocket projection observes exactly the
+// same model/effort.
+func TestTerminalModelSwitchConvergesInterfaceProjection(t *testing.T) {
+	authManager, err := auth.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, _ := authManager.IssuePairingToken(time.Minute)
+	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := authManager.EnrollDevice(pairing.Value, authManager.DaemonID(), authManager.PublicKeyHex(), "device-converge", "phone", hex.EncodeToString(publicKey)); err != nil {
+		t.Fatal(err)
+	}
+	owner := startLiveProfileOwner(t)
+	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	srv.SetModelProfiles(owner)
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
+	t.Cleanup(httpServer.Close)
+
+	var upstreamBodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBodies = append(upstreamBodies, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","object":"response","output":[]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	profile := modelprofiles.Profile{
+		ID: "provider-a", Name: "Provider A", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "a", ProviderLabel: "A", Protocol: modelprofiles.ProtocolOpenAIResponses,
+		ClientModel: "gpt-5.4", Model: "gpt-5.4", BaseURL: upstream.URL + "/v1",
+		AuthMode: modelprofiles.AuthModeBearerEnv, CredentialEnv: "A_KEY",
+	}
+	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, profile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "tmux:@converge"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := modelprofiles.LoopbackCodexBaseURL(owner.ListenAddr(), launch.State.Binding.RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", calendarAuthHeader(privateKey, authManager.DaemonID(), "device-converge", "zen-connect"))
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http"), header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	readType := func(want string) map[string]any {
+		t.Helper()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			_, raw, readErr := conn.ReadMessage()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["type"] == want {
+				return payload
+			}
+		}
+	}
+	getProjection := func() (model string, effort string) {
+		t.Helper()
+		if err := conn.WriteJSON(map[string]any{
+			"type": "get_thread_runtime", "request_id": "gtr-1", "agent_id": "tmux:@converge",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		payload := readType("thread_runtime")
+		runtime, _ := payload["runtime"].(map[string]any)
+		model, _ = runtime["model_id"].(string)
+		effort, _ = runtime["reasoning_effort"].(string)
+		return model, effort
+	}
+	post := func(body string) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, base+"/responses", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+modelprofiles.LoopbackAuthPlaceholder)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responseBody, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+		}
+	}
+
+	if model, effort := getProjection(); model != "gpt-5.4" || effort != "" {
+		t.Fatalf("initial projection model=%q effort=%q", model, effort)
+	}
+
+	// Native /model switch: model gpt-5.5 with explicit high effort.
+	post(`{"model":"gpt-5.5","reasoning":{"effort":"high"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<model_switch>\nThe user was previously using a different model. Please continue the conversation according to the following instructions:\n\nUse the newly selected model.\n</model_switch>"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if model, effort := getProjection(); model != "gpt-5.5" || effort != "high" {
+		t.Fatalf("projection after native switch model=%q effort=%q, want gpt-5.5/high", model, effort)
+	}
+	if runtime, ok := owner.ThreadRuntime("tmux:@converge"); !ok || runtime.ModelID != "gpt-5.5" || runtime.ReasoningEffort != "high" {
+		t.Fatalf("authoritative route after native switch: %#v", runtime)
+	}
+	if len(upstreamBodies) != 1 || !strings.Contains(upstreamBodies[0], `"gpt-5.5"`) {
+		t.Fatalf("upstream must receive the switched model: %#v", upstreamBodies)
+	}
+
+	// Native /model switch to default effort: Codex 0.147 carries
+	// reasoning.effort "none". The route effort must clear and the Interface
+	// projection must agree (no explicit effort), with the request forwarded
+	// without a stale effort.
+	post(`{"model":"gpt-5.5","reasoning":{"effort":"none"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<model_switch>\nThe user was previously using a different model. Please continue the conversation according to the following instructions:\n\nUse the newly selected model.\n</model_switch>"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if model, effort := getProjection(); model != "gpt-5.5" || effort != "" {
+		t.Fatalf("projection after native default switch model=%q effort=%q, want gpt-5.5/default", model, effort)
+	}
+	if runtime, ok := owner.ThreadRuntime("tmux:@converge"); !ok || runtime.ModelID != "gpt-5.5" || runtime.ReasoningEffort != "" {
+		t.Fatalf("authoritative route after native default switch: %#v", runtime)
+	}
+	if len(upstreamBodies) != 2 {
+		t.Fatalf("upstream bodies=%d", len(upstreamBodies))
+	}
+	if strings.Contains(upstreamBodies[1], `"effort"`) {
+		t.Fatalf("default-effort switch must not forward a stale effort: %s", upstreamBodies[1])
+	}
+}
+
+// TestTeardownAgentSessionCleansCodexControlArtifacts proves normal Session
+// teardown (kill_agent) kills any remaining Codex app-server via its recorded
+// pid and removes the daemon-owned socket/pid/log artifacts.
+func TestTeardownAgentSessionCleansCodexControlArtifacts(t *testing.T) {
+	owner := startLiveProfileOwner(t)
+	const sessionID = "tmux:@teardown-cleanup"
+	bindLiveCodexSession(t, owner, sessionID)
+	socketPath := owner.CodexControlSocket(sessionID)
+	if socketPath == "" {
+		t.Fatal("live session must have a control socket")
+	}
+	// Fabricate the app-server artifacts exactly as the launch wrapper does.
+	appServer := exec.Command("sleep", "60")
+	appServer.Args = []string{"codex app-server --listen unix://" + socketPath, "60"}
+	if err := appServer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	appServerDone := make(chan struct{})
+	go func() {
+		_, _ = appServer.Process.Wait()
+		close(appServerDone)
+	}()
+	t.Cleanup(func() {
+		_ = appServer.Process.Kill()
+		<-appServerDone
+	})
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pidPath := modelprofiles.CodexControlPidPath(socketPath)
+	logPath := modelprofiles.CodexControlLogPath(socketPath)
+	for path, content := range map[string]string{
+		socketPath: "stale-socket",
+		pidPath:    strconv.Itoa(appServer.Process.Pid),
+		logPath:    "stale-log",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := &Server{}
+	srv.SetModelProfiles(owner)
+	srv.killSessionOverride = func(string) error { return nil }
+	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
+		return watcher.SessionPresenceAbsent, nil
+	}
+	result := srv.teardownAgentSession(sessionID)
+	if result.Err != nil {
+		t.Fatalf("teardown: %v", result.Err)
+	}
+	select {
+	case <-appServerDone:
+	case <-time.After(6 * time.Second):
+		t.Fatal("app-server survived Session teardown")
+	}
+	for _, path := range []string{socketPath, pidPath, logPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("artifact %s not removed after teardown", path)
+		}
+	}
+	if _, ok := owner.Table().Get(sessionID); ok {
+		t.Fatal("route must be released after teardown")
 	}
 }

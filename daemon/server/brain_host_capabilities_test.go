@@ -339,11 +339,12 @@ func startBrainHostCapabilityOwner(t *testing.T) *modelprofiles.Owner {
 	t.Helper()
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
-		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
-		RoutesPath:   filepath.Join(root, "route-bindings.json"),
-		ListenerPath: filepath.Join(root, "route-listener.json"),
-		Lookup:       func(string) (string, bool) { return "ready", true },
-		Verifier:     wsProfileVerifier{},
+		ProfilesPath:    filepath.Join(root, "model-profiles.toml"),
+		RoutesPath:      filepath.Join(root, "route-bindings.json"),
+		ListenerPath:    filepath.Join(root, "route-listener.json"),
+		CodexControlDir: filepath.Join(root, "codex-ctl"),
+		Lookup:          func(string) (string, bool) { return "ready", true },
+		Verifier:        wsProfileVerifier{},
 	})
 	if err != nil {
 		t.Fatal(err)

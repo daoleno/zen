@@ -135,9 +135,15 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 // while the TUI attaches to it with `--remote`. The app server receives the
 // same model/config identity as the TUI (the TUI-only --model flag is mapped
 // to the app-server --config model override). Its output is redirected to a
-// per-session log so the pane stays TUI-only; both processes share the pane's
-// process group and die together with the pane. The TUI replaces the pane
-// shell via exec so watcher foreground detection keeps seeing `codex`.
+// per-session log so the pane stays TUI-only.
+//
+// Lifecycle: `set +m` disables shell job control so the app server stays in
+// the pane's process group; when the TUI exits or the tmux Session is killed,
+// the pty hangup reaches the whole group and the app server dies with the
+// pane — it can never be orphaned. The app-server PID is recorded next to the
+// socket so the daemon can kill it during Session teardown and sweep stale
+// artifacts after a daemon restart. The TUI replaces the pane shell via exec
+// so watcher foreground detection keeps seeing `codex`.
 func compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath string) string {
 	appServer := "codex app-server --listen unix://" + shellQuote(socket)
 	appServer = appendConfig(appServer, fmt.Sprintf("model=%s", tomlString(clientModel)))
@@ -154,8 +160,9 @@ func compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loo
 	if alias := normalizeSpace(baseCommand); alias != "" && alias != "codex" {
 		appServer = strings.Replace(appServer, "codex app-server", alias+" app-server", 1)
 	}
-	logPath := strings.TrimSuffix(socket, ".sock") + ".log"
-	return appServer + " > " + shellQuote(logPath) + " 2>&1 & exec " + tuiClient
+	logPath := CodexControlLogPath(socket)
+	pidPath := CodexControlPidPath(socket)
+	return "set +m; " + appServer + " > " + shellQuote(logPath) + " 2>&1 & echo $! > " + shellQuote(pidPath) + "; exec " + tuiClient
 }
 
 func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRouteURL string) (command string, env map[string]string, err error) {

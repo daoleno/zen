@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -393,6 +394,17 @@ func (s *Server) SetThreadRuntime(sessionID string, choice modelprofiles.ThreadR
 	if err != nil {
 		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, err
 	}
+	// Honest pre-feature Sessions: an embedded Codex TUI has no reachable
+	// app-server control surface, so an Interface mutation could never reach
+	// the native thread without restarting the Codex process. Reject the
+	// switch instead of acknowledging a state the native side cannot hold.
+	if s.codexLiveDial != nil {
+		if socket := owner.CodexControlSocket(sessionID); socket == "" {
+			if state, ok := owner.Table().Get(sessionID); ok && strings.EqualFold(strings.TrimSpace(state.Binding.ExecutorID), modelprofiles.ExecutorCodex) {
+				return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, fmt.Errorf("%w: this Codex session predates live-control launches; restart the session to enable synchronized model/effort switching (one-time migration)", modelprofiles.ErrInvalid)
+			}
+		}
+	}
 	// Native-first: apply the exact resolved model+effort to the live Codex
 	// thread and wait for the native acknowledgement before publishing the
 	// Zen route. The prepare/commit split keeps the Owner lock free during
@@ -716,8 +728,18 @@ func (s *Server) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLi
 // is incomplete or applied with uncertain durability.
 func (s *Server) teardownAgentSession(agentID string) modelprofiles.SessionTeardownResult {
 	var release func(string) (modelprofiles.PersistResult, error)
+	controlSocket := ""
 	if owner := s.modelProfiles(); owner != nil {
 		release = owner.ReleaseSession
+		controlSocket = owner.CodexControlSocket(agentID)
 	}
-	return modelprofiles.TeardownSession(agentID, s.killSession, s.sessionLivenessProbe, release)
+	result := modelprofiles.TeardownSession(agentID, s.killSession, s.sessionLivenessProbe, release)
+	if result.Err == nil && controlSocket != "" {
+		// The Session is confirmed dead: kill any orphaned Codex app-server
+		// (via its recorded pid) and remove daemon-owned socket/pid/log files.
+		if cleanupErr := modelprofiles.CleanupCodexControlArtifacts(controlSocket); cleanupErr != nil {
+			log.Printf("cleanup codex control artifacts for %s: %v", agentID, cleanupErr)
+		}
+	}
+	return result
 }
