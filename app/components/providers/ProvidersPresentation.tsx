@@ -493,11 +493,6 @@ function ConnectionChoiceRow({
             <Text style={styles.rowSubtitle} numberOfLines={1}>
               {subtitle}
             </Text>
-            {needsModel ? (
-              <Text style={styles.rowModelHint} numberOfLines={1}>
-                No model selected · Sync models
-              </Text>
-            ) : null}
           </View>
           {!ready ? (
             <Text style={styles.keyRequired}>Add key</Text>
@@ -942,6 +937,7 @@ function ModelSyncSheet({
     picker.models,
   );
   const enabledCount = choices.filter((choice) => choice.current).length;
+  const selectingDefault = picker.purpose === "default";
   const saving = mutating;
 
   return (
@@ -974,14 +970,19 @@ function ModelSyncSheet({
         </Pressable>
       </View>
       <Text style={styles.pickerHint}>
-        {enabledCount === choices.length
-          ? `${enabledCount} models exposed`
-          : `${enabledCount} of ${choices.length} models exposed`}
-        {" · "}tap to toggle support.
+        {selectingDefault
+          ? `Choose the model for new ${providerClientLabel(picker.client)} sessions.`
+          : enabledCount === choices.length
+            ? `${enabledCount} models exposed`
+            : `${enabledCount} of ${choices.length} models exposed`}
       </Text>
       <View style={styles.chipWrap}>
         {choices.map((choice) => {
-          const selected = choice.current;
+          const selected = selectingDefault
+            ? catalog.defaults[picker.client]?.connection_id ===
+                picker.connection.id &&
+              catalog.defaults[picker.client]?.model_id === choice.model.id
+            : choice.current;
           const chipDisabled = saving || disabled;
           return (
             <Pressable
@@ -992,13 +993,21 @@ function ModelSyncSheet({
                 chipDisabled && styles.modelChipDisabled,
               ]}
               disabled={chipDisabled}
-              accessibilityRole="checkbox"
+              accessibilityRole={selectingDefault ? "radio" : "checkbox"}
               accessibilityState={{
                 checked: selected,
                 disabled: chipDisabled,
                 busy: saving,
               }}
-              accessibilityLabel={`${choice.model.id}, ${selected ? "exposed" : "hidden"}`}
+              accessibilityLabel={`${choice.model.id}, ${
+                selectingDefault
+                  ? selected
+                    ? "selected default"
+                    : "available default"
+                  : selected
+                    ? "exposed"
+                    : "hidden"
+              }`}
               onPress={() =>
                 onSelectModel(picker.client, picker.connection, choice.model.id)
               }
@@ -1124,7 +1133,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     rowCopy: { flex: 1, minWidth: 0 },
     rowTitle: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary },
     rowSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
-    rowModelHint: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, marginTop: 3 },
     keyRequired: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, paddingHorizontal: 4 },
     connectionActions: {
       flexDirection: "row",

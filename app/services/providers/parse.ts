@@ -10,7 +10,7 @@ import {
   type ProviderModel,
   type ProviderModelsResult,
   type ProviderPreset,
-  type ProviderSessionSelection,
+  type ThreadRuntimeSelection,
   type ProvidersSnapshot,
 } from "./types";
 import { requireAppliedPersistence } from "./persistence";
@@ -45,7 +45,7 @@ function asStringArray(value: unknown): string[] | undefined {
 }
 
 /**
- * Parses the optional managed-Codex handoff state from an activation reply.
+ * Parses the optional managed-Codex handoff state from a runtime-switch reply.
  * Unknown states parse to undefined (callers surface the raw state string).
  */
 export function parseCodexHandoffState(raw: unknown): import("./types").CodexHandoffState | undefined {
@@ -162,6 +162,9 @@ export function parseProviderModel(raw: unknown): ProviderModel | null {
     source,
     available: record.available,
     known: record.known === true ? true : undefined,
+    reasoning_effort_default:
+      asString(record.reasoning_effort_default) || undefined,
+    reasoning_efforts: asStringArray(record.reasoning_efforts),
   };
 }
 
@@ -198,9 +201,11 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
     const client = normalizeProviderClient(rawClient);
     const entry = asRecord(rawDefault);
     const connectionId = asString(entry?.connection_id);
+    const modelId = asString(entry?.model_id);
     if (
       !isSupportedProviderClient(client) ||
       !connectionId ||
+      !modelId ||
       !connectionIds.has(connectionId)
     ) {
       return null;
@@ -209,7 +214,7 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
     if (!connection?.clients.includes(client)) return null;
     defaults[client] = {
       connection_id: connectionId,
-      model_id: asString(entry?.model_id) || undefined,
+      model_id: modelId,
     };
   }
 
@@ -237,14 +242,14 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
   return { revision, connections, defaults, presets, models };
 }
 
-export function parseProviderSessionSelection(
+export function parseThreadRuntimeSelection(
   raw: unknown,
   expectedAgentId?: string,
-): ProviderSessionSelection | null {
+): ThreadRuntimeSelection | null {
   const record = asRecord(raw);
   if (!record) return null;
   assertSecretFree(record);
-  const selection: ProviderSessionSelection = {
+  const selection: ThreadRuntimeSelection = {
     session_id: asString(record.session_id),
     client: normalizeProviderClient(asString(record.client)),
     connection_id: asString(record.connection_id),
@@ -360,13 +365,18 @@ export function parseProviderModelsDiscovery(
   return parseProviderModelsResult(raw, connectionId);
 }
 
-export function assertProviderActivationMatches(
-  selection: ProviderSessionSelection,
-  input: { agentId: string; connectionId: string; modelId: string },
+export function assertThreadRuntimeMatches(
+  selection: ThreadRuntimeSelection,
+  input: {
+    agentId: string;
+    runtime: { connectionId: string; modelId: string; effect?: string };
+  },
 ): boolean {
   return (
     selection.session_id === normalizeProviderId(input.agentId) &&
-    selection.connection_id === normalizeProviderId(input.connectionId) &&
-    selection.model_id === normalizeProviderId(input.modelId)
+    selection.connection_id === normalizeProviderId(input.runtime.connectionId) &&
+    selection.model_id === normalizeProviderId(input.runtime.modelId) &&
+    (!input.runtime.effect ||
+      selection.reasoning_effort === normalizeProviderId(input.runtime.effect))
   );
 }

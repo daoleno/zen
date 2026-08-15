@@ -125,7 +125,7 @@ func e2eCustomInput(id, name, baseURL, model string) ProviderConnectionInput {
 	}
 }
 
-// TestSessionProviderActivationE2E proves the painless-switch invariant on one
+// TestThreadRuntimeSwitchE2E proves the painless-switch invariant on one
 // live Session: requests through A, activate B (same URL, different key, model)
 // then C (different URL/key/model) on the same Session without recreation; the
 // next request after each activation carries the new Provider's auth, upstream
@@ -133,7 +133,7 @@ func e2eCustomInput(id, name, baseURL, model string) ProviderConnectionInput {
 // active route survives restart; unsupported models fail inline keeping the
 // old route; concurrent Sessions and catalog defaults are untouched; the
 // serving Provider is attributed on the Session selection.
-func TestSessionProviderActivationE2E(t *testing.T) {
+func TestThreadRuntimeSwitchE2E(t *testing.T) {
 	root := t.TempDir()
 	shared := newE2EUpstream(t, nil)
 	other := newE2EUpstream(t, nil)
@@ -223,7 +223,7 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	// prove B while the Session/route stay identical.
 	beforeRev := owner.Catalog().Revision
 	beforeDefaults := owner.MustProjectForTest(t).Defaults
-	state, snap, persist, err := owner.ActivateSessionProvider("s-live", connB.ID, "gpt-5.5", "")
+	state, snap, persist, err := owner.SetThreadRuntime("s-live", ThreadRuntimeChoice{ConnectionID: connB.ID, ModelID: "gpt-5.5", Effect: ""})
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate B err=%v persist=%#v", err, persist)
 	}
@@ -240,7 +240,7 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	if len(afterDefaults) != len(beforeDefaults) {
 		t.Fatalf("activation mutated defaults: %#v -> %#v", beforeDefaults, afterDefaults)
 	}
-	if sel, ok := owner.SessionProviderSelection("s-live"); !ok || sel.ConnectionName != "Beta" || sel.ModelID != "gpt-5.5" {
+	if sel, ok := owner.ThreadRuntime("s-live"); !ok || sel.ConnectionName != "Beta" || sel.ModelID != "gpt-5.5" {
 		t.Fatalf("session attribution after B: %#v ok=%v", sel, ok)
 	}
 
@@ -251,14 +251,14 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 
 	// Activate C: different URL, key and model; the next request reaches the
 	// other upstream with key-c/gpt-5.4.
-	if _, _, _, err := owner.ActivateSessionProvider("s-live", connC.ID, "gpt-5.4", ""); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-live", ThreadRuntimeChoice{ConnectionID: connC.ID, ModelID: "gpt-5.4", Effect: ""}); err != nil {
 		t.Fatal(err)
 	}
 	postLoopback(t, routerAddr, routeID, "gpt-5.4")
 	if got, _ := other.last(); got.auth != "Bearer key-c" || got.model != "gpt-5.4" {
 		t.Fatalf("request 3 must be C: %#v", got)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-live"); sel.ConnectionName != "Gamma" || sel.ModelID != "gpt-5.4" {
+	if sel, _ := owner.ThreadRuntime("s-live"); sel.ConnectionName != "Gamma" || sel.ModelID != "gpt-5.4" {
 		t.Fatalf("session attribution after C: %#v", sel)
 	}
 	if !owner.CodexRoutedDefault() {
@@ -267,7 +267,7 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 
 	// Failure rollback: an unsupported model fails inline and keeps the old
 	// route; the daemon never substitutes another model.
-	_, _, _, err = owner.ActivateSessionProvider("s-live", connC.ID, "bogus-model", "")
+	_, _, _, err = owner.SetThreadRuntime("s-live", ThreadRuntimeChoice{ConnectionID: connC.ID, ModelID: "bogus-model", Effect: ""})
 	if !errors.Is(err, ErrUpstreamModelRequired) {
 		t.Fatalf("unsupported model err=%v", err)
 	}
@@ -314,7 +314,7 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	}
 	// The restored binding also survives a further activation on the restarted
 	// daemon (generation and catalog restored).
-	if _, _, _, err := owner2.ActivateSessionProvider("s-live", connA.ID, "gpt-5.6-sol", ""); err != nil {
+	if _, _, _, err := owner2.SetThreadRuntime("s-live", ThreadRuntimeChoice{ConnectionID: connA.ID, ModelID: "gpt-5.6-sol", Effect: ""}); err != nil {
 		t.Fatalf("activate after restart err=%v", err)
 	}
 	postLoopback(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5.6-sol")
@@ -323,10 +323,10 @@ func TestSessionProviderActivationE2E(t *testing.T) {
 	}
 }
 
-// TestSessionProviderActivationInFlightSwitch proves an activation during an
+// TestThreadRuntimeInFlightSwitch proves a runtime switch during an
 // in-flight request: the in-flight request finishes against its immutable old
 // snapshot (old auth), while the next request uses the new route.
-func TestSessionProviderActivationInFlightSwitch(t *testing.T) {
+func TestThreadRuntimeInFlightSwitch(t *testing.T) {
 	root := t.TempDir()
 	hold := make(chan struct{})
 	started := make(chan struct{})
@@ -405,7 +405,7 @@ func TestSessionProviderActivationInFlightSwitch(t *testing.T) {
 	<-started
 
 	// Activate B while A's request is in flight: must succeed immediately.
-	if _, _, _, err := owner.ActivateSessionProvider("s-inflight", connB.ID, "gpt-5.5", ""); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-inflight", ThreadRuntimeChoice{ConnectionID: connB.ID, ModelID: "gpt-5.5", Effect: ""}); err != nil {
 		t.Fatalf("activate while in-flight err=%v", err)
 	}
 	// The in-flight request still finishes on the old snapshot (key-a).

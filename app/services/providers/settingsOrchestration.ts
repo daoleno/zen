@@ -8,13 +8,11 @@ import {
   classifyMutationPersistence,
   type MutationPersistence,
 } from "./persistence";
-import { modelSupportedOnConnection } from "./sessionModelHelpers";
 import type {
   ProviderConnection,
   ProviderCredentialResult,
   ProviderModelsResult,
   ProviderPreset,
-  ProviderSessionSelection,
   ProvidersSnapshot,
 } from "./types";
 import {
@@ -23,78 +21,42 @@ import {
   curatedConnectionInput,
 } from "./presentation";
 
-export type SettingsSwitchCarryover = {
-  /** Exact current compatible routed Session (never another Session). */
-  agentId: string;
-  /** Exact preferred connection id from the Settings selection. */
-  connectionId: string;
-  /** The current Session's model — carried, never substituted. */
-  modelId: string;
-};
+export type DefaultRuntimeSeedAction =
+  | { kind: "preserve"; modelId: string }
+  | { kind: "choose"; models: ProviderModelsResult["models"] }
+  | { kind: "unavailable" };
 
-/**
- * The Settings-only Provider switch plan for one client card selection.
- * Settings owns Provider selection: the preferred Provider is persisted with
- * NO fabricated model (a new default connection starts model-required until
- * the client chooses a model). Carryover activates the exact new Provider +
- * current Model on the current compatible routed Session, and ONLY when the
- * current model is not contradicted by the new Provider's synced allowlist —
- * never a fallback, never a different Session.
- */
-export function planSettingsProviderSwitch(input: {
+export function defaultRuntimeSeedAction(input: {
   snapshot: ProvidersSnapshot;
-  connection: ProviderConnection;
-  /** Session the Settings action may activate (null = no current Session). */
-  currentSession: { agentId: string } | null;
-  /** Current live selection of that Session (null = not loaded). */
-  currentSelection: ProviderSessionSelection | null;
-}): {
-  preferredConnectionId: string;
-  carryover: SettingsSwitchCarryover | null;
-  /**
-   * True when the current model is explicitly unsupported on the selected
-   * Provider: the switch stays model-required and never falls back.
-   */
-  unsupportedCurrentModel: boolean;
-} {
-  const preferredConnectionId = input.connection.id;
-  if (!input.currentSession || !input.currentSelection) {
-    return { preferredConnectionId, carryover: null, unsupportedCurrentModel: false };
-  }
-  const selection = input.currentSelection;
-  if (selection.hot_switchable !== true) {
-    return { preferredConnectionId, carryover: null, unsupportedCurrentModel: false };
-  }
-  // The Session already runs the selected Provider: nothing to activate.
-  if (selection.connection_id === input.connection.id) {
-    return { preferredConnectionId, carryover: null, unsupportedCurrentModel: false };
-  }
-  const currentModel = selection.model_id.trim();
-  if (!currentModel) {
-    return { preferredConnectionId, carryover: null, unsupportedCurrentModel: false };
-  }
-  // An explicit synced allowlist without the current model means unsupported:
-  // keep the old route, stay model-required, never fall back. An unknown
-  // (empty/unsynced) allowlist defers to the daemon's authoritative admission.
+  client: string;
+  connectionId: string;
+}): DefaultRuntimeSeedAction {
+  const current = input.snapshot.defaults[input.client];
+  const available = (input.snapshot.models[input.connectionId] ?? []).filter(
+    (model) => model.available && model.known !== false,
+  );
   if (
-    modelSupportedOnConnection(input.snapshot, input.connection.id, currentModel) ===
-    false
+    current?.connection_id === input.connectionId &&
+    current.model_id &&
+    available.some((model) => model.id === current.model_id)
   ) {
-    return {
-      preferredConnectionId,
-      carryover: null,
-      unsupportedCurrentModel: true,
-    };
+    return { kind: "preserve", modelId: current.model_id };
   }
-  return {
-    preferredConnectionId,
-    carryover: {
-      agentId: input.currentSession.agentId,
-      connectionId: input.connection.id,
-      modelId: currentModel,
-    },
-    unsupportedCurrentModel: false,
-  };
+  if (available.length === 0) return { kind: "unavailable" };
+  return { kind: "choose", models: available };
+}
+
+export function modelSupportChangeKeepsDefaultValid(input: {
+  snapshot: ProvidersSnapshot;
+  client: string;
+  connectionId: string;
+  enabledModelIds: string[];
+}): boolean {
+  const current = input.snapshot.defaults[input.client];
+  return !(
+    current?.connection_id === input.connectionId &&
+    !input.enabledModelIds.includes(current.model_id)
+  );
 }
 
 export type CredentialFollowUp =

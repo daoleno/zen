@@ -96,6 +96,8 @@ type Server struct {
 	hasSessionOverride           func(agentID string) bool
 	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
 	getAgentOverride             func(agentID string) *classifier.Agent
+	stageRuntimeOverride         func(agentID string, plan modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState)
+	compensateRuntimeOverride    func(agentID string, plan modelprofiles.PreparedThreadRuntime, stage codexRuntimeStage, cause error) error
 	brainSnapshotBroadcastHook   func(payload map[string]any)
 	uploadDir                    string
 	uploadMu                     sync.Mutex
@@ -312,7 +314,9 @@ type clientMessage struct {
 	ProfileID            string                                 `json:"profile_id"`
 	ConnectionID         string                                 `json:"connection_id"`
 	ModelID              string                                 `json:"model_id"`
+	ModelIDs             []string                               `json:"model_ids"`
 	ReasoningEffort      string                                 `json:"reasoning_effort"`
+	Runtime              *modelprofiles.ThreadRuntimeChoice     `json:"runtime"`
 	Credential           string                                 `json:"credential"`
 	ProviderConnection   *modelprofiles.ProviderConnectionInput `json:"provider_connection"`
 }

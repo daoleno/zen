@@ -47,7 +47,7 @@ func portableHistoryProtocolsAllowed(current, next RouteBinding) bool {
 
 // normalizePortableHistoryBody strips provider-opaque history for a degraded
 // Session. Explicit policy (Codex Responses + Anthropic Messages only):
-//   - unknown item/content *types* fail closed (ErrRequestBodyNotPortable)
+//   - unknown item/content *types* are forwarded unchanged
 //   - known portable types project to an allowlisted field set (drop extras; never
 //     raw-forward provider-specific fields on tools/messages)
 //   - strip known opaque state (previous_response_id, reasoning, item_reference,
@@ -127,7 +127,7 @@ func filterResponsesInputItem(item json.RawMessage) (json.RawMessage, error) {
 	case "":
 		return nil, fmt.Errorf("%w: responses input item missing type", ErrRequestBodyMalformed)
 	default:
-		return nil, fmt.Errorf("%w: unsupported responses input type %q", ErrRequestBodyNotPortable, meta.Type)
+		return item, nil
 	}
 }
 
@@ -180,7 +180,7 @@ func filterResponsesMessageItem(item json.RawMessage) (json.RawMessage, error) {
 			if bytes.Contains(part, []byte(`encrypted_content`)) || strings.Contains(normalizeID(meta.Type), "encrypted") {
 				continue
 			}
-			return nil, fmt.Errorf("%w: unsupported responses content type %q", ErrRequestBodyNotPortable, meta.Type)
+			kept = append(kept, part)
 		}
 	}
 	if len(kept) == 0 {
@@ -292,7 +292,7 @@ func filterAnthropicMessage(msg json.RawMessage) (json.RawMessage, string, error
 		case "":
 			return nil, "", fmt.Errorf("%w: anthropic content part missing type", ErrRequestBodyMalformed)
 		default:
-			return nil, "", fmt.Errorf("%w: unsupported anthropic content type %q", ErrRequestBodyNotPortable, meta.Type)
+			kept = append(kept, part)
 		}
 	}
 	if len(kept) == 0 {

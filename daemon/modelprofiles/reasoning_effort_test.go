@@ -304,7 +304,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 
 	// Launch: no override; the selection still projects the daemon-owned
 	// contract for the gpt-5 client model (default medium, low/medium/high).
-	sel, ok := owner.SessionProviderSelection("s-effort")
+	sel, ok := owner.ThreadRuntime("s-effort")
 	if !ok {
 		t.Fatal("selection missing")
 	}
@@ -322,7 +322,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	// reasoning.effort=high; the Session is not recreated (same route id) and
 	// the catalog is untouched.
 	beforeRev := owner.Catalog().Revision
-	state, snap, persist, err := owner.ActivateSessionProvider("s-effort", conn.ID, "gpt-5-codex", ReasoningEffortHigh)
+	state, snap, persist, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh})
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate high err=%v persist=%#v", err, persist)
 	}
@@ -349,30 +349,30 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if got, _ := codexUpstream.last(); got.effort != ReasoningEffortLow {
 		t.Fatalf("CLI effort must pass through: %#v", got)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-effort"); sel.ReasoningEffort != ReasoningEffortLow {
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortLow {
 		t.Fatalf("CLI effort must be adopted: %#v", sel)
 	}
 	// A request without effort clears the stale override (the CLI has none).
 	postEffortRequest(t, routerAddr, routeID, "gpt-5-codex")
-	if sel, _ := owner.SessionProviderSelection("s-effort"); sel.ReasoningEffort != "" {
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != "" {
 		t.Fatalf("missing CLI effort must clear the override: %#v", sel)
 	}
 
 	// Omitted effort on a compatible model switch preserves the override.
-	if _, _, _, err := owner.ActivateSessionProvider("s-effort", conn.ID, "gpt-5-codex", ReasoningEffortHigh); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := owner.ActivateSessionProvider("s-effort", conn.ID, "gpt-5-codex", ""); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ""}); err != nil {
 		t.Fatal(err)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("omitted effort must preserve the override: %#v", sel)
 	}
 
 	// Explicit unsupported effort (xhigh is not in the gpt-5-codex contract)
 	// fails inline and keeps the old route + old override; an invalid effort
 	// never reaches the upstream.
-	_, _, _, err = owner.ActivateSessionProvider("s-effort", conn.ID, "gpt-5-codex", ReasoningEffortXHigh)
+	_, _, _, err = owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortXHigh})
 	if !errors.Is(err, ErrReasoningEffortUnsupported) {
 		t.Fatalf("xhigh err=%v", err)
 	}
@@ -380,12 +380,12 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if state.Binding.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("failed activation must keep the old override: %#v", state.Binding)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
+	if sel, _ := owner.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("selection must keep the old override: %#v", sel)
 	}
 
 	// Unknown vocabulary values fail closed too.
-	if _, _, _, err := owner.ActivateSessionProvider("s-effort", conn.ID, "gpt-5-codex", "turbo"); !errors.Is(err, ErrReasoningEffortUnsupported) {
+	if _, _, _, err := owner.SetThreadRuntime("s-effort", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: "turbo"}); !errors.Is(err, ErrReasoningEffortUnsupported) {
 		t.Fatalf("unknown effort err=%v", err)
 	}
 
@@ -397,7 +397,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan2.ProvisionalID, "s-other"); err != nil {
 		t.Fatal(err)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-other"); sel.ReasoningEffort != "" {
+	if sel, _ := owner.ThreadRuntime("s-other"); sel.ReasoningEffort != "" {
 		t.Fatalf("concurrent session must have no override: %#v", sel)
 	}
 	postEffortRequest(t, routerAddr, plan2.State.Binding.RouteID, "gpt-5-codex")
@@ -420,7 +420,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	if owner2.handoffPending(routeID) {
 		t.Fatal("handoff-pending must not survive restart")
 	}
-	if sel, _ := owner2.SessionProviderSelection("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
+	if sel, _ := owner2.ThreadRuntime("s-effort"); sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("restored selection lost override: %#v", sel)
 	}
 	postEffortRequestWithEffort(t, routerSrv2.Listener.Addr().String(), routeID, "gpt-5-codex", ReasoningEffortHigh)
@@ -483,7 +483,7 @@ func TestReasoningEffortInFlightImmutable(t *testing.T) {
 	routerSrv := httptest.NewServer(owner.router.Handler())
 	t.Cleanup(routerSrv.Close)
 	routerAddr := routerSrv.Listener.Addr().String()
-	if _, _, _, err := owner.ActivateSessionProvider("s-inflight", conn.ID, "gpt-5-codex", ReasoningEffortHigh); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-inflight", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh}); err != nil {
 		t.Fatal(err)
 	}
 	// The Zen-initiated switch is in its handoff transition: the binding wins
@@ -502,7 +502,7 @@ func TestReasoningEffortInFlightImmutable(t *testing.T) {
 	}
 
 	// Activation to low while A is in flight.
-	if _, _, _, err := owner.ActivateSessionProvider("s-inflight", conn.ID, "gpt-5-codex", ReasoningEffortLow); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-inflight", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortLow}); err != nil {
 		t.Fatal(err)
 	}
 	close(hold)
@@ -548,14 +548,14 @@ func TestReasoningEffortClaudeRejected(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s-claude"); err != nil {
 		t.Fatal(err)
 	}
-	sel, ok := owner.SessionProviderSelection("s-claude")
+	sel, ok := owner.ThreadRuntime("s-claude")
 	if !ok {
 		t.Fatal("selection missing")
 	}
 	if sel.ReasoningEfforts != nil || sel.ReasoningEffortDefault != "" || sel.ReasoningEffort != "" {
 		t.Fatalf("Claude selection must project no effort surface: %#v", sel)
 	}
-	if _, _, _, err := owner.ActivateSessionProvider("s-claude", conn.ID, "claude-sonnet-4-6", ReasoningEffortHigh); !errors.Is(err, ErrReasoningEffortUnsupported) {
+	if _, _, _, err := owner.SetThreadRuntime("s-claude", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "claude-sonnet-4-6", Effect: ReasoningEffortHigh}); !errors.Is(err, ErrReasoningEffortUnsupported) {
 		t.Fatalf("Claude effort activation err=%v", err)
 	}
 	if state, _ := owner.Table().Get("s-claude"); state.Binding.ReasoningEffort != "" {
@@ -582,7 +582,7 @@ func TestReasoningEffortPersistenceFailClosed(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s-corrupt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := owner.ActivateSessionProvider("s-corrupt", conn.ID, "gpt-5-codex", ReasoningEffortHigh); err != nil {
+	if _, _, _, err := owner.SetThreadRuntime("s-corrupt", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "gpt-5-codex", Effect: ReasoningEffortHigh}); err != nil {
 		t.Fatal(err)
 	}
 	_ = owner.Close()

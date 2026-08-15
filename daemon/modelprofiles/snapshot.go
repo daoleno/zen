@@ -195,57 +195,70 @@ func (t *RouteTable) Snapshot() []SessionRouteState {
 	return out
 }
 
+// RestoreContractNotice records one durable route whose persisted contract no
+// longer matches what the current daemon authority would admit (for example
+// after a daemon upgrade tightened the client contract). The route is still
+// restored and keeps serving — notices are advisory only, for startup logging.
+// The running CLI's own request identity stays authoritative: a drifted binding
+// either converges through request-identity adoption on the next request or
+// surfaces a natural upstream error; the daemon never drops a live Session and
+// never silently rewrites a visible model. Secret-free.
+type RestoreContractNotice struct {
+	SessionID string
+	RouteID   string
+	Reason    string
+}
+
 // Restore replaces an empty RouteTable from durable SessionRouteState records.
 // Requires a daemon verifier (argument or table-owned) and re-verifies each
-// binding's client/upstream IDs, envelopes, and history domain. CredentialReady
-// is recalculated; persisted readiness is ignored.
-func (t *RouteTable) Restore(states []SessionRouteState, verifier ProfileContractVerifier) error {
+// binding's client/upstream IDs, envelopes, and history domain for the advisory
+// drift report. CredentialReady is recalculated; persisted readiness is
+// ignored.
+//
+// Every structurally valid route is restored and kept serving — contract drift
+// never drops a live Session. The report lists drifted bindings for logging;
+// convergence happens on the client's own terms (request-identity adoption) or
+// not at all. Structural failures (validateRestorableState) remain fatal —
+// corrupt or foreign data is never silently discarded.
+func (t *RouteTable) Restore(states []SessionRouteState, verifier ProfileContractVerifier) ([]RestoreContractNotice, error) {
 	if t == nil {
-		return fmt.Errorf("route table is not configured")
+		return nil, fmt.Errorf("route table is not configured")
 	}
 	if verifier == nil {
 		verifier = t.contractVerifier()
 	}
 	if verifier == nil {
-		return fmt.Errorf("%w: restore requires daemon verifier", ErrContractUnverified)
+		return nil, fmt.Errorf("%w: restore requires daemon verifier", ErrContractUnverified)
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.bySession) != 0 || len(t.byRoute) != 0 {
-		return fmt.Errorf("%w: route table is not empty", ErrRouteSnapshotInvalid)
+		return nil, fmt.Errorf("%w: route table is not empty", ErrRouteSnapshotInvalid)
 	}
+	var notices []RestoreContractNotice
 	bySession := map[string]SessionRouteState{}
 	byRoute := map[string]string{}
 	for _, state := range states {
 		if err := validateRestorableState(state); err != nil {
-			return err
+			return nil, err
 		}
-		profile := profileFromBinding(state.Binding)
-		admitted, err := AuthorizeProfileContract(profile, ContractAuth{Verifier: verifier})
-		if err != nil {
-			return fmt.Errorf("%w: restore reverify: %v", ErrRouteSnapshotInvalid, err)
-		}
-		if err := assertPersistedMatchesAdmitted(state.Binding, admitted); err != nil {
-			return fmt.Errorf("%w: %v", ErrRouteSnapshotInvalid, err)
-		}
-		launchedProfile := profileFromBinding(state.Launched)
-		launchedAdmitted, err := AuthorizeProfileContract(launchedProfile, ContractAuth{Verifier: verifier})
-		if err != nil {
-			return fmt.Errorf("%w: launched reverify: %v", ErrRouteSnapshotInvalid, err)
-		}
-		if err := assertPersistedMatchesAdmitted(state.Launched, launchedAdmitted); err != nil {
-			return fmt.Errorf("%w: launched %v", ErrRouteSnapshotInvalid, err)
+		if reason := restoreContractDriftReason(state, verifier); reason != "" {
+			notices = append(notices, RestoreContractNotice{
+				SessionID: state.Binding.SessionID,
+				RouteID:   state.Binding.RouteID,
+				Reason:    reason,
+			})
 		}
 		state.Binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(state.Binding))
 		state.History = trimHistory(state.History)
 		sid := state.Binding.SessionID
 		if _, ok := bySession[sid]; ok {
-			return fmt.Errorf("%w: duplicate session_id", ErrRouteSnapshotInvalid)
+			return nil, fmt.Errorf("%w: duplicate session_id", ErrRouteSnapshotInvalid)
 		}
 		if rid := state.Binding.RouteID; rid != "" {
 			if _, ok := byRoute[rid]; ok {
-				return fmt.Errorf("%w: duplicate route_id", ErrRouteSnapshotInvalid)
+				return nil, fmt.Errorf("%w: duplicate route_id", ErrRouteSnapshotInvalid)
 			}
 			byRoute[rid] = sid
 		}
@@ -253,7 +266,33 @@ func (t *RouteTable) Restore(states []SessionRouteState, verifier ProfileContrac
 	}
 	t.bySession = bySession
 	t.byRoute = byRoute
-	return nil
+	return notices, nil
+}
+
+// restoreContractDriftReason re-verifies one persisted route against the daemon
+// verifier and returns a human-readable reason when the binding's persisted
+// contract drifted from what the current daemon would admit, or "" when the
+// route is admissible. The route is kept either way — the reason only feeds the
+// advisory startup report. Structural validation is NOT part of this check —
+// validateRestorableState failures stay fatal for the whole restore.
+func restoreContractDriftReason(state SessionRouteState, verifier ProfileContractVerifier) string {
+	profile := profileFromBinding(state.Binding)
+	admitted, err := AuthorizeProfileContract(profile, ContractAuth{Verifier: verifier})
+	if err != nil {
+		return fmt.Sprintf("current binding reverify: %v", err)
+	}
+	if err := assertPersistedMatchesAdmitted(state.Binding, admitted); err != nil {
+		return fmt.Sprintf("current binding: %v", err)
+	}
+	launchedProfile := profileFromBinding(state.Launched)
+	launchedAdmitted, err := AuthorizeProfileContract(launchedProfile, ContractAuth{Verifier: verifier})
+	if err != nil {
+		return fmt.Sprintf("launched binding reverify: %v", err)
+	}
+	if err := assertPersistedMatchesAdmitted(state.Launched, launchedAdmitted); err != nil {
+		return fmt.Sprintf("launched binding: %v", err)
+	}
+	return ""
 }
 
 func profileFromBinding(b RouteBinding) Profile {
@@ -710,21 +749,23 @@ func (f *RouteStateFile) SetDirSync(fn func(dir string) error) {
 }
 
 // Load decodes the durable file and Restores into an empty table using the
-// table's installed contract verifier.
-func (f *RouteStateFile) Load(table *RouteTable) error {
+// table's installed contract verifier. Every structurally valid route is kept
+// live; the returned report lists contract drift for logging only — callers
+// must NOT rewrite the file (nothing was dropped).
+func (f *RouteStateFile) Load(table *RouteTable) ([]RestoreContractNotice, error) {
 	if f == nil {
-		return fmt.Errorf("route state file is not configured")
+		return nil, fmt.Errorf("route state file is not configured")
 	}
 	raw, err := os.ReadFile(f.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	states, err := DecodeDurableSnapshot(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return table.Restore(states, table.contractVerifier())
 }

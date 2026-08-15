@@ -861,52 +861,53 @@ describe("Provider public WebSocket boundary", () => {
     client.disconnectAll();
   });
 
-  test("session Provider get and activation send no legacy aliases or generation", async () => {
+  test("thread runtime get and set send no legacy aliases or generation", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
 
-    const getPending = client.getSessionProvider(server.id, "agent-a");
+    const getPending = client.getThreadRuntime(server.id, "agent-a");
     const get = JSON.parse(socket.sent.at(-1)!);
     expect(get).toEqual({
-      type: "get_session_provider",
+      type: "get_thread_runtime",
       request_id: get.request_id,
       agent_id: "agent-a",
     });
     socket.receive({
-      type: "session_provider",
+      type: "thread_runtime",
       request_id: get.request_id,
-      selection: providerSelection(),
+      runtime: providerSelection(),
     });
     await expect(getPending).resolves.toMatchObject({
       connection_id: "deepseek-main",
       model_id: "deepseek-chat",
     });
 
-    const activatePending = client.activateSessionProvider(server.id, {
+    const activatePending = client.setThreadRuntime(server.id, {
       agentId: "agent-a",
-      connectionId: "deepseek-main",
-      modelId: "deepseek-chat",
+      runtime: { connectionId: "deepseek-main", modelId: "deepseek-chat" },
     });
     const activate = JSON.parse(socket.sent.at(-1)!);
     expect(activate).toEqual({
-      type: "activate_session_provider",
+      type: "set_thread_runtime",
       request_id: activate.request_id,
       agent_id: "agent-a",
-      connection_id: "deepseek-main",
-      model_id: "deepseek-chat",
+      runtime: {
+        connection_id: "deepseek-main",
+        model_id: "deepseek-chat",
+      },
     });
     expect(activate.generation).toBeUndefined();
     expect(activate.profile_id).toBeUndefined();
     socket.receive({
-      type: "session_provider_activated",
+      type: "thread_runtime_set",
       request_id: activate.request_id,
-      selection: providerSelection(),
+      runtime: providerSelection(),
       persistence_outcome: "applied",
       persistence_durable: true,
     });
     await expect(activatePending).resolves.toMatchObject({
-      selection: {
+      runtime: {
         session_id: "agent-a",
         connection_id: "deepseek-main",
         model_id: "deepseek-chat",
@@ -920,16 +921,15 @@ describe("Provider public WebSocket boundary", () => {
     const socket = await connectClient(client);
     socket.open();
 
-    const pending = client.activateSessionProvider(server.id, {
+    const pending = client.setThreadRuntime(server.id, {
       agentId: "agent-a",
-      connectionId: "deepseek-main",
-      modelId: "deepseek-chat",
+      runtime: { connectionId: "deepseek-main", modelId: "deepseek-chat" },
     });
     const outbound = JSON.parse(socket.sent.at(-1)!);
     socket.receive({
-      type: "session_provider_activated",
+      type: "thread_runtime_set",
       request_id: outbound.request_id,
-      selection: providerSelection({
+      runtime: providerSelection({
         connection_id: "other-connection",
         model_id: "other-model",
       }),

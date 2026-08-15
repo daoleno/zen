@@ -265,6 +265,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("start model profiles owner: %w", err)
 	}
+	for _, n := range profileOwner.RestoreContractNotices() {
+		log.Printf("route %s (session %s) restored with stale contract: %s; requests continue and converge via the client model switch", n.RouteID, n.SessionID, n.Reason)
+	}
 	defer func() { _ = profileOwner.Close() }()
 	controlHandler.profiles = profileOwner
 	brainService.SetSessionRouteLifecycle(profileOwner)
@@ -278,6 +281,10 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
 	srv.SetModelProfiles(profileOwner)
+	controlHandler.threadRuntimeSet = func(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
+		snapshot, persist, _, err := srv.SetThreadRuntime(sessionID, choice)
+		return snapshot, persist, err
+	}
 	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
 	srv.SetCalendar(calendarStore, calendarScheduler)

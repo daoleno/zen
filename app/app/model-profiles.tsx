@@ -16,7 +16,8 @@ import {
   classifyMutationPersistence,
   clientForConnection,
   durabilityWarningMessage,
-  firstSupportedModel,
+  defaultRuntimeSeedAction,
+  modelSupportChangeKeepsDefaultValid,
   offlineProviderError,
   presentProviderError,
   providerMutationRequiresRefresh,
@@ -28,20 +29,14 @@ import {
   type ProvidersMutationResult,
   type ProvidersSnapshot,
 } from "../services/providers";
-import {
-  currentSessionForClient,
-} from "../services/providers/sessionModelHelpers";
-import { planSettingsProviderSwitch } from "../services/providers/settingsOrchestration";
 import { wsClient } from "../services/websocket";
 import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
-import { useCurrentSession } from "../store/currentSession";
 
 export default function ProvidersScreen() {
   const router = useRouter();
   const { state } = useAgents();
   const { currentServer } = useCurrentServer();
-  const { currentSession } = useCurrentSession();
   const currentServerId = currentServer?.id ?? null;
   const currentConnected = Boolean(
     currentServerId && state.serverConnections[currentServerId] === "connected",
@@ -377,6 +372,7 @@ export default function ProvidersScreen() {
               }
               if (discovery.models.length > 0) {
                 setModelPicker({
+                  purpose: "support",
                   client,
                   connection: saved,
                   models: discovery.models,
@@ -459,6 +455,7 @@ export default function ProvidersScreen() {
         const client = clientForConnection(connection);
         if (client) {
           setModelPicker({
+            purpose: "support",
             client,
             connection,
             models: discovery.models,
@@ -502,147 +499,36 @@ export default function ProvidersScreen() {
       }),
     );
     if (!result) return;
-    // Keep the client-selected model aligned with the allowlist: when the
-    // model new Sessions would launch with was just disabled, move the
-    // selection to the deterministic first supported model (or clear it).
-    const client = clientForConnection(connection);
-    if (!client) return;
-    const entry = result.snapshot.defaults[client];
-    const selected = entry?.model_id?.trim();
-    if (
-      entry?.connection_id === connection.id &&
-      selected &&
-      !enabledIds.includes(selected)
-    ) {
-      const next = firstSupportedModel(result.snapshot, connection.id);
-      await runMutation(() =>
-        wsClient.setProviderDefault(currentServerId!, {
-          client,
-          connectionId: connection.id,
-          modelId: next ?? undefined,
-          revision: result.snapshot.revision,
-        }),
-      );
-    }
   };
 
   const offline = !currentConnected;
   const unavailable = error?.kind === "unavailable";
 
-  /**
-   * Settings-only Provider switch: the single surface that changes which
-   * Provider a client prefers.
-   *
-   * 1. Persist the preferred Provider (catalog client default) with NO
-   *    fabricated model — a new default connection starts model-required
-   *    until the client chooses a model (the daemon keeps the recorded
-   *    selection when the same connection is re-selected).
-   * 2. Painless carryover: when the exact current compatible routed Session
-   *    runs a model that is enabled+available on the new Provider, activate
-   *    the exact new Provider + current Model pair on that same Session — no
-   *    new Session, no restart.
-   * 3. Never a fallback: an unsupported current model leaves the preferred
-   *    Provider recorded without a model, the Session keeps its old route,
-   *    and the Composer enters the explicit model-required state (sending
-   *    blocked until the user picks a model).
-   * 4. On acknowledged activation, carry the model into the preferred
-   *    Provider's recorded selection (best-effort) so future Sessions and
-   *    restart restoration stay deterministic.
-   */
+  /** Settings persists only a complete runtime seed for future Sessions. */
   const switchPreferredProvider = useCallback(
-    async (client: ProviderClient, connection: ProviderConnection) => {
-      if (!currentServerId || !currentConnected) return;
-      const result = await runMutation(() =>
-        wsClient.setProviderDefault(currentServerId!, {
-          client,
-          connectionId: connection.id,
-          modelId: undefined,
-          revision,
-        }),
-      );
-      if (!result) return;
-      const snapshot = result.snapshot;
-
-      // The current compatible routed Session for this client (last-focused
-      // managed Session on the current server). Without one the switch only
-      // persists the preferred Provider; the Composer of that client's
-      // Sessions then shows the model-required state.
-      const target = currentSessionForClient({
-        agents: state.agents,
-        currentSession,
+    (client: ProviderClient, connection: ProviderConnection) => {
+      if (!catalog) return;
+      const action = defaultRuntimeSeedAction({
+        snapshot: catalog,
         client,
+        connectionId: connection.id,
       });
-      if (!target) return;
-
-      let currentSelection;
-      try {
-        currentSelection = await wsClient.getSessionProvider(
-          currentServerId!,
-          target.agentId,
-        );
-      } catch {
-        // Session vanished or no longer managed: preferred already recorded.
-        return;
-      }
-
-      const plan = planSettingsProviderSwitch({
-        snapshot,
-        connection,
-        currentSession: target,
-        currentSelection,
-      });
-      if (plan.unsupportedCurrentModel) {
+      if (action.kind === "preserve") return;
+      if (action.kind === "unavailable") {
         Alert.alert(
-          "Model required",
-          `${currentSelection.model_id.trim()} is not available on ${connection.name}. Pick a model in the chat to finish switching.`,
+          "Sync models first",
+          "A default runtime requires both a Provider and a valid model.",
         );
         return;
       }
-      const carryover = plan.carryover;
-      if (!carryover) return;
-      try {
-        const activated = await wsClient.activateSessionProvider(
-          currentServerId!,
-          carryover,
-        );
-        const classification = classifyMutationPersistence(
-          activated.persistence,
-        );
-        if (
-          classification === "applied_durable" ||
-          classification === "applied_uncertain"
-        ) {
-          // Carryover: record the carried model as the client-selected model
-          // of the preferred Provider (best-effort; a stale revision simply
-          // skips it and the next Composer activation retries).
-          try {
-            await wsClient.setProviderDefault(currentServerId!, {
-              client,
-              connectionId: connection.id,
-              modelId: carryover.modelId,
-              revision: snapshot.revision,
-            });
-          } catch {
-            // Best-effort only; the activation itself is acknowledged.
-          }
-        }
-      } catch (activateError) {
-        // The daemon failed inline (e.g. the model is no longer admitted):
-        // the preferred Provider stays recorded, the Session keeps its old
-        // route, and the Composer enters the model-required state. Recover
-        // by choosing a model there.
-        const presented = presentProviderError(activateError);
-        Alert.alert(presented.title, presented.message);
-      }
+      setModelPicker({
+        purpose: "default",
+        client,
+        connection,
+        models: action.models,
+      });
     },
-    [
-      currentConnected,
-      currentServerId,
-      currentSession,
-      revision,
-      runMutation,
-      state.agents,
-    ],
+    [catalog],
   );
 
   const closeEditor = useCallback(() => {
@@ -722,10 +608,34 @@ export default function ProvidersScreen() {
       modelPicker={modelPicker}
       onCloseModelPicker={() => setModelPicker(null)}
       onSelectModel={(client, connection, modelId) => {
-        void runSetModels(
-          connection,
-          toggleModelSupport(catalog, connection.id, modelId),
-        );
+        if (modelPicker?.purpose === "default") {
+          void runMutation(() =>
+            wsClient.setProviderDefault(currentServerId!, {
+              client,
+              connectionId: connection.id,
+              modelId,
+              revision,
+            }),
+          ).then((result) => {
+            if (result) setModelPicker(null);
+          });
+          return;
+        }
+        const enabledIds = toggleModelSupport(catalog, connection.id, modelId);
+        const currentDefault = catalog?.defaults[client];
+        if (!modelSupportChangeKeepsDefaultValid({
+          snapshot: catalog!,
+          client,
+          connectionId: connection.id,
+          enabledModelIds: enabledIds,
+        })) {
+          Alert.alert(
+            "Choose another default first",
+            "The default runtime model cannot be disabled.",
+          );
+          return;
+        }
+        void runSetModels(connection, enabledIds);
       }}
       onTestConnection={async ({ client, baseUrl, apiKey }) => {
         if (!currentServerId || !currentConnected) {

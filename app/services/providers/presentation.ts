@@ -5,7 +5,7 @@ import type {
   ProviderConnectionInput,
   ProviderModel,
   ProviderPreset,
-  ProviderSessionSelection,
+  ThreadRuntimeSelection,
   ProvidersSnapshot,
 } from "./types";
 import {
@@ -23,7 +23,7 @@ export type ProviderModelChoice = {
 
 export function connectionsForSession(
   snapshot: ProvidersSnapshot | null | undefined,
-  selection: ProviderSessionSelection | null | undefined,
+  selection: ThreadRuntimeSelection | null | undefined,
 ): ProviderConnection[] {
   if (!snapshot || !selection) return [];
   const client = normalizeProviderClient(selection.client);
@@ -233,7 +233,7 @@ export function connectionIsFutureDefault(
 
 export function modelChoicesForSession(
   snapshot: ProvidersSnapshot | null | undefined,
-  selection: ProviderSessionSelection | null | undefined,
+  selection: ThreadRuntimeSelection | null | undefined,
 ): ProviderModelChoice[] {
   if (!snapshot || !selection) return [];
   return connectionsForSession(snapshot, selection).flatMap((connection) =>

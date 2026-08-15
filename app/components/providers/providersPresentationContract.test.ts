@@ -327,7 +327,7 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("clientForConnection(");
   });
 
-  test("model chips toggle gateway support, never a provider default", () => {
+  test("model chips select the exact default model for the current Provider", () => {
     expect(presentationSource).toContain("Models");
     expect(presentationSource).toContain("modelSupportChoices(");
     expect(presentationSource).toContain("onSelectModel(");
@@ -337,19 +337,25 @@ describe("client-first Providers surface contract", () => {
     expect(presentationSource).not.toContain("pickerCurrentLabel");
     expect(presentationSource).toContain("modelChipSelected");
     expect(presentationSource).toContain("chipWrap");
+    expect(presentationSource).toContain(
+      "Choose the model for new ${providerClientLabel(picker.client)} sessions.",
+    );
+    expect(presentationSource).toContain('accessibilityRole={selectingDefault ? "radio" : "checkbox"}');
+    expect(presentationSource).toContain("providerClientLabel(picker.client)");
+    expect(presentationSource).toContain("const selected = selectingDefault");
     expect(screenSource).toContain("runSetModels");
     expect(screenSource).toContain("wsClient.setProviderModels");
+    expect(screenSource).toContain("wsClient.setProviderDefault");
     expect(screenSource).toContain("toggleModelSupport(");
-    expect(screenSource).toContain("firstSupportedModel(");
+    expect(screenSource).not.toContain("firstSupportedModel(");
   });
 
-  test("rows never display a single model; default-without-model shows a sync hint", () => {
+  test("rows never display a single model or model-selection warning", () => {
     // A Provider owns a supported-model catalog — one model on the row is
     // misleading. Model selection lives in the Session model/provider picker.
     expect(presentationSource).not.toContain("boundModelForConnection(");
     expect(presentationSource).not.toContain("Model · ");
-    expect(presentationSource).toContain("connectionRequiresModelSelection(");
-    expect(presentationSource).toContain("No model selected · Sync models");
+    expect(presentationSource).not.toContain("No model selected · Sync models");
     expect(screenSource).toContain(
       "onSelectModel={(client, connection, modelId)",
     );

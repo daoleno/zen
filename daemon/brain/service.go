@@ -2621,9 +2621,12 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	sessionEnv := brainSessionEnvironment()
 	routes := s.sessionRoutes()
 	provisionalID := ""
-	// Missing-tmux resume must reuse the immutable existing route binding.
-	// New host launches (initial, NewChat, provider/executor mismatch) resolve
-	// the selected executor default through PrepareLaunch.
+	// Missing-tmux resume reuses the immutable existing route binding so the
+	// thread keeps its exact identity. New host launches (initial, NewChat,
+	// provider/executor mismatch) and resumes whose binding no longer exists
+	// (dropped or never routed) resolve the selected executor default through
+	// PrepareLaunch — a live thread must never stay stuck on a dead route.
+	resumeBindingFound := false
 	if routes != nil && strings.TrimSpace(id) != "" && resumeToken != "" {
 		routeCommand, routeEnv, found, routeErr := routes.ResumeLaunch(id, command)
 		if routeErr != nil {
@@ -2642,13 +2645,15 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 				id, routeErr,
 			)
 		}
+		resumeBindingFound = found
 		if found {
 			if strings.TrimSpace(routeCommand) != "" {
 				command = routeCommand
 			}
 			sessionEnv = mergeStringMaps(sessionEnv, routeEnv)
 		}
-	} else if routes != nil && resumeToken == "" {
+	}
+	if routes != nil && !resumeBindingFound {
 		clientHint := work.ProfileClientExecutor(executor.Provider, executor.Command, executor.ID)
 		plan, planErr := routes.PrepareLaunch(clientHint, "", command)
 		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {

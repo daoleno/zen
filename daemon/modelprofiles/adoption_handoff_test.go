@@ -47,7 +47,7 @@ func TestAdoptSessionModelConvergesFromRequestIdentity(t *testing.T) {
 	if !ok || state.Binding.UpstreamModel != "gpt-5.5" || state.Binding.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("adoption did not converge binding: %#v", state.Binding)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-adopt"); sel.ModelID != "gpt-5.5" || sel.ReasoningEffort != ReasoningEffortHigh {
+	if sel, _ := owner.ThreadRuntime("s-adopt"); sel.ModelID != "gpt-5.5" || sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("selection did not converge: %#v", sel)
 	}
 	if state.Binding.RouteID != routeID {
@@ -58,7 +58,7 @@ func TestAdoptSessionModelConvergesFromRequestIdentity(t *testing.T) {
 	if err := owner.AdoptSessionModel(routeID, "gpt-5.5", "", false); err != nil {
 		t.Fatal(err)
 	}
-	if sel, _ := owner.SessionProviderSelection("s-adopt"); sel.ReasoningEffort != "" {
+	if sel, _ := owner.ThreadRuntime("s-adopt"); sel.ReasoningEffort != "" {
 		t.Fatalf("missing effort must clear the override: %#v", sel)
 	}
 
@@ -158,7 +158,7 @@ func TestRouterRequestIdentityPassThroughAndAdoption(t *testing.T) {
 	if len(gotModels) != 3 || gotModels[0] != "gpt-5.6-sol" || gotModels[1] != "gpt-5.5" || gotModels[2] != "vendor/private-model" {
 		t.Fatalf("upstream models=%v want exact request identities", gotModels)
 	}
-	sel, _ := owner.SessionProviderSelection("s-router")
+	sel, _ := owner.ThreadRuntime("s-router")
 	if sel.ModelID != "gpt-5.5" || sel.ReasoningEffort != ReasoningEffortHigh {
 		t.Fatalf("binding must converge to the admitted request identity: %#v", sel)
 	}

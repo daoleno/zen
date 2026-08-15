@@ -164,8 +164,10 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	_ = readType("providers")
 
 	if err := conn.WriteJSON(map[string]any{
-		"type": "activate_session_provider", "request_id": "act-bad",
-		"agent_id": "tmux:@9", "connection_id": "missing-connection",
+		"type": "set_thread_runtime", "request_id": "act-bad",
+		"agent_id": "tmux:@9", "runtime": map[string]any{
+			"connection_id": "missing-connection", "model_id": "up-2",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -175,12 +177,14 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	}
 
 	if err := conn.WriteJSON(map[string]any{
-		"type": "activate_session_provider", "request_id": "act-ok",
-		"agent_id": "tmux:@9", "connection_id": "codex-alt",
+		"type": "set_thread_runtime", "request_id": "act-ok",
+		"agent_id": "tmux:@9", "runtime": map[string]any{
+			"connection_id": "codex-alt", "model_id": "up-2",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	activated := readType("session_provider_activated")
+	activated := readType("thread_runtime_set")
 	if activated["request_id"] != "act-ok" {
 		t.Fatalf("activated=%#v", activated)
 	}
@@ -191,7 +195,7 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 		t.Fatalf("persistence_durable=%#v", activated["persistence_durable"])
 	}
 	launched, _ := activated["launched"].(map[string]any)
-	selection, _ := activated["selection"].(map[string]any)
+	selection, _ := activated["runtime"].(map[string]any)
 	if launched["connection_id"] != "codex-main" || launched["model_id"] != "up-1" {
 		t.Fatalf("activate launched=%#v", launched)
 	}
@@ -200,11 +204,11 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	}
 
 	if err := conn.WriteJSON(map[string]any{
-		"type": "get_session_provider", "request_id": "get-1", "agent_id": "tmux:@9",
+		"type": "get_thread_runtime", "request_id": "get-1", "agent_id": "tmux:@9",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got := readType("session_provider")
+	got := readType("thread_runtime")
 	if got["request_id"] != "get-1" {
 		t.Fatalf("got=%#v", got)
 	}
@@ -222,6 +226,176 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	delErr := readType("error")
 	if delErr["code"] != modelprofiles.CodeProfileInUse && delErr["code"] != modelprofiles.CodeProfileConflict {
 		t.Fatalf("delete in-use=%#v", delErr)
+	}
+}
+
+func TestSetThreadRuntimeCommitFailureRestoresPreviousLaneAndRoute(t *testing.T) {
+	var upstreamModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		upstreamModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","object":"response","output":[]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	owner := startProfileOwner(t)
+	profileA := modelprofiles.Profile{
+		ID: "runtime-a", Name: "Runtime A", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "a", ProviderLabel: "A", Protocol: modelprofiles.ProtocolOpenAIResponses,
+		ClientModel: "gpt-5.4", Model: "gpt-5.4", BaseURL: upstream.URL + "/v1",
+		AuthMode: modelprofiles.AuthModeBearerEnv, CredentialEnv: "A_KEY",
+	}
+	if _, err := owner.UpsertProfile(profileA, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	profileB := profileA
+	profileB.ID = "runtime-b"
+	profileB.Name = "Runtime B"
+	profileB.ProviderID = "b"
+	profileB.ProviderLabel = "B"
+	profileB.ClientModel = "gpt-5.5"
+	profileB.Model = "gpt-5.5"
+	if _, err := owner.UpsertProfile(profileB, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, profileA.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "tmux:@rollback"
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	srv.SetModelProfiles(owner)
+	srv.getAgentOverride = func(string) *classifier.Agent {
+		return &classifier.Agent{ID: sessionID, ProcessID: 42}
+	}
+	targetStarted := false
+	previousRestored := false
+	srv.stageRuntimeOverride = func(agentID string, plan modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState) {
+		if agentID != sessionID || plan.Target.ConnectionID != profileB.ID {
+			t.Fatalf("unexpected stage: agent=%q plan=%#v", agentID, plan)
+		}
+		targetStarted = true
+		return codexRuntimeStage{previousCommand: "resume-previous", targetProcessID: 84}, codexHandoffState{State: codexHandoffApplied}
+	}
+	srv.compensateRuntimeOverride = func(agentID string, plan modelprofiles.PreparedThreadRuntime, stage codexRuntimeStage, cause error) error {
+		if !targetStarted || agentID != sessionID || stage.targetProcessID != 84 {
+			t.Fatalf("compensation did not target the proven new process: agent=%q stage=%#v", agentID, stage)
+		}
+		if plan.Previous.ConnectionID != profileA.ID || plan.Previous.ModelID != "gpt-5.4" {
+			t.Fatalf("previous runtime snapshot=%#v", plan.Previous)
+		}
+		previousRestored = true
+		return cause
+	}
+	owner.RoutesFile().SetPersistHook(func(phase string) error {
+		if phase == "before_write" {
+			return errors.New("injected runtime commit failure")
+		}
+		return nil
+	})
+
+	_, persist, handoff, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
+		ConnectionID: profileB.ID,
+		ModelID:      "gpt-5.5",
+	})
+	owner.RoutesFile().SetPersistHook(nil)
+	if err == nil || persist.Applied {
+		t.Fatalf("commit failure must remain unapplied: persist=%#v err=%v", persist, err)
+	}
+	if handoff.State != codexHandoffSkipped || targetStarted || previousRestored {
+		t.Fatalf("handoff=%#v targetStarted=%v previousRestored=%v", handoff, targetStarted, previousRestored)
+	}
+	runtime, ok := owner.ThreadRuntime(sessionID)
+	if !ok || runtime.ConnectionID != profileA.ID || runtime.ModelID != "gpt-5.4" {
+		t.Fatalf("failed commit published target runtime: %#v", runtime)
+	}
+	state, ok := owner.Table().Get(sessionID)
+	if !ok {
+		t.Fatal("previous route disappeared")
+	}
+	base, err := modelprofiles.LoopbackCodexBaseURL(owner.ListenAddr(), state.Binding.RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Post(base+"/responses", "application/json", strings.NewReader(`{"model":"gpt-5.4","input":[]}`))
+	if err != nil {
+		t.Fatalf("previous runtime is not sendable: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || upstreamModel != "gpt-5.4" {
+		t.Fatalf("previous route send status=%d upstreamModel=%q", response.StatusCode, upstreamModel)
+	}
+}
+
+func TestSetThreadRuntimeDoesNotRestartLiveCodexSession(t *testing.T) {
+	owner := startProfileOwner(t)
+	previous := modelprofiles.Profile{
+		ID: "provider-a", Name: "Provider A", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "a", ProviderLabel: "A", Protocol: modelprofiles.ProtocolOpenAIResponses,
+		ClientModel: "gpt-5.4", Model: "up-a", BaseURL: "https://gateway.example/v1",
+		AuthMode: modelprofiles.AuthModeBearerEnv, CredentialEnv: "A_KEY",
+	}
+	if _, err := owner.UpsertProfile(previous, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	target := previous
+	target.ID = "provider-b"
+	target.Name = "Provider B"
+	target.ProviderID = "b"
+	target.ProviderLabel = "B"
+	target.ClientModel = "gpt-5.5"
+	target.Model = "up-b"
+	target.CredentialEnv = "B_KEY"
+	if _, err := owner.UpsertProfile(target, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "tmux:@live-switch"
+	launch, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, previous.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, persist, err := owner.CommitLaunch(launch.ProvisionalID, sessionID); err != nil || !persist.Applied {
+		t.Fatalf("commit launch err=%v persist=%#v", err, persist)
+	}
+
+	srv := &Server{}
+	srv.SetModelProfiles(owner)
+	stageCalled := false
+	srv.stageRuntimeOverride = func(string, modelprofiles.PreparedThreadRuntime) (codexRuntimeStage, codexHandoffState) {
+		stageCalled = true
+		return codexRuntimeStage{}, codexHandoffState{State: codexHandoffFailed}
+	}
+	_, persist, handoff, err := srv.SetThreadRuntime(sessionID, modelprofiles.ThreadRuntimeChoice{
+		ConnectionID: target.ID,
+		ModelID:      target.Model,
+	})
+	if err != nil || !persist.Applied {
+		t.Fatalf("switch err=%v persist=%#v", err, persist)
+	}
+	if stageCalled {
+		t.Fatal("Provider switch must not stage or restart the live CLI")
+	}
+	if handoff.State != codexHandoffSkipped {
+		t.Fatalf("handoff=%#v", handoff)
+	}
+	runtime, ok := owner.ThreadRuntime(sessionID)
+	if !ok || runtime.ConnectionID != target.ID || runtime.ModelID != target.Model {
+		t.Fatalf("runtime=%#v", runtime)
+	}
+	if _, ok := owner.Table().Get(sessionID); !ok {
+		t.Fatal("live Session route was removed")
 	}
 }
 
@@ -370,8 +544,10 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 		return nil
 	})
 	if err := conn.WriteJSON(map[string]any{
-		"type": "activate_session_provider", "request_id": "act-warn",
-		"agent_id": "tmux:@9", "connection_id": "codex-alt",
+		"type": "set_thread_runtime", "request_id": "act-warn",
+		"agent_id": "tmux:@9", "runtime": map[string]any{
+			"connection_id": "codex-alt", "model_id": "up-2",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -385,12 +561,12 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 		if err := json.Unmarshal(raw, &activated); err != nil {
 			t.Fatal(err)
 		}
-		if activated["type"] == "session_provider_activated" || activated["type"] == "error" {
+		if activated["type"] == "thread_runtime_set" || activated["type"] == "error" {
 			break
 		}
 	}
 	owner.RoutesFile().SetPersistHook(nil)
-	if activated["type"] != "session_provider_activated" {
+	if activated["type"] != "thread_runtime_set" {
 		t.Fatalf("want success with warning, got %#v", activated)
 	}
 	if activated["persistence_outcome"] != "applied" {
@@ -532,7 +708,7 @@ func TestModelProfileCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 	// SetDefault
 	if err := conn.WriteJSON(map[string]any{
 		"type": "set_provider_default", "request_id": "default-ok",
-		"executor_id": modelprofiles.ExecutorCodex, "connection_id": "codex-main", "revision": 2,
+		"executor_id": modelprofiles.ExecutorCodex, "connection_id": "codex-main", "model_id": "up-2", "revision": 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -655,14 +831,16 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 			t.Fatal("missing")
 		}
 		if err := conn.WriteJSON(map[string]any{
-			"type": "activate_session_provider", "request_id": "act-" + itoaWS(i),
-			"agent_id": "tmux:@trim", "connection_id": p.ID,
+			"type": "set_thread_runtime", "request_id": "act-" + itoaWS(i),
+			"agent_id": "tmux:@trim", "runtime": map[string]any{
+				"connection_id": p.ID, "model_id": p.Model,
+			},
 		}); err != nil {
 			t.Fatal(err)
 		}
-		activated := readType("session_provider_activated")
+		activated := readType("thread_runtime_set")
 		launched, _ := activated["launched"].(map[string]any)
-		selection, _ := activated["selection"].(map[string]any)
+		selection, _ := activated["runtime"].(map[string]any)
 		if launched["connection_id"] != "p0" || launched["model_id"] != "up-0" {
 			t.Fatalf("launched drifted i=%d %#v", i, launched)
 		}
@@ -694,7 +872,7 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn2.Close() })
 	if err := conn2.WriteJSON(map[string]any{
-		"type": "get_session_provider", "request_id": "get-restart", "agent_id": "tmux:@trim",
+		"type": "get_thread_runtime", "request_id": "get-restart", "agent_id": "tmux:@trim",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +886,7 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got["type"] == "session_provider" {
+		if got["type"] == "thread_runtime" {
 			break
 		}
 	}

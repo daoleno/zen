@@ -37,13 +37,15 @@ export type ProviderPreset = {
 
 export type ProviderDefault = {
   connection_id: string;
-  model_id?: string;
+  model_id: string;
 };
 
 export type ProviderModel = {
   id: string;
   available: boolean;
   source: string;
+  reasoning_effort_default?: string;
+  reasoning_efforts?: string[];
   /**
    * Daemon-owned metadata known for this model identity on managed Codex.
    * Unknown gateway-only models are clearly unsupported (fail closed), never
@@ -81,7 +83,7 @@ export type ProviderDefaultInput = {
   revision: number;
 };
 
-export type ProviderSessionSelection = {
+export type ThreadRuntimeSelection = {
   session_id: string;
   client: string;
   connection_id: string;
@@ -139,26 +141,18 @@ export type CodexHandoffState = {
   message?: string;
 };
 
-export type ProviderActivationResult = {
-  selection: ProviderSessionSelection;
-  persistence: import("./persistence").MutationPersistence;
-  /**
-   * Managed Codex process-handoff outcome after a Zen-initiated model/effort
-   * switch on a live TUI Session. Missing = no handoff attempted. The route
-   * activation is authoritative regardless; the handoff only proves the
-   * running Codex process shows the new identity too.
-   */
-  handoff?: CodexHandoffState;
-};
-
-export type SessionProviderActivationResult = ProviderActivationResult;
-export type ProviderModelsDiscoveryResult = ProviderModelsResult;
-
-export type ActivateSessionProviderInput = {
-  agentId: string;
+export type ThreadRuntimeChoice = {
   connectionId: string;
   modelId: string;
+  effect?: string;
 };
+
+export type ThreadRuntimeMutationResult = {
+  runtime: ThreadRuntimeSelection;
+  persistence: import("./persistence").MutationPersistence;
+  handoff?: CodexHandoffState;
+};
+export type ProviderModelsDiscoveryResult = ProviderModelsResult;
 
 export type UpsertProviderConnectionInput = {
   connection: ProviderConnectionInput;

@@ -848,7 +848,7 @@ func TestCorruptV4LaunchedRejected(t *testing.T) {
 			table := NewRouteTable()
 			table.SetLookup(readyLookup("x"))
 			table.SetContractVerifier(lifecycleTestVerifier{})
-			if err := table.Restore([]SessionRouteState{broken}, lifecycleTestVerifier{}); err == nil {
+			if _, err := table.Restore([]SessionRouteState{broken}, lifecycleTestVerifier{}); err == nil {
 				t.Fatal("expected restore reject")
 			}
 		})

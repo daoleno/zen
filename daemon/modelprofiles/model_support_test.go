@@ -145,31 +145,40 @@ func TestModelSupportAllowlistSurvivesRefresh(t *testing.T) {
 	}
 }
 
-// A launch whose selected model was explicitly disabled fails closed instead of
-// routing a model the client turned off.
-func TestLaunchFailsClosedWhenAllModelsDisabled(t *testing.T) {
+// A support update cannot invalidate the complete future-thread default seed.
+// The caller must atomically choose another valid default first.
+func TestModelSupportCannotDisableSelectedDefault(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
-	if _, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
-	}, "", 0, true); err != nil {
+	}, "", 0, true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	owner.mu.Lock()
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("gw", []string{"gpt-5.6-sol"}, nil)
 	owner.mu.Unlock()
-	proj, _, err := owner.SetProviderModelSupport("gw", nil)
+	proj, err = owner.SetProviderDefault(ClientCodex, "gw", "gpt-5.6-sol", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, "gw", "gpt-5.6-sol", proj.Revision); err != nil {
-		t.Fatal(err)
+	before := proj.Models["gw"]
+	_, persist, err := owner.SetProviderModelSupport("gw", nil)
+	if err == nil || persist.Applied {
+		t.Fatalf("disabling selected default must be refused: persist=%#v err=%v", persist, err)
 	}
-	_, err = owner.PrepareLaunch(ExecutorCodex, "gw", "codex")
-	if err == nil {
-		t.Fatal("launch with every model disabled must fail closed")
+	after, projectErr := owner.ProjectProviders()
+	if projectErr != nil {
+		t.Fatal(projectErr)
+	}
+	if got := after.Defaults[ClientCodex]; got.ConnectionID != "gw" || got.ModelID != "gpt-5.6-sol" {
+		t.Fatalf("default runtime changed after refused support update: %#v", got)
+	}
+	if len(before) != len(after.Models["gw"]) || !after.Models["gw"][0].Available {
+		t.Fatalf("support mutation applied despite refusal: before=%#v after=%#v", before, after.Models["gw"])
 	}
 }
 

@@ -13,14 +13,10 @@ import type { PresentedAgent } from "../../../services/agentPresentation";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
   ProviderError,
-  ProviderSessionSelection,
+  ThreadRuntimeChoice,
 } from "../../../services/providers";
-import type {
-  ProviderPickerModelRow,
-  SessionEffortContract,
-} from "../../../services/providers/sessionModelHelpers";
+import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
 import type { ComposerModelControlPresentation } from "../../../services/providers/sessionModelHelpers";
-import type { SessionModelChoice } from "../../providers/SessionModelSheet";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
@@ -68,14 +64,7 @@ interface UseTerminalScreenLayoutPropsInput {
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
-  routeSheetSelection?: ProviderSessionSelection | null;
   routeSheetRows: ProviderPickerModelRow[];
-  routeSheetModelRequired: boolean;
-  routeSheetEffortContract?: SessionEffortContract | null;
-  routeSheetEffortChoice?: string;
-  routeSheetEffortDisabled?: boolean;
-  routeSheetHandoffWarning?: string | null;
-  onRouteSheetEffortChange?(value: string): void;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   screenFocused: boolean;
@@ -105,7 +94,7 @@ interface UseTerminalScreenLayoutPropsInput {
   onComposerModelControlPress?: () => void;
   closeRouteSheet(): void;
   retryRouteSheet(): void;
-  activateSessionModel(choice: SessionModelChoice): void;
+  activateSessionModel(choice: ThreadRuntimeChoice): void;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
 }
 
@@ -148,14 +137,7 @@ export function useTerminalScreenLayoutProps({
   routeSheetLoading,
   routeSheetActivating,
   routeSheetError,
-  routeSheetSelection,
   routeSheetRows,
-  routeSheetModelRequired,
-  routeSheetEffortContract,
-  routeSheetEffortChoice,
-  routeSheetEffortDisabled,
-  routeSheetHandoffWarning,
-  onRouteSheetEffortChange,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   screenFocused,
@@ -266,14 +248,7 @@ export function useTerminalScreenLayoutProps({
     routeSheetLoading,
     routeSheetActivating,
     routeSheetError,
-    routeSheetSelection,
     routeSheetRows,
-    routeSheetModelRequired,
-    routeSheetEffortContract,
-    routeSheetEffortChoice,
-    routeSheetEffortDisabled,
-    routeSheetHandoffWarning,
-    onRouteSheetEffortChange,
     createDurabilityWarning,
     onDismissCreateDurabilityWarning,
     creatingSession,

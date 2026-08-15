@@ -99,6 +99,11 @@ type Owner struct {
 	// (before_stage/after_stage/before_commit/after_commit/before_cleanup/
 	// after_cleanup); it never runs in production.
 	editHook func(phase string) error
+	// restoreNotices records durable routes restored at StartOwner whose
+	// persisted contract drifted from what the current daemon would admit (for
+	// example after a daemon upgrade). Set before start and never mutated;
+	// surfaced for startup logging and diagnostics only — the routes stay live.
+	restoreNotices []RestoreContractNotice
 	// credentialSweepWarning records a best-effort orphan-sweep failure; the
 	// sweep is deterministic and retried on the next start.
 	credentialSweepWarning error
@@ -132,8 +137,28 @@ type CatalogProjection struct {
 	Views   []ProfileView
 }
 
+// RestoreContractNotices returns the durable routes restored at StartOwner
+// whose persisted contract drifted from the current daemon authority
+// (secret-free; immutable after start). The routes are kept live — notices are
+// advisory, for startup logging and diagnostics. Empty when nothing drifted.
+func (o *Owner) RestoreContractNotices() []RestoreContractNotice {
+	if o == nil {
+		return nil
+	}
+	out := make([]RestoreContractNotice, len(o.restoreNotices))
+	copy(out, o.restoreNotices)
+	return out
+}
+
 // StartOwner loads catalog + durable routes. Missing profile/route files are OK
-// (empty). Malformed route snapshots fail closed.
+// (empty). Malformed route snapshots fail closed. Routes whose contract no
+// longer verifies under the current daemon authority are still restored and
+// kept serving — drift is advisory (reported via RestoreContractNotices for
+// startup logging), never destructive, so a snapshot written under an older
+// daemon contract can never brick startup nor drop a live Session. The CLI's
+// own request identity remains authoritative: a drifted binding converges via
+// request-identity adoption on the next request or surfaces a natural upstream
+// error; the daemon never rewrites a visible model silently.
 //
 // Listener semantics:
 //   - Live (committed) routes: bind the persisted (or PreferAddr) port or fail
@@ -183,7 +208,8 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	if cfg.RoutesPersistHook != nil {
 		routes.SetPersistHook(cfg.RoutesPersistHook)
 	}
-	if err := routes.Load(table); err != nil {
+	notices, err := routes.Load(table)
+	if err != nil {
 		return nil, err
 	}
 
@@ -200,18 +226,19 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	}
 
 	o := &Owner{
-		store:         store,
-		table:         table,
-		routes:        routes,
-		listener:      listenerFile,
-		listenNetwork: network,
-		preferAddr:    strings.TrimSpace(cfg.PreferAddr),
-		lookup:        lookup,
-		creds:         cfg.Credentials,
-		verifier:      verifier,
-		started:       true,
-		discovery:     newModelDiscoveryCache(),
-		discoveryPath: strings.TrimSpace(cfg.DiscoveryPath),
+		store:          store,
+		table:          table,
+		routes:         routes,
+		listener:       listenerFile,
+		listenNetwork:  network,
+		preferAddr:     strings.TrimSpace(cfg.PreferAddr),
+		lookup:         lookup,
+		creds:          cfg.Credentials,
+		verifier:       verifier,
+		started:        true,
+		discovery:      newModelDiscoveryCache(),
+		discoveryPath:  strings.TrimSpace(cfg.DiscoveryPath),
+		restoreNotices: notices,
 	}
 	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelAdoption(o.AdoptSessionModel), WithRouterHandoffPending(o.handoffPending))
 	if o.discoveryPath != "" {

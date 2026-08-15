@@ -57,22 +57,22 @@ describe("ProviderRequestOwner", () => {
     expect(owner.admitCatalogMutation().ok).toBe(true);
   });
 
-  test("activation is exclusive and ambiguous lock requires same-session refresh", () => {
+  test("runtime switch is exclusive and ambiguous lock requires same-session refresh", () => {
     const owner = new ProviderRequestOwner();
     owner.rebind("server-a", "tmux:@1");
-    const first = owner.admitActivation();
+    const first = owner.admitRuntimeSwitch();
     expect(first.ok).toBe(true);
-    expect(owner.admitActivation().ok).toBe(false);
+    expect(owner.admitRuntimeSwitch().ok).toBe(false);
     expect(owner.admitSessionLoad().ok).toBe(false);
     if (!first.ok) return;
-    owner.settleActivation(first.token, { refreshRequired: true });
-    expect(owner.activationRequiresRefresh()).toBe(true);
-    expect(owner.admitActivation().ok).toBe(false);
+    owner.settleRuntimeSwitch(first.token, { refreshRequired: true });
+    expect(owner.runtimeSwitchRequiresRefresh()).toBe(true);
+    expect(owner.admitRuntimeSwitch().ok).toBe(false);
     const refresh = owner.admitSessionLoad();
     expect(refresh.ok).toBe(true);
     if (!refresh.ok) return;
     expect(owner.acceptSession(refresh.token)).toBe(true);
-    expect(owner.activationRequiresRefresh()).toBe(false);
-    expect(owner.admitActivation().ok).toBe(true);
+    expect(owner.runtimeSwitchRequiresRefresh()).toBe(false);
+    expect(owner.admitRuntimeSwitch().ok).toBe(true);
   });
 });

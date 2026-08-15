@@ -55,6 +55,7 @@ type controlApp struct {
 	calendarStore     *calendar.Store
 	calendarScheduler *calendar.Scheduler
 	profiles          *modelprofiles.Owner
+	threadRuntimeSet  func(string, modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error)
 	stateDir          string
 }
 
@@ -140,10 +141,10 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleProviderSetModels(req)
 	case "provider_discover":
 		return a.handleProviderDiscover(req)
-	case "session_provider_get":
-		return a.handleSessionProviderGet(req)
-	case "session_provider_activate":
-		return a.handleSessionProviderActivate(req)
+	case "thread_runtime_get":
+		return a.handleThreadRuntimeGet(req)
+	case "thread_runtime_set":
+		return a.handleThreadRuntimeSet(req)
 	case "model_profile_list", "model_profile_get", "model_profile_upsert",
 		"model_profile_delete", "model_profile_set_default",
 		"session_route_get", "session_route_activate":
@@ -1810,7 +1811,7 @@ func (a *controlApp) providersMutationResponse(proj modelprofiles.ProviderCatalo
 	return response
 }
 
-func (a *controlApp) handleSessionProviderGet(req control.Request) control.Response {
+func (a *controlApp) handleThreadRuntimeGet(req control.Request) control.Response {
 	if a == nil || a.profiles == nil {
 		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 	}
@@ -1818,15 +1819,15 @@ func (a *controlApp) handleSessionProviderGet(req control.Request) control.Respo
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(req.ID)
 	}
-	sel, ok := a.profiles.SessionProviderSelection(sessionID)
+	sel, ok := a.profiles.ThreadRuntime(sessionID)
 	if !ok {
-		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "session provider binding not found")
+		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "thread runtime not found")
 	}
 	snap, _ := a.profiles.SessionSnapshot(sessionID)
-	return control.Response{OK: true, SessionProvider: &sel, SessionRoute: &snap}
+	return control.Response{OK: true, ThreadRuntime: &sel, SessionRoute: &snap}
 }
 
-func (a *controlApp) handleSessionProviderActivate(req control.Request) control.Response {
+func (a *controlApp) handleThreadRuntimeSet(req control.Request) control.Response {
 	if a == nil || a.profiles == nil {
 		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 	}
@@ -1834,19 +1835,21 @@ func (a *controlApp) handleSessionProviderActivate(req control.Request) control.
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(req.ID)
 	}
-	connectionID := strings.TrimSpace(req.ConnectionID)
-	if connectionID == "" {
-		connectionID = strings.TrimSpace(req.ProfileID)
+	if req.Runtime == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "runtime is required")
 	}
-	_, snap, persist, err := a.profiles.ActivateSessionProvider(sessionID, connectionID, req.ModelID, strings.TrimSpace(req.ReasoningEffort))
+	if a.threadRuntimeSet == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Thread runtime service is not available.")
+	}
+	snap, persist, err := a.threadRuntimeSet(sessionID, *req.Runtime)
 	if !persist.Applied {
 		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
 	}
 	if snap.Current == nil {
-		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "session provider binding not found after activate")
+		return control.ErrorResponse(modelprofiles.CodeBindingNotFound, "thread runtime not found after switch")
 	}
 	binding := *snap.Current
-	sel := modelprofiles.ProviderSessionSelection{
+	sel := modelprofiles.ThreadRuntimeSelection{
 		SessionID:              binding.SessionID,
 		Client:                 binding.Client,
 		ConnectionID:           binding.ConnectionID,
@@ -1859,13 +1862,13 @@ func (a *controlApp) handleSessionProviderActivate(req control.Request) control.
 		CredentialReady:        binding.CredentialReady,
 		HotSwitchable:          binding.HotSwitchable,
 	}
-	response := control.Response{OK: true, SessionProvider: &sel, SessionRoute: &snap, Binding: &binding}
+	response := control.Response{OK: true, ThreadRuntime: &sel, SessionRoute: &snap, Binding: &binding}
 	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
 		response.PersistenceOutcome = control.PersistenceOutcome(outcome)
 		response.PersistenceDurable = durable
 	}
 	if err != nil {
-		log.Printf("session provider activate applied with uncertain durability: %v", err)
+		log.Printf("thread runtime switch applied with uncertain durability: %v", err)
 	}
 	return response
 }

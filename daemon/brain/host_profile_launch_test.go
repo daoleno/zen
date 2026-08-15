@@ -213,6 +213,60 @@ func TestMissingTmuxResumeUsesImmutableBindingNotDefaultPrepare(t *testing.T) {
 	}
 }
 
+// TestMissingTmuxResumeWithoutBindingPreparesDefault covers the dropped-route
+// case (for example a route released before the daemon upgrade): the thread's
+// binding no longer exists, so the resume falls through to PrepareLaunch with
+// the current executor default and gets a fresh route — never a dead one.
+func TestMissingTmuxResumeWithoutBindingPreparesDefault(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-missing-unbound:@9"
+	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
+	transcriptPath := filepath.Join(t.TempDir(), "rollout-"+providerSessionID+".jsonl")
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostProviderTranscript(providerSessionID, transcriptPath, "/home/daoleno"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	routes := &fakeRouteLifecycle{
+		resumeFound: false, // binding dropped: ResumeLaunch reports not found
+		preparePlan: &modelprofiles.SessionLaunchPlan{
+			Applied:       true,
+			Command:       "codex resume " + providerSessionID + " --fresh-route",
+			Env:           map[string]string{"OPENAI_BASE_URL": "http://127.0.0.1:9/r/rt_fresh/v1"},
+			ProvisionalID: "pending:resume-fresh",
+			Persist:       modelprofiles.PersistResult{Applied: true, Durable: true},
+		},
+	}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
+	})
+	service.SetSessionRouteLifecycle(routes)
+
+	if _, err := service.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes.resumeCalls) != 1 || routes.resumeCalls[0] != oldID {
+		t.Fatalf("resumeCalls=%#v", routes.resumeCalls)
+	}
+	if len(routes.prepareCalls) != 1 || routes.prepareCalls[0][0] != "codex" || routes.prepareCalls[0][1] != "" {
+		t.Fatalf("dropped-binding resume must PrepareLaunch the default: %#v", routes.prepareCalls)
+	}
+	if len(routes.commitCalls) != 1 || routes.commitCalls[0][0] != "pending:resume-fresh" {
+		t.Fatalf("commitCalls=%#v", routes.commitCalls)
+	}
+	if len(fw.created) != 1 || fw.created[0].opts.Command != routes.preparePlan.Command {
+		t.Fatalf("created=%#v", fw.created)
+	}
+	if fw.created[0].opts.Env["OPENAI_BASE_URL"] != "http://127.0.0.1:9/r/rt_fresh/v1" {
+		t.Fatalf("env=%#v", fw.created[0].opts.Env)
+	}
+}
+
 func TestBrainHostCreateFailureAbortsProvisional(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

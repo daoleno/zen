@@ -2,7 +2,7 @@ export type ProviderRequestChannel =
   | "catalog"
   | "catalog_mutation"
   | "session"
-  | "activation";
+  | "runtime_switch";
 
 export type ProviderRequestToken = {
   channel: ProviderRequestChannel;
@@ -20,7 +20,7 @@ export type ProviderAdmission =
  * Synchronous admission owner for current-server Provider surfaces.
  *
  * It prevents stale same-server replies, overlapping revision writes, and
- * activation retries after ambiguous results. React state is presentation only;
+ * runtime-switch retries after ambiguous results. React state is presentation only;
  * the owner remains the write gate.
  */
 export class ProviderRequestOwner {
@@ -31,12 +31,12 @@ export class ProviderRequestOwner {
     catalog: 0,
     catalog_mutation: 0,
     session: 0,
-    activation: 0,
+    runtime_switch: 0,
   };
   private catalogMutation: ProviderRequestToken | null = null;
-  private activation: ProviderRequestToken | null = null;
+  private runtimeSwitch: ProviderRequestToken | null = null;
   private catalogRefreshRequired = false;
-  private activationRefreshRequired = false;
+  private runtimeSwitchRefreshRequired = false;
   private appliedRevision = 0;
 
   rebind(serverId: string | null | undefined, scope = ""): boolean {
@@ -47,7 +47,7 @@ export class ProviderRequestOwner {
     this.scope = nextScope;
     this.invalidateAll();
     this.catalogRefreshRequired = false;
-    this.activationRefreshRequired = false;
+    this.runtimeSwitchRefreshRequired = false;
     this.appliedRevision = 0;
     return true;
   }
@@ -188,7 +188,7 @@ export class ProviderRequestOwner {
     if (!this.serverId) {
       return { ok: false, reason: "No current server is connected." };
     }
-    if (this.activation) {
+    if (this.runtimeSwitch) {
       return {
         ok: false,
         reason: "Wait for the current Model change to finish.",
@@ -199,7 +199,7 @@ export class ProviderRequestOwner {
 
   acceptSession(token: ProviderRequestToken): boolean {
     if (!this.isCurrent(token)) return false;
-    this.activationRefreshRequired = false;
+    this.runtimeSwitchRefreshRequired = false;
     return true;
   }
 
@@ -207,26 +207,26 @@ export class ProviderRequestOwner {
     return this.acceptSession(token);
   }
 
-  admitActivation(_requestId?: string): ProviderAdmission {
+  admitRuntimeSwitch(_requestId?: string): ProviderAdmission {
     if (!this.serverId) {
       return { ok: false, reason: "No current server is connected." };
     }
-    if (this.activationRefreshRequired) {
+    if (this.runtimeSwitchRefreshRequired) {
       return {
         ok: false,
-        reason: "Refresh the current Model before activating again.",
+        reason: "Refresh the current runtime before switching again.",
       };
     }
-    if (this.activation) {
-      return { ok: false, reason: "Another Model activation is in progress." };
+    if (this.runtimeSwitch) {
+      return { ok: false, reason: "Another runtime switch is in progress." };
     }
     this.generations.session += 1;
-    const token = this.issue("activation");
-    this.activation = token;
+    const token = this.issue("runtime_switch");
+    this.runtimeSwitch = token;
     return { ok: true, token };
   }
 
-  settleActivation(
+  settleRuntimeSwitch(
     tokenOrInput:
       | ProviderRequestToken
       | {
@@ -242,23 +242,19 @@ export class ProviderRequestOwner {
         ? { refreshRequired: tokenOrInput.kind === "lock" }
         : options;
     if (
-      !this.activation ||
-      this.activation.generation !== token.generation ||
-      this.activation.serverId !== token.serverId ||
-      this.activation.scope !== token.scope
+      !this.runtimeSwitch ||
+      this.runtimeSwitch.generation !== token.generation ||
+      this.runtimeSwitch.serverId !== token.serverId ||
+      this.runtimeSwitch.scope !== token.scope
     ) {
       return;
     }
-    this.activation = null;
-    if (nextOptions?.refreshRequired) this.activationRefreshRequired = true;
+    this.runtimeSwitch = null;
+    if (nextOptions?.refreshRequired) this.runtimeSwitchRefreshRequired = true;
   }
 
-  activationRequiresRefresh(): boolean {
-    return this.activationRefreshRequired;
-  }
-
-  activationRefreshRequiredGate(): boolean {
-    return this.activationRequiresRefresh();
+  runtimeSwitchRequiresRefresh(): boolean {
+    return this.runtimeSwitchRefreshRequired;
   }
 
   invalidateAll(): void {
@@ -267,7 +263,7 @@ export class ProviderRequestOwner {
     }
     this.projectionEpoch += 1;
     this.catalogMutation = null;
-    this.activation = null;
+    this.runtimeSwitch = null;
   }
 }
 

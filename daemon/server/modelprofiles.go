@@ -44,17 +44,20 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "set_provider_default":
 		s.handleSetProviderDefault(conn, raw)
 		return true
+	case "set_provider_models":
+		s.handleSetProviderModels(conn, raw)
+		return true
 	case "discover_provider_models":
 		s.handleDiscoverProviderModels(conn, raw)
 		return true
 	case "test_provider_connection":
 		s.handleTestProviderConnection(conn, raw)
 		return true
-	case "get_session_provider":
-		s.handleGetSessionProvider(conn, raw)
+	case "get_thread_runtime":
+		s.handleGetThreadRuntime(conn, raw)
 		return true
-	case "activate_session_provider":
-		s.handleActivateSessionProvider(conn, raw)
+	case "set_thread_runtime":
+		s.handleSetThreadRuntime(conn, raw)
 		return true
 	case "set_provider_credential":
 		s.handleSetProviderCredential(conn, raw)
@@ -151,6 +154,28 @@ func (s *Server) handleSetProviderDefault(conn *websocket.Conn, raw clientMessag
 	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
 }
 
+func (s *Server) handleSetProviderModels(conn *websocket.Conn, raw clientMessage) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	connectionID := strings.TrimSpace(raw.ConnectionID)
+	if connectionID == "" {
+		connectionID = strings.TrimSpace(raw.ProfileID)
+	}
+	if connectionID == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, "connection_id is required")
+		return
+	}
+	proj, persist, err := owner.SetProviderModelSupport(connectionID, raw.ModelIDs)
+	if !persist.Applied {
+		s.sendModelProfileError(conn, raw.RequestID, err)
+		return
+	}
+	s.sendJSON(conn, s.providersCatalogPayload(raw.RequestID, proj, persist, err))
+}
+
 func (s *Server) handleDiscoverProviderModels(conn *websocket.Conn, raw clientMessage) {
 	owner := s.modelProfiles()
 	if owner == nil {
@@ -243,7 +268,7 @@ func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMe
 	})
 }
 
-func (s *Server) handleGetSessionProvider(conn *websocket.Conn, raw clientMessage) {
+func (s *Server) handleGetThreadRuntime(conn *websocket.Conn, raw clientMessage) {
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -253,17 +278,17 @@ func (s *Server) handleGetSessionProvider(conn *websocket.Conn, raw clientMessag
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(raw.SessionID)
 	}
-	sel, ok := owner.SessionProviderSelection(sessionID)
+	sel, ok := owner.ThreadRuntime(sessionID)
 	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeBindingNotFound, "session provider binding not found")
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeBindingNotFound, "thread runtime not found")
 		return
 	}
 	snap, _ := owner.SessionSnapshot(sessionID)
 	payload := map[string]any{
-		"type":       "session_provider",
+		"type":       "thread_runtime",
 		"request_id": raw.RequestID,
 		"agent_id":   sessionID,
-		"selection":  sel,
+		"runtime":    sel,
 	}
 	if snap.Launched != nil {
 		payload["launched"] = snap.Launched
@@ -271,7 +296,7 @@ func (s *Server) handleGetSessionProvider(conn *websocket.Conn, raw clientMessag
 	s.sendJSON(conn, payload)
 }
 
-func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientMessage) {
+func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage) {
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -281,33 +306,25 @@ func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientM
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(raw.SessionID)
 	}
-	connectionID := strings.TrimSpace(raw.ConnectionID)
-	if connectionID == "" {
-		connectionID = strings.TrimSpace(raw.ProfileID)
+	if raw.Runtime == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, "runtime is required")
+		return
 	}
-	_, snap, persist, err := owner.ActivateSessionProvider(sessionID, connectionID, raw.ModelID, strings.TrimSpace(raw.ReasoningEffort))
+	snap, persist, handoff, err := s.SetThreadRuntime(sessionID, *raw.Runtime)
 	if !persist.Applied {
 		s.sendModelProfileError(conn, raw.RequestID, err)
 		return
 	}
 	if snap.Current == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeBindingNotFound, "session provider binding not found after activate")
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeBindingNotFound, "thread runtime not found after switch")
 		return
-	}
-	// Truthful live-Codex semantics: the TUI has no external mutation protocol,
-	// so a Zen-initiated model/effort change on a live managed Codex Session
-	// runs the managed resume handoff (same thread, new identity). The handoff
-	// state is reported; the route activation above is authoritative either way.
-	handoff := codexHandoffState{}
-	if s.handoffTargetForActivation(sessionID, snap.Current) {
-		handoff = s.handoffManagedCodex(sessionID, snap.Current.ModelID, snap.Current.ReasoningEffort)
 	}
 	outcome, durable := modelprofiles.WirePersistFields(persist)
 	payload := map[string]any{
-		"type":       "session_provider_activated",
+		"type":       "thread_runtime_set",
 		"request_id": raw.RequestID,
 		"agent_id":   sessionID,
-		"selection": map[string]any{
+		"runtime": map[string]any{
 			"session_id":               snap.Current.SessionID,
 			"client":                   snap.Current.Client,
 			"connection_id":            snap.Current.ConnectionID,
@@ -331,6 +348,35 @@ func (s *Server) handleActivateSessionProvider(conn *websocket.Conn, raw clientM
 		payload["persistence_warning"] = err.Error()
 	}
 	s.sendJSON(conn, payload)
+}
+
+// SetThreadRuntime is the single daemon transaction for an acknowledged
+// current-thread runtime. Every transport must call this operation so live
+// Codex lane convergence and route publication cannot diverge.
+func (s *Server) SetThreadRuntime(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, codexHandoffState, error) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, fmt.Errorf("%w: Providers are not available", modelprofiles.ErrInvalid)
+	}
+	plan, err := owner.PrepareThreadRuntime(sessionID, choice)
+	if err != nil {
+		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, err
+	}
+	if _, ok := owner.ThreadRuntime(sessionID); !ok {
+		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, codexHandoffState{}, modelprofiles.ErrBindingNotFound
+	}
+	// Provider/model activation is a route swap, not a native CLI handoff.
+	// Keep the existing process and conversation alive: requests already
+	// admitted before the commit retain their old route snapshot, while later
+	// requests use the new binding. Native Codex restart/resume here used to
+	// turn a harmless Provider switch into an apparent Session exit.
+	handoff := codexHandoffState{State: codexHandoffSkipped, Message: "live Session retained; route switched without CLI restart"}
+	_, snap, persist, err := owner.CommitThreadRuntime(plan)
+	if !persist.Applied {
+		return modelprofiles.WireSessionSnapshot{}, persist, handoff, err
+	}
+	owner.SetSessionHandoffPending(plan.RouteID, false)
+	return snap, persist, handoff, err
 }
 
 func (s *Server) handleSetProviderCredential(conn *websocket.Conn, raw clientMessage) {

@@ -29,6 +29,7 @@ type Request struct {
 	ReasoningEffort      string                                 `json:"reasoning_effort,omitempty"`
 	ModelIDs             []string                               `json:"model_ids,omitempty"`
 	ProviderConnection   *modelprofiles.ProviderConnectionInput `json:"provider_connection,omitempty"`
+	Runtime              *modelprofiles.ThreadRuntimeChoice     `json:"runtime,omitempty"`
 	Generation           int64                                  `json:"generation,omitempty"` // internal CAS only; ignored on Provider activate
 	Operation            string                                 `json:"operation,omitempty"`
 	AgentID              string                                 `json:"agent_id,omitempty"`
@@ -100,7 +101,7 @@ type Response struct {
 	BrainWorkEvent     *brain.WorkEvent                         `json:"brain_work_event,omitempty"`
 	BrainWorkEvents    []brain.WorkEvent                        `json:"brain_work_events,omitempty"`
 	Providers          *modelprofiles.ProviderCatalogProjection `json:"providers,omitempty"`
-	SessionProvider    *modelprofiles.ProviderSessionSelection  `json:"session_provider,omitempty"`
+	ThreadRuntime      *modelprofiles.ThreadRuntimeSelection    `json:"thread_runtime,omitempty"`
 	SessionRoute       *modelprofiles.WireSessionSnapshot       `json:"session_route,omitempty"`
 	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
 }

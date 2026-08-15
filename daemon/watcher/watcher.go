@@ -2411,8 +2411,15 @@ func (w *Watcher) WaitForPaneProcessExit(sessionID string, processID int, timeou
 // WaitForPaneCommand waits until the pane's provider process executable base
 // matches commandBase (e.g. "codex") or the timeout elapses.
 func (w *Watcher) WaitForPaneCommand(sessionID, commandBase string, timeout time.Duration) bool {
+	_, ok := w.WaitForPaneCommandProcessID(sessionID, commandBase, timeout)
+	return ok
+}
+
+// WaitForPaneCommandProcessID proves the requested provider command and
+// returns the exact live process identity that satisfied the proof.
+func (w *Watcher) WaitForPaneCommandProcessID(sessionID, commandBase string, timeout time.Duration) (int, bool) {
 	if w == nil || w.targetProcessResolver == nil {
-		return false
+		return 0, false
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	commandBase = strings.TrimSpace(commandBase)
@@ -2420,11 +2427,11 @@ func (w *Watcher) WaitForPaneCommand(sessionID, commandBase string, timeout time
 	for {
 		if identity, ok := w.targetProcessResolver(sessionID); ok {
 			if commandExecutableBase(identity.Command) == commandBase {
-				return true
+				return identity.ProcessID, identity.ProcessID > 0
 			}
 		}
 		if !time.Now().Before(deadline) {
-			return false
+			return 0, false
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

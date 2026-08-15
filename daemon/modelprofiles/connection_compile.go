@@ -47,7 +47,7 @@ func executorFromClient(client string) string {
 // from a durable account connection or internal executor profile. modelOverride
 // and effortOverride are session-only and never written back to the catalog.
 // A non-empty effortOverride must be in the daemon-owned Codex vocabulary; the
-// target client model's support is admitted by the caller (ActivateSessionProvider).
+// target client model's support is admitted by the runtime transaction caller.
 func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride, effortOverride string) (Profile, error) {
 	conn = normalizeProfile(conn)
 	client := executorFromClient(clientOrExecutor)

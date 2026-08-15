@@ -66,7 +66,7 @@ import { ProvidersPresentation } from "../components/providers/ProvidersPresenta
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
   resolveComposerModelControl,
-  sessionModelSheetRows,
+  threadRuntimeRows,
 } from "../services/providers/sessionModelHelpers";
 import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
@@ -590,15 +590,11 @@ function ComposerStatesDemo() {
   const modelControl = {
     label: "claude-sonnet-4-5",
     accessibilityLabel: "Open model selection, claude-sonnet-4-5",
-    modelRequired: false,
-    preferredConnectionId: "c2",
   };
   const longModelControl = {
     label: "gpt-5.1-codex-max-longhaul-8k-context",
     accessibilityLabel:
       "Open model selection, gpt-5.1-codex-max-longhaul-8k-context",
-    modelRequired: false,
-    preferredConnectionId: "c1",
   };
   const [demoSheet, setDemoSheet] = useState<null | "routed">(null);
   const [demoModelId, setDemoModelId] = useState("deepseek-chat");
@@ -625,7 +621,6 @@ function ComposerStatesDemo() {
     connectionConnected: true,
     selection: demoSelection,
     refreshRequired: false,
-    preferredConnectionId: "c1",
   });
   const demoCatalog: ProvidersSnapshot = {
     revision: 1,
@@ -658,7 +653,7 @@ function ComposerStatesDemo() {
       c2: [{ id: "claude-sonnet-4-5", available: true, source: "bundled" }],
     },
   };
-  const demoRows = sessionModelSheetRows({
+  const demoRows = threadRuntimeRows({
     snapshot: demoCatalog,
     selection: demoSelection,
   });
@@ -982,12 +977,7 @@ function ComposerStatesDemo() {
         loading={false}
         activating={false}
         error={null}
-        selection={demoSelection}
         rows={demoRows}
-        modelRequired={false}
-        effortContract={null}
-        effortChoice=""
-        onEffortChange={NOOP}
         chrome={chrome}
         onClose={() => setDemoSheet(null)}
         onRetry={NOOP}
@@ -1113,6 +1103,7 @@ function ProvidersDemo() {
       )[0];
     if (!codex) return null;
     return {
+      purpose: "support" as const,
       client: "codex" as const,
       connection: codex,
       models: demo.catalog.models[codex.id] ?? [],

@@ -1,10 +1,22 @@
 package modelprofiles
 
 import (
+	_ "embed"
 	"fmt"
 	"sort"
 	"strings"
 )
+
+// codexCatalogBaseInstructions is the Codex CLI 0.147 model base instructions
+// reference text (codex-rs models-manager/prompt.md, Apache-2.0). The Codex
+// ModelInfo contract requires base_instructions (or model_messages.
+// instructions_template) on every model_catalog_json entry — the CLI exits at
+// config load when it is missing — and this is the exact fallback text Codex
+// itself uses for models without per-model instructions, so managed sessions
+// keep the stock Codex agent persona.
+//
+//go:embed codex_catalog_instructions.md
+var codexCatalogBaseInstructions string
 
 // ContractProvenanceCodexCatalog marks model metadata pinned from the Codex
 // CLI / OpenAI model catalog contract (versioned, evidence-based).
@@ -398,17 +410,39 @@ type CodexReasoningEffortPreset struct {
 	Description string `json:"description,omitempty"`
 }
 
+// CodexTruncationPolicyConfig is the Codex ModelInfo truncation_policy wire
+// shape: the tool-output truncation contract of the running model (mode is
+// "bytes" or "tokens"). Required by the Codex CLI >= 0.147 deserializer.
+type CodexTruncationPolicyConfig struct {
+	Mode  string `json:"mode"`
+	Limit int64  `json:"limit"`
+}
+
 // CodexModelCatalogWireEntry is the Codex ModelsResponse model entry shape
 // (codex model_catalog_json / GET /v1/models contract). Unknown models are
 // never projected here.
+//
+// The Codex CLI >= 0.147 ModelInfo serde contract requires every field below
+// that has no serde default: supported_in_api, priority, base_instructions,
+// support_verbosity, truncation_policy, supports_parallel_tool_calls,
+// experimental_supported_tools, and supported_reasoning_levels. Omitting any
+// of them makes codex exit at config load ("missing field ..."), which kills
+// the host tmux session and drives the brain host replacement loop.
 type CodexModelCatalogWireEntry struct {
-	Slug                     string                       `json:"slug"`
-	DisplayName              string                       `json:"display_name,omitempty"`
-	DefaultReasoningLevel    string                       `json:"default_reasoning_level,omitempty"`
-	SupportedReasoningLevels []CodexReasoningEffortPreset `json:"supported_reasoning_levels,omitempty"`
-	ContextWindow            int64                        `json:"context_window,omitempty"`
-	ShellType                string                       `json:"shell_type,omitempty"`
-	Visibility               string                       `json:"visibility,omitempty"`
+	Slug                       string                       `json:"slug"`
+	DisplayName                string                       `json:"display_name,omitempty"`
+	DefaultReasoningLevel      string                       `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels   []CodexReasoningEffortPreset `json:"supported_reasoning_levels"`
+	ContextWindow              int64                        `json:"context_window,omitempty"`
+	ShellType                  string                       `json:"shell_type,omitempty"`
+	Visibility                 string                       `json:"visibility,omitempty"`
+	SupportedInAPI             bool                         `json:"supported_in_api"`
+	Priority                   int                          `json:"priority"`
+	BaseInstructions           string                       `json:"base_instructions"`
+	SupportVerbosity           bool                         `json:"support_verbosity"`
+	TruncationPolicy           CodexTruncationPolicyConfig  `json:"truncation_policy"`
+	SupportsParallelToolCalls  bool                         `json:"supports_parallel_tool_calls"`
+	ExperimentalSupportedTools []string                     `json:"experimental_supported_tools"`
 }
 
 // CodexModelsResponse is the Codex-expected /v1/models + model_catalog_json
@@ -439,17 +473,31 @@ func codexEffortPresetDescription(effort string) string {
 }
 
 // codexWireEntryForModel projects one known model into the Codex wire shape.
+// Values mirror the Codex CLI 0.147 reference catalog: supported_in_api=true,
+// tokens-mode truncation at 10k, parallel tool calls for these models, no
+// experimental tools, and no verbosity surface (Zen does not route it).
 func codexWireEntryForModel(model string) (CodexModelCatalogWireEntry, bool) {
 	entry, ok := lookupCodexModelMetadata(model)
 	if !ok {
 		return CodexModelCatalogWireEntry{}, false
 	}
 	wire := CodexModelCatalogWireEntry{
-		Slug:          entry.Slug,
-		DisplayName:   entry.DisplayName,
-		ContextWindow: entry.Envelope.ContextWindowTokens,
-		ShellType:     "shell_command",
-		Visibility:    "list",
+		Slug:                       entry.Slug,
+		DisplayName:                entry.DisplayName,
+		ContextWindow:              entry.Envelope.ContextWindowTokens,
+		ShellType:                  "shell_command",
+		Visibility:                 "list",
+		SupportedInAPI:             true,
+		Priority:                   10,
+		BaseInstructions:           codexCatalogBaseInstructions,
+		SupportVerbosity:           false,
+		TruncationPolicy:           CodexTruncationPolicyConfig{Mode: "tokens", Limit: 10_000},
+		SupportsParallelToolCalls:  true,
+		ExperimentalSupportedTools: []string{},
+		// The Codex ModelInfo contract requires supported_reasoning_levels to
+		// be present; a nil slice would marshal as JSON null and fail parse,
+		// so the field always carries an explicit (possibly empty) sequence.
+		SupportedReasoningLevels: []CodexReasoningEffortPreset{},
 	}
 	if entry.Effort != nil {
 		wire.DefaultReasoningLevel = entry.Effort.defaultEffort

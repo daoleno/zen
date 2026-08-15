@@ -33,7 +33,7 @@ function snapshot(revision = 3): ProvidersSnapshot {
         advanced: false,
       },
     ],
-    defaults: { codex: { connection_id: "c1" } },
+    defaults: { codex: { connection_id: "c1", model_id: "model-a" } },
     presets: [],
     models: {},
   };

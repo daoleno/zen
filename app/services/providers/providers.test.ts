@@ -7,7 +7,7 @@ import {
   parseProviderConnectionTestResult,
   parseProviderModel,
   parseProvidersSnapshot,
-  parseProviderSessionSelection,
+  parseThreadRuntimeSelection,
   connectionsForSession,
   modelChoicesForSession,
   defaultClientsForConnection,
@@ -155,7 +155,7 @@ describe("Provider DTO parse", () => {
   });
 
   test("parses session selection and credential result without secrets", () => {
-    const selection = parseProviderSessionSelection({
+    const selection = parseThreadRuntimeSelection({
       session_id: "tmux:@1",
       client: "codex",
       connection_id: "c1",
@@ -181,7 +181,7 @@ describe("Provider DTO parse", () => {
   });
 
   test("session selection parses the Reasoning Effort projection", () => {
-    const selection = parseProviderSessionSelection({
+    const selection = parseThreadRuntimeSelection({
       session_id: "tmux:@1",
       client: "codex",
       connection_id: "c1",
@@ -204,7 +204,7 @@ describe("Provider DTO parse", () => {
     ]);
   });
 
-  test("activation replies parse the managed-Codex handoff state", () => {
+  test("runtime-switch replies parse the managed-Codex handoff state", () => {
     expect(parseCodexHandoffState({ state: "applied" })).toEqual({
       state: "applied",
     });
@@ -434,7 +434,7 @@ describe("Provider stale, reconnect, and ambiguity admission", () => {
     expect(owner.acceptCatalog(stale.token, 7)).toBe(false);
   });
 
-  test("ambiguous catalog and activation results lock until successful refresh", () => {
+  test("ambiguous catalog and runtime-switch results lock until successful refresh", () => {
     const owner = new ProviderRequestOwner();
     owner.rebind("server-a", "agent-a");
     const mutation = owner.admitCatalogMutation();
@@ -452,18 +452,18 @@ describe("Provider stale, reconnect, and ambiguity admission", () => {
     // Use a fresh owner so the admitted catalog write above does not overlap.
     const sessionOwner = new ProviderRequestOwner();
     sessionOwner.rebind("server-a", "agent-a");
-    const activation = sessionOwner.admitActivation();
-    expect(activation.ok).toBe(true);
-    if (!activation.ok) return;
-    sessionOwner.settleActivation(activation.token, {
+    const runtimeSwitch = sessionOwner.admitRuntimeSwitch();
+    expect(runtimeSwitch.ok).toBe(true);
+    if (!runtimeSwitch.ok) return;
+    sessionOwner.settleRuntimeSwitch(runtimeSwitch.token, {
       refreshRequired: true,
     });
-    expect(sessionOwner.admitActivation()).toMatchObject({ ok: false });
+    expect(sessionOwner.admitRuntimeSwitch()).toMatchObject({ ok: false });
     const sessionRefresh = sessionOwner.admitSessionLoad();
     expect(sessionRefresh.ok).toBe(true);
     if (!sessionRefresh.ok) return;
     expect(sessionOwner.acceptSession(sessionRefresh.token)).toBe(true);
-    expect(sessionOwner.admitActivation()).toMatchObject({ ok: true });
+    expect(sessionOwner.admitRuntimeSwitch()).toMatchObject({ ok: true });
   });
 
   test("ambiguous ordinary create remains blocked across reconnect until a fresh list", () => {
@@ -536,30 +536,6 @@ describe("Model sync and default binding policy", () => {
     expect(boundModelForConnection(null, "codex", "c1")).toBeNull();
   });
 
-  test("default without a model is the exact fail-closed state", () => {
-    const snapshot = providerSnapshot({
-      defaults: { codex: { connection_id: "c1" } },
-    });
-    expect(connectionRequiresModelSelection(snapshot, "codex", "c1")).toBe(
-      true,
-    );
-    // Non-default connection: no model needed until it becomes the default.
-    expect(connectionRequiresModelSelection(snapshot, "codex", "c2")).toBe(
-      false,
-    );
-    expect(
-      connectionRequiresModelSelection(
-        providerSnapshot({
-          defaults: {
-            codex: { connection_id: "c1", model_id: "deepseek-chat" },
-          },
-        }),
-        "codex",
-        "c1",
-      ),
-    ).toBe(false);
-    expect(connectionRequiresModelSelection(null, "codex", "c1")).toBe(false);
-  });
 
   test("support chips mark the gateway's exposed models", () => {
     const snapshot = providerSnapshot();
@@ -656,8 +632,8 @@ describe("Provider transport source contract", () => {
       "set_provider_default",
       "discover_provider_models",
       "set_provider_models",
-      "get_session_provider",
-      "activate_session_provider",
+      "get_thread_runtime",
+      "set_thread_runtime",
       "set_provider_credential",
     ]) {
       expect(source).toContain(`"${method}"`);

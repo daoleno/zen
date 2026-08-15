@@ -56,7 +56,7 @@ func TestCustomConnectionWithoutModelCannotBind(t *testing.T) {
 	}
 }
 
-func TestSetProviderDefaultAllowsEmptyModelBeforeDiscovery(t *testing.T) {
+func TestSetProviderDefaultPreservesCompleteSeedAndRejectsIncompleteSwitch(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "custom-gw", Name: "gateway.example", Client: ClientCodex,
@@ -66,25 +66,38 @@ func TestSetProviderDefaultAllowsEmptyModelBeforeDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Selecting a connection is a provider choice, not a model choice: with no
-	// synced models the default persists with an honest empty model instead of
-	// a fabricated placeholder.
-	proj, err = owner.SetProviderDefault(ClientCodex, "custom-gw", "", proj.Revision)
+	proj, err = owner.SetProviderDefault(ClientCodex, "custom-gw", "gpt-5", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, ok := proj.Defaults[ClientCodex]
-	if !ok || d.ConnectionID != "custom-gw" || d.ModelID != "" {
-		t.Fatalf("default=%#v want connection with empty model", proj.Defaults[ClientCodex])
+	proj, err = owner.SetProviderDefault(ClientCodex, "custom-gw", "", proj.Revision)
+	if err != nil {
+		t.Fatalf("same connection must preserve its complete seed: %v", err)
 	}
-	// Launch without any synced model still fails closed (no fabrication).
-	_, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")
-	if !errors.Is(err, ErrUpstreamModelRequired) {
+	if got := proj.Defaults[ClientCodex]; got.ConnectionID != "custom-gw" || got.ModelID != "gpt-5" {
+		t.Fatalf("preserved default=%#v", got)
+	}
+	proj, err = owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "other-gw", Name: "other.example", Client: ClientCodex,
+		PresetID: ProviderPresetCustom, BaseURL: "https://other.example/v1",
+		Advanced: true,
+	}, "", proj.Revision, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = owner.SetProviderDefault(ClientCodex, "other-gw", "", proj.Revision); !errors.Is(err, ErrUpstreamModelRequired) {
 		t.Fatalf("want ErrUpstreamModelRequired got %v", err)
+	}
+	current, projectErr := owner.ProjectProviders()
+	if projectErr != nil {
+		t.Fatal(projectErr)
+	}
+	if got := current.Defaults[ClientCodex]; got.ConnectionID != "custom-gw" || got.ModelID != "gpt-5" {
+		t.Fatalf("rejected switch mutated default=%#v", got)
 	}
 }
 
-func TestLaunchFallsBackToFirstSupportedModel(t *testing.T) {
+func TestLaunchRejectsExplicitDefaultThatIsNoLongerSupported(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "cf-api-fan", Name: "gateway.example", Client: ClientCodex,
@@ -124,21 +137,16 @@ func TestLaunchFallsBackToFirstSupportedModel(t *testing.T) {
 		t.Fatalf("wire model_id=%q", plan.Wire.ModelID)
 	}
 
-	// Selected model no longer supported (refresh dropped it): deterministic
-	// visible fallback to the first supported model, never a hard-coded gpt-5.
-	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "retired-model", proj.Revision)
-	if err != nil {
-		t.Fatal(err)
+	// An unsupported model cannot replace the complete default seed.
+	if _, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "retired-model", proj.Revision); !errors.Is(err, ErrUpstreamModelRequired) {
+		t.Fatalf("retired explicit default must be refused: %v", err)
 	}
 	plan, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.State.Binding.UpstreamModel != "codex-auto-review" {
-		t.Fatalf("fallback upstream_model=%q want codex-auto-review", plan.State.Binding.UpstreamModel)
-	}
-	if plan.Wire.ModelID != "codex-auto-review" {
-		t.Fatalf("fallback wire model_id=%q", plan.Wire.ModelID)
+	if plan.Wire.ModelID != "gpt-5.6-sol" {
+		t.Fatalf("refused update changed default model: %q", plan.Wire.ModelID)
 	}
 }
 
@@ -160,7 +168,7 @@ func TestCustomConnectionExplicitModelBinds(t *testing.T) {
 	}
 }
 
-func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
+func TestSetThreadRuntimeWithoutModelFailsClosed(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	a := codexResponsesProfile("a", "gpt-5", "up-a")
 	if _, err := owner.UpsertProfile(a, 0, true); err != nil {
@@ -181,9 +189,9 @@ func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Session activation with no model must not fabricate gpt-5 into the route.
-	_, _, _, err = owner.ActivateSessionProvider("s1", "custom-gw", "", "")
-	if !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("want ErrUpstreamModelRequired got %v", err)
+	_, _, _, err = owner.SetThreadRuntime("s1", ThreadRuntimeChoice{ConnectionID: "custom-gw", ModelID: "", Effect: ""})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid got %v", err)
 	}
 	// The session keeps its original binding untouched.
 	state, ok := owner.Table().Get("s1")
@@ -191,7 +199,7 @@ func TestActivateSessionProviderWithoutModelFailsClosed(t *testing.T) {
 		t.Fatalf("session binding changed after failed activate: %#v", state)
 	}
 	// Activation with an explicit discovered model succeeds.
-	state, _, persist, err := owner.ActivateSessionProvider("s1", "custom-gw", "gpt-5.6-sol", "")
+	state, _, persist, err := owner.SetThreadRuntime("s1", ThreadRuntimeChoice{ConnectionID: "custom-gw", ModelID: "gpt-5.6-sol", Effect: ""})
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate with model err=%v persist=%#v", err, persist)
 	}

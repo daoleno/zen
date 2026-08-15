@@ -61,7 +61,7 @@ import {
   ProviderError,
   PROVIDER_ERROR_CODES,
   ambiguousProviderMutation,
-  assertProviderActivationMatches,
+  assertThreadRuntimeMatches,
   classifyMutationPersistence,
   invalidProviderReply,
   newProviderRequestId,
@@ -70,20 +70,20 @@ import {
   parseProviderCredentialResult,
   parseProviderConnectionTestResult,
   parseProviderModelsResult,
-  parseProviderSessionSelection,
+  parseThreadRuntimeSelection,
   parseCodexHandoffState,
   parseProvidersSnapshot,
   providerErrorFromPayload,
   requireAppliedPersistence,
   type CreateSessionResult,
-  type ProviderActivationResult,
+  type ThreadRuntimeMutationResult,
   type ProviderClient,
   type ProviderConnectionInput,
   type ProviderConnectionTestResult,
   type ProviderCredentialResult,
   type ProviderDefaultInput,
   type ProviderModelsResult,
-  type ProviderSessionSelection,
+  type ThreadRuntimeSelection,
   type ProvidersMutationResult,
   type ProvidersSnapshot,
 } from "./providers";
@@ -1087,15 +1087,15 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  getSessionProvider(
+  getThreadRuntime(
     serverId: string,
     agentId: string,
-  ): Promise<ProviderSessionSelection> {
+  ): Promise<ThreadRuntimeSelection> {
     const requestId = newProviderRequestId();
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("session_provider", handleSelection);
+        this.off("thread_runtime", handleSelection);
         this.off("error", handleError);
       };
       const handleSelection = (payload: any) => {
@@ -1104,8 +1104,8 @@ export class MultiServerWebSocketClient {
         }
         cleanup();
         try {
-          const selection = parseProviderSessionSelection(
-            payload.selection,
+          const selection = parseThreadRuntimeSelection(
+            payload.runtime,
             agentId,
           );
           if (!selection) {
@@ -1147,12 +1147,12 @@ export class MultiServerWebSocketClient {
           ),
         );
       }, 15000);
-      this.on("session_provider", handleSelection);
+      this.on("thread_runtime", handleSelection);
       this.on("error", handleError);
       this.sendRequestNow(
         serverId,
         {
-          type: "get_session_provider",
+          type: "get_thread_runtime",
           request_id: requestId,
           agent_id: agentId,
         },
@@ -1162,21 +1162,18 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  activateSessionProvider(
+  setThreadRuntime(
     serverId: string,
     input: {
       agentId: string;
-      connectionId: string;
-      modelId: string;
-      /** Optional Reasoning Effort override; omitted = daemon preservation rule. */
-      reasoningEffort?: string;
+      runtime: import("./providers").ThreadRuntimeChoice;
     },
-  ): Promise<ProviderActivationResult> {
+  ): Promise<ThreadRuntimeMutationResult> {
     const requestId = newProviderRequestId();
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("session_provider_activated", handleActivated);
+        this.off("thread_runtime_set", handleActivated);
         this.off("error", handleError);
       };
       const handleActivated = (payload: any) => {
@@ -1186,13 +1183,13 @@ export class MultiServerWebSocketClient {
         cleanup();
         try {
           const persistence = requireAppliedPersistence(payload);
-          const selection = parseProviderSessionSelection(
-            payload.selection,
+          const selection = parseThreadRuntimeSelection(
+            payload.runtime,
             input.agentId,
           );
           if (
             !selection ||
-            !assertProviderActivationMatches(selection, input)
+            !assertThreadRuntimeMatches(selection, input)
           ) {
             reject(
               invalidProviderReply(
@@ -1202,7 +1199,7 @@ export class MultiServerWebSocketClient {
             return;
           }
           resolve({
-            selection,
+            runtime: selection,
             persistence,
             ...(parseCodexHandoffState(payload.handoff)
               ? { handoff: parseCodexHandoffState(payload.handoff) }
@@ -1238,19 +1235,21 @@ export class MultiServerWebSocketClient {
           ),
         );
       }, 20000);
-      this.on("session_provider_activated", handleActivated);
+      this.on("thread_runtime_set", handleActivated);
       this.on("error", handleError);
       this.sendRequestNow(
         serverId,
         {
-          type: "activate_session_provider",
+          type: "set_thread_runtime",
           request_id: requestId,
           agent_id: input.agentId,
-          connection_id: input.connectionId,
-          model_id: input.modelId,
-          ...(input.reasoningEffort?.trim()
-            ? { reasoning_effort: input.reasoningEffort.trim() }
-            : {}),
+          runtime: {
+            connection_id: input.runtime.connectionId,
+            model_id: input.runtime.modelId,
+            ...(input.runtime.effect?.trim()
+              ? { effect: input.runtime.effect.trim() }
+              : {}),
+          },
         },
         cleanup,
         reject,

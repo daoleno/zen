@@ -778,3 +778,106 @@ func TestBuiltinRestoreReverify(t *testing.T) {
 		t.Fatalf("restored=%#v", state)
 	}
 }
+
+// TestStartOwnerKeepsStaleContractRoutes reproduces the daemon-upgrade hazard:
+// a durable route written under an older client contract no longer verifies
+// under the current daemon authority. StartOwner must keep the stale route
+// live (restore it, report the drift, keep the loopback listener on the same
+// port) instead of refusing to start or dropping the Session — the running
+// CLI's own request identity stays authoritative and converges via adoption.
+func TestStartOwnerKeepsStaleContractRoutes(t *testing.T) {
+	profiles, routes, listener := stage2bRoot(t)
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath: profiles,
+		RoutesPath:   routes,
+		ListenerPath: listener,
+		Lookup:       readyLookup("x"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := Profile{
+		ID: "codex-main", Name: "Codex", ExecutorID: ExecutorCodex,
+		ProviderID: "openai", ProviderLabel: "OpenAI",
+		Protocol: ProtocolOpenAIResponses, ClientModel: "gpt-5.1", Model: "gpt-5.1",
+		ClientModelProvenance: ContractProvenanceBuiltinCatalog,
+		BaseURL:               "https://api.openai.com/v1",
+		AuthMode:              AuthModeBearerEnv,
+		CredentialEnv:         "OPENAI_API_KEY",
+	}
+	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := owner.PrepareLaunch(ExecutorCodex, profile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := owner.ListenAddr()
+	if addr == "" {
+		t.Fatal("first owner must be listening")
+	}
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	_ = owner.Close()
+
+	// Rewrite the durable route as an older daemon would have: client model
+	// gpt-5.1 with an upstream identity that is not in the current catalog.
+	raw, err := os.ReadFile(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := DecodeDurableSnapshot(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("want 1 persisted route, have %d", len(states))
+	}
+	states[0].Binding.UpstreamModel = "codex-auto-review"
+	states[0].Launched.UpstreamModel = "codex-auto-review"
+	stale, err := EncodeDurableSnapshot(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(routes, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	owner2, err := StartOwner(OwnerConfig{
+		ProfilesPath: profiles,
+		RoutesPath:   routes,
+		ListenerPath: listener,
+		Lookup:       readyLookup("x"),
+	})
+	if err != nil {
+		t.Fatalf("stale contract must not brick startup: %v", err)
+	}
+	defer func() { _ = owner2.Close() }()
+
+	notices := owner2.RestoreContractNotices()
+	if len(notices) != 1 || notices[0].SessionID != "s1" || !strings.Contains(notices[0].Reason, "codex-auto-review") {
+		t.Fatalf("drift notices=%#v", notices)
+	}
+	state, ok := owner2.Table().Get("s1")
+	if !ok || state.Binding.UpstreamModel != "codex-auto-review" {
+		t.Fatalf("stale route must stay live after restore: %#v", state.Binding)
+	}
+	// A live route keeps the loopback listener on the persisted port so the
+	// surviving CLI process keeps working (or errors naturally) after restart.
+	if owner2.ListenAddr() != addr {
+		t.Fatalf("listener port changed %s -> %s", addr, owner2.ListenAddr())
+	}
+	// Nothing was rewritten: the stale route is still durable as-is.
+	kept, err := os.ReadFile(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states2, err := DecodeDurableSnapshot(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states2) != 1 || states2[0].Binding.UpstreamModel != "codex-auto-review" {
+		t.Fatalf("route file must be untouched: %#v", states2)
+	}
+}

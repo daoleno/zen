@@ -52,6 +52,13 @@ func (controlProfileVerifier) VerifyProfileContract(profile modelprofiles.Profil
 	}, nil
 }
 
+func installControlThreadRuntimeSetter(app *controlApp, owner *modelprofiles.Owner) {
+	app.threadRuntimeSet = func(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
+		_, snapshot, persist, err := owner.SetThreadRuntime(sessionID, choice)
+		return snapshot, persist, err
+	}
+}
+
 func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
@@ -73,6 +80,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 		profiles: owner,
 		stateDir: t.TempDir(),
 	}
+	installControlThreadRuntimeSetter(app, owner)
 
 	profile := modelprofiles.Profile{
 		ID: "codex-main", Name: "Codex Main", ExecutorID: modelprofiles.ExecutorCodex,
@@ -131,14 +139,16 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	}
 
 	cas := app.HandleControlRequest(control.Request{
-		Type: "session_provider_activate", AgentID: agentID, ConnectionID: "missing-connection",
+		Type: "thread_runtime_set", AgentID: agentID,
+		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: "missing-connection", ModelID: "up-2"},
 	})
 	if cas.OK || cas.Error == nil || cas.Error.Code != modelprofiles.CodeProfileNotFound {
 		t.Fatalf("cas=%#v", cas)
 	}
 
 	act := app.HandleControlRequest(control.Request{
-		Type: "session_provider_activate", AgentID: agentID, ConnectionID: alt.ID,
+		Type: "thread_runtime_set", AgentID: agentID,
+		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: alt.ID, ModelID: alt.Model},
 	})
 	if !act.OK || act.SessionRoute == nil || act.Binding == nil {
 		t.Fatalf("activate=%#v", act)
@@ -163,7 +173,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 		t.Fatalf("spawn persistence=%#v durable=%v", spawn.PersistenceOutcome, spawn.PersistenceDurable)
 	}
 
-	get := app.HandleControlRequest(control.Request{Type: "session_provider_get", AgentID: agentID})
+	get := app.HandleControlRequest(control.Request{Type: "thread_runtime_get", AgentID: agentID})
 	if !get.OK || get.SessionRoute == nil {
 		t.Fatalf("get=%#v", get)
 	}
@@ -213,6 +223,7 @@ func TestControlSpawnCommitPersistFailureCleansAgentBinding(t *testing.T) {
 		profiles: owner,
 		stateDir: t.TempDir(),
 	}
+	installControlThreadRuntimeSetter(app, owner)
 	var saves atomic.Int64
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "before_rename" && saves.Add(1) == 2 {
@@ -236,7 +247,7 @@ func TestControlSpawnCommitPersistFailureCleansAgentBinding(t *testing.T) {
 	}
 }
 
-func TestControlActivateAppliedButNotDurableKeepsSession(t *testing.T) {
+func TestControlThreadRuntimeAppliedButNotDurableKeepsSession(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -276,6 +287,7 @@ func TestControlActivateAppliedButNotDurableKeepsSession(t *testing.T) {
 		profiles: owner,
 		stateDir: t.TempDir(),
 	}
+	installControlThreadRuntimeSetter(app, owner)
 	spawn := app.HandleControlRequest(control.Request{
 		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
@@ -291,7 +303,8 @@ func TestControlActivateAppliedButNotDurableKeepsSession(t *testing.T) {
 		return nil
 	})
 	act := app.HandleControlRequest(control.Request{
-		Type: "session_provider_activate", AgentID: agentID, ConnectionID: alt.ID,
+		Type: "thread_runtime_set", AgentID: agentID,
+		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: alt.ID, ModelID: alt.Model},
 	})
 	owner.RoutesFile().SetPersistHook(nil)
 	if !act.OK || act.SessionRoute == nil || act.Binding == nil || act.Binding.ConnectionID != alt.ID {
@@ -323,6 +336,7 @@ func TestControlCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = owner.Close() })
 	app := &controlApp{profiles: owner, stateDir: t.TempDir()}
+	installControlThreadRuntimeSetter(app, owner)
 
 	profile := modelprofiles.Profile{
 		ID: "codex-main", Name: "Codex Main", ExecutorID: modelprofiles.ExecutorCodex,
@@ -382,7 +396,7 @@ func TestControlCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 
 	setDef := app.HandleControlRequest(control.Request{
 		Type: "provider_set_default", ExecutorID: modelprofiles.ExecutorCodex,
-		ProfileID: profile.ID, Revision: 2,
+		ProfileID: profile.ID, ModelID: "up-2", Revision: 2,
 	})
 	assertApplied(setDef)
 	if setDef.Providers.Defaults[modelprofiles.ExecutorCodex].ConnectionID != profile.ID {
@@ -436,7 +450,7 @@ func TestControlUpsertUnknownClientContractRejected(t *testing.T) {
 	}
 }
 
-func TestControlActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
+func TestControlThreadRuntimeLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 	root := t.TempDir()
 	profiles := filepath.Join(root, "model-profiles.toml")
 	routes := filepath.Join(root, "route-bindings.json")
@@ -469,6 +483,7 @@ func TestControlActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &controlApp{profiles: owner, stateDir: t.TempDir()}
+	installControlThreadRuntimeSetter(app, owner)
 	rev := int64(1)
 	for i := 1; i <= modelprofiles.MaxRouteHistoryEvents+8; i++ {
 		p := base
@@ -484,7 +499,8 @@ func TestControlActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 			t.Fatal("missing")
 		}
 		act := app.HandleControlRequest(control.Request{
-			Type: "session_provider_activate", AgentID: "tmux:@trim", ConnectionID: p.ID,
+			Type: "thread_runtime_set", AgentID: "tmux:@trim",
+			Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: p.ID, ModelID: p.Model},
 		})
 		if !act.OK || act.SessionRoute == nil || act.SessionRoute.Launched == nil {
 			t.Fatalf("activate i=%d %#v", i, act)
@@ -507,7 +523,7 @@ func TestControlActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = owner2.Close() })
 	app2 := &controlApp{profiles: owner2, stateDir: t.TempDir()}
-	get := app2.HandleControlRequest(control.Request{Type: "session_provider_get", AgentID: "tmux:@trim"})
+	get := app2.HandleControlRequest(control.Request{Type: "thread_runtime_get", AgentID: "tmux:@trim"})
 	if !get.OK || get.SessionRoute == nil || get.SessionRoute.Launched == nil {
 		t.Fatalf("get after restart %#v", get)
 	}

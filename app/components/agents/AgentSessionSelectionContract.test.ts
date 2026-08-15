@@ -43,9 +43,15 @@ describe("AgentSessionSelectionBar chrome", () => {
 });
 
 describe("AgentSessionRow selection contract", () => {
-  test("long press exists only in normal mode; tap toggles in selection mode", () => {
-    expect(rowSource).toContain("onLongPress={inSelectionMode ? undefined : onLongPress}");
+  test("long press stays installed; tap toggles in selection mode", () => {
+    expect(rowSource).toContain("onLongPress={onLongPress}");
     expect(rowSource).toContain("onPress={inSelectionMode ? onToggleSelection : onPress}");
+  });
+
+  test("keeps the long-press handler installed through press release", () => {
+    expect(rowSource).toContain("onLongPress={onLongPress}");
+    expect(containerSource).toContain("if (selectionMode)");
+    expect(containerSource).toContain("return;");
   });
 
   test("becomes a checkbox in selection mode and stays a button otherwise", () => {
@@ -96,6 +102,15 @@ describe("Sessions list integration contract", () => {
     expect(listSource).toContain("pruneSessionSelection");
     expect(listSource).toContain("authoritativeAgentKeySet");
     expect(listSource).toContain("batch.settleDisappeared");
+  });
+
+  test("batch submission uses authoritative selected Sessions, not visible rows", () => {
+    expect(listSource).toContain(
+      "state.agents.filter((agent) => selectedKeys.has(agent.key))",
+    );
+    expect(listSource).not.toContain(
+      "sortedAgents.filter((agent) => selectedKeys.has(agent.key))",
+    );
   });
 
   test("one confirmation with the exact count, exact IDs submitted", () => {

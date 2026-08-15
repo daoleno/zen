@@ -55,14 +55,16 @@ type ProviderConnection struct {
 // ProviderDefault is the future-launch default for one product client.
 type ProviderDefault struct {
 	ConnectionID string `json:"connection_id"`
-	ModelID      string `json:"model_id,omitempty"`
+	ModelID      string `json:"model_id"`
 }
 
 // ProviderModelEntry is a catalog/discovery model id with availability only.
 type ProviderModelEntry struct {
-	ID        string `json:"id"`
-	Available bool   `json:"available"`
-	Source    string `json:"source"` // bundled | discovered | lkg | manual
+	ID                     string   `json:"id"`
+	Available              bool     `json:"available"`
+	Source                 string   `json:"source"` // bundled | discovered | lkg | manual
+	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
 	// Known marks daemon-owned metadata for managed Codex. Unknown gateway-only
 	// models are clearly unsupported (never masqueraded under another identity).
 	Known bool `json:"known,omitempty"`
@@ -90,11 +92,11 @@ type ProviderConnectionInput struct {
 	Advanced bool   `json:"advanced,omitempty"`
 }
 
-// ProviderSessionSelection is the Plus-menu current-Session projection.
+// ThreadRuntimeSelection is the Plus-menu current-Session projection.
 // Ordinary public wire omits provider_id. Reasoning Effort fields mirror
 // WireBinding: the current override plus the client model's daemon-owned
 // effort contract (absent for unsupported clients/models).
-type ProviderSessionSelection struct {
+type ThreadRuntimeSelection struct {
 	SessionID              string   `json:"session_id"`
 	Client                 string   `json:"client"`
 	ConnectionID           string   `json:"connection_id"`
@@ -106,6 +108,27 @@ type ProviderSessionSelection struct {
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
 	CredentialReady        bool     `json:"credential_ready"`
 	HotSwitchable          bool     `json:"hot_switchable"`
+}
+
+// ThreadRuntimeChoice is the complete atomic runtime requested for one
+// existing Zen thread lane. Connection, model, and optional effect are
+// validated together; callers cannot mutate any component independently.
+type ThreadRuntimeChoice struct {
+	ConnectionID string `json:"connection_id"`
+	ModelID      string `json:"model_id"`
+	Effect       string `json:"effect,omitempty"`
+}
+
+// PreparedThreadRuntime is an opaque, generation-bound runtime transaction.
+// The target has been fully validated but is not acknowledged or persisted
+// until CommitThreadRuntime succeeds.
+type PreparedThreadRuntime struct {
+	SessionID          string
+	RouteID            string
+	Previous           ThreadRuntimeChoice
+	Target             ThreadRuntimeChoice
+	expectedGeneration int64
+	targetProfile      Profile
 }
 
 // ProviderCredentialResult is the write-only credential mutation reply.

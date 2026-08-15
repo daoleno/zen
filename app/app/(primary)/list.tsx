@@ -393,8 +393,8 @@ export default function InboxScreen() {
   );
 
   const selectedAgents = useMemo(
-    () => sortedAgents.filter((agent) => selectedKeys.has(agent.key)),
-    [selectedKeys, sortedAgents],
+    () => state.agents.filter((agent) => selectedKeys.has(agent.key)),
+    [selectedKeys, state.agents],
   );
 
   const runTerminateSelection = useCallback(() => {

@@ -72,7 +72,7 @@ export function AgentSessionRow({
       ]}
       preset="card"
       onPress={inSelectionMode ? onToggleSelection : onPress}
-      onLongPress={inSelectionMode ? undefined : onLongPress}
+      onLongPress={onLongPress}
       delayLongPress={400}
       disabled={rowDisabled}
       accessibilityRole={inSelectionMode ? 'checkbox' : 'button'}

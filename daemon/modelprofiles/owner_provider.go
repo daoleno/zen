@@ -65,6 +65,15 @@ func stampModelKnown(entries []ProviderModelEntry, executorID string) []Provider
 	out := make([]ProviderModelEntry, 0, len(entries))
 	for _, entry := range entries {
 		entry.Known = !codex || codexModelKnown(entry.ID)
+		if codex && entry.Known {
+			entry.ReasoningEffortDefault = codexEffortDefault(entry.ID)
+			for _, contract := range CodexEffortContractSnapshots() {
+				if contract.ClientModel == entry.ID {
+					entry.ReasoningEfforts = append([]string(nil), contract.Supported...)
+					break
+				}
+			}
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -265,7 +274,11 @@ func (o *Owner) resolveSupportedLaunchModelLocked(profile Profile) (Profile, boo
 			continue
 		}
 		supportedSet[entry.ID] = struct{}{}
-		if firstSupported == "" {
+		// The deterministic fallback may only select an identity the daemon
+		// can actually compile (a provider may advertise review/audio models
+		// that are not in the Zen Codex catalog); the explicit candidate check
+		// below still honors any discovered id the client selected.
+		if firstSupported == "" && codexModelKnown(entry.ID) {
 			firstSupported = entry.ID
 		}
 	}
@@ -640,7 +653,7 @@ func (o *Owner) CodexRoutedDefault() bool {
 // model: modelID is the client's explicit selection (chosen from the synced
 // support allowlist) and is never fabricated from a preset or catalog. An empty
 // modelID preserves the existing client-selected model when the same connection
-// stays default, and clears it when the connection changes.
+// stays default. A different connection must provide its model atomically.
 func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID string, revision int64) (ProviderCatalogProjection, error) {
 	client := clientFromExecutor(clientOrExecutor)
 	connectionID = normalizeID(connectionID)
@@ -651,12 +664,14 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 			return ProviderCatalogProjection{}, err
 		}
 		if modelID == "" {
-			// Keep the client's recorded selection when the same connection
-			// remains the default; a new default connection starts without a
-			// fabricated model until the client chooses one.
+			// Keep a complete existing seed only when the same connection remains
+			// default. A different connection must provide its model atomically.
 			currentConn, currentModel := o.store.ClientDefault(client)
 			if normalizeID(currentConn) == connectionID {
 				modelID = normalizeSpace(currentModel)
+			}
+			if modelID == "" {
+				return ProviderCatalogProjection{}, fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
 			}
 		}
 		if modelID != "" {
@@ -669,6 +684,12 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 			// launch path resolves a deterministic supported model instead.
 			if target.ModelPlaceholder {
 				return ProviderCatalogProjection{}, ErrUpstreamModelRequired
+			}
+			o.mu.Lock()
+			err = o.activationModelAdmittedLocked(raw, target.Model)
+			o.mu.Unlock()
+			if err != nil {
+				return ProviderCatalogProjection{}, err
 			}
 		}
 	}
@@ -722,6 +743,20 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 		id = normalizeSpace(id)
 		if id != "" {
 			enabledSet[id] = struct{}{}
+		}
+	}
+	for _, client := range []string{ClientCodex, ClientClaude} {
+		defaultConnectionID, defaultModelID := o.store.ClientDefault(client)
+		if normalizeID(defaultConnectionID) != connectionID {
+			continue
+		}
+		if _, enabled := enabledSet[normalizeSpace(defaultModelID)]; !enabled {
+			o.mu.Unlock()
+			return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf(
+				"%w: choose another complete default runtime before disabling model %q",
+				ErrUpstreamModelRequired,
+				defaultModelID,
+			)
 		}
 	}
 	// The reference catalog is the full projected id set (trusted + discovered
@@ -838,14 +873,14 @@ func (o *Owner) ClearProviderCredential(connectionID string) (ProviderCredential
 	}, nil
 }
 
-// SessionProviderSelection returns the Plus-menu projection for a Session.
-func (o *Owner) SessionProviderSelection(sessionID string) (ProviderSessionSelection, bool) {
+// ThreadRuntime returns the Plus-menu projection for a Session.
+func (o *Owner) ThreadRuntime(sessionID string) (ThreadRuntimeSelection, bool) {
 	snap, ok := o.SessionSnapshot(sessionID)
 	if !ok || snap.Current == nil {
-		return ProviderSessionSelection{}, false
+		return ThreadRuntimeSelection{}, false
 	}
 	c := snap.Current
-	return ProviderSessionSelection{
+	return ThreadRuntimeSelection{
 		SessionID:              c.SessionID,
 		Client:                 c.Client,
 		ConnectionID:           c.ConnectionID,
@@ -966,8 +1001,8 @@ func (o *Owner) AdoptSessionModel(routeID, modelID, effortOverride string, effor
 	return nil
 }
 
-// ActivateSessionProvider atomically activates Provider+model (+ optional
-// Reasoning Effort) for the next admitted request on the existing routed
+// SetThreadRuntime atomically activates Provider+model (+ optional Effect)
+// for the next admitted request on the existing routed
 // Session (same RouteID). The model/effort override is ephemeral: catalog
 // connection, defaults, revision, and other Sessions are never mutated.
 // Generation CAS is internal. The selected model must be admitted by the
@@ -982,36 +1017,37 @@ func (o *Owner) AdoptSessionModel(routeID, modelID, effortOverride string, effor
 //     the user's effort; incompatible switches fall back to the safe default.
 //   - effortOverride set: must be in the daemon Codex vocabulary AND supported
 //     by the target client model; otherwise the activation fails inline.
-func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID, effortOverride string) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (PreparedThreadRuntime, error) {
 	if o == nil || !o.started {
-		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+		return PreparedThreadRuntime{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
 	sessionID = strings.TrimSpace(sessionID)
-	connectionID = normalizeID(connectionID)
-	modelID = normalizeSpace(modelID)
-	effortOverride = normalizeID(effortOverride)
+	connectionID := normalizeID(choice.ConnectionID)
+	modelID := normalizeSpace(choice.ModelID)
+	effortOverride := normalizeID(choice.Effect)
+	if connectionID == "" || modelID == "" {
+		return PreparedThreadRuntime{}, fmt.Errorf("%w: runtime connection_id and model_id are required", ErrInvalid)
+	}
 
 	state, ok := o.table.Get(sessionID)
 	if !ok {
-		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
+		return PreparedThreadRuntime{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
 	}
 	raw, err := o.GetProfile(connectionID)
 	if err != nil {
-		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+		return PreparedThreadRuntime{}, err
 	}
-	beforeRev := o.Catalog().Revision
-	beforeModel := normalizeSpace(raw.Model)
 
 	target, err := CompileConnectionTarget(raw, state.Binding.ExecutorID, modelID, effortOverride)
 	if err != nil {
-		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+		return PreparedThreadRuntime{}, err
 	}
 	if !target.ModelPlaceholder {
 		o.mu.Lock()
 		err = o.activationModelAdmittedLocked(raw, target.Model)
 		o.mu.Unlock()
 		if err != nil {
-			return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+			return PreparedThreadRuntime{}, err
 		}
 	}
 	// Explicit effort: admit against the TARGET model's daemon-owned contract
@@ -1022,7 +1058,7 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID, effort
 	// invalid value).
 	if effortOverride != "" {
 		if !codexEffortSupported(target.ClientModel, effortOverride) {
-			return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: client model %s does not support effort %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
+			return PreparedThreadRuntime{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effortOverride)
 		}
 	} else if currentEffort := normalizeID(state.Binding.ReasoningEffort); currentEffort != "" {
 		if codexEffortSupported(target.ClientModel, currentEffort) {
@@ -1032,7 +1068,34 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID, effort
 		// Incompatible: fall through with an empty override (model default).
 	}
 	target.ReasoningEffort = effortOverride
-	next, snap, persist, err := o.activateCompiledProfile(sessionID, target, state.Generation)
+	return PreparedThreadRuntime{
+		SessionID: sessionID,
+		RouteID:   state.Binding.RouteID,
+		Previous: ThreadRuntimeChoice{
+			ConnectionID: state.Binding.ProfileID,
+			ModelID:      state.Binding.ClientModel,
+			Effect:       state.Binding.ReasoningEffort,
+		},
+		Target: ThreadRuntimeChoice{
+			ConnectionID: connectionID,
+			ModelID:      target.ClientModel,
+			Effect:       effortOverride,
+		},
+		expectedGeneration: state.Generation,
+		targetProfile:      target,
+	}, nil
+}
+
+// CommitThreadRuntime publishes one previously prepared target. Generation
+// CAS prevents a stale process handoff from overwriting a newer runtime.
+func (o *Owner) CommitThreadRuntime(plan PreparedThreadRuntime) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+	beforeRev := o.Catalog().Revision
+	raw, err := o.GetProfile(plan.Target.ConnectionID)
+	if err != nil {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+	}
+	beforeModel := normalizeSpace(raw.Model)
+	next, snap, persist, err := o.activateCompiledProfile(plan.SessionID, plan.targetProfile, plan.expectedGeneration)
 	if !persist.Applied {
 		return SessionRouteState{}, WireSessionSnapshot{}, persist, err
 	}
@@ -1040,8 +1103,18 @@ func (o *Owner) ActivateSessionProvider(sessionID, connectionID, modelID, effort
 	if o.Catalog().Revision != beforeRev {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: activate must not mutate provider catalog", ErrInvalid)
 	}
-	if got, gerr := o.GetProfile(connectionID); gerr == nil && normalizeSpace(got.Model) != beforeModel {
+	if got, gerr := o.GetProfile(plan.Target.ConnectionID); gerr == nil && normalizeSpace(got.Model) != beforeModel {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: activate must not mutate connection model", ErrInvalid)
 	}
 	return next, snap, persist, err
+}
+
+// SetThreadRuntime validates and commits one runtime without process staging.
+// Server-managed live Codex Sessions use Prepare/Commit around lane handoff.
+func (o *Owner) SetThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+	plan, err := o.PrepareThreadRuntime(sessionID, choice)
+	if err != nil {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
+	}
+	return o.CommitThreadRuntime(plan)
 }

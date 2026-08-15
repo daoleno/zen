@@ -8,16 +8,10 @@ import { TypeScale } from "../../../constants/tokens";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
   ProviderError,
-  ProviderSessionSelection,
+  ThreadRuntimeChoice,
 } from "../../../services/providers";
-import type {
-  ProviderPickerModelRow,
-  SessionEffortContract,
-} from "../../../services/providers/sessionModelHelpers";
-import {
-  SessionModelSheet,
-  type SessionModelChoice,
-} from "../../providers/SessionModelSheet";
+import type { ProviderPickerModelRow } from "../../../services/providers/sessionModelHelpers";
+import { SessionModelSheet } from "../../providers/SessionModelSheet";
 import { GitDiffSheet } from "../GitDiffSheet";
 import { NewTerminalSheet } from "../NewTerminalSheet";
 import { SessionResourceSheet } from "../SessionResourceSheet";
@@ -38,14 +32,7 @@ export interface TerminalScreenOverlaysProps {
   routeSheetLoading: boolean;
   routeSheetActivating: boolean;
   routeSheetError?: ProviderError | string | null;
-  routeSheetSelection?: ProviderSessionSelection | null;
   routeSheetRows: ProviderPickerModelRow[];
-  routeSheetModelRequired: boolean;
-  routeSheetEffortContract?: SessionEffortContract | null;
-  routeSheetEffortChoice?: string;
-  routeSheetEffortDisabled?: boolean;
-  routeSheetHandoffWarning?: string | null;
-  onRouteSheetEffortChange?(value: string): void;
   createDurabilityWarning?: string | null;
   onDismissCreateDurabilityWarning?(): void;
   creatingSession: boolean;
@@ -68,7 +55,7 @@ export interface TerminalScreenOverlaysProps {
   onRetryResourceSheet(): void;
   onCloseRouteSheet(): void;
   onRetryRouteSheet(): void;
-  onActivateSessionModel(choice: SessionModelChoice): void;
+  onActivateSessionModel(choice: ThreadRuntimeChoice): void;
   onOpenModel?(): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
@@ -92,14 +79,7 @@ export function TerminalScreenOverlays({
   routeSheetLoading,
   routeSheetActivating,
   routeSheetError,
-  routeSheetSelection,
   routeSheetRows,
-  routeSheetModelRequired,
-  routeSheetEffortContract,
-  routeSheetEffortChoice,
-  routeSheetEffortDisabled,
-  routeSheetHandoffWarning,
-  onRouteSheetEffortChange,
   createDurabilityWarning,
   onDismissCreateDurabilityWarning,
   creatingSession,
@@ -178,14 +158,7 @@ export function TerminalScreenOverlays({
         loading={routeSheetLoading}
         activating={routeSheetActivating}
         error={routeSheetError}
-        selection={routeSheetSelection}
         rows={routeSheetRows}
-        modelRequired={routeSheetModelRequired}
-        effortContract={routeSheetEffortContract}
-        effortChoice={routeSheetEffortChoice}
-        effortDisabled={routeSheetEffortDisabled}
-        onEffortChange={(value) => onRouteSheetEffortChange?.(value)}
-        handoffWarning={routeSheetHandoffWarning}
         chrome={chrome}
         onClose={onCloseRouteSheet}
         onRetry={onRetryRouteSheet}

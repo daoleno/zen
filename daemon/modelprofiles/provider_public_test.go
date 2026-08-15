@@ -165,7 +165,7 @@ func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	}
 }
 
-func TestActivateSessionProviderUsesCurrentGenerationAtomically(t *testing.T) {
+func TestSetThreadRuntimeUsesCurrentGenerationAtomically(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	a := codexResponsesProfile("a", "gpt-5", "up-a")
 	b := codexResponsesProfile("b", "gpt-5", "up-b")
@@ -184,7 +184,7 @@ func TestActivateSessionProviderUsesCurrentGenerationAtomically(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "s1"); err != nil {
 		t.Fatal(err)
 	}
-	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "up-b", "")
+	state, snap, persist, err := owner.SetThreadRuntime("s1", ThreadRuntimeChoice{ConnectionID: b.ID, ModelID: "up-b", Effect: ""})
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate err=%v persist=%#v", err, persist)
 	}
@@ -463,15 +463,10 @@ func TestCustomDefaultDoesNotFabricateDiscoveredModel(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("codex-auto", []string{"deepseek-v4-flash"}, nil)
 	owner.mu.Unlock()
-	// The gateway never owns a default model: selecting the connection with an
-	// empty model must not fabricate the first discovered id into the client
-	// selection.
-	proj, err := owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d, ok := proj.Defaults[ClientCodex]; !ok || d.ModelID != "" {
-		t.Fatalf("default fabricated a model: %#v", proj.Defaults[ClientCodex])
+	// Settings must select the exact discovered model atomically; an empty
+	// model is refused rather than fabricated.
+	if _, err := owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision); err == nil {
+		t.Fatal("empty default runtime was accepted")
 	}
 	// Launch still resolves deterministically from the support allowlist.
 	plan, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex")

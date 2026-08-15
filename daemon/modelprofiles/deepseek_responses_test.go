@@ -436,7 +436,7 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	}
 }
 
-func TestActivateSessionProviderDoesNotMutateCatalog(t *testing.T) {
+func TestSetThreadRuntimeDoesNotMutateCatalog(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	a := codexResponsesProfile("a", "gpt-5", "up-a")
 	if _, err := owner.UpsertProfile(a, 0, true); err != nil {
@@ -458,7 +458,7 @@ func TestActivateSessionProviderDoesNotMutateCatalog(t *testing.T) {
 	}
 	beforeRev := owner.Catalog().Revision
 	beforeModel := b.Model
-	state, snap, persist, err := owner.ActivateSessionProvider("s1", b.ID, "session-only-model", "")
+	state, snap, persist, err := owner.SetThreadRuntime("s1", ThreadRuntimeChoice{ConnectionID: b.ID, ModelID: "session-only-model", Effect: ""})
 	if err != nil || !persist.Applied {
 		t.Fatalf("activate err=%v persist=%#v", err, persist)
 	}

@@ -3,7 +3,6 @@ package modelprofiles
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,11 +55,14 @@ func TestNormalizeResponsesPortableHistoryStripsOpaqueKeepsTextTools(t *testing.
 	}
 }
 
-func TestNormalizeResponsesPortableHistoryFailsClosedUnknownType(t *testing.T) {
+func TestNormalizeResponsesPortableHistoryPreservesUnknownType(t *testing.T) {
 	in := []byte(`{"input":[{"type":"vendor_secret_item","payload":"x"}]}`)
-	_, _, err := normalizePortableHistoryBody(RouteProtocolResponses, in)
-	if !errors.Is(err, ErrRequestBodyNotPortable) {
-		t.Fatalf("err=%v", err)
+	out, _, err := normalizePortableHistoryBody(RouteProtocolResponses, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "vendor_secret_item") || !strings.Contains(string(out), "payload") {
+		t.Fatalf("unknown item was lost: %s", out)
 	}
 }
 
@@ -149,7 +151,7 @@ func TestPortableHistoryStickySurvivesDurableRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored := NewRouteTable()
-	if err := restored.Restore(states, registerAllow(registerAllow(nil, a), b)); err != nil {
+	if _, err := restored.Restore(states, registerAllow(registerAllow(nil, a), b)); err != nil {
 		t.Fatal(err)
 	}
 	again, ok := restored.Get("sticky")
@@ -161,11 +163,14 @@ func TestPortableHistoryStickySurvivesDurableRestore(t *testing.T) {
 	}
 }
 
-func TestNormalizeAnthropicPortableHistoryFailsClosedUnknownType(t *testing.T) {
+func TestNormalizeAnthropicPortableHistoryPreservesUnknownType(t *testing.T) {
 	in := []byte(`{"messages":[{"role":"assistant","content":[{"type":"vendor_memory","data":"x"}]}]}`)
-	_, _, err := normalizePortableHistoryBody(RouteProtocolAnthropicMessages, in)
-	if !errors.Is(err, ErrRequestBodyNotPortable) {
-		t.Fatalf("err=%v", err)
+	out, _, err := normalizePortableHistoryBody(RouteProtocolAnthropicMessages, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "vendor_memory") || !strings.Contains(string(out), "data") {
+		t.Fatalf("unknown block was lost: %s", out)
 	}
 }
 

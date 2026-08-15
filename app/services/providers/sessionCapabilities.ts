@@ -53,23 +53,10 @@ export function capabilityProviderDisagreementMessage(input: {
 }): string | null {
   if (!input.managed) return null;
   if (!input.selectionFound) {
-    return "The daemon advertised a managed Model, but no Session Provider selection was found. Refresh before relying on this Session.";
+    return "The daemon advertised a managed Model, but no Thread runtime was found. Refresh before relying on this Session.";
   }
   if (input.activeSwitch && !input.hotSwitchable) {
     return "The daemon advertised Model switching, but this Session is read-only. Refresh before activating.";
   }
   return null;
-}
-
-export function isMissingSessionProviderError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code =
-    "code" in error && typeof (error as { code?: unknown }).code === "string"
-      ? (error as { code: string }).code
-      : "";
-  return (
-    code === "route_binding_not_found" ||
-    code === "route_binding_not_routed" ||
-    code === "model_profiles_unavailable"
-  );
 }

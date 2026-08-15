@@ -93,7 +93,7 @@ func TestNonOpenCodeProvidersFlowStableIDInPlaceDeltas(t *testing.T) {
 			// The second poll carries the stable-ID in-place update; the full
 			// fingerprint path must send a delta with the upserted event.
 			var delta struct {
-				Type    string                     `json:"type"`
+				Type    string                        `json:"type"`
 				Upserts []work.CodexConversationEvent `json:"upserts"`
 			}
 			if err := conn.ReadJSON(&delta); err != nil {
@@ -182,7 +182,7 @@ func TestBrainThreadScopeFlowsWorkCardDeltas(t *testing.T) {
 	// delta carrying the new work card.
 	second := finishScheduledResult(t, calendarStore, "item-2", "Evening notes", "thread-1", "Second card.", "")
 	var delta struct {
-		Type    string                     `json:"type"`
+		Type    string                        `json:"type"`
 		Upserts []work.CodexConversationEvent `json:"upserts"`
 	}
 	if err := conn.ReadJSON(&delta); err != nil {
@@ -394,7 +394,7 @@ INSERT INTO project(id) VALUES ('proj');
 		t.Fatalf("update: %v: %s", err, out)
 	}
 	var delta struct {
-		Type    string                     `json:"type"`
+		Type    string                        `json:"type"`
 		Upserts []work.CodexConversationEvent `json:"upserts"`
 	}
 	if err := conn.ReadJSON(&delta); err != nil {

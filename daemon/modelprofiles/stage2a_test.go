@@ -540,10 +540,10 @@ func TestDurableSnapshotRestoreReverify(t *testing.T) {
 	verifier := registerAllow(nil, p1)
 	restored := NewRouteTable()
 	restored.SetLookup(func(string) (string, bool) { return "tok", true })
-	if err := restored.Restore(states, nil); !errors.Is(err, ErrContractUnverified) {
+	if _, err := restored.Restore(states, nil); !errors.Is(err, ErrContractUnverified) {
 		t.Fatalf("restore without verifier err=%v", err)
 	}
-	if err := restored.Restore(states, verifier); err != nil {
+	if _, err := restored.Restore(states, verifier); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := restored.Get("s1")
@@ -551,11 +551,49 @@ func TestDurableSnapshotRestoreReverify(t *testing.T) {
 		t.Fatalf("restored=%#v", got.Binding)
 	}
 
-	// Forged disk model fails closed.
+	// Forged disk model is kept serving with an advisory drift notice: contract
+	// drift never drops a live Session, never bricks restore. The daemon starts
+	// with every structurally valid route; the CLI's own request identity stays
+	// authoritative and converges via adoption (or errors upstream).
 	forged := states
 	forged[0].Binding.UpstreamModel = "forged"
-	if err := NewRouteTable().Restore(forged, verifier); err == nil {
-		t.Fatal("forged upstream must fail")
+	clean := NewRouteTable()
+	clean.SetLookup(func(string) (string, bool) { return "tok", true })
+	notices, err := clean.Restore(forged, verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 || notices[0].SessionID != "s1" || strings.TrimSpace(notices[0].Reason) == "" {
+		t.Fatalf("forged route must be reported as drift: %#v", notices)
+	}
+	if got, ok := clean.Get("s1"); !ok || got.Binding.UpstreamModel != "forged" {
+		t.Fatalf("forged route must stay live after restore: %#v", got.Binding)
+	}
+
+	// A mixed snapshot keeps every route; only the contract-invalid one is
+	// reported as drift.
+	p2 := codexResponsesProfile("p2", "gpt-5", "m2")
+	mix := NewRouteTable()
+	mix.SetLookup(func(string) (string, bool) { return "tok", true })
+	if _, err := mix.BindLaunch("s2", p2, 1, verifiedAuth(p2)); err != nil {
+		t.Fatal(err)
+	}
+	mixStates := append([]SessionRouteState{}, mix.Snapshot()...)
+	mixStates = append(mixStates, forged[0])
+	mixed := NewRouteTable()
+	mixed.SetLookup(func(string) (string, bool) { return "tok", true })
+	notices, err = mixed.Restore(mixStates, registerAllow(registerAllow(nil, p1), p2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 || notices[0].SessionID != "s1" {
+		t.Fatalf("mixed restore drift=%#v", notices)
+	}
+	if got, ok := mixed.Get("s1"); !ok || got.Binding.UpstreamModel != "forged" {
+		t.Fatalf("forged route must stay live in mixed restore: %#v", got.Binding)
+	}
+	if got, ok := mixed.Get("s2"); !ok || got.Binding.UpstreamModel != "m2" {
+		t.Fatalf("valid route must survive mixed restore: %#v", got.Binding)
 	}
 
 	dir := t.TempDir()
@@ -574,8 +612,12 @@ func TestDurableSnapshotRestoreReverify(t *testing.T) {
 	loaded := NewRouteTable()
 	loaded.SetLookup(func(string) (string, bool) { return "tok", true })
 	loaded.SetContractVerifier(verifier)
-	if err := file.Load(loaded); err != nil {
-		t.Fatal(err)
+	notices, loadErr := file.Load(loaded)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices=%#v", notices)
 	}
 	if loaded.Len() != 1 {
 		t.Fatalf("len=%d", loaded.Len())

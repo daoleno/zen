@@ -200,6 +200,40 @@ func (o *Owner) CodexResumeCommand(sessionID, threadID, modelID, effortOverride 
 	return CompileCodexResume(threadID, modelID, effortOverride, loopbackURL, o.CodexModelCatalogPath(state.Binding.ProfileID))
 }
 
+// CodexResumeCommandsForRuntime builds target and compensation commands for a
+// prepared runtime transaction without mutating the acknowledged route.
+func (o *Owner) CodexResumeCommandsForRuntime(plan PreparedThreadRuntime, threadID string) (target string, previous string, err error) {
+	if o == nil || !o.started {
+		return "", "", fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	state, ok := o.table.Get(strings.TrimSpace(plan.SessionID))
+	if !ok || state.Generation != plan.expectedGeneration || state.Binding.RouteID != plan.RouteID {
+		return "", "", fmt.Errorf("%w: runtime changed while preparing handoff", ErrBindingConflict)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	loopbackURL, err := LoopbackCodexBaseURL(o.addr, plan.RouteID)
+	if err != nil {
+		return "", "", err
+	}
+	if err := o.writeCodexModelCatalogLocked(plan.targetProfile); err != nil {
+		return "", "", err
+	}
+	previousProfile := profileFromBinding(state.Binding)
+	if err := o.writeCodexModelCatalogLocked(previousProfile); err != nil {
+		return "", "", err
+	}
+	target, err = CompileCodexResume(threadID, plan.Target.ModelID, plan.Target.Effect, loopbackURL, o.CodexModelCatalogPath(plan.Target.ConnectionID))
+	if err != nil {
+		return "", "", err
+	}
+	previous, err = CompileCodexResume(threadID, plan.Previous.ModelID, plan.Previous.Effect, loopbackURL, o.CodexModelCatalogPath(plan.Previous.ConnectionID))
+	if err != nil {
+		return "", "", err
+	}
+	return target, previous, nil
+}
+
 // RouteIDForSession returns the route id for a Session (empty when unbounded).
 func (o *Owner) RouteIDForSession(sessionID string) string {
 	if o == nil || o.table == nil {
