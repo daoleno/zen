@@ -94,6 +94,39 @@ func TestProviderProjectionUsesUpstreamCatalogThenLocalSameSlugMetadata(t *testi
 	}
 }
 
+func TestProviderProjectionSurvivesLegacyCacheEntryWithoutMetadata(t *testing.T) {
+	// Entries persisted before the metadata field existed deserialize with a
+	// nil Metadata map but non-empty IDs. Projecting them must not panic on
+	// assignment to entry in nil map.
+	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
+		testCodexCacheEntry("gpt-5.6", "Local 5.6", ReasoningEffortMedium, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh),
+	})
+	owner := startBuiltinVerifierOwner(t)
+	if _, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "legacy", Name: "Legacy", Client: ClientCodex, PresetID: ProviderPresetCustom,
+		BaseURL: "https://gateway.example/v1", Advanced: true,
+	}, "", 0, true); err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	owner.discovery = newModelDiscoveryCache()
+	// putModels with nil metadata and non-empty ids reproduces the legacy shape.
+	owner.discovery.putModels("legacy", []string{"gpt-5.6"}, nil, nil)
+	owner.mu.Unlock()
+
+	projection, err := owner.ProjectProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ProviderModelEntry{}
+	for _, entry := range projection.Models["legacy"] {
+		byID[entry.ID] = entry
+	}
+	if byID["gpt-5.6"].DisplayName != "Local 5.6" {
+		t.Fatalf("local metadata did not fill legacy gap: %#v", byID["gpt-5.6"])
+	}
+}
+
 func TestProviderProjectionFallsBackToCodexCacheAndIncludesExactDefaultsAndSessions(t *testing.T) {
 	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
 		testCodexCacheEntry("cache-model", "Cache Model", ReasoningEffortHigh, ReasoningEffortLow, ReasoningEffortHigh),

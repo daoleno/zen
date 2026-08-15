@@ -143,6 +143,11 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 			source = ModelSourceLKG
 		}
 	} else if executorID == ExecutorCodex {
+		// Legacy cache entries predate the metadata field and deserialize with a
+		// nil Metadata map. Never write into a nil map.
+		if metadata == nil {
+			metadata = map[string]modelPresentationMetadata{}
+		}
 		for _, id := range ids {
 			metadata[id] = mergeModelPresentationMetadata(metadata[id], localMetadata[id])
 		}
