@@ -211,6 +211,9 @@ func (t *RouteTable) activateStateLocked(current SessionRouteState, profile Prof
 	draft.Generation = current.Generation + 1
 	draft.RouteID = current.Binding.RouteID
 	draft.RouteProtocol = current.Binding.RouteProtocol
+	// The live native control socket is Session-scoped (never per-connection)
+	// and must survive every route activation.
+	draft.CodexControlSocket = current.Binding.CodexControlSocket
 	// Unified model identity: the new binding carries the newly selected
 	// model's own client identity + envelope (a model switch legitimately
 	// changes them). Protocol/route identity and history rules are preserved
@@ -404,6 +407,30 @@ func (t *RouteTable) GetByRouteID(routeID string) (RouteBinding, bool) {
 	binding := state.Binding
 	binding.CredentialReady = t.credentialReadyLocked(profileFromBinding(binding))
 	return binding, true
+}
+
+// SetCodexControlSocket records the durable app-server control socket on a
+// Session binding (launch-time only; empty clears it).
+func (t *RouteTable) SetCodexControlSocket(sessionID, socketPath string) error {
+	if t == nil {
+		return fmt.Errorf("route table is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ErrBindingSessionRequired
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state, ok := t.bySession[sessionID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
+	}
+	state.Binding.CodexControlSocket = normalizeSpace(socketPath)
+	if state.Launched.SessionID != "" && state.Launched.RouteID != "" {
+		state.Launched.CodexControlSocket = normalizeSpace(socketPath)
+	}
+	t.bySession[sessionID] = cloneSessionState(state)
+	return nil
 }
 
 // RebindSession moves an existing binding from fromID to toID while preserving

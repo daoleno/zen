@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,12 @@ type OwnerConfig struct {
 	// ListenerPersistHook is a test seam installed on the listener file before
 	// StartOwner converges inert metadata or restores a sticky listener.
 	ListenerPersistHook func(phase string) error
+	// CodexControlDir, when set, is the daemon-owned root for per-session
+	// Codex app-server control sockets. Managed Codex launches with a Zen
+	// route then run in live-control mode (headless app server + `--remote`
+	// TUI), exposing the native thread/settings/update mutation surface to
+	// the daemon. Empty keeps the legacy embedded-TUI launch.
+	CodexControlDir string
 }
 
 // Owner is the production lifecycle owner for catalog + RouteTable + loopback Router.
@@ -72,6 +79,7 @@ type Owner struct {
 	mu            sync.Mutex
 	store         *Store
 	table         *RouteTable
+	codexControlDir string
 	router        *Router
 	routes        *RouteStateFile
 	listener      *ListenerFile
@@ -120,6 +128,9 @@ type SessionLaunchPlan struct {
 	Wire          WireBinding
 	Launch        ResolvedLaunch
 	Persist       PersistResult
+	// CodexControlSocket is the app-server control socket when the launch runs
+	// in live-control mode (empty otherwise).
+	CodexControlSocket string
 }
 
 // WireSessionSnapshot is the control-plane Session Provider selection projection.
@@ -186,6 +197,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	if verifier == nil {
 		verifier = BuiltinEnvelopeVerifier{}
 	}
+	codexControlDir := strings.TrimSpace(cfg.CodexControlDir)
 
 	store, err := NewStore(profilesPath)
 	if err != nil {
@@ -226,19 +238,20 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	}
 
 	o := &Owner{
-		store:          store,
-		table:          table,
-		routes:         routes,
-		listener:       listenerFile,
-		listenNetwork:  network,
-		preferAddr:     strings.TrimSpace(cfg.PreferAddr),
-		lookup:         lookup,
-		creds:          cfg.Credentials,
-		verifier:       verifier,
-		started:        true,
-		discovery:      newModelDiscoveryCache(),
-		discoveryPath:  strings.TrimSpace(cfg.DiscoveryPath),
-		restoreNotices: notices,
+		store:           store,
+		table:           table,
+		routes:          routes,
+		listener:        listenerFile,
+		listenNetwork:   network,
+		preferAddr:      strings.TrimSpace(cfg.PreferAddr),
+		lookup:          lookup,
+		creds:           cfg.Credentials,
+		verifier:        verifier,
+		started:         true,
+		discovery:       newModelDiscoveryCache(),
+		discoveryPath:   strings.TrimSpace(cfg.DiscoveryPath),
+		restoreNotices:  notices,
+		codexControlDir: codexControlDir,
 	}
 	if err := o.recoverProviderSwitchJournal(); err != nil {
 		_ = o.Close()
@@ -861,6 +874,14 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 			return SessionLaunchPlan{}, err
 		}
 	}
+	// Live native control: managed Codex launches with a Zen route run in
+	// app-server live-control mode with a daemon-owned control socket. The
+	// socket path is durable on the binding so SetThreadRuntime can reach the
+	// native thread after daemon restarts.
+	controlSocket := ""
+	if normalizeID(profile.ExecutorID) == ExecutorCodex && normalizeID(profile.Protocol) == ProtocolOpenAIResponses && o.codexControlDir != "" {
+		controlSocket = filepath.Join(o.codexControlDir, "codex-ctl-"+uuid.NewString()+".sock")
+	}
 
 	auth := ContractAuth{Verifier: o.verifier}
 	provisional := "pending:" + uuid.NewString()
@@ -881,6 +902,12 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 		bound, bindErr := o.table.BindLaunch(provisional, profile, o.store.Revision(), auth)
 		if bindErr != nil {
 			return bindErr
+		}
+		if controlSocket != "" {
+			if err := o.table.SetCodexControlSocket(provisional, controlSocket); err != nil {
+				return err
+			}
+			bound.Binding.CodexControlSocket = controlSocket
 		}
 		state = bound
 		loopbackURL := ""
@@ -905,6 +932,7 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 			Lookup:                o.lookup,
 			Credentials:           o.creds,
 			Verifier:              o.verifier,
+			CodexControlSocket:    controlSocket,
 		})
 		if compileErr != nil {
 			return compileErr
@@ -929,15 +957,29 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 	}
 	wire := state.Binding.ToWire()
 	return SessionLaunchPlan{
-		Applied:       true,
-		Command:       launch.Command,
-		Env:           launch.Env,
-		ProvisionalID: provisional,
-		State:         state,
-		Wire:          wire,
-		Launch:        launch,
-		Persist:       persist,
+		Applied:            true,
+		Command:            launch.Command,
+		Env:                launch.Env,
+		ProvisionalID:      provisional,
+		State:              state,
+		Wire:               wire,
+		Launch:             launch,
+		Persist:            persist,
+		CodexControlSocket: launch.CodexControlSocket,
 	}, err
+}
+
+// CodexControlSocket returns the durable app-server control socket for a
+// Session (empty when the Session has no live native control surface).
+func (o *Owner) CodexControlSocket(sessionID string) string {
+	if o == nil || o.table == nil {
+		return ""
+	}
+	state, ok := o.table.Get(strings.TrimSpace(sessionID))
+	if !ok {
+		return ""
+	}
+	return normalizeSpace(state.Binding.CodexControlSocket)
 }
 
 // CommitLaunch rebinds a provisional launch to the real Zen Session id.

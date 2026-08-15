@@ -42,6 +42,7 @@ type durableSessionRoute struct {
 	UpstreamBaseURL       string                `json:"upstream_base_url"`
 	UpstreamModel         string                `json:"upstream_model"`
 	ReasoningEffort       string                `json:"reasoning_effort,omitempty"`
+	CodexControlSocket    string                `json:"codex_control_socket,omitempty"`
 	HistoryDomain         string                `json:"history_domain"`
 	HistoryState          string                `json:"history_state"`
 	HistoryPortability    string                `json:"history_portability,omitempty"`
@@ -81,6 +82,7 @@ type durableRouteFields struct {
 	UpstreamBaseURL       string          `json:"upstream_base_url"`
 	UpstreamModel         string          `json:"upstream_model"`
 	ReasoningEffort       string          `json:"reasoning_effort,omitempty"`
+	CodexControlSocket    string          `json:"codex_control_socket,omitempty"`
 	HistoryDomain         string          `json:"history_domain"`
 	HistoryState          string          `json:"history_state"`
 	HistoryPortability    string          `json:"history_portability,omitempty"`
@@ -477,6 +479,7 @@ func sessionStateToDurable(state SessionRouteState) (durableSessionRoute, error)
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
 		ReasoningEffort:       normalizeID(b.ReasoningEffort),
+		CodexControlSocket:    normalizeSpace(b.CodexControlSocket),
 		HistoryDomain:         b.HistoryDomain,
 		HistoryState:          b.HistoryState,
 		HistoryPortability:    b.HistoryPortability,
@@ -523,6 +526,7 @@ func durableToSessionState(rec durableSessionRoute) (SessionRouteState, error) {
 		UpstreamBaseURL:       normalizeSpace(rec.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(rec.UpstreamModel),
 		ReasoningEffort:       normalizeID(rec.ReasoningEffort),
+		CodexControlSocket:    normalizeSpace(rec.CodexControlSocket),
 		HistoryDomain:         normalizeSpace(rec.HistoryDomain),
 		HistoryState:          normalizeID(rec.HistoryState),
 		HistoryPortability:    normalizeID(rec.HistoryPortability),
@@ -621,6 +625,7 @@ func bindingToDurableFields(b RouteBinding) durableRouteFields {
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
 		ReasoningEffort:       normalizeID(b.ReasoningEffort),
+		CodexControlSocket:    normalizeSpace(b.CodexControlSocket),
 		HistoryDomain:         b.HistoryDomain,
 		HistoryState:          b.HistoryState,
 		HistoryPortability:    b.HistoryPortability,
@@ -663,6 +668,7 @@ func durableFieldsToBinding(f durableRouteFields) RouteBinding {
 		UpstreamBaseURL:       normalizeSpace(f.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(f.UpstreamModel),
 		ReasoningEffort:       normalizeID(f.ReasoningEffort),
+		CodexControlSocket:    normalizeSpace(f.CodexControlSocket),
 		HistoryDomain:         normalizeSpace(f.HistoryDomain),
 		HistoryState:          hs,
 		HistoryPortability:    normalizeID(f.HistoryPortability),

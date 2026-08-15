@@ -261,6 +261,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 		ListenerPath:  listenerPath,
 		DiscoveryPath: discoveryPath,
 		Credentials:   credentialStore,
+		// Per-session Codex app-server control sockets (live native
+		// thread/settings/update for managed Codex sessions).
+		CodexControlDir: filepath.Join(authManager.StorageDir(), "codex-ctl"),
 	})
 	if err != nil {
 		return fmt.Errorf("start model profiles owner: %w", err)

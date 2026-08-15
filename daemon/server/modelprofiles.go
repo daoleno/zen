@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -374,18 +377,132 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 }
 
 // SetThreadRuntime is the single daemon transaction for an acknowledged
-// current-thread runtime. It changes only the route binding and durable
-// runtime projection; the existing process and conversation remain untouched.
+// current-thread runtime. For live-control Codex Sessions (app-server mode)
+// it applies the native thread/settings/update FIRST and commits the Zen
+// route binding only after the native applied-settings acknowledgement; on
+// native failure or timeout the route is untouched, and on route-commit
+// failure the native side is reverted. For embedded Sessions it changes only
+// the route binding and durable runtime projection; the existing process and
+// conversation remain untouched.
 func (s *Server) SetThreadRuntime(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 	owner := s.modelProfiles()
 	if owner == nil {
 		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, fmt.Errorf("%w: Providers are not available", modelprofiles.ErrInvalid)
+	}
+	prepared, err := owner.PrepareThreadRuntime(sessionID, choice)
+	if err != nil {
+		return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, err
+	}
+	// Native-first: apply the exact resolved model+effort to the live Codex
+	// thread and wait for the native acknowledgement before publishing the
+	// Zen route. The prepare/commit split keeps the Owner lock free during
+	// the network round-trip; Commit re-validates the generation CAS.
+	if socket := owner.CodexControlSocket(sessionID); socket != "" && s.codexLiveDial != nil {
+		revert, cleanup, liveErr := s.applyLiveNativeThreadRuntime(socket, sessionID, prepared)
+		if liveErr != nil {
+			return modelprofiles.WireSessionSnapshot{}, modelprofiles.PersistResult{}, liveErr
+		}
+		_, snap, persist, commitErr := owner.CommitThreadRuntime(prepared)
+		if !persist.Applied || commitErr != nil {
+			if revert != nil {
+				// Route publish failed after native applied: revert the native
+				// thread to the previous model/effort (best-effort; the native
+				// update is idempotent).
+				rctx, rcancel := context.WithTimeout(context.Background(), codexLiveRollbackBudget)
+				_ = revert(rctx)
+				rcancel()
+			}
+			cleanup()
+			return snap, persist, commitErr
+		}
+		cleanup()
+		return snap, persist, nil
 	}
 	_, snap, persist, err := owner.SetThreadRuntime(sessionID, choice)
 	if !persist.Applied {
 		return modelprofiles.WireSessionSnapshot{}, persist, err
 	}
 	return snap, persist, err
+}
+
+// codexLiveRollbackBudget bounds the native rollback after a failed route
+// commit. Rollback is best-effort: a timed-out rollback still returns the
+// route-commit failure to the caller, and the next request is normalized by
+// the router to the committed binding. Apply + rollback stay below the App's
+// 20s set_thread_runtime wait.
+const codexLiveRollbackBudget = 5 * time.Second
+
+// applyLiveNativeThreadRuntime opens the Session's Codex app-server control
+// socket, resolves the native thread, applies the prepared target model+effort
+// and waits for the native acknowledgement. The returned revert re-applies
+// the previous native identity on the same open connection; the returned
+// cleanup closes it (idempotent, safe to call after revert).
+func (s *Server) applyLiveNativeThreadRuntime(socket, sessionID string, prepared modelprofiles.PreparedThreadRuntime) (revert func(context.Context) error, cleanup func(), err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), codexLiveApplyBudget)
+	defer cancel()
+	live, liveErr := s.codexLiveDial(ctx, socket)
+	if liveErr != nil {
+		return nil, nil, fmt.Errorf("%w: dial %s: %v", modelprofiles.ErrInvalid, socket, liveErr)
+	}
+	threadID, resolveErr := live.ResolveThread(ctx, s.codexSessionCwd(sessionID))
+	if resolveErr != nil {
+		_ = live.Close()
+		return nil, nil, fmt.Errorf("%w: resolve native thread: %v", modelprofiles.ErrInvalid, resolveErr)
+	}
+	target := prepared.Target()
+	previous := prepared.Previous()
+	nativeRevert, applyErr := live.ApplySettings(
+		ctx,
+		threadID,
+		target.ModelID,
+		codexEffortPointer(target.Effect),
+		codexctl.Settings{ThreadID: threadID, Model: previous.ModelID, Effort: previous.Effect},
+		codexctl.DefaultAckTimeout,
+	)
+	if applyErr != nil {
+		_ = live.Close()
+		return nil, nil, fmt.Errorf("%w: native thread settings apply: %v", modelprofiles.ErrInvalid, applyErr)
+	}
+	revert = func(rctx context.Context) error {
+		return nativeRevert(rctx)
+	}
+	cleanup = func() { _ = live.Close() }
+	return revert, cleanup, nil
+}
+
+// codexLiveApplyBudget bounds dial + thread resolution + settings apply + ack
+// for one Interface runtime mutation. The App-side set_thread_runtime wait is
+// 20s; apply + rollback stay safely below it.
+const codexLiveApplyBudget = 13 * time.Second
+
+func codexEffortPointer(effort string) *string {
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return nil
+	}
+	return &effort
+}
+
+// codexSessionCwd returns the watcher-observed cwd for a Session ("" when
+// unknown; thread resolution then falls back to the app server's primary
+// loaded thread).
+func (s *Server) codexSessionCwd(sessionID string) string {
+	if s == nil {
+		return ""
+	}
+	if s.getAgentOverride != nil {
+		if agent := s.getAgentOverride(sessionID); agent != nil {
+			return strings.TrimSpace(agent.Cwd)
+		}
+		return ""
+	}
+	if s.watcher == nil {
+		return ""
+	}
+	if agent := s.watcher.GetAgent(sessionID); agent != nil {
+		return strings.TrimSpace(agent.Cwd)
+	}
+	return ""
 }
 
 func (s *Server) handleSetProviderCredential(conn *websocket.Conn, raw clientMessage) {

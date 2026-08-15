@@ -4950,6 +4950,18 @@ func agentProcessScore(proc processInfo, detected string) int {
 		if resume, _ := commandResumeArg(detected); resume {
 			score += 10
 		}
+		// Live-control Codex launches put two codex processes in one pane: the
+		// headless app server and the --remote TUI client. The TUI client is the
+		// agent identity (pane foreground); the app server must never win the
+		// tie or the watcher loses provider identity for the pane.
+		if detectedName == "codex" {
+			if isCodexAppServerProcess(proc.args) {
+				score -= 20
+			}
+			if isCodexTUIClientProcess(proc.args) {
+				score += 20
+			}
+		}
 		return score
 	case detectedName == "cursor-agent":
 		if lowerComm == "cursor-agent" {
@@ -4964,6 +4976,33 @@ func agentProcessScore(proc processInfo, detected string) int {
 	default:
 		return 0
 	}
+}
+
+// isCodexAppServerProcess reports the headless `codex app-server` half of a
+// live-control launch (its argv starts with `codex app-server` or carries
+// `--listen`).
+func isCodexAppServerProcess(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) >= 2 && normalizeCommand(fields[0]) == "codex" && normalizeCommand(fields[1]) == "app-server" {
+		return true
+	}
+	for _, field := range fields {
+		if field == "--listen" || strings.HasPrefix(field, "--listen=") {
+			return true
+		}
+	}
+	return false
+}
+
+// isCodexTUIClientProcess reports the `--remote` TUI client half of a
+// live-control launch.
+func isCodexTUIClientProcess(command string) bool {
+	for _, field := range strings.Fields(strings.TrimSpace(command)) {
+		if field == "--remote" || strings.HasPrefix(field, "--remote=") {
+			return true
+		}
+	}
+	return false
 }
 
 func isCodexResumeCommandLine(command string) bool {

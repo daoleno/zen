@@ -1538,6 +1538,62 @@ func TestForegroundProviderAuthorityRejectsIndeterminateSameFamilySiblings(t *te
 	}
 }
 
+func TestForegroundProviderAuthorityPicksCodexTUIClientOverAppServer(t *testing.T) {
+	started := time.Date(2026, 8, 3, 15, 0, 0, 0, time.UTC)
+	// Live-control Codex launch: the pane shell execs the --remote TUI client
+	// (foreground, pid 20) while the headless app server (pid 21) stays in the
+	// same process group. Both report comm=codex; the TUI client must win the
+	// authority tie deterministically.
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "codex",
+			args:      "codex --remote unix:///tmp/zen/codex-ctl-abc.sock --model gpt-5 --config 'model_provider=\"openai\"'",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "codex app-server --listen unix:///tmp/zen/codex-ctl-abc.sock --config 'model=\"gpt-5\"' --config 'model_provider=\"openai\"'",
+		},
+	}
+
+	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
+	if !ok || command != "codex" || pid != 20 || !processStarted.Equal(processes[20].startedAt) {
+		t.Fatalf(
+			"live-control foreground authority = (%q, %s, %d, %t), want the --remote TUI client pid 20",
+			command,
+			processStarted,
+			pid,
+			ok,
+		)
+	}
+}
+
+func TestAgentProcessScoreDistinguishesCodexRoles(t *testing.T) {
+	appServer := processInfo{pid: 21, comm: "codex", args: "codex app-server --listen unix:///tmp/zen/codex-ctl-abc.sock"}
+	tuiClient := processInfo{pid: 20, comm: "codex", args: "codex --remote unix:///tmp/zen/codex-ctl-abc.sock --model gpt-5"}
+	appScore := agentProcessScore(appServer, "codex")
+	tuiScore := agentProcessScore(tuiClient, "codex")
+	if !(tuiScore > appScore) {
+		t.Fatalf("TUI client score %d must exceed app-server score %d", tuiScore, appScore)
+	}
+	if !isCodexAppServerProcess(appServer.args) || isCodexAppServerProcess(tuiClient.args) {
+		t.Fatalf("app-server role detection wrong: %q %q", appServer.args, tuiClient.args)
+	}
+	if !isCodexTUIClientProcess(tuiClient.args) || isCodexTUIClientProcess(appServer.args) {
+		t.Fatalf("TUI client role detection wrong: %q %q", tuiClient.args, appServer.args)
+	}
+}
+
 func TestForegroundProviderAuthorityKeepsPlainShellGeneric(t *testing.T) {
 	started := time.Date(2026, 8, 3, 14, 30, 0, 0, time.UTC)
 	processes := map[int]processInfo{

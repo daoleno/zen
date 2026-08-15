@@ -1028,6 +1028,11 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 		},
 		expectedGeneration: state.Generation,
 		targetProfile:      target,
+		Previous: ThreadRuntimeChoice{
+			ConnectionID: state.Binding.ProfileID,
+			ModelID:      state.Binding.ClientModel,
+			Effect:       state.Binding.ReasoningEffort,
+		},
 	}, nil
 }
 
@@ -1036,6 +1041,10 @@ type preparedThreadRuntime struct {
 	Target             ThreadRuntimeChoice
 	expectedGeneration int64
 	targetProfile      Profile
+	// Previous is the pre-mutation native thread identity (client model +
+	// reasoning effort) needed to revert a native thread/settings/update when
+	// the route commit fails.
+	Previous ThreadRuntimeChoice
 }
 
 // ApplyTerminalModelSwitch applies only Codex's explicit reserved model-switch
@@ -1101,17 +1110,61 @@ func (o *Owner) commitThreadRuntimeLocked(plan preparedThreadRuntime) (SessionRo
 	return next, snap, persist, err
 }
 
-// SetThreadRuntime validates and commits one runtime without process staging,
-// process replacement, or resume input.
-func (o *Owner) SetThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+// PreparedThreadRuntime is a validated, not-yet-committed runtime mutation.
+// The native-first transaction in the server layer applies the native Codex
+// thread/settings/update between PrepareThreadRuntime and CommitThreadRuntime;
+// Commit re-validates the generation CAS so a concurrent mutation fails closed.
+type PreparedThreadRuntime struct {
+	plan preparedThreadRuntime
+}
+
+// Target is the exact resolved native identity (client model + effort) the
+// mutation will apply.
+func (p PreparedThreadRuntime) Target() ThreadRuntimeChoice {
+	return p.plan.Target
+}
+
+// Previous is the pre-mutation native identity for rollback.
+func (p PreparedThreadRuntime) Previous() ThreadRuntimeChoice {
+	return p.plan.Previous
+}
+
+// PrepareThreadRuntime validates and resolves one runtime mutation without
+// committing it. The Owner lock is not held across the returned handle, so
+// callers may perform native (network) work between Prepare and Commit.
+func (o *Owner) PrepareThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (PreparedThreadRuntime, error) {
 	if o == nil || !o.started {
-		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+		return PreparedThreadRuntime{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	plan, err := o.prepareThreadRuntimeLocked(sessionID, choice, !choice.UseDefaultEffect)
 	if err != nil {
+		return PreparedThreadRuntime{}, err
+	}
+	return PreparedThreadRuntime{plan: plan}, nil
+}
+
+// CommitThreadRuntime publishes a prepared mutation atomically (generation CAS
+// inside the same Owner transaction). On failure the table is unchanged; a
+// caller that already applied the native side must revert it.
+func (o *Owner) CommitThreadRuntime(prepared PreparedThreadRuntime) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+	if o == nil || !o.started {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.commitThreadRuntimeLocked(prepared.plan)
+}
+
+// SetThreadRuntime validates and commits one runtime without process staging,
+// process replacement, or resume input. It is the route-only path; live
+// native synchronization is orchestrated by the server layer through
+// PrepareThreadRuntime + CommitThreadRuntime.
+func (o *Owner) SetThreadRuntime(sessionID string, choice ThreadRuntimeChoice) (SessionRouteState, WireSessionSnapshot, PersistResult, error) {
+	prepared, err := o.PrepareThreadRuntime(sessionID, choice)
+	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err
 	}
-	return o.commitThreadRuntimeLocked(plan)
+	return o.CommitThreadRuntime(prepared)
 }

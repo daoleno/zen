@@ -28,6 +28,7 @@ import (
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
@@ -96,6 +97,11 @@ type Server struct {
 	hasSessionOverride           func(agentID string) bool
 	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
 	getAgentOverride             func(agentID string) *classifier.Agent
+	// codexLiveDial opens the live native Codex app-server control surface for
+	// a Session's control socket. Nil (tests, legacy embedded sessions) keeps
+	// SetThreadRuntime on the route-only path. Production New installs the
+	// codexctl client.
+	codexLiveDial func(ctx context.Context, socketPath string) (codexctl.LiveControl, error)
 	brainSnapshotBroadcastHook   func(payload map[string]any)
 	uploadDir                    string
 	uploadMu                     sync.Mutex
@@ -246,6 +252,9 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 	}
 	if brainService != nil {
 		srv.brainWorkSubID, srv.brainWorkSub = brainService.SubscribeWork()
+	}
+	srv.codexLiveDial = func(ctx context.Context, socketPath string) (codexctl.LiveControl, error) {
+		return codexctl.Open(ctx, socketPath, codexctl.DialOptions{})
 	}
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()

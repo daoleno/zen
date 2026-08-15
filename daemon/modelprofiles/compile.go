@@ -49,7 +49,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 
 	switch profile.ExecutorID {
 	case ExecutorCodex:
-		command, env, note, err := compileCodex(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL, opts.CodexModelCatalogPath)
+		command, env, note, err := compileCodex(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL, opts.CodexModelCatalogPath, opts.CodexControlSocket)
 		if err != nil {
 			return ResolvedLaunch{}, err
 		}
@@ -67,6 +67,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 			Draft:              draft,
 			Wire:               draft.ToWire(),
 			CodexWebSocketNote: note,
+			CodexControlSocket: normalizeSpace(opts.CodexControlSocket),
 		}, nil
 	case ExecutorClaude:
 		command, env, err := compileClaude(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL)
@@ -92,20 +93,23 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 	}
 }
 
-func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRouteURL, modelCatalogPath string) (command string, env map[string]string, wsNote string, err error) {
+func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRouteURL, modelCatalogPath, controlSocket string) (command string, env map[string]string, wsNote string, err error) {
 	switch profile.Protocol {
 	case ProtocolOpenAINative:
+		if normalizeSpace(controlSocket) != "" {
+			return "", nil, "", fmt.Errorf("%w: live control requires the responses route protocol", ErrInvalid)
+		}
 		return appendArgv(baseCommand, "--model", clientModel), nil, "", nil
 	case ProtocolOpenAIResponses:
-		command := appendArgv(baseCommand, "--model", clientModel)
-		command = appendConfig(command, `model_provider="openai"`)
-		command = appendConfig(command, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
+		tuiCommand := appendArgv(baseCommand, "--model", clientModel)
+		tuiCommand = appendConfig(tuiCommand, `model_provider="openai"`)
+		tuiCommand = appendConfig(tuiCommand, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
 		// Deterministic per-connection Codex model catalog (ModelsResponse
 		// shape, daemon-owned metadata + discovery availability): the Codex
 		// thread model picker and metadata resolve the exact models of this
 		// route instead of a provider-agnostic (possibly poisoned) cache.
 		if path := normalizeSpace(modelCatalogPath); path != "" {
-			command = appendConfig(command, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
+			tuiCommand = appendConfig(tuiCommand, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
 		}
 		// Do not emit no-op --disable flags. Router rejects WebSocket Upgrade with
 		// 501; installed Codex falls back to POST /v1/responses (see package report).
@@ -114,10 +118,44 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 		if normalizeID(profile.AuthMode) != AuthModeNativePassthrough {
 			env[EnvOpenAIAPIKey] = LoopbackAuthPlaceholder
 		}
+		if socket := normalizeSpace(controlSocket); socket != "" {
+			command = compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath)
+		} else {
+			command = tuiCommand
+		}
 		return command, env, wsNote, nil
 	default:
 		return "", nil, "", fmt.Errorf("%w: protocol %q", ErrUnsupportedProtocol, profile.Protocol)
 	}
+}
+
+// compileCodexAppServerLive wraps the plain TUI launch in Codex's supported
+// live-control mode: a headless `codex app-server` owns the thread and exposes
+// the native thread/settings/update mutation surface on the control socket,
+// while the TUI attaches to it with `--remote`. The app server receives the
+// same model/config identity as the TUI (the TUI-only --model flag is mapped
+// to the app-server --config model override). Its output is redirected to a
+// per-session log so the pane stays TUI-only; both processes share the pane's
+// process group and die together with the pane. The TUI replaces the pane
+// shell via exec so watcher foreground detection keeps seeing `codex`.
+func compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath string) string {
+	appServer := "codex app-server --listen unix://" + shellQuote(socket)
+	appServer = appendConfig(appServer, fmt.Sprintf("model=%s", tomlString(clientModel)))
+	appServer = appendConfig(appServer, `model_provider="openai"`)
+	appServer = appendConfig(appServer, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
+	if path := normalizeSpace(modelCatalogPath); path != "" {
+		appServer = appendConfig(appServer, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
+	}
+	tuiClient := appendArgv(baseCommand, "--remote", "unix://"+socket)
+	// The TUI half keeps every model/config identity flag of the plain launch.
+	tuiClient += strings.TrimPrefix(tuiCommand, strings.TrimSpace(baseCommand))
+	// baseCommand may be an alias path; the app-server half resolves the same
+	// installation so both halves agree on the thread owner.
+	if alias := normalizeSpace(baseCommand); alias != "" && alias != "codex" {
+		appServer = strings.Replace(appServer, "codex app-server", alias+" app-server", 1)
+	}
+	logPath := strings.TrimSuffix(socket, ".sock") + ".log"
+	return appServer + " > " + shellQuote(logPath) + " 2>&1 & exec " + tuiClient
 }
 
 func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRouteURL string) (command string, env map[string]string, err error) {

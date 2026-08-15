@@ -275,6 +275,12 @@ type CompileOptions struct {
 	Credentials             CredentialStore
 	Verifier                ProfileContractVerifier
 	VerifiedProfileContract VerifiedProfileContract
+	// CodexControlSocket, when set, launches the Codex session in app-server
+	// live-control mode: a headless `codex app-server` owns the thread and the
+	// TUI attaches via `--remote`, exposing the native thread/settings/update
+	// mutation surface to the daemon. Only meaningful for ExecutorCodex with
+	// the responses route protocol.
+	CodexControlSocket string
 }
 
 // RouteBinding is daemon-internal per-Session route state.
@@ -309,9 +315,14 @@ type RouteBinding struct {
 	// snapshotted per request flight (in-flight immutability) and persisted with
 	// the route state (restart restoration). Never a connection setting.
 	ReasoningEffort string
-	Generation      int64
-	CatalogRevision int64
-	Activation      string
+	// CodexControlSocket is the daemon-owned Codex app-server control socket
+	// for this Session's live native thread (empty when the Session runs in
+	// embedded mode or is not Codex). Durable so live control survives daemon
+	// restarts; the native thread id is re-resolved from the app server.
+	CodexControlSocket string
+	Generation         int64
+	CatalogRevision    int64
+	Activation         string
 }
 
 // RouteActivationEvent is daemon-internal append-only history (bounded).
@@ -380,6 +391,9 @@ type ResolvedLaunch struct {
 	// CodexWebSocketNote records empirical WS→POST fallback behavior for the
 	// installed Codex under test (not a permanent product version lock).
 	CodexWebSocketNote string
+	// CodexControlSocket is the app-server control socket when the launch runs
+	// in live-control mode (see CompileOptions.CodexControlSocket).
+	CodexControlSocket string
 }
 
 // SupportsExecutor reports whether the executor participates in Model Profiles.
