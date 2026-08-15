@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/daoleno/zen/daemon/codexctl"
 )
 
 // Router is the Zen-owned same-protocol loopback routing runtime.
@@ -24,9 +26,13 @@ type Router struct {
 	// local GET /v1/models surface. Nil means the surface is unavailable.
 	models func(profileID string) ([]ProviderModelEntry, error)
 	// modelSwitch applies a model/effect identity carried with Codex's reserved
-	// explicit model-switch contextual signal. Bare request mismatches never
-	// call this hook.
+	// explicit model-switch contextual signal, or with an authoritative native
+	// settings snapshot for fragment-less changes.
 	modelSwitch func(routeID, modelID, effort string, effortPresent bool) error
+	// nativeSettings returns the authoritative applied native thread settings
+	// for a route (persistent app-server subscription snapshot). Nil disables
+	// fragment-less native convergence.
+	nativeSettings func(routeID string) (codexctl.NativeSettings, bool)
 }
 
 // RouterOption configures Router construction.
@@ -79,6 +85,16 @@ func WithRouterModelCatalog(models func(profileID string) ([]ProviderModelEntry,
 func WithRouterModelSwitch(apply func(routeID, modelID, effort string, effortPresent bool) error) RouterOption {
 	return func(r *Router) {
 		r.modelSwitch = apply
+	}
+}
+
+// WithRouterNativeSettings installs the authoritative native thread-settings
+// source (the live-control app-server subscription snapshot). With it, a
+// fragment-less request whose model/effort differs from the binding is
+// checked against the native thread before deciding converge vs normalize.
+func WithRouterNativeSettings(lookup func(routeID string) (codexctl.NativeSettings, bool)) RouterOption {
+	return func(r *Router) {
+		r.nativeSettings = lookup
 	}
 }
 
@@ -221,6 +237,44 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			completed = false
+		}
+
+		// Fragment-less native convergence: a same-model effort change (or any
+		// other native thread-settings change that carries no reserved
+		// model-switch fragment) is invisible in the request body alone. For
+		// live-control sessions the authoritative native settings snapshot
+		// (persistent app-server subscription) decides: when the native thread
+		// itself confirms the request's model/effort, the route is converged
+		// BEFORE forwarding (same mutation path as the reserved signal); when
+		// the native thread still matches the binding, the request is a stale
+		// in-flight payload and is normalized to the binding. Unavailable or
+		// ambiguous evidence fails closed to the binding.
+		if !explicitModelSwitch && parsed.Endpoint == EndpointResponses && r.nativeSettings != nil &&
+			requestBodyDiffersFromBinding(binding, requestModel, requestEffort, requestEffortPresent) {
+			if settings, ok := r.nativeSettings(binding.RouteID); ok {
+				if settings.Model != binding.ClientModel ||
+					normalizeID(settings.Effort) != normalizeID(binding.ReasoningEffort) {
+					// Pending native change: converge the route, then re-begin
+					// the flight so the rewrite block normalizes to the new
+					// binding. A generation-CAS conflict means a concurrent
+					// mutation won; the re-read below fails closed to the
+					// authoritative binding.
+					if r.modelSwitch != nil {
+						if err := r.table.EndRouteFlight(parsed.RouteID, flightToken, false); err != nil {
+							writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
+							return
+						}
+						completed = true
+						_ = r.modelSwitch(binding.RouteID, settings.Model, settings.Effort, settings.Effort != "")
+						binding, flightToken, err = r.table.BeginRouteFlight(parsed.RouteID)
+						if err != nil {
+							writeRouteError(w, http.StatusNotFound, ErrRouteNotFound)
+							return
+						}
+						completed = false
+					}
+				}
+			}
 		}
 
 		// The route binding is the acknowledged Session runtime. A request body
@@ -543,4 +597,21 @@ func classifyUpstreamDoError(err error) (int, error) {
 		return http.StatusBadGateway, ErrUpstreamSSRF
 	}
 	return http.StatusBadGateway, ErrUpstreamInvalid
+}
+
+// requestBodyDiffersFromBinding reports whether the request's model/effort
+// identity differs from the acknowledged route binding. Effort follows Zen
+// semantics: absent and the native "none" both mean model default ("").
+func requestBodyDiffersFromBinding(binding RouteBinding, requestModel, requestEffort string, requestEffortPresent bool) bool {
+	if requestModel != binding.ClientModel {
+		return true
+	}
+	bodyEffort := ""
+	if requestEffortPresent {
+		bodyEffort = normalizeID(requestEffort)
+		if bodyEffort == ReasoningEffortNone {
+			bodyEffort = ""
+		}
+	}
+	return bodyEffort != normalizeID(binding.ReasoningEffort)
 }

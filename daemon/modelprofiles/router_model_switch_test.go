@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daoleno/zen/daemon/codexctl"
 )
 
 func TestRouterDistinguishesStaleBodyFromExplicitTerminalModelSwitch(t *testing.T) {
@@ -355,11 +357,76 @@ func TestRouterTerminalModelSwitchWithNativeDefaultEffortClearsBinding(t *testin
 	}
 }
 
-func TestRouterNativeEffortOnlyChangeStaysBindingAuthoritative(t *testing.T) {
-	// An effort-only native change carries no model-switch fragment (the
-	// fragment is model-change-only), so there is no native signal to converge
-	// on. The router must normalize the request to the binding instead of
-	// acknowledging the stale native effort.
+func liveConvergeRouterOwner(t *testing.T, upstreamURL string, models []string) (*Owner, string, error) {
+	t.Helper()
+	root := t.TempDir()
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath:    filepath.Join(root, "model-profiles.toml"),
+		RoutesPath:      filepath.Join(root, "route-bindings.json"),
+		ListenerPath:    filepath.Join(root, "route-listener.json"),
+		CodexControlDir: filepath.Join(root, "codex-ctl"),
+		Lookup:          func(string) (string, bool) { return "key-a", true },
+		Verifier:        BuiltinEnvelopeVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	creds, err := NewFileCredentialStore(filepath.Join(root, "credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.SetCredentialStore(creds)
+	connectionProjection, err := owner.UpsertProviderConnection(
+		e2eCustomInput("", "Codex", upstreamURL+"/v1", models[0]),
+		"key-a",
+		0,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := connectionProjection.Connections[0]
+	seedModelCatalogs(t, owner, map[string][]string{connection.ID: models})
+	if _, err := owner.SetProviderDefault(ClientCodex, connection.ID, models[0], owner.Catalog().Revision); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(ExecutorCodex, connection.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.CodexControlSocket == "" {
+		t.Fatal("live-control launch must allocate a socket")
+	}
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "live-converge"); err != nil {
+		t.Fatal(err)
+	}
+	return owner, connection.ID, nil
+}
+
+func convergePost(t *testing.T, base, body string) (int, string) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	return response.StatusCode, string(responseBody)
+}
+
+// TestRouterSameModelEffortChangeConvergesFromNativeEvidence is the core
+// acceptance proof: a same-model native effort change carries no reserved
+// model-switch fragment, but the authoritative native settings snapshot
+// confirms the request, so the route binding AND the Interface projection
+// converge before the request is forwarded — the request is never rewritten
+// back to the stale binding.
+func TestRouterSameModelEffortChangeConvergesFromNativeEvidence(t *testing.T) {
 	type received struct {
 		Model     string `json:"model"`
 		Reasoning struct {
@@ -380,63 +447,243 @@ func TestRouterNativeEffortOnlyChangeStaysBindingAuthoritative(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	root := t.TempDir()
-	owner := startSettingsSwitchOwner(t, root)
-	t.Cleanup(func() { _ = owner.Close() })
-	connectionProjection, err := owner.UpsertProviderConnection(
-		e2eCustomInput("", "Codex", upstream.URL+"/v1", "gpt-5.4"),
-		"key-a",
-		0,
-		true,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection := connectionProjection.Connections[0]
-	seedModelCatalogs(t, owner, map[string][]string{
-		connection.ID: {"gpt-5.4", "gpt-5.5"},
-	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connection.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
-		t.Fatal(err)
-	}
-	launch, err := owner.PrepareLaunch(ExecutorCodex, connection.ID, "codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "effort-only-native"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := owner.SetThreadRuntime("effort-only-native", ThreadRuntimeChoice{
-		ConnectionID: connection.ID,
-		ModelID:      "gpt-5.4",
-		Effect:       ReasoningEffortHigh,
+	owner, connectionID, _ := liveConvergeRouterOwner(t, upstream.URL, []string{"gpt-5.4", "gpt-5.5"})
+	// Interface sets explicit high first.
+	if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+		ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortHigh,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The native thread changed effort to low (same model, no fragment).
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{ThreadID: "t-native", Model: "gpt-5.4", Effort: ReasoningEffortLow}, true
+	})
 	router := httptest.NewServer(owner.router.Handler())
 	t.Cleanup(router.Close)
-	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launch.State.Binding.RouteID)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launchRouteID(owner, "live-converge"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewBufferString(`{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`))
+
+	status, body := convergePost(t, base, `{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if len(calls) != 1 || calls[0].Reasoning.Effort != ReasoningEffortLow {
+		t.Fatalf("upstream must receive the converged low effort: %#v", calls)
+	}
+	runtime, ok := owner.ThreadRuntime("live-converge")
+	if !ok || runtime.ModelID != "gpt-5.4" || runtime.ReasoningEffort != ReasoningEffortLow {
+		t.Fatalf("route must converge to the native low effort: %#v", runtime)
+	}
+}
+
+// TestRouterSameModelDefaultChangeConvergesFromNativeEvidence proves the
+// native default (effort "none") converges to a cleared route effort with the
+// request forwarded without a stale explicit effort.
+func TestRouterSameModelDefaultChangeConvergesFromNativeEvidence(t *testing.T) {
+	type received struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	owner, connectionID, _ := liveConvergeRouterOwner(t, upstream.URL, []string{"gpt-5.4"})
+	if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+		ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{ThreadID: "t-native", Model: "gpt-5.4", Effort: ""}, true
+	})
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launchRouteID(owner, "live-converge"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+LoopbackAuthPlaceholder)
-	response, err := http.DefaultClient.Do(request)
+
+	status, body := convergePost(t, base, `{"model":"gpt-5.4","reasoning":{"effort":"none"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if len(calls) != 1 || calls[0].Reasoning.Effort != "" {
+		t.Fatalf("upstream must receive no explicit effort: %#v", calls)
+	}
+	runtime, ok := owner.ThreadRuntime("live-converge")
+	if !ok || runtime.ReasoningEffort != "" {
+		t.Fatalf("route must converge to model default: %#v", runtime)
+	}
+}
+
+// TestRouterStaleEffortRequestNormalizedWhenNativeMatchesBinding proves a
+// request that differs from the binding while the native thread still matches
+// the binding is a stale in-flight payload: it is normalized, never converged.
+func TestRouterStaleEffortRequestNormalizedWhenNativeMatchesBinding(t *testing.T) {
+	type received struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	owner, connectionID, _ := liveConvergeRouterOwner(t, upstream.URL, []string{"gpt-5.4"})
+	if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+		ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{ThreadID: "t-native", Model: "gpt-5.4", Effort: ReasoningEffortHigh}, true
+	})
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launchRouteID(owner, "live-converge"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseBody, _ := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+
+	status, body := convergePost(t, base, `{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
 	}
 	if len(calls) != 1 || calls[0].Reasoning.Effort != ReasoningEffortHigh {
-		t.Fatalf("effort-only native change must be normalized to the binding: %#v", calls)
+		t.Fatalf("stale request must be normalized to the binding: %#v", calls)
 	}
-	if runtime, ok := owner.ThreadRuntime("effort-only-native"); !ok || runtime.ReasoningEffort != ReasoningEffortHigh {
-		t.Fatalf("effort-only native change must not mutate the route: %#v", runtime)
+	if runtime, ok := owner.ThreadRuntime("live-converge"); !ok || runtime.ReasoningEffort != ReasoningEffortHigh {
+		t.Fatalf("stale request must not mutate the route: %#v", runtime)
 	}
+}
+
+// TestRouterNativeSettingsUnavailableFailsClosed proves missing native
+// evidence never converges: the request is normalized to the binding and the
+// route stays put.
+func TestRouterNativeSettingsUnavailableFailsClosed(t *testing.T) {
+	type received struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	owner, connectionID, _ := liveConvergeRouterOwner(t, upstream.URL, []string{"gpt-5.4"})
+	if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+		ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{}, false
+	})
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launchRouteID(owner, "live-converge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := convergePost(t, base, `{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if len(calls) != 1 || calls[0].Reasoning.Effort != ReasoningEffortHigh {
+		t.Fatalf("unavailable evidence must normalize to the binding: %#v", calls)
+	}
+	if runtime, ok := owner.ThreadRuntime("live-converge"); !ok || runtime.ReasoningEffort != ReasoningEffortHigh {
+		t.Fatalf("unavailable evidence must not mutate the route: %#v", runtime)
+	}
+}
+
+// TestRouterNativeConvergeConflictFailsClosedToAuthoritativeBinding proves
+// the generation CAS ordering rule: when a concurrent mutation wins between
+// the native-evidence check and the converge, the loser rewrites its request
+// to the authoritative winning binding instead of erroring or double-applying.
+func TestRouterNativeConvergeConflictFailsClosedToAuthoritativeBinding(t *testing.T) {
+	type received struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	var calls []received
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body received
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		calls = append(calls, body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"r","object":"response","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	owner, connectionID, _ := liveConvergeRouterOwner(t, upstream.URL, []string{"gpt-5.4"})
+	if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+		ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Native evidence says the thread moved to medium...
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{ThreadID: "t-native", Model: "gpt-5.4", Effort: ReasoningEffortMedium}, true
+	})
+	// ...but a concurrent Interface mutation commits low first, so the router's
+	// converge attempt fails the generation CAS.
+	owner.router.modelSwitch = func(routeID, modelID, effort string, effortPresent bool) error {
+		if _, _, _, err := owner.SetThreadRuntime("live-converge", ThreadRuntimeChoice{
+			ConnectionID: connectionID, ModelID: "gpt-5.4", Effect: ReasoningEffortLow,
+		}); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: concurrent runtime mutation won", ErrBindingConflict)
+	}
+	router := httptest.NewServer(owner.router.Handler())
+	t.Cleanup(router.Close)
+	base, err := LoopbackCodexBaseURL(router.Listener.Addr().String(), launchRouteID(owner, "live-converge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := convergePost(t, base, `{"model":"gpt-5.4","reasoning":{"effort":"medium"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	// The winning binding (low) is authoritative: the request is served under it.
+	if len(calls) != 1 || calls[0].Reasoning.Effort != ReasoningEffortLow {
+		t.Fatalf("conflict must rewrite to the winning binding: %#v", calls)
+	}
+	if runtime, ok := owner.ThreadRuntime("live-converge"); !ok || runtime.ReasoningEffort != ReasoningEffortLow {
+		t.Fatalf("route must keep the concurrent winner: %#v", runtime)
+	}
+}
+
+func launchRouteID(owner *Owner, sessionID string) string {
+	state, ok := owner.Table().Get(sessionID)
+	if !ok {
+		return ""
+	}
+	return state.Binding.RouteID
 }

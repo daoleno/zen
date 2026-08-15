@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/google/uuid"
 )
 
@@ -80,19 +81,25 @@ type Owner struct {
 	store           *Store
 	table           *RouteTable
 	codexControlDir string
-	router          *Router
-	routes          *RouteStateFile
-	listener        *ListenerFile
-	ln              net.Listener
-	srv             *http.Server
-	addr            string
-	listenNetwork   string
-	preferAddr      string
-	lookup          func(string) (string, bool)
-	creds           CredentialStore
-	verifier        ProfileContractVerifier
-	started         bool
-	closed          bool
+	// nativeMu guards the per-route native-settings monitor registry.
+	nativeMu       sync.Mutex
+	nativeMonitors map[string]*codexctl.Monitor
+	// nativeSettingsLookup, when set (tests), replaces the monitor-backed
+	// authoritative native settings source.
+	nativeSettingsLookup func(routeID string) (codexctl.NativeSettings, bool)
+	router               *Router
+	routes               *RouteStateFile
+	listener             *ListenerFile
+	ln                   net.Listener
+	srv                  *http.Server
+	addr                 string
+	listenNetwork        string
+	preferAddr           string
+	lookup               func(string) (string, bool)
+	creds                CredentialStore
+	verifier             ProfileContractVerifier
+	started              bool
+	closed               bool
 	// idleListenerOwned is true when this Owner started the loopback listener
 	// from an inert (no live routes) state and may tear it down on failed first
 	// launch / last Abort when no routes remain.
@@ -252,12 +259,13 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		discoveryPath:   strings.TrimSpace(cfg.DiscoveryPath),
 		restoreNotices:  notices,
 		codexControlDir: codexControlDir,
+		nativeMonitors:  map[string]*codexctl.Monitor{},
 	}
 	if err := o.recoverProviderSwitchJournal(); err != nil {
 		_ = o.Close()
 		return nil, err
 	}
-	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch))
+	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {
 			o.discoveryLoadWarning = fmt.Errorf("%w: %v", ErrDiscoveryCacheInvalid, err)
@@ -419,7 +427,7 @@ func (o *Owner) ensureListenerLocked(sticky bool) (PersistResult, error) {
 	}
 
 	if o.router == nil {
-		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterCredentials(o.creds), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch))
+		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterCredentials(o.creds), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
 	}
 	srv := &http.Server{
 		Handler:           o.router.Handler(),
@@ -567,7 +575,22 @@ func (o *Owner) Close() error {
 		_ = o.ln.Close()
 	}
 	o.started = false
+	o.closeNativeMonitors()
 	return first
+}
+
+// RouterHandler returns the loopback routing handler (nil when the owner is
+// not started or has no router).
+func (o *Owner) RouterHandler() http.Handler {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.router == nil {
+		return nil
+	}
+	return o.router.Handler()
 }
 
 // ListenAddr returns the bound loopback host:port.
@@ -989,6 +1012,85 @@ func (o *Owner) CodexControlSocket(sessionID string) string {
 	return normalizeSpace(state.Binding.CodexControlSocket)
 }
 
+// SetNativeSettingsLookup replaces the authoritative native settings source
+// (test seam; nil restores the monitor-backed implementation).
+func (o *Owner) SetNativeSettingsLookup(lookup func(routeID string) (codexctl.NativeSettings, bool)) {
+	if o == nil {
+		return
+	}
+	o.nativeMu.Lock()
+	defer o.nativeMu.Unlock()
+	o.nativeSettingsLookup = lookup
+}
+
+// nativeSettingsForRoute returns the authoritative applied native thread
+// settings for a route, maintaining a per-route subscription monitor over the
+// Session's app-server control socket. ok=false fails closed: no live-control
+// socket, no monitor yet (thread not created / not attached), or a dead
+// subscription — the caller must never converge on missing evidence.
+func (o *Owner) nativeSettingsForRoute(routeID string) (codexctl.NativeSettings, bool) {
+	if o == nil {
+		return codexctl.NativeSettings{}, false
+	}
+	routeID = strings.TrimSpace(routeID)
+	o.nativeMu.Lock()
+	if o.nativeSettingsLookup != nil {
+		lookup := o.nativeSettingsLookup
+		o.nativeMu.Unlock()
+		return lookup(routeID)
+	}
+	monitor := o.nativeMonitors[routeID]
+	if monitor != nil && !monitor.Alive() {
+		monitor.Close()
+		delete(o.nativeMonitors, routeID)
+		monitor = nil
+	}
+	if monitor == nil {
+		if o.codexControlDir == "" {
+			o.nativeMu.Unlock()
+			return codexctl.NativeSettings{}, false
+		}
+		binding, ok := o.table.GetByRouteID(routeID)
+		if !ok || normalizeSpace(binding.CodexControlSocket) == "" {
+			o.nativeMu.Unlock()
+			return codexctl.NativeSettings{}, false
+		}
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 6*time.Second)
+		opened, openErr := codexctl.OpenMonitor(dialCtx, binding.CodexControlSocket, codexctl.DialOptions{})
+		dialCancel()
+		if openErr != nil {
+			o.nativeMu.Unlock()
+			return codexctl.NativeSettings{}, false
+		}
+		o.nativeMonitors[routeID] = opened
+		o.nativeMu.Unlock()
+		// The monitor attaches asynchronously; the first caller must wait for
+		// the authoritative snapshot (bounded) so the request is never decided
+		// on missing evidence.
+		readyCtx, readyCancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer readyCancel()
+		return opened.WaitReady(readyCtx)
+	}
+	o.nativeMu.Unlock()
+	return monitor.Settings()
+}
+
+// closeNativeMonitors terminates every subscription monitor. Safe to call
+// from Close and per-session release paths; the registry stays consistent
+// under o.nativeMu.
+func (o *Owner) closeNativeMonitors() {
+	if o == nil {
+		return
+	}
+	o.nativeMu.Lock()
+	monitors := o.nativeMonitors
+	o.nativeMonitors = map[string]*codexctl.Monitor{}
+	o.nativeMu.Unlock()
+	for _, monitor := range monitors {
+		monitor.Close()
+	}
+}
+
 // CommitLaunch rebinds a provisional launch to the real Zen Session id.
 // When Persist.Applied is true the binding is live even if Durable is false.
 // The returned WireSessionSnapshot is built under the same Owner.mu transaction.
@@ -1232,6 +1334,10 @@ func (o *Owner) ReleaseSession(sessionID string) (PersistResult, error) {
 	if o == nil || !o.started {
 		return PersistResult{Applied: true, Durable: true}, nil
 	}
+	routeID := ""
+	if state, ok := o.table.Get(strings.TrimSpace(sessionID)); ok {
+		routeID = state.Binding.RouteID
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	persist, err := o.mutateAndPersistLocked(func() error {
@@ -1240,6 +1346,14 @@ func (o *Owner) ReleaseSession(sessionID string) (PersistResult, error) {
 		}
 		return nil
 	})
+	if persist.Applied && routeID != "" {
+		o.nativeMu.Lock()
+		if monitor := o.nativeMonitors[routeID]; monitor != nil {
+			delete(o.nativeMonitors, routeID)
+			monitor.Close()
+		}
+		o.nativeMu.Unlock()
+	}
 	if persist.Applied {
 		if releaseErr := o.releaseIdleListenerLocked(); releaseErr != nil {
 			cleanup := PersistResultFromError(releaseErr)

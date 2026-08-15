@@ -383,8 +383,16 @@ func (c *Client) ResolveThread(ctx context.Context, cwd string) (string, error) 
 	if len(loaded) == 0 {
 		return "", fmt.Errorf("%w: no native thread loaded", ErrNoThread)
 	}
-	// The thread store can flush a moment after the thread is live in memory;
-	// retry the cwd-filtered listing briefly before falling back.
+	// A per-session app server loads exactly the pane's threads; a single
+	// loaded thread IS the pane's primary thread — no listing round-trip and
+	// no flush-retry delay (the monitor attach path depends on this being
+	// fast).
+	if len(loaded) == 1 {
+		return loaded[0], nil
+	}
+	// Multiple loaded threads (e.g. an open side conversation): the thread
+	// store can flush a moment after threads go live in memory; retry the
+	// cwd-filtered listing briefly before falling back.
 	deadline := time.Now().Add(c.resolveRetry)
 	for {
 		candidates, listErr := c.listLoadedThreads(ctx, cwd, loaded)
@@ -529,6 +537,32 @@ func (c *Client) AttachThread(ctx context.Context, threadID string) error {
 		return fmt.Errorf("%w: attach: %v", ErrApply, err)
 	}
 	return nil
+}
+
+// ResumeThread attaches to the native thread and returns the authoritative
+// current settings carried by the ThreadResumeResponse (model + effort).
+func (c *Client) ResumeThread(ctx context.Context, threadID string) (NativeSettings, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return NativeSettings{}, fmt.Errorf("%w: thread id required", ErrApply)
+	}
+	result, err := c.call(ctx, methodThreadResume, map[string]any{
+		"threadId": threadID,
+	})
+	if err != nil {
+		return NativeSettings{}, err
+	}
+	var payload struct {
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoningEffort"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return NativeSettings{}, fmt.Errorf("%w: thread/resume: %v", ErrProtocol, err)
+	}
+	return NativeSettings{
+		ThreadID: threadID,
+		Model:    strings.TrimSpace(payload.Model),
+		Effort:   normalizeNativeEffort(payload.ReasoningEffort),
+	}, nil
 }
 
 // applySettingsOnly sends thread/settings/update without waiting for the

@@ -32,6 +32,10 @@ type fakeAppServer struct {
 	settingsUpdateHook func(f *fakeAppServer, params map[string]any)
 	threads            []ThreadInfo
 	loaded             []string
+	// resumeModel/resumeEffort shape the thread/resume response like the real
+	// ThreadResumeResponse (current native settings at attach time).
+	resumeModel  string
+	resumeEffort string
 }
 
 func startFakeAppServer(t *testing.T) *fakeAppServer {
@@ -97,6 +101,16 @@ func (f *fakeAppServer) lastParams(method string) map[string]any {
 	return nil
 }
 
+// closeClients force-closes every accepted websocket (simulates the app
+// server dying: the client read pump then fails closed).
+func (f *fakeAppServer) closeClients() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ws := range f.clients {
+		_ = ws.Close()
+	}
+}
+
 func (f *fakeAppServer) broadcast(method string, params any) {
 	raw, _ := json.Marshal(map[string]any{"method": method, "params": params})
 	f.mu.Lock()
@@ -127,7 +141,14 @@ func (f *fakeAppServer) serve(ws *websocket.Conn) {
 		case methodInitialize:
 			f.reply(ws, envelope.ID, map[string]any{"userAgent": "codex/0.147.0 fake", "codexHome": "/tmp"})
 		case methodThreadResume:
-			f.reply(ws, envelope.ID, map[string]any{"thread": map[string]any{"id": "t-main"}})
+			resume := map[string]any{"thread": map[string]any{"id": "t-main", "modelProvider": "openai"}}
+			if f.resumeModel != "" {
+				resume["model"] = f.resumeModel
+			}
+			if f.resumeEffort != "" {
+				resume["reasoningEffort"] = f.resumeEffort
+			}
+			f.reply(ws, envelope.ID, resume)
 		case methodThreadLoadedList:
 			f.mu.Lock()
 			loaded := append([]string{}, f.loaded...)

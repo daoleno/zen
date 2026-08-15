@@ -664,3 +664,135 @@ func TestTeardownAgentSessionCleansCodexControlArtifacts(t *testing.T) {
 		t.Fatal("route must be released after teardown")
 	}
 }
+
+// TestTerminalEffortOnlyChangeConvergesInterfaceProjection proves the
+// same-model effort-only Terminal change converges end-to-end: the request
+// (no model-switch fragment) is checked against the authoritative native
+// settings snapshot, the route binding converges, and the Interface
+// get_thread_runtime projection observes exactly the same effort — the
+// request is never rewritten back to the stale binding.
+func TestTerminalEffortOnlyChangeConvergesInterfaceProjection(t *testing.T) {
+	authManager, err := auth.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, _ := authManager.IssuePairingToken(time.Minute)
+	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := authManager.EnrollDevice(pairing.Value, authManager.DaemonID(), authManager.PublicKeyHex(), "device-effort-converge", "phone", hex.EncodeToString(publicKey)); err != nil {
+		t.Fatal(err)
+	}
+	owner := startLiveProfileOwner(t)
+	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	srv.SetModelProfiles(owner)
+	srv.codexLiveDial = func(ctx context.Context, socketPath string) (codexctl.LiveControl, error) {
+		return &fakeLiveControl{}, nil
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
+	t.Cleanup(httpServer.Close)
+
+	var upstreamBodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBodies = append(upstreamBodies, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","object":"response","output":[]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	profile := modelprofiles.Profile{
+		ID: "provider-a", Name: "Provider A", ExecutorID: modelprofiles.ExecutorCodex,
+		ProviderID: "a", ProviderLabel: "A", Protocol: modelprofiles.ProtocolOpenAIResponses,
+		ClientModel: "gpt-5.4", Model: "gpt-5.4", BaseURL: upstream.URL + "/v1",
+		AuthMode: modelprofiles.AuthModeBearerEnv, CredentialEnv: "A_KEY",
+	}
+	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := owner.PrepareLaunch(modelprofiles.ExecutorCodex, profile.ID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(launch.ProvisionalID, "tmux:@effort-converge"); err != nil {
+		t.Fatal(err)
+	}
+	// Interface sets explicit high first; the native thread then moves to low
+	// (same model, no reserved fragment).
+	if _, persist, err := srv.SetThreadRuntime("tmux:@effort-converge", modelprofiles.ThreadRuntimeChoice{
+		ConnectionID: profile.ID, ModelID: "gpt-5.4", Effect: "high",
+	}); err != nil || !persist.Applied {
+		t.Fatalf("interface high err=%v persist=%#v", err, persist)
+	}
+	owner.SetNativeSettingsLookup(func(routeID string) (codexctl.NativeSettings, bool) {
+		return codexctl.NativeSettings{ThreadID: "t-native", Model: "gpt-5.4", Effort: "low"}, true
+	})
+	base, err := modelprofiles.LoopbackCodexBaseURL(owner.ListenAddr(), launch.State.Binding.RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", calendarAuthHeader(privateKey, authManager.DaemonID(), "device-effort-converge", "zen-connect"))
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http"), header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	readType := func(want string) map[string]any {
+		t.Helper()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			_, raw, readErr := conn.ReadMessage()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["type"] == want {
+				return payload
+			}
+		}
+	}
+	getProjection := func() (model string, effort string) {
+		t.Helper()
+		if err := conn.WriteJSON(map[string]any{
+			"type": "get_thread_runtime", "request_id": "gtr-effort", "agent_id": "tmux:@effort-converge",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		payload := readType("thread_runtime")
+		runtime, _ := payload["runtime"].(map[string]any)
+		model, _ = runtime["model_id"].(string)
+		effort, _ = runtime["reasoning_effort"].(string)
+		return model, effort
+	}
+
+	if model, effort := getProjection(); model != "gpt-5.4" || effort != "high" {
+		t.Fatalf("initial projection model=%q effort=%q", model, effort)
+	}
+	// Terminal effort-only change: same model, effort low, no fragment.
+	request, err := http.NewRequest(http.MethodPost, base+"/responses", strings.NewReader(`{"model":"gpt-5.4","reasoning":{"effort":"low"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+modelprofiles.LoopbackAuthPlaceholder)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+	}
+	if model, effort := getProjection(); model != "gpt-5.4" || effort != "low" {
+		t.Fatalf("projection after effort-only change model=%q effort=%q, want gpt-5.4/low", model, effort)
+	}
+	if runtime, ok := owner.ThreadRuntime("tmux:@effort-converge"); !ok || runtime.ReasoningEffort != "low" {
+		t.Fatalf("authoritative route after effort-only change: %#v", runtime)
+	}
+	if len(upstreamBodies) != 1 || !strings.Contains(upstreamBodies[0], `"effort":"low"`) {
+		t.Fatalf("upstream must receive the converged low effort: %#v", upstreamBodies)
+	}
+}
