@@ -151,7 +151,27 @@ func loadCodexModelCatalogFile(path string) ([]string, map[string]modelPresentat
 	return ids, metadata, nil
 }
 
-func codexWireEntryForModelMetadata(model string, metadata modelPresentationMetadata) (CodexModelCatalogWireEntry, bool) {
+// resolveCodexContextWindow returns the evidence-based context window for a
+// wire catalog entry in resolution order: explicit projection metadata, the
+// installed Codex CLI catalog cache (the running binary's own metadata), then
+// the daemon-owned pinned catalog. Unknown models resolve to 0, which omits
+// the field so the native CLI applies its own fallback — the daemon never
+// fabricates a context window (a bogus value such as 1 drives constant
+// Context compacted / skill-budget warnings / false tool failures).
+func resolveCodexContextWindow(model string, metadata modelPresentationMetadata, installed map[string]modelPresentationMetadata) int64 {
+	if metadata.ContextWindow > 0 {
+		return metadata.ContextWindow
+	}
+	if entry, ok := installed[normalizeSpace(model)]; ok && entry.ContextWindow > 0 {
+		return entry.ContextWindow
+	}
+	if entry, ok := lookupCodexModelMetadata(model); ok && entry.Envelope.ContextWindowTokens > 0 {
+		return entry.Envelope.ContextWindowTokens
+	}
+	return 0
+}
+
+func codexWireEntryForModelMetadata(model string, metadata modelPresentationMetadata, installed map[string]modelPresentationMetadata) (CodexModelCatalogWireEntry, bool) {
 	model = normalizeSpace(model)
 	if err := ValidateModelID(model); err != nil {
 		return CodexModelCatalogWireEntry{}, false
@@ -161,10 +181,7 @@ func codexWireEntryForModelMetadata(model string, metadata modelPresentationMeta
 	if displayName == "" {
 		displayName = model
 	}
-	contextWindow := metadata.ContextWindow
-	if contextWindow <= 0 {
-		contextWindow = opaqueCodexPassthroughEnvelope().ContextWindowTokens
-	}
+	contextWindow := resolveCodexContextWindow(model, metadata, installed)
 	return CodexModelCatalogWireEntry{
 		Slug:                       model,
 		DisplayName:                displayName,

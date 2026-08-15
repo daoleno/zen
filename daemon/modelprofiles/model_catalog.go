@@ -440,12 +440,16 @@ type CodexTruncationPolicyConfig struct {
 // experimental_supported_tools, and supported_reasoning_levels. Omitting any
 // of them makes codex exit at config load ("missing field ..."), which kills
 // the host tmux session and drives the brain host replacement loop.
+// context_window is the one capability claim resolved evidence-based
+// (installed Codex catalog cache, then daemon-owned pinned catalog) and
+// omitted for unknown models so the native CLI applies its own fallback — it
+// is never fabricated.
 type CodexModelCatalogWireEntry struct {
 	Slug                       string                       `json:"slug"`
 	DisplayName                string                       `json:"display_name,omitempty"`
 	DefaultReasoningLevel      string                       `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels   []CodexReasoningEffortPreset `json:"supported_reasoning_levels"`
-	ContextWindow              int64                        `json:"context_window,omitempty"`
+	ContextWindow              int64                        `json:"context_window,omitempty"` // 0 = unknown, omitted (native fallback)
 	ShellType                  string                       `json:"shell_type,omitempty"`
 	Visibility                 string                       `json:"visibility,omitempty"`
 	SupportedInAPI             bool                         `json:"supported_in_api"`
@@ -492,7 +496,8 @@ func codexEffortPresetDescription(effort string) string {
 // tokens-mode truncation at 10k, parallel tool calls for these models, no
 // experimental tools, and no verbosity surface (Zen does not route it).
 func codexWireEntryForModel(model string) (CodexModelCatalogWireEntry, bool) {
-	return codexWireEntryForModelMetadata(model, modelPresentationMetadata{})
+	_, installed, _ := loadInstalledCodexModelCatalog()
+	return codexWireEntryForModelMetadata(model, modelPresentationMetadata{}, installed)
 }
 
 // CodexModelsResponseForModels projects the exact known-model subset.
@@ -505,6 +510,10 @@ func CodexModelsResponseForModels(models []string) CodexModelsResponse {
 }
 
 func CodexModelsResponseForEntries(entries []ProviderModelEntry) CodexModelsResponse {
+	// The installed Codex catalog cache is the preferred context-window source
+	// (the running CLI's own metadata). Loaded once per projection so the wire
+	// loop below never re-reads the file per model.
+	_, installed, _ := loadInstalledCodexModelCatalog()
 	seen := map[string]struct{}{}
 	resp := CodexModelsResponse{Models: []CodexModelCatalogWireEntry{}}
 	for _, entry := range entries {
@@ -525,7 +534,7 @@ func CodexModelsResponseForEntries(entries []ProviderModelEntry) CodexModelsResp
 				Effort: effort, Description: codexEffortPresetDescription(effort),
 			})
 		}
-		if wire, ok := codexWireEntryForModelMetadata(model, metadata); ok {
+		if wire, ok := codexWireEntryForModelMetadata(model, metadata, installed); ok {
 			resp.Models = append(resp.Models, wire)
 		}
 	}

@@ -1,6 +1,7 @@
 package modelprofiles
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -35,6 +36,58 @@ func testCodexCacheEntry(slug, display, defaultEffort string, efforts ...string)
 		entry.SupportedReasoningLevels = append(entry.SupportedReasoningLevels, CodexReasoningEffortPreset{Effort: effort})
 	}
 	return entry
+}
+
+// Regression: the Codex wire catalog must never fabricate context_window for
+// models without explicit metadata. The conn model_catalog_json feeds the
+// native CLI's compaction/skill-budget math; a bogus 1-token window forces
+// constant "Context compacted", skill-budget warnings, and false tool
+// failures. Resolution order: installed Codex cache, daemon-owned pinned
+// catalog, then omit the field so native Codex fallback applies.
+func TestWireCatalogContextWindowPrefersInstalledCodexCache(t *testing.T) {
+	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
+		testCodexCacheEntry("gpt-5.6-sol", "GPT-5.6-Sol", ReasoningEffortMedium, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh),
+	})
+	resp := CodexModelsResponseForModels([]string{"gpt-5.6-sol"})
+	if len(resp.Models) != 1 {
+		t.Fatalf("models=%d want 1", len(resp.Models))
+	}
+	if got := resp.Models[0].ContextWindow; got != 123456 {
+		t.Fatalf("context_window=%d want installed cache value 123456 (never the fabricated 1)", got)
+	}
+}
+
+func TestWireCatalogContextWindowFallsBackToDaemonOwnedCatalog(t *testing.T) {
+	// No installed cache: the daemon-owned pinned catalog still resolves the
+	// evidence-based window for known models.
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	resp := CodexModelsResponseForModels([]string{"gpt-5.6-sol"})
+	if len(resp.Models) != 1 {
+		t.Fatalf("models=%d want 1", len(resp.Models))
+	}
+	if got := resp.Models[0].ContextWindow; got != 272000 {
+		t.Fatalf("context_window=%d want daemon-owned 272000", got)
+	}
+}
+
+func TestWireCatalogOmitsContextWindowForUnknownModel(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	resp := CodexModelsResponseForModels([]string{"vendor/private-alpha"})
+	if len(resp.Models) != 1 {
+		t.Fatalf("models=%d want 1", len(resp.Models))
+	}
+	if resp.Models[0].ContextWindow != 0 {
+		t.Fatalf("context_window=%d want 0 (omitted, native fallback)", resp.Models[0].ContextWindow)
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("context_window")) {
+		t.Fatalf("unknown model must omit context_window so native Codex fallback applies: %s", raw)
+	}
 }
 
 func TestInstalledCodexCatalogPrefersCODEXHOMEAndNeverUsesRealHome(t *testing.T) {

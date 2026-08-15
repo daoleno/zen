@@ -6,9 +6,74 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
+
+// Regression at the launch boundary: the per-connection Codex model catalog
+// file written before every routed Codex launch must carry evidence-based
+// context windows (installed Codex cache first, daemon-owned pinned catalog
+// second) and must never contain the fabricated 1-token window that drives
+// constant "Context compacted", skill-budget warnings, and false tool
+// failures.
+func TestLaunchCodexModelCatalogFileNeverFabricatesContextWindowOne(t *testing.T) {
+	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
+		testCodexCacheEntry("gpt-5.6-sol", "GPT-5.6-Sol", ReasoningEffortMedium, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh),
+	})
+	owner := startBuiltinVerifierOwner(t)
+	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "xcode", Name: "Xcode gateway", Client: ClientCodex,
+		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
+		Advanced: true,
+	}, "", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	owner.discovery = newModelDiscoveryCache()
+	owner.discovery.put("xcode", []string{"gpt-5.6-sol", "vendor/private-alpha"}, nil)
+	owner.mu.Unlock()
+	proj, err = owner.SetProviderDefault(ClientCodex, "xcode", "gpt-5.6-sol", proj.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := owner.PrepareLaunch(ExecutorCodex, "xcode", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, "xcode-session"); err != nil {
+		t.Fatal(err)
+	}
+
+	path := owner.CodexModelCatalogPath("xcode")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read conn catalog %s: %v", path, err)
+	}
+	var resp CodexModelsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode conn catalog: %v", err)
+	}
+	windows := map[string]int64{}
+	for _, entry := range resp.Models {
+		windows[entry.Slug] = entry.ContextWindow
+	}
+	// Installed cache wins for the routed model (fixture 123456) over the
+	// daemon-owned 272000; never the fabricated 1.
+	if windows["gpt-5.6-sol"] != 123456 {
+		t.Fatalf("gpt-5.6-sol context_window=%d want installed cache 123456: %s", windows["gpt-5.6-sol"], raw)
+	}
+	// Unknown models are never projected with a fabricated window.
+	if windows["vendor/private-alpha"] != 0 {
+		t.Fatalf("unknown model context_window=%d want 0 (omitted, native fallback)", windows["vendor/private-alpha"])
+	}
+	for slug, window := range windows {
+		if window == 1 {
+			t.Fatalf("entry %s must never carry the fabricated 1-token window: %s", slug, raw)
+		}
+	}
+}
 
 // Controlled integration proof for the unified identity invariant: a new
 // Session launched with the UI-selected gpt-5.6-sol runs that EXACT model as
