@@ -496,8 +496,13 @@ func writeBrainGrokHostFixture(t *testing.T, home, cwd, sessionID string, starte
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	created := startedAt.UTC().Add(2 * time.Second).Format(time.RFC3339Nano)
-	updated := startedAt.UTC().Add(2 * time.Minute).Format(time.RFC3339Nano)
+	// Session freshness for the Grok matcher is measured against real wall
+	// clock (work.FindGrokSession gates on a 72h max age), while the agent
+	// identity/startedAt stays historical. Write a *fresh* summary so the
+	// test outcome never decays with calendar time.
+	now := time.Now().UTC()
+	created := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	updated := now.Add(-30 * time.Second).Format(time.RFC3339Nano)
 	summary, err := json.Marshal(map[string]any{
 		"info": map[string]any{
 			"id":  sessionID,
