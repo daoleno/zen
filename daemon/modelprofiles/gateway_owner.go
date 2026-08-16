@@ -76,12 +76,10 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 	if err != nil {
 		return err
 	}
-	if profileID != "" {
-		if profile, err := o.GetProfile(profileID); err == nil {
-			gateway.SetUpstream(GatewayUpstreamFromProfile(profile))
-		} else {
-			gateway.ClearUpstream()
-		}
+	if up, ok := o.resolveGatewayUpstream(profileID); ok {
+		gateway.SetUpstream(up)
+	} else {
+		gateway.ClearUpstream()
 	}
 	if o.takeover != nil {
 		state, err := o.takeover.LoadState()
@@ -180,16 +178,33 @@ func (o *Owner) refreshGatewayUpstream() {
 	if o.store != nil {
 		profileID = strings.TrimSpace(o.store.DefaultProfileID(ExecutorCodex))
 	}
+	if up, ok := o.resolveGatewayUpstream(profileID); ok {
+		o.gateway.SetUpstream(up)
+		return
+	}
+	o.gateway.ClearUpstream()
+}
+
+// resolveGatewayUpstream derives the machine-level gateway upstream for a
+// Codex connection id through the same per-client compile the launch/router
+// path uses. Durable account connections store auth_mode=none (the raw form:
+// per-client auth semantics are compiled at use time); compiling the target
+// yields the codex bearer_env credential contract so the gateway injects the
+// same credentials as the per-Session router. Secret-free; ok=false clears the
+// upstream (no default, unknown id, or un-compilable connection).
+func (o *Owner) resolveGatewayUpstream(profileID string) (GatewayUpstream, bool) {
+	if o == nil || o.store == nil {
+		return GatewayUpstream{}, false
+	}
+	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
-		o.gateway.ClearUpstream()
-		return
+		return GatewayUpstream{}, false
 	}
-	profile, err := o.GetProfile(profileID)
+	profile, err := o.store.ResolveProfileWithModel(ExecutorCodex, profileID, "")
 	if err != nil {
-		o.gateway.ClearUpstream()
-		return
+		return GatewayUpstream{}, false
 	}
-	o.gateway.SetUpstream(GatewayUpstreamFromProfile(profile))
+	return GatewayUpstreamFromProfile(profile), true
 }
 
 // DefaultCodexConfigPath resolves the CLI's native Codex config path,

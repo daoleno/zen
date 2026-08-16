@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeGatewayUpstream records exact request bodies for gateway A/B tests.
@@ -324,6 +325,108 @@ func TestSetProviderDefaultRetargetsGatewayUpstream(t *testing.T) {
 	}
 	if !owner.Gateway().Listening() {
 		t.Fatal("gateway stopped listening across the default switch")
+	}
+}
+
+// TestGatewayUpstreamCompilesAccountConnectionAuth is the live activation
+// regression: durable account connections store auth_mode=none (raw form;
+// per-client auth semantics compile at use time) with a credential env. The
+// machine-level gateway must resolve the default Codex connection through the
+// same per-client compile the launch/router path uses, or real requests reach
+// the upstream with no credential and fail 401 (observed during guarded live
+// activation against a real provider).
+func TestGatewayUpstreamCompilesAccountConnectionAuth(t *testing.T) {
+	root := t.TempDir()
+	codexConfig := filepath.Join(root, "codex", "config.toml")
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath:    filepath.Join(root, "profiles.toml"),
+		RoutesPath:      filepath.Join(root, "routes.json"),
+		ListenerPath:    filepath.Join(root, "listener.json"),
+		GatewayAddr:     "127.0.0.1:0",
+		GatewayStateDir: filepath.Join(root, "gateway"),
+		CodexConfigPath: codexConfig,
+		Credentials:     NewMemoryCredentialStore(),
+		Lookup:          readyLookup("secret"),
+		Verifier:        BuiltinEnvelopeVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	// Scripted upstream that rejects unauthenticated requests with the exact
+	// live failure shape; a correctly authorized broker returns a completion.
+	authSeen := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "API key is required in Authorization header", http.StatusUnauthorized)
+			return
+		}
+		authSeen <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp-gw"}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// Durable account connection in the real store shape: custom provider,
+	// credential env set, auth_mode stored raw as none (compiled per client).
+	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "conn-gw-a", Name: "gw A", Client: ClientCodex, PresetID: ProviderPresetCustom,
+		BaseURL: upstream.URL + "/v1", ModelID: "gpt-5",
+	}, "secret", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := owner.GetProfile("conn-gw-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAccountConnection(raw) || normalizeID(raw.AuthMode) != AuthModeNone || normalizeSpace(raw.CredentialEnv) != "ZEN_PROVIDER_API_KEY" {
+		t.Fatalf("fixture is not a durable account connection: auth=%q env=%q", raw.AuthMode, raw.CredentialEnv)
+	}
+	if _, err := owner.SetProviderDefault("codex", "conn-gw-a", "gpt-5", proj.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.EnableCodexGateway(""); err != nil {
+		t.Fatal(err)
+	}
+	up, ok := owner.Gateway().Upstream()
+	if !ok {
+		t.Fatal("gateway has no upstream after enable")
+	}
+	if normalizeID(up.AuthMode) != AuthModeBearerEnv {
+		t.Fatalf("gateway upstream auth_mode = %q, want bearer_env (per-client compile)", up.AuthMode)
+	}
+	if normalizeSpace(up.CredentialEnv) != "ZEN_PROVIDER_API_KEY" {
+		t.Fatalf("gateway upstream credential_env = %q", up.CredentialEnv)
+	}
+	if normalizeSpace(up.CredentialRef) == "" {
+		t.Fatal("gateway upstream credential_ref is empty")
+	}
+
+	// A real gateway request must reach the upstream WITH the stored bearer
+	// credential injected (without the fix the raw account connection yields
+	// auth_mode=none and the upstream 401s — the live activation failure).
+	req, err := http.NewRequest(http.MethodPost, "http://"+owner.Gateway().ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	rawBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway request status = %d body=%s", resp.StatusCode, rawBody)
+	}
+	select {
+	case h := <-authSeen:
+		if h != "Bearer secret" {
+			t.Fatalf("upstream saw Authorization %q, want %q", h, "Bearer secret")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream never saw the authorized gateway request")
 	}
 }
 
