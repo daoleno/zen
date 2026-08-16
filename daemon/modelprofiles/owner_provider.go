@@ -150,6 +150,11 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 		}
 		for _, id := range ids {
 			metadata[id] = mergeModelPresentationMetadata(metadata[id], localMetadata[id])
+			// The daemon-pinned catalog is the final metadata authority for
+			// managed Codex: the installed CLI cache is volatile (rewritten by
+			// every codex run) and must never decide whether a model identity
+			// has daemon-known display/effort metadata.
+			metadata[id] = mergeModelPresentationMetadata(metadata[id], pinnedCodexPresentationMetadata()[id])
 		}
 	}
 	required := o.connectionRequiredModels(profile)
@@ -715,6 +720,9 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 		return err
 	}()
 	o.mu.Unlock()
+	// The machine-level gateway follows the default Codex connection: every
+	// Provider-selection mutation must retarget it atomically.
+	o.refreshGatewayUpstream()
 	projection, projectionErr := o.ProjectProviders()
 	if projectionErr != nil {
 		return ProviderCatalogProjection{}, projectionErr

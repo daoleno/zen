@@ -59,6 +59,30 @@ func normalizeModelPresentationMetadata(metadata modelPresentationMetadata) mode
 	return metadata
 }
 
+// pinnedCodexPresentationMetadata projects the daemon-pinned Codex catalog
+// (display name, effort contract, context window) as presentation metadata.
+// Deterministic; independent of the volatile installed-CLI models cache.
+func pinnedCodexPresentationMetadata() map[string]modelPresentationMetadata {
+	out := make(map[string]modelPresentationMetadata, len(codexModelCatalog))
+	for _, entry := range codexModelCatalog {
+		presets := []CodexReasoningEffortPreset{}
+		defaultEffort := ""
+		if entry.Effort != nil {
+			defaultEffort = entry.Effort.defaultEffort
+			for _, effort := range entry.Effort.supported {
+				presets = append(presets, CodexReasoningEffortPreset{Effort: effort})
+			}
+		}
+		out[normalizeSpace(entry.Slug)] = normalizeModelPresentationMetadata(modelPresentationMetadata{
+			DisplayName:              entry.DisplayName,
+			DefaultReasoningLevel:    defaultEffort,
+			SupportedReasoningLevels: presets,
+			ContextWindow:            entry.Envelope.ContextWindowTokens,
+		})
+	}
+	return out
+}
+
 func mergeModelPresentationMetadata(primary, fallback modelPresentationMetadata) modelPresentationMetadata {
 	primary = normalizeModelPresentationMetadata(primary)
 	fallback = normalizeModelPresentationMetadata(fallback)

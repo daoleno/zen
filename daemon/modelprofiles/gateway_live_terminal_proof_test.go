@@ -66,6 +66,7 @@ func newProofUpstream(t *testing.T, marker string) *proofUpstream {
 	t.Helper()
 	up := &proofUpstream{bodyChan: make(chan []byte, 8), marker: marker}
 	up.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("upstream %s hit: %s %s (upgrade=%v)", marker, r.Method, r.URL.Path, r.Header.Get("Upgrade"))
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/responses") && r.Method == http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
@@ -106,6 +107,7 @@ func waitBody(t *testing.T, up *proofUpstream, want string) []byte {
 	t.Helper()
 	select {
 	case body := <-up.bodyChan:
+		t.Logf("upstream %s received body (%d bytes)", up.marker, len(body))
 		if !bytes.Contains(body, []byte(want)) {
 			t.Fatalf("upstream %s request missing %q: %s", up.marker, want, body)
 		}
@@ -119,8 +121,24 @@ func waitBody(t *testing.T, up *proofUpstream, want string) []byte {
 		}
 		return body
 	case <-time.After(60 * time.Second):
-		t.Fatalf("timed out waiting for upstream %s", up.marker)
+		up.mu.Lock()
+		frames := len(up.bodyChan)
+		up.mu.Unlock()
+		t.Fatalf("timed out waiting for upstream %s (buffered %d)", up.marker, frames)
 		return nil
+	}
+}
+
+// dumpProofState writes the isolated pane + daemon log for failure diagnosis.
+func dumpProofState(t *testing.T, tmuxSocket, logPath string) {
+	t.Helper()
+	if out, err := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenproof", "-p").Output(); err == nil {
+		t.Logf("pane capture:\n%s", trimTo(out, 4000))
+	} else {
+		t.Logf("pane capture failed: %v", err)
+	}
+	if raw, err := os.ReadFile(logPath); err == nil {
+		t.Logf("daemon log tail:\n%s", trimTo(raw, 4000))
 	}
 }
 
@@ -161,7 +179,7 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 	}
 	daemonBin := strings.TrimSpace(os.Getenv("ZEN_DAEMON_BIN"))
 	if daemonBin == "" {
-		daemonBin = filepath.Join("..", "..", "..", "daemon", "tmp", "zen-dev")
+		daemonBin = filepath.Join("..", "..", "tmp", "zen-dev")
 	}
 	absBin, err := filepath.Abs(daemonBin)
 	if err != nil {
@@ -177,10 +195,29 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 	}
 
 	sbx := t.TempDir()
+	daemonLogPath := filepath.Join(sbx, "daemon.log")
+	tmuxSocket := filepath.Join(sbx, "tmux.sock")
+	dumped := false
+	// kill the isolated tmux server last (cleanups run LIFO, so register it
+	// first and let the failure dump run before it)
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run() })
+	t.Cleanup(func() {
+		if t.Failed() && !dumped {
+			dumped = true
+			dumpProofState(t, tmuxSocket, daemonLogPath)
+		}
+	})
 	zenHome := filepath.Join(sbx, "home")
 	codexHome := filepath.Join(sbx, "codex-home")
 	for _, dir := range []string{zenHome, codexHome} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A fresh HOME triggers the zsh-newuser-install wizard in the pane shell
+	// and blocks the direct codex launch; seed minimal startup files.
+	for _, rc := range []string{".zshenv", ".zshrc", ".zprofile"} {
+		if err := os.WriteFile(filepath.Join(zenHome, rc), []byte("# zen isolated proof shell\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,18 +256,15 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 
 	// Dedicated tmux server so the sandbox daemon's watcher never sees the
 	// user's real sessions.
-	tmuxSocket := filepath.Join(sbx, "tmux.sock")
 	newTmux := exec.Command("tmux", "-S", tmuxSocket, "new-session", "-d", "-s", "zenproof", "-x", "200", "-y", "50")
 	newTmux.Env = proofEnv(zenHome, codexHome, sbx, tmuxSocket)
 	if out, err := newTmux.CombinedOutput(); err != nil {
 		t.Fatalf("create isolated tmux server: %v: %s", err, out)
 	}
-	defer func() { _ = exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run() }()
-
 	// Sandbox daemon.
 	daemonCmd := exec.Command(absBin, "-addr", "127.0.0.1:0", "-state-dir", zenDir)
 	daemonCmd.Env = proofEnv(zenHome, codexHome, sbx, tmuxSocket)
-	daemonLog, err := os.Create(filepath.Join(sbx, "daemon.log"))
+	daemonLog, err := os.Create(daemonLogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,19 +315,50 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 
 	// Direct Terminal Codex (NOT a zen launch): plain `codex` TUI in the pane.
 	pane := exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof",
-		"cd "+sbx+" && "+absCodexTUI()+" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C "+sbx+" Enter")
+		"cd "+sbx+" && "+absCodexTUI()+" --dangerously-bypass-approvals-and-sandbox -C "+sbx, "Enter")
 	pane.Env = proofEnv(zenHome, codexHome, sbx, tmuxSocket)
 	if out, err := pane.CombinedOutput(); err != nil {
 		t.Fatalf("launch direct codex: %v: %s", err, out)
+	}
+	// Answer a first-run trust prompt if it appears (option 1 = yes).
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		captured, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenproof", "-p").Output()
+		if bytes.Contains(captured, []byte("Do you trust")) {
+			_, _ = exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof", "1", "Enter").Output()
+			break
+		}
+		if bytes.Contains(captured, []byte("model:")) || bytes.Contains(captured, []byte("model :")) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 	panePID := tmuxPanePID(t, tmuxSocket, "zenproof")
 	if panePID <= 0 {
 		t.Fatal("direct codex pane has no pid")
 	}
 
-	// Prompt 1 -> upstream A through Zen.
-	exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof", "reply with the single word alpha Enter").Run()
-	bodyA := waitBody(t, upA, `"reply with the single word alpha"`)
+	// Prompt 1 -> upstream A through Zen. The TUI input pipeline is
+	// event-driven; resend Enter until the upstream observes the turn (bounded
+	// retry, never duplicates the prompt text).
+	submitTurn := func(text string, up *proofUpstream, want string) []byte {
+		t.Helper()
+		_, _ = exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof", text, "Enter").Output()
+		for attempt := 0; attempt < 5; attempt++ {
+			select {
+			case body := <-up.bodyChan:
+				if !bytes.Contains(body, []byte(want)) {
+					t.Fatalf("upstream %s request missing %q: %s", up.marker, want, body)
+				}
+				return body
+			case <-time.After(3 * time.Second):
+			}
+			_, _ = exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof", "Enter").Output()
+		}
+		t.Fatalf("upstream %s never observed the turn %q", up.marker, want)
+		return nil
+	}
+	bodyA := submitTurn("reply with the single word alpha", upA, `"reply with the single word alpha"`)
 	if bytes.Contains(bodyA, []byte(modelprofiles.LoopbackAuthPlaceholder)) {
 		t.Fatalf("placeholder leaked upstream: %s", bodyA)
 	}
@@ -316,8 +381,7 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 	}
 
 	// Prompt 2 in the SAME pane/process -> upstream B.
-	exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenproof", "reply with the single word beta Enter").Run()
-	bodyB := waitBody(t, upB, `"reply with the single word beta"`)
+	bodyB := submitTurn("reply with the single word beta", upB, `"reply with the single word beta"`)
 	if bytes.Contains(bodyB, []byte(modelprofiles.LoopbackAuthPlaceholder)) {
 		t.Fatalf("placeholder leaked upstream: %s", bodyB)
 	}

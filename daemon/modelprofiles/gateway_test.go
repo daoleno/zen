@@ -267,6 +267,66 @@ func TestGatewayStreamingResponseFlushesChunks(t *testing.T) {
 	_ = flushed
 }
 
+// TestSetProviderDefaultRetargetsGatewayUpstream is the Settings Provider
+// selection regression: changing the default Codex connection must retarget
+// the machine-level gateway atomically (the same hook the isolated
+// direct-terminal live proof exercises end-to-end).
+func TestSetProviderDefaultRetargetsGatewayUpstream(t *testing.T) {
+	root := t.TempDir()
+	codexConfig := filepath.Join(root, "codex", "config.toml")
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath:    filepath.Join(root, "profiles.toml"),
+		RoutesPath:      filepath.Join(root, "routes.json"),
+		ListenerPath:    filepath.Join(root, "listener.json"),
+		GatewayAddr:     "127.0.0.1:0",
+		GatewayStateDir: filepath.Join(root, "gateway"),
+		CodexConfigPath: codexConfig,
+		Lookup:          readyLookup("secret"),
+		Verifier:        BuiltinEnvelopeVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	a := codexResponsesProfile("conn-a", "gpt-5", "gpt-5")
+	b := codexResponsesProfile("conn-b", "gpt-5", "gpt-5")
+	projA, err := owner.UpsertProfile(a, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projB, err := owner.UpsertProfile(b, projA.Catalog.Revision, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.SetProviderDefault("codex", "conn-a", "gpt-5", projB.Catalog.Revision); err != nil {
+		t.Fatal(err)
+	}
+	pp, err := owner.ProjectProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setDefaultRevision := pp.Revision
+	if _, err := owner.EnableCodexGateway(""); err != nil {
+		t.Fatal(err)
+	}
+	if up, ok := owner.Gateway().Upstream(); !ok || up.ProfileID != "conn-a" {
+		t.Fatalf("gateway upstream after enable = %+v ok=%v, want conn-a", up, ok)
+	}
+
+	// Settings Provider selection -> default moves to conn-b -> the gateway
+	// follows without touching the listener or any running process.
+	if _, err := owner.SetProviderDefault("codex", "conn-b", "gpt-5", setDefaultRevision); err != nil {
+		t.Fatal(err)
+	}
+	if up, ok := owner.Gateway().Upstream(); !ok || up.ProfileID != "conn-b" {
+		t.Fatalf("gateway upstream after default switch = %+v ok=%v, want conn-b", up, ok)
+	}
+	if !owner.Gateway().Listening() {
+		t.Fatal("gateway stopped listening across the default switch")
+	}
+}
+
 // TestGatewayUpstreamFlapDoesNotChangeListener: switching upstream never
 // rebinds the stable endpoint.
 func TestGatewayUpstreamFlapDoesNotChangeListener(t *testing.T) {
@@ -285,4 +345,3 @@ func TestGatewayUpstreamFlapDoesNotChangeListener(t *testing.T) {
 		t.Fatal("gateway stopped listening")
 	}
 }
-
