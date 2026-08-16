@@ -3,21 +3,25 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import {
   Radii,
   TypeScale,
   Typography,
   useAppColors,
 } from "../../constants/tokens";
+import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import type { AgentKind } from "../../services/agentPresentation";
 import type { PluginsUnifiedView } from "../../services/pluginsScreenModel";
 import {
@@ -48,7 +52,9 @@ import type {
   CatalogSkill,
   InstalledSkill,
   ManagedSkillAgent,
+  PackageDetail,
   RankedCatalogSkill,
+  SkillBinding,
   SkillMutationOperation,
   SkillsCatalogResult,
   SkillsLeaderboard,
@@ -56,6 +62,7 @@ import type {
   SkillsRequestState,
 } from "../../services/skillsManagement";
 import {
+  scopeLabel,
   skillAgentLabel,
   skillsRequestData,
 } from "../../services/skillsManagement";
@@ -101,14 +108,27 @@ export interface SkillsPresentationProps {
   preparingMutation: string;
   mutationNotice: SurfaceMutationNotice | null;
   currentServerAvailable: boolean;
+  inspectedName: string | null;
+  inspectState: SkillsRequestState<PackageDetail>;
   onSelectSection(section: SkillsSurfaceSection): void;
   onSelectAgent(agent: ManagedSkillAgent): void;
   onOpenSettings(): void;
   onRefreshSkills(): void;
   onRetryPlugins(): void;
-  onRemove(skill: InstalledSkill): void;
-  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
-  onUpdateSkills(scope: "project" | "global"): void;
+  onInspectSkill(name: string): void;
+  onDismissInspector(): void;
+  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
+  onMigrate(): void;
+  onBinding(
+    skill: InstalledSkill,
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(skill: InstalledSkill): void;
+  onForget(skill: InstalledSkill): void;
+  onAdopt(skill: InstalledSkill): void;
+  onUpdate(skill: InstalledSkill): void;
   onInstallPlugin(entry: AvailablePlugin): void;
   onUpdatePlugin(row: InstalledPluginRow): void;
   onUninstallPlugin(row: InstalledPluginRow): void;
@@ -121,12 +141,16 @@ export interface SkillsPresentationProps {
   onDismissNotice(): void;
 }
 
-type SurfaceSheet =
-  | { kind: "options" }
-  | { kind: "skill-details"; skill: InstalledSkill }
+/** Desktop breakpoint: at wide widths the inspector becomes a persistent side panel. */
+const INSPECTOR_PANEL_BREAKPOINT = 920;
+const INSPECTOR_PANEL_WIDTH = 400;
+
+type PluginSheet =
   | { kind: "plugin-details"; plugin: InstalledPluginRow }
   | { kind: "plugin-available"; plugin: AvailablePlugin }
   | null;
+
+type SurfaceSheet = { kind: "options" } | PluginSheet;
 
 export function SkillsPresentation(props: SkillsPresentationProps) {
   const {
@@ -152,14 +176,22 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     preparingMutation,
     mutationNotice,
     currentServerAvailable,
+    inspectedName,
+    inspectState,
     onSelectSection,
     onSelectAgent,
     onOpenSettings,
     onRefreshSkills,
     onRetryPlugins,
-    onRemove,
-    onInstall,
-    onUpdateSkills,
+    onInspectSkill,
+    onDismissInspector,
+    onImport,
+    onMigrate,
+    onBinding,
+    onUninstall,
+    onForget,
+    onAdopt,
+    onUpdate,
     onInstallPlugin,
     onUpdatePlugin,
     onUninstallPlugin,
@@ -172,14 +204,18 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     onDismissNotice,
   } = props;
   const colors = useAppColors();
+  const { width } = useWindowDimensions();
   const [localQuery, setLocalQuery] = useState("");
-  const [sheet, setSheet] = useState<SurfaceSheet>(null);
+  const [pluginSheet, setPluginSheet] = useState<PluginSheet>(null);
+  const [optionsSheet, setOptionsSheet] = useState(false);
 
   useEffect(() => {
     setLocalQuery("");
-    setSheet(null);
+    setPluginSheet(null);
   }, [section, selectedAgent]);
 
+  const desktopInspector =
+    width >= INSPECTOR_PANEL_BREAKPOINT && Boolean(inspectedName);
   const showingSkillsSearch = section === "skills" && browsing;
   const refresh = () => {
     if (section === "plugins") {
@@ -192,121 +228,348 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     section === "plugins"
       ? pluginsState.status === "loading"
       : inventoryState.status === "loading" ||
-        (browsing
-          ? searchState.status === "loading"
-          : catalogState.status === "loading");
-  const searchValue = showingSkillsSearch ? query : localQuery;
-  const clearSearch = showingSkillsSearch ? onClearSearch : () => setLocalQuery("");
-  const updateSupported =
-    section === "skills" && mutationOperations.includes("update");
+        catalogState.status === "loading" ||
+        searchState.status === "loading";
+  const inspectDetail = inspectedName
+    ? skillsRequestData(inspectState)
+    : undefined;
+  const inspectedInstalled = useMemo(
+    () =>
+      installedSkills.find((skill) => skill.name === inspectedName) ?? null,
+    [inspectedName, installedSkills],
+  );
+
+  const inspectorElement =
+    inspectedName && inspectDetail ? (
+      <SkillInspector
+        detail={inspectDetail}
+        installed={inspectedInstalled}
+        inspectState={inspectState}
+        selectedAgent={selectedAgent}
+        capabilities={mutationOperations}
+        hasProjectCwd={hasProjectCwd}
+        preparingMutation={preparingMutation}
+        onClose={onDismissInspector}
+        onBinding={(operation, agent, scope) => {
+          if (inspectedInstalled) {
+            onBinding(inspectedInstalled, operation, agent, scope);
+          }
+        }}
+        onUninstall={() => {
+          if (inspectedInstalled) {
+            onUninstall(inspectedInstalled);
+          }
+        }}
+        onForget={() => {
+          if (inspectedInstalled) {
+            onForget(inspectedInstalled);
+          }
+        }}
+        onAdopt={() => {
+          if (inspectedInstalled) {
+            onAdopt(inspectedInstalled);
+          }
+        }}
+        onUpdate={() => {
+          if (inspectedInstalled) {
+            onUpdate(inspectedInstalled);
+          }
+        }}
+        onInspectFile={() => undefined}
+      />
+    ) : null;
 
   return (
-    <SafeAreaView
-      style={[styles.root, { backgroundColor: colors.bgPrimary }]}
-      edges={["bottom"]}
-    >
-      <View style={styles.frame}>
-        <SurfaceTabs section={section} onSelect={onSelectSection} />
+    <SafeAreaView edges={["top"]} style={styles.root}>
+      <SurfaceTabs section={section} onSelect={onSelectSection} />
+      {section === "skills" ? (
         <View style={styles.tools}>
-          <CompactToolbar
-            section={section}
-            refreshing={refreshing}
-            onOpenOptions={() => setSheet({ kind: "options" })}
-            onRefresh={refresh}
-          />
           <SurfaceSearch
-            value={searchValue}
+            value={localQuery || query}
             remote={showingSkillsSearch}
-            loading={showingSkillsSearch && searchState.status === "loading"}
-            placeholder={searchPlaceholder(section)}
-            onChange={showingSkillsSearch ? onChangeQuery : setLocalQuery}
-            onSubmit={showingSkillsSearch ? onSubmitSearch : undefined}
-            onClear={clearSearch}
+            loading={searchState.status === "loading"}
+            placeholder={searchPlaceholder("skills")}
+            onChange={(value) => {
+              setLocalQuery(value);
+              onChangeQuery(value);
+            }}
+            onSubmit={onSubmitSearch}
+            onClear={() => {
+              setLocalQuery("");
+              onClearSearch();
+            }}
+          />
+          <CompactToolbar
+            section="skills"
+            refreshing={refreshing}
+            onOpenOptions={() => setOptionsSheet(true)}
+            onRefresh={refresh}
           />
         </View>
-
-        {mutationNotice ? (
-          <MutationNoticeBanner notice={mutationNotice} onDismiss={onDismissNotice} />
-        ) : null}
-
-        {section === "plugins" ? (
-          <PluginsList
-            query={localQuery}
-            state={pluginsState}
-            view={pluginsView}
-            currentServerAvailable={currentServerAvailable}
-            refreshing={refreshing}
-            preparingMutation={preparingMutation}
-            onOpenSettings={onOpenSettings}
-            onRetry={onRetryPlugins}
-            onInstall={onInstallPlugin}
-            onInspectInstalled={(plugin) =>
-              setSheet({ kind: "plugin-details", plugin })
-            }
-            onInspectAvailable={(plugin) =>
-              setSheet({ kind: "plugin-available", plugin })
-            }
+      ) : (
+        <View style={styles.tools}>
+          <SurfaceSearch
+            value={localQuery || query}
+            remote={false}
+            loading={false}
+            placeholder={searchPlaceholder("plugins")}
+            onChange={(value) => {
+              setLocalQuery(value);
+              onChangeQuery(value);
+            }}
+            onClear={() => {
+              setLocalQuery("");
+              onClearSearch();
+            }}
           />
-        ) : (
-          <SkillsList
-            selectedAgent={selectedAgent}
-            query={localQuery}
-            state={inventoryState}
-            skills={installedSkills}
-            catalogSkills={catalogSkills}
-            catalogInstalledElsewhere={catalogInstalledElsewhere}
-            leaderboardView={leaderboardView}
-            browsing={browsing}
-            submittedQuery={submittedQuery}
-            leaderboard={leaderboard}
-            catalogState={catalogState}
-            searchState={searchState}
-            searchResult={searchResult}
-            currentServerAvailable={currentServerAvailable}
+          <CompactToolbar
+            section="plugins"
             refreshing={refreshing}
-            preparingMutation={preparingMutation}
-            onOpenSettings={onOpenSettings}
             onRefresh={refresh}
-            onRemove={onRemove}
-            onInstall={onInstall}
-            onRetryCatalog={onRetryCatalog}
-            onRetrySearch={onRetrySearch}
-            onInspect={(skill) => setSheet({ kind: "skill-details", skill })}
           />
-        )}
-      </View>
-
+        </View>
+      )}
+      {mutationNotice ? (
+        <MutationNoticeBanner
+          notice={mutationNotice}
+          onDismiss={onDismissNotice}
+        />
+      ) : null}
+      {desktopInspector ? (
+        <View style={styles.desktopRow}>
+          <View style={styles.desktopList}>
+            <SurfaceBody
+              {...props}
+              section={section}
+              selectedAgent={selectedAgent}
+              query={localQuery || query}
+              refreshing={refreshing}
+              preparingMutation={preparingMutation}
+              onInspectSkill={onInspectSkill}
+              onInspectPlugin={(plugin) =>
+                setPluginSheet(
+                  "pluginId" in plugin
+                    ? { kind: "plugin-available", plugin }
+                    : { kind: "plugin-details", plugin },
+                )
+              }
+            />
+          </View>
+          <View style={styles.desktopPanel}>{inspectorElement}</View>
+        </View>
+      ) : (
+        <SurfaceBody
+          {...props}
+          section={section}
+          selectedAgent={selectedAgent}
+          query={localQuery || query}
+          refreshing={refreshing}
+          preparingMutation={preparingMutation}
+          onInspectSkill={onInspectSkill}
+          onInspectPlugin={(plugin) =>
+            setPluginSheet(
+              "pluginId" in plugin
+                ? { kind: "plugin-available", plugin }
+                : { kind: "plugin-details", plugin },
+            )
+          }
+        />
+      )}
       <SurfaceSheet
-        sheet={sheet}
+        sheet={optionsSheet ? { kind: "options" } : pluginSheet}
         selectedAgent={selectedAgent}
         agentCounts={agentCounts}
         leaderboardView={leaderboardView}
-        hasProjectCwd={hasProjectCwd}
         preparingMutation={preparingMutation}
-        updateSupported={updateSupported}
-        onClose={() => setSheet(null)}
-        onSelectAgent={(agent) => {
-          onSelectAgent(agent);
-          setSheet(null);
+        onClose={() => {
+          setOptionsSheet(false);
+          setPluginSheet(null);
         }}
-        onSelectLeaderboard={(value) => {
-          onSelectLeaderboard(value);
-          setSheet(null);
-        }}
-        onUpdateSkills={(scope) => {
-          setSheet(null);
-          onUpdateSkills(scope);
-        }}
+        onSelectAgent={onSelectAgent}
+        onSelectLeaderboard={onSelectLeaderboard}
+        onDiscover={onMigrate}
         onUpdatePlugin={(plugin) => {
-          setSheet(null);
+          setPluginSheet(null);
           onUpdatePlugin(plugin);
         }}
         onUninstallPlugin={(plugin) => {
-          setSheet(null);
+          setPluginSheet(null);
           onUninstallPlugin(plugin);
         }}
       />
+      {inspectedName && inspectDetail && !desktopInspector ? (
+        <SkillInspectorSheet
+          detail={inspectDetail}
+          inspectState={inspectState}
+          installed={inspectedInstalled}
+          selectedAgent={selectedAgent}
+          capabilities={mutationOperations}
+          hasProjectCwd={hasProjectCwd}
+          preparingMutation={preparingMutation}
+          onClose={onDismissInspector}
+          onBinding={(operation, agent, scope) => {
+            if (inspectedInstalled) {
+              onBinding(inspectedInstalled, operation, agent, scope);
+            }
+          }}
+          onUninstall={() => {
+            if (inspectedInstalled) {
+              onUninstall(inspectedInstalled);
+            }
+          }}
+          onForget={() => {
+            if (inspectedInstalled) {
+              onForget(inspectedInstalled);
+            }
+          }}
+          onAdopt={() => {
+            if (inspectedInstalled) {
+              onAdopt(inspectedInstalled);
+            }
+          }}
+          onUpdate={() => {
+            if (inspectedInstalled) {
+              onUpdate(inspectedInstalled);
+            }
+          }}
+        />
+      ) : null}
+      {mutationNotice ? null : null}
     </SafeAreaView>
+  );
+}
+
+function SurfaceBody({
+  section,
+  selectedAgent,
+  query,
+  inventoryState,
+  installedSkills,
+  catalogSkills,
+  catalogInstalledElsewhere,
+  browsing,
+  catalogState,
+  leaderboard,
+  searchState,
+  searchResult,
+  submittedQuery,
+  leaderboardView,
+  pluginsState,
+  pluginsView,
+  currentServerAvailable,
+  refreshing,
+  preparingMutation,
+  onOpenSettings,
+  onRetryPlugins,
+  onRefreshSkills,
+  onInspectSkill,
+  onImport,
+  onBinding,
+  onUninstall,
+  onForget,
+  onAdopt,
+  onUpdate,
+  onInstallPlugin,
+  onChangeQuery,
+  onSubmitSearch,
+  onClearSearch,
+  onSelectLeaderboard,
+  onRetryCatalog,
+  onRetrySearch,
+  onInspectPlugin,
+}: {
+  section: SkillsSurfaceSection;
+  selectedAgent: ManagedSkillAgent;
+  query: string;
+  inventoryState: SkillsRequestState<unknown>;
+  installedSkills: InstalledSkill[];
+  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
+  catalogInstalledElsewhere: Record<string, readonly string[]>;
+  browsing: boolean;
+  catalogState: SkillsRequestState<SkillsLeaderboards>;
+  leaderboard?: SkillsLeaderboard;
+  searchState: SkillsRequestState<SkillsCatalogResult>;
+  searchResult?: SkillsCatalogResult;
+  submittedQuery: string;
+  leaderboardView: SkillsLeaderboardView;
+  pluginsState: SkillsRequestState<PluginInventory>;
+  pluginsView: PluginsUnifiedView;
+  currentServerAvailable: boolean;
+  refreshing: boolean;
+  preparingMutation: string;
+  onOpenSettings(): void;
+  onRetryPlugins(): void;
+  onRefreshSkills(): void;
+  onInspectSkill(name: string): void;
+  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
+  onBinding(
+    skill: InstalledSkill,
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(skill: InstalledSkill): void;
+  onForget(skill: InstalledSkill): void;
+  onAdopt(skill: InstalledSkill): void;
+  onUpdate(skill: InstalledSkill): void;
+  onInstallPlugin(entry: AvailablePlugin): void;
+  onChangeQuery(value: string): void;
+  onSubmitSearch(): void;
+  onClearSearch(): void;
+  onSelectLeaderboard(view: SkillsLeaderboardView): void;
+  onRetryCatalog(): void;
+  onRetrySearch(): void;
+  onInspectPlugin(
+    plugin: InstalledPluginRow | AvailablePlugin,
+  ): void;
+}) {
+  if (section === "plugins") {
+    return (
+      <PluginsList
+        query={query}
+        state={pluginsState}
+        view={pluginsView}
+        currentServerAvailable={currentServerAvailable}
+        refreshing={refreshing}
+        preparingMutation={preparingMutation}
+        onOpenSettings={onOpenSettings}
+        onRetry={onRetryPlugins}
+        onInstall={onInstallPlugin}
+        onInspectInstalled={(plugin) => onInspectPlugin(plugin)}
+        onInspectAvailable={(plugin) => onInspectPlugin(plugin)}
+      />
+    );
+  }
+  return (
+    <SkillsList
+      selectedAgent={selectedAgent}
+      query={query}
+      state={inventoryState}
+      skills={installedSkills}
+      catalogSkills={catalogSkills}
+      catalogInstalledElsewhere={catalogInstalledElsewhere}
+      leaderboardView={leaderboardView}
+      browsing={browsing}
+      submittedQuery={submittedQuery}
+      leaderboard={leaderboard}
+      catalogState={catalogState}
+      searchState={searchState}
+      searchResult={searchResult}
+      currentServerAvailable={currentServerAvailable}
+      refreshing={refreshing}
+      preparingMutation={preparingMutation}
+      onOpenSettings={onOpenSettings}
+      onRefresh={onRefreshSkills}
+      onInspect={onInspectSkill}
+      onImport={onImport}
+      onBinding={onBinding}
+      onUninstall={onUninstall}
+      onForget={onForget}
+      onAdopt={onAdopt}
+      onUpdate={onUpdate}
+      onRetryCatalog={onRetryCatalog}
+      onRetrySearch={onRetrySearch}
+    />
   );
 }
 
@@ -391,18 +654,18 @@ function CompactToolbar({
 }: {
   section: SkillsSurfaceSection;
   refreshing: boolean;
-  onOpenOptions(): void;
+  onOpenOptions?(): void;
   onRefresh(): void;
 }) {
   const colors = useAppColors();
   return (
     <View style={styles.toolbar}>
       <View style={styles.toolbarSpacer} />
-      {section === "skills" ? (
+      {section === "skills" && onOpenOptions ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Skills options"
-          accessibilityHint="Target, ranking, and update actions"
+          accessibilityHint="Target, ranking, and discovery actions"
           onPress={onOpenOptions}
           style={({ pressed }) => [
             styles.iconButton,
@@ -823,11 +1086,15 @@ function SkillsList({
   preparingMutation,
   onOpenSettings,
   onRefresh,
-  onRemove,
-  onInstall,
+  onInspect,
+  onImport,
+  onBinding,
+  onUninstall,
+  onForget,
+  onAdopt,
+  onUpdate,
   onRetryCatalog,
   onRetrySearch,
-  onInspect,
 }: {
   selectedAgent: ManagedSkillAgent;
   query: string;
@@ -847,11 +1114,20 @@ function SkillsList({
   preparingMutation: string;
   onOpenSettings(): void;
   onRefresh(): void;
-  onRemove(skill: InstalledSkill): void;
-  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
+  onInspect(name: string): void;
+  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
+  onBinding(
+    skill: InstalledSkill,
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(skill: InstalledSkill): void;
+  onForget(skill: InstalledSkill): void;
+  onAdopt(skill: InstalledSkill): void;
+  onUpdate(skill: InstalledSkill): void;
   onRetryCatalog(): void;
   onRetrySearch(): void;
-  onInspect(skill: InstalledSkill): void;
 }) {
   const colors = useAppColors();
   const hasInventory = skillsRequestData(state) !== undefined;
@@ -882,9 +1158,7 @@ function SkillsList({
           loadingTitle="Loading installed Skills…"
           error={state.status === "error" ? state.error : undefined}
           errorTitle="Installed Skills unavailable"
-          empty={
-            hasInventory && skills.length === 0 && !browsing
-          }
+          empty={hasInventory && skills.length === 0 && !browsing}
           emptyTitle={`No Skills for ${skillAgentLabel(selectedAgent)}`}
           noMatches={
             hasInventory &&
@@ -913,21 +1187,25 @@ function SkillsList({
       }
       renderItem={({ item }) =>
         item.kind === "installed" ? (
-          <InstalledSkillItem
+          <InstalledSkillRow
             skill={item.skill}
             selectedAgent={selectedAgent}
-            busy={preparingMutation === `remove:${item.skill.id}`}
-            onRemove={() => onRemove(item.skill)}
-            onInspect={() => onInspect(item.skill)}
+            preparingMutation={preparingMutation}
+            onInspect={() => onInspect(item.skill.name)}
+            onBinding={onBinding}
+            onUninstall={onUninstall}
+            onForget={onForget}
+            onAdopt={onAdopt}
+            onUpdate={onUpdate}
           />
         ) : (
-          <CatalogSkillItem
+          <CatalogSkillRow
             skill={item.skill}
             leaderboardView={leaderboardView}
             installedElsewhere={catalogInstalledElsewhere[item.catalogId] ?? []}
             selectedAgent={selectedAgent}
             busy={preparingMutation === `install:${item.catalogId}`}
-            onInstall={() => onInstall(item.skill)}
+            onImport={() => onImport(item.skill)}
           />
         )
       }
@@ -935,28 +1213,55 @@ function SkillsList({
   );
 }
 
-function InstalledSkillItem({
+/** One installed/discovered row: lifecycle state is row facets, not chrome. */
+function InstalledSkillRow({
   skill,
   selectedAgent,
-  busy,
-  onRemove,
+  preparingMutation,
   onInspect,
+  onBinding,
+  onUninstall,
+  onForget,
+  onAdopt,
+  onUpdate,
 }: {
   skill: InstalledSkill;
   selectedAgent: ManagedSkillAgent;
-  busy: boolean;
-  onRemove(): void;
+  preparingMutation: string;
   onInspect(): void;
+  onBinding(
+    skill: InstalledSkill,
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(skill: InstalledSkill): void;
+  onForget(skill: InstalledSkill): void;
+  onAdopt(skill: InstalledSkill): void;
+  onUpdate(skill: InstalledSkill): void;
 }) {
   const colors = useAppColors();
   const ownership = installedSkillOwnership(skill, selectedAgent);
   const badges = installedSkillBadges(skill, skill.agents.length);
+  const capabilities = skill.capability.canManage
+    ? skill.capability.operations
+    : [];
+  const binding = skill.bindings.find((candidate) => candidate.agent === selectedAgent);
+  const quickAction = skillQuickAction(
+    skill,
+    capabilities,
+    binding,
+    onUpdate,
+    onUninstall,
+    onForget,
+    onAdopt,
+  );
   return (
     <View style={styles.itemRow}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${skill.name}, ${installedSkillMetadata(skill)}`}
-        accessibilityHint="Show Skill details"
+        accessibilityHint="Open the Skill inspector"
         onPress={onInspect}
         style={({ pressed }) => [
           styles.itemMain,
@@ -989,13 +1294,13 @@ function InstalledSkillItem({
           <BadgeRow badges={badges} />
         </View>
       </Pressable>
-      {ownership.manageable ? (
+      {quickAction ? (
         <SmallAction
-          label="Remove"
-          accessibilityLabel={`Remove ${skill.name}`}
-          destructive
-          busy={busy}
-          onPress={onRemove}
+          label={quickAction.label}
+          accessibilityLabel={`${quickAction.label} ${skill.name}`}
+          destructive={quickAction.destructive}
+          busy={preparingMutation === quickAction.busyKey}
+          onPress={() => quickAction.run()}
         />
       ) : (
         <ItemIconAction
@@ -1008,20 +1313,55 @@ function InstalledSkillItem({
   );
 }
 
-function CatalogSkillItem({
+function skillQuickAction(
+  skill: InstalledSkill,
+  capabilities: readonly SkillMutationOperation[],
+  binding: SkillBinding | undefined,
+  onUpdate: (skill: InstalledSkill) => void,
+  onUninstall: (skill: InstalledSkill) => void,
+  onForget: (skill: InstalledSkill) => void,
+  onAdopt: (skill: InstalledSkill) => void,
+): { label: string; destructive?: boolean; busyKey: string; run(): void } | null {
+  if (skill.owned) {
+    if (capabilities.includes("update")) {
+      return { label: "Update", busyKey: `update:${skill.id}`, run: () => onUpdate(skill) };
+    }
+    if (capabilities.includes("uninstall")) {
+      return {
+        label: "Uninstall",
+        destructive: true,
+        busyKey: `uninstall:${skill.id}`,
+        run: () => onUninstall(skill),
+      };
+    }
+    return null;
+  }
+  if (skill.tracked) {
+    if (capabilities.includes("forget")) {
+      return { label: "Forget", busyKey: `forget:${skill.id}`, run: () => onForget(skill) };
+    }
+    return null;
+  }
+  if (capabilities.includes("adopt")) {
+    return { label: "Adopt", busyKey: `adopt:${skill.id}`, run: () => onAdopt(skill) };
+  }
+  return null;
+}
+
+function CatalogSkillRow({
   skill,
   leaderboardView,
   installedElsewhere,
   selectedAgent,
   busy,
-  onInstall,
+  onImport,
 }: {
   skill: CatalogSkill | RankedCatalogSkill;
   leaderboardView: SkillsLeaderboardView;
   installedElsewhere: readonly string[];
   selectedAgent: ManagedSkillAgent;
   busy: boolean;
-  onInstall(): void;
+  onImport(): void;
 }) {
   const colors = useAppColors();
   const ranked = isRankedCatalogSkill(skill);
@@ -1034,11 +1374,11 @@ function CatalogSkillItem({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${skill.name}, ${metadata}`}
-        accessibilityHint="Show why this Skill can be installed"
+        accessibilityHint="Import this Skill from its pinned source"
         onPress={() =>
           Alert.alert(
             skill.name,
-            `${skill.source}\n\nInstall adds this Skill for ${skillAgentLabel(selectedAgent)} through the official skills CLI.`,
+            `${skill.source}\n\nImporting pins this Skill at its recorded ref and binds it for ${skillAgentLabel(selectedAgent)}.`,
           )
         }
         style={({ pressed }) => [
@@ -1074,10 +1414,10 @@ function CatalogSkillItem({
       </Pressable>
       {skill.installable ? (
         <SmallAction
-          label="Install"
-          accessibilityLabel={`Install ${skill.name} for ${skillAgentLabel(selectedAgent)}`}
+          label="Import"
+          accessibilityLabel={`Import ${skill.name} for ${skillAgentLabel(selectedAgent)}`}
           busy={busy}
-          onPress={onInstall}
+          onPress={onImport}
         />
       ) : (
         <ItemIconAction
@@ -1086,7 +1426,7 @@ function CatalogSkillItem({
           onPress={() =>
             Alert.alert(
               skill.name,
-              "This catalog entry does not expose an installable npx skills identity.",
+              "This catalog entry does not expose an installable identity.",
             )
           }
         />
@@ -1213,7 +1553,7 @@ function LoadingNote({ title }: { title: string }) {
       <ActivityIndicator size="small" color={colors.accent} />
       <Text
         maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.browseNoteTitle, { color: colors.textSecondary }]}
+        style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
       >
         {title}
       </Text>
@@ -1228,45 +1568,33 @@ function BadgeRow({ badges }: { badges: LifecycleBadge[] }) {
   }
   return (
     <View style={styles.badgeRow}>
-      {badges.map((badge) => (
-        <View
-          key={badge.label}
-          style={[
-            styles.badgePill,
-            {
-              backgroundColor:
-                badge.tone === "accent"
-                  ? colors.accentSoft
-                  : badge.tone === "warning"
-                    ? colors.dangerSoft
-                    : colors.surfaceSubtle,
-              borderColor:
-                badge.tone === "accent"
-                  ? colors.accent
-                  : badge.tone === "warning"
-                    ? colors.dangerText
-                    : colors.borderSubtle,
-            },
-          ]}
-        >
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+      {badges.map((badge) => {
+        const toneColor =
+          badge.tone === "accent"
+            ? colors.accent
+            : badge.tone === "warning"
+              ? colors.warning
+              : colors.textTertiary;
+        return (
+          <View
+            key={badge.label}
             style={[
-              styles.badgeLabel,
+              styles.badgePill,
               {
-                color:
-                  badge.tone === "accent"
-                    ? colors.accent
-                    : badge.tone === "warning"
-                      ? colors.dangerText
-                      : colors.textSecondary,
+                backgroundColor: colors.surfaceSubtle,
+                borderColor: colors.borderSubtle,
               },
             ]}
           >
-            {badge.label}
-          </Text>
-        </View>
-      ))}
+            <Text
+              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+              style={[styles.badgeLabel, { color: toneColor }]}
+            >
+              {badge.label}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -1276,27 +1604,23 @@ function SurfaceSheet({
   selectedAgent,
   agentCounts,
   leaderboardView,
-  hasProjectCwd,
   preparingMutation,
   onClose,
   onSelectAgent,
   onSelectLeaderboard,
-  onUpdateSkills,
+  onDiscover,
   onUpdatePlugin,
   onUninstallPlugin,
-  updateSupported,
 }: {
   sheet: SurfaceSheet;
   selectedAgent: ManagedSkillAgent;
   agentCounts: SkillsAgentCounts;
   leaderboardView: SkillsLeaderboardView;
-  hasProjectCwd: boolean;
   preparingMutation: string;
-  updateSupported: boolean;
   onClose(): void;
   onSelectAgent(agent: ManagedSkillAgent): void;
   onSelectLeaderboard(view: SkillsLeaderboardView): void;
-  onUpdateSkills(scope: "project" | "global"): void;
+  onDiscover(): void;
   onUpdatePlugin(plugin: InstalledPluginRow): void;
   onUninstallPlugin(plugin: InstalledPluginRow): void;
 }) {
@@ -1338,49 +1662,24 @@ function SurfaceSheet({
                 />
               ),
             )}
-            {updateSupported ? (
-              <>
-                <SheetSectionHeading>Update</SheetSectionHeading>
-                <SheetOption
-                  icon="globe-outline"
-                  label="Global Skills"
-                  detail="Update every global Skill with npx skills"
-                  busy={preparingMutation === "update:global"}
-                  onPress={() => onUpdateSkills("global")}
-                />
-                <SheetOption
-                  icon="folder-outline"
-                  label="Project Skills"
-                  detail={
-                    hasProjectCwd
-                      ? "Update every Skill in the current project"
-                      : "Open a project Session to enable this action"
-                  }
-                  disabled={!hasProjectCwd}
-                  busy={preparingMutation === "update:project"}
-                  onPress={() => onUpdateSkills("project")}
-                />
-              </>
-            ) : null}
+            <SheetSectionHeading>Discovery</SheetSectionHeading>
+            <SheetOption
+              icon="scan-outline"
+              label="Scan existing Skills"
+              detail="Track external installations across all six Agents; no files are changed"
+              busy={preparingMutation === "migrate"}
+              onPress={onDiscover}
+            />
           </>
-        ) : null}
-
-        {sheet?.kind === "skill-details" ? (
-          <SkillDetailSheet
-            skill={sheet.skill}
-            selectedAgent={selectedAgent}
-          />
         ) : null}
 
         {sheet?.kind === "plugin-details" ? (
           <PluginDetailSheet
             plugin={sheet.plugin}
-            preparingMutation={preparingMutation}
             onUpdate={() => onUpdatePlugin(sheet.plugin)}
             onUninstall={() => onUninstallPlugin(sheet.plugin)}
           />
         ) : null}
-
         {sheet?.kind === "plugin-available" ? (
           <AvailablePluginDetailSheet plugin={sheet.plugin} />
         ) : null}
@@ -1391,13 +1690,13 @@ function SurfaceSheet({
         onPress={onClose}
         style={({ pressed }) => [
           styles.sheetClose,
-          { borderTopColor: colors.borderSubtle },
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
+          { borderTopColor: useAppColors().borderSubtle },
+          pressed ? { backgroundColor: useAppColors().surfacePressed } : null,
         ]}
       >
         <Text
           maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.sheetCloseText, { color: colors.textSecondary }]}
+          style={[styles.sheetCloseText, { color: useAppColors().textSecondary }]}
         >
           Close
         </Text>
@@ -1406,34 +1705,12 @@ function SurfaceSheet({
   );
 }
 
-function SkillDetailSheet({
-  skill,
-  selectedAgent,
-}: {
-  skill: InstalledSkill;
-  selectedAgent: ManagedSkillAgent;
-}) {
-  const ownership = installedSkillOwnership(skill, selectedAgent);
-  const badges = installedSkillBadges(skill, skill.agents.length);
-  return (
-    <>
-      <SheetTitle>{skill.name}</SheetTitle>
-      <SheetMetadata>{installedSkillMetadata(skill)}</SheetMetadata>
-      <BadgeRow badges={badges} />
-      {skill.description ? <SheetBody>{skill.description}</SheetBody> : null}
-      <SheetSection title={ownership.summary}>{ownership.detail}</SheetSection>
-    </>
-  );
-}
-
 function PluginDetailSheet({
   plugin,
-  preparingMutation,
   onUpdate,
   onUninstall,
 }: {
   plugin: InstalledPluginRow;
-  preparingMutation: string;
   onUpdate(): void;
   onUninstall(): void;
 }) {
@@ -1453,14 +1730,12 @@ function PluginDetailSheet({
           <SheetAction
             icon="arrow-up-circle-outline"
             label="Update"
-            busy={preparingMutation === `plugin:update:${plugin.id}`}
             onPress={onUpdate}
           />
           <SheetAction
             icon="trash-outline"
             label="Uninstall"
             destructive
-            busy={preparingMutation === `plugin:uninstall:${plugin.id}`}
             onPress={onUninstall}
           />
         </View>
@@ -1469,17 +1744,495 @@ function PluginDetailSheet({
   );
 }
 
-function AvailablePluginDetailSheet({ plugin }: { plugin: AvailablePlugin }) {
+function AvailablePluginDetailSheet({
+  plugin,
+}: {
+  plugin: AvailablePlugin;
+}) {
   const ownership = availablePluginOwnership(plugin);
-  const badges = availablePluginBadges(plugin);
   return (
     <>
       <SheetTitle>{plugin.name}</SheetTitle>
-      <SheetMetadata>{`@${plugin.marketplaceName}`}</SheetMetadata>
-      <BadgeRow badges={badges} />
-      {plugin.description ? <SheetBody>{plugin.description}</SheetBody> : null}
+      <SheetMetadata>
+        {`@${plugin.marketplaceName}`}
+        {plugin.sourceRef ? ` · ${plugin.sourceRef}` : ""}
+      </SheetMetadata>
       <SheetSection title={ownership.summary}>{ownership.detail}</SheetSection>
     </>
+  );
+}
+
+/**
+ * The Skill inspector body. Rendered inside a bottom sheet on mobile and as a
+ * persistent right-side panel on desktop; content is identical either way.
+ */
+function SkillInspectorBody({
+  detail,
+  installed,
+  selectedAgent,
+  capabilities,
+  hasProjectCwd,
+  preparingMutation,
+  onBinding,
+  onUninstall,
+  onForget,
+  onAdopt,
+  onUpdate,
+}: {
+  detail: PackageDetail;
+  installed: InstalledSkill | null;
+  selectedAgent: ManagedSkillAgent;
+  capabilities: readonly SkillMutationOperation[];
+  hasProjectCwd: boolean;
+  preparingMutation: string;
+  onBinding(
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(): void;
+  onForget(): void;
+  onAdopt(): void;
+  onUpdate(): void;
+}) {
+  const colors = useAppColors();
+  const operationSupported = (operation: SkillMutationOperation) =>
+    capabilities.includes(operation) &&
+    (!installed ||
+      (installed.capability.canManage &&
+        installed.capability.operations.includes(operation)));
+  const boundAgents = new Set(detail.bindings.map((binding) => binding.agent));
+  const showBody = Boolean(detail.skillMd?.trim());
+  return (
+    <>
+      <SheetTitle>{detail.skillName}</SheetTitle>
+      <SheetMetadata>
+        {[
+          detail.source,
+          detail.ref ? `ref ${detail.ref}` : undefined,
+          detail.contentHash ? shortHash(detail.contentHash) : undefined,
+          scopeLabel(detail.scope),
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </SheetMetadata>
+      <BadgeRow
+        badges={[
+          detail.owned
+            ? { label: detail.enabled ? "Zen-owned · Enabled" : "Zen-owned · Disabled", tone: detail.enabled ? "accent" : "warning" }
+            : { label: detail.tracked ? "Tracked external" : "External", tone: "warning" },
+          { label: scopeLabel(detail.scope), tone: "neutral" },
+        ]}
+      />
+      {detail.description ? <SheetBody>{detail.description}</SheetBody> : null}
+
+      {(detail.warnings ?? []).length > 0 ? (
+        <SheetSection title="Warnings">
+          {detail.warnings!.map((warning) => (
+            <Text
+              key={warning}
+              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+              style={[styles.warningLine, { color: colors.warning }]}
+            >
+              ⚠ {warning}
+            </Text>
+          ))}
+        </SheetSection>
+      ) : null}
+
+      {(detail.risk ?? []).length > 0 ? (
+        <SheetSection title="Static risk signals">
+          {detail.risk!.map((signal, index) => (
+            <Text
+              key={`${signal.type}:${index}`}
+              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+              style={[
+                styles.warningLine,
+                {
+                  color:
+                    signal.severity === "alert"
+                      ? colors.dangerText
+                      : signal.severity === "warn"
+                        ? colors.warning
+                        : colors.textSecondary,
+                },
+              ]}
+            >
+              {signal.severity === "alert" ? "▲" : "•"}{" "}
+              {signal.detail || signal.type}
+              {signal.file ? ` (${signal.file})` : ""}
+            </Text>
+          ))}
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.inspectNote, { color: colors.textTertiary }]}
+          >
+            Static signals only; they never prove safety.
+          </Text>
+        </SheetSection>
+      ) : null}
+
+      <SheetSection title="Provenance">
+        {[
+          ["Source", detail.source || "—"],
+          ["Source type", detail.sourceType || "—"],
+          ["Ref", detail.ref || "—"],
+          ["Content hash", detail.contentHash || "—"],
+          ["Installed", detail.installedAt || "—"],
+          ["Updated", detail.updatedAt || "—"],
+          ["Manager", detail.manager],
+        ].map(([label, value]) => (
+          <Text
+            key={label}
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.provenanceLine, { color: colors.textSecondary }]}
+          >
+            <Text style={{ color: colors.textTertiary }}>{label}: </Text>
+            {value}
+          </Text>
+        ))}
+      </SheetSection>
+
+      <SheetSection title="Files">
+        {detail.files && detail.files.length > 0 ? (
+          (detail.files.length > 64
+            ? detail.files.slice(0, 64)
+            : detail.files
+          ).map((file) => (
+            <Text
+              key={file.path}
+              numberOfLines={1}
+              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+              style={[styles.fileLine, { color: colors.textSecondary }]}
+            >
+              {file.path} · {file.size} B
+            </Text>
+          ))
+        ) : (
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.inspectNote, { color: colors.textTertiary }]}
+          >
+            No files listed.
+          </Text>
+        )}
+        {detail.files && detail.files.length > 64 ? (
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.inspectNote, { color: colors.textTertiary }]}
+          >
+            …{detail.files.length - 64} more files
+          </Text>
+        ) : null}
+      </SheetSection>
+
+      <SheetSection title="Agent bindings">
+        {detail.bindings.length === 0 ? (
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.inspectNote, { color: colors.textTertiary }]}
+          >
+            No bindings yet.
+          </Text>
+        ) : null}
+        {detail.bindings.map((binding) => (
+          <View key={`${binding.agent}:${binding.scope}`} style={styles.bindingRow}>
+            <View style={styles.bindingCopy}>
+              <Text
+                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+                style={[styles.bindingName, { color: colors.textPrimary }]}
+              >
+                {skillAgentLabel(binding.agent)} · {scopeLabel(binding.scope)}
+              </Text>
+              <Text
+                numberOfLines={1}
+                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+                style={[styles.bindingDetail, { color: colors.textTertiary }]}
+              >
+                {binding.mode === "symlink" ? "symlink" : "copy"}
+                {binding.enabled ? "" : " · disabled"}
+                {binding.driftHash ? " · drifted" : ""}
+              </Text>
+            </View>
+            {operationSupported("enable") && !binding.enabled ? (
+              <SmallAction
+                label="Enable"
+                accessibilityLabel={`Enable ${detail.skillName} for ${skillAgentLabel(binding.agent)}`}
+                busy={
+                  preparingMutation ===
+                  `enable:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
+                }
+                onPress={() => onBinding("enable", binding.agent, binding.scope as "project" | "global")}
+              />
+            ) : null}
+            {operationSupported("disable") && binding.enabled ? (
+              <SmallAction
+                label="Disable"
+                accessibilityLabel={`Disable ${detail.skillName} for ${skillAgentLabel(binding.agent)}`}
+                busy={
+                  preparingMutation ===
+                  `disable:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
+                }
+                onPress={() => onBinding("disable", binding.agent, binding.scope as "project" | "global")}
+              />
+            ) : null}
+            {operationSupported("unbind") ? (
+              <SmallAction
+                label="Unbind"
+                destructive
+                accessibilityLabel={`Unbind ${detail.skillName} from ${skillAgentLabel(binding.agent)}`}
+                busy={
+                  preparingMutation ===
+                  `unbind:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
+                }
+                onPress={() => onBinding("unbind", binding.agent, binding.scope as "project" | "global")}
+              />
+            ) : null}
+          </View>
+        ))}
+        {operationSupported("bind") && detail.owned ? (
+          <View style={styles.bindGrid}>
+            {compactSkillTargets(agentCountsFromDetail(detail)).map((target) => {
+              if (boundAgents.has(target.agent)) {
+                return null;
+              }
+              return (
+                <SmallAction
+                  key={target.agent}
+                  label={`Bind ${target.label}`}
+                  accessibilityLabel={`Bind ${detail.skillName} to ${target.label}`}
+                  busy={
+                    preparingMutation ===
+                    `bind:${installed?.id ?? detail.skillName}:${target.agent}:global`
+                  }
+                  onPress={() => onBinding("bind", target.agent, "global")}
+                />
+              );
+            })}
+            {hasProjectCwd ? (
+              <Text
+                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+                style={[styles.inspectNote, { color: colors.textTertiary }]}
+              >
+                Project-scope binds are available from the row actions; this
+                inspector binds globally.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </SheetSection>
+
+      {showBody ? (
+        <SheetSection title="SKILL.md">
+          <EnrichedMarkdownText
+            markdown={detail.skillMd!}
+            selectable
+            containerStyle={styles.markdownBody}
+            markdownStyle={markdownStyle(colors.textPrimary, colors.textSecondary, colors.accent)}
+            onLinkPress={(event) => {
+              void openSafeMarkdownUrl(event.url, (safeUrl) => Linking.openURL(safeUrl));
+            }}
+          />
+        </SheetSection>
+      ) : null}
+
+      <View style={styles.sheetActions}>
+        {operationSupported("update") && detail.owned ? (
+          <SheetAction
+            icon="arrow-up-circle-outline"
+            label="Update"
+            busy={preparingMutation === `update:${installed?.id ?? detail.skillName}`}
+            onPress={onUpdate}
+          />
+        ) : null}
+        {operationSupported("adopt") && !detail.owned ? (
+          <SheetAction
+            icon="arrow-forward-circle-outline"
+            label="Adopt"
+            busy={preparingMutation === `adopt:${installed?.id ?? detail.skillName}`}
+            onPress={onAdopt}
+          />
+        ) : null}
+        {operationSupported("forget") && !detail.owned && detail.tracked ? (
+          <SheetAction
+            icon="close-circle-outline"
+            label="Forget"
+            busy={preparingMutation === `forget:${installed?.id ?? detail.skillName}`}
+            onPress={onForget}
+          />
+        ) : null}
+        {operationSupported("uninstall") && detail.owned ? (
+          <SheetAction
+            icon="trash-outline"
+            label="Uninstall"
+            destructive
+            busy={preparingMutation === `uninstall:${installed?.id ?? detail.skillName}`}
+            onPress={onUninstall}
+          />
+        ) : null}
+      </View>
+      <Text
+        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+        style={[styles.inspectNote, { color: colors.textTertiary }]}
+      >
+        Mutations run on the daemon and refresh the authoritative inventory
+        afterward. Destructive actions always show an exact confirmation.
+      </Text>
+    </>
+  );
+}
+
+function agentCountsFromDetail(detail: PackageDetail): SkillsAgentCounts {
+  const counts: SkillsAgentCounts = {
+    codex: 0,
+    "claude-code": 0,
+    cursor: 0,
+    grok: 0,
+    opencode: 0,
+    pi: 0,
+  };
+  for (const binding of detail.bindings) {
+    counts[binding.agent] += 1;
+  }
+  return counts;
+}
+
+function markdownStyle(
+  text: string,
+  secondary: string,
+  accent: string,
+): Parameters<typeof EnrichedMarkdownText>[0]["markdownStyle"] {
+  return {
+    paragraph: { color: text, fontSize: 14, lineHeight: 20 },
+    h1: { color: text },
+    h2: { color: text },
+    h3: { color: text },
+    link: { color: accent },
+    codeBlock: { color: secondary },
+    strong: { color: text },
+    list: { color: text },
+    blockquote: { color: secondary },
+  };
+}
+
+/** Mobile presentation: bottom sheet. */
+function SkillInspectorSheet(props: {
+  detail: PackageDetail;
+  inspectState: SkillsRequestState<PackageDetail>;
+  installed: InstalledSkill | null;
+  selectedAgent: ManagedSkillAgent;
+  capabilities: readonly SkillMutationOperation[];
+  hasProjectCwd: boolean;
+  preparingMutation: string;
+  onClose(): void;
+  onBinding(
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(): void;
+  onForget(): void;
+  onAdopt(): void;
+  onUpdate(): void;
+}) {
+  const colors = useAppColors();
+  return (
+    <BottomSheetFrame visible maxHeight="88%" dragToDismiss onClose={props.onClose}>
+      <ScrollView
+        contentContainerStyle={styles.sheetContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {props.inspectState.status === "error" ? (
+          <SheetBody>
+            {props.inspectState.error || "This Skill could not be inspected."}
+          </SheetBody>
+        ) : (
+          <SkillInspectorBody {...props} />
+        )}
+      </ScrollView>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Close"
+        onPress={props.onClose}
+        style={({ pressed }) => [
+          styles.sheetClose,
+          { borderTopColor: colors.borderSubtle },
+          pressed ? { backgroundColor: colors.surfacePressed } : null,
+        ]}
+      >
+        <Text
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.sheetCloseText, { color: colors.textSecondary }]}
+        >
+          Close
+        </Text>
+      </Pressable>
+    </BottomSheetFrame>
+  );
+}
+
+/** Desktop presentation: persistent right-side panel. */
+function SkillInspector(props: {
+  detail: PackageDetail;
+  inspectState: SkillsRequestState<PackageDetail>;
+  installed: InstalledSkill | null;
+  selectedAgent: ManagedSkillAgent;
+  capabilities: readonly SkillMutationOperation[];
+  hasProjectCwd: boolean;
+  preparingMutation: string;
+  onClose(): void;
+  onBinding(
+    operation: "bind" | "unbind" | "enable" | "disable",
+    agent: ManagedSkillAgent,
+    scope: "project" | "global",
+  ): void;
+  onUninstall(): void;
+  onForget(): void;
+  onAdopt(): void;
+  onUpdate(): void;
+  onInspectFile(): void;
+}) {
+  const colors = useAppColors();
+  return (
+    <View style={[styles.inspectorPanel, { borderLeftColor: colors.borderSubtle }]}>
+      <View style={styles.inspectorHeader}>
+        <Text
+          numberOfLines={1}
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.inspectorHeaderTitle, { color: colors.textPrimary }]}
+        >
+          Inspector
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close inspector"
+          onPress={props.onClose}
+          style={({ pressed }) => [
+            styles.iconButton,
+            pressed ? { backgroundColor: colors.surfacePressed } : null,
+          ]}
+        >
+          <Ionicons
+            accessible={false}
+            name="close"
+            size={20}
+            color={colors.textSecondary}
+          />
+        </Pressable>
+      </View>
+      <ScrollView
+        contentContainerStyle={styles.inspectorContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {props.inspectState.status === "error" ? (
+          <SheetBody>
+            {props.inspectState.error || "This Skill could not be inspected."}
+          </SheetBody>
+        ) : (
+          <SkillInspectorBody {...props} />
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -1522,14 +2275,12 @@ function SheetBody({ children }: { children: React.ReactNode }) {
 function SheetSectionHeading({ children }: { children: React.ReactNode }) {
   const colors = useAppColors();
   return (
-    <View style={styles.sheetSectionHeading}>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.sheetSectionTitle, { color: colors.textPrimary }]}
-      >
-        {children}
-      </Text>
-    </View>
+    <Text
+      maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+      style={[styles.sheetSectionHeading, { color: colors.textTertiary }]}
+    >
+      {children}
+    </Text>
   );
 }
 
@@ -1542,19 +2293,9 @@ function SheetSection({
 }) {
   const colors = useAppColors();
   return (
-    <View style={styles.sheetSection}>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.sheetSectionTitle, { color: colors.textPrimary }]}
-      >
-        {title}
-      </Text>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.sheetBody, { color: colors.textSecondary }]}
-      >
-        {children}
-      </Text>
+    <View style={[styles.sheetSection, { borderTopColor: colors.borderSubtle }]}>
+      <SheetSectionHeading>{title}</SheetSectionHeading>
+      {children}
     </View>
   );
 }
@@ -1563,12 +2304,6 @@ function SheetSkillList({ skills }: { skills: string[] }) {
   const colors = useAppColors();
   return (
     <View style={styles.sheetSkillList}>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.sheetSectionTitle, { color: colors.textPrimary }]}
-      >
-        Included Skills
-      </Text>
       {skills.map((skill) => (
         <View
           key={skill}
@@ -1577,7 +2312,7 @@ function SheetSkillList({ skills }: { skills: string[] }) {
           <Ionicons
             accessible={false}
             name="library-outline"
-            size={17}
+            size={16}
             color={colors.textTertiary}
           />
           <Text
@@ -1593,8 +2328,8 @@ function SheetSkillList({ skills }: { skills: string[] }) {
 }
 
 function SheetOption({
-  icon,
   agent,
+  icon,
   label,
   detail,
   selected,
@@ -1602,8 +2337,8 @@ function SheetOption({
   busy,
   onPress,
 }: {
-  icon?: React.ComponentProps<typeof Ionicons>["name"];
   agent?: ManagedSkillAgent;
+  icon?: React.ComponentProps<typeof Ionicons>["name"];
   label: string;
   detail?: string;
   selected?: boolean;
@@ -1613,37 +2348,49 @@ function SheetOption({
 }) {
   const colors = useAppColors();
   return (
-    <Pressable
+    <AnimatedPressable
       accessibilityRole="button"
       accessibilityLabel={[label, detail].filter(Boolean).join(", ")}
-      accessibilityState={{ selected, disabled: disabled || busy }}
+      accessibilityState={{ selected: selected, disabled: disabled || busy }}
       disabled={disabled || busy}
       onPress={onPress}
-      style={({ pressed }) => [
+      style={[
         styles.sheetOption,
         selected ? { backgroundColor: colors.surfaceSubtle } : null,
-        pressed ? { backgroundColor: colors.surfacePressed } : null,
         disabled ? styles.disabled : null,
       ]}
     >
-      <View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={styles.sheetOptionIcon}
-      >
-        {busy ? (
-          <ActivityIndicator size="small" color={colors.accent} />
-        ) : agent ? (
-          <AgentKindIcon kind={managedAgentKind(agent)} size={22} variant="compact" />
-        ) : icon ? (
-          <Ionicons name={icon} size={21} color={colors.textSecondary} />
-        ) : null}
-      </View>
+      {agent ? (
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={styles.sheetOptionIcon}
+        >
+          <AgentKindIcon kind={managedAgentKind(agent)} size={20} variant="compact" />
+        </View>
+      ) : (
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={styles.sheetOptionIcon}
+        >
+          <Ionicons
+            accessible={false}
+            name={icon ?? "ellipse-outline"}
+            size={18}
+            color={selected ? colors.accent : colors.textTertiary}
+          />
+        </View>
+      )}
       <View style={styles.sheetOptionCopy}>
         <Text
           maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.sheetOptionLabel, { color: colors.textPrimary }]}
+          style={[
+            styles.sheetOptionLabel,
+            { color: selected ? colors.accent : colors.textPrimary },
+          ]}
         >
           {label}
         </Text>
@@ -1656,18 +2403,8 @@ function SheetOption({
           </Text>
         ) : null}
       </View>
-      <View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      >
-        {selected ? (
-          <Ionicons name="checkmark" size={20} color={colors.accent} />
-        ) : (
-          <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
-        )}
-      </View>
-    </Pressable>
+      {busy ? <ActivityIndicator size="small" color={colors.accent} /> : null}
+    </AnimatedPressable>
   );
 }
 
@@ -1706,7 +2443,7 @@ function SheetAction({
         <Ionicons
           accessible={false}
           name={icon}
-          size={19}
+          size={18}
           color={destructive ? colors.dangerText : colors.textSecondary}
         />
       )}
@@ -1973,6 +2710,8 @@ function managedAgentKind(agent: ManagedSkillAgent): AgentKind {
       return "claude";
     case "cursor":
       return "cursor";
+    case "grok":
+      return "grok";
     case "opencode":
       return "opencode";
     case "pi":
@@ -2014,6 +2753,10 @@ function rankedMetric(
   }
 }
 
+function shortHash(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 12)}…` : value;
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
   frame: {
@@ -2022,6 +2765,9 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     flex: 1,
   },
+  desktopRow: { flex: 1, flexDirection: "row" },
+  desktopList: { flex: 1, minWidth: 0 },
+  desktopPanel: { width: INSPECTOR_PANEL_WIDTH, flexShrink: 0 },
   surfaceTabs: {
     minHeight: 48,
     paddingHorizontal: 16,
@@ -2207,6 +2953,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingVertical: 10,
     gap: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   sheetSectionHeading: {
     paddingHorizontal: 4,
@@ -2278,4 +3025,59 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sheetCloseText: { ...TypeScale.label },
+  inspectorPanel: {
+    flex: 1,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    backgroundColor: "transparent",
+  },
+  inspectorHeader: {
+    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  inspectorHeaderTitle: {
+    ...TypeScale.label,
+    fontFamily: Typography.uiFontMedium,
+    flex: 1,
+  },
+  inspectorContent: { padding: 12, gap: 4, paddingBottom: 40 },
+  warningLine: {
+    ...TypeScale.compact,
+    paddingVertical: 1,
+  },
+  inspectNote: {
+    ...TypeScale.caption,
+    paddingTop: 4,
+  },
+  provenanceLine: {
+    ...TypeScale.compact,
+    paddingVertical: 1,
+  },
+  fileLine: {
+    ...TypeScale.caption,
+    paddingVertical: 1,
+  },
+  bindingRow: {
+    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  bindingCopy: { flex: 1, minWidth: 120, gap: 1 },
+  bindingName: {
+    ...TypeScale.compact,
+    fontFamily: Typography.uiFontMedium,
+  },
+  bindingDetail: { ...TypeScale.caption },
+  bindGrid: {
+    paddingTop: 8,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  markdownBody: { paddingTop: 4 },
 });

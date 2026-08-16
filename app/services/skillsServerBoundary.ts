@@ -2,6 +2,7 @@ export type SkillsRequestChannel =
   | "inventory"
   | "catalog"
   | "search"
+  | "inspect"
   | "mutation"
   | "handoff"
   | "plugins"
@@ -17,6 +18,7 @@ const channels: SkillsRequestChannel[] = [
   "inventory",
   "catalog",
   "search",
+  "inspect",
   "mutation",
   "handoff",
   "plugins",
@@ -34,6 +36,7 @@ export class SkillsServerRequestOwner {
     inventory: 0,
     catalog: 0,
     search: 0,
+    inspect: 0,
     mutation: 0,
     handoff: 0,
     plugins: 0,

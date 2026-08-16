@@ -9,18 +9,14 @@ import (
 	"time"
 )
 
-// Mutation execution runs the exact reviewed command on the daemon host. The
-// command was built by BuildMutationCommand / BuildPluginMutationCommand from
-// validated structured inputs, so executing it directly (no shell, no string
-// interpretation) is the same safe operation the user's terminal would run.
-//
-// This is the authoritative mutation path the App drives: build -> review ->
-// confirm -> execute -> refresh inventory. The terminal-handoff path never
-// observes an exit code, never acknowledges the result to the App, and never
-// converges the installed inventory; this executor closes all three gaps.
+// Native Skills mutations never shell out: every lifecycle effect is a
+// bounded filesystem or fetch operation implemented in operations.go with
+// exact rollback. The shell executor below exists only for the plugin
+// subsystem, which still reviews and runs the official Claude plugin CLI
+// command exactly as a user's terminal would.
 
 const (
-	// DefaultMutationTimeout bounds install/update (network and package
+	// DefaultMutationTimeout bounds import/update (network and package
 	// resolution can take minutes).
 	DefaultMutationTimeout = 5 * time.Minute
 	// DefaultRemovalTimeout bounds remove/uninstall (local bookkeeping).
@@ -49,14 +45,18 @@ type MutationExecutionOptions struct {
 	// CWD is the validated working directory for project-scope mutations.
 	// Empty means the daemon's own working directory.
 	CWD string
-	// Timeout bounds the whole execution. Zero selects the operation default.
+	// Timeout bounds native operations. Zero selects the operation default.
 	Timeout time.Duration
+	// InventoryOptions carries fixture home/state/env overrides for native
+	// operations. Empty keeps the production user home.
+	InventoryOptions InventoryOptions
 }
 
 // MutationTimeoutFor selects the bounded timeout for a built command.
 func MutationTimeoutFor(command MutationCommand) time.Duration {
 	switch command.Operation {
-	case OperationRemove:
+	case OperationUninstall, OperationForget, OperationBind, OperationUnbind,
+		OperationEnable, OperationDisable, OperationMigrate:
 		return DefaultRemovalTimeout
 	default:
 		return DefaultMutationTimeout
@@ -71,20 +71,10 @@ func PluginMutationTimeoutFor(command PluginMutationCommand) time.Duration {
 	return DefaultMutationTimeout
 }
 
-// ExecuteMutationCommand runs a reviewed Skills command with the exact argv
-// tokens (never a shell). A non-zero exit is a truthful failure result with
-// the bounded output tail; start/context errors are returned as errors so the
-// server can classify them on the wire.
-func ExecuteMutationCommand(ctx context.Context, command MutationCommand, options MutationExecutionOptions) (MutationExecution, error) {
-	argv, err := mutationArgv(command.Command, "npx")
-	if err != nil {
-		return MutationExecution{}, err
-	}
-	return executeCommandTokens(ctx, argv[0], argv[1:], options, MutationTimeoutFor(command))
-}
-
-// ExecutePluginMutationCommand runs a reviewed plugin-manager command the same
-// safe way.
+// ExecutePluginMutationCommand runs a reviewed plugin-manager command with the
+// exact argv tokens (never a shell). A non-zero exit is a truthful failure
+// result with the bounded output tail; start/context errors are returned as
+// errors so the server can classify them on the wire.
 func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCommand, options MutationExecutionOptions) (MutationExecution, error) {
 	argv, err := mutationArgv(command.Command, "claude")
 	if err != nil {
@@ -113,9 +103,6 @@ func mutationArgv(command, expectedBinary string) ([]string, error) {
 				return nil, ErrMutationCommandInvalid
 			}
 		}
-		// Tokens built by the validators never contain path separators inside
-		// a single argv element beyond the literal URL/identity forms; the
-		// allowlist above already excludes "/" ambiguity by construction.
 	}
 	return argv, nil
 }
@@ -148,13 +135,6 @@ func executeCommandTokens(ctx context.Context, binary string, args []string, opt
 
 	command := exec.CommandContext(runCtx, path, args...)
 	env := append(os.Environ(), "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
-	if binary == "npx" {
-		// The reviewed command is exact (`npx skills ...`) and must never be
-		// altered. When the skills package is not cached, npx prompts to
-		// install it; the npm config below answers that prompt the same way a
-		// user pressing Enter in a terminal would, without a TTY dependency.
-		env = append(env, "npm_config_yes=true", "npm_config_update_notifier=false")
-	}
 	command.Env = env
 	if options.CWD != "" {
 		command.Dir = options.CWD

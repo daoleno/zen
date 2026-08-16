@@ -16,10 +16,7 @@ import {
   skillAgentLabel,
 } from "./skillsManagement";
 import type { SkillsAgentCounts } from "./skillsScreenModel";
-import {
-  MANAGED_SKILL_AGENTS,
-  skillsRemovalPlanForAgent,
-} from "./skillsScreenModel";
+import { MANAGED_SKILL_AGENTS } from "./skillsScreenModel";
 
 /**
  * Layout and presentation truth for the compact Plugins & Skills surface.
@@ -130,12 +127,20 @@ export function installedSkillBadges(
   skill: InstalledSkill,
   installedCount: number,
 ): LifecycleBadge[] {
-  const badges: LifecycleBadge[] = [
-    { label: "Installed", tone: "accent" },
-    { label: scopeLabel(skill.scope), tone: "neutral" },
-  ];
+  const badges: LifecycleBadge[] = [];
+  if (skill.owned) {
+    badges.push({ label: skill.enabled ? "Zen-owned · Enabled" : "Zen-owned · Disabled", tone: skill.enabled ? "accent" : "warning" });
+  } else if (skill.tracked) {
+    badges.push({ label: "Tracked external", tone: "warning" });
+  } else {
+    badges.push({ label: "External", tone: "neutral" });
+  }
+  badges.push({ label: scopeLabel(skill.scope), tone: "neutral" });
   if (installedCount > 1) {
     badges.push({ label: `${installedCount} agents`, tone: "neutral" });
+  }
+  if (skill.migration === "duplicate" || skill.migration === "conflict") {
+    badges.push({ label: skill.migration === "conflict" ? "Conflict" : "Duplicate", tone: "warning" });
   }
   return badges;
 }
@@ -158,17 +163,26 @@ export function installedSkillOwnership(
   skill: InstalledSkill,
   agent: ManagedSkillAgent,
 ): OwnershipPresentation {
-  const plan = skillsRemovalPlanForAgent(skill, agent);
-  if (plan) {
-    const impact = plan.affectedAgents.length > 1
-      ? ` Removing it also affects ${plan.affectedAgents
-          .map(skillAgentLabel)
-          .join(", ")}.`
-      : "";
+  if (skill.capability.canManage) {
+    if (skill.owned) {
+      const binding = skill.bindings.find(
+        (candidate) => candidate.agent === agent,
+      );
+      return {
+        manageable: true,
+        summary: binding
+          ? `Bound · ${scopeLabel(binding.scope)} · ${
+              binding.enabled ? "Enabled" : "Disabled"
+            }`
+          : "In the canonical store",
+        detail: `Content lives in Zen's store; bindings are managed per Agent and scope.`,
+      };
+    }
     return {
       manageable: true,
-      summary: "Managed with npx skills",
-      detail: `Installed through the supported Skills manager.${impact}`,
+      summary: "External installation",
+      detail:
+        "Tracked for adopt/forget. Zen never edits external files unless you adopt.",
     };
   }
 
@@ -177,7 +191,7 @@ export function installedSkillOwnership(
     summary: ownershipLabel(skill),
     detail:
       skill.capability.reason ||
-      `${ownershipLabel(skill)} owns this Skill outside Zen's supported Skills manager.`,
+      `${ownershipLabel(skill)} owns this Skill outside Zen's management.`,
   };
 }
 
@@ -266,8 +280,10 @@ export function availablePluginOwnership(
 
 function ownershipLabel(skill: InstalledSkill): string {
   switch (skill.manager) {
-    case "skills-cli":
-      return "External Skills install";
+    case "zen":
+      return "Zen-owned";
+    case "external":
+      return "External installation";
     case "builtin":
       return "Built in";
     case "plugin":

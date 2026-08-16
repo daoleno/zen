@@ -1,38 +1,80 @@
-export type SkillAgent = "codex" | "claude-code" | "cursor" | "opencode" | "pi" | "grok";
-export type ManagedSkillAgent = Exclude<SkillAgent, "grok">;
+export type SkillAgent =
+  | "codex"
+  | "claude-code"
+  | "cursor"
+  | "grok"
+  | "opencode"
+  | "pi";
+/** Every Zen-supported Agent now has a real adapter; all six are managed. */
+export type ManagedSkillAgent = SkillAgent;
 export type SkillScope =
-  "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
-export type SkillManager = "skills-cli" | "plugin" | "builtin" | "unknown";
-export type SkillMutationOperation = "install" | "remove" | "update";
+  | "project"
+  | "global"
+  | "mixed"
+  | "plugin"
+  | "builtin"
+  | "unknown";
+export type SkillManager = "zen" | "external" | "plugin" | "builtin" | "unknown";
+export type BindingMode = "symlink" | "copy";
+export type SkillMutationOperation =
+  | "import"
+  | "migrate"
+  | "bind"
+  | "unbind"
+  | "enable"
+  | "disable"
+  | "uninstall"
+  | "forget"
+  | "adopt"
+  | "update";
 
 export interface SkillBinding {
-  sourcePath: string;
+  agent: SkillAgent;
   scope: SkillScope;
-  agents: SkillAgent[];
+  mode: BindingMode;
+  targetPath: string;
+  sourcePath: string;
+  enabled: boolean;
+  boundAt: string;
+  driftHash?: string;
+  note?: string;
+}
+
+export interface SkillRiskSignal {
+  type: string;
+  detail?: string;
+  severity: "info" | "warn" | "alert";
+  file?: string;
 }
 
 export interface SkillAgentSupport {
   agent: SkillAgent;
   name: string;
   supported: boolean;
-  cliManaged: boolean;
+  globalScope: boolean;
+  projectScope: boolean;
+  bindingMode: BindingMode;
+  bindingModeNote?: string;
+  defaultGlobalDir: string;
   reason?: string;
 }
 
-export interface SkillRemovalPlan {
-  agent: ManagedSkillAgent;
-  affectedAgents: ManagedSkillAgent[];
+export interface ExecutorSupport {
+  name: string;
+  kind?: string;
+  agent: SkillAgent;
+  command?: string;
 }
 
 export type SkillManagementCapability =
   | {
-      canRemove: true;
-      removalPlans: SkillRemovalPlan[];
+      canManage: true;
+      operations: SkillMutationOperation[];
       reason?: undefined;
     }
   | {
-      canRemove: false;
-      removalPlans: [];
+      canManage: false;
+      operations: [];
       reason?: string;
     };
 
@@ -40,16 +82,27 @@ export interface InstalledSkill {
   id: string;
   name: string;
   description?: string;
+  manager: SkillManager;
+  owned: boolean;
+  tracked: boolean;
+  enabled: boolean;
   canonicalPath: string;
   sourcePath: string;
   scope: SkillScope;
   agents: SkillAgent[];
   bindings: SkillBinding[];
-  manager: SkillManager;
   provenance: string;
   source?: string;
   sourceType?: string;
+  sourceUrl?: string;
+  ref?: string;
+  contentHash?: string;
+  installedAt?: string;
+  updatedAt?: string;
   plugin?: string;
+  risk?: SkillRiskSignal[];
+  warnings?: string[];
+  migration?: "owned" | "external" | "duplicate" | "conflict" | string;
   capability: SkillManagementCapability;
 }
 
@@ -58,10 +111,16 @@ export interface SkillsInventory {
   cwd?: string;
   skills: InstalledSkill[];
   agents: SkillAgentSupport[];
+  executors?: ExecutorSupport[];
   warnings: string[];
-  /** Authoritative mutation capability from the daemon; update appears only
-   * when this daemon truly serves the collection-level update operation. */
   mutationOperations: SkillMutationOperation[];
+  migration: {
+    owned: number;
+    external: number;
+    duplicate: number;
+    conflict: number;
+    tracked: number;
+  };
 }
 
 export interface CatalogSkill {
@@ -106,14 +165,24 @@ export interface SkillsLeaderboards {
   hot: SkillsLeaderboard;
 }
 
+export interface SkillMutationChange {
+  kind: "create_dir" | "copy_file" | "symlink" | "remove" | "keep" | "write";
+  path: string;
+  destination?: string;
+  detail?: string;
+}
+
 export interface SkillsMutationCommand {
   operation: SkillMutationOperation;
-  command: string;
+  scope: "project" | "global";
+  agents: SkillAgent[];
+  skillName: string;
   catalogId?: string;
   source?: string;
-  skillName: string;
-  scope: "project" | "global";
-  agents: ManagedSkillAgent[];
+  ref?: string;
+  summary: string;
+  changes: SkillMutationChange[];
+  destructive: boolean;
 }
 
 export interface SkillsMutationExecution {
@@ -128,6 +197,38 @@ export interface SkillsMutationResult {
   execution: SkillsMutationExecution;
 }
 
+export interface PackageFile {
+  path: string;
+  size: number;
+  mode: string;
+}
+
+export interface PackageDetail {
+  skillName: string;
+  description?: string;
+  manager: SkillManager;
+  owned: boolean;
+  tracked: boolean;
+  enabled: boolean;
+  canonicalPath?: string;
+  sourcePath?: string;
+  source?: string;
+  sourceType?: string;
+  sourceUrl?: string;
+  ref?: string;
+  contentHash?: string;
+  installedAt?: string;
+  updatedAt?: string;
+  scope: SkillScope;
+  agents: SkillAgent[];
+  bindings: SkillBinding[];
+  files?: PackageFile[];
+  skillMd?: string;
+  risk?: SkillRiskSignal[];
+  warnings?: string[];
+  capability: SkillManagementCapability;
+}
+
 export type SkillsRequestState<T> =
   | { status: "idle"; generation: number; data?: undefined; error?: undefined }
   | {
@@ -140,14 +241,15 @@ export type SkillsRequestState<T> =
   | { status: "empty"; generation: number; data: T; error?: undefined }
   | { status: "error"; generation: number; data?: T; error: string };
 
-const AGENTS = new Set<SkillAgent>(["codex", "claude-code", "cursor", "opencode", "pi", "grok"]);
-const MANAGED_AGENTS = new Set<ManagedSkillAgent>([
+const AGENTS = new Set<SkillAgent>([
   "codex",
   "claude-code",
   "cursor",
+  "grok",
   "opencode",
   "pi",
 ]);
+const MANAGED_AGENTS = AGENTS;
 const SCOPES = new Set<SkillScope>([
   "project",
   "global",
@@ -157,13 +259,34 @@ const SCOPES = new Set<SkillScope>([
   "unknown",
 ]);
 const MANAGERS = new Set<SkillManager>([
-  "skills-cli",
+  "zen",
+  "external",
   "plugin",
   "builtin",
   "unknown",
 ]);
-const OPERATIONS = new Set<SkillMutationOperation>(["install", "remove", "update"]);
-const LEGACY_MUTATION_OPERATIONS: SkillMutationOperation[] = ["install", "remove"];
+const OPERATIONS = new Set<SkillMutationOperation>([
+  "import",
+  "migrate",
+  "bind",
+  "unbind",
+  "enable",
+  "disable",
+  "uninstall",
+  "forget",
+  "adopt",
+  "update",
+]);
+const BINDING_MODES = new Set<BindingMode>(["symlink", "copy"]);
+const CHANGE_KINDS = new Set<string>([
+  "create_dir",
+  "copy_file",
+  "symlink",
+  "remove",
+  "keep",
+  "write",
+]);
+const LEGACY_MUTATION_OPERATIONS: SkillMutationOperation[] = [];
 const SKILL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
@@ -173,6 +296,9 @@ const MAX_CATALOG_SKILLS = 30;
 const MAX_LEADERBOARD_SKILLS = 30;
 const MAX_LEADERBOARD_TOTAL = 10_000_000;
 const MAX_CATALOG_METRIC = 1_000_000_000_000;
+const MAX_BINDINGS = 12;
+const MAX_CHANGES = 24;
+const MAX_FILES = 128;
 
 export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   const inventory = record(value);
@@ -212,11 +338,29 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   if (!generatedAt || Number.isNaN(Date.parse(generatedAt))) {
     throw new Error("Daemon returned an invalid Skills inventory timestamp.");
   }
+  const rawExecutors = Array.isArray(inventory.executors)
+    ? inventory.executors
+    : [];
+  const executors = rawExecutors
+    .map(normalizeExecutorSupport)
+    .filter((executor): executor is ExecutorSupport => executor != null);
+  if (executors.length !== rawExecutors.length) {
+    throw new Error("Daemon returned an invalid executor contract.");
+  }
+  const migrationRaw = record(inventory.migration);
+  const migration = {
+    owned: boundedCount(migrationRaw.owned),
+    external: boundedCount(migrationRaw.external),
+    duplicate: boundedCount(migrationRaw.duplicate),
+    conflict: boundedCount(migrationRaw.conflict),
+    tracked: boundedCount(migrationRaw.tracked),
+  };
   return {
     generatedAt,
     cwd: boundedString(inventory.cwd, 4096) || undefined,
     skills,
     agents,
+    executors: executors.length > 0 ? executors : undefined,
     warnings: (Array.isArray(inventory.warnings) ? inventory.warnings : [])
       .map((warning) => boundedString(warning, 240))
       .filter(Boolean)
@@ -224,21 +368,25 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
     mutationOperations: normalizeMutationOperations(
       inventory.mutation_operations,
     ),
+    migration,
   };
 }
 
+function boundedCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    return 0;
+  }
+  return value;
+}
+
 /**
- * The daemon's authoritative mutation capability list. An older daemon omits
- * the field entirely (its documented historical wire only served install and
- * remove); a present field must be a strict subset of known operations or the
- * snapshot is rejected. The App gates every lifecycle affordance on this list.
+ * The daemon's authoritative mutation capability list. The App gates every
+ * lifecycle affordance on this list; an absent field is rejected so an old
+ * daemon can never silently disable every action.
  */
 function normalizeMutationOperations(
   value: unknown,
 ): SkillMutationOperation[] {
-  if (value == null) {
-    return [...LEGACY_MUTATION_OPERATIONS];
-  }
   if (!Array.isArray(value) || value.length < 1 || value.length > OPERATIONS.size) {
     throw new Error("Daemon returned an invalid Skills mutation capability.");
   }
@@ -314,49 +462,90 @@ export function normalizeSkillsMutationCommand(
   const operation = raw.operation;
   const scope = raw.scope;
   const skillName = boundedString(raw.skill_name, 128);
-  const command = boundedString(raw.command, 1024);
+  const summary = boundedString(raw.summary, 512);
+  const destructive = raw.destructive === true;
   if (
     typeof operation !== "string" ||
     !OPERATIONS.has(operation as SkillMutationOperation) ||
     (scope !== "project" && scope !== "global") ||
-    (operation !== "update" && !isSkillName(skillName)) ||
-    !command
+    !summary
   ) {
     throw new Error("Daemon returned an invalid Skills command.");
   }
-  const agents =
-    operation === "update"
-      ? normalizeEmptyAgents(raw.agents)
-      : normalizeManagedAgents(raw.agents);
+  const agents = normalizeAgents(raw.agents);
+  if (agents == null) {
+    throw new Error("Daemon returned invalid Skill targets.");
+  }
+  const rawChanges = Array.isArray(raw.changes) ? raw.changes : [];
+  if (rawChanges.length < 1 || rawChanges.length > MAX_CHANGES) {
+    throw new Error("Daemon returned an invalid Skills change plan.");
+  }
+  const changes: SkillMutationChange[] = [];
+  for (const change of rawChanges) {
+    const candidate = record(change);
+    const kind = candidate.kind;
+    const path = boundedString(candidate.path, 4096);
+    const destination = boundedString(candidate.destination, 4096);
+    const detail = boundedString(candidate.detail, 240);
+    if (
+      typeof kind !== "string" ||
+      !CHANGE_KINDS.has(kind) ||
+      !path ||
+      (candidate.destination != null && !destination)
+    ) {
+      throw new Error("Daemon returned an invalid Skills change.");
+    }
+    changes.push({
+      kind: kind as SkillMutationChange["kind"],
+      path,
+      destination: destination || undefined,
+      detail: detail || undefined,
+    });
+  }
   const normalized: SkillsMutationCommand = {
     operation: operation as SkillMutationOperation,
-    command,
-    skillName,
     scope,
+    skillName,
     agents,
+    summary,
+    changes,
+    destructive,
   };
-  if (operation === "install") {
+  if (operation === "import") {
     const catalogId = boundedString(raw.catalog_id, 272);
-    const source = boundedString(raw.source, 141);
-    if (!isCatalogIdentity(catalogId, source, skillName)) {
-      throw new Error("Daemon returned an unbound Skills install command.");
+    const source = boundedString(raw.source, 1024);
+    const ref = boundedString(raw.ref, 128);
+    if (!catalogId || !source) {
+      throw new Error("Daemon returned an unbound Skills import command.");
+    }
+    if (
+      !isRepository(source) ||
+      !isSkillName(skillName) ||
+      catalogId !== `${source}/${skillName}`
+    ) {
+      throw new Error("Daemon returned an invalid Skills import command.");
     }
     normalized.catalogId = catalogId;
     normalized.source = source;
-  } else if (operation === "update") {
-    // The official CLI updates every installed Skill in one scope; the command
-    // carries no single-Skill identity and no Agent targets.
-    if (
-      skillName ||
-      raw.catalog_id != null ||
-      raw.source != null ||
-      agents.length !== 0
-    ) {
-      throw new Error("Daemon returned an invalid Skills update command.");
+    normalized.ref = ref || undefined;
+  } else if (operation !== "migrate") {
+    if (!isSkillName(skillName)) {
+      throw new Error("Daemon returned an invalid Skills command.");
+    }
+    const source = boundedString(raw.source, 1024);
+    const ref = boundedString(raw.ref, 128);
+    if (source) {
+      normalized.source = source;
+    }
+    if (ref) {
+      normalized.ref = ref;
     }
   }
-  if (!isExactOfficialSkillsCommand(normalized)) {
-    throw new Error("Daemon returned a non-official Skills command.");
+  if (operation === "migrate" && skillName) {
+    throw new Error("Daemon returned an invalid Skills migrate command.");
+  }
+  if (!isValidMutationCommand(normalized)) {
+    throw new Error("Daemon returned a non-reviewable Skills command.");
   }
   return normalized;
 }
@@ -401,7 +590,7 @@ export function assertSkillsMutationMatchesRequest(
     source?: string;
     skillName?: string;
     scope: "project" | "global";
-    agents?: ManagedSkillAgent[];
+    agents?: SkillAgent[];
   },
 ): void {
   assertSkillsCommandMatchesRequest(result.command, expected);
@@ -415,7 +604,7 @@ function assertSkillsCommandMatchesRequest(
     source?: string;
     skillName?: string;
     scope: "project" | "global";
-    agents?: ManagedSkillAgent[];
+    agents?: SkillAgent[];
   },
 ): void {
   if (
@@ -424,30 +613,110 @@ function assertSkillsCommandMatchesRequest(
     command.agents.length !== (expected.agents ?? []).length ||
     command.agents.some(
       (agent, index) => agent !== (expected.agents ?? [])[index],
-    )
+    ) ||
+    (expected.skillName != null && command.skillName !== expected.skillName)
   ) {
     throw new Error("Daemon executed a Skills command for a different request.");
   }
-  if (expected.operation === "install") {
+  if (expected.operation === "import") {
     if (
       command.catalogId !== expected.skillId ||
-      command.source !== expected.source ||
-      (expected.skillName != null && command.skillName !== expected.skillName)
+      command.source !== expected.source
     ) {
       throw new Error("Daemon executed a Skills command for a different request.");
     }
-  } else if (
-    expected.operation === "remove" &&
-    expected.skillName != null &&
-    command.skillName !== expected.skillName
-  ) {
-    throw new Error("Daemon executed a Skills command for a different request.");
-  } else if (
-    expected.operation === "update" &&
-    (command.agents.length !== 0 || command.skillName !== "")
-  ) {
-    throw new Error("Daemon executed a Skills command for a different request.");
   }
+}
+
+export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
+  const raw = record(value);
+  const skillName = boundedString(raw.skill_name, 128);
+  const manager = raw.manager;
+  const scope = raw.scope;
+  if (
+    !isSkillName(skillName) ||
+    typeof manager !== "string" ||
+    !MANAGERS.has(manager as SkillManager) ||
+    typeof scope !== "string" ||
+    !SCOPES.has(scope as SkillScope)
+  ) {
+    throw new Error("Daemon returned an invalid Skills detail.");
+  }
+  const agents = normalizeAgents(raw.agents) ?? [];
+  const bindings = (Array.isArray(raw.bindings) ? raw.bindings : [])
+    .map(normalizeBinding)
+    .filter((binding): binding is SkillBinding => binding != null);
+  if (bindings.some((binding) => !agents.includes(binding.agent))) {
+    throw new Error("Daemon returned an inconsistent Skills detail.");
+  }
+  const files = (Array.isArray(raw.files) ? raw.files : [])
+    .slice(0, MAX_FILES)
+    .map((candidate): PackageFile | null => {
+      const file = record(candidate);
+      const path = boundedString(file.path, 1024);
+      const size = file.size;
+      const mode = boundedString(file.mode, 16);
+      if (
+        !path ||
+        typeof size !== "number" ||
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > 64 << 20 ||
+        !mode
+      ) {
+        return null;
+      }
+      return { path, size, mode };
+    })
+    .filter((file): file is PackageFile => file != null);
+  return {
+    skillName,
+    description: boundedString(raw.description, 240) || undefined,
+    manager: manager as SkillManager,
+    owned: raw.owned === true,
+    tracked: raw.tracked === true,
+    enabled: raw.enabled === true,
+    canonicalPath: boundedString(raw.canonical_path, 4096) || undefined,
+    sourcePath: boundedString(raw.source_path, 4096) || undefined,
+    source: boundedString(raw.source, 1024) || undefined,
+    sourceType: boundedString(raw.source_type, 32) || undefined,
+    sourceUrl: boundedString(raw.source_url, 1024) || undefined,
+    ref: boundedString(raw.ref, 128) || undefined,
+    contentHash: boundedString(raw.content_hash, 64) || undefined,
+    installedAt: boundedString(raw.installed_at, 64) || undefined,
+    updatedAt: boundedString(raw.updated_at, 64) || undefined,
+    scope: scope as SkillScope,
+    agents,
+    bindings,
+    files: files.length > 0 ? files : undefined,
+    skillMd: boundedMultilineString(raw.skill_md, 70000) || undefined,
+    risk: (Array.isArray(raw.risk) ? raw.risk : [])
+      .map(normalizeRisk)
+      .filter((risk): risk is SkillRiskSignal => risk != null),
+    warnings: (Array.isArray(raw.warnings) ? raw.warnings : [])
+      .map((warning) => boundedString(warning, 240))
+      .filter(Boolean)
+      .slice(0, 12),
+    capability: normalizeCapability(raw.capability),
+  };
+}
+
+function normalizeRisk(value: unknown): SkillRiskSignal | null {
+  const raw = record(value);
+  const type = boundedString(raw.type, 40);
+  const severity = raw.severity;
+  if (
+    !type ||
+    (severity !== "info" && severity !== "warn" && severity !== "alert")
+  ) {
+    return null;
+  }
+  return {
+    type,
+    detail: boundedString(raw.detail, 240) || undefined,
+    severity,
+    file: boundedString(raw.file, 1024) || undefined,
+  };
 }
 
 export function createSkillsRequestState<T>(): SkillsRequestState<T> {
@@ -511,35 +780,64 @@ export function buildSkillsMutationConfirmation(
   message: string;
   confirmLabel: string;
 } {
-  if (command.operation === "update") {
-    const scope = scopeLabel(command.scope);
-    return {
-      title: `Update ${scope} Skills?`,
-      message: [
-        `Scope: ${scope}`,
-        "Updates every installed Skill in this scope to its latest version.",
-        "",
-        "Command:",
-        command.command,
-      ].join("\n"),
-      confirmLabel: "Update",
-    };
+  const verb = mutationVerb(command.operation);
+  const scope = scopeLabel(command.scope);
+  const lines = [command.summary, "", `Scope: ${scope}`];
+  if (command.agents.length > 0) {
+    lines.push(
+      `Target${command.agents.length === 1 ? "" : "s"}: ${command.agents
+        .map(skillAgentLabel)
+        .join(", ")}`,
+    );
   }
-  const verb = command.operation === "install" ? "Install" : "Remove";
-  const agentLabel = command.operation === "install" ? "Target" : "Affected";
-  const agentCardinality = command.agents.length === 1 ? "Agent" : "Agents";
-  return {
-    title: `${verb} ${command.skillName}?`,
-    message: [
-      `Skill: ${command.skillName}`,
-      `Scope: ${scopeLabel(command.scope)}`,
-      `${agentLabel} ${agentCardinality}: ${command.agents.map(skillAgentLabel).join(", ")}`,
+  if (command.operation === "import" && command.source) {
+    lines.push(`Source: ${command.source}`);
+    if (command.ref) {
+      lines.push(`Pinned ref: ${command.ref}`);
+    }
+  }
+  if (command.destructive) {
+    lines.push(
       "",
-      "Command:",
-      command.command,
-    ].join("\n"),
+      "This removes the following:",
+      ...command.changes.map(
+        (change) =>
+          `• ${change.path}${change.detail ? ` (${change.detail})` : ""}`,
+      ),
+    );
+  } else if (command.changes.length > 0) {
+    lines.push("", "Changes:", ...command.changes.map((change) => `• ${change.detail || change.path}`));
+  }
+  return {
+    title: `${verb} ${command.skillName || "Skills"}?`,
+    message: lines.join("\n"),
     confirmLabel: verb,
   };
+}
+
+function mutationVerb(operation: SkillMutationOperation): string {
+  switch (operation) {
+    case "import":
+      return "Import";
+    case "migrate":
+      return "Discover";
+    case "bind":
+      return "Bind";
+    case "unbind":
+      return "Unbind";
+    case "enable":
+      return "Enable";
+    case "disable":
+      return "Disable";
+    case "uninstall":
+      return "Uninstall";
+    case "forget":
+      return "Forget";
+    case "adopt":
+      return "Adopt";
+    case "update":
+      return "Update";
+  }
 }
 
 export function skillAgentLabel(agent: SkillAgent): string {
@@ -550,16 +848,16 @@ export function skillAgentLabel(agent: SkillAgent): string {
       return "Claude Code";
     case "cursor":
       return "Cursor";
+    case "grok":
+      return "Grok";
     case "opencode":
       return "OpenCode";
     case "pi":
       return "Pi";
-    case "grok":
-      return "Grok";
   }
 }
 
-export function scopeLabel(scope: SkillScope): string {
+export function scopeLabel(scope: SkillScope | "project" | "global"): string {
   switch (scope) {
     case "project":
       return "Project";
@@ -597,6 +895,23 @@ export function isRepository(value: string): boolean {
     OWNER_PATTERN.test(parts[0] || "") &&
     REPO_PATTERN.test(parts[1] || "") &&
     !parts[1]?.toLowerCase().endsWith(".git")
+  );
+}
+
+// isValidMutationCommand is the plan review gate: bounded, deterministic, and
+// fail-closed. The App renders exactly this plan; nothing else is actionable.
+function isValidMutationCommand(command: SkillsMutationCommand): boolean {
+  if (command.summary.length > 512) {
+    return false;
+  }
+  if (command.operation !== "migrate" && command.skillName.length === 0) {
+    return false;
+  }
+  if (command.operation === "migrate" && command.changes.length === 0) {
+    return false;
+  }
+  return command.changes.every(
+    (change) => change.path.length > 0 && change.path.length <= 4096,
   );
 }
 
@@ -781,7 +1096,7 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
     return null;
   }
   const rawBindings = Array.isArray(raw.bindings) ? raw.bindings : [];
-  if (rawBindings.length < 1 || rawBindings.length > 12) {
+  if (rawBindings.length > MAX_BINDINGS) {
     return null;
   }
   const bindings = rawBindings.map(normalizeBinding);
@@ -790,140 +1105,153 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
   }
   const validBindings = bindings as SkillBinding[];
   const bindingPaths = new Set(
-    validBindings.map((binding) => binding.sourcePath),
+    validBindings.map((binding) => binding.targetPath),
   );
-  const bindingScopes = new Set(validBindings.map((binding) => binding.scope));
-  const bindingAgents = new Set(
-    validBindings.flatMap((binding) => binding.agents),
-  );
+  const bindingAgents = new Set(validBindings.map((binding) => binding.agent));
   if (
     bindingPaths.size !== validBindings.length ||
-    !bindingPaths.has(sourcePath) ||
-    (scope === "mixed"
-      ? bindingScopes.size < 2
-      : validBindings.some((binding) => binding.scope !== scope)) ||
     agents.some((agent) => !bindingAgents.has(agent)) ||
     bindingAgents.size !== agents.length
   ) {
     return null;
   }
-  const capability = record(raw.capability);
-  const cliManaged = manager === "skills-cli" && isSkillName(name);
-  const source = boundedString(raw.source, 141);
-  const removable =
-    cliManaged &&
-    (scope === "project" || scope === "global") &&
-    capability.can_remove === true;
-  const removalPlans = removable
-    ? normalizeRemovalPlans(capability.removal_plans, agents)
-    : null;
+  const capability = normalizeCapability(raw.capability);
   return {
     id,
     name,
     description: boundedString(raw.description, 240) || undefined,
+    manager: manager as SkillManager,
+    owned: raw.owned === true,
+    tracked: raw.tracked === true,
+    enabled: raw.enabled === true,
     canonicalPath,
     sourcePath,
     scope: scope as SkillScope,
     agents,
     bindings: validBindings,
-    manager: manager as SkillManager,
     provenance: boundedString(raw.provenance, 240) || "Unknown provenance",
-    source: source && isRepository(source) ? source : undefined,
+    source: boundedString(raw.source, 1024) || undefined,
     sourceType: boundedString(raw.source_type, 32) || undefined,
+    sourceUrl: boundedString(raw.source_url, 1024) || undefined,
+    ref: boundedString(raw.ref, 128) || undefined,
+    contentHash: boundedString(raw.content_hash, 64) || undefined,
+    installedAt: boundedString(raw.installed_at, 64) || undefined,
+    updatedAt: boundedString(raw.updated_at, 64) || undefined,
     plugin: boundedString(raw.plugin, 128) || undefined,
-    capability:
-      removable && removalPlans
-        ? { canRemove: true, removalPlans }
-        : {
-            canRemove: false,
-            removalPlans: [],
-            reason:
-              boundedString(capability.reason, 240) ||
-              (removable
-                ? "No exact Agent removal plan was proven."
-                : undefined),
-          },
+    risk: (Array.isArray(raw.risk) ? raw.risk : [])
+      .map(normalizeRisk)
+      .filter((risk): risk is SkillRiskSignal => risk != null),
+    warnings: (Array.isArray(raw.warnings) ? raw.warnings : [])
+      .map((warning) => boundedString(warning, 240))
+      .filter(Boolean)
+      .slice(0, 12),
+    migration: boundedString(raw.migration, 40) || undefined,
+    capability,
   };
 }
 
-function normalizeRemovalPlans(
-  value: unknown,
-  installedAgents: SkillAgent[],
-): SkillRemovalPlan[] | null {
-  const managedInstalled = installedAgents.filter(
-    (agent): agent is ManagedSkillAgent => agent !== "grok",
-  );
-  if (
-    !Array.isArray(value) ||
-    value.length < 1 ||
-    value.length !== managedInstalled.length
-  ) {
-    return null;
+function normalizeCapability(value: unknown): SkillManagementCapability {
+  const raw = record(value);
+  if (raw.can_manage === true) {
+    const rawOps = Array.isArray(raw.operations) ? raw.operations : [];
+    const operations = rawOps
+      .filter(
+        (op): op is SkillMutationOperation =>
+          typeof op === "string" && OPERATIONS.has(op as SkillMutationOperation),
+      )
+      .slice(0, OPERATIONS.size);
+    if (operations.length !== rawOps.length || operations.length === 0) {
+      return {
+        canManage: false,
+        operations: [],
+        reason: boundedString(raw.reason, 240) || undefined,
+      };
+    }
+    return { canManage: true, operations };
   }
-  const installed = new Set(managedInstalled);
-  const seen = new Set<ManagedSkillAgent>();
-  const plans: SkillRemovalPlan[] = [];
-  for (const candidate of value) {
-    const raw = record(candidate);
-    const agent = raw.agent;
-    if (
-      typeof agent !== "string" ||
-      !MANAGED_AGENTS.has(agent as ManagedSkillAgent) ||
-      !installed.has(agent as ManagedSkillAgent) ||
-      seen.has(agent as ManagedSkillAgent)
-    ) {
-      return null;
-    }
-    let affectedAgents: ManagedSkillAgent[];
-    try {
-      affectedAgents = normalizeManagedAgents(raw.affected_agents);
-    } catch {
-      return null;
-    }
-    if (
-      !affectedAgents.includes(agent as ManagedSkillAgent) ||
-      affectedAgents.some((affected) => !installed.has(affected))
-    ) {
-      return null;
-    }
-    seen.add(agent as ManagedSkillAgent);
-    plans.push({
-      agent: agent as ManagedSkillAgent,
-      affectedAgents,
-    });
-  }
-  return seen.size === installed.size ? plans : null;
+  return {
+    canManage: false,
+    operations: [],
+    reason: boundedString(raw.reason, 240) || undefined,
+  };
 }
 
 function normalizeBinding(value: unknown): SkillBinding | null {
   const raw = record(value);
-  const sourcePath = boundedString(raw.source_path, 4096);
+  const agent = raw.agent;
   const scope = raw.scope;
-  const agents = normalizeAgents(raw.agents);
+  const mode = raw.mode;
+  const targetPath = boundedString(raw.target_path, 4096);
+  const sourcePath = boundedString(raw.source_path, 4096);
+  const boundAt = boundedString(raw.bound_at, 64);
   if (
-    !sourcePath ||
+    typeof agent !== "string" ||
+    !AGENTS.has(agent as SkillAgent) ||
     typeof scope !== "string" ||
     !SCOPES.has(scope as SkillScope) ||
-    agents == null
+    typeof mode !== "string" ||
+    !BINDING_MODES.has(mode as BindingMode) ||
+    !targetPath ||
+    !sourcePath ||
+    !boundAt ||
+    typeof raw.enabled !== "boolean"
   ) {
     return null;
   }
-  return { sourcePath, scope: scope as SkillScope, agents };
+  return {
+    agent: agent as SkillAgent,
+    scope: scope as SkillScope,
+    mode: mode as BindingMode,
+    targetPath,
+    sourcePath,
+    enabled: raw.enabled,
+    boundAt,
+    driftHash: boundedString(raw.drift_hash, 64) || undefined,
+    note: boundedString(raw.note, 240) || undefined,
+  };
 }
 
 function normalizeAgentSupport(value: unknown): SkillAgentSupport | null {
   const raw = record(value);
   const agent = raw.agent;
   const name = boundedString(raw.name, 40);
-  if (typeof agent !== "string" || !AGENTS.has(agent as SkillAgent) || !name) {
+  const bindingMode = raw.binding_mode;
+  const defaultGlobalDir = boundedString(raw.default_global_dir, 1024);
+  if (
+    typeof agent !== "string" ||
+    !AGENTS.has(agent as SkillAgent) ||
+    !name ||
+    (typeof bindingMode !== "string" ||
+      !BINDING_MODES.has(bindingMode as BindingMode)) ||
+    !defaultGlobalDir
+  ) {
     return null;
   }
   return {
     agent: agent as SkillAgent,
     name,
     supported: raw.supported === true,
-    cliManaged: raw.cli_managed === true,
+    globalScope: raw.global_scope === true,
+    projectScope: raw.project_scope === true,
+    bindingMode: bindingMode as BindingMode,
+    bindingModeNote: boundedString(raw.binding_mode_note, 240) || undefined,
+    defaultGlobalDir,
     reason: boundedString(raw.reason, 240) || undefined,
+  };
+}
+
+function normalizeExecutorSupport(value: unknown): ExecutorSupport | null {
+  const raw = record(value);
+  const name = boundedString(raw.name, 128);
+  const agent = raw.agent;
+  if (!name || typeof agent !== "string" || !AGENTS.has(agent as SkillAgent)) {
+    return null;
+  }
+  return {
+    name,
+    kind: boundedString(raw.kind, 40) || undefined,
+    agent: agent as SkillAgent,
+    command: boundedString(raw.command, 1024) || undefined,
   };
 }
 
@@ -944,97 +1272,6 @@ function normalizeAgents(value: unknown): SkillAgent[] | null {
     seen.add(raw as SkillAgent);
   }
   return [...seen];
-}
-
-function normalizeManagedAgents(value: unknown): ManagedSkillAgent[] {
-  if (
-    !Array.isArray(value) ||
-    value.length < 1 ||
-    value.length > MANAGED_AGENTS.size
-  ) {
-    throw new Error("Daemon returned invalid Skill targets.");
-  }
-  const seen = new Set<ManagedSkillAgent>();
-  for (const raw of value) {
-    if (
-      typeof raw !== "string" ||
-      !MANAGED_AGENTS.has(raw as ManagedSkillAgent)
-    ) {
-      throw new Error("Daemon returned an unsupported Skill target.");
-    }
-    if (seen.has(raw as ManagedSkillAgent)) {
-      throw new Error("Daemon returned duplicate Skill targets.");
-    }
-    seen.add(raw as ManagedSkillAgent);
-  }
-  return [...seen];
-}
-
-function normalizeEmptyAgents(value: unknown): ManagedSkillAgent[] {
-  if (value == null || (Array.isArray(value) && value.length === 0)) {
-    return [];
-  }
-  throw new Error("Daemon returned invalid Skill update targets.");
-}
-
-function isExactOfficialSkillsCommand(value: SkillsMutationCommand): boolean {
-  if (/[^A-Za-z0-9._:/ -]/.test(value.command)) {
-    return false;
-  }
-  const tokens = value.command.split(" ");
-  if (tokens.some((token) => token === "")) {
-    return false;
-  }
-  let index = 0;
-  if (tokens[index++] !== "npx" || tokens[index++] !== "skills") {
-    return false;
-  }
-  if (value.operation === "update") {
-    // Collection-level update: no Skill identity, no Agent targets.
-    if (tokens[index++] !== "update") {
-      return false;
-    }
-    if (value.scope === "global") {
-      if (tokens[index++] !== "--global") return false;
-    } else if (tokens[index++] !== "--project") {
-      return false;
-    }
-    return tokens[index++] === "--yes" && index === tokens.length;
-  }
-  const expectedSubcommand =
-    value.operation === "install" ? "add" : value.operation;
-  if (tokens[index++] !== expectedSubcommand) {
-    return false;
-  }
-  if (value.operation === "install") {
-    const url = tokens[index++] || "";
-    const source = url.startsWith("https://github.com/")
-      ? url.slice("https://github.com/".length)
-      : "";
-    if (
-      !isRepository(source) ||
-      source !== value.source ||
-      value.catalogId !== `${source}/${value.skillName}` ||
-      tokens[index++] !== "--skill" ||
-      tokens[index++] !== value.skillName
-    ) {
-      return false;
-    }
-  } else if (tokens[index++] !== value.skillName) {
-    return false;
-  }
-
-  if (value.scope === "global") {
-    if (tokens[index++] !== "--global") return false;
-  } else if (tokens[index] === "--global") {
-    return false;
-  }
-  for (const agent of value.agents) {
-    if (tokens[index++] !== "--agent" || tokens[index++] !== agent) {
-      return false;
-    }
-  }
-  return tokens[index++] === "--yes" && index === tokens.length;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -1064,6 +1301,19 @@ function boundedString(value: unknown, maxLength: number): string {
     typeof value !== "string" ||
     value.length > maxLength ||
     /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return "";
+  }
+  return value;
+}
+
+/** Multiline content (SKILL.md bodies) allows newlines/tabs but no other
+ * control characters and no NUL. */
+function boundedMultilineString(value: unknown, maxLength: number): string {
+  if (
+    typeof value !== "string" ||
+    value.length > maxLength ||
+    /[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
   ) {
     return "";
   }

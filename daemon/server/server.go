@@ -134,6 +134,7 @@ type Server struct {
 	skillsCatalogs     map[*websocket.Conn]skillsCatalogRequest
 	skillsSearches     map[*websocket.Conn]skillsSearchRequest
 	skillsMutations    map[*websocket.Conn]skillsMutationRequest
+	skillsInspects     map[*websocket.Conn]skillsInspectRequest
 	pluginsInventories map[*websocket.Conn]pluginsInventoryRequest
 	pluginsMutations   map[*websocket.Conn]pluginsMutationRequest
 	pluginCatalogCLI   skillmgmt.PluginCLI
@@ -255,6 +256,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		skillsCatalogs:     make(map[*websocket.Conn]skillsCatalogRequest),
 		skillsSearches:     make(map[*websocket.Conn]skillsSearchRequest),
 		skillsMutations:    make(map[*websocket.Conn]skillsMutationRequest),
+		skillsInspects:     make(map[*websocket.Conn]skillsInspectRequest),
 		pluginsInventories: make(map[*websocket.Conn]pluginsInventoryRequest),
 		pluginsMutations:   make(map[*websocket.Conn]pluginsMutationRequest),
 		pluginCatalogCLI:   skillmgmt.NewClaudePluginCLI(),
@@ -326,6 +328,7 @@ type clientMessage struct {
 	SkillID              string                                 `json:"skill_id"`
 	Source               string                                 `json:"source"`
 	SkillName            string                                 `json:"skill_name"`
+	Ref                  string                                 `json:"ref"`
 	PluginID             string                                 `json:"plugin_id"`
 	ProfileID            string                                 `json:"profile_id"`
 	ConnectionID         string                                 `json:"connection_id"`
@@ -603,6 +606,10 @@ func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
 	if mutation, ok := s.skillsMutations[conn]; ok {
 		mutation.cancel()
 		delete(s.skillsMutations, conn)
+	}
+	if inspect, ok := s.skillsInspects[conn]; ok {
+		inspect.cancel()
+		delete(s.skillsInspects, conn)
 	}
 	if mutation, ok := s.pluginsMutations[conn]; ok {
 		mutation.cancel()
@@ -1159,6 +1166,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "skills_mutation":
 		s.handleSkillsMutation(conn, raw)
+
+	case "skills_inspect":
+		s.handleSkillsInspect(conn, raw)
 
 	case "plugins_inventory":
 		s.handlePluginsInventory(conn, raw)

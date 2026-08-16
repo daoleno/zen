@@ -3,7 +3,6 @@ import type {
   InstalledSkill,
   ManagedSkillAgent,
   RankedCatalogSkill,
-  SkillRemovalPlan,
   SkillsInventory,
 } from "./skillsManagement";
 
@@ -13,6 +12,7 @@ export const MANAGED_SKILL_AGENTS: readonly ManagedSkillAgent[] = [
   "codex",
   "claude-code",
   "cursor",
+  "grok",
   "opencode",
   "pi",
 ];
@@ -59,8 +59,8 @@ export function catalogSkillId(
 /**
  * Builds the unified Skills list. `catalogSkills` is the current browse
  * source: leaderboard rows when browsing, search rows after a submitted
- * query. Catalog rows that canonically match an installed row (for the
- * selected target) are dropped so one identity renders exactly once.
+ * query. Catalog rows that canonically match an installed row are dropped so
+ * one identity renders exactly once.
  */
 export function skillsUnifiedRows(
   installed: InstalledSkill[],
@@ -98,6 +98,7 @@ export function skillsAgentCounts(
     codex: 0,
     "claude-code": 0,
     cursor: 0,
+    grok: 0,
     opencode: 0,
     pi: 0,
   };
@@ -153,18 +154,6 @@ export function skillsInstallTargets(
   agent: ManagedSkillAgent,
 ): ManagedSkillAgent[] {
   return [agent];
-}
-
-export function skillsRemovalPlanForAgent(
-  skill: InstalledSkill,
-  agent: ManagedSkillAgent,
-): SkillRemovalPlan | null {
-  if (!skill.capability.canRemove) {
-    return null;
-  }
-  return (
-    skill.capability.removalPlans.find((plan) => plan.agent === agent) ?? null
-  );
 }
 
 export function skillsLeaderboardLabel(view: SkillsLeaderboardView): string {

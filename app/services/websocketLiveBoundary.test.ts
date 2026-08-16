@@ -318,12 +318,12 @@ describe("generic WebSocket live boundary", () => {
     client.disconnectAll();
   });
 
-  test("Skills install response rejects a same-name different repository and old unbound daemon", async () => {
+  test("Skills import response rejects a same-name different repository and unbound plans", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
     const options = {
-      operation: "install" as const,
+      operation: "import" as const,
       skillId: "acme/skills/useful",
       source: "acme/skills",
       skillName: "useful",
@@ -337,14 +337,15 @@ describe("generic WebSocket live boundary", () => {
       type: "skills_command",
       request_id: mismatchedRequest.request_id,
       command: {
-        operation: "install",
-        command:
-          "npx skills add https://github.com/other/skills --skill useful --global --agent codex --yes",
-        catalog_id: "other/skills/useful",
-        source: "other/skills",
-        skill_name: "useful",
+        operation: "import",
         scope: "global",
         agents: ["codex"],
+        skill_name: "useful",
+        catalog_id: "other/skills/useful",
+        source: "other/skills",
+        summary: "Import useful from other/skills",
+        changes: [{ kind: "create_dir", path: "/store/useful" }],
+        destructive: false,
       },
     });
     await expect(mismatched).rejects.toThrow("different request");
@@ -355,15 +356,16 @@ describe("generic WebSocket live boundary", () => {
       type: "skills_command",
       request_id: unboundRequest.request_id,
       command: {
-        operation: "install",
-        command:
-          "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --yes",
-        skill_name: "useful",
+        operation: "import",
         scope: "global",
         agents: ["codex"],
+        skill_name: "useful",
+        summary: "Import useful",
+        changes: [{ kind: "create_dir", path: "/store/useful" }],
+        destructive: false,
       },
     });
-    await expect(unbound).rejects.toThrow("unbound Skills install command");
+    await expect(unbound).rejects.toThrow("unbound Skills import command");
     client.disconnectAll();
   });
 
@@ -1183,7 +1185,27 @@ describe("Skills management transport", () => {
         cwd: "/workspace/project",
         skills: [],
         agents: [],
+        executors: [],
         warnings: [],
+        mutation_operations: [
+          "import",
+          "migrate",
+          "bind",
+          "unbind",
+          "enable",
+          "disable",
+          "uninstall",
+          "forget",
+          "adopt",
+          "update",
+        ],
+        migration: {
+          owned: 0,
+          external: 0,
+          duplicate: 0,
+          conflict: 0,
+          tracked: 0,
+        },
       },
     });
 
@@ -1195,7 +1217,19 @@ describe("Skills management transport", () => {
         skills: [],
         agents: [],
         warnings: [],
-        mutationOperations: ["install", "remove"],
+        mutationOperations: [
+          "import",
+          "migrate",
+          "bind",
+          "unbind",
+          "enable",
+          "disable",
+          "uninstall",
+          "forget",
+          "adopt",
+          "update",
+        ],
+        migration: { owned: 0, external: 0, duplicate: 0, conflict: 0, tracked: 0 },
       },
     });
     client.disconnectAll();
@@ -1230,66 +1264,68 @@ describe("Skills management transport", () => {
     client.disconnectAll();
   });
 
-  test("command construction sends structured fields and accepts one exact official command", async () => {
+  test("command construction sends structured fields and accepts one exact reviewable plan", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
 
     const pending = client.buildSkillsCommand(server.id, {
-      operation: "install",
+      operation: "import",
       skillId: "acme/skills/useful",
       source: "acme/skills",
       skillName: "useful",
       scope: "global",
       agents: ["codex", "cursor"],
+      ref: "main",
     });
     const outbound = JSON.parse(socket.sent.at(-1)!);
     expect(outbound).toMatchObject({
       type: "skills_command",
-      operation: "install",
+      operation: "import",
       skill_id: "acme/skills/useful",
       source: "acme/skills",
       skill_name: "useful",
       scope: "global",
       agents: ["codex", "cursor"],
+      ref: "main",
     });
 
-    const command =
-      "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --agent cursor --yes";
     socket.receive({
       type: "skills_command",
       request_id: outbound.request_id,
       command: {
-        operation: "install",
-        command,
-        catalog_id: "acme/skills/useful",
-        source: "acme/skills",
-        skill_name: "useful",
+        operation: "import",
         scope: "global",
         agents: ["codex", "cursor"],
+        skill_name: "useful",
+        catalog_id: "acme/skills/useful",
+        source: "acme/skills",
+        ref: "main",
+        summary: "Import useful into Zen's canonical store from acme/skills",
+        changes: [{ kind: "create_dir", path: "/store/useful" }],
+        destructive: false,
       },
     });
 
-    await expect(pending).resolves.toEqual({
-      operation: "install",
-      command,
+    await expect(pending).resolves.toMatchObject({
+      operation: "import",
       catalogId: "acme/skills/useful",
       source: "acme/skills",
       skillName: "useful",
       scope: "global",
       agents: ["codex", "cursor"],
+      ref: "main",
     });
     client.disconnectAll();
   });
 
-  test("a valid command for different structured targets is rejected", async () => {
+  test("a valid plan for different structured targets is rejected", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
 
     const pending = client.buildSkillsCommand(server.id, {
-      operation: "remove",
-      skillId: "0123456789abcdef01234567",
+      operation: "unbind",
       skillName: "useful",
       scope: "global",
       agents: ["codex"],
@@ -1299,11 +1335,13 @@ describe("Skills management transport", () => {
       type: "skills_command",
       request_id: outbound.request_id,
       command: {
-        operation: "remove",
-        command: "npx skills remove other-skill --global --agent codex --yes",
-        skill_name: "other-skill",
+        operation: "unbind",
         scope: "global",
         agents: ["codex"],
+        skill_name: "other-skill",
+        summary: "Unbind other-skill from Codex",
+        changes: [{ kind: "remove", path: "/home/.codex/skills/other-skill" }],
+        destructive: false,
       },
     });
 

@@ -37,6 +37,30 @@ func TestSkillsSearchClaimRejectsStaleGenerationAndConsumesCurrentOnce(t *testin
 	}
 }
 
+func TestSkillsInspectClaimReplacesStaleGenerationAndConsumesCurrentOnce(t *testing.T) {
+	connection := &websocket.Conn{}
+	previousContext, cancelPrevious := context.WithCancel(context.Background())
+	_, cancelCurrent := context.WithCancel(context.Background())
+	previous := skillsInspectRequest{requestID: "inspect-previous", generation: 2, cancel: cancelPrevious}
+	current := skillsInspectRequest{requestID: "inspect-current", generation: 3, cancel: cancelCurrent}
+	server := &Server{skillsInspects: map[*websocket.Conn]skillsInspectRequest{connection: previous}}
+	t.Cleanup(cancelCurrent)
+	if replaced, ok := server.replaceSkillsInspect(connection, current); !ok || replaced.requestID != previous.requestID {
+		t.Fatalf("replacement = %#v/%v", replaced, ok)
+	}
+	select {
+	case <-previousContext.Done():
+	default:
+		t.Fatal("inspect replacement left the previous scan active")
+	}
+	if server.claimSkillsInspect(connection, previous) {
+		t.Fatal("stale inspect claimed the current generation")
+	}
+	if !server.claimSkillsInspect(connection, current) || server.claimSkillsInspect(connection, current) {
+		t.Fatal("current inspect was not consumed exactly once")
+	}
+}
+
 func TestSkillsRequestIdentityIsBoundedAndASCII(t *testing.T) {
 	for _, valid := range []string{"skills_123", "request:abc-123"} {
 		if !validSkillsRequestID(valid) {

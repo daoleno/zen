@@ -61,7 +61,7 @@ func TestSkillsMutationSupersedeCancelsInFlightCommandAndSuppressesStaleResult(t
 		if err := conn.WriteJSON(map[string]any{
 			"type":       "skills_mutation",
 			"request_id": requestID,
-			"operation":  "install",
+			"operation":  "import",
 			"skill_id":   "owner/repo/skill",
 			"source":     "owner/repo",
 			"skill_name": "skill",
@@ -114,7 +114,7 @@ func TestSkillsMutationOnlyCurrentRequestClaimsOnceAndEmitsResult(t *testing.T) 
 		if err := conn.WriteJSON(map[string]any{
 			"type":       "skills_mutation",
 			"request_id": requestID,
-			"operation":  "install",
+			"operation":  "import",
 			"skill_id":   "owner/repo/skill",
 			"source":     "owner/repo",
 			"skill_name": "skill",

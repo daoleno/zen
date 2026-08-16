@@ -1,11 +1,10 @@
 import type {
-  CatalogSkill,
   InstalledSkill,
   ManagedSkillAgent,
   RankedCatalogSkill,
   SkillMutationOperation,
+  CatalogSkill,
 } from "./skillsManagement";
-import { skillsRemovalPlanForAgent } from "./skillsScreenModel";
 
 /**
  * First-level Plugins & Skills surface model.
@@ -15,12 +14,10 @@ import { skillsRemovalPlanForAgent } from "./skillsScreenModel";
  * invents data, re-issues requests, or guesses capability.
  *
  * The mutation gate is the single fail-closed authority for action
- * availability. Install and remove are supported only when the daemon's own
- * inventory truth proves them (catalog `installable`, `can_remove` plus an
- * exact per-Agent removal plan, and the daemon's mutation capability list).
- * Update is the official CLI's collection-level operation (update-all in one
- * scope) and is supported only when the daemon's mutation capability list
- * includes it; a per-row Update is never rendered.
+ * availability: an action renders only when the daemon's own inventory truth
+ * proves the operation (the row capability list plus the daemon-wide mutation
+ * capability list). Project-scope operations additionally require a real
+ * working directory.
  */
 
 export type SkillsSurfaceSection = "plugins" | "skills";
@@ -35,9 +32,19 @@ export interface SkillsSurfaceState {
 }
 
 export type SkillMutationIntent =
-  | { kind: "install"; skill: CatalogSkill | RankedCatalogSkill }
-  | { kind: "remove"; skill: InstalledSkill; agent: ManagedSkillAgent }
-  | { kind: "update"; scope: "project" | "global" };
+  | { kind: "import"; skill: CatalogSkill | RankedCatalogSkill; scope: "project" | "global" }
+  | { kind: "migrate" }
+  | {
+      kind: "binding";
+      operation: "bind" | "unbind" | "enable" | "disable";
+      skill: InstalledSkill;
+      agent: ManagedSkillAgent;
+      scope: "project" | "global";
+    }
+  | { kind: "uninstall"; skill: InstalledSkill }
+  | { kind: "forget"; skill: InstalledSkill }
+  | { kind: "adopt"; skill: InstalledSkill }
+  | { kind: "update"; skill: InstalledSkill };
 
 export type SkillMutationDecision =
   | { supported: true; operation: SkillMutationOperation }
@@ -74,38 +81,86 @@ export function reduceSkillsSurface(
 export function evaluateSkillMutation(
   intent: SkillMutationIntent,
   capabilities: readonly SkillMutationOperation[],
+  hasProjectCwd = false,
 ): SkillMutationDecision {
+  const operation = intentOperation(intent);
+  if (!capabilities.includes(operation)) {
+    return {
+      supported: false,
+      reason: `This server does not support ${operation} for Skills.`,
+    };
+  }
   switch (intent.kind) {
-    case "install": {
-      const skill = intent.skill;
-      if (!capabilities.includes("install") || !skill.installable) {
+    case "import": {
+      if (!intent.skill.installable) {
         return {
           supported: false,
           reason: "This catalog identity cannot be installed on this server.",
         };
       }
-      return { supported: true, operation: "install" };
-    }
-    case "remove": {
-      const plan = skillsRemovalPlanForAgent(intent.skill, intent.agent);
-      if (!capabilities.includes("remove") || !plan) {
+      if (intent.scope === "project" && !hasProjectCwd) {
         return {
           supported: false,
-          reason:
-            "No exact removal plan exists for this Skill and Agent on this server.",
+          reason: SKILL_UPDATE_PROJECT_REQUIRES_CWD_REASON,
         };
       }
-      return { supported: true, operation: "remove" };
+      return { supported: true, operation: "import" };
     }
-    case "update":
-      if (!capabilities.includes("update")) {
-        return { supported: false, reason: SKILL_UPDATE_UNSUPPORTED_REASON };
+    case "migrate":
+      return { supported: true, operation: "migrate" };
+    case "binding": {
+      if (intent.scope === "project" && !hasProjectCwd) {
+        return {
+          supported: false,
+          reason: SKILL_UPDATE_PROJECT_REQUIRES_CWD_REASON,
+        };
       }
-      return { supported: true, operation: "update" };
+      return { supported: true, operation: intent.operation };
+    }
+    case "uninstall":
+    case "forget":
+    case "adopt":
+    case "update":
+      return { supported: true, operation };
   }
 }
 
-/** Project-scope update additionally requires a real project directory. */
-export function projectUpdateAvailable(projectCwd: string | undefined): boolean {
-  return Boolean(projectCwd?.trim());
+export function intentOperation(
+  intent: SkillMutationIntent,
+): SkillMutationOperation {
+  switch (intent.kind) {
+    case "import":
+      return "import";
+    case "migrate":
+      return "migrate";
+    case "binding":
+      return intent.operation;
+    case "uninstall":
+      return "uninstall";
+    case "forget":
+      return "forget";
+    case "adopt":
+      return "adopt";
+    case "update":
+      return "update";
+  }
+}
+
+/** The per-row action set proven by the daemon's own capability list. */
+export function skillRowOperations(
+  skill: InstalledSkill,
+): readonly SkillMutationOperation[] {
+  return skill.capability.canManage ? skill.capability.operations : [];
+}
+
+export function skillRowSupports(
+  skill: InstalledSkill,
+  operation: SkillMutationOperation,
+  capabilities: readonly SkillMutationOperation[],
+): boolean {
+  return (
+    capabilities.includes(operation) &&
+    skill.capability.canManage &&
+    skill.capability.operations.includes(operation)
+  );
 }

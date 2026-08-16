@@ -13,12 +13,14 @@ const (
 	maxSkillNameLength = 128
 	maxSourceLength    = 141
 	maxCWDLength       = 4096
+	maxRefLength       = 128
 )
 
 var (
 	ownerPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 	repoPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$`)
 	skillPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$`)
+	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,126}$`)
 )
 
 func ValidateSkillName(value string) error {
@@ -45,6 +47,28 @@ func ValidateRepository(value string) error {
 	return nil
 }
 
+// ValidateRef validates a pinned provenance ref (branch, tag, or commit
+// fragment). Refs may contain slashes for branch names but never traversal or
+// control characters.
+func ValidateRef(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("pinned ref is required")
+	}
+	if len(value) > maxRefLength || !utf8.ValidString(value) || strings.ContainsAny(value, "\x00\r\n") {
+		return errors.New("invalid pinned ref")
+	}
+	if !refPattern.MatchString(value) {
+		return errors.New("invalid pinned ref")
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == "." || part == ".." {
+			return errors.New("invalid pinned ref")
+		}
+	}
+	return nil
+}
+
 func ValidateCatalogIdentity(id, source, name string) error {
 	if err := ValidateRepository(source); err != nil {
 		return err
@@ -58,12 +82,12 @@ func ValidateCatalogIdentity(id, source, name string) error {
 	return nil
 }
 
+// ValidateAgent accepts every Zen-supported Agent. All six now have a real
+// adapter; capability differences are represented per-Agent in AgentSupport.
 func ValidateAgent(agent Agent) error {
 	switch agent {
-	case AgentCodex, AgentClaudeCode, AgentCursor, AgentOpenCode, AgentPi:
+	case AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi:
 		return nil
-	case AgentGrok:
-		return errors.New("Grok is not an official skills CLI target")
 	default:
 		return fmt.Errorf("unsupported Skill target %q", agent)
 	}
@@ -94,8 +118,8 @@ func ValidateCWD(value string, required bool) (string, error) {
 }
 
 func validateAgents(values []Agent) ([]Agent, error) {
-	if len(values) == 0 || len(values) > 5 {
-		return nil, errors.New("choose between one and five supported agents")
+	if len(values) == 0 || len(values) > 6 {
+		return nil, errors.New("choose between one and six supported agents")
 	}
 	seen := make(map[Agent]struct{}, len(values))
 	validated := make([]Agent, 0, len(values))
@@ -110,4 +134,17 @@ func validateAgents(values []Agent) ([]Agent, error) {
 		validated = append(validated, agent)
 	}
 	return validated, nil
+}
+
+func ValidateSourceType(value string) bool {
+	switch SourceType(value) {
+	case SourceTypeCatalog, SourceTypeLocal, SourceTypeArchive, SourceTypeGithub, SourceTypeExternal:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidateBindingMode(value string) bool {
+	return BindingMode(value) == BindingSymlink || BindingMode(value) == BindingCopy
 }

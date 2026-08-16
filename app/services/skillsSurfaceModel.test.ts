@@ -1,235 +1,201 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SKILL_UPDATE_UNSUPPORTED_REASON,
+  SKILL_UPDATE_PROJECT_REQUIRES_CWD_REASON,
   createSkillsSurfaceState,
   evaluateSkillMutation,
-  projectUpdateAvailable,
+  intentOperation,
   reduceSkillsSurface,
+  skillRowOperations,
+  skillRowSupports,
 } from "./skillsSurfaceModel";
-import {
-  skillsSectionAgentCounts,
-  skillsSectionProjection,
-} from "./skillsScreenModel";
-import type {
-  CatalogSkill,
-  InstalledSkill,
-  SkillMutationOperation,
-  SkillsInventory,
-} from "./skillsManagement";
+import type { InstalledSkill, SkillMutationOperation } from "./skillsManagement";
 
-const FULL_CAPABILITIES: readonly SkillMutationOperation[] = [
-  "install",
-  "remove",
+const CAPABILITIES: readonly SkillMutationOperation[] = [
+  "import",
+  "migrate",
+  "bind",
+  "unbind",
+  "enable",
+  "disable",
+  "uninstall",
+  "forget",
+  "adopt",
   "update",
-];
-const LEGACY_CAPABILITIES: readonly SkillMutationOperation[] = [
-  "install",
-  "remove",
 ];
 
 function installedSkill(
-  id: string,
-  name: string,
-  manager: InstalledSkill["manager"] = "skills-cli",
-  removable = false,
+  overrides: Partial<InstalledSkill> = {},
 ): InstalledSkill {
   return {
-    id,
-    name,
-    canonicalPath: `/home/test/.agents/skills/${name}`,
-    sourcePath: `/home/test/.agents/skills/${name}`,
+    id: "aaaaaaaaaaaaaaaaaaaaaaaa",
+    name: "demo",
+    manager: "zen",
+    owned: true,
+    tracked: true,
+    enabled: true,
+    canonicalPath: "/store/demo",
+    sourcePath: "/store/demo",
     scope: "global",
     agents: ["codex"],
     bindings: [
       {
-        sourcePath: `/home/test/.agents/skills/${name}`,
+        agent: "codex",
         scope: "global",
-        agents: ["codex"],
+        mode: "symlink",
+        targetPath: "/home/.codex/skills/demo",
+        sourcePath: "/store/demo",
+        enabled: true,
+        boundAt: "2026-08-01T00:00:00Z",
       },
     ],
-    manager,
-    provenance:
-      manager === "skills-cli" ? "official skills-cli lock" : "unknown",
-    source: manager === "skills-cli" ? "acme/skills" : undefined,
-    capability: removable
-      ? {
-          canRemove: true,
-          removalPlans: [{ agent: "codex", affectedAgents: ["codex"] }],
-        }
-      : {
-          canRemove: false,
-          removalPlans: [],
-          reason: "No official skills-cli provenance proves a safe management command.",
-        },
+    provenance: "Zen canonical store",
+    capability: {
+      canManage: true,
+      operations: [
+        "bind",
+        "unbind",
+        "enable",
+        "disable",
+        "uninstall",
+        "update",
+      ],
+    },
+    ...overrides,
   };
 }
 
-function pluginSkill(id: string, name: string): InstalledSkill {
-  return {
-    ...installedSkill(id, name, "plugin"),
-    plugin: "sample-plugin",
-    scope: "plugin",
-  };
-}
-
-function inventory(skills: InstalledSkill[]): SkillsInventory {
-  return {
-    generatedAt: "2026-08-08T00:00:00Z",
-    skills,
-    agents: [],
-    warnings: [],
-    mutationOperations: [...FULL_CAPABILITIES],
-  };
-}
-
-function catalogSkill(installable: boolean): CatalogSkill {
-  return {
-    id: "acme/skills/good",
-    skillId: "good",
-    name: "good",
-    source: "acme/skills",
-    installs: 10,
-    installable,
-  };
-}
-
-describe("Plugins & Skills first-level sections", () => {
-  test("section switch is pure navigation and never duplicates state", () => {
-    let state = createSkillsSurfaceState();
-    expect(state.section).toBe("skills");
-
-    state = reduceSkillsSurface(state, {
-      type: "select_section",
-      section: "plugins",
-    });
-    expect(state.section).toBe("plugins");
-
-    state = reduceSkillsSurface(state, {
-      type: "select_section",
-      section: "plugins",
-    });
-    expect(state.section).toBe("plugins");
-
-    state = reduceSkillsSurface(state, {
-      type: "select_section",
-      section: "skills",
-    });
-    expect(state.section).toBe("skills");
-  });
-
-  test("Skills section projection excludes plugin-owned Skills and counts", () => {
-    const projection = skillsSectionProjection(
-      inventory([
-        installedSkill("000000000000000000000001", "cli-skill", "skills-cli", true),
-        installedSkill("000000000000000000000002", "builtin-skill", "builtin"),
-        pluginSkill("000000000000000000000003", "hosted-skill"),
-      ]),
-      "codex",
-    );
-    expect(projection.count).toBe(2);
-    expect(projection.skills.map((skill) => skill.name)).toEqual([
-      "cli-skill",
-      "builtin-skill",
-    ]);
+describe("surface navigation", () => {
+  test("defaults to the Skills section and switches once", () => {
+    const initial = createSkillsSurfaceState();
+    expect(initial.section).toBe("skills");
     expect(
-      skillsSectionAgentCounts(
-        inventory([
-          installedSkill("000000000000000000000001", "cli-skill", "skills-cli", true),
-          installedSkill("000000000000000000000002", "builtin-skill", "builtin"),
-          pluginSkill("000000000000000000000003", "hosted-skill"),
-        ]),
-      ).codex,
-    ).toBe(2);
+      reduceSkillsSurface(initial, { type: "select_section", section: "plugins" })
+        .section,
+    ).toBe("plugins");
+    // Idempotent selection returns the same state.
+    expect(
+      reduceSkillsSurface(initial, { type: "select_section", section: "skills" }),
+    ).toBe(initial);
   });
 });
 
-describe("Skill mutation gate", () => {
-  test("install is supported only for catalog-truthful installable identities", () => {
+describe("evaluateSkillMutation gates every lifecycle action", () => {
+  test("import requires the operation, an installable identity, and project cwd", () => {
+    const skill = {
+      id: "owner/repo/demo",
+      skillId: "demo",
+      name: "demo",
+      source: "owner/repo",
+      installs: 10,
+      installable: true,
+    };
+    expect(
+      evaluateSkillMutation({ kind: "import", skill, scope: "global" }, CAPABILITIES),
+    ).toEqual({ supported: true, operation: "import" });
+    const missingOp = evaluateSkillMutation(
+      { kind: "import", skill, scope: "global" },
+      CAPABILITIES.filter((op) => op !== "import"),
+    );
+    expect(missingOp.supported).toBe(false);
+    expect(intentOperation({ kind: "import", skill, scope: "global" })).toBe("import");
+
+    const projectGate = evaluateSkillMutation(
+      { kind: "import", skill, scope: "project" },
+      CAPABILITIES,
+      false,
+    );
+    expect(projectGate).toEqual({
+      supported: false,
+      reason: SKILL_UPDATE_PROJECT_REQUIRES_CWD_REASON,
+    });
     expect(
       evaluateSkillMutation(
-        { kind: "install", skill: catalogSkill(true) },
-        FULL_CAPABILITIES,
-      ),
-    ).toEqual({ supported: true, operation: "install" });
+        { kind: "import", skill, scope: "project" },
+        CAPABILITIES,
+        true,
+      ).supported,
+    ).toBe(true);
+  });
 
+  test("binding operations are per agent and scope", () => {
+    const skill = installedSkill();
+    for (const operation of ["bind", "unbind", "enable", "disable"] as const) {
+      expect(
+        evaluateSkillMutation(
+          { kind: "binding", operation, skill, agent: "codex", scope: "global" },
+          CAPABILITIES,
+        ),
+      ).toEqual({ supported: true, operation });
+    }
+    const projectGate = evaluateSkillMutation(
+      { kind: "binding", operation: "bind", skill, agent: "pi", scope: "project" },
+      CAPABILITIES,
+      false,
+    );
+    expect(projectGate.supported).toBe(false);
+  });
+
+  test("uninstall, forget, adopt, update map to their exact operations", () => {
+    const owned = installedSkill();
+    const external = installedSkill({ owned: false, tracked: true, manager: "external" });
+    const pairs: Array<[Parameters<typeof evaluateSkillMutation>[0], SkillMutationOperation]> = [
+      [{ kind: "uninstall", skill: owned }, "uninstall"],
+      [{ kind: "forget", skill: external }, "forget"],
+      [{ kind: "adopt", skill: external }, "adopt"],
+      [{ kind: "update", skill: owned }, "update"],
+    ];
+    for (const [intent, operation] of pairs) {
+      expect(evaluateSkillMutation(intent, CAPABILITIES)).toEqual({
+        supported: true,
+        operation,
+      });
+    }
+    // A missing capability always fails closed with a deterministic reason.
     const decision = evaluateSkillMutation(
-      { kind: "install", skill: catalogSkill(false) },
-      FULL_CAPABILITIES,
+      { kind: "uninstall", skill: owned },
+      CAPABILITIES.filter((op) => op !== "uninstall"),
+    );
+    expect(decision.supported).toBe(false);
+    if (decision.supported) {
+      throw new Error("expected failure");
+    }
+    expect(typeof decision.reason).toBe("string");
+  });
+
+  test("migrate is supported only when advertised", () => {
+    expect(evaluateSkillMutation({ kind: "migrate" }, CAPABILITIES)).toEqual({
+      supported: true,
+      operation: "migrate",
+    });
+    const decision = evaluateSkillMutation(
+      { kind: "migrate" },
+      CAPABILITIES.filter((op) => op !== "migrate"),
     );
     expect(decision.supported).toBe(false);
   });
+});
 
-  test("remove is supported only when an exact Agent removal plan exists", () => {
-    const removable = installedSkill(
-      "000000000000000000000011",
-      "removable",
-      "skills-cli",
-      true,
-    );
-    expect(
-      evaluateSkillMutation(
-        { kind: "remove", skill: removable, agent: "codex" },
-        FULL_CAPABILITIES,
-      ),
-    ).toEqual({ supported: true, operation: "remove" });
-
-    const unmanaged = installedSkill("000000000000000000000012", "unmanaged");
-    expect(
-      evaluateSkillMutation(
-        { kind: "remove", skill: unmanaged, agent: "codex" },
-        FULL_CAPABILITIES,
-      ),
-    ).toEqual({
-      supported: false,
-      reason:
-        "No exact removal plan exists for this Skill and Agent on this server.",
+describe("row operation helpers", () => {
+  test("skillRowOperations reads the daemon capability list", () => {
+    const skill = installedSkill();
+    expect(skillRowOperations(skill)).toContain("update");
+    expect(skillRowOperations(skill)).not.toContain("adopt");
+    const locked = installedSkill({
+      capability: { canManage: false, operations: [], reason: "blocked" },
     });
+    expect(skillRowOperations(locked)).toEqual([]);
   });
 
-  test("update is a collection-level capability gated by the daemon mutation list", () => {
+  test("skillRowSupports requires both row and daemon capability", () => {
+    const skill = installedSkill();
+    expect(skillRowSupports(skill, "update", CAPABILITIES)).toBe(true);
+    expect(skillRowSupports(skill, "adopt", CAPABILITIES)).toBe(false);
     expect(
-      evaluateSkillMutation({ kind: "update", scope: "global" }, FULL_CAPABILITIES),
-    ).toEqual({ supported: true, operation: "update" });
-    expect(
-      evaluateSkillMutation({ kind: "update", scope: "project" }, FULL_CAPABILITIES),
-    ).toEqual({ supported: true, operation: "update" });
-
-    expect(
-      evaluateSkillMutation(
-        { kind: "update", scope: "global" },
-        LEGACY_CAPABILITIES,
+      skillRowSupports(
+        skill,
+        "update",
+        CAPABILITIES.filter((op) => op !== "update"),
       ),
-    ).toEqual({
-      supported: false,
-      reason: SKILL_UPDATE_UNSUPPORTED_REASON,
-    });
-  });
-
-  test("legacy capability lists keep install and remove working", () => {
-    expect(
-      evaluateSkillMutation(
-        { kind: "install", skill: catalogSkill(true) },
-        LEGACY_CAPABILITIES,
-      ),
-    ).toEqual({ supported: true, operation: "install" });
-    const removable = installedSkill(
-      "000000000000000000000021",
-      "removable",
-      "skills-cli",
-      true,
-    );
-    expect(
-      evaluateSkillMutation(
-        { kind: "remove", skill: removable, agent: "codex" },
-        LEGACY_CAPABILITIES,
-      ),
-    ).toEqual({ supported: true, operation: "remove" });
-  });
-
-  test("project update requires a real project directory", () => {
-    expect(projectUpdateAvailable("/workspace/project")).toBe(true);
-    expect(projectUpdateAvailable("")).toBe(false);
-    expect(projectUpdateAvailable(undefined)).toBe(false);
-    expect(projectUpdateAvailable("   ")).toBe(false);
+    ).toBe(false);
   });
 });
