@@ -389,9 +389,28 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 		t.Fatalf("pane pid changed across the switch: %d -> %d (process must be the same)", panePID, panePID2)
 	}
 
-	// The same process rendered both replies (A then B) in its thread.
-	captured, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenproof", "-p").Output()
-	for _, marker := range []string{"upstream-A-served", "upstream-B-served"} {
+	// The same process rendered both replies (A then B) in its thread. The
+	// TUI paints asynchronously after the upstream turn completes, so poll
+	// the pane until both markers render (bounded; a stale single-shot
+	// capture raced the redraw).
+	markers := []string{"upstream-A-served", "upstream-B-served"}
+	captured := []byte(nil)
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		captured, _ = exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenproof", "-p").Output()
+		all := true
+		for _, marker := range markers {
+			if !bytes.Contains(captured, []byte(marker)) {
+				all = false
+				break
+			}
+		}
+		if all {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	for _, marker := range markers {
 		if !bytes.Contains(captured, []byte(marker)) {
 			t.Fatalf("pane did not render %s: %s", marker, trimTo(captured, 1200))
 		}
