@@ -19,19 +19,25 @@ import {
   useAppColors,
 } from "../../constants/tokens";
 import type { AgentKind } from "../../services/agentPresentation";
-import type { PluginSectionView } from "../../services/pluginsScreenModel";
+import type { PluginsUnifiedView } from "../../services/pluginsScreenModel";
 import {
   PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER,
   PLUGINS_SKILLS_TOUCH_TARGET,
+  availablePluginBadges,
+  availablePluginOwnership,
+  catalogSkillBadges,
   compactSkillTargets,
   filterAvailablePlugins,
   filterInstalledPlugins,
   filterInstalledSkills,
+  installedPluginBadges,
   installedPluginMetadata,
   installedPluginOwnership,
+  installedSkillBadges,
   installedSkillMetadata,
   installedSkillOwnership,
-  type PluginsSkillsMode,
+  filterCatalogSkills,
+  type LifecycleBadge,
 } from "../../services/pluginsSkillsSurfaceModel";
 import type {
   AvailablePlugin,
@@ -54,10 +60,11 @@ import {
   skillsRequestData,
 } from "../../services/skillsManagement";
 import {
-  skillsEmptyLeaderboardCopy,
   skillsLeaderboardLabel,
   type SkillsAgentCounts,
   type SkillsLeaderboardView,
+  type SkillsUnifiedRow,
+  skillsUnifiedRows,
 } from "../../services/skillsScreenModel";
 import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
 import { AgentKindIcon } from "../terminal/AgentKindIcon";
@@ -65,19 +72,21 @@ import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 
-export type SkillsMode = PluginsSkillsMode;
-export type PluginsMode = PluginsSkillsMode;
+export interface SurfaceMutationNotice {
+  kind: "success" | "error";
+  message: string;
+}
 
 export interface SkillsPresentationProps {
   section: SkillsSurfaceSection;
-  mode: SkillsMode;
-  pluginsMode: PluginsMode;
   selectedAgent: ManagedSkillAgent;
   agentCounts: SkillsAgentCounts;
   inventoryState: SkillsRequestState<unknown>;
   installedSkills: InstalledSkill[];
-  pluginsState: SkillsRequestState<PluginInventory>;
-  pluginSection: PluginSectionView;
+  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
+  /** catalogId -> other Agent labels that already have this Skill installed. */
+  catalogInstalledElsewhere: Record<string, readonly string[]>;
+  browsing: boolean;
   catalogState: SkillsRequestState<SkillsLeaderboards>;
   leaderboard?: SkillsLeaderboard;
   searchState: SkillsRequestState<SkillsCatalogResult>;
@@ -85,19 +94,20 @@ export interface SkillsPresentationProps {
   query: string;
   submittedQuery: string;
   leaderboardView: SkillsLeaderboardView;
+  pluginsState: SkillsRequestState<PluginInventory>;
+  pluginsView: PluginsUnifiedView;
   mutationOperations: readonly SkillMutationOperation[];
   hasProjectCwd: boolean;
   preparingMutation: string;
-  creatingTerminal: boolean;
+  mutationNotice: SurfaceMutationNotice | null;
   currentServerAvailable: boolean;
   onSelectSection(section: SkillsSurfaceSection): void;
-  onSelectMode(mode: SkillsMode): void;
-  onSelectPluginsMode(mode: PluginsMode): void;
   onSelectAgent(agent: ManagedSkillAgent): void;
   onOpenSettings(): void;
-  onRefreshInventory(): void;
+  onRefreshSkills(): void;
   onRetryPlugins(): void;
   onRemove(skill: InstalledSkill): void;
+  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
   onUpdateSkills(scope: "project" | "global"): void;
   onInstallPlugin(entry: AvailablePlugin): void;
   onUpdatePlugin(row: InstalledPluginRow): void;
@@ -108,29 +118,28 @@ export interface SkillsPresentationProps {
   onSelectLeaderboard(view: SkillsLeaderboardView): void;
   onRetryCatalog(): void;
   onRetrySearch(): void;
-  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
+  onDismissNotice(): void;
 }
 
 type SurfaceSheet =
-  | { kind: "mode" }
   | { kind: "target" }
   | { kind: "ranking" }
   | { kind: "skills-update" }
   | { kind: "skill-details"; skill: InstalledSkill }
   | { kind: "plugin-details"; plugin: InstalledPluginRow }
+  | { kind: "plugin-available"; plugin: AvailablePlugin }
   | null;
 
 export function SkillsPresentation(props: SkillsPresentationProps) {
   const {
     section,
-    mode,
-    pluginsMode,
     selectedAgent,
     agentCounts,
     inventoryState,
     installedSkills,
-    pluginsState,
-    pluginSection,
+    catalogSkills,
+    catalogInstalledElsewhere,
+    browsing,
     catalogState,
     leaderboard,
     searchState,
@@ -138,19 +147,20 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     query,
     submittedQuery,
     leaderboardView,
+    pluginsState,
+    pluginsView,
     mutationOperations,
     hasProjectCwd,
     preparingMutation,
-    creatingTerminal,
+    mutationNotice,
     currentServerAvailable,
     onSelectSection,
-    onSelectMode,
-    onSelectPluginsMode,
     onSelectAgent,
     onOpenSettings,
-    onRefreshInventory,
+    onRefreshSkills,
     onRetryPlugins,
     onRemove,
+    onInstall,
     onUpdateSkills,
     onInstallPlugin,
     onUpdatePlugin,
@@ -161,48 +171,36 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
     onSelectLeaderboard,
     onRetryCatalog,
     onRetrySearch,
-    onInstall,
+    onDismissNotice,
   } = props;
   const colors = useAppColors();
   const [localQuery, setLocalQuery] = useState("");
   const [sheet, setSheet] = useState<SurfaceSheet>(null);
-  const activeMode = section === "plugins" ? pluginsMode : mode;
-  const showingSkillsSearch =
-    section === "skills" && activeMode === "discover";
 
   useEffect(() => {
     setLocalQuery("");
     setSheet(null);
-  }, [activeMode, section, selectedAgent]);
+  }, [section, selectedAgent]);
 
+  const showingSkillsSearch = section === "skills" && browsing;
   const refresh = () => {
     if (section === "plugins") {
       onRetryPlugins();
       return;
     }
-    if (mode === "installed") {
-      onRefreshInventory();
-      return;
-    }
-    if (submittedQuery) {
-      onRetrySearch();
-      return;
-    }
-    onRetryCatalog();
+    onRefreshSkills();
   };
   const refreshing =
     section === "plugins"
       ? pluginsState.status === "loading"
-      : mode === "installed"
-        ? inventoryState.status === "loading"
-        : submittedQuery
+      : inventoryState.status === "loading" ||
+        (browsing
           ? searchState.status === "loading"
-          : catalogState.status === "loading";
+          : catalogState.status === "loading");
   const searchValue = showingSkillsSearch ? query : localQuery;
-  const clearSearch = showingSkillsSearch
-    ? onClearSearch
-    : () => setLocalQuery("");
-  const updateSupported = mutationOperations.includes("update");
+  const clearSearch = showingSkillsSearch ? onClearSearch : () => setLocalQuery("");
+  const updateSupported =
+    section === "skills" && mutationOperations.includes("update");
 
   return (
     <SafeAreaView
@@ -214,15 +212,11 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
         <View style={styles.tools}>
           <CompactToolbar
             section={section}
-            mode={activeMode}
             selectedAgent={selectedAgent}
             leaderboardView={leaderboardView}
-            showingLeaderboard={showingSkillsSearch && !submittedQuery}
-            updateSupported={
-              section === "skills" && mode === "installed" && updateSupported
-            }
+            showingLeaderboard={showingSkillsSearch === false}
+            updateSupported={updateSupported}
             refreshing={refreshing}
-            onOpenMode={() => setSheet({ kind: "mode" })}
             onOpenTarget={() => setSheet({ kind: "target" })}
             onOpenRanking={() => setSheet({ kind: "ranking" })}
             onOpenUpdate={() => setSheet({ kind: "skills-update" })}
@@ -232,60 +226,60 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             value={searchValue}
             remote={showingSkillsSearch}
             loading={showingSkillsSearch && searchState.status === "loading"}
-            placeholder={searchPlaceholder(section, activeMode)}
+            placeholder={searchPlaceholder(section)}
             onChange={showingSkillsSearch ? onChangeQuery : setLocalQuery}
             onSubmit={showingSkillsSearch ? onSubmitSearch : undefined}
             onClear={clearSearch}
           />
         </View>
 
+        {mutationNotice ? (
+          <MutationNoticeBanner notice={mutationNotice} onDismiss={onDismissNotice} />
+        ) : null}
+
         {section === "plugins" ? (
-          <PluginsSection
-            mode={pluginsMode}
+          <PluginsList
             query={localQuery}
             state={pluginsState}
-            view={pluginSection}
+            view={pluginsView}
             currentServerAvailable={currentServerAvailable}
             refreshing={refreshing}
             preparingMutation={preparingMutation}
             onOpenSettings={onOpenSettings}
             onRetry={onRetryPlugins}
             onInstall={onInstallPlugin}
-            onInspectPlugin={(plugin) =>
+            onInspectInstalled={(plugin) =>
               setSheet({ kind: "plugin-details", plugin })
             }
+            onInspectAvailable={(plugin) =>
+              setSheet({ kind: "plugin-available", plugin })
+            }
           />
-        ) : mode === "installed" ? (
-          <InstalledSkillsList
+        ) : (
+          <SkillsList
             selectedAgent={selectedAgent}
             query={localQuery}
             state={inventoryState}
             skills={installedSkills}
-            currentServerAvailable={currentServerAvailable}
-            refreshing={refreshing}
-            preparingMutation={preparingMutation}
-            onOpenSettings={onOpenSettings}
-            onRefresh={onRefreshInventory}
-            onRemove={onRemove}
-            onInspect={(skill) => setSheet({ kind: "skill-details", skill })}
-          />
-        ) : (
-          <DiscoverSkillsList
-            selectedAgent={selectedAgent}
+            catalogSkills={catalogSkills}
+            catalogInstalledElsewhere={catalogInstalledElsewhere}
+            leaderboardView={leaderboardView}
+            browsing={browsing}
             submittedQuery={submittedQuery}
-            view={leaderboardView}
-            catalogState={catalogState}
             leaderboard={leaderboard}
+            catalogState={catalogState}
             searchState={searchState}
             searchResult={searchResult}
             currentServerAvailable={currentServerAvailable}
-            preparingMutation={preparingMutation}
             refreshing={refreshing}
+            preparingMutation={preparingMutation}
             onOpenSettings={onOpenSettings}
             onRefresh={refresh}
+            onRemove={onRemove}
+            onInstall={onInstall}
             onRetryCatalog={onRetryCatalog}
             onRetrySearch={onRetrySearch}
-            onInstall={onInstall}
+            onInspect={(skill) => setSheet({ kind: "skill-details", skill })}
           />
         )}
       </View>
@@ -293,18 +287,12 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
       <SurfaceSheet
         sheet={sheet}
         section={section}
-        mode={activeMode}
         selectedAgent={selectedAgent}
         agentCounts={agentCounts}
         leaderboardView={leaderboardView}
         hasProjectCwd={hasProjectCwd}
         preparingMutation={preparingMutation}
         onClose={() => setSheet(null)}
-        onSelectMode={(value) => {
-          if (section === "plugins") onSelectPluginsMode(value);
-          else onSelectMode(value);
-          setSheet(null);
-        }}
         onSelectAgent={(agent) => {
           onSelectAgent(agent);
           setSheet(null);
@@ -326,28 +314,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           onUninstallPlugin(plugin);
         }}
       />
-
-      {creatingTerminal ? (
-        <View
-          accessibilityRole="progressbar"
-          accessibilityLabel="Opening Terminal"
-          style={[
-            styles.handoffStatus,
-            {
-              backgroundColor: colors.bgElevated,
-              borderColor: colors.borderSubtle,
-            },
-          ]}
-        >
-          <ActivityIndicator size="small" color={colors.accent} />
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.handoffText, { color: colors.textSecondary }]}
-          >
-            Opening Terminal…
-          </Text>
-        </View>
-      ) : null}
     </SafeAreaView>
   );
 }
@@ -363,14 +329,14 @@ function SurfaceTabs({
   const tabs: Array<{
     section: SkillsSurfaceSection;
     label: string;
-    icon: "extension-puzzle-outline" | "sparkles-outline";
+    icon: "extension-puzzle-outline" | "library-outline";
   }> = [
     {
       section: "plugins",
       label: "Plugins",
       icon: "extension-puzzle-outline",
     },
-    { section: "skills", label: "Skills", icon: "sparkles-outline" },
+    { section: "skills", label: "Skills", icon: "library-outline" },
   ];
   return (
     <View
@@ -427,26 +393,22 @@ function SurfaceTabs({
 
 function CompactToolbar({
   section,
-  mode,
   selectedAgent,
   leaderboardView,
   showingLeaderboard,
   updateSupported,
   refreshing,
-  onOpenMode,
   onOpenTarget,
   onOpenRanking,
   onOpenUpdate,
   onRefresh,
 }: {
   section: SkillsSurfaceSection;
-  mode: PluginsSkillsMode;
   selectedAgent: ManagedSkillAgent;
   leaderboardView: SkillsLeaderboardView;
   showingLeaderboard: boolean;
   updateSupported: boolean;
   refreshing: boolean;
-  onOpenMode(): void;
   onOpenTarget(): void;
   onOpenRanking(): void;
   onOpenUpdate(): void;
@@ -455,12 +417,6 @@ function CompactToolbar({
   const colors = useAppColors();
   return (
     <View style={styles.toolbar}>
-      <ToolButton
-        accessibilityLabel={`View ${mode === "installed" ? "Installed" : "Discover"}`}
-        icon={mode === "installed" ? "download-outline" : "compass-outline"}
-        label={mode === "installed" ? "Installed" : "Discover"}
-        onPress={onOpenMode}
-      />
       {section === "skills" ? (
         <ToolButton
           accessibilityLabel={`Target ${skillAgentLabel(selectedAgent)}`}
@@ -469,7 +425,7 @@ function CompactToolbar({
           onPress={onOpenTarget}
         />
       ) : null}
-      {showingLeaderboard ? (
+      {section === "skills" && showingLeaderboard ? (
         <ToolButton
           accessibilityLabel={`Ranking ${skillsLeaderboardLabel(leaderboardView)}`}
           icon="options-outline"
@@ -634,8 +590,61 @@ function SurfaceSearch({
   );
 }
 
-function PluginsSection({
-  mode,
+function MutationNoticeBanner({
+  notice,
+  onDismiss,
+}: {
+  notice: SurfaceMutationNotice;
+  onDismiss(): void;
+}) {
+  const colors = useAppColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${notice.kind === "success" ? "Success" : "Failed"}: ${notice.message}`}
+      onPress={onDismiss}
+      style={[
+        styles.noticeBanner,
+        {
+          backgroundColor:
+            notice.kind === "success" ? colors.successSoft : colors.dangerSoft,
+          borderColor:
+            notice.kind === "success" ? colors.success : colors.dangerText,
+        },
+      ]}
+    >
+      <Ionicons
+        accessible={false}
+        name={notice.kind === "success" ? "checkmark-circle" : "alert-circle"}
+        size={19}
+        color={notice.kind === "success" ? colors.success : colors.dangerText}
+      />
+      <Text
+        numberOfLines={3}
+        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+        style={[
+          styles.noticeText,
+          {
+            color:
+              notice.kind === "success"
+                ? colors.textPrimary
+                : colors.dangerText,
+          },
+        ]}
+      >
+        {notice.message}
+      </Text>
+      <Ionicons
+        accessible={false}
+        name="close"
+        size={18}
+        color={colors.textTertiary}
+      />
+    </Pressable>
+  );
+}
+
+function PluginsList({
   query,
   state,
   view,
@@ -645,80 +654,62 @@ function PluginsSection({
   onOpenSettings,
   onRetry,
   onInstall,
-  onInspectPlugin,
+  onInspectInstalled,
+  onInspectAvailable,
 }: {
-  mode: PluginsMode;
   query: string;
   state: SkillsRequestState<PluginInventory>;
-  view: PluginSectionView;
+  view: PluginsUnifiedView;
   currentServerAvailable: boolean;
   refreshing: boolean;
   preparingMutation: string;
   onOpenSettings(): void;
   onRetry(): void;
   onInstall(plugin: AvailablePlugin): void;
-  onInspectPlugin(plugin: InstalledPluginRow): void;
-}) {
-  if (mode === "installed") {
-    return (
-      <InstalledPluginsList
-        query={query}
-        state={state}
-        rows={view.installed}
-        currentServerAvailable={currentServerAvailable}
-        refreshing={refreshing}
-        onOpenSettings={onOpenSettings}
-        onRetry={onRetry}
-        onInspect={onInspectPlugin}
-      />
-    );
-  }
-  return (
-    <DiscoverPluginsList
-      query={query}
-      state={state}
-      entries={view.explore}
-      catalogReady={view.catalogReady}
-      currentServerAvailable={currentServerAvailable}
-      refreshing={refreshing}
-      preparingMutation={preparingMutation}
-      onOpenSettings={onOpenSettings}
-      onRetry={onRetry}
-      onInstall={onInstall}
-    />
-  );
-}
-
-function InstalledPluginsList({
-  query,
-  state,
-  rows,
-  currentServerAvailable,
-  refreshing,
-  onOpenSettings,
-  onRetry,
-  onInspect,
-}: {
-  query: string;
-  state: SkillsRequestState<PluginInventory>;
-  rows: InstalledPluginRow[];
-  currentServerAvailable: boolean;
-  refreshing: boolean;
-  onOpenSettings(): void;
-  onRetry(): void;
-  onInspect(plugin: InstalledPluginRow): void;
+  onInspectInstalled(plugin: InstalledPluginRow): void;
+  onInspectAvailable(plugin: AvailablePlugin): void;
 }) {
   const colors = useAppColors();
-  const visibleRows = useMemo(
-    () => filterInstalledPlugins(rows, query),
-    [query, rows],
-  );
   const hasData = skillsRequestData(state) !== undefined;
+  const visibleInstalled = useMemo(
+    () =>
+      view.rows
+        .filter((row) => row.kind === "installed")
+        .map((row) => (row.kind === "installed" ? row.plugin : null))
+        .filter((plugin): plugin is InstalledPluginRow => plugin != null),
+    [view],
+  );
+  const visibleAvailable = useMemo(
+    () =>
+      view.rows
+        .filter((row) => row.kind === "available")
+        .map((row) => (row.kind === "available" ? row.plugin : null))
+        .filter((plugin): plugin is AvailablePlugin => plugin != null),
+    [view],
+  );
+  const filteredInstalled = useMemo(
+    () => filterInstalledPlugins(visibleInstalled, query),
+    [query, visibleInstalled],
+  );
+  const filteredAvailable = useMemo(
+    () => filterAvailablePlugins(visibleAvailable, query),
+    [query, visibleAvailable],
+  );
+  const data: Array<
+    | { kind: "installed"; plugin: InstalledPluginRow }
+    | { kind: "available"; plugin: AvailablePlugin }
+  > = [
+    ...filteredInstalled.map((plugin) => ({ kind: "installed" as const, plugin })),
+    ...filteredAvailable.map((plugin) => ({ kind: "available" as const, plugin })),
+  ];
+
   return (
     <FlatList
       style={styles.list}
-      data={visibleRows}
-      keyExtractor={(row) => row.id}
+      data={data}
+      keyExtractor={(row) =>
+        row.kind === "installed" ? row.plugin.id : row.plugin.pluginId
+      }
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.listContent}
       refreshControl={surfaceRefreshControl(refreshing, onRetry, colors.accent)}
@@ -729,17 +720,40 @@ function InstalledPluginsList({
           loadingTitle="Loading plugins…"
           error={state.status === "error" ? state.error : undefined}
           errorTitle="Plugins unavailable"
-          empty={hasData && rows.length === 0}
-          emptyTitle="No plugins installed"
-          noMatches={hasData && rows.length > 0 && visibleRows.length === 0}
+          empty={hasData && view.rows.length === 0 && view.catalogReady}
+          emptyTitle="No plugins found"
+          noMatches={
+            hasData &&
+            view.rows.length > 0 &&
+            filteredInstalled.length + filteredAvailable.length === 0
+          }
+          capabilityUnavailable={hasData && !view.catalogReady && view.rows.length > 0}
+          capabilityTitle={
+            view.rows.length === 0
+              ? "Plugin catalog unavailable"
+              : "Catalog unavailable — installed rows only"
+          }
+          catalogUnavailable={hasData && !view.catalogReady && view.rows.length === 0}
           currentServerAvailable={currentServerAvailable}
           onOpenSettings={onOpenSettings}
           onRetry={onRetry}
         />
       }
-      renderItem={({ item }) => (
-        <InstalledPluginItem plugin={item} onInspect={() => onInspect(item)} />
-      )}
+      renderItem={({ item }) =>
+        item.kind === "installed" ? (
+          <InstalledPluginItem
+            plugin={item.plugin}
+            onInspect={() => onInspectInstalled(item.plugin)}
+          />
+        ) : (
+          <AvailablePluginItem
+            plugin={item.plugin}
+            busy={preparingMutation === `plugin:install:${item.plugin.pluginId}`}
+            onInstall={() => onInstall(item.plugin)}
+            onInspect={() => onInspectAvailable(item.plugin)}
+          />
+        )
+      }
     />
   );
 }
@@ -753,6 +767,7 @@ function InstalledPluginItem({
 }) {
   const colors = useAppColors();
   const ownership = installedPluginOwnership(plugin);
+  const badges = installedPluginBadges(plugin);
   return (
     <Pressable
       accessibilityRole="button"
@@ -789,6 +804,7 @@ function InstalledPluginItem({
         >
           {installedPluginMetadata(plugin)}
         </Text>
+        <BadgeRow badges={badges} />
       </View>
       <ItemActionIndicator
         icon={ownership.manageable ? "ellipsis-horizontal" : "information-circle-outline"}
@@ -797,123 +813,144 @@ function InstalledPluginItem({
   );
 }
 
-function DiscoverPluginsList({
-  query,
-  state,
-  entries,
-  catalogReady,
-  currentServerAvailable,
-  refreshing,
-  preparingMutation,
-  onOpenSettings,
-  onRetry,
+function AvailablePluginItem({
+  plugin,
+  busy,
   onInstall,
+  onInspect,
 }: {
-  query: string;
-  state: SkillsRequestState<PluginInventory>;
-  entries: AvailablePlugin[];
-  catalogReady: boolean;
-  currentServerAvailable: boolean;
-  refreshing: boolean;
-  preparingMutation: string;
-  onOpenSettings(): void;
-  onRetry(): void;
-  onInstall(plugin: AvailablePlugin): void;
+  plugin: AvailablePlugin;
+  busy: boolean;
+  onInstall(): void;
+  onInspect(): void;
 }) {
   const colors = useAppColors();
-  const visibleEntries = useMemo(
-    () => filterAvailablePlugins(entries, query),
-    [entries, query],
-  );
-  const hasData = skillsRequestData(state) !== undefined;
+  const badges = availablePluginBadges(plugin);
   return (
-    <FlatList
-      style={styles.list}
-      data={visibleEntries}
-      keyExtractor={(entry) => entry.pluginId}
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(refreshing, onRetry, colors.accent)}
-      ItemSeparatorComponent={() => <Separator />}
-      ListHeaderComponent={
-        <ListStateHeader
-          loading={state.status === "loading" && !hasData}
-          loadingTitle="Loading plugin catalog…"
-          error={state.status === "error" ? state.error : undefined}
-          errorTitle="Plugin catalog unavailable"
-          empty={hasData && catalogReady && entries.length === 0}
-          emptyTitle="No plugins available"
-          noMatches={
-            hasData && catalogReady && entries.length > 0 && visibleEntries.length === 0
-          }
-          capabilityUnavailable={hasData && !catalogReady}
-          currentServerAvailable={currentServerAvailable}
-          onOpenSettings={onOpenSettings}
-          onRetry={onRetry}
+    <View style={styles.itemRow}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${plugin.name}, available plugin`}
+        accessibilityHint="Show plugin details"
+        onPress={onInspect}
+        style={({ pressed }) => [
+          styles.itemMain,
+          pressed ? { backgroundColor: colors.surfacePressed } : null,
+        ]}
+      >
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+        >
+          <Ionicons
+            name="extension-puzzle-outline"
+            size={20}
+            color={colors.textSecondary}
+          />
+        </View>
+        <View style={styles.itemCopy}>
+          <Text
+            numberOfLines={2}
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.itemName, { color: colors.textPrimary }]}
+          >
+            {plugin.name}
+          </Text>
+          <Text
+            numberOfLines={2}
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.itemMetadata, { color: colors.textTertiary }]}
+          >
+            {plugin.description ||
+              [`@${plugin.marketplaceName}`, plugin.sourceRef].filter(Boolean).join(" · ")}
+          </Text>
+          <BadgeRow badges={badges} />
+        </View>
+      </Pressable>
+      {plugin.installable ? (
+        <SmallAction
+          label="Install"
+          accessibilityLabel={`Install ${plugin.name}`}
+          busy={busy}
+          onPress={onInstall}
         />
-      }
-      renderItem={({ item }) => (
-        <CatalogRow
-          icon={<AgentKindIcon kind="claude" size={22} variant="compact" />}
-          name={item.name}
-          metadata={
-            item.description ||
-            [`@${item.marketplaceName}`, item.sourceRef].filter(Boolean).join(" · ")
-          }
-          trailing={
-            item.installable ? (
-              <SmallAction
-                label="Install"
-                accessibilityLabel={`Install ${item.name}`}
-                busy={preparingMutation === `plugin:install:${item.pluginId}`}
-                onPress={() => onInstall(item)}
-              />
-            ) : (
-              <InstalledCheck />
-            )
-          }
-        />
+      ) : (
+        <InstalledCheck />
       )}
-    />
+    </View>
   );
 }
 
-function InstalledSkillsList({
+function SkillsList({
   selectedAgent,
   query,
   state,
   skills,
+  catalogSkills,
+  catalogInstalledElsewhere,
+  leaderboardView,
+  browsing,
+  submittedQuery,
+  leaderboard,
+  catalogState,
+  searchState,
+  searchResult,
   currentServerAvailable,
   refreshing,
   preparingMutation,
   onOpenSettings,
   onRefresh,
   onRemove,
+  onInstall,
+  onRetryCatalog,
+  onRetrySearch,
   onInspect,
 }: {
   selectedAgent: ManagedSkillAgent;
   query: string;
   state: SkillsRequestState<unknown>;
   skills: InstalledSkill[];
+  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
+  catalogInstalledElsewhere: Record<string, readonly string[]>;
+  leaderboardView: SkillsLeaderboardView;
+  browsing: boolean;
+  submittedQuery: string;
+  leaderboard?: SkillsLeaderboard;
+  catalogState: SkillsRequestState<SkillsLeaderboards>;
+  searchState: SkillsRequestState<SkillsCatalogResult>;
+  searchResult?: SkillsCatalogResult;
   currentServerAvailable: boolean;
   refreshing: boolean;
   preparingMutation: string;
   onOpenSettings(): void;
   onRefresh(): void;
   onRemove(skill: InstalledSkill): void;
+  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
+  onRetryCatalog(): void;
+  onRetrySearch(): void;
   onInspect(skill: InstalledSkill): void;
 }) {
   const colors = useAppColors();
+  const hasInventory = skillsRequestData(state) !== undefined;
   const visibleSkills = useMemo(
     () => filterInstalledSkills(skills, query),
     [query, skills],
   );
-  const hasInventory = skillsRequestData(state) !== undefined;
+  const visibleCatalog = useMemo(
+    () => filterCatalogSkills(catalogSkills, query),
+    [query, catalogSkills],
+  );
+  const rows = useMemo(
+    () => skillsUnifiedRows(visibleSkills, visibleCatalog),
+    [visibleCatalog, visibleSkills],
+  );
   return (
     <FlatList
       style={styles.list}
-      data={visibleSkills}
-      keyExtractor={(skill) => skill.id}
+      data={rows}
+      keyExtractor={rowKey}
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.listContent}
       refreshControl={surfaceRefreshControl(refreshing, onRefresh, colors.accent)}
@@ -924,23 +961,55 @@ function InstalledSkillsList({
           loadingTitle="Loading installed Skills…"
           error={state.status === "error" ? state.error : undefined}
           errorTitle="Installed Skills unavailable"
-          empty={hasInventory && skills.length === 0}
+          empty={
+            hasInventory && skills.length === 0 && !browsing
+          }
           emptyTitle={`No Skills for ${skillAgentLabel(selectedAgent)}`}
-          noMatches={hasInventory && skills.length > 0 && visibleSkills.length === 0}
+          noMatches={
+            hasInventory &&
+            skills.length + catalogSkills.length > 0 &&
+            visibleSkills.length + visibleCatalog.length === 0
+          }
           currentServerAvailable={currentServerAvailable}
           onOpenSettings={onOpenSettings}
           onRetry={onRefresh}
         />
       }
-      renderItem={({ item }) => (
-        <InstalledSkillItem
-          skill={item}
-          selectedAgent={selectedAgent}
-          busy={preparingMutation === `remove:${item.id}`}
-          onRemove={() => onRemove(item)}
-          onInspect={() => onInspect(item)}
+      ListFooterComponent={
+        <CatalogBrowseNote
+          browsing={browsing}
+          submittedQuery={submittedQuery}
+          leaderboard={leaderboard}
+          catalogState={catalogState}
+          searchState={searchState}
+          searchResult={searchResult}
+          showsInstalled={hasInventory && skills.length > 0}
+          currentServerAvailable={currentServerAvailable}
+          onOpenSettings={onOpenSettings}
+          onRetryCatalog={onRetryCatalog}
+          onRetrySearch={onRetrySearch}
         />
-      )}
+      }
+      renderItem={({ item }) =>
+        item.kind === "installed" ? (
+          <InstalledSkillItem
+            skill={item.skill}
+            selectedAgent={selectedAgent}
+            busy={preparingMutation === `remove:${item.skill.id}`}
+            onRemove={() => onRemove(item.skill)}
+            onInspect={() => onInspect(item.skill)}
+          />
+        ) : (
+          <CatalogSkillItem
+            skill={item.skill}
+            leaderboardView={leaderboardView}
+            installedElsewhere={catalogInstalledElsewhere[item.catalogId] ?? []}
+            selectedAgent={selectedAgent}
+            busy={preparingMutation === `install:${item.catalogId}`}
+            onInstall={() => onInstall(item.skill)}
+          />
+        )
+      }
     />
   );
 }
@@ -960,6 +1029,7 @@ function InstalledSkillItem({
 }) {
   const colors = useAppColors();
   const ownership = installedSkillOwnership(skill, selectedAgent);
+  const badges = installedSkillBadges(skill, skill.agents.length);
   return (
     <View style={styles.itemRow}>
       <Pressable
@@ -978,7 +1048,7 @@ function InstalledSkillItem({
           importantForAccessibility="no-hide-descendants"
           style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
         >
-          <Ionicons name="sparkles-outline" size={21} color={colors.textSecondary} />
+          <Ionicons name="library-outline" size={21} color={colors.textSecondary} />
         </View>
         <View style={styles.itemCopy}>
           <Text
@@ -995,6 +1065,7 @@ function InstalledSkillItem({
           >
             {installedSkillMetadata(skill)}
           </Text>
+          <BadgeRow badges={badges} />
         </View>
       </Pressable>
       {ownership.manageable ? (
@@ -1016,175 +1087,265 @@ function InstalledSkillItem({
   );
 }
 
-function DiscoverSkillsList({
+function CatalogSkillItem({
+  skill,
+  leaderboardView,
+  installedElsewhere,
   selectedAgent,
-  submittedQuery,
-  view,
-  catalogState,
-  leaderboard,
-  searchState,
-  searchResult,
-  currentServerAvailable,
-  preparingMutation,
-  refreshing,
-  onOpenSettings,
-  onRefresh,
-  onRetryCatalog,
-  onRetrySearch,
+  busy,
   onInstall,
 }: {
+  skill: CatalogSkill | RankedCatalogSkill;
+  leaderboardView: SkillsLeaderboardView;
+  installedElsewhere: readonly string[];
   selectedAgent: ManagedSkillAgent;
-  submittedQuery: string;
-  view: SkillsLeaderboardView;
-  catalogState: SkillsRequestState<SkillsLeaderboards>;
-  leaderboard?: SkillsLeaderboard;
-  searchState: SkillsRequestState<SkillsCatalogResult>;
-  searchResult?: SkillsCatalogResult;
-  currentServerAvailable: boolean;
-  preparingMutation: string;
-  refreshing: boolean;
-  onOpenSettings(): void;
-  onRefresh(): void;
-  onRetryCatalog(): void;
-  onRetrySearch(): void;
-  onInstall(skill: CatalogSkill | RankedCatalogSkill): void;
+  busy: boolean;
+  onInstall(): void;
 }) {
   const colors = useAppColors();
-  const showingSearch = Boolean(submittedQuery);
-  const hasCatalog = skillsRequestData(catalogState) !== undefined;
-  const data: Array<CatalogSkill | RankedCatalogSkill> = showingSearch
-    ? (searchResult?.skills ?? [])
-    : (leaderboard?.skills ?? []);
+  const ranked = isRankedCatalogSkill(skill);
+  const metadata = ranked
+    ? `${skill.source} · ${rankedMetric(skill, leaderboardView)}`
+    : `${skill.source} · ${formatInstalls(skill.installs)} installs`;
+  const badges = catalogSkillBadges(skill, [...installedElsewhere]);
   return (
-    <FlatList
-      style={styles.list}
-      data={data}
-      keyExtractor={(skill) => skill.id}
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(refreshing, onRefresh, colors.accent)}
-      ItemSeparatorComponent={() => <Separator />}
-      ListHeaderComponent={
-        showingSearch ? (
-          <ListStateHeader
-            loading={searchState.status === "loading"}
-            loadingTitle={`Searching for “${submittedQuery}”…`}
-            error={searchState.status === "error" ? searchState.error : undefined}
-            errorTitle="Search unavailable"
-            empty={searchState.status === "empty"}
-            emptyTitle="No results"
-            currentServerAvailable={currentServerAvailable}
-            onOpenSettings={onOpenSettings}
-            onRetry={onRetrySearch}
-          />
-        ) : (
-          <ListStateHeader
-            loading={catalogState.status === "loading" && !hasCatalog}
-            loadingTitle="Loading skills.sh rankings…"
-            error={catalogState.status === "error" ? catalogState.error : undefined}
-            errorTitle="Rankings unavailable"
-            empty={
-              hasCatalog && leaderboard?.skills.length === 0
-            }
-            emptyTitle={skillsEmptyLeaderboardCopy(view).title}
-            currentServerAvailable={currentServerAvailable}
-            onOpenSettings={onOpenSettings}
-            onRetry={onRetryCatalog}
-          />
-        )
-      }
-      renderItem={({ item: skill }) => {
-        const ranked = isRankedCatalogSkill(skill);
-        return (
-          <CatalogRow
-            prefix={ranked ? String(skill.rank) : undefined}
-            icon={
-              <Ionicons name="sparkles-outline" size={21} color={colors.textSecondary} />
-            }
-            name={skill.name}
-            metadata={
-              ranked
-                ? `${skill.source} · ${rankedMetric(skill, view)}`
-                : `${skill.source} · ${formatInstalls(skill.installs)} installs`
-            }
-            trailing={
-              skill.installable ? (
-                <SmallAction
-                  label="Install"
-                  accessibilityLabel={`Install ${skill.name} for ${skillAgentLabel(selectedAgent)}`}
-                  busy={preparingMutation === `install:${skill.id}`}
-                  onPress={() => onInstall(skill)}
-                />
-              ) : (
-                <ItemIconAction
-                  label={`Why ${skill.name} is unavailable`}
-                  icon="information-circle-outline"
-                  onPress={() =>
-                    Alert.alert(
-                      skill.name,
-                      "This catalog entry does not expose an installable npx skills identity.",
-                    )
-                  }
-                />
-              )
-            }
-          />
-        );
-      }}
-    />
+    <View style={styles.itemRow}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${skill.name}, ${metadata}`}
+        accessibilityHint="Show why this Skill can be installed"
+        onPress={() =>
+          Alert.alert(
+            skill.name,
+            `${skill.source}\n\nInstall adds this Skill for ${skillAgentLabel(selectedAgent)} through the official skills CLI.`,
+          )
+        }
+        style={({ pressed }) => [
+          styles.itemMain,
+          pressed ? { backgroundColor: colors.surfacePressed } : null,
+        ]}
+      >
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+        >
+          <Ionicons name="library-outline" size={21} color={colors.textSecondary} />
+        </View>
+        <View style={styles.itemCopy}>
+          <Text
+            numberOfLines={2}
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.itemName, { color: colors.textPrimary }]}
+          >
+            {skill.name}
+          </Text>
+          <Text
+            numberOfLines={2}
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.itemMetadata, { color: colors.textTertiary }]}
+          >
+            {metadata}
+          </Text>
+          <BadgeRow badges={badges} />
+        </View>
+      </Pressable>
+      {skill.installable ? (
+        <SmallAction
+          label="Install"
+          accessibilityLabel={`Install ${skill.name} for ${skillAgentLabel(selectedAgent)}`}
+          busy={busy}
+          onPress={onInstall}
+        />
+      ) : (
+        <ItemIconAction
+          label={`Why ${skill.name} is unavailable`}
+          icon="information-circle-outline"
+          onPress={() =>
+            Alert.alert(
+              skill.name,
+              "This catalog entry does not expose an installable npx skills identity.",
+            )
+          }
+        />
+      )}
+    </View>
   );
 }
 
-function CatalogRow({
-  prefix,
-  icon,
-  name,
-  metadata,
-  trailing,
+function CatalogBrowseNote({
+  browsing,
+  submittedQuery,
+  leaderboard,
+  catalogState,
+  searchState,
+  searchResult,
+  showsInstalled,
+  currentServerAvailable,
+  onOpenSettings,
+  onRetryCatalog,
+  onRetrySearch,
 }: {
-  prefix?: string;
-  icon: React.ReactNode;
-  name: string;
-  metadata: string;
-  trailing: React.ReactNode;
+  browsing: boolean;
+  submittedQuery: string;
+  leaderboard?: SkillsLeaderboard;
+  catalogState: SkillsRequestState<SkillsLeaderboards>;
+  searchState: SkillsRequestState<SkillsCatalogResult>;
+  searchResult?: SkillsCatalogResult;
+  showsInstalled: boolean;
+  currentServerAvailable: boolean;
+  onOpenSettings(): void;
+  onRetryCatalog(): void;
+  onRetrySearch(): void;
 }) {
   const colors = useAppColors();
+  if (!browsing) {
+    if (catalogState.status === "error") {
+      return (
+        <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
+          >
+            Catalog unavailable
+          </Text>
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
+          >
+            {catalogState.error}
+          </Text>
+          <SmallAction label="Retry" onPress={onRetryCatalog} />
+        </View>
+      );
+    }
+    if (leaderboard && leaderboard.skills.length === 0 && !showsInstalled) {
+      return (
+        <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
+          >
+            No catalog Skills
+          </Text>
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
+          >
+            Use Search above to discover Skills from skills.sh.
+          </Text>
+        </View>
+      );
+    }
+    return null;
+  }
+  if (searchState.status === "loading") {
+    return <LoadingNote title={`Searching for “${submittedQuery}”…`} />;
+  }
+  if (searchState.status === "error") {
+    return (
+      <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
+        <Text
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
+        >
+          Search unavailable
+        </Text>
+        <Text
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
+        >
+          {searchState.error}
+        </Text>
+        <SmallAction label="Retry" onPress={onRetrySearch} />
+      </View>
+    );
+  }
+  if (searchState.status === "empty") {
+    return (
+      <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
+        <Text
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
+        >
+          No results for “{submittedQuery}”
+        </Text>
+        <Text
+          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+          style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
+        >
+          {searchResult?.skills.length === 0
+            ? "Nothing on skills.sh matched this query."
+            : ""}
+        </Text>
+      </View>
+    );
+  }
+  return null;
+}
+
+function LoadingNote({ title }: { title: string }) {
+  const colors = useAppColors();
   return (
-    <View style={styles.itemRow}>
-      {prefix ? (
-        <Text
-          accessibilityLabel={`Rank ${prefix}`}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.catalogRank, { color: colors.textTertiary }]}
-        >
-          {prefix}
-        </Text>
-      ) : null}
-      <View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
+    <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
+      <ActivityIndicator size="small" color={colors.accent} />
+      <Text
+        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+        style={[styles.browseNoteTitle, { color: colors.textSecondary }]}
       >
-        {icon}
-      </View>
-      <View style={styles.itemCopy}>
-        <Text
-          numberOfLines={2}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.itemName, { color: colors.textPrimary }]}
+        {title}
+      </Text>
+    </View>
+  );
+}
+
+function BadgeRow({ badges }: { badges: LifecycleBadge[] }) {
+  const colors = useAppColors();
+  if (badges.length === 0) {
+    return null;
+  }
+  return (
+    <View style={styles.badgeRow}>
+      {badges.map((badge) => (
+        <View
+          key={badge.label}
+          style={[
+            styles.badgePill,
+            {
+              backgroundColor:
+                badge.tone === "accent"
+                  ? colors.accentSoft
+                  : badge.tone === "warning"
+                    ? colors.dangerSoft
+                    : colors.surfaceSubtle,
+              borderColor:
+                badge.tone === "accent"
+                  ? colors.accent
+                  : badge.tone === "warning"
+                    ? colors.dangerText
+                    : colors.borderSubtle,
+            },
+          ]}
         >
-          {name}
-        </Text>
-        <Text
-          numberOfLines={2}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.itemMetadata, { color: colors.textTertiary }]}
-        >
-          {metadata}
-        </Text>
-      </View>
-      {trailing}
+          <Text
+            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+            style={[
+              styles.badgeLabel,
+              {
+                color:
+                  badge.tone === "accent"
+                    ? colors.accent
+                    : badge.tone === "warning"
+                      ? colors.dangerText
+                      : colors.textSecondary,
+              },
+            ]}
+          >
+            {badge.label}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -1192,14 +1353,12 @@ function CatalogRow({
 function SurfaceSheet({
   sheet,
   section,
-  mode,
   selectedAgent,
   agentCounts,
   leaderboardView,
   hasProjectCwd,
   preparingMutation,
   onClose,
-  onSelectMode,
   onSelectAgent,
   onSelectLeaderboard,
   onUpdateSkills,
@@ -1208,14 +1367,12 @@ function SurfaceSheet({
 }: {
   sheet: SurfaceSheet;
   section: SkillsSurfaceSection;
-  mode: PluginsSkillsMode;
   selectedAgent: ManagedSkillAgent;
   agentCounts: SkillsAgentCounts;
   leaderboardView: SkillsLeaderboardView;
   hasProjectCwd: boolean;
   preparingMutation: string;
   onClose(): void;
-  onSelectMode(mode: PluginsSkillsMode): void;
   onSelectAgent(agent: ManagedSkillAgent): void;
   onSelectLeaderboard(view: SkillsLeaderboardView): void;
   onUpdateSkills(scope: "project" | "global"): void;
@@ -1234,26 +1391,6 @@ function SurfaceSheet({
         contentContainerStyle={styles.sheetContent}
         showsVerticalScrollIndicator={false}
       >
-        {sheet?.kind === "mode" ? (
-          <>
-            <SheetTitle>{section === "plugins" ? "Plugins" : "Skills"}</SheetTitle>
-            <SheetOption
-              icon="download-outline"
-              label="Installed"
-              detail={`Show installed ${section === "plugins" ? "plugins" : "Skills"}`}
-              selected={mode === "installed"}
-              onPress={() => onSelectMode("installed")}
-            />
-            <SheetOption
-              icon="compass-outline"
-              label="Discover"
-              detail={`Browse ${section === "plugins" ? "the plugin catalog" : "skills.sh"}`}
-              selected={mode === "discover"}
-              onPress={() => onSelectMode("discover")}
-            />
-          </>
-        ) : null}
-
         {sheet?.kind === "target" ? (
           <>
             <SheetTitle>Target</SheetTitle>
@@ -1328,6 +1465,9 @@ function SurfaceSheet({
           />
         ) : null}
 
+        {sheet?.kind === "plugin-available" ? (
+          <AvailablePluginDetailSheet plugin={sheet.plugin} />
+        ) : null}
       </ScrollView>
       <Pressable
         accessibilityRole="button"
@@ -1358,10 +1498,12 @@ function SkillDetailSheet({
   selectedAgent: ManagedSkillAgent;
 }) {
   const ownership = installedSkillOwnership(skill, selectedAgent);
+  const badges = installedSkillBadges(skill, skill.agents.length);
   return (
     <>
       <SheetTitle>{skill.name}</SheetTitle>
       <SheetMetadata>{installedSkillMetadata(skill)}</SheetMetadata>
+      <BadgeRow badges={badges} />
       {skill.description ? <SheetBody>{skill.description}</SheetBody> : null}
       <SheetSection title={ownership.summary}>{ownership.detail}</SheetSection>
     </>
@@ -1380,10 +1522,12 @@ function PluginDetailSheet({
   onUninstall(): void;
 }) {
   const ownership = installedPluginOwnership(plugin);
+  const badges = installedPluginBadges(plugin);
   return (
     <>
       <SheetTitle>{plugin.name}</SheetTitle>
       <SheetMetadata>{installedPluginMetadata(plugin)}</SheetMetadata>
+      <BadgeRow badges={badges} />
       <SheetSection title={ownership.summary}>{ownership.detail}</SheetSection>
       {plugin.skills.length > 0 ? (
         <SheetSkillList skills={plugin.skills.map((skill) => skill.name)} />
@@ -1405,6 +1549,20 @@ function PluginDetailSheet({
           />
         </View>
       ) : null}
+    </>
+  );
+}
+
+function AvailablePluginDetailSheet({ plugin }: { plugin: AvailablePlugin }) {
+  const ownership = availablePluginOwnership(plugin);
+  const badges = availablePluginBadges(plugin);
+  return (
+    <>
+      <SheetTitle>{plugin.name}</SheetTitle>
+      <SheetMetadata>{`@${plugin.marketplaceName}`}</SheetMetadata>
+      <BadgeRow badges={badges} />
+      {plugin.description ? <SheetBody>{plugin.description}</SheetBody> : null}
+      <SheetSection title={ownership.summary}>{ownership.detail}</SheetSection>
     </>
   );
 }
@@ -1488,7 +1646,7 @@ function SheetSkillList({ skills }: { skills: string[] }) {
         >
           <Ionicons
             accessible={false}
-            name="sparkles-outline"
+            name="library-outline"
             size={17}
             color={colors.textTertiary}
           />
@@ -1644,6 +1802,8 @@ function ListStateHeader({
   emptyTitle = "Nothing here yet",
   noMatches,
   capabilityUnavailable,
+  capabilityTitle = "Capability unavailable",
+  catalogUnavailable,
   currentServerAvailable = true,
   onOpenSettings,
   onRetry,
@@ -1656,6 +1816,8 @@ function ListStateHeader({
   emptyTitle?: string;
   noMatches?: boolean;
   capabilityUnavailable?: boolean;
+  capabilityTitle?: string;
+  catalogUnavailable?: boolean;
   currentServerAvailable?: boolean;
   onOpenSettings?(): void;
   onRetry?(): void;
@@ -1671,10 +1833,14 @@ function ListStateHeader({
       />
     );
   }
-  if (capabilityUnavailable) {
+  if (capabilityUnavailable || catalogUnavailable) {
     return (
       <RequestState
-        title="Plugin catalog unavailable"
+        title={
+          catalogUnavailable && !capabilityUnavailable
+            ? "Plugin catalog unavailable"
+            : capabilityTitle
+        }
         action={currentServerAvailable ? "Retry" : "Settings"}
         onAction={currentServerAvailable ? onRetry : onOpenSettings}
       />
@@ -1859,14 +2025,14 @@ function surfaceRefreshControl(
   );
 }
 
-function searchPlaceholder(
-  section: SkillsSurfaceSection,
-  mode: PluginsSkillsMode,
-): string {
-  if (section === "plugins") {
-    return mode === "installed" ? "Search installed plugins" : "Search plugin catalog";
-  }
-  return mode === "installed" ? "Search installed Skills" : "Search skills.sh";
+function rowKey(row: SkillsUnifiedRow): string {
+  return row.kind === "installed" ? `installed:${row.skill.id}` : `catalog:${row.catalogId}`;
+}
+
+function searchPlaceholder(section: SkillsSurfaceSection): string {
+  return section === "plugins"
+    ? "Search plugins"
+    : "Search your Skills or skills.sh";
 }
 
 function managedAgentKind(agent: ManagedSkillAgent): AgentKind {
@@ -1999,6 +2165,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  noticeBanner: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radii.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  noticeText: {
+    ...TypeScale.compact,
+    flex: 1,
+  },
   list: { flex: 1 },
   listContent: {
     width: "100%",
@@ -2036,6 +2217,30 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   itemMetadata: { ...TypeScale.caption },
+  badgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingTop: 3,
+  },
+  badgePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radii.pill,
+    alignSelf: "flex-start",
+  },
+  badgeLabel: { ...TypeScale.micro },
+  browseNote: {
+    paddingVertical: 10,
+    gap: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  browseNoteTitle: {
+    ...TypeScale.compact,
+    fontFamily: Typography.uiFontMedium,
+  },
+  browseNoteDetail: { ...TypeScale.caption },
   itemIconAction: {
     width: PLUGINS_SKILLS_TOUCH_TARGET,
     height: PLUGINS_SKILLS_TOUCH_TARGET,
@@ -2043,12 +2248,6 @@ const styles = StyleSheet.create({
     borderRadius: Radii.xs,
     alignItems: "center",
     justifyContent: "center",
-  },
-  catalogRank: {
-    ...TypeScale.caption,
-    width: 20,
-    textAlign: "right",
-    fontVariant: ["tabular-nums"],
   },
   requestState: {
     minHeight: 72,
@@ -2159,18 +2358,4 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sheetCloseText: { ...TypeScale.label },
-  handoffStatus: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 16,
-    minHeight: 48,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.sm,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  handoffText: { ...TypeScale.compact },
 });

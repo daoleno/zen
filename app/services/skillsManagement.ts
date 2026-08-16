@@ -116,6 +116,18 @@ export interface SkillsMutationCommand {
   agents: ManagedSkillAgent[];
 }
 
+export interface SkillsMutationExecution {
+  success: boolean;
+  exitCode: number;
+  output: string;
+  durationMs: number;
+}
+
+export interface SkillsMutationResult {
+  command: SkillsMutationCommand;
+  execution: SkillsMutationExecution;
+}
+
 export type SkillsRequestState<T> =
   | { status: "idle"; generation: number; data?: undefined; error?: undefined }
   | {
@@ -347,6 +359,95 @@ export function normalizeSkillsMutationCommand(
     throw new Error("Daemon returned a non-official Skills command.");
   }
   return normalized;
+}
+
+export function normalizeSkillsMutationResult(
+  value: unknown,
+): SkillsMutationResult {
+  const raw = record(value);
+  const command = normalizeSkillsMutationCommand(raw.command);
+  const success = raw.success;
+  const exitCode = raw.exit_code;
+  const durationMs = raw.duration_ms;
+  if (
+    typeof success !== "boolean" ||
+    typeof exitCode !== "number" ||
+    !Number.isSafeInteger(exitCode) ||
+    exitCode < -1 ||
+    exitCode > 255 ||
+    typeof durationMs !== "number" ||
+    !Number.isSafeInteger(durationMs) ||
+    durationMs < 0 ||
+    durationMs > 3600_000
+  ) {
+    throw new Error("Daemon returned an invalid Skills mutation outcome.");
+  }
+  const output = boundedString(raw.output, 60000);
+  if (success !== (exitCode === 0)) {
+    throw new Error("Daemon returned inconsistent Skills mutation state.");
+  }
+  return {
+    command,
+    execution: { success, exitCode, output, durationMs },
+  };
+}
+
+/** Asserts the daemon's executed command matches the exact reviewed request. */
+export function assertSkillsMutationMatchesRequest(
+  result: SkillsMutationResult,
+  expected: {
+    operation: SkillMutationOperation;
+    skillId?: string;
+    source?: string;
+    skillName?: string;
+    scope: "project" | "global";
+    agents?: ManagedSkillAgent[];
+  },
+): void {
+  assertSkillsCommandMatchesRequest(result.command, expected);
+}
+
+function assertSkillsCommandMatchesRequest(
+  command: SkillsMutationCommand,
+  expected: {
+    operation: SkillMutationOperation;
+    skillId?: string;
+    source?: string;
+    skillName?: string;
+    scope: "project" | "global";
+    agents?: ManagedSkillAgent[];
+  },
+): void {
+  if (
+    command.operation !== expected.operation ||
+    command.scope !== expected.scope ||
+    command.agents.length !== (expected.agents ?? []).length ||
+    command.agents.some(
+      (agent, index) => agent !== (expected.agents ?? [])[index],
+    )
+  ) {
+    throw new Error("Daemon executed a Skills command for a different request.");
+  }
+  if (expected.operation === "install") {
+    if (
+      command.catalogId !== expected.skillId ||
+      command.source !== expected.source ||
+      (expected.skillName != null && command.skillName !== expected.skillName)
+    ) {
+      throw new Error("Daemon executed a Skills command for a different request.");
+    }
+  } else if (
+    expected.operation === "remove" &&
+    expected.skillName != null &&
+    command.skillName !== expected.skillName
+  ) {
+    throw new Error("Daemon executed a Skills command for a different request.");
+  } else if (
+    expected.operation === "update" &&
+    (command.agents.length !== 0 || command.skillName !== "")
+  ) {
+    throw new Error("Daemon executed a Skills command for a different request.");
+  }
 }
 
 export function createSkillsRequestState<T>(): SkillsRequestState<T> {

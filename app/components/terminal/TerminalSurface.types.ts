@@ -1,6 +1,4 @@
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
-import type { SkillsHandoffFailure } from '../../services/skillsTerminalHandoff';
-export type { SkillsHandoffFailure } from '../../services/skillsTerminalHandoff';
 
 export interface TerminalSurfaceHandle {
   sendInput(data: string, options?: { focus?: boolean }): void;
@@ -19,7 +17,4 @@ export interface TerminalSurfaceProps {
   theme: TerminalThemePalette;
   ctrlArmed?: boolean;
   onCtrlArmedChange?: (next: boolean) => void;
-  /** One non-durable Skills mutation grant, consumed only after PTY readiness. */
-  skillsHandoffToken?: string;
-  onSkillsHandoffFailure?: (failure: SkillsHandoffFailure) => void;
 }

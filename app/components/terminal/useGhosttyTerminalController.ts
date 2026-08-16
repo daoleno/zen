@@ -10,7 +10,6 @@ import type { TerminalThemePalette } from '../../constants/terminalThemes';
 import { useGhosttyCoreTerminal } from './useGhosttyCoreTerminal';
 import { useTerminalSession } from './useTerminalSession';
 import type { TerminalInputHandleRef } from './TerminalInputHandler';
-import type { SkillsHandoffFailure } from './TerminalSurface.types';
 import { TerminalLiveGridOwner } from './terminalLiveGrid';
 import type { TerminalScrollCancelReason } from './terminalScrollGesture';
 import { isCurrentTerminalRendererGeneration } from './terminalSurfaceBootstrap';
@@ -18,14 +17,6 @@ import {
   notifyTmuxClientFocus,
   TerminalScrollCorrelation,
 } from './terminalSessionCorrelation';
-import { makeSessionKey } from '../../services/sessionKeys';
-import {
-  skillsTerminalHandoff,
-  submitSkillsTerminalHandoff,
-  unconfirmedSkillsTerminalHandoff,
-  type SkillsTerminalSubmission,
-} from '../../services/skillsTerminalHandoff';
-import { wsClient } from '../../services/websocket';
 
 type BridgeMessage = { rendererGeneration: number } & (
   | { type: 'ready' }
@@ -81,8 +72,6 @@ interface UseGhosttyTerminalControllerArgs {
   rendererGeneration: number;
   onCtrlArmedChange?: (next: boolean) => void;
   onRendererBootstrapFailure?: (message: string, generation: number) => void;
-  skillsHandoffToken?: string;
-  onSkillsHandoffFailure?: (failure: SkillsHandoffFailure) => void;
 }
 
 /**
@@ -97,8 +86,6 @@ export function useGhosttyTerminalController({
   rendererGeneration,
   onCtrlArmedChange,
   onRendererBootstrapFailure,
-  skillsHandoffToken,
-  onSkillsHandoffFailure,
 }: UseGhosttyTerminalControllerArgs) {
   const webviewRef = useRef<WebView>(null);
   const inputRef = useRef<TerminalInputHandleRef>(null);
@@ -109,11 +96,6 @@ export function useGhosttyTerminalController({
   const gridOwnerRef = useRef<TerminalLiveGridOwner | null>(null);
   const scrollCorrelationRef = useRef(new TerminalScrollCorrelation());
   const rendererGenerationRef = useRef(rendererGeneration);
-  const skillsHandoffTokenRef = useRef(skillsHandoffToken || '');
-  const submittedSkillsCommandRef = useRef<SkillsTerminalSubmission | null>(null);
-  if (skillsHandoffToken) {
-    skillsHandoffTokenRef.current = skillsHandoffToken;
-  }
   rendererGenerationRef.current = rendererGeneration;
   const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -209,18 +191,6 @@ export function useGhosttyTerminalController({
       const attached = gridOwnerRef.current?.attach(sessionId) ?? false;
       if (attached) {
         scheduleRenderState();
-        const token = skillsHandoffTokenRef.current;
-        if (token) {
-          skillsHandoffTokenRef.current = '';
-          submittedSkillsCommandRef.current = submitSkillsTerminalHandoff(
-            skillsTerminalHandoff,
-            makeSessionKey(serverId, targetId),
-            token,
-            sessionId,
-            (input) => wsClient.sendTerminalInput(serverId, sessionId, input),
-            (failure) => onSkillsHandoffFailure?.(failure),
-          );
-        }
       }
       return attached;
     },
@@ -228,25 +198,11 @@ export function useGhosttyTerminalController({
       if (ghostty.writeOutput(session_id, data)) {
         scheduleRenderState();
       }
-      if (
-        submittedSkillsCommandRef.current?.sessionId === session_id &&
-        data.includes(submittedSkillsCommandRef.current.command.command)
-      ) {
-        submittedSkillsCommandRef.current = null;
-      }
     },
     onScrollState: ({ at_bottom }) => {
       setScrolledUp(!at_bottom);
     },
     onSessionInvalidated: (sessionId, reason) => {
-      const failure = unconfirmedSkillsTerminalHandoff(
-        submittedSkillsCommandRef.current,
-        sessionId,
-      );
-      if (failure) {
-        submittedSkillsCommandRef.current = null;
-        onSkillsHandoffFailure?.(failure);
-      }
       replaceScrollContext(
         null,
         reason === 'disconnect' ? 'disconnect' : 'session-change',
@@ -269,28 +225,8 @@ export function useGhosttyTerminalController({
       if (ghostty.writeOutput(session_id, `\r\n[Zen] ${message}\r\n`)) {
         scheduleRenderState();
       }
-      if (code === 'input_failed') {
-        const failure = unconfirmedSkillsTerminalHandoff(
-          submittedSkillsCommandRef.current,
-          session_id,
-        );
-        if (failure) {
-          submittedSkillsCommandRef.current = null;
-          onSkillsHandoffFailure?.(failure);
-        }
-      }
     },
   });
-
-  useEffect(() => {
-    return () => {
-      const token = skillsHandoffTokenRef.current;
-      if (token) {
-        skillsTerminalHandoff.revoke(makeSessionKey(serverId, targetId), token);
-        skillsHandoffTokenRef.current = '';
-      }
-    };
-  }, [serverId, targetId]);
 
   const gridOwner = useMemo(() => new TerminalLiveGridOwner({
     requestPtyGrid(cols, rows) {

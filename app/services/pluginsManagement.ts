@@ -69,6 +69,18 @@ export interface PluginMutationCommand {
   host: PluginHost;
 }
 
+export interface PluginMutationExecution {
+  success: boolean;
+  exitCode: number;
+  output: string;
+  durationMs: number;
+}
+
+export interface PluginMutationResult {
+  command: PluginMutationCommand;
+  execution: PluginMutationExecution;
+}
+
 export const PLUGIN_MUTATION_OPERATIONS = new Set<PluginMutationOperation>([
   "install",
   "update",
@@ -146,6 +158,51 @@ export function normalizePluginMutationCommand(
     throw new Error("Daemon returned a non-official plugin command.");
   }
   return normalized;
+}
+
+export function normalizePluginMutationResult(
+  value: unknown,
+): PluginMutationResult {
+  const raw = record(value);
+  const command = normalizePluginMutationCommand(raw.command);
+  const success = raw.success;
+  const exitCode = raw.exit_code;
+  const durationMs = raw.duration_ms;
+  if (
+    typeof success !== "boolean" ||
+    typeof exitCode !== "number" ||
+    !Number.isSafeInteger(exitCode) ||
+    exitCode < -1 ||
+    exitCode > 255 ||
+    typeof durationMs !== "number" ||
+    !Number.isSafeInteger(durationMs) ||
+    durationMs < 0 ||
+    durationMs > 3600_000
+  ) {
+    throw new Error("Daemon returned an invalid Plugin mutation outcome.");
+  }
+  const output = boundedString(raw.output, 60000);
+  if (success !== (exitCode === 0)) {
+    throw new Error("Daemon returned inconsistent Plugin mutation state.");
+  }
+  return {
+    command,
+    execution: { success, exitCode, output, durationMs },
+  };
+}
+
+export function assertPluginMutationMatchesRequest(
+  result: PluginMutationResult,
+  expected: { operation: PluginMutationOperation; pluginId: string; scope: "user" },
+): void {
+  const command = result.command;
+  if (
+    command.operation !== expected.operation ||
+    command.pluginId !== expected.pluginId ||
+    command.scope !== expected.scope
+  ) {
+    throw new Error("Daemon executed a Plugin command for a different request.");
+  }
 }
 
 export function isPluginID(value: string): boolean {

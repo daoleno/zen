@@ -10,7 +10,11 @@ import {
   normalizeSkillsInventory,
   normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
+  normalizeSkillsMutationResult,
+  assertSkillsMutationMatchesRequest,
   skillsRequestData,
+  type ManagedSkillAgent,
+  type SkillMutationOperation,
   type SkillsMutationCommand,
 } from "./skillsManagement";
 
@@ -648,6 +652,119 @@ describe("Skills mutation review", () => {
           mutation_operations: bad,
         }),
       ).toThrow();
+    }
+  });
+});
+
+describe("Skills mutation execution boundary", () => {
+  test("normalizes a truthful execution result and rejects inconsistent state", () => {
+    const success = normalizeSkillsMutationResult({
+      command: {
+        operation: "remove",
+        command: "npx skills remove demo --global --agent codex --yes",
+        skill_name: "demo",
+        scope: "global",
+        agents: ["codex"],
+      },
+      success: true,
+      exit_code: 0,
+      output: "removed demo",
+      duration_ms: 812,
+    });
+    expect(success.execution).toEqual({
+      success: true,
+      exitCode: 0,
+      output: "removed demo",
+      durationMs: 812,
+    });
+    expect(success.command.operation).toBe("remove");
+
+    const failure = normalizeSkillsMutationResult({
+      command: {
+        operation: "remove",
+        command: "npx skills remove demo --global --agent codex --yes",
+        skill_name: "demo",
+        scope: "global",
+        agents: ["codex"],
+      },
+      success: false,
+      exit_code: 3,
+      output: "not found",
+      duration_ms: 40,
+    });
+    expect(failure.execution.success).toBe(false);
+    expect(failure.execution.output).toBe("not found");
+  });
+
+  test("rejects malformed or self-contradictory mutation outcomes", () => {
+    const base = {
+      command: {
+        operation: "install",
+        command: "npx skills add https://github.com/owner/repo --skill demo --global --agent codex --yes",
+        catalog_id: "owner/repo/demo",
+        source: "owner/repo",
+        skill_name: "demo",
+        scope: "global",
+        agents: ["codex"],
+      },
+      success: true,
+      exit_code: 0,
+      output: "",
+      duration_ms: 10,
+    };
+    // success true with a non-zero exit is contradictory and must be rejected.
+    expect(() =>
+      normalizeSkillsMutationResult({ ...base, success: true, exit_code: 1 }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsMutationResult({ ...base, duration_ms: -1 }),
+    ).toThrow();
+    // Control characters in the output tail are sanitized to empty rather
+    // than leaking terminal escapes onto the App.
+    expect(
+      normalizeSkillsMutationResult({ ...base, output: "a\u0000b" }).execution
+        .output,
+    ).toBe("");
+    expect(() =>
+      normalizeSkillsMutationResult({ ...base, command: undefined }),
+    ).toThrow();
+  });
+
+  test("executed commands must match the reviewed request exactly", () => {
+    const result = normalizeSkillsMutationResult({
+      command: {
+        operation: "remove",
+        command: "npx skills remove demo --global --agent codex --yes",
+        skill_name: "demo",
+        scope: "global",
+        agents: ["codex"],
+      },
+      success: true,
+      exit_code: 0,
+      output: "",
+      duration_ms: 10,
+    });
+    expect(() =>
+      assertSkillsMutationMatchesRequest(result, {
+        operation: "remove",
+        skillName: "demo",
+        scope: "global",
+        agents: ["codex"],
+      }),
+    ).not.toThrow();
+    const mismatchCases: Array<{
+      operation: SkillMutationOperation;
+      skillName: string;
+      scope: "project" | "global";
+      agents: ManagedSkillAgent[];
+    }> = [
+      { operation: "remove", skillName: "other", scope: "global", agents: ["codex"] },
+      { operation: "remove", skillName: "demo", scope: "project", agents: ["codex"] },
+      { operation: "remove", skillName: "demo", scope: "global", agents: ["claude-code"] },
+      { operation: "install", skillName: "demo", scope: "global", agents: ["codex"] },
+    ];
+    for (const mismatch of mismatchCases) {
+      expect(() => assertSkillsMutationMatchesRequest(result, mismatch)).toThrow();
     }
   });
 });

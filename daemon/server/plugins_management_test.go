@@ -38,3 +38,33 @@ func TestPluginsInventoryClaimReplacesStaleGenerationAndConsumesCurrentOnce(t *t
 		t.Fatal("current plugin inventory was claimable more than once")
 	}
 }
+
+func TestPluginsMutationReplaceCancelsPreviousAndClaimsOnce(t *testing.T) {
+	connection := &websocket.Conn{}
+	previousContext, cancelPrevious := context.WithCancel(context.Background())
+	_, cancelCurrent := context.WithCancel(context.Background())
+	previous := pluginsMutationRequest{requestID: "plugins-mutation-previous", cancel: cancelPrevious}
+	current := pluginsMutationRequest{requestID: "plugins-mutation-current", cancel: cancelCurrent}
+	server := &Server{pluginsMutations: map[*websocket.Conn]pluginsMutationRequest{connection: previous}}
+	t.Cleanup(cancelCurrent)
+
+	replaced, hadPrevious := server.replacePluginsMutation(connection, current)
+	if !hadPrevious || replaced.requestID != previous.requestID {
+		t.Fatalf("replacement = %#v, %v", replaced, hadPrevious)
+	}
+	select {
+	case <-previousContext.Done():
+	default:
+		t.Fatal("replacement left the previous plugin mutation running")
+	}
+
+	if server.claimPluginsMutation(connection, previous) {
+		t.Fatal("stale plugin mutation claimed the current slot")
+	}
+	if !server.claimPluginsMutation(connection, current) {
+		t.Fatal("current plugin mutation did not claim its slot")
+	}
+	if server.claimPluginsMutation(connection, current) {
+		t.Fatal("current plugin mutation was claimable more than once")
+	}
+}

@@ -49,7 +49,6 @@ export interface TerminalViewportProps {
   onConsumeInitialComposerFocus(): void;
   composerModelControl?: ComposerModelControlPresentation | null;
   onComposerModelControlPress?: () => void;
-  skillsHandoffToken?: string;
 }
 
 function TerminalViewportImpl({
@@ -88,7 +87,6 @@ function TerminalViewportImpl({
   onConsumeInitialComposerFocus,
   composerModelControl,
   onComposerModelControlPress,
-  skillsHandoffToken,
 }: TerminalViewportProps) {
   const interfaceChatAgentInfo = React.useMemo<
     InterfaceChatAgentInfo | undefined
@@ -162,7 +160,6 @@ function TerminalViewportImpl({
             keyboardVisible={keyboardVisible}
             onRetryConnection={onRetryConnection}
             onAccessoryLayout={onAccessoryLayout}
-            skillsHandoffToken={skillsHandoffToken}
           />
 
           {showInterfaceChat && sessionKey && serverId && agentId ? (

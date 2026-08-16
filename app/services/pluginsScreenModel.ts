@@ -8,14 +8,16 @@ import type {
 /**
  * Plugins surface model.
  *
- * The Plugins section has two authoritative presentations: Installed rows and
- * the Explore catalog, both derived from the owning client's plugin manager
- * via the daemon `plugins_inventory` wire.
+ * The Plugins section is one stable management list: installed rows and
+ * catalog-discovered rows coexist, deduplicated by the canonical plugin
+ * identity (`name@marketplace`). There is no separate Discover mode and no
+ * expansion state switch.
  *
  * The mutation gate is the single fail-closed authority: install requires a
  * ready catalog entry, update/uninstall require an installed Claude-hosted
- * mutable row. Codex-hosted plugins have no stable lifecycle adapter in this
- * release and are always unsupported (a visual state, never a fake button).
+ * mutable row. Codex-hosted and cache rows have no stable lifecycle adapter in
+ * this release and are always unsupported (a visual state, never a fake
+ * button).
  */
 
 export type PluginMutationIntent =
@@ -34,88 +36,56 @@ export const PLUGIN_HOST_UNSUPPORTED_REASON =
 export const PLUGIN_CACHE_READONLY_REASON =
   "This plugin is only visible through its cache and cannot be managed.";
 
-/** Progressive disclosure keeps the plugin list calm while bounded. */
-export const MAX_EXPANDED_PLUGINS = 24;
+/** One unified row for the single Plugins management list. */
+export type PluginsUnifiedRow =
+  | { kind: "installed"; plugin: InstalledPluginRow }
+  | { kind: "available"; plugin: AvailablePlugin };
 
-export interface PluginExpansionState {
-  expanded: readonly string[];
-}
-
-export type PluginExpansionAction =
-  | { type: "toggle"; pluginId: string }
-  | { type: "reset" };
-
-export interface PluginSectionView {
+export interface PluginsUnifiedView {
   catalogReady: boolean;
   catalogUnavailableCode?: string;
-  installed: InstalledPluginRow[];
-  explore: AvailablePlugin[];
+  rows: PluginsUnifiedRow[];
 }
 
 /**
- * The Installed/Explore view from the authoritative plugin inventory. A
- * non-ready catalog keeps installed rows but renders no install affordance
- * and no Explore list (capability gap is a state, not a guess).
+ * The unified installed+discovered view from the authoritative plugin
+ * inventory. An available catalog entry is dropped when its canonical
+ * identity is already installed on this server (the daemon also marks those
+ * `installable: false`, but cache rows are re-checked here so one identity
+ * renders exactly once). A non-ready catalog keeps installed rows but no
+ * install affordances and no discovered rows.
  */
-export function pluginSectionView(
+export function pluginsUnifiedView(
   inventory: PluginInventory | undefined,
-): PluginSectionView {
+): PluginsUnifiedView {
   if (!inventory) {
-    return {
-      catalogReady: false,
-      installed: [],
-      explore: [],
-    };
+    return { catalogReady: false, rows: [] };
   }
   const catalogReady = inventory.catalog.status === "ready";
+  const installedIds = new Set(inventory.installed.map((row) => row.id));
+  const rows: PluginsUnifiedRow[] = [...inventory.installed]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((plugin) => ({ kind: "installed", plugin }));
+  if (catalogReady) {
+    const available = [...inventory.catalog.available]
+      .filter((entry) => entry.installable && !installedIds.has(entry.pluginId))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const plugin of available) {
+      rows.push({ kind: "available", plugin });
+    }
+  }
   return {
     catalogReady,
     catalogUnavailableCode: catalogReady
       ? undefined
       : inventory.catalog.code,
-    installed: [...inventory.installed].sort((left, right) =>
-      left.id.localeCompare(right.id),
-    ),
-    explore: catalogReady
-      ? [...inventory.catalog.available].sort((left, right) =>
-          left.name.localeCompare(right.name),
-        )
-      : [],
+    rows,
   };
-}
-
-export function createPluginExpansionState(): PluginExpansionState {
-  return { expanded: [] };
-}
-
-export function reducePluginExpansion(
-  current: PluginExpansionState,
-  action: PluginExpansionAction,
-): PluginExpansionState {
-  switch (action.type) {
-    case "toggle": {
-      const { pluginId } = action;
-      if (!pluginId) {
-        return current;
-      }
-      if (current.expanded.includes(pluginId)) {
-        return {
-          expanded: current.expanded.filter((id) => id !== pluginId),
-        };
-      }
-      if (current.expanded.length >= MAX_EXPANDED_PLUGINS) {
-        return { expanded: [...current.expanded.slice(1), pluginId] };
-      }
-      return { expanded: [...current.expanded, pluginId] };
-    }
-    case "reset":
-      return createPluginExpansionState();
-  }
 }
 
 /**
  * The authoritative plugin mutation gate. Every supported decision requires
- * daemon-proven capability: a ready catalog for install, a mutable
+ * daemon-proven capability: a ready catalog entry for install, a mutable
  * Claude-hosted installed row for update/uninstall. Everything else fails
  * closed with a deterministic reason so the UI can render an honest state.
  */

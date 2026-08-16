@@ -47,8 +47,6 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
   theme,
   ctrlArmed = false,
   onCtrlArmedChange,
-  skillsHandoffToken,
-  onSkillsHandoffFailure,
 }, ref) => {
   const chrome = useMemo(
     () => buildTerminalChrome(theme),
@@ -91,8 +89,6 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
     rendererGeneration: renderer.generation,
     onCtrlArmedChange,
     onRendererBootstrapFailure: reportRendererFailure,
-    skillsHandoffToken,
-    onSkillsHandoffFailure,
   });
 
   const html = useMemo(

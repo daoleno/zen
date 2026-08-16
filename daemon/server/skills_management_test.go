@@ -123,6 +123,7 @@ func TestSkillsDisconnectCancelsInventoryAndSearchOwners(t *testing.T) {
 	inventoryContext, cancelInventory := context.WithCancel(context.Background())
 	searchContext, cancelSearch := context.WithCancel(context.Background())
 	catalogContext, cancelCatalog := context.WithCancel(context.Background())
+	mutationContext, cancelMutation := context.WithCancel(context.Background())
 	server := &Server{
 		skillsInventories: map[*websocket.Conn]skillsInventoryRequest{
 			connection: {requestID: "inventory", generation: 1, cancel: cancelInventory},
@@ -133,18 +134,56 @@ func TestSkillsDisconnectCancelsInventoryAndSearchOwners(t *testing.T) {
 		skillsCatalogs: map[*websocket.Conn]skillsCatalogRequest{
 			connection: {requestID: "catalog", generation: 1, cancel: cancelCatalog},
 		},
+		skillsMutations: map[*websocket.Conn]skillsMutationRequest{
+			connection: {requestID: "mutation", cancel: cancelMutation},
+		},
 	}
 	server.mu.Lock()
 	server.cancelSkillsRequestsLocked(connection)
 	server.mu.Unlock()
-	for name, ctx := range map[string]context.Context{"inventory": inventoryContext, "search": searchContext, "catalog": catalogContext} {
+	for name, ctx := range map[string]context.Context{
+		"inventory": inventoryContext,
+		"search":    searchContext,
+		"catalog":   catalogContext,
+		"mutation":  mutationContext,
+	} {
 		select {
 		case <-ctx.Done():
 		default:
 			t.Fatalf("%s context remained active after disconnect", name)
 		}
 	}
-	if len(server.skillsInventories) != 0 || len(server.skillsSearches) != 0 || len(server.skillsCatalogs) != 0 {
+	if len(server.skillsInventories) != 0 || len(server.skillsSearches) != 0 || len(server.skillsCatalogs) != 0 || len(server.skillsMutations) != 0 {
 		t.Fatalf("request owners survived disconnect")
+	}
+}
+
+func TestSkillsMutationReplaceCancelsPreviousAndClaimsOnce(t *testing.T) {
+	connection := &websocket.Conn{}
+	previousContext, cancelPrevious := context.WithCancel(context.Background())
+	_, cancelCurrent := context.WithCancel(context.Background())
+	previous := skillsMutationRequest{requestID: "mutation-previous", cancel: cancelPrevious}
+	current := skillsMutationRequest{requestID: "mutation-current", cancel: cancelCurrent}
+	server := &Server{skillsMutations: map[*websocket.Conn]skillsMutationRequest{connection: previous}}
+	t.Cleanup(cancelCurrent)
+
+	replaced, ok := server.replaceSkillsMutation(connection, current)
+	if !ok || replaced.requestID != previous.requestID {
+		t.Fatalf("replacement = %#v/%v", replaced, ok)
+	}
+	select {
+	case <-previousContext.Done():
+	default:
+		t.Fatal("replacement left the previous mutation running")
+	}
+
+	if server.claimSkillsMutation(connection, previous) {
+		t.Fatal("stale mutation claimed the current slot")
+	}
+	if !server.claimSkillsMutation(connection, current) {
+		t.Fatal("current mutation did not claim its slot")
+	}
+	if server.claimSkillsMutation(connection, current) {
+		t.Fatal("current mutation was claimable more than once")
 	}
 }

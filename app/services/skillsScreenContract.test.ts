@@ -6,17 +6,20 @@ import {
 } from "../components/ui/mobileSingleLineInputModel";
 import {
   SkillsAutomaticInventoryOwner,
-  createSkillsDiscoverState,
-  reduceSkillsDiscover,
+  catalogSkillId,
+  installedSkillCatalogId,
   skillsAgentCounts,
   skillsAgentProjection,
   skillsEmptyLeaderboardCopy,
   skillsInstallTargets,
   skillsRemovalPlanForAgent,
+  skillsUnifiedRows,
 } from "./skillsScreenModel";
 import type {
+  CatalogSkill,
   InstalledSkill,
   ManagedSkillAgent,
+  RankedCatalogSkill,
   SkillManagementCapability,
   SkillsInventory,
 } from "./skillsManagement";
@@ -30,6 +33,7 @@ function installedSkill(
     removalPlans: [],
     reason: "Not CLI managed.",
   },
+  source?: string,
 ): InstalledSkill {
   return {
     id,
@@ -41,6 +45,7 @@ function installedSkill(
     bindings: [{ sourcePath: `/skills/${name}`, scope: "global", agents }],
     manager: capability.canRemove ? "skills-cli" : "unknown",
     provenance: capability.canRemove ? "official skills-cli lock" : "unknown",
+    source,
     capability,
   };
 }
@@ -52,6 +57,21 @@ function inventory(skills: InstalledSkill[]): SkillsInventory {
     agents: [],
     warnings: [],
     mutationOperations: ["install", "remove", "update"],
+  };
+}
+
+function catalogSkill(
+  name: string,
+  source: string,
+  installable = true,
+): CatalogSkill {
+  return {
+    id: `${source}/${name}`,
+    skillId: name,
+    name,
+    installs: 120,
+    source,
+    installable,
   };
 }
 
@@ -89,65 +109,53 @@ describe("Skills screen behavior", () => {
     expect(owner.shouldRefresh(1, "server-a")).toBe(false);
   });
 
-  test("typing is local, submit owns search, and clear restores the selected leaderboard", () => {
-    let state = createSkillsDiscoverState();
+  test("unified rows keep installed and discovered together, deduplicated by canonical identity", () => {
+    const installed = [
+      installedSkill(
+        "000000000000000000000001",
+        "codex-only",
+        ["codex"],
+        { canRemove: true, removalPlans: [] },
+        "owner/repo-a",
+      ),
+      installedSkill("000000000000000000000002", "builtin-one", ["codex"]),
+    ];
+    const catalog = [
+      catalogSkill("codex-only", "owner/repo-a"),
+      catalogSkill("fresh-skill", "owner/repo-b"),
+      catalogSkill("fresh-skill", "owner/repo-b"),
+      catalogSkill("another", "owner/repo-c", false),
+    ];
+    const rows = skillsUnifiedRows(installed, catalog);
 
-    let transition = reduceSkillsDiscover(state, {
-      type: "select_view",
-      view: "trending",
-    });
-    state = transition.state;
-    expect(state.view).toBe("trending");
-    expect(transition.effect).toEqual({ type: "none" });
-
-    transition = reduceSkillsDiscover(state, {
-      type: "change_query",
-      value: "react native",
-    });
-    state = transition.state;
-    expect(state.submittedQuery).toBe("");
-    expect(transition.effect).toEqual({ type: "none" });
-
-    transition = reduceSkillsDiscover(state, { type: "submit" });
-    state = transition.state;
-    expect(transition.effect).toEqual({
-      type: "submit_search",
-      query: "react native",
-    });
-    expect(state.submittedQuery).toBe("react native");
-
-    transition = reduceSkillsDiscover(state, { type: "clear" });
-    state = transition.state;
-    expect(transition.effect).toEqual({ type: "clear_search" });
-    expect(state).toEqual({
-      query: "",
-      submittedQuery: "",
-      view: "trending",
-    });
+    expect(rows.map((row) => row.kind)).toEqual([
+      "installed",
+      "installed",
+      "catalog",
+      "catalog",
+    ]);
+    // Installed rows are ordered by name; catalog rows keep browse order and
+    // drop both duplicates of the installed identity.
+    expect(rows[0]).toMatchObject({ kind: "installed", skill: { name: "builtin-one" } });
+    expect(rows[1]).toMatchObject({ kind: "installed", skill: { name: "codex-only" } });
+    expect(rows[2]).toMatchObject({ kind: "catalog", skill: { name: "fresh-skill" } });
+    expect(rows[3]).toMatchObject({ kind: "catalog", skill: { name: "another" } });
+    // The catalog twin of an installed Skill never renders twice.
+    expect(rows.filter((row) => row.kind === "catalog" && row.skill.name === "codex-only")).toHaveLength(0);
   });
 
-  test("one-character submit never searches and an empty edit clears old results", () => {
-    let state = createSkillsDiscoverState();
-    state = reduceSkillsDiscover(state, {
-      type: "change_query",
-      value: "r",
-    }).state;
-    expect(reduceSkillsDiscover(state, { type: "submit" }).effect).toEqual({
-      type: "none",
-    });
-
-    state = {
-      query: "previous",
-      submittedQuery: "previous",
-      view: "hot",
-    };
-    const cleared = reduceSkillsDiscover(state, {
-      type: "change_query",
-      value: "   ",
-    });
-    expect(cleared.effect).toEqual({ type: "clear_search" });
-    expect(cleared.state.view).toBe("hot");
-    expect(cleared.state.submittedQuery).toBe("");
+  test("canonical identities are exact and closed for unmanaged skills", () => {
+    const managed = installedSkill(
+      "000000000000000000000003",
+      "cli-skill",
+      ["codex"],
+      { canRemove: true, removalPlans: [] },
+      "owner/repo-a",
+    );
+    const builtin = installedSkill("000000000000000000000004", "builtin-two", ["codex"]);
+    expect(installedSkillCatalogId(managed)).toBe("owner/repo-a/cli-skill");
+    expect(installedSkillCatalogId(builtin)).toBeNull();
+    expect(catalogSkillId(catalogSkill("x", "owner/repo"))).toBe("owner/repo/x");
   });
 
   test("an honest empty leaderboard stays empty for each selected view", () => {
@@ -192,7 +200,7 @@ describe("Skills screen behavior", () => {
     ).toEqual(["shared"]);
   });
 
-  test("Discover always targets only the selected managed Agent", () => {
+  test("install always targets only the selected managed Agent", () => {
     expect(skillsInstallTargets("codex")).toEqual(["codex"]);
     expect(skillsInstallTargets("claude-code")).toEqual(["claude-code"]);
     expect(skillsInstallTargets("cursor")).toEqual(["cursor"]);
@@ -234,6 +242,20 @@ describe("Skills screen behavior", () => {
     ).toEqual(["claude-code"]);
     expect(skillsRemovalPlanForAgent(unsafe, "codex")).toBeNull();
     expect(skillsRemovalPlanForAgent(shared, "cursor")?.agent).toBe("cursor");
+  });
+
+  test("ranked and plain catalog rows share one canonical identity", () => {
+    const ranked: RankedCatalogSkill = {
+      id: "owner/repo/ranked",
+      skillId: "ranked",
+      name: "ranked",
+      source: "owner/repo",
+      rank: 1,
+      totalInstalls: 10,
+      installable: true,
+    };
+    expect(catalogSkillId(ranked)).toBe("owner/repo/ranked");
+    expect(catalogSkillId(catalogSkill("plain", "owner/repo"))).toBe("owner/repo/plain");
   });
 
   test("shared mobile input geometry keeps one centered text lane at normal and enlarged font scales", () => {

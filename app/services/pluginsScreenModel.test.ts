@@ -1,16 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  MAX_EXPANDED_PLUGINS,
   PLUGIN_CACHE_READONLY_REASON,
   PLUGIN_HOST_UNSUPPORTED_REASON,
-  createPluginExpansionState,
   evaluatePluginMutation,
-  pluginSectionView,
-  reducePluginExpansion,
+  pluginsUnifiedView,
 } from "./pluginsScreenModel";
 import {
   isPluginID,
   normalizePluginMutationCommand,
+  normalizePluginMutationResult,
+  assertPluginMutationMatchesRequest,
   normalizePluginsInventory,
   type InstalledPluginRow,
   type PluginInventory,
@@ -81,75 +80,79 @@ function pluginInventory(
   };
 }
 
-describe("Plugins section view", () => {
-  test("authoritative view sorts Installed and Explore deterministically", () => {
-    const view = pluginSectionView(
+describe("Plugins unified view", () => {
+  test("installed and available rows coexist deterministically, deduplicated by identity", () => {
+    const view = pluginsUnifiedView(
       pluginInventory("ready", [
         installedRow("plug-b@market-b"),
         installedRow("plug-a@market-a"),
       ]),
     );
     expect(view.catalogReady).toBe(true);
-    expect(view.installed.map((row) => row.id)).toEqual([
-      "plug-a@market-a",
-      "plug-b@market-b",
+    expect(view.rows.map((row) => row.kind)).toEqual([
+      "installed",
+      "installed",
     ]);
-    expect(view.explore.map((entry) => entry.pluginId)).toEqual([
-      "plug-a@market-a",
-      "plug-b@market-b",
-    ]);
+    expect(view.rows[0]).toEqual({
+      kind: "installed",
+      plugin: expect.objectContaining({ id: "plug-a@market-a" }),
+    });
+    // plug-a and plug-b are installed, so their catalog twins never render
+    // duplicate discovered rows.
+    expect(view.rows.every((row) => row.kind === "installed")).toBe(true);
   });
 
-  test("unavailable catalog keeps Installed rows but drops Explore", () => {
-    const view = pluginSectionView(
+  test("not-yet-installed catalog entries render as discovered rows", () => {
+    const view = pluginsUnifiedView(pluginInventory("ready", []));
+    expect(view.rows.map((row) => row.kind)).toEqual(["available"]);
+    expect(view.rows[0]).toEqual({
+      kind: "available",
+      plugin: expect.objectContaining({
+        pluginId: "plug-a@market-a",
+        installable: true,
+      }),
+    });
+    // plug-b is marked not installable by the daemon (installed elsewhere in
+    // the owning client); without an installed row it renders as nothing,
+    // never as a fake install affordance.
+    expect(
+      view.rows.some(
+        (row) => row.kind === "available" && row.plugin.pluginId === "plug-b@market-b",
+      ),
+    ).toBe(false);
+  });
+
+  test("unavailable catalog keeps installed rows but drops discovered rows", () => {
+    const view = pluginsUnifiedView(
       pluginInventory("unavailable", [installedRow("plug-a@market-a")]),
     );
     expect(view.catalogReady).toBe(false);
     expect(view.catalogUnavailableCode).toBe("claude_catalog_unavailable");
-    expect(view.installed).toHaveLength(1);
-    expect(view.explore).toEqual([]);
+    expect(view.rows).toHaveLength(1);
+    expect(view.rows[0]).toEqual({ kind: "installed", plugin: expect.objectContaining({ id: "plug-a@market-a" }) });
+  });
+
+  test("cache-only installed rows are never duplicated by catalog entries", () => {
+    const inventory = pluginInventory("ready", [
+      installedRow("plug-c@market-c", "claude"),
+    ]);
+    inventory.catalog.available = [
+      {
+        pluginId: "plug-c@market-c",
+        name: "plug-c",
+        marketplaceName: "market-c",
+        installable: false,
+      },
+    ];
+    const view = pluginsUnifiedView(inventory);
+    expect(view.rows).toHaveLength(1);
+    expect(view.rows[0]).toEqual({ kind: "installed", plugin: expect.objectContaining({ id: "plug-c@market-c" }) });
   });
 
   test("empty inventory yields an empty authoritative view", () => {
-    const view = pluginSectionView(undefined);
-    expect(view.installed).toEqual([]);
-    expect(view.explore).toEqual([]);
+    const view = pluginsUnifiedView(undefined);
+    expect(view.rows).toEqual([]);
     expect(view.catalogReady).toBe(false);
-  });
-});
-
-describe("Plugins expansion state", () => {
-  test("toggle expands, collapses, and resets deterministically", () => {
-    let state = createPluginExpansionState();
-    state = reducePluginExpansion(state, { type: "toggle", pluginId: "p1" });
-    expect(state.expanded).toEqual(["p1"]);
-    state = reducePluginExpansion(state, { type: "toggle", pluginId: "p2" });
-    expect(state.expanded).toEqual(["p1", "p2"]);
-    state = reducePluginExpansion(state, { type: "toggle", pluginId: "p1" });
-    expect(state.expanded).toEqual(["p2"]);
-    state = reducePluginExpansion(state, { type: "reset" });
-    expect(state.expanded).toEqual([]);
-  });
-
-  test("expansion is bounded and evicts the oldest entry first", () => {
-    let state = createPluginExpansionState();
-    for (let index = 0; index < MAX_EXPANDED_PLUGINS + 3; index += 1) {
-      state = reducePluginExpansion(state, {
-        type: "toggle",
-        pluginId: `p${index}`,
-      });
-    }
-    expect(state.expanded).toHaveLength(MAX_EXPANDED_PLUGINS);
-    expect(state.expanded[0]).toBe("p3");
-    expect(state.expanded[MAX_EXPANDED_PLUGINS - 1]).toBe(`p${MAX_EXPANDED_PLUGINS + 2}`);
-  });
-
-  test("ignores empty plugin identities", () => {
-    const state = reducePluginExpansion(createPluginExpansionState(), {
-      type: "toggle",
-      pluginId: "",
-    });
-    expect(state.expanded).toEqual([]);
   });
 });
 
@@ -437,5 +440,65 @@ describe("Plugins wire parsing", () => {
         ],
       }),
     ).toThrow();
+  });
+});
+
+describe("Plugin mutation execution boundary", () => {
+  test("normalizes a truthful execution result and rejects contradictions", () => {
+    const success = normalizePluginMutationResult({
+      command: {
+        operation: "uninstall",
+        command: "claude plugin uninstall plug-a@market-a --scope user --yes",
+        plugin_id: "plug-a@market-a",
+        scope: "user",
+        host: "claude",
+      },
+      success: true,
+      exit_code: 0,
+      output: "uninstalled",
+      duration_ms: 512,
+    });
+    expect(success.execution).toEqual({
+      success: true,
+      exitCode: 0,
+      output: "uninstalled",
+      durationMs: 512,
+    });
+    expect(() =>
+      normalizePluginMutationResult({
+        ...success,
+        success: true,
+        exit_code: 1,
+      }),
+    ).toThrow();
+  });
+
+  test("executed plugin commands must match the reviewed request exactly", () => {
+    const result = normalizePluginMutationResult({
+      command: {
+        operation: "update",
+        command: "claude plugin update plug-a@market-a --scope user",
+        plugin_id: "plug-a@market-a",
+        scope: "user",
+        host: "claude",
+      },
+      success: true,
+      exit_code: 0,
+      output: "",
+      duration_ms: 10,
+    });
+    expect(() =>
+      assertPluginMutationMatchesRequest(result, {
+        operation: "update",
+        pluginId: "plug-a@market-a",
+        scope: "user",
+      }),
+    ).not.toThrow();
+    for (const mismatch of [
+      { operation: "uninstall" as const, pluginId: "plug-a@market-a", scope: "user" as const },
+      { operation: "update" as const, pluginId: "plug-b@market-b", scope: "user" as const },
+    ]) {
+      expect(() => assertPluginMutationMatchesRequest(result, mismatch)).toThrow();
+    }
   });
 });

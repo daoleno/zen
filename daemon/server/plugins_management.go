@@ -14,6 +14,11 @@ type pluginsInventoryRequest struct {
 	cancel     context.CancelFunc
 }
 
+type pluginsMutationRequest struct {
+	requestID string
+	cancel    context.CancelFunc
+}
+
 type pluginsInventoryResponse struct {
 	Type       string                    `json:"type"`
 	RequestID  string                    `json:"request_id"`
@@ -25,6 +30,16 @@ type pluginCommandResponse struct {
 	Type      string                          `json:"type"`
 	RequestID string                          `json:"request_id"`
 	Command   skillmgmt.PluginMutationCommand `json:"command"`
+}
+
+type pluginMutationResultResponse struct {
+	Type       string                          `json:"type"`
+	RequestID  string                          `json:"request_id"`
+	Command    skillmgmt.PluginMutationCommand `json:"command"`
+	Success    bool                            `json:"success"`
+	ExitCode   int                             `json:"exit_code"`
+	Output     string                          `json:"output"`
+	DurationMS int64                           `json:"duration_ms"`
 }
 
 type pluginsErrorResponse struct {
@@ -120,6 +135,99 @@ func (s *Server) handlePluginCommand(conn *websocket.Conn, raw clientMessage) {
 			Command:   command,
 		})
 	}()
+}
+
+// handlePluginMutation rebuilds the reviewed plugin command from the same
+// structured inputs and executes it directly on the daemon host. Like the
+// Skills mutation, each connection runs one plugin mutation at a time.
+func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
+	if !validSkillsRequestID(raw.RequestID) {
+		s.sendPluginsError(conn, "plugin_mutation_error", raw, "invalid_request", "Invalid Plugin mutation request.")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	next := pluginsMutationRequest{requestID: raw.RequestID, cancel: cancel}
+	previous, hadPrevious := s.replacePluginsMutation(conn, next)
+	if hadPrevious {
+		previous.cancel()
+		s.sendJSON(conn, pluginsErrorResponse{
+			Type:      "plugin_mutation_error",
+			RequestID: previous.requestID,
+			Code:      "superseded",
+			Message:   "A newer Plugin mutation replaced this request.",
+		})
+	}
+	go func() {
+		request := skillmgmt.PluginMutationRequest{
+			Operation: skillmgmt.PluginMutationOperation(raw.Operation),
+			PluginID:  raw.PluginID,
+			Scope:     raw.Scope,
+		}
+		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request, s.pluginCatalogCLI)
+		if !s.claimPluginsMutation(conn, next) {
+			return
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			s.sendJSON(conn, pluginsErrorResponse{
+				Type:      "plugin_mutation_error",
+				RequestID: raw.RequestID,
+				Code:      "command_rejected",
+				Message:   err.Error(),
+			})
+			return
+		}
+		execution, execErr := skillmgmt.ExecutePluginMutationCommand(ctx, command, skillmgmt.MutationExecutionOptions{})
+		if execErr != nil {
+			code := "execution_failed"
+			if errors.Is(execErr, skillmgmt.ErrMutationCancelled) {
+				return
+			}
+			if errors.Is(execErr, skillmgmt.ErrMutationTimedOut) {
+				code = "timeout"
+			}
+			s.sendJSON(conn, pluginsErrorResponse{
+				Type:      "plugin_mutation_error",
+				RequestID: raw.RequestID,
+				Code:      code,
+				Message:   execErr.Error(),
+			})
+			return
+		}
+		s.sendJSON(conn, pluginMutationResultResponse{
+			Type:       "plugin_mutation_result",
+			RequestID:  raw.RequestID,
+			Command:    command,
+			Success:    execution.Success,
+			ExitCode:   execution.ExitCode,
+			Output:     execution.Output,
+			DurationMS: execution.DurationMS,
+		})
+	}()
+}
+
+func (s *Server) replacePluginsMutation(conn *websocket.Conn, next pluginsMutationRequest) (pluginsMutationRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.pluginsMutations[conn]
+	if ok {
+		previous.cancel()
+	}
+	s.pluginsMutations[conn] = next
+	return previous, ok
+}
+
+func (s *Server) claimPluginsMutation(conn *websocket.Conn, expected pluginsMutationRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.pluginsMutations[conn]
+	if !ok || current.requestID != expected.requestID {
+		return false
+	}
+	delete(s.pluginsMutations, conn)
+	return true
 }
 
 func (s *Server) sendPluginsError(conn *websocket.Conn, responseType string, raw clientMessage, code, message string) {

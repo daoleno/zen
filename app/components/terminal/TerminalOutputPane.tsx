@@ -1,9 +1,6 @@
 import React from "react";
-import * as Clipboard from "expo-clipboard";
 import {
-  Pressable,
   StyleSheet,
-  Text,
   View,
   type LayoutChangeEvent,
 } from "react-native";
@@ -13,7 +10,6 @@ import type {
 } from "../../constants/terminalThemes";
 import { TerminalAccessoryDock } from "./TerminalAccessoryDock";
 import { TerminalSurface, type TerminalSurfaceHandle } from "./TerminalSurface";
-import type { SkillsHandoffFailure } from "./TerminalSurface.types";
 import { TerminalOutputStateCard } from "./TerminalOutputStateCard";
 
 interface TerminalOutputPaneProps {
@@ -42,7 +38,6 @@ interface TerminalOutputPaneProps {
   keyboardVisible: boolean;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
-  skillsHandoffToken?: string;
 }
 
 function TerminalOutputPaneImpl({
@@ -71,17 +66,10 @@ function TerminalOutputPaneImpl({
   keyboardVisible,
   onRetryConnection,
   onAccessoryLayout,
-  skillsHandoffToken,
 }: TerminalOutputPaneProps) {
-  const [skillsFailure, setSkillsFailure] =
-    React.useState<SkillsHandoffFailure | null>(null);
   const hasTerminalTarget = Boolean(sessionKey && serverId && agentId);
   const shouldAutoResumeTerminal =
     terminalSurfaceActive && canRenderTerminal && hasTerminalTarget;
-
-  React.useEffect(() => {
-    setSkillsFailure(null);
-  }, [sessionKey]);
 
   React.useEffect(() => {
     if (!shouldMountTerminalSurface || !hasTerminalTarget) {
@@ -131,52 +119,7 @@ function TerminalOutputPaneImpl({
             theme={theme}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={onCtrlArmedChange}
-            skillsHandoffToken={skillsHandoffToken}
-            onSkillsHandoffFailure={setSkillsFailure}
           />
-        ) : null}
-        {skillsFailure ? (
-          <View
-            accessibilityRole="alert"
-            style={[
-              styles.skillsFailure,
-              {
-                backgroundColor: chrome.surface,
-                borderColor: chrome.border,
-              },
-            ]}
-          >
-            <Text style={[styles.skillsFailureTitle, { color: chrome.text }]}>
-              {skillsFailure.kind === "not-submitted"
-                ? "Skills command was not submitted."
-                : "Skills command submission was not confirmed."}
-            </Text>
-            <Text
-              style={[styles.skillsFailureDetail, { color: chrome.textMuted }]}
-            >
-              Review the Terminal before running it manually.
-            </Text>
-            <Text
-              selectable
-              numberOfLines={3}
-              style={[styles.skillsFailureCommand, { color: chrome.text }]}
-            >
-              {skillsFailure.command.command}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() =>
-                void Clipboard.setStringAsync(skillsFailure.command.command)
-              }
-              style={[styles.skillsFailureCopy, { borderColor: chrome.border }]}
-            >
-              <Text
-                style={[styles.skillsFailureCopyText, { color: chrome.text }]}
-              >
-                Copy command
-              </Text>
-            </Pressable>
-          </View>
         ) : null}
         {canRenderTerminal ? null : (
           <TerminalOutputStateCard
@@ -220,30 +163,4 @@ const styles = StyleSheet.create({
     minHeight: 0,
     paddingTop: 4,
   },
-  skillsFailure: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    top: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    padding: 12,
-    gap: 6,
-  },
-  skillsFailureTitle: { fontSize: 14, fontWeight: "600" },
-  skillsFailureDetail: { fontSize: 12, lineHeight: 17 },
-  skillsFailureCommand: {
-    fontFamily: "monospace",
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  skillsFailureCopy: {
-    alignSelf: "flex-start",
-    minHeight: 36,
-    justifyContent: "center",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-  },
-  skillsFailureCopyText: { fontSize: 12, fontWeight: "600" },
 });

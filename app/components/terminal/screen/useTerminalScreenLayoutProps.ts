@@ -77,7 +77,6 @@ interface UseTerminalScreenLayoutPropsInput {
   setRenameVisible(value: boolean): void;
   showInterfaceChat: boolean;
   onConsumeInitialComposerFocus(): void;
-  skillsHandoffToken?: string;
   navigationActions: ReturnType<typeof useTerminalNavigationActions>;
   terminalRef: RefObject<TerminalSurfaceHandle | null>;
   terminalTheme: TerminalThemePalette;
@@ -150,7 +149,6 @@ export function useTerminalScreenLayoutProps({
   setRenameVisible,
   showInterfaceChat,
   onConsumeInitialComposerFocus,
-  skillsHandoffToken,
   navigationActions,
   terminalRef,
   terminalTheme,
@@ -237,7 +235,6 @@ export function useTerminalScreenLayoutProps({
     onConsumeInitialComposerFocus,
     composerModelControl,
     onComposerModelControlPress,
-    skillsHandoffToken,
   });
   const overlayProps = useTerminalScreenOverlayProps({
     resourceSheetVisible,

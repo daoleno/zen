@@ -28,6 +28,11 @@ type skillsCatalogRequest struct {
 	cancel     context.CancelFunc
 }
 
+type skillsMutationRequest struct {
+	requestID string
+	cancel    context.CancelFunc
+}
+
 type skillsInventoryResponse struct {
 	Type       string              `json:"type"`
 	RequestID  string              `json:"request_id"`
@@ -53,6 +58,16 @@ type skillsCommandResponse struct {
 	Type      string                    `json:"type"`
 	RequestID string                    `json:"request_id"`
 	Command   skillmgmt.MutationCommand `json:"command"`
+}
+
+type skillsMutationResultResponse struct {
+	Type       string                    `json:"type"`
+	RequestID  string                    `json:"request_id"`
+	Command    skillmgmt.MutationCommand `json:"command"`
+	Success    bool                      `json:"success"`
+	ExitCode   int                       `json:"exit_code"`
+	Output     string                    `json:"output"`
+	DurationMS int64                     `json:"duration_ms"`
 }
 
 type skillsErrorResponse struct {
@@ -277,19 +292,7 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "Invalid Skills command request.")
 		return
 	}
-	agents := make([]skillmgmt.Agent, 0, len(raw.Agents))
-	for _, agent := range raw.Agents {
-		agents = append(agents, skillmgmt.Agent(agent))
-	}
-	request := skillmgmt.MutationRequest{
-		Operation: skillmgmt.MutationOperation(raw.Operation),
-		CWD:       raw.Cwd,
-		SkillID:   raw.SkillID,
-		Source:    raw.Source,
-		SkillName: raw.SkillName,
-		Scope:     skillmgmt.Scope(raw.Scope),
-		Agents:    agents,
-	}
+	request := skillsMutationWireRequest(raw)
 	go func() {
 		command, err := skillmgmt.BuildMutationCommand(skillmgmt.InventoryOptions{}, request)
 		if err != nil {
@@ -302,6 +305,115 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 			Command:   command,
 		})
 	}()
+}
+
+func skillsMutationWireRequest(raw clientMessage) skillmgmt.MutationRequest {
+	agents := make([]skillmgmt.Agent, 0, len(raw.Agents))
+	for _, agent := range raw.Agents {
+		agents = append(agents, skillmgmt.Agent(agent))
+	}
+	return skillmgmt.MutationRequest{
+		Operation: skillmgmt.MutationOperation(raw.Operation),
+		CWD:       raw.Cwd,
+		SkillID:   raw.SkillID,
+		Source:    raw.Source,
+		SkillName: raw.SkillName,
+		Scope:     skillmgmt.Scope(raw.Scope),
+		Agents:    agents,
+	}
+}
+
+// handleSkillsMutation rebuilds the reviewed command from the same structured
+// inputs (authoritative, never trusting the App's displayed text), then
+// executes it directly on the daemon host and reports the truthful outcome.
+// Each connection runs exactly one mutation at a time; a newer request
+// replaces and cancels the previous one.
+func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
+	if !validSkillsRequestID(raw.RequestID) {
+		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "Invalid Skills mutation request.")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	next := skillsMutationRequest{requestID: raw.RequestID, cancel: cancel}
+	previous, hadPrevious := s.replaceSkillsMutation(conn, next)
+	if hadPrevious {
+		previous.cancel()
+		s.sendJSON(conn, skillsErrorResponse{
+			Type:      "skills_mutation_error",
+			RequestID: previous.requestID,
+			Code:      "superseded",
+			Message:   "A newer Skills mutation replaced this request.",
+		})
+	}
+	go func() {
+		request := skillsMutationWireRequest(raw)
+		command, err := skillmgmt.BuildMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request)
+		if !s.claimSkillsMutation(conn, next) {
+			return
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			s.sendJSON(conn, skillsErrorResponse{
+				Type:      "skills_mutation_error",
+				RequestID: raw.RequestID,
+				Code:      "command_rejected",
+				Message:   err.Error(),
+			})
+			return
+		}
+		execution, execErr := skillmgmt.ExecuteMutationCommand(ctx, command, skillmgmt.MutationExecutionOptions{
+			CWD: request.CWD,
+		})
+		if execErr != nil {
+			code := "execution_failed"
+			if errors.Is(execErr, skillmgmt.ErrMutationCancelled) {
+				return
+			}
+			if errors.Is(execErr, skillmgmt.ErrMutationTimedOut) {
+				code = "timeout"
+			}
+			s.sendJSON(conn, skillsErrorResponse{
+				Type:      "skills_mutation_error",
+				RequestID: raw.RequestID,
+				Code:      code,
+				Message:   execErr.Error(),
+			})
+			return
+		}
+		s.sendJSON(conn, skillsMutationResultResponse{
+			Type:       "skills_mutation_result",
+			RequestID:  raw.RequestID,
+			Command:    command,
+			Success:    execution.Success,
+			ExitCode:   execution.ExitCode,
+			Output:     execution.Output,
+			DurationMS: execution.DurationMS,
+		})
+	}()
+}
+
+func (s *Server) replaceSkillsMutation(conn *websocket.Conn, next skillsMutationRequest) (skillsMutationRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.skillsMutations[conn]
+	if ok {
+		previous.cancel()
+	}
+	s.skillsMutations[conn] = next
+	return previous, ok
+}
+
+func (s *Server) claimSkillsMutation(conn *websocket.Conn, expected skillsMutationRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.skillsMutations[conn]
+	if !ok || current.requestID != expected.requestID {
+		return false
+	}
+	delete(s.skillsMutations, conn)
+	return true
 }
 
 func (s *Server) sendSkillsError(conn *websocket.Conn, responseType string, raw clientMessage, code, message string) {

@@ -35,21 +35,27 @@ import {
   normalizeSkillsInventory,
   normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
+  normalizeSkillsMutationResult,
+  assertSkillsMutationMatchesRequest,
   type ManagedSkillAgent,
   type SkillMutationOperation,
   type SkillsCatalogResult,
   type SkillsInventory,
   type SkillsLeaderboards,
   type SkillsMutationCommand,
+  type SkillsMutationResult,
 } from "./skillsManagement";
 import {
   normalizePluginsInventory,
   normalizePluginMutationCommand,
+  normalizePluginMutationResult,
+  assertPluginMutationMatchesRequest,
   type PluginInventory,
   type PluginMutationCommand,
   type PluginMutationOperation,
+  type PluginMutationResult,
 } from "./pluginsManagement";
-import { PLUGINS_INVENTORY_TIMEOUT_MS, PLUGIN_COMMAND_TIMEOUT_MS } from "./pluginsDeadlines";
+import { PLUGINS_INVENTORY_TIMEOUT_MS, PLUGIN_COMMAND_TIMEOUT_MS, PLUGIN_MUTATION_TIMEOUT_MS, SKILLS_MUTATION_TIMEOUT_MS } from "./pluginsDeadlines";
 import {
   dispatchStructuredCommand,
   sendWebSocketMessageNow,
@@ -2351,6 +2357,77 @@ export class MultiServerWebSocketClient {
     });
   }
 
+  executeSkillsMutation(
+    serverId: string,
+    options: {
+      operation: SkillMutationOperation;
+      cwd?: string;
+      skillId?: string;
+      source?: string;
+      skillName?: string;
+      scope: "project" | "global";
+      agents?: ManagedSkillAgent[];
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<SkillsMutationResult>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("skills_mutation_result", handleResult);
+        this.off("skills_mutation_error", handleError);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const result = normalizeSkillsMutationResult(payload.result);
+          assertSkillsMutationMatchesRequest(result, options);
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(
+          daemonRequestError(
+            payload.message || "The Skills mutation failed.",
+            payload.code,
+          ),
+        );
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while running the Skills mutation."));
+      }, SKILLS_MUTATION_TIMEOUT_MS);
+      this.on("skills_mutation_result", handleResult);
+      this.on("skills_mutation_error", handleError);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "skills_mutation",
+          request_id: requestId,
+          operation: options.operation,
+          cwd: options.cwd,
+          skill_id: options.skillId,
+          source: options.source,
+          skill_name: options.skillName,
+          scope: options.scope,
+          agents: options.agents,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
   getPluginsInventory(serverId: string, options: { generation: number }) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<{ generation: number; inventory: PluginInventory }>(
@@ -2481,6 +2558,69 @@ export class MultiServerWebSocketClient {
         serverId,
         {
           type: "plugin_command",
+          request_id: requestId,
+          operation: options.operation,
+          plugin_id: options.pluginId,
+          scope: options.scope,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  executePluginMutation(
+    serverId: string,
+    options: {
+      operation: PluginMutationOperation;
+      pluginId: string;
+      scope: "user";
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<PluginMutationResult>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("plugin_mutation_result", handleResult);
+        this.off("plugin_mutation_error", handleError);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const result = normalizePluginMutationResult(payload.result);
+          assertPluginMutationMatchesRequest(result, options);
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(
+          daemonRequestError(
+            payload.message || "The Plugin mutation failed.",
+            payload.code,
+          ),
+        );
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while running the Plugin mutation."));
+      }, PLUGIN_MUTATION_TIMEOUT_MS);
+      this.on("plugin_mutation_result", handleResult);
+      this.on("plugin_mutation_error", handleError);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "plugin_mutation",
           request_id: requestId,
           operation: options.operation,
           plugin_id: options.pluginId,

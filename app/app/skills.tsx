@@ -9,8 +9,7 @@ import { Alert, Keyboard } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   SkillsPresentation,
-  type SkillsMode,
-  type PluginsMode,
+  type SurfaceMutationNotice,
 } from "../components/skills/SkillsPresentation";
 import {
   beginSkillsRequest,
@@ -18,11 +17,13 @@ import {
   completeSkillsRequest,
   createSkillsRequestState,
   failSkillsRequest,
+  skillAgentLabel,
   skillsRequestData,
   type CatalogSkill,
   type InstalledSkill,
   type ManagedSkillAgent,
   type RankedCatalogSkill,
+  type SkillMutationOperation,
   type SkillsCatalogResult,
   type SkillsInventory,
   type SkillsLeaderboard,
@@ -35,12 +36,12 @@ import {
   type AvailablePlugin,
   type InstalledPluginRow,
   type PluginInventory,
-  type PluginMutationCommand,
+  type PluginMutationOperation,
 } from "../services/pluginsManagement";
 import {
   SkillsAutomaticInventoryOwner,
-  createSkillsDiscoverState,
-  reduceSkillsDiscover,
+  catalogSkillId,
+  installedSkillCatalogId,
   skillsInstallTargets,
   skillsRemovalPlanForAgent,
   skillsSectionAgentCounts,
@@ -49,8 +50,8 @@ import {
 } from "../services/skillsScreenModel";
 import {
   evaluatePluginMutation,
-  pluginSectionView,
-  type PluginSectionView,
+  pluginsUnifiedView,
+  type PluginsUnifiedView,
 } from "../services/pluginsScreenModel";
 import {
   createSkillsSurfaceState,
@@ -64,28 +65,29 @@ import {
   type SkillsServerRequestToken,
 } from "../services/skillsServerBoundary";
 import {
-  createOwnedSkillsTerminalSession,
-  skillsTerminalHandoff,
-  type TerminalHandoffCommand,
-} from "../services/skillsTerminalHandoff";
-import { makeSessionKey } from "../services/sessionKeys";
-import { markAgentOpened } from "../services/storage";
-import {
   DaemonRequestError,
   wsClient,
 } from "../services/websocket";
 import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
 
-interface ReviewedCommand {
-  command: TerminalHandoffCommand & { scope: "project" | "global" | "user" };
-  cwd: string;
-  serverId: string;
-  token: SkillsServerRequestToken;
-  sessionLabel: string;
+const LEGACY_MUTATION_CAPABILITIES = ["install", "remove"] as const;
+
+interface SkillsMutationInput {
+  operation: SkillMutationOperation;
+  cwd?: string;
+  skillId?: string;
+  source?: string;
+  skillName?: string;
+  scope: "project" | "global";
+  agents?: ManagedSkillAgent[];
 }
 
-const LEGACY_MUTATION_CAPABILITIES = ["install", "remove"] as const;
+interface PluginMutationInput {
+  operation: PluginMutationOperation;
+  pluginId: string;
+  scope: "user";
+}
 
 export default function SkillsScreen() {
   const router = useRouter();
@@ -104,8 +106,6 @@ export default function SkillsScreen() {
   const automaticPluginsOwnerRef = useRef(new SkillsAutomaticInventoryOwner());
 
   const [surface, setSurface] = useState(createSkillsSurfaceState);
-  const [mode, setMode] = useState<SkillsMode>("installed");
-  const [pluginsMode, setPluginsMode] = useState<PluginsMode>("installed");
   const [selectedAgent, setSelectedAgent] =
     useState<ManagedSkillAgent>("codex");
   const [boundServerId, setBoundServerId] = useState(currentServerId);
@@ -116,21 +116,24 @@ export default function SkillsScreen() {
   const [pluginsState, setPluginsState] = useState<
     SkillsRequestState<PluginInventory>
   >(createSkillsRequestState);
-  const [discover, setDiscover] = useState(createSkillsDiscoverState);
+  const [leaderboardView, setLeaderboardView] =
+    useState<SkillsLeaderboardView>("all-time");
   const [catalogState, setCatalogState] = useState<
     SkillsRequestState<SkillsLeaderboards>
   >(createSkillsRequestState);
   const [searchState, setSearchState] = useState<
     SkillsRequestState<SkillsCatalogResult>
   >(createSkillsRequestState);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const [preparingMutation, setPreparingMutation] = useState("");
-  const [creatingTerminal, setCreatingTerminal] = useState(false);
+  const [mutationNotice, setMutationNotice] =
+    useState<SurfaceMutationNotice | null>(null);
   const activeSearchRef = useRef<{
     generation: number;
     serverId: string;
   } | null>(null);
   const focusedRef = useRef(false);
-  const creatingTerminalRef = useRef(false);
 
   const projectCwd = useMemo(() => {
     if (!currentServerId) {
@@ -179,12 +182,10 @@ export default function SkillsScreen() {
     setPluginsState(createSkillsRequestState());
     setCatalogState(createSkillsRequestState());
     setSearchState(createSkillsRequestState());
-    setDiscover((current) => ({
-      ...current,
-      query: "",
-      submittedQuery: "",
-    }));
+    setSearchQuery("");
+    setSubmittedQuery("");
     setPreparingMutation("");
+    setMutationNotice(null);
   }, [cancelActiveSearch, currentServerId]);
 
   const refreshInventory = useCallback(async () => {
@@ -303,7 +304,9 @@ export default function SkillsScreen() {
           current,
           token.generation,
           response.inventory,
-          response.inventory.installed.length === 0,
+          response.inventory.installed.length === 0 &&
+            (response.inventory.catalog.status !== "ready" ||
+              response.inventory.catalog.available.length === 0),
         ),
       );
     } catch (error: unknown) {
@@ -420,7 +423,7 @@ export default function SkillsScreen() {
 
   useEffect(() => {
     if (
-      mode !== "discover" ||
+      submittedQuery ||
       !automaticCatalogOwnerRef.current.shouldRefresh(
         focusGeneration,
         currentServerId,
@@ -429,7 +432,7 @@ export default function SkillsScreen() {
       return;
     }
     void loadLeaderboards();
-  }, [currentServerId, focusGeneration, loadLeaderboards, mode]);
+  }, [currentServerId, focusGeneration, loadLeaderboards, submittedQuery]);
 
   const runSearch = useCallback(
     async (rawQuery: string, intent: "new-query" | "same-query") => {
@@ -523,44 +526,39 @@ export default function SkillsScreen() {
     setSearchState(createSkillsRequestState());
   }, [cancelActiveSearch]);
 
-  const changeDiscoverQuery = useCallback(
+  const changeSearchQuery = useCallback(
     (value: string) => {
-      const transition = reduceSkillsDiscover(discover, {
-        type: "change_query",
-        value,
-      });
-      setDiscover(transition.state);
-      if (transition.effect.type === "clear_search") {
+      setSearchQuery(value);
+      if (!value.trim() && submittedQuery) {
+        setSubmittedQuery("");
         clearSearch();
       }
     },
-    [clearSearch, discover],
+    [clearSearch, submittedQuery],
   );
 
-  const submitDiscoverSearch = useCallback(() => {
-    const transition = reduceSkillsDiscover(discover, { type: "submit" });
-    setDiscover(transition.state);
-    if (transition.effect.type === "clear_search") {
-      clearSearch();
-    } else if (transition.effect.type === "submit_search") {
-      void runSearch(transition.effect.query, "new-query");
+  const submitSearch = useCallback(() => {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      if (submittedQuery) {
+        setSubmittedQuery("");
+        clearSearch();
+      }
+      return;
     }
-  }, [clearSearch, discover, runSearch]);
+    setSubmittedQuery(query);
+    void runSearch(query, "new-query");
+  }, [clearSearch, runSearch, searchQuery, submittedQuery]);
 
-  const clearDiscoverSearch = useCallback(() => {
-    const transition = reduceSkillsDiscover(discover, { type: "clear" });
-    setDiscover(transition.state);
+  const clearSearchState = useCallback(() => {
+    setSearchQuery("");
+    setSubmittedQuery("");
     clearSearch();
-  }, [clearSearch, discover]);
+  }, [clearSearch]);
 
-  const selectLeaderboardView = useCallback(
-    (view: SkillsLeaderboardView) => {
-      setDiscover(
-        reduceSkillsDiscover(discover, { type: "select_view", view }).state,
-      );
-    },
-    [discover],
-  );
+  const selectLeaderboardView = useCallback((view: SkillsLeaderboardView) => {
+    setLeaderboardView(view);
+  }, []);
 
   const selectAgent = useCallback(
     (agent: ManagedSkillAgent) => {
@@ -580,120 +578,131 @@ export default function SkillsScreen() {
     );
   }, []);
 
-  const handoffToTerminal = useCallback(
-    async (reviewed: ReviewedCommand) => {
-      if (
-        creatingTerminalRef.current ||
-        !requestOwnerRef.current.isCurrent(reviewed.token) ||
-        currentServerId !== reviewed.serverId ||
-        !currentConnected
-      ) {
-        Alert.alert(
-          "Server changed",
-          "Review the command again for the current server.",
-        );
-        return;
-      }
-      if (
-        reviewed.command.scope === "project" &&
-        !reviewed.cwd
-      ) {
-        Alert.alert(
-          "Project unavailable",
-          "Open a Session with a project directory on this server first.",
-        );
-        return;
-      }
+  const refreshSkills = useCallback(() => {
+    void refreshInventory();
+    if (submittedQuery) {
+      void runSearch(submittedQuery, "same-query");
+    } else {
+      void loadLeaderboards();
+    }
+  }, [loadLeaderboards, refreshInventory, runSearch, submittedQuery]);
 
-      const handoffToken = requestOwnerRef.current.issue("handoff");
-      creatingTerminalRef.current = true;
-      setCreatingTerminal(true);
-      let issuedGrant: { sessionKey: string; token: string } | null = null;
+  const executeSkillsMutation = useCallback(
+    async (
+      token: SkillsServerRequestToken,
+      input: SkillsMutationInput,
+      key: string,
+      confirmation: { title: string; message: string; confirmLabel: string },
+      destructive: boolean,
+    ) => {
+      if (!requestOwnerRef.current.isCurrent(token) || !token.serverId) {
+        return;
+      }
+      const confirmed = await confirmMutation(confirmation, destructive);
+      if (!confirmed || !requestOwnerRef.current.isCurrent(token)) {
+        return;
+      }
+      setPreparingMutation(key);
+      setMutationNotice(null);
       try {
-        const startedAt = Date.now();
-        const creation = await createOwnedSkillsTerminalSession({
-          serverId: reviewed.serverId,
-          createSession: async (serverId) => {
-            const created = await wsClient.createSession(serverId, {
-              cwd: reviewed.cwd || undefined,
-              name: reviewed.sessionLabel,
-            });
-            return created.agentId;
-          },
-          isCurrent: () => requestOwnerRef.current.isCurrent(handoffToken),
-          abortSession: (serverId, agentId) =>
-            wsClient.killAgent(serverId, agentId),
+        const result = await wsClient.executeSkillsMutation(token.serverId, {
+          operation: input.operation,
+          cwd: input.cwd,
+          skillId: input.skillId,
+          source: input.source,
+          skillName: input.skillName,
+          scope: input.scope,
+          agents: input.agents,
         });
-        if (creation.status === "stale") {
-          Alert.alert(
-            "Server changed",
-            "The Terminal was not opened because the current server changed.",
-          );
+        if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        const agentId = creation.agentId;
-        const sessionKey = makeSessionKey(reviewed.serverId, agentId);
-        const token = skillsTerminalHandoff.issue(
-          sessionKey,
-          reviewed.command,
-        );
-        issuedGrant = { sessionKey, token };
-        void markAgentOpened(sessionKey, Date.now());
-        router.push({
-          pathname: "/terminal/[id]",
-          params: {
-            id: agentId,
-            serverId: reviewed.serverId,
-            name: reviewed.sessionLabel,
-            cwd: reviewed.cwd,
-            startedAt: String(startedAt),
-            initialInterfaceRenderMode: "terminal",
-            skillsHandoff: token,
-          },
-        });
-      } catch (error: unknown) {
-        if (issuedGrant) {
-          skillsTerminalHandoff.revoke(
-            issuedGrant.sessionKey,
-            issuedGrant.token,
-          );
+        if (result.execution.success) {
+          setMutationNotice({
+            kind: "success",
+            message: skillsMutationSuccessCopy(input),
+          });
+          void refreshInventory();
+        } else {
+          setMutationNotice({
+            kind: "error",
+            message: mutationFailureCopy(input, result.execution.output, result.execution.exitCode),
+          });
         }
-        Alert.alert(
-          "Could not open Terminal",
-          error instanceof Error
-            ? error.message
-            : "Reconnect to the server and try again.",
-        );
+      } catch (error: unknown) {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setMutationNotice({
+            kind: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "The Skills mutation could not be run.",
+          });
+        }
       } finally {
-        creatingTerminalRef.current = false;
-        setCreatingTerminal(false);
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setPreparingMutation("");
+        }
       }
     },
-    [currentConnected, currentServerId, router],
+    [refreshInventory],
   );
 
-  const confirmCommand = useCallback(
-    (reviewed: ReviewedCommand, confirmation: {
-      title: string;
-      message: string;
-      confirmLabel: string;
-    }) => {
-      Alert.alert(confirmation.title, confirmation.message, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: confirmation.confirmLabel,
-          style:
-            reviewed.command.operation === "remove" ||
-            reviewed.command.operation === "uninstall"
-              ? "destructive"
-              : "default",
-          onPress: () => {
-            void handoffToTerminal(reviewed);
-          },
-        },
-      ]);
+  const executePluginMutation = useCallback(
+    async (
+      token: SkillsServerRequestToken,
+      input: PluginMutationInput,
+      key: string,
+      confirmation: { title: string; message: string; confirmLabel: string },
+      destructive: boolean,
+    ) => {
+      if (!requestOwnerRef.current.isCurrent(token) || !token.serverId) {
+        return;
+      }
+      const confirmed = await confirmMutation(confirmation, destructive);
+      if (!confirmed || !requestOwnerRef.current.isCurrent(token)) {
+        return;
+      }
+      setPreparingMutation(key);
+      setMutationNotice(null);
+      try {
+        const result = await wsClient.executePluginMutation(token.serverId, {
+          operation: input.operation,
+          pluginId: input.pluginId,
+          scope: input.scope,
+        });
+        if (!requestOwnerRef.current.isCurrent(token)) {
+          return;
+        }
+        if (result.execution.success) {
+          setMutationNotice({
+            kind: "success",
+            message: pluginMutationSuccessCopy(input),
+          });
+          void loadPlugins();
+        } else {
+          setMutationNotice({
+            kind: "error",
+            message: pluginMutationFailureCopy(input, result.execution.output, result.execution.exitCode),
+          });
+        }
+      } catch (error: unknown) {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setMutationNotice({
+            kind: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "The Plugin mutation could not be run.",
+          });
+        }
+      } finally {
+        if (requestOwnerRef.current.isCurrent(token)) {
+          setPreparingMutation("");
+        }
+      }
     },
-    [handoffToTerminal],
+    [loadPlugins],
   );
 
   const prepareRemove = useCallback(
@@ -725,15 +734,19 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand(
+        await executeSkillsMutation(
+          token,
           {
-            command,
-            cwd: projectCwd,
-            serverId: currentServerId,
-            token,
-            sessionLabel: `Skills: remove ${command.skillName}`,
+            operation: "remove",
+            cwd: projectCwd || undefined,
+            skillId: skill.id,
+            skillName: skill.name,
+            scope: skill.scope as "project" | "global",
+            agents: plan.affectedAgents,
           },
+          key,
           buildSkillsMutationConfirmation(command),
+          true,
         );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
@@ -751,9 +764,9 @@ export default function SkillsScreen() {
       }
     },
     [
-      confirmCommand,
       currentConnected,
       currentServerId,
+      executeSkillsMutation,
       inventoryState,
       preparingMutation,
       projectCwd,
@@ -779,12 +792,12 @@ export default function SkillsScreen() {
       }
       Keyboard.dismiss();
       const token = requestOwnerRef.current.issue("mutation");
-      const key = `install:${skill.id}`;
+      const key = `install:${catalogSkillId(skill)}`;
       setPreparingMutation(key);
       try {
         const command = await wsClient.buildSkillsCommand(currentServerId, {
           operation: "install",
-          skillId: skill.id,
+          skillId: catalogSkillId(skill),
           source: skill.source,
           skillName: skill.skillId,
           scope: "global",
@@ -793,15 +806,19 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand(
+        await executeSkillsMutation(
+          token,
           {
-            command,
-            cwd: "",
-            serverId: currentServerId,
-            token,
-            sessionLabel: `Skills: install ${command.skillName}`,
+            operation: "install",
+            skillId: catalogSkillId(skill),
+            source: skill.source,
+            skillName: skill.skillId,
+            scope: "global",
+            agents: skillsInstallTargets(selectedAgent),
           },
+          key,
           buildSkillsMutationConfirmation(command),
+          false,
         );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
@@ -819,9 +836,9 @@ export default function SkillsScreen() {
       }
     },
     [
-      confirmCommand,
       currentConnected,
       currentServerId,
+      executeSkillsMutation,
       inventoryState,
       preparingMutation,
       selectedAgent,
@@ -859,15 +876,16 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand(
+        await executeSkillsMutation(
+          token,
           {
-            command,
-            cwd: scope === "project" ? projectCwd : "",
-            serverId: currentServerId,
-            token,
-            sessionLabel: `Skills: update ${scope}`,
+            operation: "update",
+            cwd: scope === "project" ? projectCwd || undefined : undefined,
+            scope,
           },
+          key,
           buildSkillsMutationConfirmation(command),
+          false,
         );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
@@ -885,9 +903,9 @@ export default function SkillsScreen() {
       }
     },
     [
-      confirmCommand,
       currentConnected,
       currentServerId,
+      executeSkillsMutation,
       inventoryState,
       preparingMutation,
       projectCwd,
@@ -896,7 +914,7 @@ export default function SkillsScreen() {
 
   const preparePluginMutation = useCallback(
     async (
-      operation: "install" | "update" | "uninstall",
+      operation: PluginMutationOperation,
       identity: { pluginId: string; name: string },
       row?: InstalledPluginRow,
       entry?: AvailablePlugin,
@@ -931,15 +949,12 @@ export default function SkillsScreen() {
         if (!requestOwnerRef.current.isCurrent(token)) {
           return;
         }
-        confirmCommand(
-          {
-            command,
-            cwd: "",
-            serverId: currentServerId,
-            token,
-            sessionLabel: `Plugins: ${operation} ${identity.name}`,
-          },
+        await executePluginMutation(
+          token,
+          { operation, pluginId: identity.pluginId, scope: "user" },
+          key,
           buildPluginMutationConfirmation(command),
+          operation === "uninstall",
         );
       } catch (error: unknown) {
         if (requestOwnerRef.current.isCurrent(token)) {
@@ -956,7 +971,13 @@ export default function SkillsScreen() {
         }
       }
     },
-    [confirmCommand, currentConnected, currentServerId, pluginsState, preparingMutation],
+    [
+      currentConnected,
+      currentServerId,
+      executePluginMutation,
+      pluginsState,
+      preparingMutation,
+    ],
   );
 
   const presentationIsCurrent = boundServerId === currentServerId;
@@ -972,14 +993,19 @@ export default function SkillsScreen() {
   const visibleSearchState = presentationIsCurrent
     ? searchState
     : createSkillsRequestState<SkillsCatalogResult>();
-  const visibleDiscover = presentationIsCurrent
-    ? discover
-    : createSkillsDiscoverState();
+  const visibleSearchQuery = presentationIsCurrent ? searchQuery : "";
+  const visibleSubmittedQuery = presentationIsCurrent ? submittedQuery : "";
+  const visibleLeaderboardView = presentationIsCurrent
+    ? leaderboardView
+    : "all-time";
+  const visibleNotice = presentationIsCurrent ? mutationNotice : null;
+  const visiblePreparing = presentationIsCurrent ? preparingMutation : "";
+
   const inventory = skillsRequestData(visibleInventoryState);
   const search = skillsRequestData(visibleSearchState);
   const leaderboards = skillsRequestData(visibleCatalogState);
   const leaderboard = leaderboards
-    ? leaderboardForView(leaderboards, visibleDiscover.view)
+    ? leaderboardForView(leaderboards, visibleLeaderboardView)
     : undefined;
   const projection = useMemo(
     () => skillsSectionProjection(inventory, selectedAgent),
@@ -990,47 +1016,70 @@ export default function SkillsScreen() {
     [inventory],
   );
   const pluginsInventory = skillsRequestData(visiblePluginsState);
-  const pluginSection: PluginSectionView = useMemo(
-    () => pluginSectionView(pluginsInventory),
+  const pluginsView: PluginsUnifiedView = useMemo(
+    () => pluginsUnifiedView(pluginsInventory),
     [pluginsInventory],
   );
+  const catalogSkills = useMemo(
+    () =>
+      visibleSubmittedQuery
+        ? (search?.skills ?? [])
+        : (leaderboard?.skills ?? []),
+    [leaderboard, search, visibleSubmittedQuery],
+  );
+  const browsing = Boolean(visibleSubmittedQuery);
+  const catalogInstalledElsewhere = useMemo(() => {
+    const result: Record<string, readonly string[]> = {};
+    for (const skill of inventory?.skills ?? []) {
+      const identity = installedSkillCatalogId(skill);
+      if (!identity) {
+        continue;
+      }
+      const agents = skill.agents
+        .filter((agent) => agent !== selectedAgent && isManagedAgentName(agent))
+        .map(skillAgentLabel);
+      if (agents.length > 0) {
+        result[identity] = agents;
+      }
+    }
+    return result;
+  }, [inventory, selectedAgent]);
   const mutationOperations = inventory?.mutationOperations ?? [
     ...LEGACY_MUTATION_CAPABILITIES,
   ];
-  const hasProjectCwd = Boolean(projectCwd?.trim());
 
   return (
     <SkillsPresentation
       key={currentServerId ?? "none"}
       section={surface.section}
-      mode={mode}
-      pluginsMode={pluginsMode}
       selectedAgent={selectedAgent}
       agentCounts={agentCounts}
       inventoryState={visibleInventoryState}
       installedSkills={projection.skills}
-      pluginsState={visiblePluginsState}
-      pluginSection={pluginSection}
+      catalogSkills={catalogSkills}
+      catalogInstalledElsewhere={catalogInstalledElsewhere}
+      browsing={browsing}
       catalogState={visibleCatalogState}
       leaderboard={leaderboard}
       searchState={visibleSearchState}
       searchResult={search}
-      query={visibleDiscover.query}
-      submittedQuery={visibleDiscover.submittedQuery}
-      leaderboardView={visibleDiscover.view}
+      query={visibleSearchQuery}
+      submittedQuery={visibleSubmittedQuery}
+      leaderboardView={visibleLeaderboardView}
+      pluginsState={visiblePluginsState}
+      pluginsView={pluginsView}
       mutationOperations={mutationOperations}
-      hasProjectCwd={hasProjectCwd}
-      preparingMutation={preparingMutation}
-      creatingTerminal={creatingTerminal}
+      hasProjectCwd={Boolean(projectCwd?.trim())}
+      preparingMutation={visiblePreparing}
+      mutationNotice={visibleNotice}
       currentServerAvailable={Boolean(currentServer)}
       onSelectSection={selectSection}
-      onSelectMode={setMode}
-      onSelectPluginsMode={setPluginsMode}
       onSelectAgent={selectAgent}
       onOpenSettings={() => router.push("/settings")}
-      onRefreshInventory={() => void refreshInventory()}
+      onRefreshSkills={refreshSkills}
       onRetryPlugins={() => void loadPlugins()}
       onRemove={(skill) => void prepareRemove(skill)}
+      onInstall={(skill) => void prepareInstall(skill)}
       onUpdateSkills={(scope) => void prepareSkillsUpdate(scope)}
       onInstallPlugin={(entry) =>
         void preparePluginMutation("install", {
@@ -1050,22 +1099,36 @@ export default function SkillsScreen() {
           name: row.name,
         }, row)
       }
-      onChangeQuery={changeDiscoverQuery}
-      onSubmitSearch={submitDiscoverSearch}
-      onClearSearch={clearDiscoverSearch}
+      onChangeQuery={changeSearchQuery}
+      onSubmitSearch={submitSearch}
+      onClearSearch={clearSearchState}
       onSelectLeaderboard={selectLeaderboardView}
       onRetryCatalog={() => void loadLeaderboards()}
-      onRetrySearch={() =>
-        void runSearch(discover.submittedQuery, "same-query")
-      }
-      onInstall={(skill) => void prepareInstall(skill)}
+      onRetrySearch={() => void runSearch(submittedQuery, "same-query")}
+      onDismissNotice={() => setMutationNotice(null)}
     />
   );
 }
 
+function confirmMutation(
+  confirmation: { title: string; message: string; confirmLabel: string },
+  destructive: boolean,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(confirmation.title, confirmation.message, [
+      { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+      {
+        text: confirmation.confirmLabel,
+        style: destructive ? "destructive" : "default",
+        onPress: () => resolve(true),
+      },
+    ]);
+  });
+}
+
 function mutationCapabilities(
   state: SkillsRequestState<SkillsInventory>,
-): readonly ("install" | "remove" | "update")[] {
+): readonly SkillMutationOperation[] {
   return (
     skillsRequestData(state)?.mutationOperations ?? LEGACY_MUTATION_CAPABILITIES
   );
@@ -1079,6 +1142,72 @@ function pluginInstalledIds(
     ids.add(row.id);
   }
   return ids;
+}
+
+function skillsMutationSuccessCopy(input: SkillsMutationInput): string {
+  const agentLabel = (input.agents ?? []).map(skillAgentLabel).join(", ");
+  switch (input.operation) {
+    case "install":
+      return `Installed ${input.skillName} for ${agentLabel}.`;
+    case "remove":
+      return `Removed ${input.skillName} from ${agentLabel}.`;
+    case "update":
+      return `Updated every ${input.scope} Skill.`;
+  }
+}
+
+function pluginMutationSuccessCopy(input: PluginMutationInput): string {
+  switch (input.operation) {
+    case "install":
+      return `Installed ${input.pluginId}.`;
+    case "update":
+      return `Updated ${input.pluginId}.`;
+    case "uninstall":
+      return `Uninstalled ${input.pluginId}.`;
+  }
+}
+
+function mutationFailureCopy(
+  input: SkillsMutationInput & { skillName?: string },
+  output: string,
+  exitCode: number,
+): string {
+  const headline = `The command exited with code ${exitCode}.`;
+  const tail = output
+    ? output.length > 500
+      ? `${output.slice(0, 500)}…`
+      : output
+    : "";
+  return tail ? `${headline}\n\n${tail}` : headline;
+}
+
+function pluginMutationFailureCopy(
+  input: PluginMutationInput,
+  output: string,
+  exitCode: number,
+): string {
+  const headline = `The command exited with code ${exitCode}.`;
+  const tail = output
+    ? output.length > 500
+      ? `${output.slice(0, 500)}…`
+      : output
+    : "";
+  return tail ? `${headline}\n\n${tail}` : headline;
+}
+
+function isManagedAgentName(
+  agent: string,
+): agent is ManagedSkillAgent {
+  switch (agent) {
+    case "codex":
+    case "claude-code":
+    case "cursor":
+    case "opencode":
+    case "pi":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function leaderboardForView(

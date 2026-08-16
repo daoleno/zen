@@ -128,7 +128,9 @@ type Server struct {
 	skillsInventories  map[*websocket.Conn]skillsInventoryRequest
 	skillsCatalogs     map[*websocket.Conn]skillsCatalogRequest
 	skillsSearches     map[*websocket.Conn]skillsSearchRequest
+	skillsMutations    map[*websocket.Conn]skillsMutationRequest
 	pluginsInventories map[*websocket.Conn]pluginsInventoryRequest
+	pluginsMutations   map[*websocket.Conn]pluginsMutationRequest
 	pluginCatalogCLI   skillmgmt.PluginCLI
 	mu                 sync.Mutex
 }
@@ -247,7 +249,9 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		skillsInventories:  make(map[*websocket.Conn]skillsInventoryRequest),
 		skillsCatalogs:     make(map[*websocket.Conn]skillsCatalogRequest),
 		skillsSearches:     make(map[*websocket.Conn]skillsSearchRequest),
+		skillsMutations:    make(map[*websocket.Conn]skillsMutationRequest),
 		pluginsInventories: make(map[*websocket.Conn]pluginsInventoryRequest),
+		pluginsMutations:   make(map[*websocket.Conn]pluginsMutationRequest),
 		pluginCatalogCLI:   skillmgmt.NewClaudePluginCLI(),
 	}
 	if brainService != nil {
@@ -590,6 +594,14 @@ func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
 	if catalog, ok := s.skillsCatalogs[conn]; ok {
 		catalog.cancel()
 		delete(s.skillsCatalogs, conn)
+	}
+	if mutation, ok := s.skillsMutations[conn]; ok {
+		mutation.cancel()
+		delete(s.skillsMutations, conn)
+	}
+	if mutation, ok := s.pluginsMutations[conn]; ok {
+		mutation.cancel()
+		delete(s.pluginsMutations, conn)
 	}
 }
 
@@ -1140,11 +1152,17 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "skills_command":
 		s.handleSkillsCommand(conn, raw)
 
+	case "skills_mutation":
+		s.handleSkillsMutation(conn, raw)
+
 	case "plugins_inventory":
 		s.handlePluginsInventory(conn, raw)
 
 	case "plugin_command":
 		s.handlePluginCommand(conn, raw)
+
+	case "plugin_mutation":
+		s.handlePluginMutation(conn, raw)
 
 	case "codex_terminal_snapshot":
 		text, err := s.watcher.CapturePaneContent(raw.TargetID)

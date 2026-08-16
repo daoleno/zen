@@ -85,20 +85,20 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).not.toContain("PluginsModeSwitch");
   });
 
-  test("Installed and Discover are compact tool choices with real lifecycle actions", () => {
+  test("one stable surface with real lifecycle actions and no Installed/Discover switch", () => {
     expect(skillsSource).not.toContain("Enter at least 2 characters");
     expect(skillsSource).not.toContain("View only");
     expect(skillsSource).not.toContain("Switch to Discover");
-    expect(skillsSource).toContain('label="Installed"');
-    expect(skillsSource).toContain('label="Discover"');
+    expect(skillsSource).not.toContain('label="Discover"');
+    expect(skillsSource).not.toContain('label="Installed"');
     expect(skillsSource).toContain('label="Global Skills"');
     expect(skillsSource).toContain('label="Project Skills"');
     expect(skillsSource).toContain('label="Update"');
     expect(skillsSource).toContain('label="Uninstall"');
     const installedRowBlock = skillsSource.match(
-      /function InstalledSkillItem\([\s\S]*?function DiscoverSkillsList\(/,
+      /function InstalledSkillItem\([\s\S]*?function CatalogSkillItem\(/,
     )?.[0];
-    expect(installedRowBlock).not.toContain("Update");
+    expect(installedRowBlock).not.toContain('label="Update"');
     expect(installedRowBlock).toContain('label="Remove"');
   });
 
@@ -110,7 +110,7 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain("state.error");
     expect(skillsSource).toContain("catalogState.error");
     expect(skillsSource).toContain("searchState.error");
-    expect(skillsSource).toContain('emptyTitle="No plugins installed"');
+    expect(skillsSource).toContain('emptyTitle="No plugins found"');
     expect(skillsSource).toContain('loadingTitle="Loading installed Skills…"');
   });
 
@@ -124,7 +124,7 @@ describe("navigation and Skills copy density", () => {
 
   test("one Plugin row gets one contextual trailing action and a client icon", () => {
     const rowBlock = skillsSource.match(
-      /function InstalledPluginItem\([\s\S]*?function DiscoverPluginsList\(/,
+      /function InstalledPluginItem\([\s\S]*?function AvailablePluginItem\(/,
     )?.[0];
     expect(rowBlock).toBeDefined();
     expect(rowBlock).toContain("AgentKindIcon");

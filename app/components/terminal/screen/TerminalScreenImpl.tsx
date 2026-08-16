@@ -43,7 +43,6 @@ export default function TerminalScreen() {
     screenFocused,
     setScreenFocused,
     terminalRef,
-    skillsHandoffToken,
   } = useTerminalScreenLocalState();
 
   // Last-focused routed Session: the current Session for cross-screen actions
@@ -241,7 +240,6 @@ export default function TerminalScreen() {
       setRenameVisible,
       showInterfaceChat,
       onConsumeInitialComposerFocus: consumeInitialComposerFocus,
-      skillsHandoffToken,
       navigationActions,
       terminalRef,
       terminalTheme,

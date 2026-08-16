@@ -24,18 +24,18 @@ import {
 /**
  * Layout and presentation truth for the compact Plugins & Skills surface.
  *
- * The UI deliberately has only one first-level navigator. Installed/Discover,
- * target, search, refresh, and update are tools inside the selected section;
- * they are not additional full-width navigation bars. Keeping the geometry
- * here makes the narrow-phone and large-type contract independently testable.
+ * The UI deliberately has only one first-level navigator (the Plugins and
+ * Skills tabs) and one stable management list per tab. Installed and
+ * discovered rows coexist with lifecycle badges; search, target, ranking, and
+ * refresh are tools inside the selected section, never additional full-width
+ * navigation. Keeping the geometry here makes the narrow-phone and large-type
+ * contract independently testable.
  */
 export const PLUGINS_SKILLS_TOUCH_TARGET = 44;
 export const PLUGINS_SKILLS_MIN_VIEWPORT = 360;
 export const PLUGINS_SKILLS_SCREEN_PADDING = 16;
 export const PLUGINS_SKILLS_CONTROL_GAP = 8;
 export const PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER = 1.5;
-
-export type PluginsSkillsMode = "installed" | "discover";
 
 export interface CompactSkillTarget {
   agent: ManagedSkillAgent;
@@ -47,6 +47,11 @@ export interface OwnershipPresentation {
   manageable: boolean;
   summary: string;
   detail: string;
+}
+
+export interface LifecycleBadge {
+  label: string;
+  tone: "neutral" | "accent" | "warning";
 }
 
 export function compactSkillTargets(
@@ -121,6 +126,34 @@ export function installedSkillMetadata(skill: InstalledSkill): string {
   return [source, scopeLabel(skill.scope)].filter(Boolean).join(" · ");
 }
 
+export function installedSkillBadges(
+  skill: InstalledSkill,
+  installedCount: number,
+): LifecycleBadge[] {
+  const badges: LifecycleBadge[] = [
+    { label: "Installed", tone: "accent" },
+    { label: scopeLabel(skill.scope), tone: "neutral" },
+  ];
+  if (installedCount > 1) {
+    badges.push({ label: `${installedCount} agents`, tone: "neutral" });
+  }
+  return badges;
+}
+
+export function catalogSkillBadges(
+  skill: CatalogSkill | RankedCatalogSkill,
+  installedForOtherAgents: string[],
+): LifecycleBadge[] {
+  const badges: LifecycleBadge[] = [{ label: "Available", tone: "neutral" }];
+  if (installedForOtherAgents.length > 0) {
+    badges.push({
+      label: `Installed for ${installedForOtherAgents.join(", ")}`,
+      tone: "warning",
+    });
+  }
+  return badges;
+}
+
 export function installedSkillOwnership(
   skill: InstalledSkill,
   agent: ManagedSkillAgent,
@@ -160,6 +193,30 @@ export function installedPluginMetadata(plugin: InstalledPluginRow): string {
   ].join(" · ");
 }
 
+export function installedPluginBadges(
+  plugin: InstalledPluginRow,
+): LifecycleBadge[] {
+  const badges: LifecycleBadge[] = [
+    { label: "Installed", tone: "accent" },
+    { label: pluginHostLabel(plugin.host), tone: "neutral" },
+  ];
+  if (plugin.source === "catalog") {
+    badges.push({ label: "Catalog", tone: "neutral" });
+  } else {
+    badges.push({ label: "Cached", tone: "warning" });
+  }
+  return badges;
+}
+
+export function availablePluginBadges(
+  plugin: AvailablePlugin,
+): LifecycleBadge[] {
+  return [
+    { label: "Available", tone: "neutral" },
+    { label: `@${plugin.marketplaceName}`, tone: "neutral" },
+  ];
+}
+
 export function installedPluginOwnership(
   plugin: InstalledPluginRow,
 ): OwnershipPresentation {
@@ -192,6 +249,18 @@ export function installedPluginOwnership(
     manageable: false,
     summary: `Managed by ${pluginHostLabel(plugin.host)}`,
     detail: "The owning client does not currently allow Zen to change this plugin.",
+  };
+}
+
+export function availablePluginOwnership(
+  plugin: AvailablePlugin,
+): OwnershipPresentation {
+  return {
+    manageable: false,
+    summary: `Install from @${plugin.marketplaceName}`,
+    detail:
+      plugin.description ||
+      "Installing runs the owning client's official installer for this plugin.",
   };
 }
 

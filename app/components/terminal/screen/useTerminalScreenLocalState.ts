@@ -101,11 +101,6 @@ export function useTerminalScreenLocalState() {
     router.setParams({ createDurabilityWarning: "" });
   }, [createDurabilityWarningParam, router]);
 
-  const skillsHandoffToken =
-    skillsHandoffGrant?.sessionKey === sessionKey
-      ? skillsHandoffGrant.token
-      : undefined;
-
   const consumeInitialComposerFocus = useCallback(() => {
     router.setParams({ initialComposerFocus: "" });
     setInitialComposerFocusGrant((current) =>
@@ -139,7 +134,6 @@ export function useTerminalScreenLocalState() {
     screenFocused,
     setScreenFocused,
     terminalRef,
-    skillsHandoffToken,
   };
 }
 

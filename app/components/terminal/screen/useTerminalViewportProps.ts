@@ -39,7 +39,6 @@ interface UseTerminalViewportPropsInput {
   onConsumeInitialComposerFocus(): void;
   composerModelControl?: ComposerModelControlPresentation | null;
   onComposerModelControlPress?: () => void;
-  skillsHandoffToken?: string;
 }
 
 export function useTerminalViewportProps({
@@ -69,7 +68,6 @@ export function useTerminalViewportProps({
   onConsumeInitialComposerFocus,
   composerModelControl,
   onComposerModelControlPress,
-  skillsHandoffToken,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
     void sessionActions.applyInterfaceRenderMode("terminal");
@@ -119,7 +117,6 @@ export function useTerminalViewportProps({
       onConsumeInitialComposerFocus,
       composerModelControl,
       onComposerModelControlPress,
-      skillsHandoffToken,
     }),
     [
       accessoryBottomOffset,
@@ -147,7 +144,6 @@ export function useTerminalViewportProps({
       showInterfaceChat,
       composerModelControl,
       onComposerModelControlPress,
-      skillsHandoffToken,
       viewportModel.accessoryVisible,
       viewportModel.canRenderTerminal,
       viewportModel.shouldMountTerminalSurface,

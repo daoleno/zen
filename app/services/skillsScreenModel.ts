@@ -1,33 +1,13 @@
 import type {
+  CatalogSkill,
   InstalledSkill,
   ManagedSkillAgent,
+  RankedCatalogSkill,
   SkillRemovalPlan,
   SkillsInventory,
 } from "./skillsManagement";
 
 export type SkillsLeaderboardView = "all-time" | "trending" | "hot";
-
-export interface SkillsDiscoverState {
-  query: string;
-  submittedQuery: string;
-  view: SkillsLeaderboardView;
-}
-
-export type SkillsDiscoverAction =
-  | { type: "change_query"; value: string }
-  | { type: "submit" }
-  | { type: "clear" }
-  | { type: "select_view"; view: SkillsLeaderboardView };
-
-export type SkillsDiscoverEffect =
-  | { type: "none" }
-  | { type: "clear_search" }
-  | { type: "submit_search"; query: string };
-
-export interface SkillsDiscoverTransition {
-  state: SkillsDiscoverState;
-  effect: SkillsDiscoverEffect;
-}
 
 export const MANAGED_SKILL_AGENTS: readonly ManagedSkillAgent[] = [
   "codex",
@@ -45,57 +25,70 @@ export interface SkillsAgentProjection {
   skills: InstalledSkill[];
 }
 
-export function createSkillsDiscoverState(): SkillsDiscoverState {
-  return { query: "", submittedQuery: "", view: "all-time" };
+/**
+ * One unified row for the single Skills management list. Installed and
+ * discovered rows coexist: a catalog entry whose canonical identity is already
+ * installed for the selected target never renders a duplicate catalog row.
+ */
+export type SkillsUnifiedRow =
+  | { kind: "installed"; skill: InstalledSkill; catalogId: string | null }
+  | {
+      kind: "catalog";
+      skill: CatalogSkill | RankedCatalogSkill;
+      catalogId: string;
+    };
+
+/**
+ * Canonical identity for an installed Skill: source repository plus skill
+ * directory name. Builtin/plugin/unknown managers and skills without a
+ * provable repository source have no catalog identity and can never dedupe
+ * against skills.sh entries.
+ */
+export function installedSkillCatalogId(
+  skill: InstalledSkill,
+): string | null {
+  return skill.source && skill.name ? `${skill.source}/${skill.name}` : null;
 }
 
-export function reduceSkillsDiscover(
-  current: SkillsDiscoverState,
-  action: SkillsDiscoverAction,
-): SkillsDiscoverTransition {
-  switch (action.type) {
-    case "change_query": {
-      if (!action.value.trim()) {
-        return {
-          state: { ...current, query: "", submittedQuery: "" },
-          effect: current.submittedQuery
-            ? { type: "clear_search" }
-            : { type: "none" },
-        };
-      }
-      return {
-        state: { ...current, query: action.value },
-        effect: { type: "none" },
-      };
+export function catalogSkillId(
+  skill: CatalogSkill | RankedCatalogSkill,
+): string {
+  return `${skill.source}/${skill.skillId}`;
+}
+
+/**
+ * Builds the unified Skills list. `catalogSkills` is the current browse
+ * source: leaderboard rows when browsing, search rows after a submitted
+ * query. Catalog rows that canonically match an installed row (for the
+ * selected target) are dropped so one identity renders exactly once.
+ */
+export function skillsUnifiedRows(
+  installed: InstalledSkill[],
+  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>,
+): SkillsUnifiedRow[] {
+  const installedRows: SkillsUnifiedRow[] = [...installed]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((skill) => ({
+      kind: "installed",
+      skill,
+      catalogId: installedSkillCatalogId(skill),
+    }));
+  const installedIdentities = new Set(
+    installedRows
+      .map((row) => row.catalogId)
+      .filter((id): id is string => id !== null),
+  );
+  const catalogRows: SkillsUnifiedRow[] = [];
+  const seen = new Set<string>();
+  for (const skill of catalogSkills) {
+    const identity = catalogSkillId(skill);
+    if (seen.has(identity) || installedIdentities.has(identity)) {
+      continue;
     }
-    case "submit": {
-      const query = current.query.trim();
-      if (query.length < 2) {
-        return {
-          state: { ...current, submittedQuery: "" },
-          effect: current.submittedQuery
-            ? { type: "clear_search" }
-            : { type: "none" },
-        };
-      }
-      return {
-        state: { ...current, query, submittedQuery: query },
-        effect: { type: "submit_search", query },
-      };
-    }
-    case "clear":
-      return {
-        state: { ...current, query: "", submittedQuery: "" },
-        effect: current.submittedQuery
-          ? { type: "clear_search" }
-          : { type: "none" },
-      };
-    case "select_view":
-      return {
-        state: { ...current, view: action.view },
-        effect: { type: "none" },
-      };
+    seen.add(identity);
+    catalogRows.push({ kind: "catalog", skill, catalogId: identity });
   }
+  return [...installedRows, ...catalogRows];
 }
 
 export function skillsAgentCounts(

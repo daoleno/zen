@@ -15,134 +15,107 @@ const surfaceModelSource = readFileSync(
   join(import.meta.dir, "pluginsSkillsSurfaceModel.ts"),
   "utf8",
 );
+const websocketSource = readFileSync(
+  join(import.meta.dir, "websocket.ts"),
+  "utf8",
+);
+const skillsScreenModelSource = readFileSync(
+  join(import.meta.dir, "skillsScreenModel.ts"),
+  "utf8",
+);
 
-describe("Plugins & Skills V3 action wiring", () => {
+describe("Plugins & Skills V4 management surface", () => {
   test("all inventory and discovery flows stay bound to the current server", () => {
     expect(screenSource).toContain("useCurrentServer");
     expect(screenSource).toContain("requestOwnerRef.current.rebind(currentServerId)");
     expect(screenSource).toContain("presentationIsCurrent");
     expect(screenSource).toContain('key={currentServerId ?? "none"}');
-    expect(screenSource).toContain("const visibleDiscover = presentationIsCurrent");
-    expect(screenSource).toContain('query: ""');
-    expect(screenSource).toContain('submittedQuery: ""');
+    expect(screenSource).toContain("const visibleInventoryState = presentationIsCurrent");
     expect(presentationSource).not.toContain("serverBindingKey");
   });
 
-  test("inventory, Plugins, and leaderboards refresh through one data-retaining request state", () => {
-    expect(screenSource.match(/beginSkillsRequest\(current, token\.generation\)/g)).toHaveLength(3);
-    expect(screenSource).toContain("skillsRequestData(visibleInventoryState)");
-    expect(screenSource).toContain("skillsRequestData(visiblePluginsState)");
-    expect(screenSource).toContain("skillsRequestData(visibleCatalogState)");
-    expect(screenSource).toContain("useMemo(\n    () => pluginSectionView");
+  test("there is no Installed/Discover mode switch anywhere in the surface", () => {
+    // The row discriminator literals are unified-list kinds, not modes; the
+    // banned state switch is a top-level Installed/Discover mode selection.
+    expect(presentationSource).not.toContain("activeMode");
+    expect(presentationSource).not.toContain("onSelectMode");
+    expect(presentationSource).not.toContain("PluginsSkillsMode");
+    expect(screenSource).not.toContain("SkillsMode");
+    expect(screenSource).not.toContain("PluginsMode");
+    expect(screenSource).not.toContain("pluginsMode");
+    // The only "discover" wording left is the inline search hint, which is
+    // item-level discovery copy, not a navigation mode.
     expect(presentationSource).toContain(
-      "skillsRequestData(state) !== undefined",
+      "Use Search above to discover Skills from skills.sh.",
     );
   });
 
-  test("new-query search clears data while same-query refresh and retry retain it", () => {
-    expect(screenSource).toContain(
-      'void runSearch(transition.effect.query, "new-query")',
-    );
-    expect(screenSource).toContain(
-      'void runSearch(discover.submittedQuery, "same-query")',
-    );
-    expect(screenSource).toContain(
-      'intent: "new-query" | "same-query"',
-    );
-    expect(screenSource).toContain(
-      'intent === "same-query"',
-    );
+  test("each tab renders one unified management list with installed and discovered rows", () => {
+    expect(presentationSource).toContain("skillsUnifiedRows(visibleSkills, visibleCatalog)");
+    expect(screenSource).toContain("pluginsUnifiedView");
+    expect(presentationSource).toContain("function SkillsList");
+    expect(presentationSource).toContain("kind: \"installed\"");
+    expect(presentationSource).toContain("function CatalogSkillItem");
+    expect(presentationSource).toContain("kind: \"available\"; plugin: AvailablePlugin");
+    expect(skillsScreenModelSource).toContain("installedSkillCatalogId");
+    expect(pluginModelSource).toContain("pluginsUnifiedView");
   });
 
-  test("refresh and retained-data errors keep each FlatList and its rows mounted", () => {
-    const installedPlugins = presentationSource.match(
-      /function InstalledPluginsList\([\s\S]*?function InstalledPluginItem\(/,
-    )?.[0];
-    const installedSkills = presentationSource.match(
-      /function InstalledSkillsList\([\s\S]*?function InstalledSkillItem\(/,
-    )?.[0];
-    const discoverSkills = presentationSource.match(
-      /function DiscoverSkillsList\([\s\S]*?function CatalogRow\(/,
-    )?.[0];
-    expect(installedPlugins).toContain("data={visibleRows}");
-    expect(installedPlugins).toContain(
-      'loading={state.status === "loading" && !hasData}',
-    );
-    expect(installedPlugins).toContain(
-      'error={state.status === "error" ? state.error : undefined}',
-    );
-    expect(installedSkills).toContain("data={visibleSkills}");
-    expect(installedSkills).toContain(
-      'loading={state.status === "loading" && !hasInventory}',
-    );
-    expect(discoverSkills).toContain("data={data}");
-    expect(discoverSkills).toContain(
-      'loading={catalogState.status === "loading" && !hasCatalog}',
-    );
-    expect(discoverSkills).toContain(
-      'error={catalogState.status === "error" ? catalogState.error : undefined}',
-    );
+  test("lifecycle badges mark source and lifecycle on every row", () => {
+    expect(surfaceModelSource).toContain("installedSkillBadges");
+    expect(surfaceModelSource).toContain("catalogSkillBadges");
+    expect(surfaceModelSource).toContain("installedPluginBadges");
+    expect(surfaceModelSource).toContain("availablePluginBadges");
+    expect(presentationSource).toContain("function BadgeRow");
   });
 
-  test("an older daemon is a concise Plugin capability error, never a cache projection", () => {
-    expect(screenSource).toContain('error.code === "unknown_message_type"');
-    expect(screenSource).toContain("Update the Zen daemon to manage Plugins.");
-    expect(screenSource).not.toContain("projectPlugins");
-    expect(screenSource).not.toContain("pluginsFallback");
-    expect(presentationSource).not.toContain("FallbackPlugin");
-    expect(presentationSource).not.toContain("fallbackPlugins");
-    expect(pluginModelSource).not.toContain("CacheFallbackPlugin");
-    expect(pluginModelSource).not.toContain("projectPlugins");
-    expect(surfaceModelSource).not.toContain("filterFallbackPlugins");
+  test("refresh retains the rendered list and stable chrome (no mode buttons, no flash)", () => {
+    expect(screenSource).toContain("beginSkillsRequest(current, token.generation)");
+    expect(screenSource).toContain("skillsRequestData(visibleInventoryState)");
+    expect(presentationSource).toContain("skillsRequestData(state) !== undefined");
+    // The toolbar renders exactly the stable tool set: Target/Ranking/Update
+    // for Skills plus Refresh; no segmented state buttons.
+    expect(presentationSource).toContain("function CompactToolbar");
+    expect(presentationSource).not.toContain("onOpenMode");
+    expect(presentationSource).not.toContain("View Installed");
+    expect(presentationSource).not.toContain("View Discover");
   });
 
-  test("Plugins install, update, and uninstall prepare real daemon commands", () => {
-    expect(screenSource).toContain("wsClient.getPluginsInventory");
-    expect(screenSource).toContain("wsClient.buildPluginCommand");
-    expect(screenSource).toContain('preparePluginMutation("install"');
-    expect(screenSource).toContain('preparePluginMutation("update"');
-    expect(screenSource).toContain('preparePluginMutation("uninstall"');
-    expect(screenSource).toContain("evaluatePluginMutation");
-    expect(presentationSource).toContain("onInstallPlugin");
-    expect(presentationSource).toContain("onUpdatePlugin");
-    expect(presentationSource).toContain("onUninstallPlugin");
+  test("reviewed commands execute through the authoritative daemon mutation path", () => {
+    expect(websocketSource).toContain("executeSkillsMutation(");
+    expect(websocketSource).toContain('type: "skills_mutation"');
+    expect(websocketSource).toContain("skills_mutation_result");
+    expect(websocketSource).toContain("executePluginMutation(");
+    expect(websocketSource).toContain('type: "plugin_mutation"');
+    expect(websocketSource).toContain("plugin_mutation_result");
+    // The old terminal handoff execution path is gone.
+    expect(screenSource).not.toContain("skillsTerminalHandoff");
+    expect(screenSource).not.toContain("handoffToTerminal");
+    expect(screenSource).not.toContain("createOwnedSkillsTerminalSession");
   });
 
-  test("Skills install, remove, and scope update retain the npx skills daemon gate", () => {
-    expect(screenSource).toContain("wsClient.buildSkillsCommand");
-    expect(screenSource).toContain("evaluateSkillMutation");
-    expect(screenSource).toContain("skillsInstallTargets(selectedAgent)");
-    expect(screenSource).toContain("skillsRemovalPlanForAgent");
-    expect(screenSource).toContain("projectUpdateAvailable");
-    expect(presentationSource).toContain('label="Global Skills"');
-    expect(presentationSource).toContain('label="Project Skills"');
-  });
-
-  test("reviewed lifecycle commands still hand off to a real owned Terminal session", () => {
-    expect(screenSource).toContain("createOwnedSkillsTerminalSession");
-    expect(screenSource).toContain("skillsTerminalHandoff.issue");
-    expect(screenSource).toContain("buildSkillsMutationConfirmation");
-    expect(screenSource).toContain("buildPluginMutationConfirmation");
-    expect(screenSource).toContain('initialInterfaceRenderMode: "terminal"');
+  test("destructive actions confirm, then refresh inventory and show truthful state", () => {
+    expect(screenSource).toContain("confirmMutation(confirmation, destructive)");
+    expect(screenSource).toContain("void refreshInventory()");
+    expect(screenSource).toContain("void loadPlugins()");
+    expect(screenSource).toContain("mutationNotice");
+    expect(screenSource).toContain("kind: \"success\"");
+    expect(screenSource).toContain("kind: \"error\"");
+    expect(presentationSource).toContain("function MutationNoticeBanner");
   });
 
   test("unsupported ownership exposes inspection, not fake mutation callbacks", () => {
-    const pluginRow = presentationSource.match(
-      /function InstalledPluginItem\([\s\S]*?function DiscoverPluginsList\(/,
-    )?.[0];
-    const skillRow = presentationSource.match(
-      /function InstalledSkillItem\([\s\S]*?function DiscoverSkillsList\(/,
-    )?.[0];
-    expect(pluginRow).toBeDefined();
-    expect(pluginRow).toContain("ownership.manageable");
-    expect(pluginRow).toContain("information-circle-outline");
-    expect(pluginRow?.match(/<Pressable/g)).toHaveLength(1);
-    expect(pluginRow).toContain("ItemActionIndicator");
-    expect(pluginRow).not.toContain("ItemIconAction");
-    expect(pluginRow).not.toContain("onUpdatePlugin");
-    expect(pluginRow).not.toContain("onUninstallPlugin");
-    expect(skillRow).toBeDefined();
-    expect(skillRow).toContain("ownership.manageable");
-    expect(skillRow).toContain("information-circle-outline");
+    expect(presentationSource).toContain("installedSkillOwnership");
+    expect(presentationSource).toContain("installedPluginOwnership");
+    expect(surfaceModelSource).toContain("manageable: false");
+    expect(surfaceModelSource).toContain("Codex-hosted plugins do not expose a supported lifecycle adapter");
+    expect(surfaceModelSource).toContain("Discovered from client cache");
+  });
+
+  test("the Skills feature uses neutral icons, never sparkle imagery", () => {
+    expect(presentationSource).not.toContain("sparkles");
+    expect(presentationSource).not.toContain("Sparkles");
+    expect(presentationSource).toContain('icon: "library-outline"');
+    expect(presentationSource).toContain('icon: "extension-puzzle-outline"');
   });
 });
