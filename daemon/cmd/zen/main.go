@@ -89,6 +89,8 @@ func run(args []string, stderr io.Writer) error {
 			return runBrainCommand(args[1:], stderr)
 		case "calendar":
 			return runCalendarCommand(args[1:], stderr)
+		case "codex-gateway":
+			return runCodexGatewayCommand(args[1:], stderr)
 		case "devices":
 			return runDevicesCommand(args[1:], stderr)
 		}
@@ -264,6 +266,12 @@ func runDaemon(args []string, stderr io.Writer) error {
 		// Per-session Codex app-server control sockets (live native
 		// thread/settings/update for managed Codex sessions).
 		CodexControlDir: filepath.Join(authManager.StorageDir(), "codex-ctl"),
+		// Machine-level Codex gateway + config takeover: a stable loopback
+		// endpoint baked into the CLI's native config; Provider switching
+		// retargets the gateway without touching running Codex processes.
+		GatewayAddr:      modelprofiles.DefaultGatewayListenAddr,
+		GatewayStateDir:  filepath.Join(authManager.StorageDir(), "codex-gateway"),
+		CodexConfigPath:  modelprofiles.DefaultCodexConfigPath(),
 	})
 	if err != nil {
 		return fmt.Errorf("start model profiles owner: %w", err)
@@ -272,6 +280,15 @@ func runDaemon(args []string, stderr io.Writer) error {
 		log.Printf("route %s (session %s) restored with stale contract: %s; the restored binding remains authoritative until an explicit model switch", n.RouteID, n.SessionID, n.Reason)
 	}
 	defer func() { _ = profileOwner.Close() }()
+	if takeover := profileOwner.Takeover(); takeover != nil {
+		// New managed Codex launches use the canonical machine-level gateway
+		// route while takeover is enabled (the native config projection is the
+		// routing truth; Session ownership stays a terminal-control concern).
+		profileOwner.SetGatewayBypass(func() bool {
+			state, stateErr := takeover.LoadState()
+			return stateErr == nil && state.Enabled
+		})
+	}
 	controlHandler.profiles = profileOwner
 	brainService.SetSessionRouteLifecycle(profileOwner)
 
@@ -846,6 +863,38 @@ func runAgentList(args []string, stderr io.Writer) error {
 		return err
 	}
 	resp, err := callControl(cfg, control.Request{Type: "agent_list"})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+// runCodexGatewayCommand manages the machine-level Codex gateway takeover:
+// status | enable | disable | restore-backup.
+func runCodexGatewayCommand(args []string, stderr io.Writer) error {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "Usage: zen codex-gateway <status|enable|disable|restore-backup> [flags]")
+		return errors.New("codex-gateway subcommand is required")
+	}
+	cfg, err := parseCLIConfig("zen codex-gateway "+args[0], args[1:], stderr)
+	if err != nil {
+		return err
+	}
+	reqType := ""
+	switch args[0] {
+	case "status":
+		reqType = "codex_gateway_status"
+	case "enable":
+		reqType = "codex_gateway_enable"
+	case "disable":
+		reqType = "codex_gateway_disable"
+	case "restore-backup", "restore":
+		reqType = "codex_gateway_restore_backup"
+	default:
+		fmt.Fprintln(stderr, "Usage: zen codex-gateway <status|enable|disable|restore-backup> [flags]")
+		return fmt.Errorf("unknown codex-gateway subcommand %q", args[0])
+	}
+	resp, err := callControl(cfg, control.Request{Type: reqType})
 	if err != nil {
 		return err
 	}

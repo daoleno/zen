@@ -67,6 +67,15 @@ type OwnerConfig struct {
 	// TUI), exposing the native thread/settings/update mutation surface to
 	// the daemon. Empty keeps the legacy embedded-TUI launch.
 	CodexControlDir string
+	// GatewayAddr, when set, enables the machine-level Codex gateway on the
+	// stable loopback address baked into the takeover projection.
+	GatewayAddr string
+	// GatewayStateDir is the daemon-owned state dir for the gateway and the
+	// Codex config takeover (state + exact backups).
+	GatewayStateDir string
+	// CodexConfigPath is the CLI's native Codex config file for the takeover
+	// projection (CODEX_HOME-aware; empty disables takeover management).
+	CodexConfigPath string
 }
 
 // Owner is the production lifecycle owner for catalog + RouteTable + loopback Router.
@@ -81,6 +90,9 @@ type Owner struct {
 	store           *Store
 	table           *RouteTable
 	codexControlDir string
+	gateway         *Gateway
+	takeover        *Takeover
+	gatewayBypass   func() bool
 	// nativeMu guards the per-route native-settings monitor registry.
 	nativeMu       sync.Mutex
 	nativeMonitors map[string]*codexctl.Monitor
@@ -205,6 +217,15 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		verifier = BuiltinEnvelopeVerifier{}
 	}
 	codexControlDir := strings.TrimSpace(cfg.CodexControlDir)
+	if codexControlDir != "" {
+		// The live-control launch redirects the app-server output and pid to
+		// this directory before exec'ing the TUI client. Missing here means
+		// the app-server half never starts and the --remote TUI client dies;
+		// fail closed at startup instead of launching a broken pane.
+		if err := os.MkdirAll(codexControlDir, 0o700); err != nil {
+			return nil, fmt.Errorf("%w: create codex control dir: %v", ErrInvalid, err)
+		}
+	}
 
 	store, err := NewStore(profilesPath)
 	if err != nil {
@@ -266,6 +287,10 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		return nil, err
 	}
 	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
+	if err := o.startGateway(cfg); err != nil {
+		_ = o.Close()
+		return nil, err
+	}
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {
 			o.discoveryLoadWarning = fmt.Errorf("%w: %v", ErrDiscoveryCacheInvalid, err)
@@ -574,6 +599,12 @@ func (o *Owner) Close() error {
 	if o.ln != nil {
 		_ = o.ln.Close()
 	}
+	if o.router != nil {
+		o.router.CloseWebSocketConnections()
+	}
+	if o.gateway != nil {
+		_ = o.gateway.Close()
+	}
 	o.started = false
 	o.closeNativeMonitors()
 	return first
@@ -739,13 +770,17 @@ func (o *Owner) SetDefault(executorID, profileID string, expectedRevision int64)
 		return CatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
+		o.mu.Unlock()
 		return CatalogProjection{}, fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
 	}
 	_, err := o.store.SetDefault(executorID, profileID, expectedRevision)
+	o.mu.Unlock()
 	if err != nil && !errors.Is(err, ErrPersistDirSync) {
 		return CatalogProjection{}, err
+	}
+	if normalizeID(executorID) == ExecutorCodex || normalizeID(executorID) == "codex" {
+		o.refreshGatewayUpstream()
 	}
 	catalog, views := o.store.Projection()
 	return CatalogProjection{Catalog: catalog, Views: views}, err
@@ -880,6 +915,13 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 		executorID = inferExecutorFromCommand(baseCommand)
 	}
 	if shouldBypassProfiles(executorID, profileID, baseCommand) {
+		return SessionLaunchPlan{Bypass: true, Command: baseCommand}, nil
+	}
+	// Machine-level gateway takeover: new managed Codex launches use the
+	// canonical stable gateway through the CLI's native config projection
+	// instead of per-Session loopback injection. Provider routing no longer
+	// depends on Session creation through Zen or app-server control.
+	if normalizeID(executorID) == ExecutorCodex && o.gatewayBypass != nil && o.gatewayBypass() {
 		return SessionLaunchPlan{Bypass: true, Command: baseCommand}, nil
 	}
 	if !SupportsExecutor(executorID) {

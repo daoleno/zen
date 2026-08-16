@@ -60,6 +60,18 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "test_provider_connection":
 		s.handleTestProviderConnection(conn, raw)
 		return true
+	case "codex_gateway_status":
+		s.handleCodexGatewayStatus(conn, raw)
+		return true
+	case "codex_gateway_enable":
+		s.handleCodexGatewayEnable(conn, raw)
+		return true
+	case "codex_gateway_disable":
+		s.handleCodexGatewayDisable(conn, raw)
+		return true
+	case "codex_gateway_restore_backup":
+		s.handleCodexGatewayRestoreBackup(conn, raw)
+		return true
 	case "get_thread_runtime":
 		s.handleGetThreadRuntime(conn, raw)
 		return true
@@ -236,6 +248,68 @@ func (s *Server) handleDiscoverProviderModels(conn *websocket.Conn, raw clientMe
 		payload["discovery_warning"] = err.Error()
 	}
 	s.sendJSON(conn, payload)
+}
+
+
+// handleCodexGatewayStatus reports the machine-level Codex gateway takeover
+// state (active | inactive | drifted | broken) plus backup/restore info.
+func (s *Server) handleCodexGatewayStatus(conn *websocket.Conn, raw clientMessage) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	status := owner.GatewayStatus()
+	s.sendJSON(conn, map[string]any{
+		"type":         "codex_gateway_status",
+		"request_id":   raw.RequestID,
+		"ok":           true,
+		"codex_gateway": status,
+	})
+}
+
+// handleCodexGatewayEnable activates the machine-level takeover with an exact
+// config backup and an atomic projection to the stable gateway endpoint.
+func (s *Server) handleCodexGatewayEnable(conn *websocket.Conn, raw clientMessage) {
+	s.handleCodexGatewayMutation(conn, raw, "codex_gateway_enable")
+}
+
+// handleCodexGatewayDisable removes only the Zen-owned projection.
+func (s *Server) handleCodexGatewayDisable(conn *websocket.Conn, raw clientMessage) {
+	s.handleCodexGatewayMutation(conn, raw, "codex_gateway_disable")
+}
+
+// handleCodexGatewayRestoreBackup rolls the exact pre-takeover config back.
+func (s *Server) handleCodexGatewayRestoreBackup(conn *websocket.Conn, raw clientMessage) {
+	s.handleCodexGatewayMutation(conn, raw, "codex_gateway_restore_backup")
+}
+
+func (s *Server) handleCodexGatewayMutation(conn *websocket.Conn, raw clientMessage, responseType string) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	var status modelprofiles.TakeoverStatus
+	var err error
+	switch responseType {
+	case "codex_gateway_enable":
+		status, err = owner.EnableCodexGateway(modelprofiles.DefaultGatewayListenAddr)
+	case "codex_gateway_disable":
+		status, err = owner.DisableCodexGateway()
+	default:
+		status, err = owner.RestoreCodexGatewayBackup()
+	}
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.ControlErrorCode(err), err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":         responseType,
+		"request_id":   raw.RequestID,
+		"ok":           true,
+		"codex_gateway": status,
+	})
 }
 
 func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMessage) {

@@ -139,6 +139,14 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleProviderSetDefault(req)
 	case "provider_switch":
 		return a.handleProviderSwitch(req)
+	case "codex_gateway_status":
+		return a.handleCodexGatewayStatus()
+	case "codex_gateway_enable":
+		return a.handleCodexGatewayEnable()
+	case "codex_gateway_disable":
+		return a.handleCodexGatewayDisable()
+	case "codex_gateway_restore_backup":
+		return a.handleCodexGatewayRestoreBackup()
 	case "provider_set_models":
 		return a.handleProviderSetModels(req)
 	case "provider_discover":
@@ -1744,6 +1752,54 @@ func (a *controlApp) handleProviderSetDefault(req control.Request) control.Respo
 	}
 	proj, err := a.profiles.SetProviderDefault(executorID, connectionID, req.ModelID, req.Revision)
 	return a.providersMutationResponse(proj, err)
+}
+
+// handleCodexGatewayStatus reports the truthful machine-level Codex gateway
+// takeover state.
+func (a *controlApp) handleCodexGatewayStatus() control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	status := a.profiles.GatewayStatus()
+	return control.Response{OK: true, Gateway: &status}
+}
+
+// handleCodexGatewayEnable activates the machine-level takeover: exact backup
+// of the CLI config, atomic projection to the stable gateway endpoint, and the
+// gateway pointed at the currently selected Codex Provider.
+func (a *controlApp) handleCodexGatewayEnable() control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	status, err := a.profiles.EnableCodexGateway(modelprofiles.DefaultGatewayListenAddr)
+	if err != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	return control.Response{OK: true, Gateway: &status}
+}
+
+// handleCodexGatewayDisable removes only the Zen-owned projection.
+func (a *controlApp) handleCodexGatewayDisable() control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	status, err := a.profiles.DisableCodexGateway()
+	if err != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	return control.Response{OK: true, Gateway: &status}
+}
+
+// handleCodexGatewayRestoreBackup rolls the exact pre-takeover config back.
+func (a *controlApp) handleCodexGatewayRestoreBackup() control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+	}
+	status, err := a.profiles.RestoreCodexGatewayBackup()
+	if err != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	return control.Response{OK: true, Gateway: &status}
 }
 
 func (a *controlApp) handleProviderSwitch(req control.Request) control.Response {

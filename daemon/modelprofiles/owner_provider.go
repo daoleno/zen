@@ -735,6 +735,7 @@ func (o *Owner) SwitchProvider(clientOrExecutor, connectionID string, revision i
 	if !persist.Applied {
 		return ProviderCatalogProjection{}, err
 	}
+	o.refreshGatewayUpstream()
 	projection, projectionErr := o.ProjectProviders()
 	if projectionErr != nil {
 		return ProviderCatalogProjection{}, projectionErr
