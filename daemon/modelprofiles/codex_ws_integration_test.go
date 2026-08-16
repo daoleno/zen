@@ -1,10 +1,24 @@
-package modelprofiles_test
+package modelprofiles
+
+// Opt-in live proof: a real installed `codex` CLI streams over the transparent
+// Responses WebSocket proxy (machine-level Gateway and per-session Router) and
+// NEVER emits the "Falling back from WebSockets to HTTPS transport" warning.
+//
+// Run (from daemon module root):
+//
+//	ZEN_CODEX_WS_INTEGRATION=1 go test ./modelprofiles -run TestCodexWSUpstreamProxyLive -count=1 -timeout 120s
+//
+// Uses a temporary CODEX_HOME and a scripted 127.0.0.1 Responses WebSocket
+// upstream that speaks the protocol events (response.created, output_item,
+// output_text.delta/.done, response.completed). No real credentials, no user
+// config, no network beyond loopback. The upstream records whether any
+// non-WebSocket POST /v1/responses request arrived (it must not for the WS
+// session) and whether the WS handshake carried the injected provider auth.
 
 import (
 	"encoding/json"
-	"io"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,127 +27,254 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daoleno/zen/daemon/modelprofiles"
+	"github.com/gorilla/websocket"
 )
 
-// Opt-in Codex WebSocket→POST fallback probe against a local Zen-shaped route.
-//
-// Run (from daemon module root):
-//
-//	ZEN_CODEX_WS_INTEGRATION=1 go test ./modelprofiles -run TestCodexWSFallbackIntegration -count=1 -timeout 60s
-//
-// Requires an installed `codex` on PATH. Uses a temporary CODEX_HOME and the
-// fixed non-secret loopback placeholder — never real credentials, user config,
-// or network beyond 127.0.0.1. Observed on this workstation: codex-cli 0.146.1
-// receives Upgrade→501 then POSTs /v1/responses. Future Codex versions must
-// re-run this probe; do not treat the result as a permanent product guarantee.
-func TestCodexWSFallbackIntegration(t *testing.T) {
-	if os.Getenv("ZEN_CODEX_WS_INTEGRATION") == "" {
-		t.Skip("set ZEN_CODEX_WS_INTEGRATION=1 to run Codex WS fallback probe")
-	}
-	tmpRoot := t.TempDir()
-	codexHome := filepath.Join(tmpRoot, "codex-home")
-	if err := os.MkdirAll(codexHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
+// wsLiveUpstream is the scripted Responses WebSocket upstream for the live
+// proof: it reads the first frame, answers with a complete turn (created,
+// output_item.added, content_part.added, output_text.delta/done,
+// output_item.done, completed), then keeps reading until the CLI closes.
+type wsLiveUpstream struct {
+	mu         sync.Mutex
+	handshakes int
+	postHits   int // non-WebSocket /v1/responses requests (fallback must not happen)
+	path       string
+	frames     int
+	server     *httptest.Server
+	url        string
+}
 
+func newWSLiveUpstream(t *testing.T) *wsLiveUpstream {
+	t.Helper()
+	up := &wsLiveUpstream{}
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	up.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/responses") && !isWebSocketUpgrade(r) {
+			up.mu.Lock()
+			up.postHits++
+			up.mu.Unlock()
+			http.Error(w, "post not expected", http.StatusTeapot)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		up.mu.Lock()
+		up.handshakes++
+		up.path = r.URL.Path
+		up.mu.Unlock()
+		var requestID string
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			up.mu.Lock()
+			up.frames++
+			up.mu.Unlock()
+			var doc map[string]any
+			_ = json.Unmarshal(data, &doc)
+			if doc["type"] == "response.create" {
+				if v, ok := doc["model"].(string); ok {
+					requestID = v
+				}
+			}
+			respID := "resp-live-ws-1"
+			events := []map[string]any{
+				{"type": "response.created", "response": map[string]any{"id": respID}},
+				{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{
+					"id": "msg-1", "type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": "", "annotations": []any{}}},
+				}},
+				{"type": "response.content_part.added", "item_id": "msg-1", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+				{"type": "response.output_text.delta", "item_id": "msg-1", "output_index": 0, "content_index": 0, "delta": "ok"},
+				{"type": "response.output_text.done", "item_id": "msg-1", "output_index": 0, "content_index": 0, "text": "ok"},
+				{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{
+					"id": "msg-1", "type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": "ok", "annotations": []any{}}},
+				}},
+				{"type": "response.completed", "response": map[string]any{
+					"id":     respID,
+					"status": "completed",
+					"usage":  map[string]any{"input_tokens": 1, "input_tokens_details": nil, "output_tokens": 1, "output_tokens_details": nil, "total_tokens": 2},
+				}},
+			}
+			for _, ev := range events {
+				raw, _ := json.Marshal(ev)
+				if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
+					return
+				}
+			}
+			_ = requestID
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(up.server.Close)
+	up.url = "ws" + strings.TrimPrefix(up.server.URL, "http")
+	return up
+}
+
+func TestCodexWSUpstreamProxyLive(t *testing.T) {
+	if os.Getenv("ZEN_CODEX_WS_INTEGRATION") == "" {
+		t.Skip("set ZEN_CODEX_WS_INTEGRATION=1 to run the Codex WebSocket live proof")
+	}
 	codexPath, err := exec.LookPath("codex")
 	if err != nil {
 		t.Fatalf("codex not on PATH: %v", err)
 	}
-	verCmd := exec.Command(codexPath, "--version")
-	verCmd.Env = append(scrubEnv(os.Environ(), "CODEX_HOME"), "CODEX_HOME="+codexHome, "HOME="+tmpRoot)
-	verOut, err := verCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("codex --version: %v (%s)", err, verOut)
-	}
-	version := strings.TrimSpace(string(verOut))
+	version := strings.TrimSpace(runCodex(t, codexPath, []string{"--version"}, nil, ""))
 	t.Logf("codex --version => %s", version)
-
-	var mu sync.Mutex
-	events := []map[string]any{}
-	add := func(ev map[string]any) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, ev)
+	if !strings.Contains(version, "codex-cli") {
+		t.Fatalf("unexpected codex version output: %q", version)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		up := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
-		add(map[string]any{
-			"method": r.Method, "path": r.URL.Path, "upgrade": up,
-			"connection": r.Header.Get("Connection"), "body_len": len(body),
-		})
-		if up {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotImplemented)
-			_, _ = w.Write([]byte(`{"error":{"type":"route_websocket_rejected","message":"request failed"}}`))
-			return
+	t.Run("gateway", func(t *testing.T) {
+		upstream := newWSLiveUpstream(t)
+		g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore())
+		if err := g.Listen(); err != nil {
+			t.Fatal(err)
 		}
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/responses") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"resp_fake","object":"response","status":"completed","output":[]}`))
-			return
+		t.Cleanup(func() { _ = g.Close() })
+		g.SetUpstream(gatewayUpstreamFor(upstream.server.URL))
+
+		home := t.TempDir()
+		codexHome := filepath.Join(home, "codex-home")
+		if err := os.MkdirAll(codexHome, 0o700); err != nil {
+			t.Fatal(err)
 		}
-		http.NotFound(w, r)
+		config := "model_provider = \"zen-gateway\"\nmodel = \"gpt-4o\"\n" +
+			"[model_providers.zen-gateway]\n" +
+			"name = \"zen-gateway\"\n" +
+			"base_url = \"http://" + g.ActualAddr() + "/v1\"\n" +
+			"wire_api = \"responses\"\n" +
+			"requires_openai_auth = false\n" +
+			"supports_websockets = true\n"
+		if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		out := runCodex(t, codexPath,
+			[]string{"exec", "--skip-git-repo-check",
+				"--dangerously-bypass-approvals-and-sandbox",
+				"-c", `model_provider="zen-gateway"`,
+				"-c", `model="gpt-4o"`,
+				"reply with the single word ok"},
+			append(scrubEnv(os.Environ(), "CODEX_HOME"), "CODEX_HOME="+codexHome, "HOME="+home),
+			home,
+		)
+		if strings.Contains(out, "Falling back from WebSockets") {
+			t.Fatalf("codex warned about WebSocket fallback:\n%s", trimTail(out, 1600))
+		}
+		if !strings.Contains(out, "ok") {
+			t.Fatalf("codex did not print the streamed reply, tail=%q", trimTail(out, 600))
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			upstream.mu.Lock()
+			h, p, f := upstream.handshakes, upstream.path, upstream.frames
+			upstream.mu.Unlock()
+			if h >= 1 && p == "/v1/responses" && f >= 1 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		upstream.mu.Lock()
+		h, p, f, posts := upstream.handshakes, upstream.path, upstream.frames, upstream.postHits
+		upstream.mu.Unlock()
+		if h < 1 {
+			t.Fatalf("gateway live: no WebSocket handshake reached the upstream")
+		}
+		if p != "/v1/responses" {
+			t.Fatalf("gateway live: upstream path = %q", p)
+		}
+		if f < 1 {
+			t.Fatalf("gateway live: no request frame reached the upstream")
+		}
+		if posts != 0 {
+			t.Fatalf("gateway live: codex fell back to HTTPS POST (%d hits)", posts)
+		}
 	})
-	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
 
-	base := "http://" + ln.Addr().String() + "/v1"
-	cmd := exec.Command(codexPath, "exec", "--skip-git-repo-check",
-		"-c", `model_provider="openai"`,
-		"-c", `openai_base_url="`+base+`"`,
-		"-c", `model="gpt-4o"`,
-		"--dangerously-bypass-approvals-and-sandbox",
-		"reply with the single word ok",
-	)
-	cmd.Env = append(scrubEnv(os.Environ(), "CODEX_HOME", "OPENAI_API_KEY"),
-		"CODEX_HOME="+codexHome,
-		"OPENAI_API_KEY="+modelprofiles.LoopbackAuthPlaceholder,
-		"HOME="+tmpRoot,
-	)
-	cmd.Dir = tmpRoot
+	t.Run("router", func(t *testing.T) {
+		upstream := newWSLiveUpstream(t)
+		table := NewRouteTable()
+		profile := routedCodex(upstream.server.URL, "gpt-4o", "gpt-4o")
+		state, err := table.BindLaunch("live-ws-router", profile, 1, verifiedAuth(profile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		router := NewRouter(table)
+		srv := httptest.NewServer(router.Handler())
+		defer srv.Close()
+		base, _ := LoopbackCodexBaseURL(srv.Listener.Addr().String(), state.Binding.RouteID)
+
+		home := t.TempDir()
+		codexHome := filepath.Join(home, "codex-home")
+		if err := os.MkdirAll(codexHome, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		out := runCodex(t, codexPath,
+			[]string{"exec", "--skip-git-repo-check",
+				"--dangerously-bypass-approvals-and-sandbox",
+				"-c", `model_provider="openai"`,
+				"-c", "openai_base_url=" + tomlString(base),
+				"-c", `model="gpt-4o"`,
+				"reply with the single word ok"},
+			append(scrubEnv(os.Environ(), "CODEX_HOME", "OPENAI_API_KEY"),
+				"CODEX_HOME="+codexHome,
+				"OPENAI_API_KEY="+LoopbackAuthPlaceholder,
+				"HOME="+home,
+			),
+			home,
+		)
+		if strings.Contains(out, "Falling back from WebSockets") {
+			t.Fatalf("codex warned about WebSocket fallback:\n%s", trimTail(out, 1600))
+		}
+		if !strings.Contains(out, "ok") {
+			t.Fatalf("codex did not print the streamed reply, tail=%q", trimTail(out, 600))
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			upstream.mu.Lock()
+			h, f := upstream.handshakes, upstream.frames
+			upstream.mu.Unlock()
+			if h >= 1 && f >= 1 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		upstream.mu.Lock()
+		h, f, posts := upstream.handshakes, upstream.frames, upstream.postHits
+		upstream.mu.Unlock()
+		if h < 1 {
+			t.Fatalf("router live: no WebSocket handshake reached the upstream")
+		}
+		if f < 1 {
+			t.Fatalf("router live: no request frame reached the upstream")
+		}
+		if posts != 0 {
+			t.Fatalf("router live: codex fell back to HTTPS POST (%d hits)", posts)
+		}
+	})
+}
+
+// runCodex executes the installed codex CLI with the given env/dir; combined
+// output is returned and a fatal error is raised on non-zero exit.
+func runCodex(t *testing.T, codexPath string, args []string, env []string, dir string) string {
+	t.Helper()
+	cmd := exec.Command(codexPath, args...)
+	if env != nil {
+		cmd.Env = env
+	}
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	out, err := cmd.CombinedOutput()
-	t.Logf("codex exit=%v output_tail=%q", err, trimTail(string(out), 800))
-
-	deadline := time.Now().Add(2 * time.Second)
-	var sawWS501, sawPOST bool
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		for _, ev := range events {
-			if ev["upgrade"] == true && ev["method"] == "GET" {
-				sawWS501 = true
-			}
-			if ev["upgrade"] == false && ev["method"] == "POST" && strings.HasSuffix(ev["path"].(string), "/responses") {
-				if n, _ := ev["body_len"].(int); n > 0 {
-					sawPOST = true
-				}
-			}
-		}
-		snapshot, _ := json.Marshal(events)
-		mu.Unlock()
-		if sawWS501 && sawPOST {
-			t.Logf("events=%s", snapshot)
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("codex %v failed: %v\n%s", args, err, trimTail(string(out), 1600))
 	}
-	if !sawWS501 {
-		t.Fatalf("expected WebSocket Upgrade hit (501 path); version=%s events=%v", version, events)
-	}
-	if !sawPOST {
-		t.Fatalf("expected POST /v1/responses after WS reject; version=%s events=%v", version, events)
-	}
+	return string(out)
 }
 
 func trimTail(s string, n int) string {

@@ -159,13 +159,16 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 	}
 }
 
-func TestRouterRejectsWebSocketUpgrade(t *testing.T) {
+func TestRouterRejectsWebSocketUpgradeForClaudeRoute(t *testing.T) {
+	// A route whose protocol never uses Responses-over-WebSocket keeps the
+	// honest 501 marker and the upstream is never contacted. The Responses
+	// route WebSocket path is proxied transparently (wsproxy_test.go).
 	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("upstream must not be contacted for websocket")
+		t.Error("upstream must not be contacted for unsupported websocket")
 	})
 	defer upstream.Close()
 	table := NewRouteTable()
-	profile := routedCodex(upstream.URL, "gpt-5.6-sol", "gpt-5.6-sol")
+	profile := routedClaude(upstream.URL, "claude-sonnet-4-6", "claude-sonnet-4-6")
 	state, err := table.BindLaunch("s", profile, 1, verifiedAuth(profile))
 	if err != nil {
 		t.Fatal(err)
@@ -173,8 +176,8 @@ func TestRouterRejectsWebSocketUpgrade(t *testing.T) {
 	router := NewRouter(table)
 	srv := httptest.NewServer(router.Handler())
 	defer srv.Close()
-	base, _ := LoopbackCodexBaseURL(srv.Listener.Addr().String(), state.Binding.RouteID)
-	req, _ := http.NewRequest(http.MethodPost, base+"/responses", bytes.NewReader([]byte(`{"model":"x"}`)))
+	base, _ := LoopbackClaudeRootURL(srv.Listener.Addr().String(), state.Binding.RouteID)
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/messages", bytes.NewReader([]byte(`{"model":"x"}`)))
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	resp, err := http.DefaultClient.Do(req)

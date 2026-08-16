@@ -33,6 +33,9 @@ type Router struct {
 	// for a route (persistent app-server subscription snapshot). Nil disables
 	// fragment-less native convergence.
 	nativeSettings func(routeID string) (codexctl.NativeSettings, bool)
+	// ws tracks hijacked Responses WebSocket connections so shutdown tears
+	// them down deterministically.
+	ws *wsConnRegistry
 }
 
 // RouterOption configures Router construction.
@@ -104,11 +107,23 @@ func NewRouter(table *RouteTable, opts ...RouterOption) *Router {
 		table:   table,
 		client:  NewSafeHTTPClient(5 * time.Minute),
 		maxBody: MaxRouteRequestBodyBytes,
+		ws:      newWSConnRegistry(),
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
 	return r
+}
+
+// CloseWebSocketConnections drops every hijacked Responses WebSocket
+// connection. Called by Owner.Close after the HTTP server shutdown so no
+// long-lived socket survives the daemon process teardown; hijacked
+// connections are not covered by http.Server.Shutdown.
+func (r *Router) CloseWebSocketConnections() {
+	if r == nil || r.ws == nil {
+		return
+	}
+	r.ws.closeAll(websocketCloseGoingAway, "zen daemon shutting down")
 }
 
 func (r *Router) credentialLookup() func(string) (string, bool) {
@@ -137,16 +152,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Reject WebSocket Upgrade with 501 so Codex can fall back to POST /v1/responses
-	// when the installed CLI probe confirms that behavior.
-	if isWebSocketUpgrade(req) {
-		writeRouteError(w, http.StatusNotImplemented, ErrRouteWebSocket)
-		return
-	}
-
 	parsed, err := ParseRouteRequestPath(req.URL.Path)
 	if err != nil {
 		writeRouteError(w, http.StatusNotFound, ErrRoutePathMismatch)
+		return
+	}
+	if isWebSocketUpgrade(req) {
+		r.serveRouteWebSocket(w, req, parsed)
 		return
 	}
 
@@ -394,6 +406,68 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
+}
+
+// serveRouteWebSocket transparently proxies a Codex Responses-over-WebSocket
+// Upgrade for an admitted per-session route. The route binding elects the
+// upstream; frames pass byte-for-byte in both directions (no model/effort
+// rewrite — the same transparency contract as the machine-level Gateway, and
+// the Codex client uses exactly one transport per process). The upstream must
+// reach 101 before the client handshake completes; any other outcome is an
+// honest HTTP error so Codex falls back to HTTPS POST through the same route.
+// GET /v1/models is local-only and never upgraded.
+func (r *Router) serveRouteWebSocket(w http.ResponseWriter, req *http.Request, parsed ParsedRouteRequest) {
+	if r == nil || r.table == nil {
+		writeRouteError(w, http.StatusServiceUnavailable, ErrRouteNotFound)
+		return
+	}
+	if parsed.Endpoint != EndpointResponses {
+		// No client speaks WebSocket for other endpoints; keep the honest 501
+		// marker instead of silently accepting an unsupported upgrade.
+		writeRouteError(w, http.StatusNotImplemented, ErrRouteWebSocket)
+		return
+	}
+	binding, flightToken, err := r.table.BeginRouteFlight(parsed.RouteID)
+	if err != nil {
+		writeRouteError(w, http.StatusNotFound, ErrRouteNotFound)
+		return
+	}
+	if !EndpointAllowedForProtocol(binding.RouteProtocol, parsed.Endpoint) {
+		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
+		writeRouteError(w, http.StatusBadRequest, ErrRouteProtocolMismatch)
+		return
+	}
+
+	upstreamURL, err := UpstreamRequestURL(binding.UpstreamBaseURL, parsed.APIPath)
+	if err != nil {
+		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
+		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
+		return
+	}
+	upstreamURL, err = withRawQuery(upstreamURL, req.URL.RawQuery)
+	if err != nil {
+		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
+		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
+		return
+	}
+	wsURL, err := wsUpstreamURL(upstreamURL)
+	if err != nil {
+		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
+		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
+		return
+	}
+	headers := buildWebSocketUpstreamHeaders(req.Header)
+	if err := applyUpstreamAuth(headers, binding, captureInboundAuth(req.Header), r.credentialLookup(), r.creds); err != nil {
+		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
+		writeRouteError(w, http.StatusBadGateway, ErrCredentialNotReady)
+		return
+	}
+
+	// The flight lease spans the WebSocket session (the equivalent of the
+	// per-request POST lease): a successful upstream session marks opaque
+	// history on release, every failure releases without marking.
+	proxyWebSocketToUpstream(req.Context(), w, req, wsURL, headers, r.ws)
+	_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, true)
 }
 
 // serveLocalModels answers GET /v1/models with the synced model catalog of

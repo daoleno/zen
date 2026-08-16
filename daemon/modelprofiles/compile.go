@@ -111,9 +111,12 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 		if path := normalizeSpace(modelCatalogPath); path != "" {
 			tuiCommand = appendConfig(tuiCommand, fmt.Sprintf("model_catalog_json=%s", tomlString(path)))
 		}
-		// Do not emit no-op --disable flags. Router rejects WebSocket Upgrade with
-		// 501; installed Codex falls back to POST /v1/responses (see package report).
-		wsNote = "codex_ws_reject_501_then_post_responses_fallback_observed"
+		// Do not emit no-op --disable flags: Responses-over-WebSocket is proxied
+		// transparently (router + machine gateway complete the upgrade against
+		// the selected Provider connection), so installed Codex streams over WS
+		// when the upstream supports it and honestly falls back to POST
+		// /v1/responses otherwise (see package wsproxy tests).
+		wsNote = "codex_ws_upstream_proxy_installed"
 		env = map[string]string{}
 		if normalizeID(profile.AuthMode) != AuthModeNativePassthrough {
 			env[EnvOpenAIAPIKey] = LoopbackAuthPlaceholder
