@@ -4527,7 +4527,19 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 		for _, previous := range providerLineage {
 			if !processDescendsFrom(previous.pid, process.pid, processes) &&
 				!processDescendsFrom(process.pid, previous.pid, processes) {
-				return foregroundTargetAuthority{}, false
+				// Live-control Codex launches legitimately place two sibling
+				// subtrees in the pane's foreground process group: the headless
+				// app-server support process and the interactive --remote TUI
+				// client (each half may itself be a node wrapper plus its
+				// native descendant, and the app-server half is forked by the
+				// pane shell before it execs the TUI). Only that
+				// support/client sibling combination is determinate; every
+				// other sibling provider combination is indeterminate and
+				// fails closed.
+				if family != "codex" ||
+					isCodexAppServerProcess(previous.args) == isCodexAppServerProcess(process.args) {
+					return foregroundTargetAuthority{}, false
+				}
 			}
 		}
 		providerLineage = append(providerLineage, process)
@@ -4556,6 +4568,25 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 	if providerFamily != "" {
 		if bestTied || bestCommand == "" || bestProcess.pid <= 0 {
 			return foregroundTargetAuthority{}, false
+		}
+		if providerFamily == "codex" {
+			// A headless Codex app-server support process is never the
+			// interactive pane identity: without a provable TUI client the pane
+			// is not a sendable agent surface. This also covers the brief launch
+			// window in which the native app-server half out-scores the node
+			// wrapper TUI before the native TUI descendant exists.
+			if isCodexAppServerProcess(bestProcess.args) {
+				return foregroundTargetAuthority{}, false
+			}
+			// The installed Codex CLI is a node launcher whose native binary is
+			// the interactive process (node rewrites its comm, e.g. "MainThread").
+			// While the best candidate is still the launcher, the pane identity
+			// is converging: fail closed so the ready-wait keeps polling instead
+			// of freezing on an identity that the mutation-boundary re-proof
+			// cannot reproduce once the native descendant exists.
+			if normalizeCommand(bestProcess.comm) != "codex" {
+				return foregroundTargetAuthority{}, false
+			}
 		}
 		if resumeCommand != "" && agentProviderFamily(bestCommand) == providerFamily {
 			bestCommand = resumeCommand

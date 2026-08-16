@@ -2,6 +2,7 @@ package modelprofiles
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -142,6 +143,12 @@ func TestPrepareLaunchAllocatesControlSocketOnlyWithControlDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Close() })
+	// The live-control launch redirects the app-server log and pid file into
+	// this directory before exec'ing the TUI client; a missing directory
+	// silently kills the app-server half and the --remote TUI dies with it.
+	if info, statErr := os.Stat(filepath.Join(root, "codex-ctl")); statErr != nil || !info.IsDir() {
+		t.Fatalf("codex control dir was not created by StartOwner: %v", statErr)
+	}
 	profile := codexResponsesProfile("gw", "gpt-5", "gpt-5")
 	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
 		t.Fatal(err)

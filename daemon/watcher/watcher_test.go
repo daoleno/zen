@@ -1369,6 +1369,10 @@ func TestForegroundCodexAuthorityRejectsHigherScoringBackgroundProvider(t *testi
 
 func TestForegroundCodexWrapperAuthorityRejectsBackgroundNativeClaude(t *testing.T) {
 	started := time.Date(2026, 8, 3, 12, 30, 0, 0, time.UTC)
+	// Real installed-Codex shape: the foreground node wrapper (pid 20) always
+	// spawns its native binary descendant (pid 21), which is the interactive
+	// authority; a background Claude in a different process group must never
+	// influence the result.
 	processes := map[int]processInfo{
 		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
 		20: {
@@ -1380,13 +1384,22 @@ func TestForegroundCodexWrapperAuthorityRejectsBackgroundNativeClaude(t *testing
 			comm:      "node",
 			args:      "node /home/user/.local/bin/codex --no-alt-screen",
 		},
-		30: {pid: 30, ppid: 10, pgid: 30, tpgid: 20, startedAt: started.Add(2 * time.Second), comm: "claude", args: "claude --dangerously-skip-permissions"},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "--no-alt-screen",
+		},
+		30: {pid: 30, ppid: 10, pgid: 30, tpgid: 20, startedAt: started.Add(3 * time.Second), comm: "claude", args: "claude --dangerously-skip-permissions"},
 	}
 
 	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
-	if !ok || command != "codex" || pid != 20 || !processStarted.Equal(processes[20].startedAt) {
+	if !ok || command != "codex" || pid != 21 || !processStarted.Equal(processes[21].startedAt) {
 		t.Fatalf(
-			"foreground wrapper authority = (%q, %s, %d, %t), want actual foreground Codex wrapper pid 20",
+			"foreground wrapper authority = (%q, %s, %d, %t), want the native Codex descendant pid 21",
 			command,
 			processStarted,
 			pid,
@@ -1575,6 +1588,217 @@ func TestForegroundProviderAuthorityPicksCodexTUIClientOverAppServer(t *testing.
 			pid,
 			ok,
 		)
+	}
+}
+
+func TestForegroundProviderAuthorityResolvesLiveControlNodeWrapperSiblingSubtrees(t *testing.T) {
+	started := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	// Real installed-Codex shape (npm @openai/codex 0.147): the pane shell
+	// backgrounds `codex app-server --listen …` with job control disabled
+	// (same process group), then execs the node-wrapper TUI client. The node
+	// wrapper (comm=node, argv carries the wrapper path) spawns its native
+	// binary descendant (comm=codex) for each half, so the foreground group
+	// contains TWO sibling codex subtrees. The native --remote TUI client
+	// must win the authority deterministically.
+	codexBin := "/home/daoleno/.local/share/mise/installs/node/24.18.0/bin/codex"
+	socket := "unix:///home/daoleno/.zen/codex-ctl/codex-ctl-abc.sock"
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "node",
+			args:      "node " + codexBin + " --remote " + socket + " --model gpt-5.6-sol --config 'model_provider=\"openai\"'",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "--remote " + socket + " --model gpt-5.6-sol --config 'model_provider=\"openai\"'",
+		},
+		22: {
+			pid:       22,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(3 * time.Second),
+			comm:      "node",
+			args:      "node " + codexBin + " app-server --listen " + socket + " --config 'model=\"gpt-5.6-sol\"'",
+		},
+		23: {
+			pid:       23,
+			ppid:      22,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(4 * time.Second),
+			comm:      "codex",
+			args:      "app-server --listen " + socket + " --config 'model=\"gpt-5.6-sol\"'",
+		},
+	}
+	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
+	if !ok || command != "codex" || pid != 21 || !processStarted.Equal(processes[21].startedAt) {
+		t.Fatalf(
+			"node-wrapper live-control foreground authority = (%q, %s, %d, %t), want the native --remote TUI client pid 21",
+			command,
+			processStarted,
+			pid,
+			ok,
+		)
+	}
+}
+
+func TestForegroundProviderAuthorityRejectsAppServerOnlyPane(t *testing.T) {
+	started := time.Date(2026, 8, 16, 18, 5, 0, 0, time.UTC)
+	// A pane whose only provider processes are headless app-server halves is
+	// not an interactive agent surface and must fail closed even though a
+	// unique best score exists.
+	socket := "unix:///home/daoleno/.zen/codex-ctl/codex-ctl-abc.sock"
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "codex",
+			args:      "codex app-server --listen " + socket,
+		},
+	}
+	if authority, ok := resolveForegroundTargetProcess(10, processes); ok {
+		t.Fatalf("app-server-only pane authorized target: %#v", authority)
+	}
+}
+
+func TestForegroundProviderAuthorityRejectsMultipleAppServerSiblingSubtrees(t *testing.T) {
+	started := time.Date(2026, 8, 16, 18, 6, 0, 0, time.UTC)
+	// Two independent app-server support subtrees (siblings) are ambiguous
+	// even next to one TUI client: the support/client sibling allowance only
+	// covers exactly one support subtree.
+	socket := "unix:///home/daoleno/.zen/codex-ctl/codex-ctl-abc.sock"
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "codex",
+			args:      "codex --remote " + socket + " --model gpt-5",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "codex app-server --listen " + socket + "1",
+		},
+		22: {
+			pid:       22,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(3 * time.Second),
+			comm:      "codex",
+			args:      "codex app-server --listen " + socket + "2",
+		},
+	}
+	if authority, ok := resolveForegroundTargetProcess(10, processes); ok {
+		t.Fatalf("two sibling app-server subtrees authorized target: %#v", authority)
+	}
+}
+
+func TestStartupIdentityTransitionConvergesOnNativeCodexTUI(t *testing.T) {
+	started := time.Date(2026, 8, 16, 19, 0, 0, 0, time.UTC)
+	// Real installed-Codex startup phases in one pane process group (pane 10):
+	//   A: launch shell + app-server node wrapper only
+	//   B: shell exec'd the TUI node wrapper; app-server wrapper is its sibling
+	//   C: native app-server descendant out-scores the TUI wrapper
+	//   D: native --remote TUI descendant exists and wins (complete tree)
+	// The ready-wait must keep polling through A/B/C and converge on the
+	// native TUI client, so the frozen identity equals the mutation-boundary
+	// re-proof identity.
+	codexBin := "/home/daoleno/.local/share/mise/installs/node/24.18.0/bin/codex"
+	socket := "unix:///home/daoleno/.zen/codex-ctl/codex-ctl-abc.sock"
+	const pane = 10
+	mk := func(pid, ppid int, comm, args string, at time.Time) processInfo {
+		return processInfo{
+			pid: pid, ppid: ppid, pgid: pane, tpgid: pane,
+			startedAt: at, comm: comm, args: args,
+		}
+	}
+	shell := mk(pane, 1, "zsh", "zsh", started)
+	tuiWrapper := mk(pane, 1, "MainThread", "node "+codexBin+" --remote "+socket+" --model gpt-5.6-sol", started.Add(time.Second))
+	appServerWrapper := mk(21, pane, "MainThread", "node "+codexBin+" app-server --listen "+socket+" --config 'model=\"gpt-5.6-sol\"'", started.Add(2*time.Second))
+	nativeServer := mk(22, 21, "codex", "app-server --listen "+socket, started.Add(3*time.Second))
+	nativeTUI := mk(23, pane, "codex", "--remote "+socket+" --model gpt-5.6-sol", started.Add(4*time.Second))
+
+	phaseA := map[int]processInfo{shell.pid: shell, appServerWrapper.pid: appServerWrapper}
+	phaseB := map[int]processInfo{tuiWrapper.pid: tuiWrapper, appServerWrapper.pid: appServerWrapper}
+	phaseC := map[int]processInfo{tuiWrapper.pid: tuiWrapper, appServerWrapper.pid: appServerWrapper, nativeServer.pid: nativeServer}
+	phaseD := map[int]processInfo{tuiWrapper.pid: tuiWrapper, appServerWrapper.pid: appServerWrapper, nativeServer.pid: nativeServer, nativeTUI.pid: nativeTUI}
+
+	// Phase B repeats: without the launcher-convergence rule the wait freezes
+	// on the TUI node wrapper after two stable polls and the re-proof then
+	// diverges. The scripted table advances one phase per resolver call.
+	steps := []map[int]processInfo{phaseA, phaseB, phaseB, phaseC, phaseC, phaseD, phaseD}
+	index := 0
+	processes := func() map[int]processInfo {
+		table := steps[index]
+		if index < len(steps)-1 {
+			index++
+		}
+		return table
+	}
+	resolver := func(target string) (targetProcessIdentity, bool) {
+		table := processes()
+		paneProcess, ok := table[pane]
+		if !ok || paneProcess.startedAt.IsZero() {
+			return targetProcessIdentity{}, false
+		}
+		authority, ok := resolveForegroundTargetProcess(pane, table)
+		if !ok {
+			return targetProcessIdentity{}, false
+		}
+		return targetProcessIdentity{
+			Command:         strings.TrimSpace(authority.command),
+			PanePID:         pane,
+			PaneStart:       paneProcess.startedAt.UnixNano(),
+			ForegroundID:    authority.foreground.pid,
+			ForegroundStart: authority.foreground.startedAt.UnixNano(),
+			ProcessID:       authority.provider.pid,
+			ProcessStart:    authority.provider.startedAt.UnixNano(),
+		}, true
+	}
+
+	identity, known := resolveTargetIdentityWhenReadyTimeout(
+		resolver,
+		"codex:@1",
+		"set +m; codex app-server --listen unix:///x & echo $! > /x.pid; exec codex --remote unix:///x",
+		5*time.Second,
+	)
+	if !known {
+		t.Fatalf("startup identity did not converge through launcher/app-server transitions")
+	}
+	if identity.ProcessID != nativeTUI.pid {
+		t.Fatalf("frozen identity provider pid = %d, want native TUI pid %d", identity.ProcessID, nativeTUI.pid)
+	}
+	if identity.Command != "codex" {
+		t.Fatalf("frozen identity command = %q, want codex", identity.Command)
+	}
+	// The mutation-boundary re-proof must reproduce the frozen identity
+	// exactly; otherwise the first send is rejected before submission.
+	if err := guardTargetIdentity(resolver, "codex:@1", identity); err != nil {
+		t.Fatalf("mutation-boundary re-proof diverged from frozen identity: %v", err)
 	}
 }
 
