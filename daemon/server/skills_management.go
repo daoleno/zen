@@ -348,6 +348,28 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 	go func() {
 		request := skillsMutationWireRequest(raw)
 		command, err := skillmgmt.BuildMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request)
+		// The mutation stays registered (owned, cancelable) through the whole
+		// build + execute lifetime: a newer mutation or a disconnect cancels
+		// ctx and replaces/deletes the slot, which both stops the command and
+		// suppresses this goroutine's outcome. Only the still-current request
+		// may proceed to execution.
+		if err == nil && !s.isCurrentSkillsMutation(conn, next) {
+			return
+		}
+		var execution skillmgmt.MutationExecution
+		var execErr error
+		if err == nil {
+			execute := skillmgmt.ExecuteMutationCommand
+			if s.skillsMutationExecuteOverride != nil {
+				execute = s.skillsMutationExecuteOverride
+			}
+			execution, execErr = execute(ctx, command, skillmgmt.MutationExecutionOptions{
+				CWD: request.CWD,
+			})
+		}
+		// Atomically consume the slot with the emission: a superseded or
+		// disconnected request can never claim, so its stale result is
+		// suppressed even if the command finished just before the replacement.
 		if !s.claimSkillsMutation(conn, next) {
 			return
 		}
@@ -363,14 +385,11 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 			})
 			return
 		}
-		execution, execErr := skillmgmt.ExecuteMutationCommand(ctx, command, skillmgmt.MutationExecutionOptions{
-			CWD: request.CWD,
-		})
 		if execErr != nil {
-			code := "execution_failed"
 			if errors.Is(execErr, skillmgmt.ErrMutationCancelled) {
 				return
 			}
+			code := "execution_failed"
 			if errors.Is(execErr, skillmgmt.ErrMutationTimedOut) {
 				code = "timeout"
 			}
@@ -414,6 +433,17 @@ func (s *Server) claimSkillsMutation(conn *websocket.Conn, expected skillsMutati
 	}
 	delete(s.skillsMutations, conn)
 	return true
+}
+
+// isCurrentSkillsMutation reports whether the request still owns the mutation
+// slot WITHOUT consuming it. Used to skip execution when a request was
+// superseded during command building; the slot itself is consumed atomically
+// with the terminal emission via claimSkillsMutation.
+func (s *Server) isCurrentSkillsMutation(conn *websocket.Conn, expected skillsMutationRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.skillsMutations[conn]
+	return ok && current.requestID == expected.requestID
 }
 
 func (s *Server) sendSkillsError(conn *websocket.Conn, responseType string, raw clientMessage, code, message string) {

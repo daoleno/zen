@@ -164,6 +164,25 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 			Scope:     raw.Scope,
 		}
 		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request, s.pluginCatalogCLI)
+		// Ownership stays registered (cancelable) through build + execute, so
+		// a newer mutation or a disconnect cancels the in-flight command and
+		// suppresses this goroutine's outcome. Only the still-current request
+		// proceeds to execution.
+		if err == nil && !s.isCurrentPluginsMutation(conn, next) {
+			return
+		}
+		var execution skillmgmt.MutationExecution
+		var execErr error
+		if err == nil {
+			execute := skillmgmt.ExecutePluginMutationCommand
+			if s.pluginMutationExecuteOverride != nil {
+				execute = s.pluginMutationExecuteOverride
+			}
+			execution, execErr = execute(ctx, command, skillmgmt.MutationExecutionOptions{})
+		}
+		// Atomically consume the slot with the emission: a superseded or
+		// disconnected request can never claim, so its stale result is
+		// suppressed even if the command finished just before the replacement.
 		if !s.claimPluginsMutation(conn, next) {
 			return
 		}
@@ -179,12 +198,11 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 			})
 			return
 		}
-		execution, execErr := skillmgmt.ExecutePluginMutationCommand(ctx, command, skillmgmt.MutationExecutionOptions{})
 		if execErr != nil {
-			code := "execution_failed"
 			if errors.Is(execErr, skillmgmt.ErrMutationCancelled) {
 				return
 			}
+			code := "execution_failed"
 			if errors.Is(execErr, skillmgmt.ErrMutationTimedOut) {
 				code = "timeout"
 			}
@@ -228,6 +246,15 @@ func (s *Server) claimPluginsMutation(conn *websocket.Conn, expected pluginsMuta
 	}
 	delete(s.pluginsMutations, conn)
 	return true
+}
+
+// isCurrentPluginsMutation reports whether the request still owns the plugin
+// mutation slot WITHOUT consuming it. See isCurrentSkillsMutation.
+func (s *Server) isCurrentPluginsMutation(conn *websocket.Conn, expected pluginsMutationRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.pluginsMutations[conn]
+	return ok && current.requestID == expected.requestID
 }
 
 func (s *Server) sendPluginsError(conn *websocket.Conn, responseType string, raw clientMessage, code, message string) {

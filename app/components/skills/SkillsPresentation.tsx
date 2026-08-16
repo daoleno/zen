@@ -122,9 +122,7 @@ export interface SkillsPresentationProps {
 }
 
 type SurfaceSheet =
-  | { kind: "target" }
-  | { kind: "ranking" }
-  | { kind: "skills-update" }
+  | { kind: "options" }
   | { kind: "skill-details"; skill: InstalledSkill }
   | { kind: "plugin-details"; plugin: InstalledPluginRow }
   | { kind: "plugin-available"; plugin: AvailablePlugin }
@@ -212,14 +210,8 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
         <View style={styles.tools}>
           <CompactToolbar
             section={section}
-            selectedAgent={selectedAgent}
-            leaderboardView={leaderboardView}
-            showingLeaderboard={showingSkillsSearch === false}
-            updateSupported={updateSupported}
             refreshing={refreshing}
-            onOpenTarget={() => setSheet({ kind: "target" })}
-            onOpenRanking={() => setSheet({ kind: "ranking" })}
-            onOpenUpdate={() => setSheet({ kind: "skills-update" })}
+            onOpenOptions={() => setSheet({ kind: "options" })}
             onRefresh={refresh}
           />
           <SurfaceSearch
@@ -286,12 +278,12 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
 
       <SurfaceSheet
         sheet={sheet}
-        section={section}
         selectedAgent={selectedAgent}
         agentCounts={agentCounts}
         leaderboardView={leaderboardView}
         hasProjectCwd={hasProjectCwd}
         preparingMutation={preparingMutation}
+        updateSupported={updateSupported}
         onClose={() => setSheet(null)}
         onSelectAgent={(agent) => {
           onSelectAgent(agent);
@@ -393,55 +385,38 @@ function SurfaceTabs({
 
 function CompactToolbar({
   section,
-  selectedAgent,
-  leaderboardView,
-  showingLeaderboard,
-  updateSupported,
   refreshing,
-  onOpenTarget,
-  onOpenRanking,
-  onOpenUpdate,
+  onOpenOptions,
   onRefresh,
 }: {
   section: SkillsSurfaceSection;
-  selectedAgent: ManagedSkillAgent;
-  leaderboardView: SkillsLeaderboardView;
-  showingLeaderboard: boolean;
-  updateSupported: boolean;
   refreshing: boolean;
-  onOpenTarget(): void;
-  onOpenRanking(): void;
-  onOpenUpdate(): void;
+  onOpenOptions(): void;
   onRefresh(): void;
 }) {
   const colors = useAppColors();
   return (
     <View style={styles.toolbar}>
-      {section === "skills" ? (
-        <ToolButton
-          accessibilityLabel={`Target ${skillAgentLabel(selectedAgent)}`}
-          label={skillAgentLabel(selectedAgent)}
-          agent={selectedAgent}
-          onPress={onOpenTarget}
-        />
-      ) : null}
-      {section === "skills" && showingLeaderboard ? (
-        <ToolButton
-          accessibilityLabel={`Ranking ${skillsLeaderboardLabel(leaderboardView)}`}
-          icon="options-outline"
-          label={skillsLeaderboardLabel(leaderboardView)}
-          onPress={onOpenRanking}
-        />
-      ) : null}
-      {updateSupported ? (
-        <ToolButton
-          accessibilityLabel="Update installed Skills"
-          icon="arrow-up-circle-outline"
-          label="Update"
-          onPress={onOpenUpdate}
-        />
-      ) : null}
       <View style={styles.toolbarSpacer} />
+      {section === "skills" ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Skills options"
+          accessibilityHint="Target, ranking, and update actions"
+          onPress={onOpenOptions}
+          style={({ pressed }) => [
+            styles.iconButton,
+            pressed ? { backgroundColor: colors.surfacePressed } : null,
+          ]}
+        >
+          <Ionicons
+            accessible={false}
+            name="ellipsis-horizontal-circle-outline"
+            size={22}
+            color={colors.textSecondary}
+          />
+        </Pressable>
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Refresh"
@@ -465,60 +440,6 @@ function CompactToolbar({
         )}
       </Pressable>
     </View>
-  );
-}
-
-function ToolButton({
-  accessibilityLabel,
-  icon,
-  label,
-  agent,
-  onPress,
-}: {
-  accessibilityLabel: string;
-  icon?: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  agent?: ManagedSkillAgent;
-  onPress(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <AnimatedPressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      onPress={onPress}
-      style={[
-        styles.toolButton,
-        {
-          backgroundColor: colors.surfaceSubtle,
-          borderColor: colors.borderSubtle,
-        },
-      ]}
-    >
-      <View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      >
-        {agent ? (
-          <AgentKindIcon kind={managedAgentKind(agent)} size={18} variant="compact" />
-        ) : icon ? (
-          <Ionicons name={icon} size={18} color={colors.textSecondary} />
-        ) : null}
-      </View>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.toolButtonText, { color: colors.textSecondary }]}
-      >
-        {label}
-      </Text>
-      <Ionicons
-        accessible={false}
-        name="chevron-down"
-        size={14}
-        color={colors.textTertiary}
-      />
-    </AnimatedPressable>
   );
 }
 
@@ -1352,7 +1273,6 @@ function BadgeRow({ badges }: { badges: LifecycleBadge[] }) {
 
 function SurfaceSheet({
   sheet,
-  section,
   selectedAgent,
   agentCounts,
   leaderboardView,
@@ -1364,14 +1284,15 @@ function SurfaceSheet({
   onUpdateSkills,
   onUpdatePlugin,
   onUninstallPlugin,
+  updateSupported,
 }: {
   sheet: SurfaceSheet;
-  section: SkillsSurfaceSection;
   selectedAgent: ManagedSkillAgent;
   agentCounts: SkillsAgentCounts;
   leaderboardView: SkillsLeaderboardView;
   hasProjectCwd: boolean;
   preparingMutation: string;
+  updateSupported: boolean;
   onClose(): void;
   onSelectAgent(agent: ManagedSkillAgent): void;
   onSelectLeaderboard(view: SkillsLeaderboardView): void;
@@ -1391,9 +1312,10 @@ function SurfaceSheet({
         contentContainerStyle={styles.sheetContent}
         showsVerticalScrollIndicator={false}
       >
-        {sheet?.kind === "target" ? (
+        {sheet?.kind === "options" ? (
           <>
-            <SheetTitle>Target</SheetTitle>
+            <SheetTitle>Skills options</SheetTitle>
+            <SheetSectionHeading>Target</SheetSectionHeading>
             {compactSkillTargets(agentCounts).map((target) => (
               <SheetOption
                 key={target.agent}
@@ -1404,12 +1326,7 @@ function SurfaceSheet({
                 onPress={() => onSelectAgent(target.agent)}
               />
             ))}
-          </>
-        ) : null}
-
-        {sheet?.kind === "ranking" ? (
-          <>
-            <SheetTitle>Ranking</SheetTitle>
+            <SheetSectionHeading>Ranking</SheetSectionHeading>
             {(["all-time", "trending", "hot"] as SkillsLeaderboardView[]).map(
               (view) => (
                 <SheetOption
@@ -1421,31 +1338,30 @@ function SurfaceSheet({
                 />
               ),
             )}
-          </>
-        ) : null}
-
-        {sheet?.kind === "skills-update" ? (
-          <>
-            <SheetTitle>Update Skills</SheetTitle>
-            <SheetOption
-              icon="globe-outline"
-              label="Global Skills"
-              detail="Update every global Skill with npx skills"
-              busy={preparingMutation === "update:global"}
-              onPress={() => onUpdateSkills("global")}
-            />
-            <SheetOption
-              icon="folder-outline"
-              label="Project Skills"
-              detail={
-                hasProjectCwd
-                  ? "Update every Skill in the current project"
-                  : "Open a project Session to enable this action"
-              }
-              disabled={!hasProjectCwd}
-              busy={preparingMutation === "update:project"}
-              onPress={() => onUpdateSkills("project")}
-            />
+            {updateSupported ? (
+              <>
+                <SheetSectionHeading>Update</SheetSectionHeading>
+                <SheetOption
+                  icon="globe-outline"
+                  label="Global Skills"
+                  detail="Update every global Skill with npx skills"
+                  busy={preparingMutation === "update:global"}
+                  onPress={() => onUpdateSkills("global")}
+                />
+                <SheetOption
+                  icon="folder-outline"
+                  label="Project Skills"
+                  detail={
+                    hasProjectCwd
+                      ? "Update every Skill in the current project"
+                      : "Open a project Session to enable this action"
+                  }
+                  disabled={!hasProjectCwd}
+                  busy={preparingMutation === "update:project"}
+                  onPress={() => onUpdateSkills("project")}
+                />
+              </>
+            ) : null}
           </>
         ) : null}
 
@@ -1600,6 +1516,20 @@ function SheetBody({ children }: { children: React.ReactNode }) {
     >
       {children}
     </Text>
+  );
+}
+
+function SheetSectionHeading({ children }: { children: React.ReactNode }) {
+  const colors = useAppColors();
+  return (
+    <View style={styles.sheetSectionHeading}>
+      <Text
+        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+        style={[styles.sheetSectionTitle, { color: colors.textPrimary }]}
+      >
+        {children}
+      </Text>
+    </View>
   );
 }
 
@@ -2132,21 +2062,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   toolbarSpacer: { flexGrow: 1, minWidth: 0 },
-  toolButton: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    maxWidth: "100%",
-    paddingHorizontal: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.xs,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-  toolButtonText: {
-    ...TypeScale.label,
-    flexShrink: 1,
-  },
   iconButton: {
     width: PLUGINS_SKILLS_TOUCH_TARGET,
     height: PLUGINS_SKILLS_TOUCH_TARGET,
@@ -2292,6 +2207,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingVertical: 10,
     gap: 4,
+  },
+  sheetSectionHeading: {
+    paddingHorizontal: 4,
+    paddingTop: 12,
+    paddingBottom: 2,
   },
   sheetSectionTitle: {
     ...TypeScale.label,

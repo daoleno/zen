@@ -97,6 +97,11 @@ type Server struct {
 	hasSessionOverride           func(agentID string) bool
 	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
 	getAgentOverride             func(agentID string) *classifier.Agent
+	// skillsMutationExecuteOverride / pluginMutationExecuteOverride replace the
+	// production command executor in handler tests so the ownership/cancellation
+	// protocol can be proven without running real CLIs.
+	skillsMutationExecuteOverride func(ctx context.Context, command skillmgmt.MutationCommand, options skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error)
+	pluginMutationExecuteOverride func(ctx context.Context, command skillmgmt.PluginMutationCommand, options skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error)
 	// codexLiveDial opens the live native Codex app-server control surface for
 	// a Session's control socket. Nil (tests, legacy embedded sessions) keeps
 	// SetThreadRuntime on the route-only path. Production New installs the

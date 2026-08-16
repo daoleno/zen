@@ -114,11 +114,16 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('loadingTitle="Loading installed Skills…"');
   });
 
-  test("the target carousel is replaced by one official-icon target control and sheet", () => {
+  test("the target carousel is replaced by one options sheet with the official-icon target control", () => {
     expect(skillsSource).not.toContain("AgentSelector");
     expect(skillsSource).not.toMatch(/\shorizontal(?:\s|=)/);
     expect(skillsSource).toContain("compactSkillTargets(agentCounts)");
-    expect(skillsSource).toContain('accessibilityLabel={`Target ${skillAgentLabel(selectedAgent)}`}');
+    // Target, Ranking, and Update live inside one options sheet opened by a
+    // single neutral icon button; none render as top toolbar labels.
+    expect(skillsSource).toContain('accessibilityLabel="Skills options"');
+    expect(skillsSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
+    expect(skillsSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
+    expect(skillsSource).toContain("SheetSectionHeading>Update</SheetSectionHeading>");
     expect(skillsSource).toContain("managedAgentKind(agent)");
   });
 
@@ -171,7 +176,7 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('flexWrap: "wrap"');
     expect(skillsSource).toContain("PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER");
     expect(skillsSource).toContain("numberOfLines={2}");
-    for (const key of ["surfaceTab", "toolButton", "iconButton", "smallAction"]) {
+    for (const key of ["surfaceTab", "iconButton", "smallAction", "sheetOptionIcon"]) {
       const block = skillsSource.match(
         new RegExp(`${key}: \\{[\\s\\S]*?\\},`),
       )?.[0];

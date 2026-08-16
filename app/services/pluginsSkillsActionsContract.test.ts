@@ -81,6 +81,33 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(presentationSource).not.toContain("View Discover");
   });
 
+  test("the top toolbar is at most one icon-only options control plus refresh", () => {
+    const toolbarBlock = presentationSource.match(
+      /function CompactToolbar\([\s\S]*?function SurfaceSearch\(/,
+    )?.[0]!;
+    expect(toolbarBlock).toBeDefined();
+    // Exactly one Skills options icon button and one Refresh icon button.
+    expect(toolbarBlock.match(/accessibilityLabel="Skills options"/g)).toHaveLength(1);
+    expect(toolbarBlock.match(/accessibilityLabel="Refresh"/g)).toHaveLength(1);
+    // No labeled top toolbar buttons and no leftover tool-button component.
+    expect(toolbarBlock).not.toContain("ToolButton");
+    expect(toolbarBlock).not.toContain("skillAgentLabel(selectedAgent)");
+    expect(toolbarBlock).not.toMatch(/label=\"Target\"/);
+    expect(toolbarBlock).not.toMatch(/label=\"Ranking\"/);
+    expect(toolbarBlock).not.toMatch(/label=\"Update\"/);
+    expect(toolbarBlock).not.toContain("skillsLeaderboardLabel");
+    // The Plugins toolbar has only refresh (the options button is Skills-only).
+    expect(presentationSource).toContain('{section === "skills" ? (');
+    // Target, Ranking, and Update controls still exist once, inside the sheet.
+    expect(presentationSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
+    expect(presentationSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
+    expect(presentationSource).toContain("SheetSectionHeading>Update</SheetSectionHeading>");
+    expect(presentationSource).toContain('kind: "options"');
+    expect(presentationSource).not.toContain('kind: "target"');
+    expect(presentationSource).not.toContain('kind: "ranking"');
+    expect(presentationSource).not.toContain('kind: "skills-update"');
+  });
+
   test("reviewed commands execute through the authoritative daemon mutation path", () => {
     expect(websocketSource).toContain("executeSkillsMutation(");
     expect(websocketSource).toContain('type: "skills_mutation"');

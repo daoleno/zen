@@ -68,3 +68,33 @@ func TestPluginsMutationReplaceCancelsPreviousAndClaimsOnce(t *testing.T) {
 		t.Fatal("current plugin mutation was claimable more than once")
 	}
 }
+
+func TestPluginsMutationOwnershipPersistsWithoutConsuming(t *testing.T) {
+	connection := &websocket.Conn{}
+	_, cancel := context.WithCancel(context.Background())
+	current := pluginsMutationRequest{requestID: "plugins-mutation-current", cancel: cancel}
+	server := &Server{pluginsMutations: map[*websocket.Conn]pluginsMutationRequest{}}
+	t.Cleanup(cancel)
+
+	server.replacePluginsMutation(connection, current)
+	if !server.isCurrentPluginsMutation(connection, current) {
+		t.Fatal("plugin mutation ownership was not retained while registered")
+	}
+	if !server.isCurrentPluginsMutation(connection, current) {
+		t.Fatal("isCurrent consumed the plugin mutation slot")
+	}
+	// Disconnect cancels and removes the owned slot so the in-flight command
+	// is stopped and its stale result can never claim.
+	server.mu.Lock()
+	server.cancelSkillsRequestsLocked(connection)
+	server.mu.Unlock()
+	if server.isCurrentPluginsMutation(connection, current) {
+		t.Fatal("disconnected plugin mutation still owns the slot")
+	}
+	if server.claimPluginsMutation(connection, current) {
+		t.Fatal("disconnected plugin mutation claimed the slot")
+	}
+	if len(server.pluginsMutations) != 0 {
+		t.Fatal("plugin mutation slot survived disconnect")
+	}
+}
