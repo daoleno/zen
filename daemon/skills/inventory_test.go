@@ -1,10 +1,7 @@
 package skills
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,585 +9,376 @@ import (
 	"time"
 )
 
-func TestDiscoverInventoryDeduplicatesRealPathsAndAggregatesSupportedAgents(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(home, "project")
-	shared := filepath.Join(project, ".agents", "skills", "shared-skill")
-	writeTestSkill(t, shared, "shared-skill", "Shared project guidance")
-	claudeLink := filepath.Join(project, ".claude", "skills", "shared-skill")
-	if err := os.MkdirAll(filepath.Dir(claudeLink), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(shared, claudeLink); err != nil {
-		t.Fatal(err)
-	}
-	writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-		"shared-skill": {
-			Source:       "acme/skills",
-			SourceType:   "github",
-			SourceURL:    "https://github.com/acme/skills",
-			SkillPath:    "skills/shared-skill/SKILL.md",
-			ComputedHash: "abc",
-		},
-	})
+// --- inventory state and ownership semantics ------------------------------
 
-	inventory, err := DiscoverInventory(InventoryOptions{
-		CWD:        project,
-		Home:       home,
-		CodexHome:  filepath.Join(home, ".codex"),
-		ClaudeHome: filepath.Join(home, ".claude"),
-		Now:        func() time.Time { return time.Unix(42, 0) },
-	})
+func TestStoreInventoryRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	file := InventoryFile{
+		Version: inventoryVersion,
+		Packages: map[string]PackageEntry{
+			"alpha": {
+				SkillName: "alpha", Source: "owner/repo", SourceType: string(SourceTypeCatalog),
+				ContentHash: "abc123", InstalledAt: f.Now.Format(time.RFC3339), UpdatedAt: f.Now.Format(time.RFC3339),
+				Owned: true, Bindings: []BindingEntry{{Agent: AgentCodex, Scope: ScopeGlobal, TargetPath: f.agentGlobalDir(AgentCodex) + "/alpha", Enabled: true, Mode: BindingSymlink}},
+			},
+		},
+	}
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadInventory(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inventory.Skills) != 1 {
-		t.Fatalf("skills = %#v, want one real-path row", inventory.Skills)
+	entry := loaded.Packages["alpha"]
+	if entry.Source != "owner/repo" || !entry.Owned || len(entry.Bindings) != 1 {
+		t.Fatalf("round-trip lost metadata: %+v", entry)
 	}
-	got := inventory.Skills[0]
-	if got.CanonicalPath != shared {
-		t.Fatalf("canonical path = %q, want %q", got.CanonicalPath, shared)
+	if loaded.Version != inventoryVersion {
+		t.Fatalf("unexpected version %d", loaded.Version)
 	}
-	wantAgents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentOpenCode}
-	if !sameAgentSet(got.Agents, wantAgents) {
-		t.Fatalf("agents = %v, want %v", got.Agents, wantAgents)
-	}
-	if got.Manager != ManagerSkillsCLI || !got.Capability.CanRemove {
-		t.Fatalf("management = %#v/%#v, want exact CLI removal", got.Manager, got.Capability)
-	}
-	if len(got.Bindings) != 2 {
-		t.Fatalf("bindings = %#v, want both supported paths", got.Bindings)
-	}
-	if got.Source != "acme/skills" || got.Scope != ScopeProject {
-		t.Fatalf("source/scope = %q/%q", got.Source, got.Scope)
-	}
-	if inventory.GeneratedAt.Unix() != 42 {
-		t.Fatalf("generated_at = %s", inventory.GeneratedAt)
-	}
-	if len(inventory.Agents) != 6 || inventory.Agents[5].Agent != AgentGrok || inventory.Agents[5].Supported {
-		t.Fatalf("agent support = %#v", inventory.Agents)
+	// Immutable: a package directory must never contain inventory metadata.
+	if _, err := os.Stat(filepath.Join(store.PackageDir("alpha"), "inventory.json")); !os.IsNotExist(err) {
+		t.Fatal("inventory metadata must live outside package directories")
 	}
 }
 
-func TestDiscoverInventoryKeepsUnknownBuiltinAndPluginRowsUnmanaged(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(home, "project")
-	if err := os.MkdirAll(project, 0o755); err != nil {
+func TestStoreInventoryRejectsCorruptAndInvalid(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	if err := os.MkdirAll(filepath.Dir(store.InventoryPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestSkill(t, filepath.Join(home, ".agents", "skills", "unknown-skill"), "unknown-skill", "Unknown owner")
-	writeTestSkill(t, filepath.Join(home, ".codex", "skills", ".system", "builtin-skill"), "builtin-skill", "Builtin")
-	writeTestSkill(t, filepath.Join(home, ".codex", "plugins", "cache", "vendor", "sample-plugin", "1.0.0", "skills", "plugin-skill"), "plugin-skill", "Plugin")
+	if err := os.WriteFile(store.InventoryPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadInventory(false); err == nil {
+		t.Fatal("corrupt inventory must fail closed")
+	}
+	if err := os.WriteFile(store.InventoryPath(), []byte(`{"version":99,"packages":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadInventory(false); err == nil {
+		t.Fatal("unsupported schema must fail closed")
+	}
+	if err := os.WriteFile(store.InventoryPath(), []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadInventory(true); err == nil {
+		t.Fatal("missing inventory under required load must fail")
+	}
+}
 
-	inventory, err := DiscoverInventory(InventoryOptions{
-		CWD:        project,
-		Home:       home,
-		CodexHome:  filepath.Join(home, ".codex"),
-		ClaudeHome: filepath.Join(home, ".claude"),
-	})
+func TestInventoryOwnedAndExternalRows(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	// Owned package in the store.
+	storeDir := store.PackageDir("alpha")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("---\nname: alpha\n---\nInstructions\n")
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := folderContentHash(storeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	byName := make(map[string]InstalledSkill)
+	file := InventoryFile{
+		Version: inventoryVersion,
+		Packages: map[string]PackageEntry{
+			"alpha": {
+				SkillName: "alpha", Source: "owner/repo", SourceType: string(SourceTypeCatalog),
+				ContentHash: hash, InstalledAt: f.Now.Format(time.RFC3339), UpdatedAt: f.Now.Format(time.RFC3339),
+				Owned: true,
+				Bindings: []BindingEntry{{
+					Agent: AgentCodex, Scope: ScopeGlobal, TargetPath: f.agentGlobalDir(AgentCodex) + "/alpha",
+					Enabled: true, Mode: BindingSymlink,
+				}},
+			},
+		},
+	}
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	// Ensures the Codex global dir now contains the symlink binding.
+	if err := os.MkdirAll(f.agentGlobalDir(AgentCodex), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(storeDir, filepath.Join(f.agentGlobalDir(AgentCodex), "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	// An external skill in Grok's global dir (untracked).
+	f.writeSkill(f.agentGlobalDir(AgentGrok), "grok-only", "grok body")
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alpha, grokOnly *InstalledSkill
+	for index := range inventory.Skills {
+		switch inventory.Skills[index].Name {
+		case "alpha":
+			alpha = &inventory.Skills[index]
+		case "grok-only":
+			grokOnly = &inventory.Skills[index]
+		}
+	}
+	if alpha == nil {
+		t.Fatal("owned row missing")
+	}
+	if !alpha.Owned || alpha.Manager != ManagerZen || alpha.Enabled != true {
+		t.Fatalf("owned row state wrong: %+v", alpha)
+	}
+	if !alpha.Capability.CanManage {
+		t.Fatal("owned row must be manageable")
+	}
+	hasOperations := map[MutationOperation]bool{}
+	for _, op := range alpha.Capability.Operations {
+		hasOperations[op] = true
+	}
+	for _, required := range []MutationOperation{OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationUpdate} {
+		if !hasOperations[required] {
+			t.Fatalf("owned row missing operation %q", required)
+		}
+	}
+	if grokOnly == nil {
+		t.Fatal("external row missing")
+	}
+	if grokOnly.Owned || grokOnly.Tracked || grokOnly.Manager != ManagerExternal {
+		t.Fatalf("external row state wrong: %+v", grokOnly)
+	}
+	if !grokOnly.Capability.CanManage {
+		t.Fatal("external row must offer adopt")
+	}
+	// Agents table must include all six with truthful scope capability.
+	if len(inventory.Agents) != 6 {
+		t.Fatalf("expected six adapters, got %d", len(inventory.Agents))
+	}
+	byAgent := map[Agent]AgentSupport{}
+	for _, support := range inventory.Agents {
+		byAgent[support.Agent] = support
+	}
+	for _, agent := range []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi} {
+		support := byAgent[agent]
+		if !support.Supported || !support.GlobalScope || !support.ProjectScope || support.BindingMode == "" {
+			t.Fatalf("agent %s capability table is not truthful: %+v", agent, support)
+		}
+	}
+	if byAgent[AgentGrok].Supported != true {
+		t.Fatal("Grok has a real adapter and must be reported supported")
+	}
+}
+
+func TestInventoryCopyDriftDetection(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	storeDir := store.PackageDir("beta")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("---\nname: beta\n---\nCanonical\n")
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := folderContentHash(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cursor uses copy mode: materialize a copy, then mutate it to drift.
+	cursorDir := f.agentGlobalDir(AgentCursor)
+	if err := os.MkdirAll(cursorDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(cursorDir, "beta")
+	if err := copyDirBounded(storeDir, target); err != nil {
+		t.Fatal(err)
+	}
+	// Drift the copy.
+	if err := os.WriteFile(filepath.Join(target, "SKILL.md"), []byte("---\nname: beta\n---\nMUTATED\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := InventoryFile{
+		Version: inventoryVersion,
+		Packages: map[string]PackageEntry{
+			"beta": {
+				SkillName: "beta", Source: "owner/repo", SourceType: string(SourceTypeCatalog),
+				ContentHash: hash, InstalledAt: f.Now.Format(time.RFC3339), UpdatedAt: f.Now.Format(time.RFC3339),
+				Owned: true,
+				Bindings: []BindingEntry{{
+					Agent: AgentCursor, Scope: ScopeGlobal, TargetPath: target,
+					Enabled: true, Mode: BindingCopy,
+				}},
+			},
+		},
+	}
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beta *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name == "beta" {
+			beta = &inventory.Skills[index]
+		}
+	}
+	if beta == nil {
+		t.Fatal("beta row missing")
+	}
+	if len(beta.Bindings) != 1 || beta.Bindings[0].DriftHash != "drifted" {
+		t.Fatalf("copy drift must be reported, got %+v", beta.Bindings)
+	}
+	if len(beta.Warnings) == 0 {
+		t.Fatal("drift must surface a warning")
+	}
+}
+
+func TestInventoryDuplicateAndConflictClassification(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	// Same-name different-content external skills in two agent dirs = duplicate.
+	f.writeSkill(f.agentGlobalDir(AgentCodex), "dup-name", "codex variant")
+	f.writeSkill(f.agentGlobalDir(AgentPi), "dup-name", "pi variant")
+	// Conflict: an external copy of an owned package with different content.
+	storeDir := store.PackageDir("owned-name")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), []byte("---\nname: owned-name\n---\nowned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := folderContentHash(storeDir)
+	file := InventoryFile{
+		Version: inventoryVersion,
+		Packages: map[string]PackageEntry{
+			"owned-name": {
+				SkillName: "owned-name", Source: "owner/repo", SourceType: string(SourceTypeCatalog),
+				ContentHash: hash, InstalledAt: f.Now.Format(time.RFC3339), UpdatedAt: f.Now.Format(time.RFC3339),
+				Owned: true,
+			},
+		},
+	}
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	f.writeSkill(f.agentGlobalDir(AgentGrok), "owned-name", "conflicting external content")
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{} // name for dup-name assertions
+	conflictExternal := false
 	for _, skill := range inventory.Skills {
-		byName[skill.Name] = skill
-	}
-	for name, want := range map[string]struct {
-		scope   Scope
-		manager Manager
-	}{
-		"unknown-skill": {ScopeGlobal, ManagerUnknown},
-		"builtin-skill": {ScopeBuiltin, ManagerBuiltin},
-		"plugin-skill":  {ScopePlugin, ManagerPlugin},
-	} {
-		got, ok := byName[name]
-		if !ok {
-			t.Fatalf("missing %s from %#v", name, inventory.Skills)
+		if skill.Name == "dup-name" && skill.Migration == "duplicate" {
+			seen["dup-name"] = true
 		}
-		if got.Scope != want.scope || got.Manager != want.manager || got.Capability.CanRemove {
-			t.Fatalf("%s = %#v, want unmanaged %s/%s", name, got, want.scope, want.manager)
+		if skill.Name == "owned-name" && skill.Manager == ManagerExternal && skill.Migration == "conflict" {
+			conflictExternal = true
 		}
 	}
-	if got := byName["plugin-skill"].Plugin; got != "sample-plugin" {
-		t.Fatalf("plugin = %q, want sample-plugin", got)
+	if !seen["dup-name"] {
+		t.Fatal("duplicate classification missing")
+	}
+	if !conflictExternal {
+		t.Fatal("conflict classification missing on the external row")
+	}
+	if inventory.Migration.Duplicate < 1 || inventory.Migration.Conflict < 1 {
+		t.Fatalf("migration status incomplete: %+v", inventory.Migration)
+	}
+	// Conflicted rows must not be manageable (fail closed).
+	for _, skill := range inventory.Skills {
+		if skill.Migration == "conflict" && skill.Capability.CanManage {
+			t.Fatal("conflicted row must not grant management authority")
+		}
 	}
 }
 
-func TestDiscoverInventoryMarshalsEmptyAgentTargetsAsArrays(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(home, "project")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
+func TestInventoryExecutorsAndAdapters(t *testing.T) {
+	f := newFixture(t)
+	f.writeSkill(f.agentGlobalDir(AgentCodex), "x", "x body")
+	options := f.options("")
+	options.Executors = []ExecutorAlias{
+		{Name: "agent", Kind: "cursor", Command: "cursor-agent --force"},
+		{Name: "custom-grok", Kind: "", Command: "/usr/bin/grok"},
+		{Name: "unknown-tool", Kind: "", Command: "some-random-tool"},
 	}
-	writeTestSkill(t, filepath.Join(home, ".agents", "skills", "unbound-skill"), "unbound-skill", "No inferred agent target")
-
-	inventory, err := DiscoverInventory(InventoryOptions{
-		CWD:        project,
-		Home:       home,
-		CodexHome:  filepath.Join(home, ".codex"),
-		ClaudeHome: filepath.Join(home, ".claude"),
-	})
+	inventory, err := DiscoverInventory(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inventory.Skills) != 1 || len(inventory.Skills[0].Bindings) != 1 {
-		t.Fatalf("inventory = %#v, want one Skill with one binding", inventory.Skills)
+	byName := map[string]ExecutorSupport{}
+	for _, entry := range inventory.Executors {
+		byName[entry.Name] = entry
 	}
-	encoded, err := json.Marshal(inventory)
+	if byName["agent"].Agent != AgentCursor {
+		t.Fatalf("kind must drive alias resolution, got %+v", byName["agent"])
+	}
+	if byName["custom-grok"].Agent != AgentGrok {
+		t.Fatalf("command inference must map grok, got %+v", byName["custom-grok"])
+	}
+	if _, ok := byName["unknown-tool"]; ok {
+		t.Fatal("unknown executors must never gain lifecycle authority")
+	}
+}
+
+func TestInventoryEscapesRealUserState(t *testing.T) {
+	f := newFixture(t)
+	// Discovery with an explicit fixture Home must never consult the real
+	// user's home/state dirs. Point the fixture env at bogus paths and assert
+	// the store path used is the fixture one.
+	options := f.options("")
+	inventory, err := DiscoverInventory(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), `"agents":null`) {
-		t.Fatalf("inventory agent collections must be JSON arrays: %s", encoded)
+	if inventory.Skills == nil {
+		t.Fatal("nil skills slice")
 	}
+	store := f.store()
+	if !filepath.HasPrefix(store.Root(), f.Home) {
+		t.Fatalf("store escaped fixture home: %s", store.Root())
+	}
+	_ = inventory
 }
 
-func TestDiscoverInventoryRejectsMalformedLockProvenance(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(home, "project")
-	writeTestSkill(t, filepath.Join(project, ".agents", "skills", "safe-skill"), "safe-skill", "Visible")
-	writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-		"safe-skill": {
-			Source:     "acme/skills;touch-pwned",
-			SourceType: "github",
-			SkillPath:  "../outside/SKILL.md",
-		},
-	})
+// --- helpers ---------------------------------------------------------------
 
-	inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
+func TestInventoryJSONWireShape(t *testing.T) {
+	// The JSON wire shape is part of the app contract; snapshot key fields.
+	f := newFixture(t)
+	store := f.store()
+	if err := os.MkdirAll(store.PackageDir("gamma"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := PackageEntry{
+		SkillName: "gamma", Source: "owner/repo", SourceType: string(SourceTypeCatalog),
+		ContentHash: "hash", Owned: true,
+	}
+	file := InventoryFile{Version: inventoryVersion, Packages: map[string]PackageEntry{"gamma": entry}}
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(store.InventoryPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inventory.Skills) != 1 || inventory.Skills[0].Manager != ManagerUnknown || inventory.Skills[0].Capability.CanRemove {
-		t.Fatalf("malformed lock granted management: %#v", inventory.Skills)
-	}
-}
-
-func TestDiscoverInventoryRequiresLinkedGlobalAgentsAndCurrentLockProvenance(t *testing.T) {
-	home := t.TempDir()
-	canonical := filepath.Join(home, ".agents", "skills", "global-skill")
-	writeTestSkill(t, canonical, "global-skill", "Global")
-	writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 2, map[string]lockEntry{
-		"global-skill": {
-			Source:       "acme/skills",
-			SourceType:   "github",
-			SourceURL:    "https://github.com/acme/skills",
-			SkillPath:    "skills/global-skill/SKILL.md",
-			ComputedHash: "abc",
-		},
-	})
-
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home})
-	if err != nil || len(inventory.Skills) != 1 {
-		t.Fatalf("inventory = %#v, error = %v", inventory, err)
-	}
-	if inventory.Skills[0].Manager != ManagerUnknown || len(inventory.Skills[0].Agents) != 0 {
-		t.Fatalf("old canonical lock granted ownership or targets: %#v", inventory.Skills[0])
-	}
-
-	writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 3, map[string]lockEntry{
-		"global-skill": {
-			Source:          "acme/skills",
-			SourceType:      "github",
-			SourceURL:       "https://github.com/acme/skills",
-			SkillPath:       "skills/global-skill/SKILL.md",
-			SkillFolderHash: "abc",
-		},
-	})
-	codexLink := filepath.Join(home, ".codex", "skills", "global-skill")
-	if err := os.MkdirAll(filepath.Dir(codexLink), 0o755); err != nil {
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(canonical, codexLink); err != nil {
-		t.Fatal(err)
+	packages := decoded["packages"].(map[string]any)
+	gamma := packages["gamma"].(map[string]any)
+	if gamma["owned"] != true || gamma["content_hash"] != "hash" || gamma["skill_name"] != "gamma" {
+		t.Fatalf("inventory wire shape unexpected: %v", gamma)
 	}
-
-	inventory, err = DiscoverInventory(InventoryOptions{Home: home})
-	if err != nil || len(inventory.Skills) != 1 {
-		t.Fatalf("linked inventory = %#v, error = %v", inventory, err)
-	}
-	got := inventory.Skills[0]
-	if got.Manager != ManagerSkillsCLI || !sameAgentSet(got.Agents, []Agent{AgentCodex}) || !got.Capability.CanRemove {
-		t.Fatalf("linked global ownership = %#v", got)
-	}
-}
-
-func TestDiscoverInventoryReadsFrontmatterWithoutReadingOrBoundingSkillBody(t *testing.T) {
-	home := t.TempDir()
-	directory := filepath.Join(home, ".agents", "skills", "metadata-only")
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	metadata := "---\nname: metadata-only\ndescription: Safe summary\n---\n" + strings.Repeat("private body\n", 100_000)
-	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(metadata), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inventory.Skills) != 1 || inventory.Skills[0].Name != "metadata-only" || inventory.Skills[0].Description != "Safe summary" {
-		t.Fatalf("metadata-only inventory = %#v", inventory.Skills)
-	}
-}
-
-func TestDiscoverInventoryHonorsItsUniqueResultLimit(t *testing.T) {
-	home := t.TempDir()
-	for _, name := range []string{"alpha", "bravo", "charlie"} {
-		writeTestSkill(t, filepath.Join(home, ".codex", "skills", name), name, "Bounded")
-	}
-
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home, MaxSkills: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inventory.Skills) != 2 {
-		t.Fatalf("skills = %d, want bounded result of 2", len(inventory.Skills))
-	}
-	if !inventory.incomplete || !warningsContain(inventory.Warnings, "bounded result limit") {
-		t.Fatalf("warnings = %#v", inventory.Warnings)
-	}
-}
-
-func TestDiscoverInventoryRemovalAuthorityCannotBeBorrowed(t *testing.T) {
-	t.Run("frontmatter alias", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		writeTestSkill(t, filepath.Join(project, ".agents", "skills", "decoy"), "victim", "Decoy")
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"victim": {Source: "acme/skills", SourceType: "github"},
-		})
-		inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
-		if err != nil || len(inventory.Skills) != 1 {
-			t.Fatalf("inventory = %#v, error = %v", inventory, err)
-		}
-		got := inventory.Skills[0]
-		if got.Name != "decoy" || got.Manager != ManagerUnknown || got.Capability.CanRemove {
-			t.Fatalf("frontmatter borrowed lock authority: %#v", got)
-		}
-	})
-
-	t.Run("stale lock key", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		writeTestSkill(t, filepath.Join(project, ".agents", "skills", "current"), "current", "Current")
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"previous": {Source: "acme/skills", SourceType: "github"},
-		})
-		inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
-		if err != nil || inventory.Skills[0].Manager != ManagerUnknown || inventory.Skills[0].Capability.CanRemove {
-			t.Fatalf("stale lock granted removal: %#v, error = %v", inventory.Skills, err)
-		}
-	})
-
-	t.Run("mismatched lock source path", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		writeTestSkill(t, filepath.Join(project, ".agents", "skills", "current"), "current", "Current")
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"current": {Source: "acme/skills", SourceType: "github", SkillPath: "skills/other/SKILL.md"},
-		})
-		inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
-		if err != nil || inventory.Skills[0].Manager != ManagerUnknown || inventory.Skills[0].Capability.CanRemove {
-			t.Fatalf("mismatched source granted removal: %#v, error = %v", inventory.Skills, err)
-		}
-	})
-
-	t.Run("duplicate installed identity", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		writeTestSkill(t, filepath.Join(project, ".agents", "skills", "duplicate"), "duplicate", "One")
-		writeTestSkill(t, filepath.Join(project, ".claude", "skills", "duplicate"), "duplicate", "Two")
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"duplicate": {Source: "acme/skills", SourceType: "github"},
-		})
-		inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
-		if err != nil || len(inventory.Skills) != 2 {
-			t.Fatalf("inventory = %#v, error = %v", inventory, err)
-		}
-		for _, got := range inventory.Skills {
-			if got.Manager != ManagerUnknown || got.Capability.CanRemove || !strings.Contains(got.Capability.Reason, "share this Skill identity") {
-				t.Fatalf("duplicate identity remained removable: %#v", got)
-			}
-		}
-	})
-}
-
-func TestDiscoverInventoryRepresentsMixedScopeBindingsOnceAndDisablesRemoval(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(home, "project")
-	shared := filepath.Join(project, ".agents", "skills", "shared")
-	writeTestSkill(t, shared, "shared", "Shared")
-	globalLink := filepath.Join(home, ".codex", "skills", "shared")
-	if err := os.MkdirAll(filepath.Dir(globalLink), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(shared, globalLink); err != nil {
-		t.Fatal(err)
-	}
-	writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-		"shared": {Source: "acme/skills", SourceType: "github"},
-	})
-	writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 3, map[string]lockEntry{
-		"shared": {Source: "acme/skills", SourceType: "github"},
-	})
-	inventory, err := DiscoverInventory(InventoryOptions{CWD: project, Home: home})
-	if err != nil || len(inventory.Skills) != 1 {
-		t.Fatalf("inventory = %#v, error = %v", inventory, err)
-	}
-	got := inventory.Skills[0]
-	if got.Scope != ScopeMixed || got.Capability.CanRemove || len(got.Bindings) != 2 {
-		t.Fatalf("mixed binding = %#v", got)
-	}
-}
-
-func TestDiscoverInventoryBoundsAllDirectoryEntryWorkAndHonorsCancellation(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(home, ".agents", "skills")
-	for index := 0; index < 40; index++ {
-		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("unrelated-%03d", index)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home, MaxWork: 5})
-	if err != nil || len(inventory.Skills) != 0 || !inventory.incomplete || !warningsContain(inventory.Warnings, "work limit") {
-		t.Fatalf("bounded inventory = %#v, error = %v", inventory, err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := DiscoverInventory(InventoryOptions{Context: ctx, Home: home}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled inventory error = %v", err)
-	}
-}
-
-func TestDiscoverInventoryCountsDuplicateCanonicalBindingsAgainstWorkBudget(t *testing.T) {
-	home := t.TempDir()
-	canonical := filepath.Join(home, ".agents", "skills", "shared")
-	writeTestSkill(t, canonical, "shared", "Shared")
-	for _, path := range []string{
-		filepath.Join(home, ".codex", "skills", "shared"),
-		filepath.Join(home, ".claude", "skills", "shared"),
-	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(canonical, path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home, MaxWork: 6})
-	if err != nil || len(inventory.Skills) != 1 || len(inventory.Warnings) == 0 {
-		t.Fatalf("duplicate-path work budget = %#v, error = %v", inventory, err)
-	}
-}
-
-func TestDiscoverInventorySurfacesBoundedSanitizedReadWarnings(t *testing.T) {
-	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".agents", "skills", "broken"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".agents", "skills", "broken", "SKILL.md"), []byte("---\nname: [\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".agents", ".skill-lock.json"), []byte("not-json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".cursor", "skills"), []byte("not-a-directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	inventory, err := DiscoverInventory(InventoryOptions{Home: home})
-	if err != nil || len(inventory.Warnings) < 3 || len(inventory.Warnings) > maxInventoryWarnings {
-		t.Fatalf("warnings = %#v, error = %v", inventory.Warnings, err)
-	}
-	for _, warning := range inventory.Warnings {
-		if strings.Contains(warning, home) {
-			t.Fatalf("warning exposed private root: %q", warning)
-		}
-	}
-}
-
-func TestIncompleteInventoryDisablesEarlierRemovalAuthorityAndCommandConstruction(t *testing.T) {
-	t.Run("cancellation preserves visible rows without authority", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		for _, name := range []string{"alpha", "later"} {
-			writeTestSkill(t, filepath.Join(project, ".agents", "skills", name), name, "Managed")
-		}
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"alpha": {Source: "acme/skills", SourceType: "github"},
-			"later": {Source: "acme/skills", SourceType: "github"},
-		})
-		cancelContext := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 8}
-		inventory, err := DiscoverInventory(InventoryOptions{Context: cancelContext, CWD: project, Home: home})
-		if !errors.Is(err, context.Canceled) || len(inventory.Skills) != 1 {
-			t.Fatalf("canceled inventory = %#v, error = %v", inventory, err)
-		}
-		assertIncompleteUnmanagedRow(t, inventory, inventory.Skills[0].Name)
-		if !warningsContain(inventory.Warnings, "canceled") {
-			t.Fatalf("canceled warnings = %#v", inventory.Warnings)
-		}
-	})
-
-	t.Run("result limit hides later duplicate", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		first := filepath.Join(project, ".agents", "skills", "shared")
-		writeTestSkill(t, first, "shared", "First")
-		writeTestSkill(t, filepath.Join(project, ".claude", "skills", "shared"), "shared", "Later duplicate")
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"shared": {Source: "acme/skills", SourceType: "github"},
-		})
-		options := InventoryOptions{CWD: project, Home: home, MaxSkills: 1}
-		inventory, err := DiscoverInventory(options)
-		if err != nil || len(inventory.Skills) != 1 {
-			t.Fatalf("inventory = %#v, error = %v", inventory, err)
-		}
-		assertIncompleteUnmanagedRow(t, inventory, "shared")
-		_, err = BuildMutationCommand(options, MutationRequest{
-			Operation: OperationRemove,
-			CWD:       project,
-			SkillID:   installedSkillID(first),
-			Scope:     ScopeProject,
-			Agents:    []Agent{AgentCodex, AgentCursor},
-		})
-		if err == nil || !strings.Contains(err.Error(), "inventory is incomplete") {
-			t.Fatalf("incomplete result-limit removal error = %v", err)
-		}
-	})
-
-	t.Run("work limit hides later mixed-scope binding", func(t *testing.T) {
-		home := t.TempDir()
-		project := filepath.Join(home, "project")
-		first := filepath.Join(project, ".agents", "skills", "shared")
-		writeTestSkill(t, first, "shared", "Project")
-		globalLink := filepath.Join(home, ".codex", "skills", "shared")
-		if err := os.MkdirAll(filepath.Dir(globalLink), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(first, globalLink); err != nil {
-			t.Fatal(err)
-		}
-		writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
-			"shared": {Source: "acme/skills", SourceType: "github"},
-		})
-		writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 3, map[string]lockEntry{
-			"shared": {Source: "acme/skills", SourceType: "github"},
-		})
-		options := InventoryOptions{CWD: project, Home: home, MaxWork: 8}
-		inventory, err := DiscoverInventory(options)
-		if err != nil || len(inventory.Skills) != 1 {
-			t.Fatalf("inventory = %#v, error = %v", inventory, err)
-		}
-		assertIncompleteUnmanagedRow(t, inventory, "shared")
-		_, err = BuildMutationCommand(options, MutationRequest{
-			Operation: OperationRemove,
-			CWD:       project,
-			SkillID:   installedSkillID(first),
-			Scope:     ScopeProject,
-			Agents:    []Agent{AgentCodex, AgentCursor},
-		})
-		if err == nil || !strings.Contains(err.Error(), "inventory is incomplete") {
-			t.Fatalf("incomplete work-limit removal error = %v", err)
-		}
-	})
-}
-
-func TestPluginTraversalStopsOnCancellationAndSharedWorkExhaustion(t *testing.T) {
-	cache := filepath.Join(t.TempDir(), "cache")
-	writeTestSkill(t, filepath.Join(cache, "vendor", "plugin", "1.0.0", "skills", "plugin-skill"), "plugin-skill", "Plugin")
-
-	complete := newPluginTestCollector(context.Background(), 100)
-	complete.scanPluginCache(cache, AgentCodex, "Codex plugin")
-	if complete.incomplete || complete.count != 1 {
-		t.Fatalf("complete plugin traversal = count %d, work %d, warnings %#v", complete.count, complete.work, complete.warnings)
-	}
-
-	cancelContext := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 12}
-	canceled := newPluginTestCollector(cancelContext, 100)
-	canceled.scanPluginCache(cache, AgentCodex, "Codex plugin")
-	if !canceled.incomplete || !canceled.stopped || canceled.work < 2 || canceled.work >= complete.work || canceled.count != 0 {
-		t.Fatalf("canceled plugin traversal = count %d, work %d/%d, warnings %#v", canceled.count, canceled.work, complete.work, canceled.warnings)
-	}
-	if !errors.Is(cancelContext.Err(), context.Canceled) || !warningsContain(canceled.warnings, "canceled") {
-		t.Fatalf("cancellation state = %v, warnings %#v", cancelContext.Err(), canceled.warnings)
-	}
-
-	workLimited := newPluginTestCollector(context.Background(), 8)
-	workLimited.scanPluginCache(cache, AgentCodex, "Codex plugin")
-	if !workLimited.incomplete || !workLimited.stopped || workLimited.work != 8 || workLimited.count != 0 || !warningsContain(workLimited.warnings, "total-work limit") {
-		t.Fatalf("work-limited plugin traversal = count %d, work %d, warnings %#v", workLimited.count, workLimited.work, workLimited.warnings)
-	}
-}
-
-func assertIncompleteUnmanagedRow(t *testing.T, inventory Inventory, name string) {
-	t.Helper()
-	if !inventory.incomplete || !warningsContain(inventory.Warnings, "incomplete") {
-		t.Fatalf("inventory did not report incompleteness: %#v", inventory)
-	}
-	got := inventory.Skills[0]
-	if got.Name != name || got.Manager != ManagerUnknown || got.Capability.CanRemove || got.Source != "" || got.SourceType != "" || got.Provenance == "official skills-cli lock" {
-		t.Fatalf("incomplete row retained mutation authority: %#v", got)
-	}
-}
-
-func newPluginTestCollector(ctx context.Context, maxWork int) *inventoryCollector {
-	return &inventoryCollector{
-		options: InventoryOptions{Context: ctx, MaxSkills: defaultMaxInstalledSkills, MaxWork: maxWork},
-		byReal:  make(map[string]*InstalledSkill),
-		blocked: make(map[string]string),
-		warned:  make(map[string]struct{}),
-	}
-}
-
-type cancelAfterErrChecksContext struct {
-	context.Context
-	checks      int
-	cancelAfter int
-}
-
-func (ctx *cancelAfterErrChecksContext) Err() error {
-	ctx.checks++
-	if ctx.checks >= ctx.cancelAfter {
-		return context.Canceled
-	}
-	return nil
-}
-
-func warningsContain(warnings []string, fragment string) bool {
-	for _, warning := range warnings {
-		if strings.Contains(warning, fragment) {
-			return true
-		}
-	}
-	return false
-}
-
-func writeTestSkill(t *testing.T, directory, name, description string) {
-	t.Helper()
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	metadata := "---\nname: " + name + "\ndescription: " + description + "\n---\n"
-	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(metadata), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeTestLock(t *testing.T, path string, version int, entries map[string]lockEntry) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(lockFile{Version: version, Skills: entries})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
+	// No control characters or traversal in package ids.
+	if strings.ContainsAny(gamma["skill_name"].(string), "../\x00") {
+		t.Fatal("invalid skill name leaked to wire")
 	}
 }

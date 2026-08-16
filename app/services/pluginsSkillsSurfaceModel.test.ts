@@ -35,25 +35,35 @@ function skill(
     id: name.padEnd(24, "0").slice(0, 24),
     name,
     description: `${name} description`,
-    canonicalPath: `/home/test/.agents/skills/${name}`,
-    sourcePath: `/home/test/.agents/skills/${name}`,
+    manager: "zen",
+    owned: true,
+    tracked: true,
+    enabled: true,
+    canonicalPath: `/store/${name}`,
+    sourcePath: `/store/${name}`,
     scope: "global",
     agents,
-    bindings: [
-      {
-        sourcePath: `/home/test/.agents/skills/${name}`,
-        scope: "global",
-        agents,
-      },
-    ],
-    manager: "skills-cli",
-    provenance: "official skills-cli lock",
+    bindings: agents.map((agent) => ({
+      agent,
+      scope: "global" as const,
+      mode: "symlink" as const,
+      targetPath: `/home/test/.codex/skills/${name}`,
+      sourcePath: `/store/${name}`,
+      enabled: true,
+      boundAt: "2026-08-01T00:00:00Z",
+    })),
+    provenance: "Zen canonical store",
     source: "acme/skills",
     capability: {
-      canRemove: true,
-      removalPlans: agents
-        .filter((agent): agent is ManagedSkillAgent => agent !== "grok")
-        .map((agent) => ({ agent, affectedAgents: [agent] })),
+      canManage: true,
+      operations: [
+        "bind",
+        "unbind",
+        "enable",
+        "disable",
+        "uninstall",
+        "update",
+      ],
     },
     ...overrides,
   };
@@ -106,6 +116,7 @@ describe("Plugins & Skills V3 compact geometry", () => {
       codex: 40,
       "claude-code": 75,
       cursor: 0,
+      grok: 6,
       opencode: 3,
       pi: 2,
     });
@@ -113,6 +124,7 @@ describe("Plugins & Skills V3 compact geometry", () => {
       { agent: "codex", label: "Codex", count: 40 },
       { agent: "claude-code", label: "Claude Code", count: 75 },
       { agent: "cursor", label: "Cursor", count: 0 },
+      { agent: "grok", label: "Grok", count: 6 },
       { agent: "opencode", label: "OpenCode", count: 3 },
       { agent: "pi", label: "Pi", count: 2 },
     ]);
@@ -127,9 +139,12 @@ describe("Plugins & Skills V3 search and filtering", () => {
         source: undefined,
         scope: "builtin",
         manager: "builtin",
+        owned: false,
+        tracked: false,
+        enabled: false,
         provenance: "Codex builtin",
         description: "Native provider helper",
-        capability: { canRemove: false, removalPlans: [] },
+        capability: { canManage: false, operations: [], reason: "Builtin." },
       }),
     ];
     expect(filterInstalledSkills(values, "ALPHA")).toEqual([values[0]]);
@@ -196,30 +211,47 @@ describe("Plugins & Skills V3 search and filtering", () => {
 });
 
 describe("Plugins & Skills V3 quiet ownership presentation", () => {
-  test("supported npx Skills expose removal and preserve cross-client impact for inspection", () => {
+  test("Zen-owned Skills expose bindings per Agent and scope for inspection", () => {
     const shared = skill("shared", {
       agents: ["codex", "claude-code"],
-      capability: {
-        canRemove: true,
-        removalPlans: [
-          {
-            agent: "codex",
-            affectedAgents: ["codex", "claude-code"],
-          },
-          {
-            agent: "claude-code",
-            affectedAgents: ["claude-code"],
-          },
-        ],
-      },
+      scope: "mixed",
+      bindings: [
+        {
+          agent: "codex",
+          scope: "global",
+          mode: "symlink",
+          targetPath: "/home/test/.codex/skills/shared",
+          sourcePath: "/store/shared",
+          enabled: true,
+          boundAt: "2026-08-01T00:00:00Z",
+        },
+        {
+          agent: "claude-code",
+          scope: "project",
+          mode: "symlink",
+          targetPath: "/repo/.claude/skills/shared",
+          sourcePath: "/store/shared",
+          enabled: false,
+          boundAt: "2026-08-01T00:00:00Z",
+        },
+      ],
     });
     expect(installedSkillOwnership(shared, "codex")).toEqual({
       manageable: true,
-      summary: "Managed with npx skills",
-      detail:
-        "Installed through the supported Skills manager. Removing it also affects Codex, Claude Code.",
+      summary: "Bound · Global · Enabled",
+      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
     });
-    expect(installedSkillMetadata(shared)).toBe("acme/skills · Global");
+    expect(installedSkillOwnership(shared, "claude-code")).toEqual({
+      manageable: true,
+      summary: "Bound · Project · Disabled",
+      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
+    });
+    expect(installedSkillOwnership(shared, "grok")).toEqual({
+      manageable: true,
+      summary: "In the canonical store",
+      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
+    });
+    expect(installedSkillMetadata(shared)).toBe("acme/skills · Mixed scopes");
   });
 
   test("unsupported Skill ownership is honest in details without an Unmanaged list badge", () => {
@@ -227,10 +259,12 @@ describe("Plugins & Skills V3 quiet ownership presentation", () => {
       source: undefined,
       scope: "builtin",
       manager: "builtin",
+      owned: false,
+      tracked: false,
       provenance: "Codex builtin",
       capability: {
-        canRemove: false,
-        removalPlans: [],
+        canManage: false,
+        operations: [],
         reason: "Built-in Skills are owned by Codex.",
       },
     });

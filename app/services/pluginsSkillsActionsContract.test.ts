@@ -55,7 +55,8 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(screenSource).toContain("pluginsUnifiedView");
     expect(presentationSource).toContain("function SkillsList");
     expect(presentationSource).toContain("kind: \"installed\"");
-    expect(presentationSource).toContain("function CatalogSkillItem");
+    expect(presentationSource).toContain("function InstalledSkillRow");
+    expect(presentationSource).toContain("function CatalogSkillRow");
     expect(presentationSource).toContain("kind: \"available\"; plugin: AvailablePlugin");
     expect(skillsScreenModelSource).toContain("installedSkillCatalogId");
     expect(pluginModelSource).toContain("pluginsUnifiedView");
@@ -97,11 +98,11 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(toolbarBlock).not.toMatch(/label=\"Update\"/);
     expect(toolbarBlock).not.toContain("skillsLeaderboardLabel");
     // The Plugins toolbar has only refresh (the options button is Skills-only).
-    expect(presentationSource).toContain('{section === "skills" ? (');
+    expect(presentationSource).toContain('{section === "skills" && onOpenOptions ? (');
     // Target, Ranking, and Update controls still exist once, inside the sheet.
     expect(presentationSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
     expect(presentationSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
-    expect(presentationSource).toContain("SheetSectionHeading>Update</SheetSectionHeading>");
+    expect(presentationSource).toContain("SheetSectionHeading>Discovery</SheetSectionHeading>");
     expect(presentationSource).toContain('kind: "options"');
     expect(presentationSource).not.toContain('kind: "target"');
     expect(presentationSource).not.toContain('kind: "ranking"');

@@ -32,12 +32,14 @@ import {
 import type { CalendarItem } from "../store/calendar";
 import {
   normalizeSkillsCatalogResult,
+  normalizeSkillsInspectDetail,
   normalizeSkillsInventory,
   normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
   normalizeSkillsMutationResult,
   assertSkillsMutationMatchesRequest,
-  type ManagedSkillAgent,
+  type PackageDetail,
+  type SkillAgent,
   type SkillMutationOperation,
   type SkillsCatalogResult,
   type SkillsInventory,
@@ -2257,7 +2259,9 @@ export class MultiServerWebSocketClient {
       source?: string;
       skillName?: string;
       scope: "project" | "global";
-      agents?: ManagedSkillAgent[];
+      agents?: SkillAgent[];
+      ref?: string;
+      path?: string;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2284,41 +2288,27 @@ export class MultiServerWebSocketClient {
               "Daemon returned a Skills command for a different request.",
             );
           }
-          if (options.operation === "install") {
-            if (
-              command.catalogId !== options.skillId ||
-              command.source !== options.source ||
-              (options.skillName != null &&
-                command.skillName !== options.skillName) ||
-              command.agents.length !== (options.agents ?? []).length ||
-              command.agents.some(
-                (agent, index) => agent !== (options.agents ?? [])[index],
-              )
-            ) {
-              throw new Error(
-                "Daemon returned a Skills command for a different request.",
-              );
-            }
-          } else if (options.operation === "remove") {
-            if (
-              (options.skillName != null &&
-                command.skillName !== options.skillName) ||
-              command.agents.length !== (options.agents ?? []).length ||
-              command.agents.some(
-                (agent, index) => agent !== (options.agents ?? [])[index],
-              )
-            ) {
-              throw new Error(
-                "Daemon returned a Skills command for a different request.",
-              );
-            }
-          } else if (
-            options.operation === "update" &&
-            (command.agents.length !== 0 || command.skillName !== "")
+          if (
+            (options.skillName != null &&
+              command.skillName !== options.skillName) ||
+            command.agents.length !== (options.agents ?? []).length ||
+            command.agents.some(
+              (agent, index) => agent !== (options.agents ?? [])[index],
+            )
           ) {
             throw new Error(
               "Daemon returned a Skills command for a different request.",
             );
+          }
+          if (options.operation === "import") {
+            if (
+              command.catalogId !== options.skillId ||
+              command.source !== options.source
+            ) {
+              throw new Error(
+                "Daemon returned a Skills command for a different request.",
+              );
+            }
           }
           resolve(command);
         } catch (error) {
@@ -2350,6 +2340,8 @@ export class MultiServerWebSocketClient {
           skill_name: options.skillName,
           scope: options.scope,
           agents: options.agents,
+          ref: options.ref,
+          path: options.path,
         },
         cleanup,
         reject,
@@ -2366,7 +2358,9 @@ export class MultiServerWebSocketClient {
       source?: string;
       skillName?: string;
       scope: "project" | "global";
-      agents?: ManagedSkillAgent[];
+      agents?: SkillAgent[];
+      ref?: string;
+      path?: string;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2421,11 +2415,85 @@ export class MultiServerWebSocketClient {
           skill_name: options.skillName,
           scope: options.scope,
           agents: options.agents,
+          ref: options.ref,
+          path: options.path,
         },
         cleanup,
         reject,
       );
     });
+  }
+
+  getSkillsInspect(
+    serverId: string,
+    options: { skillName: string; generation: number; cwd?: string },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<{ generation: number; detail: PackageDetail }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("skills_inspect_result", handleDetail);
+          this.off("skills_inspect_error", handleError);
+        };
+        const handleDetail = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          if (payload.generation !== options.generation) {
+            reject(
+              new Error("Daemon returned a stale Skills inspect generation."),
+            );
+            return;
+          }
+          try {
+            resolve({
+              generation: options.generation,
+              detail: normalizeSkillsInspectDetail(payload.detail),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        };
+        const handleError = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          reject(
+            daemonRequestError(
+              payload.message || "Could not inspect this Skill.",
+              payload.code,
+            ),
+          );
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while inspecting the Skill."));
+        }, 15000);
+        this.on("skills_inspect_result", handleDetail);
+        this.on("skills_inspect_error", handleError);
+        this.sendRequestNow(
+          serverId,
+          {
+            type: "skills_inspect",
+            request_id: requestId,
+            generation: options.generation,
+            skill_name: options.skillName,
+            cwd: options.cwd,
+          },
+          cleanup,
+          reject,
+        );
+      },
+    );
   }
 
   getPluginsInventory(serverId: string, options: { generation: number }) {

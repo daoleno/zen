@@ -1,770 +1,484 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assertSkillsMutationMatchesRequest,
   beginSkillsRequest,
   buildSkillsMutationConfirmation,
   completeSkillsRequest,
   createSkillsRequestState,
   failSkillsRequest,
-  isCatalogIdentity,
-  normalizeSkillsCatalogResult,
+  normalizeSkillsInspectDetail,
   normalizeSkillsInventory,
-  normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
   normalizeSkillsMutationResult,
-  assertSkillsMutationMatchesRequest,
   skillsRequestData,
-  type ManagedSkillAgent,
-  type SkillMutationOperation,
+  type InstalledSkill,
+  type SkillsInventory,
   type SkillsMutationCommand,
 } from "./skillsManagement";
 
-describe("Skills management wire boundary", () => {
-  test("normalizes a bounded Installed projection and preserves unmanaged rows", () => {
-    const inventory = normalizeSkillsInventory({
-      generated_at: "2026-07-19T00:00:00Z",
-      cwd: "/workspace/project",
+describe("skills inventory normalization", () => {
+  test("accepts the Zen-owned row contract with per-binding state", () => {
+    const value = {
+      generated_at: "2026-08-01T00:00:00Z",
+      cwd: "/repo",
       skills: [
         {
-          id: "0123456789abcdef01234567",
-          name: "shared-skill",
-          description: "Shared guidance",
-          canonical_path: "/home/test/.agents/skills/shared-skill",
-          source_path: "/workspace/project/.claude/skills/shared-skill",
-          scope: "project",
-          agents: ["codex", "claude-code", "cursor"],
+          id: "abc123def456abc123def456",
+          name: "demo",
+          description: "A demo Skill",
+          manager: "zen",
+          owned: true,
+          tracked: true,
+          enabled: true,
+          canonical_path: "/home/u/.zen/skills/store/demo",
+          source_path: "/home/u/.zen/skills/store/demo",
+          scope: "global",
+          agents: ["codex", "cursor"],
           bindings: [
             {
-              source_path: "/workspace/project/.agents/skills/shared-skill",
-              scope: "project",
-              agents: ["codex", "cursor"],
+              agent: "codex",
+              scope: "global",
+              mode: "symlink",
+              target_path: "/home/u/.codex/skills/demo",
+              source_path: "/home/u/.zen/skills/store/demo",
+              enabled: true,
+              bound_at: "2026-08-01T00:00:00Z",
             },
             {
-              source_path: "/workspace/project/.claude/skills/shared-skill",
-              scope: "project",
-              agents: ["claude-code"],
+              agent: "cursor",
+              scope: "global",
+              mode: "copy",
+              target_path: "/home/u/.cursor/skills/demo",
+              source_path: "/home/u/.zen/skills/store/demo",
+              enabled: true,
+              bound_at: "2026-08-01T00:00:00Z",
+              drift_hash: "drifted",
             },
           ],
-          manager: "skills-cli",
-          provenance: "official skills-cli lock",
-          source: "acme/skills",
+          provenance: "Zen canonical store",
+          source: "owner/repo",
+          source_type: "catalog",
+          ref: "main",
+          content_hash: "abcd",
+          installed_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+          migration: "owned",
+          risk: [{ type: "script", severity: "info", detail: "Script file.", file: "run.sh" }],
           capability: {
-            can_remove: true,
-            removal_plans: [
-              {
-                agent: "codex",
-                affected_agents: ["codex", "claude-code", "cursor"],
-              },
-              {
-                agent: "claude-code",
-                affected_agents: ["claude-code"],
-              },
-              {
-                agent: "cursor",
-                affected_agents: ["codex", "claude-code", "cursor"],
-              },
+            can_manage: true,
+            operations: [
+              "bind",
+              "unbind",
+              "enable",
+              "disable",
+              "uninstall",
+              "update",
             ],
           },
-        },
-        {
-          id: "89abcdef0123456789abcdef",
-          name: "provider-skill",
-          canonical_path: "/home/test/.codex/skills/.system/provider-skill",
-          source_path: "/home/test/.codex/skills/.system/provider-skill",
-          scope: "builtin",
-          agents: ["codex"],
-          bindings: [
-            {
-              source_path: "/home/test/.codex/skills/.system/provider-skill",
-              scope: "builtin",
-              agents: ["codex"],
-            },
-          ],
-          manager: "builtin",
-          provenance: "Codex builtin",
-          capability: { can_remove: true },
         },
       ],
       agents: [
         {
           agent: "grok",
           name: "Grok",
-          supported: false,
-          cli_managed: false,
-          reason: "No official target.",
+          supported: true,
+          global_scope: true,
+          project_scope: true,
+          binding_mode: "copy",
+          default_global_dir: "/home/u/.grok/skills",
         },
       ],
-      warnings: [],
-    });
-
-    expect(inventory.skills[0]?.agents).toEqual([
-      "codex",
-      "claude-code",
-      "cursor",
-    ]);
-    expect(inventory.skills[0]?.capability).toEqual({
-      canRemove: true,
-      removalPlans: [
-        {
-          agent: "codex",
-          affectedAgents: ["codex", "claude-code", "cursor"],
-        },
-        { agent: "claude-code", affectedAgents: ["claude-code"] },
-        {
-          agent: "cursor",
-          affectedAgents: ["codex", "claude-code", "cursor"],
-        },
+      executors: [{ name: "agent", kind: "cursor", agent: "cursor", command: "cursor-agent" }],
+      warnings: ["A warning"],
+      mutation_operations: [
+        "import",
+        "migrate",
+        "bind",
+        "unbind",
+        "enable",
+        "disable",
+        "uninstall",
+        "forget",
+        "adopt",
+        "update",
       ],
-      reason: undefined,
-    });
-    expect(inventory.skills[1]?.capability).toEqual({
-      canRemove: false,
-      removalPlans: [],
-      reason: undefined,
-    });
-    expect(inventory.agents[0]).toMatchObject({
-      agent: "grok",
-      supported: false,
-      cliManaged: false,
-    });
-    expect(() =>
-      normalizeSkillsInventory({
-        generated_at: "2026-07-19T00:00:00Z",
-        skills: [{ name: "silently-dropped" }],
-        agents: [],
-      }),
-    ).toThrow("invalid installed Skill");
+      migration: { owned: 1, external: 2, duplicate: 1, conflict: 0, tracked: 3 },
+    };
+    const inventory = normalizeSkillsInventory(value);
+    expect(inventory.skills).toHaveLength(1);
+    const skill = inventory.skills[0]!;
+    expect(skill.owned).toBe(true);
+    expect(skill.manager).toBe("zen");
+    expect(skill.capability.canManage).toBe(true);
+    expect(skill.capability.operations).toContain("uninstall");
+    expect(skill.bindings[0]!.agent).toBe("codex");
+    expect(skill.bindings[1]!.driftHash).toBe("drifted");
+    expect(skill.risk?.[0]?.severity).toBe("info");
+    expect(inventory.migration.conflict).toBe(0);
+    expect(inventory.mutationOperations).toHaveLength(10);
+    expect(inventory.executors?.[0]?.agent).toBe("cursor");
   });
 
-  test("normalizes Discover results and rejects malformed or ambiguous identities", () => {
-    expect(
-      normalizeSkillsCatalogResult({
-        query: "react native",
-        skills: [
-          {
-            id: "vercel-labs/agent-skills/react-native",
-            name: "react-native",
-            installs: 42,
-            source: "vercel-labs/agent-skills",
-          },
-        ],
-      }).skills,
-    ).toEqual([
-      {
-        id: "vercel-labs/agent-skills/react-native",
-        skillId: "react-native",
-        name: "react-native",
-        installs: 42,
-        source: "vercel-labs/agent-skills",
-        installable: true,
-      },
-    ]);
-    expect(isCatalogIdentity("acme/skills/good", "acme/skills", "good")).toBe(
-      true,
-    );
-    expect(
-      isCatalogIdentity("acme/skills/good", "acme/skills;touch-pwned", "good"),
-    ).toBe(false);
-    expect(() =>
-      normalizeSkillsCatalogResult({
-        query: "good",
-        skills: [
-          {
-            id: "acme/skills/good",
-            name: "good",
-            installs: 1,
-            source: "acme/skills",
-          },
-          {
-            id: "acme/skills/good",
-            name: "good",
-            installs: 2,
-            source: "acme/skills",
-          },
-        ],
-      }),
-    ).toThrow("invalid catalog identity");
-  });
-
-  test("normalizes all three exact ranked metrics and rejects leaderboard shape drift", () => {
-    const leaderboards = normalizeSkillsLeaderboards({
-      all_time: {
-        view: "all-time",
-        total_skills: 9000,
-        skills: [
-          {
-            id: "vercel-labs/skills/find-skills",
-            skill_id: "find-skills",
-            name: "find-skills",
-            source: "vercel-labs/skills",
-            rank: 1,
-            total_installs: 2500000,
-            installable: true,
-          },
-        ],
-      },
-      trending: {
-        view: "trending",
-        total_skills: 8000,
-        skills: [
-          {
-            id: "101-skills/skills/ai-video-generation",
-            skill_id: "ai-video-generation",
-            name: "ai-video-generation",
-            source: "101-skills/skills",
-            rank: 1,
-            installs_24h: 21000,
-            installable: true,
-          },
-        ],
-      },
-      hot: {
-        view: "hot",
-        total_skills: 5000,
-        skills: [
-          {
-            id: "open.feishu.cn/lark-doc",
-            skill_id: "lark-doc",
-            name: "Lark Doc",
-            source: "open.feishu.cn",
-            rank: 1,
-            current_installs: 244,
-            yesterday_installs: 140,
-            change: 104,
-            installable: false,
-          },
-        ],
-      },
-    });
-
-    expect(leaderboards.allTime.skills[0]?.totalInstalls).toBe(2500000);
-    expect(leaderboards.trending.skills[0]?.installs24h).toBe(21000);
-    expect(leaderboards.hot.skills[0]).toMatchObject({
-      currentInstalls: 244,
-      yesterdayInstalls: 140,
-      change: 104,
-      installable: false,
-    });
-
-    expect(() =>
-      normalizeSkillsLeaderboards({
-        all_time: { view: "hot", total_skills: 0, skills: [] },
-        trending: { view: "trending", total_skills: 0, skills: [] },
-        hot: { view: "hot", total_skills: 0, skills: [] },
-      }),
-    ).toThrow("mismatched");
-  });
-
-  test("mixed-scope canonical rows preserve bindings and cannot be removable", () => {
-    const inventory = normalizeSkillsInventory({
-      generated_at: "2026-07-19T00:00:00Z",
+  test("rejects duplicate ids, unknown managers, and oversized rows", () => {
+    const base = {
+      generated_at: "2026-08-01T00:00:00Z",
       skills: [
         {
-          id: "0123456789abcdef01234567",
-          name: "shared-skill",
-          canonical_path: "/shared/shared-skill",
-          source_path: "/project/.agents/skills/shared-skill",
-          scope: "mixed",
-          agents: ["codex"],
-          bindings: [
-            {
-              source_path: "/project/.agents/skills/shared-skill",
-              scope: "project",
-              agents: ["codex"],
-            },
-            {
-              source_path: "/home/.codex/skills/shared-skill",
-              scope: "global",
-              agents: ["codex"],
-            },
-          ],
-          manager: "skills-cli",
-          provenance: "ambiguous installed binding",
-          capability: { can_remove: true, reason: "Mixed scopes." },
-        },
-      ],
-      agents: [],
-    });
-    expect(inventory.skills[0]?.scope).toBe("mixed");
-    expect(inventory.skills[0]?.bindings).toHaveLength(2);
-    expect(inventory.skills[0]?.capability.canRemove).toBe(false);
-    expect(inventory.skills[0]?.capability.removalPlans).toEqual([]);
-  });
-
-  test("fails removal closed when Agent plans are missing, incomplete, or expand beyond installed bindings", () => {
-    const normalizeCapability = (removalPlans: unknown) =>
-      normalizeSkillsInventory({
-        generated_at: "2026-07-19T00:00:00Z",
-        skills: [
-          {
-            id: "0123456789abcdef01234567",
-            name: "shared-skill",
-            canonical_path: "/project/.agents/skills/shared-skill",
-            source_path: "/project/.agents/skills/shared-skill",
-            scope: "project",
-            agents: ["codex", "cursor"],
-            bindings: [
-              {
-                source_path: "/project/.agents/skills/shared-skill",
-                scope: "project",
-                agents: ["codex", "cursor"],
-              },
-            ],
-            manager: "skills-cli",
-            provenance: "official skills-cli lock",
-            capability: {
-              can_remove: true,
-              removal_plans: removalPlans,
-            },
-          },
-        ],
-        agents: [],
-      }).skills[0]?.capability;
-
-    expect(normalizeCapability(undefined)).toEqual({
-      canRemove: false,
-      removalPlans: [],
-      reason: "No exact Agent removal plan was proven.",
-    });
-    expect(
-      normalizeCapability([
-        { agent: "codex", affected_agents: ["codex", "cursor"] },
-      ]),
-    ).toMatchObject({ canRemove: false, removalPlans: [] });
-    expect(
-      normalizeCapability([
-        {
-          agent: "codex",
-          affected_agents: ["codex", "claude-code", "cursor"],
-        },
-        { agent: "cursor", affected_agents: ["codex", "cursor"] },
-      ]),
-    ).toMatchObject({ canRemove: false, removalPlans: [] });
-  });
-
-  test("accepts daemon nil agent slices as honest empty bindings", () => {
-    const inventory = normalizeSkillsInventory({
-      generated_at: "2026-07-19T00:00:00Z",
-      skills: [
-        {
-          id: "0123456789abcdef01234567",
-          name: "shared-skill",
-          canonical_path: "/home/test/.agents/skills/shared-skill",
-          source_path: "/home/test/.agents/skills/shared-skill",
+          id: "abc123def456abc123def456",
+          name: "a",
+          manager: "zen",
+          owned: true,
+          tracked: true,
+          enabled: true,
+          canonical_path: "/s/a",
+          source_path: "/s/a",
           scope: "global",
           agents: ["codex"],
           bindings: [
             {
-              source_path: "/home/test/.agents/skills/shared-skill",
+              agent: "codex",
               scope: "global",
-              agents: null,
-            },
-            {
-              source_path: "/home/test/.codex/skills/shared-skill",
-              scope: "global",
-              agents: ["codex"],
+              mode: "symlink",
+              target_path: "/home/u/.codex/skills/a",
+              source_path: "/s/a",
+              enabled: true,
+              bound_at: "2026-08-01T00:00:00Z",
             },
           ],
-          manager: "unknown",
-          provenance: "ambiguous installed binding",
-          capability: { can_remove: false },
+          provenance: "store",
+          capability: { can_manage: true, operations: ["uninstall"] },
         },
       ],
       agents: [],
-    });
-
-    expect(inventory.skills[0]?.bindings[0]?.agents).toEqual([]);
-    expect(inventory.skills[0]?.agents).toEqual(["codex"]);
-    expect(inventory.skills[0]?.capability.canRemove).toBe(false);
+      warnings: [],
+      mutation_operations: ["import", "uninstall"],
+    };
+    expect(() => normalizeSkillsInventory(base)).not.toThrow();
+    expect(() =>
+      normalizeSkillsInventory({
+        ...base,
+        skills: [base.skills[0], { ...base.skills[0], canonical_path: "/s/b", id: "abc123def456abc123def456" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsInventory({
+        ...base,
+        skills: [{ ...base.skills[0], manager: "skills-cli" }],
+      }),
+    ).toThrow();
+    // Missing mutation operations: an older daemon is rejected (fail closed).
+    expect(() =>
+      normalizeSkillsInventory({
+        ...base,
+        mutation_operations: undefined,
+      }),
+    ).toThrow();
   });
 
-  test("refresh retains successful data while generations complete and fail closed", () => {
-    let state = createSkillsRequestState<string[]>();
-    state = beginSkillsRequest(state);
-    const rows = ["old"];
-    state = completeSkillsRequest(state, 1, rows, false);
-    expect(skillsRequestData(state)).toBe(rows);
-
-    state = beginSkillsRequest(state);
-    expect(state).toEqual({ status: "loading", generation: 2, data: rows });
-    expect(skillsRequestData(state)).toBe(rows);
-    const current = state;
-    expect(completeSkillsRequest(state, 1, ["stale"], false)).toBe(current);
-    expect(failSkillsRequest(state, 1, "stale failure")).toBe(current);
-
-    state = failSkillsRequest(state, 2, "current failure");
-    expect(state).toEqual({
-      status: "error",
-      generation: 2,
-      data: rows,
-      error: "current failure",
-    });
-    expect(skillsRequestData(state)).toBe(rows);
-
-    state = beginSkillsRequest(state, 3);
-    state = completeSkillsRequest(state, 3, ["new"], false);
-    expect(state).toEqual({ status: "ready", generation: 3, data: ["new"] });
-  });
-
-  test("a new search or capability failure can explicitly drop stale data", () => {
-    const rows = ["old"];
-    const ready = completeSkillsRequest(
-      beginSkillsRequest(createSkillsRequestState<string[]>()),
-      1,
-      rows,
-      false,
-    );
-    const search = beginSkillsRequest(ready, 2, false);
-    expect(search).toEqual({ status: "loading", generation: 2 });
-    expect(skillsRequestData(search)).toBeUndefined();
-
-    const refresh = beginSkillsRequest(ready, 2);
-    const capabilityFailure = failSkillsRequest(
-      refresh,
-      2,
-      "Update the Zen daemon.",
-      false,
-    );
-    expect(capabilityFailure).toEqual({
-      status: "error",
-      generation: 2,
-      error: "Update the Zen daemon.",
-    });
-  });
-
-  test("same-query retry retains exact search result and rows through loading and error", () => {
-    const skills = [{ id: "old-result" }];
-    const result = { skills };
-    let state = completeSkillsRequest(
-      beginSkillsRequest(createSkillsRequestState<typeof result>()),
-      1,
-      result,
-      false,
-    );
-
-    state = beginSkillsRequest(state, 2, true);
-    expect(state.status).toBe("loading");
-    expect(skillsRequestData(state)).toBe(result);
-    expect(skillsRequestData(state)?.skills).toBe(skills);
-
-    state = failSkillsRequest(state, 2, "Search unavailable.");
-    expect(state.status).toBe("error");
-    expect(skillsRequestData(state)).toBe(result);
-    expect(skillsRequestData(state)?.skills).toBe(skills);
-
-    const differentQuery = beginSkillsRequest(state, 3, false);
-    expect(differentQuery.status).toBe("loading");
-    expect(skillsRequestData(differentQuery)).toBeUndefined();
+  test("external rows are honest about ownership and adopt capability", () => {
+    const value = {
+      generated_at: "2026-08-01T00:00:00Z",
+      skills: [
+        {
+          id: "111122223333111122223333",
+          name: "ext",
+          manager: "external",
+          owned: false,
+          tracked: true,
+          enabled: true,
+          canonical_path: "/home/u/.grok/skills/ext",
+          source_path: "/home/u/.grok/skills/ext",
+          scope: "global",
+          agents: ["grok"],
+          bindings: [
+            {
+              agent: "grok",
+              scope: "global",
+              mode: "copy",
+              target_path: "/home/u/.grok/skills/ext",
+              source_path: "/home/u/.grok/skills/ext",
+              enabled: true,
+              bound_at: "2026-08-01T00:00:00Z",
+            },
+          ],
+          provenance: "Tracked external installation",
+          source: "/home/u/.grok/skills/ext",
+          source_type: "external",
+          content_hash: "h",
+          migration: "external",
+          capability: { can_manage: true, operations: ["adopt", "forget"] },
+        },
+      ],
+      agents: [],
+      warnings: [],
+      mutation_operations: ["adopt", "forget"],
+    };
+    const inventory = normalizeSkillsInventory(value);
+    expect(inventory.skills[0]!.owned).toBe(false);
+    expect(inventory.skills[0]!.capability.operations).toEqual([
+      "adopt",
+      "forget",
+    ]);
   });
 });
 
-describe("Skills mutation review", () => {
-  const remove: SkillsMutationCommand = {
-    operation: "remove",
-    command:
-      "npx skills remove shared-skill --global --agent codex --agent cursor --yes",
-    skillName: "shared-skill",
-    scope: "global",
-    agents: ["codex", "cursor"],
-  };
-
-  const install: SkillsMutationCommand = {
-    operation: "install",
-    command:
-      "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --yes",
-    catalogId: "acme/skills/useful",
-    source: "acme/skills",
-    skillName: "useful",
+describe("mutation command normalization", () => {
+  const planBase = {
+    operation: "import",
     scope: "global",
     agents: ["codex"],
+    skill_name: "demo",
+    catalog_id: "owner/repo/demo",
+    source: "owner/repo",
+    ref: "main",
+    summary: "Import demo into Zen's canonical store",
+    changes: [
+      {
+        kind: "create_dir",
+        path: "/home/u/.zen/skills/store/demo",
+        detail: "Canonical Zen store entry",
+      },
+      { kind: "symlink", path: "/home/u/.codex/skills/demo", destination: "/home/u/.zen/skills/store/demo" },
+    ],
+    destructive: false,
   };
 
-  test("accepts only the exact official structured command grammar", () => {
-    expect(
-      normalizeSkillsMutationCommand({
-        operation: remove.operation,
-        command: remove.command,
-        skill_name: remove.skillName,
-        scope: remove.scope,
-        agents: remove.agents,
-      }),
-    ).toEqual(remove);
-    expect(
-      normalizeSkillsMutationCommand({
-        operation: install.operation,
-        command: install.command,
-        catalog_id: install.catalogId,
-        source: install.source,
-        skill_name: install.skillName,
-        scope: install.scope,
-        agents: install.agents,
-      }),
-    ).toEqual(install);
-    expect(() =>
-      normalizeSkillsMutationCommand({
-        operation: "remove",
-        command:
-          "npx skills remove shared-skill --global --agent codex --yes; touch pwned",
-        skill_name: "shared-skill",
-        scope: "global",
-        agents: ["codex"],
-      }),
-    ).toThrow("non-official Skills command");
+  test("accepts the reviewable import plan", () => {
+    const command = normalizeSkillsMutationCommand(planBase);
+    expect(command.operation).toBe("import");
+    expect(command.catalogId).toBe("owner/repo/demo");
+    expect(command.ref).toBe("main");
+    expect(command.changes).toHaveLength(2);
+    expect(command.destructive).toBe(false);
   });
 
-  test("install commands are bound to the exact catalog repository and current wire version", () => {
-    expect(() =>
-      normalizeSkillsMutationCommand({
-        operation: install.operation,
-        command: install.command.replace("acme/skills", "other/skills"),
-        catalog_id: install.catalogId,
-        source: install.source,
-        skill_name: install.skillName,
-        scope: install.scope,
-        agents: install.agents,
-      }),
-    ).toThrow("non-official Skills command");
-    expect(() =>
-      normalizeSkillsMutationCommand({
-        operation: install.operation,
-        command: install.command,
-        skill_name: install.skillName,
-        scope: install.scope,
-        agents: install.agents,
-      }),
-    ).toThrow("unbound Skills install command");
-  });
-
-  test("removal confirmation names the exact Skill, scope, targets, and command", () => {
-    expect(buildSkillsMutationConfirmation(remove)).toEqual({
-      title: "Remove shared-skill?",
-      message: [
-        "Skill: shared-skill",
-        "Scope: Global",
-        "Affected Agents: Codex, Cursor",
-        "",
-        "Command:",
-        remove.command,
-      ].join("\n"),
-      confirmLabel: "Remove",
-    });
-  });
-
-  test("update is a collection-level command with no Skill identity", () => {
-    const global = normalizeSkillsMutationCommand({
-      operation: "update",
-      command: "npx skills update --global --yes",
+  test("uninstall plans are destructive and exactly described", () => {
+    const command = normalizeSkillsMutationCommand({
+      operation: "uninstall",
       scope: "global",
       agents: [],
+      skill_name: "demo",
+      summary: "Uninstall demo (remove all bindings, store content, and inventory entry)",
+      changes: [
+        { kind: "remove", path: "/home/u/.zen/skills/store/demo", detail: "Remove canonical store content" },
+        { kind: "remove", path: "/home/u/.codex/skills/demo", detail: "Remove binding for Codex" },
+      ],
+      destructive: true,
     });
-    expect(global).toEqual({
-      operation: "update",
-      command: "npx skills update --global --yes",
-      skillName: "",
-      scope: "global",
-      agents: [],
-    });
+    expect(command.operation).toBe("uninstall");
+    expect(command.destructive).toBe(true);
+  });
 
-    const project = normalizeSkillsMutationCommand({
-      operation: "update",
-      command: "npx skills update --project --yes",
-      scope: "project",
-      agents: [],
-    });
-    expect(project.command).toBe("npx skills update --project --yes");
-
+  test("rejects unbound, unknown, or unreviewable plans", () => {
+    expect(() =>
+      normalizeSkillsMutationCommand({ ...planBase, catalog_id: undefined, source: undefined }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsMutationCommand({ ...planBase, operation: "install" }),
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsMutationCommand({ ...planBase, changes: [] }),
+    ).toThrow();
     expect(() =>
       normalizeSkillsMutationCommand({
-        operation: "update",
-        command: "npx skills update --global --yes",
-        scope: "global",
-        agents: ["codex"],
+        ...planBase,
+        changes: [{ kind: "delete", path: "/x" }],
       }),
     ).toThrow();
     expect(() =>
       normalizeSkillsMutationCommand({
-        operation: "update",
-        command: "npx skills update --global --yes",
-        scope: "global",
-        agents: [],
-        skill_name: "shared-skill",
-      }),
-    ).toThrow();
-    expect(() =>
-      normalizeSkillsMutationCommand({
-        operation: "update",
-        command: "npx skills update shared-skill --global --yes",
-        scope: "global",
-        agents: [],
-      }),
-    ).toThrow("non-official");
-    expect(() =>
-      normalizeSkillsMutationCommand({
-        operation: "update",
-        command: "npx skills update --global",
-        scope: "global",
-        agents: [],
-      }),
-    ).toThrow();
-  });
-
-  test("update confirmation states the scope and the whole-scope effect", () => {
-    expect(
-      buildSkillsMutationConfirmation({
-        operation: "update",
-        command: "npx skills update --global --yes",
-        skillName: "",
-        scope: "global",
-        agents: [],
-      }),
-    ).toMatchObject({
-      title: "Update Global Skills?",
-      confirmLabel: "Update",
-    });
-  });
-
-  test("mutation operations capability is strict and legacy-safe", () => {
-    const legacy = normalizeSkillsInventory({
-      generated_at: "2026-08-08T00:00:00Z",
-      skills: [],
-      agents: [],
-    });
-    expect(legacy.mutationOperations).toEqual(["install", "remove"]);
-
-    const full = normalizeSkillsInventory({
-      generated_at: "2026-08-08T00:00:00Z",
-      skills: [],
-      agents: [],
-      mutation_operations: ["install", "remove", "update"],
-    });
-    expect(full.mutationOperations).toEqual(["install", "remove", "update"]);
-
-    for (const bad of [
-      [],
-      ["install", "install"],
-      ["delete"],
-      ["install", "remove", "update", "sync"],
-    ]) {
-      expect(() =>
-        normalizeSkillsInventory({
-          generated_at: "2026-08-08T00:00:00Z",
-          skills: [],
-          agents: [],
-          mutation_operations: bad,
-        }),
-      ).toThrow();
-    }
-  });
-});
-
-describe("Skills mutation execution boundary", () => {
-  test("normalizes a truthful execution result and rejects inconsistent state", () => {
-    const success = normalizeSkillsMutationResult({
-      command: {
-        operation: "remove",
-        command: "npx skills remove demo --global --agent codex --yes",
+        ...planBase,
+        operation: "migrate",
         skill_name: "demo",
-        scope: "global",
         agents: ["codex"],
-      },
-      success: true,
-      exit_code: 0,
-      output: "removed demo",
-      duration_ms: 812,
-    });
-    expect(success.execution).toEqual({
-      success: true,
-      exitCode: 0,
-      output: "removed demo",
-      durationMs: 812,
-    });
-    expect(success.command.operation).toBe("remove");
-
-    const failure = normalizeSkillsMutationResult({
-      command: {
-        operation: "remove",
-        command: "npx skills remove demo --global --agent codex --yes",
-        skill_name: "demo",
-        scope: "global",
-        agents: ["codex"],
-      },
-      success: false,
-      exit_code: 3,
-      output: "not found",
-      duration_ms: 40,
-    });
-    expect(failure.execution.success).toBe(false);
-    expect(failure.execution.output).toBe("not found");
-  });
-
-  test("rejects malformed or self-contradictory mutation outcomes", () => {
-    const base = {
-      command: {
-        operation: "install",
-        command: "npx skills add https://github.com/owner/repo --skill demo --global --agent codex --yes",
-        catalog_id: "owner/repo/demo",
-        source: "owner/repo",
-        skill_name: "demo",
-        scope: "global",
-        agents: ["codex"],
-      },
-      success: true,
-      exit_code: 0,
-      output: "",
-      duration_ms: 10,
-    };
-    // success true with a non-zero exit is contradictory and must be rejected.
-    expect(() =>
-      normalizeSkillsMutationResult({ ...base, success: true, exit_code: 1 }),
-    ).toThrow();
-    expect(() =>
-      normalizeSkillsMutationResult({ ...base, duration_ms: -1 }),
-    ).toThrow();
-    // Control characters in the output tail are sanitized to empty rather
-    // than leaking terminal escapes onto the App.
-    expect(
-      normalizeSkillsMutationResult({ ...base, output: "a\u0000b" }).execution
-        .output,
-    ).toBe("");
-    expect(() =>
-      normalizeSkillsMutationResult({ ...base, command: undefined }),
+      }),
     ).toThrow();
   });
 
-  test("executed commands must match the reviewed request exactly", () => {
+  test("result normalization requires consistent success state", () => {
     const result = normalizeSkillsMutationResult({
-      command: {
-        operation: "remove",
-        command: "npx skills remove demo --global --agent codex --yes",
-        skill_name: "demo",
-        scope: "global",
-        agents: ["codex"],
-      },
+      command: planBase,
       success: true,
       exit_code: 0,
-      output: "",
-      duration_ms: 10,
+      output: "Imported demo (3 files).",
+      duration_ms: 12,
     });
+    expect(result.execution.success).toBe(true);
     expect(() =>
-      assertSkillsMutationMatchesRequest(result, {
-        operation: "remove",
+      normalizeSkillsMutationResult({
+        command: planBase,
+        success: false,
+        exit_code: 0,
+        output: "",
+        duration_ms: 1,
+      }),
+    ).toThrow();
+  });
+
+  test("executed plans must match the reviewed request exactly", () => {
+    const command = normalizeSkillsMutationCommand(planBase);
+    assertSkillsMutationMatchesRequest(
+      { command, execution: { success: true, exitCode: 0, output: "", durationMs: 1 } },
+      {
+        operation: "import",
+        skillId: "owner/repo/demo",
+        source: "owner/repo",
         skillName: "demo",
         scope: "global",
         agents: ["codex"],
+      },
+    );
+    expect(() =>
+      assertSkillsMutationMatchesRequest(
+        { command, execution: { success: true, exitCode: 0, output: "", durationMs: 1 } },
+        {
+          operation: "import",
+          skillId: "owner/repo/demo",
+          source: "owner/other",
+          scope: "global",
+          agents: ["codex"],
+        },
+      ),
+    ).toThrow();
+  });
+});
+
+describe("inspect detail normalization", () => {
+  test("renders content, provenance, files, bindings, and risk", () => {
+    const detail = normalizeSkillsInspectDetail({
+      skill_name: "demo",
+      description: "A demo",
+      manager: "zen",
+      owned: true,
+      tracked: true,
+      enabled: true,
+      canonical_path: "/home/u/.zen/skills/store/demo",
+      source: "owner/repo",
+      source_type: "catalog",
+      ref: "main",
+      content_hash: "abcd",
+      installed_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+      scope: "global",
+      agents: ["codex"],
+      bindings: [
+        {
+          agent: "codex",
+          scope: "global",
+          mode: "symlink",
+          target_path: "/home/u/.codex/skills/demo",
+          source_path: "/home/u/.zen/skills/store/demo",
+          enabled: true,
+          bound_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+      files: [{ path: "SKILL.md", size: 120, mode: "0644" }],
+      skill_md: "# Demo\n\nBody with\nnewlines and tabs\there.\n",
+      risk: [{ type: "script", severity: "warn", detail: "Script.", file: "run.sh" }],
+      warnings: ["Store content drifted."],
+      capability: { can_manage: true, operations: ["uninstall", "update"] },
+    });
+    expect(detail.skillMd).toContain("# Demo");
+    expect(detail.skillMd).toContain("\n"); // multiline bodies are preserved
+    expect(detail.files?.[0]?.path).toBe("SKILL.md");
+    expect(detail.bindings[0]!.enabled).toBe(true);
+    expect(detail.risk?.[0]?.severity).toBe("warn");
+    expect(detail.capability.operations).toContain("uninstall");
+  });
+
+  test("rejects malformed detail payloads", () => {
+    expect(() => normalizeSkillsInspectDetail({})).toThrow();
+    expect(() =>
+      normalizeSkillsInspectDetail({
+        skill_name: "demo",
+        manager: "zen",
+        scope: "bogus",
+        agents: ["codex"],
+        bindings: [],
       }),
-    ).not.toThrow();
-    const mismatchCases: Array<{
-      operation: SkillMutationOperation;
-      skillName: string;
-      scope: "project" | "global";
-      agents: ManagedSkillAgent[];
-    }> = [
-      { operation: "remove", skillName: "other", scope: "global", agents: ["codex"] },
-      { operation: "remove", skillName: "demo", scope: "project", agents: ["codex"] },
-      { operation: "remove", skillName: "demo", scope: "global", agents: ["claude-code"] },
-      { operation: "install", skillName: "demo", scope: "global", agents: ["codex"] },
-    ];
-    for (const mismatch of mismatchCases) {
-      expect(() => assertSkillsMutationMatchesRequest(result, mismatch)).toThrow();
-    }
+    ).toThrow();
+    expect(() =>
+      normalizeSkillsInspectDetail({
+        skill_name: "demo",
+        manager: "zen",
+        scope: "global",
+        agents: ["codex"],
+        bindings: [
+          {
+            agent: "pi",
+            scope: "global",
+            mode: "symlink",
+            target_path: "/x",
+            source_path: "/y",
+            enabled: true,
+            bound_at: "2026-08-01T00:00:00Z",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("confirmation builder describes exact effects", () => {
+  test("destructive uninstall enumerates every removed path", () => {
+    const command: SkillsMutationCommand = {
+      operation: "uninstall",
+      scope: "global",
+      agents: ["codex"],
+      skillName: "demo",
+      summary: "Uninstall demo (remove all bindings, store content, and inventory entry)",
+      changes: [
+        { kind: "remove", path: "/store/demo", detail: "Remove canonical store content" },
+        { kind: "remove", path: "/home/.codex/skills/demo", detail: "Remove binding for Codex" },
+      ],
+      destructive: true,
+    };
+    const confirmation = buildSkillsMutationConfirmation(command);
+    expect(confirmation.title).toBe("Uninstall demo?");
+    expect(confirmation.confirmLabel).toBe("Uninstall");
+    expect(confirmation.message).toContain("/store/demo");
+    expect(confirmation.message).toContain("/home/.codex/skills/demo");
+  });
+
+  test("import confirmation pins provenance", () => {
+    const confirmation = buildSkillsMutationConfirmation({
+      operation: "import",
+      scope: "global",
+      agents: ["codex"],
+      skillName: "demo",
+      catalogId: "owner/repo/demo",
+      source: "owner/repo",
+      ref: "main",
+      summary: "Import demo into Zen's canonical store from owner/repo",
+      changes: [{ kind: "create_dir", path: "/store/demo" }],
+      destructive: false,
+    });
+    expect(confirmation.message).toContain("Pinned ref: main");
+    expect(confirmation.message).toContain("owner/repo");
+  });
+});
+
+describe("request state machine", () => {
+  test("generations gate begin/complete/fail exactly once", () => {
+    const initial = createSkillsRequestState<SkillsInventory>();
+    const loading = beginSkillsRequest(initial);
+    expect(loading.status).toBe("loading");
+    const ready = completeSkillsRequest(loading, loading.generation, {
+      generatedAt: "2026-08-01T00:00:00Z",
+      skills: [],
+      agents: [],
+      warnings: [],
+      mutationOperations: ["import"],
+      migration: { owned: 0, external: 0, duplicate: 0, conflict: 0, tracked: 0 },
+    } as SkillsInventory, true);
+    expect(ready.status).toBe("empty");
+    // A stale completion cannot overwrite a newer generation.
+    const newer = beginSkillsRequest(ready);
+    expect(completeSkillsRequest(newer, loading.generation, {} as SkillsInventory, false)).toBe(
+      newer,
+    );
+    const failed = failSkillsRequest(newer, newer.generation, "boom");
+    expect(failed.status).toBe("error");
+    expect(skillsRequestData(failed)).toBeDefined();
   });
 });

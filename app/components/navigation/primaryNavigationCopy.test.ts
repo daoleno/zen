@@ -91,21 +91,25 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).not.toContain("Switch to Discover");
     expect(skillsSource).not.toContain('label="Discover"');
     expect(skillsSource).not.toContain('label="Installed"');
-    expect(skillsSource).toContain('label="Global Skills"');
-    expect(skillsSource).toContain('label="Project Skills"');
+    // Per-row lifecycle actions: owned rows update, external rows adopt or
+    // forget; destructive uninstall lives in the inspector with exact paths.
     expect(skillsSource).toContain('label="Update"');
+    expect(skillsSource).toContain('label="Adopt"');
+    expect(skillsSource).toContain('label="Forget"');
     expect(skillsSource).toContain('label="Uninstall"');
     const installedRowBlock = skillsSource.match(
-      /function InstalledSkillItem\([\s\S]*?function CatalogSkillItem\(/,
+      /function InstalledSkillRow\([\s\S]*?function CatalogSkillRow\(/,
     )?.[0];
-    expect(installedRowBlock).not.toContain('label="Update"');
-    expect(installedRowBlock).toContain('label="Remove"');
+    expect(installedRowBlock).toContain("label={quickAction.label}");
+    expect(installedRowBlock).not.toContain('label="Remove"');
+    expect(skillsSource).toContain('return { label: "Update"');
   });
 
   test("ownership is progressive while loading, empty, and error reasons stay inline", () => {
     expect(skillsSource).toContain("installedSkillOwnership");
     expect(skillsSource).toContain("installedPluginOwnership");
-    expect(skillsSource).toContain('kind: "skill-details"');
+    expect(skillsSource).toContain("SkillInspectorBody");
+    expect(skillsSource).toContain("SkillInspectorSheet");
     expect(skillsSource).toContain('kind: "plugin-details"');
     expect(skillsSource).toContain("state.error");
     expect(skillsSource).toContain("catalogState.error");
@@ -118,12 +122,12 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).not.toContain("AgentSelector");
     expect(skillsSource).not.toMatch(/\shorizontal(?:\s|=)/);
     expect(skillsSource).toContain("compactSkillTargets(agentCounts)");
-    // Target, Ranking, and Update live inside one options sheet opened by a
+    // Target, Ranking, and Discovery live inside one options sheet opened by a
     // single neutral icon button; none render as top toolbar labels.
     expect(skillsSource).toContain('accessibilityLabel="Skills options"');
     expect(skillsSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
     expect(skillsSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
-    expect(skillsSource).toContain("SheetSectionHeading>Update</SheetSectionHeading>");
+    expect(skillsSource).toContain("SheetSectionHeading>Discovery</SheetSectionHeading>");
     expect(skillsSource).toContain("managedAgentKind(agent)");
   });
 

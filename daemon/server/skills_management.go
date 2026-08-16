@@ -33,6 +33,12 @@ type skillsMutationRequest struct {
 	cancel    context.CancelFunc
 }
 
+type skillsInspectRequest struct {
+	requestID  string
+	generation int64
+	cancel     context.CancelFunc
+}
+
 type skillsInventoryResponse struct {
 	Type       string              `json:"type"`
 	RequestID  string              `json:"request_id"`
@@ -58,6 +64,13 @@ type skillsCommandResponse struct {
 	Type      string                    `json:"type"`
 	RequestID string                    `json:"request_id"`
 	Command   skillmgmt.MutationCommand `json:"command"`
+}
+
+type skillsInspectResponse struct {
+	Type       string                  `json:"type"`
+	RequestID  string                  `json:"request_id"`
+	Generation int64                   `json:"generation"`
+	Detail     skillmgmt.PackageDetail `json:"detail"`
 }
 
 type skillsMutationResultResponse struct {
@@ -96,7 +109,7 @@ func (s *Server) handleSkillsInventory(conn *websocket.Conn, raw clientMessage) 
 		})
 	}
 	go func() {
-		inventory, err := skillmgmt.DiscoverInventory(skillmgmt.InventoryOptions{Context: ctx, CWD: raw.Cwd})
+		inventory, err := skillmgmt.DiscoverInventory(skillsInventoryOptions(s, ctx, raw.Cwd))
 		if !s.claimSkillsInventory(conn, next) {
 			return
 		}
@@ -307,10 +320,26 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 	}()
 }
 
+func skillsInventoryOptions(s *Server, ctx context.Context, cwd string) skillmgmt.InventoryOptions {
+	options := skillmgmt.InventoryOptions{Context: ctx, CWD: cwd}
+	if s.execs != nil {
+		for name, executor := range s.execs.ByName {
+			options.Executors = append(options.Executors, skillmgmt.ExecutorAlias{
+				Name: name, Kind: executor.Kind, Command: executor.Command,
+			})
+		}
+	}
+	return options
+}
+
 func skillsMutationWireRequest(raw clientMessage) skillmgmt.MutationRequest {
 	agents := make([]skillmgmt.Agent, 0, len(raw.Agents))
 	for _, agent := range raw.Agents {
 		agents = append(agents, skillmgmt.Agent(agent))
+	}
+	scope := skillmgmt.Scope(raw.Scope)
+	if scope == "" && raw.Operation == "migrate" {
+		scope = skillmgmt.ScopeGlobal
 	}
 	return skillmgmt.MutationRequest{
 		Operation: skillmgmt.MutationOperation(raw.Operation),
@@ -318,7 +347,9 @@ func skillsMutationWireRequest(raw clientMessage) skillmgmt.MutationRequest {
 		SkillID:   raw.SkillID,
 		Source:    raw.Source,
 		SkillName: raw.SkillName,
-		Scope:     skillmgmt.Scope(raw.Scope),
+		Ref:       raw.Ref,
+		InfoPath:  raw.Path,
+		Scope:     scope,
 		Agents:    agents,
 	}
 }
@@ -347,7 +378,8 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 	}
 	go func() {
 		request := skillsMutationWireRequest(raw)
-		command, err := skillmgmt.BuildMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request)
+		buildOptions := skillsInventoryOptions(s, ctx, raw.Cwd)
+		command, err := skillmgmt.BuildMutationCommand(buildOptions, request)
 		// The mutation stays registered (owned, cancelable) through the whole
 		// build + execute lifetime: a newer mutation or a disconnect cancels
 		// ctx and replaces/deletes the slot, which both stops the command and
@@ -363,8 +395,12 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 			if s.skillsMutationExecuteOverride != nil {
 				execute = s.skillsMutationExecuteOverride
 			}
+			// Native Skills operations are cancellable and bounded; the timeout
+			// mirrors the old CLI bounds so a hung fetch can never hang Zen.
 			execution, execErr = execute(ctx, command, skillmgmt.MutationExecutionOptions{
-				CWD: request.CWD,
+				CWD:              request.CWD,
+				InventoryOptions: buildOptions,
+				Timeout:          skillmgmt.MutationTimeoutFor(command),
 			})
 		}
 		// Atomically consume the slot with the emission: a superseded or
@@ -458,6 +494,75 @@ func (s *Server) sendSkillsError(conn *websocket.Conn, responseType string, raw 
 
 func validSkillsRequest(requestID string, generation int64) bool {
 	return validSkillsRequestID(requestID) && generation > 0
+}
+
+// handleSkillsInspect serves the read-side inspector: rendered SKILL.md
+// content, bounded file listing, provenance, hash, bindings, and risk
+// signals for one Skill. Like the inventory, inspect is generation-cancelable
+// and never mutates state.
+func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {
+	if !validSkillsRequest(raw.RequestID, raw.Generation) {
+		s.sendSkillsError(conn, "skills_inspect_error", raw, "invalid_request", "Invalid Skills inspect request.")
+		return
+	}
+	name := strings.TrimSpace(raw.SkillName)
+	if name == "" {
+		s.sendSkillsError(conn, "skills_inspect_error", raw, "invalid_request", "A Skill name is required.")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	next := skillsInspectRequest{requestID: raw.RequestID, generation: raw.Generation, cancel: cancel}
+	previous, hadPrevious := s.replaceSkillsInspect(conn, next)
+	if hadPrevious {
+		s.sendJSON(conn, skillsErrorResponse{
+			Type:       "skills_inspect_error",
+			RequestID:  previous.requestID,
+			Generation: previous.generation,
+			Code:       "superseded",
+			Message:    "A newer Skills inspect request replaced this request.",
+		})
+	}
+	go func() {
+		detail, err := skillmgmt.InspectPackage(skillsInventoryOptions(s, ctx, raw.Cwd), name)
+		if !s.claimSkillsInspect(conn, next) {
+			return
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			s.sendSkillsError(conn, "skills_inspect_error", raw, "inspect_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, skillsInspectResponse{
+			Type:       "skills_inspect_result",
+			RequestID:  raw.RequestID,
+			Generation: raw.Generation,
+			Detail:     detail,
+		})
+	}()
+}
+
+func (s *Server) replaceSkillsInspect(conn *websocket.Conn, next skillsInspectRequest) (skillsInspectRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.skillsInspects[conn]
+	if ok {
+		previous.cancel()
+	}
+	s.skillsInspects[conn] = next
+	return previous, ok
+}
+
+func (s *Server) claimSkillsInspect(conn *websocket.Conn, expected skillsInspectRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.skillsInspects[conn]
+	if !ok || current.requestID != expected.requestID || current.generation != expected.generation {
+		return false
+	}
+	delete(s.skillsInspects, conn)
+	return true
 }
 
 func validSkillsRequestID(value string) bool {
