@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,16 +67,21 @@ type skillFrontmatter struct {
 }
 
 type inventoryCollector struct {
-	options    InventoryOptions
-	byReal     map[string]*InstalledSkill
-	byName     map[string][]*InstalledSkill
-	blocked    map[string]string
-	warnings   []string
-	warned     map[string]struct{}
-	count      int
-	work       int
-	incomplete bool
-	stopped    bool
+	options                InventoryOptions
+	byReal                 map[string]*InstalledSkill
+	byName                 map[string][]*InstalledSkill
+	blocked                map[string]string
+	warnings               []string
+	warned                 map[string]struct{}
+	count                  int
+	work                   int
+	incomplete             bool
+	stopped                bool
+	codexEnabledOverrides  map[string]bool
+	codexConfigLoaded      bool
+	piGlobalSkillPatterns  []string
+	piProjectSkillPatterns []string
+	piConfigLoaded         bool
 }
 
 // DiscoverInventory builds the authoritative single Skills list: Zen-owned
@@ -308,11 +316,19 @@ func (collector *inventoryCollector) addOwnedRow(store Store, entry PackageEntry
 		collector.warn(fmt.Sprintf("Zen-owned Skill %q drifted from its recorded content hash.", entry.SkillName))
 	}
 	for _, binding := range entry.Bindings {
+		runtimeEnabled := binding.Enabled
+		operations := bindingOperations(binding)
+		note := binding.Note
+		if binding.Enabled && !collector.skillBindingEnabled(binding.Agent, binding.TargetPath) {
+			runtimeEnabled = false
+			operations = []MutationOperation{OperationUnbind}
+			note = appendBindingNote(note, agentName(binding.Agent)+" runtime settings disable this materialized binding; change that provider setting before enabling it with Zen.")
+		}
 		extended := SkillBinding{
 			Agent: binding.Agent, Scope: binding.Scope, Mode: string(binding.Mode),
 			TargetPath: binding.TargetPath, SourcePath: binding.TargetPath,
-			Enabled: binding.Enabled, BoundAt: binding.BoundAt, Note: binding.Note,
-			Operations: bindingOperations(binding),
+			Enabled: runtimeEnabled, BoundAt: binding.BoundAt, Note: note,
+			Operations: operations,
 		}
 		if binding.Mode == BindingCopy && binding.Enabled {
 			if driftHash := copyBindingDriftHash(binding, hash); driftHash != "" {
@@ -325,7 +341,15 @@ func (collector *inventoryCollector) addOwnedRow(store Store, entry PackageEntry
 		}
 		skill.Bindings = append(skill.Bindings, extended)
 	}
+	skill.Enabled = anySkillBindingEnabled(skill.Bindings)
 	collector.add(skill)
+}
+
+func appendBindingNote(existing, addition string) string {
+	if strings.TrimSpace(existing) == "" {
+		return addition
+	}
+	return strings.TrimSpace(existing) + " " + addition
 }
 
 func bindingOperations(binding BindingEntry) []MutationOperation {
@@ -351,8 +375,18 @@ func updateProvenancePinned(entry PackageEntry) bool {
 	switch SourceType(entry.SourceType) {
 	case SourceTypeCatalog, SourceTypeGithub:
 		return entry.Ref != ""
-	case SourceTypeLocal, SourceTypeArchive:
-		return filepath.IsAbs(entry.Source) && entry.ContentHash != ""
+	case SourceTypeLocal:
+		if !filepath.IsAbs(entry.Source) || entry.ContentHash == "" {
+			return false
+		}
+		info, err := os.Stat(entry.Source)
+		return err == nil && info.IsDir()
+	case SourceTypeArchive:
+		if !filepath.IsAbs(entry.Source) || entry.ContentHash == "" {
+			return false
+		}
+		info, err := os.Stat(entry.Source)
+		return err == nil && info.Mode().IsRegular()
 	default:
 		return false
 	}
@@ -384,15 +418,26 @@ func (collector *inventoryCollector) addTrackedExternalRow(store Store, entry Pa
 		collector.add(skill)
 		return
 	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		collector.warn(fmt.Sprintf("Tracked external Skill %q could not be resolved: %v", entry.SkillName, err))
+		return
+	}
+	realDir, err = filepath.Abs(realDir)
+	if err != nil {
+		collector.warn(fmt.Sprintf("Tracked external Skill %q could not be resolved: %v", entry.SkillName, err))
+		return
+	}
+	realDir = filepath.Clean(realDir)
 	skill := &InstalledSkill{
-		ID:            installedSkillID(dir),
+		ID:            installedSkillID(realDir),
 		Name:          entry.SkillName,
 		Description:   entry.Description,
 		Manager:       ManagerExternal,
 		Owned:         false,
 		Tracked:       true,
 		Enabled:       true,
-		CanonicalPath: dir,
+		CanonicalPath: realDir,
 		SourcePath:    dir,
 		Scope:         entry.DiscoveredScope,
 		Agents:        append([]Agent{}, entry.DiscoveredAgents...),
@@ -409,6 +454,14 @@ func (collector *inventoryCollector) addTrackedExternalRow(store Store, entry Pa
 			Operations: []MutationOperation{OperationAdopt, OperationForget},
 		},
 	}
+	for _, agent := range skill.Agents {
+		enabled := collector.skillBindingEnabled(agent, dir)
+		skill.Bindings = append(skill.Bindings, SkillBinding{
+			Agent: agent, Scope: skill.Scope, Mode: externalBindingMode(dir),
+			TargetPath: dir, SourcePath: dir, Enabled: enabled,
+		})
+	}
+	skill.Enabled = anySkillBindingEnabled(skill.Bindings)
 	collector.add(skill)
 }
 
@@ -475,6 +528,51 @@ func (collector *inventoryCollector) scanExternalSurfaces(store Store) {
 			}
 		}
 	}
+	if collector.stopped {
+		return
+	}
+	collector.scanRoot(inventoryRoot{
+		path:       filepath.Join(collector.options.Home, ".agents", "skills"),
+		label:      "shared user Skills directory",
+		scope:      ScopeGlobal,
+		agents:     []Agent{AgentCodex, AgentPi},
+		manager:    ManagerExternal,
+		provenance: "Shared user Skills directory",
+	}, store)
+	if collector.stopped || collector.options.CWD == "" {
+		return
+	}
+	for _, root := range sharedProjectSkillRoots(collector.options.CWD, collector.options.Home) {
+		collector.scanRoot(inventoryRoot{
+			path:       root,
+			label:      "shared project Skills directory",
+			scope:      ScopeProject,
+			agents:     []Agent{AgentCodex, AgentPi},
+			manager:    ManagerExternal,
+			provenance: "Shared project Skills directory",
+		}, store)
+		if collector.stopped {
+			return
+		}
+	}
+}
+
+func sharedProjectSkillRoots(cwd, home string) []string {
+	roots := []string{}
+	current := filepath.Clean(cwd)
+	normalizedHome := filepath.Clean(home)
+	for {
+		if current == normalizedHome || filepath.Dir(current) == current {
+			break
+		}
+		roots = append(roots, filepath.Join(current, ".agents", "skills"))
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			break
+		}
+		parent := filepath.Dir(current)
+		current = parent
+	}
+	return roots
 }
 
 func (collector *inventoryCollector) scanRoot(root inventoryRoot, store Store) {
@@ -568,18 +666,25 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	realPath = filepath.Clean(realPath)
 
 	hash := ""
-	if hashValue, hashErr := boundedDiscoveryHash(sourcePath); hashErr == nil {
+	var hashErr error
+	// The directory entry itself may be an Agent binding symlink. Its resolved
+	// copy ID pins the target; package-internal symlinks remain rejected by the
+	// bounded hash traversal.
+	if hashValue, err := boundedDiscoveryHash(realPath); err == nil {
 		hash = hashValue
+	} else {
+		hashErr = err
 	}
 	bindings := make([]SkillBinding, 0, len(root.agents))
 	for _, agent := range root.agents {
+		enabled := collector.skillBindingEnabled(agent, sourcePath)
 		bindings = append(bindings, SkillBinding{
 			Agent:      agent,
 			Scope:      root.scope,
-			Mode:       string(BindingSymlink),
+			Mode:       externalBindingMode(sourcePath),
 			TargetPath: filepath.Clean(sourcePath),
 			SourcePath: filepath.Clean(sourcePath),
-			Enabled:    true,
+			Enabled:    enabled,
 		})
 	}
 	if existing := collector.byReal[realPath]; existing != nil {
@@ -598,7 +703,7 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		Manager:       root.manager,
 		Owned:         false,
 		Tracked:       false,
-		Enabled:       true,
+		Enabled:       anySkillBindingEnabled(bindings),
 		CanonicalPath: realPath,
 		SourcePath:    filepath.Clean(sourcePath),
 		Scope:         root.scope,
@@ -623,6 +728,9 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		skill.Capability = ManagementCapability{Reason: "Builtin Skills are managed by their provider."}
 	} else {
 		skill.Provenance = root.provenance
+		if hashErr != nil {
+			collector.blockManagement(skill, "Manage with Zen is unavailable because this Skill copy could not be hashed within safety bounds.")
+		}
 	}
 	if identityMismatch {
 		collector.blockManagement(skill, "Skill metadata does not match its installed directory identity.")
@@ -631,6 +739,349 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	collector.byReal[realPath] = skill
 	collector.byName[name] = append(collector.byName[name], skill)
 	collector.count++
+}
+
+type codexSkillsConfig struct {
+	Skills struct {
+		Config []struct {
+			Path    string `toml:"path"`
+			Enabled *bool  `toml:"enabled"`
+		} `toml:"config"`
+	} `toml:"skills"`
+}
+
+func (collector *inventoryCollector) skillBindingEnabled(agent Agent, sourcePath string) bool {
+	switch agent {
+	case AgentCodex:
+		collector.loadCodexEnabledOverrides()
+		metadataPath := filepath.Join(sourcePath, "SKILL.md")
+		if realPath, err := filepath.EvalSymlinks(metadataPath); err == nil {
+			metadataPath = realPath
+		}
+		metadataPath, _ = filepath.Abs(metadataPath)
+		if enabled, ok := collector.codexEnabledOverrides[filepath.Clean(metadataPath)]; ok {
+			return enabled
+		}
+		return true
+	case AgentPi:
+		return collector.piSkillBindingEnabled(sourcePath)
+	default:
+		return true
+	}
+}
+
+func (collector *inventoryCollector) loadCodexEnabledOverrides() {
+	if collector.codexConfigLoaded {
+		return
+	}
+	collector.codexConfigLoaded = true
+	collector.codexEnabledOverrides = map[string]bool{}
+	data, err := os.ReadFile(filepath.Join(collector.options.CodexHome, "config.toml"))
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		collector.warn("Codex Skill enabled overrides could not be read; discovered copies use filesystem availability.")
+		return
+	}
+	var config codexSkillsConfig
+	if _, err := toml.Decode(string(data), &config); err != nil {
+		collector.warn("Codex Skill enabled overrides could not be parsed; discovered copies use filesystem availability.")
+		return
+	}
+	for _, entry := range config.Skills.Config {
+		if entry.Enabled == nil || strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		path := filepath.Clean(entry.Path)
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		if realPath, err := filepath.EvalSymlinks(path); err == nil {
+			path = realPath
+		}
+		collector.codexEnabledOverrides[filepath.Clean(path)] = *entry.Enabled
+	}
+}
+
+type piSkillsSettings struct {
+	Skills json.RawMessage `json:"skills"`
+}
+
+type legacyPiSkillsSettings struct {
+	CustomDirectories []string `json:"customDirectories"`
+}
+
+func (collector *inventoryCollector) piSkillBindingEnabled(sourcePath string) bool {
+	collector.loadPiSkillPatterns()
+	patterns, baseDir, ok := collector.piPatternsForSource(sourcePath)
+	if !ok || len(patterns) == 0 {
+		return true
+	}
+	metadataPath, err := filepath.Abs(filepath.Join(sourcePath, "SKILL.md"))
+	if err != nil {
+		return true
+	}
+	enabled := true
+	// Pi applies exclusions, then exact force-includes, then exact
+	// force-excludes regardless of their order in settings.json.
+	for _, prefix := range []byte{'!', '+', '-'} {
+		for _, configured := range patterns {
+			configured = strings.TrimSpace(configured)
+			if len(configured) < 2 || configured[0] != prefix {
+				continue
+			}
+			matches, matchErr := piSkillPatternMatches(metadataPath, configured[1:], baseDir, prefix != '!')
+			if matchErr != nil {
+				collector.warn("A Pi Skill enabled override pattern could not be evaluated; unmatched copies use filesystem availability.")
+				continue
+			}
+			if !matches {
+				continue
+			}
+			switch prefix {
+			case '!':
+				enabled = false
+			case '+':
+				enabled = true
+			case '-':
+				enabled = false
+			}
+		}
+	}
+	return enabled
+}
+
+func (collector *inventoryCollector) loadPiSkillPatterns() {
+	if collector.piConfigLoaded {
+		return
+	}
+	collector.piConfigLoaded = true
+	collector.piGlobalSkillPatterns = collector.readPiSkillPatterns(
+		filepath.Join(collector.options.Home, ".pi", "agent", "settings.json"),
+		"global",
+	)
+	if collector.options.CWD != "" {
+		collector.piProjectSkillPatterns = collector.readPiSkillPatterns(
+			filepath.Join(collector.options.CWD, ".pi", "settings.json"),
+			"project",
+		)
+	}
+}
+
+func (collector *inventoryCollector) readPiSkillPatterns(settingsPath, scope string) []string {
+	data, err := os.ReadFile(settingsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		collector.warn("Pi " + scope + " Skill enabled overrides could not be read; discovered copies use filesystem availability.")
+		return nil
+	}
+	var settings piSkillsSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		collector.warn("Pi " + scope + " Skill enabled overrides could not be parsed; discovered copies use filesystem availability.")
+		return nil
+	}
+	if len(settings.Skills) == 0 || string(settings.Skills) == "null" {
+		return nil
+	}
+	var patterns []string
+	if err := json.Unmarshal(settings.Skills, &patterns); err == nil {
+		return patterns
+	}
+	var legacy legacyPiSkillsSettings
+	if err := json.Unmarshal(settings.Skills, &legacy); err == nil && legacy.CustomDirectories != nil {
+		return legacy.CustomDirectories
+	}
+	collector.warn("Pi " + scope + " Skill enabled overrides have an unsupported shape; discovered copies use filesystem availability.")
+	return nil
+}
+
+func (collector *inventoryCollector) piPatternsForSource(sourcePath string) ([]string, string, bool) {
+	sourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return nil, "", false
+	}
+	sourcePath = filepath.Clean(sourcePath)
+	projectPiRoot := ""
+	if collector.options.CWD != "" {
+		projectPiRoot = filepath.Join(collector.options.CWD, ".pi", "skills")
+		if pathWithinRoot(sourcePath, projectPiRoot) {
+			return collector.piProjectSkillPatterns, filepath.Dir(projectPiRoot), true
+		}
+		for _, root := range sharedProjectSkillRoots(collector.options.CWD, collector.options.Home) {
+			if pathWithinRoot(sourcePath, root) {
+				return collector.piProjectSkillPatterns, filepath.Dir(root), true
+			}
+		}
+	}
+	globalPiRoot := filepath.Join(collector.options.Home, ".pi", "agent", "skills")
+	if pathWithinRoot(sourcePath, globalPiRoot) {
+		return collector.piGlobalSkillPatterns, filepath.Dir(globalPiRoot), true
+	}
+	globalSharedRoot := filepath.Join(collector.options.Home, ".agents", "skills")
+	if pathWithinRoot(sourcePath, globalSharedRoot) {
+		return collector.piGlobalSkillPatterns, filepath.Dir(globalSharedRoot), true
+	}
+	return nil, "", false
+}
+
+func pathWithinRoot(candidate, root string) bool {
+	if root == "" {
+		return false
+	}
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func externalBindingMode(sourcePath string) string {
+	info, err := os.Lstat(sourcePath)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return string(BindingSymlink)
+	}
+	return string(BindingDirect)
+}
+
+func piSkillPatternMatches(metadataPath, patternValue, baseDir string, exact bool) (bool, error) {
+	metadataPath = filepath.Clean(metadataPath)
+	baseDir = filepath.Clean(baseDir)
+	relative, err := filepath.Rel(baseDir, metadataPath)
+	if err != nil {
+		return false, err
+	}
+	parent := filepath.Dir(metadataPath)
+	parentRelative, err := filepath.Rel(baseDir, parent)
+	if err != nil {
+		return false, err
+	}
+	patternValue = filepath.ToSlash(patternValue)
+	if exact {
+		patternValue = strings.TrimPrefix(patternValue, "./")
+		for _, candidate := range []string{
+			filepath.ToSlash(relative),
+			filepath.ToSlash(metadataPath),
+			filepath.ToSlash(parentRelative),
+			filepath.ToSlash(parent),
+		} {
+			if candidate == patternValue {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	for _, candidate := range []string{
+		filepath.ToSlash(relative),
+		filepath.Base(metadataPath),
+		filepath.ToSlash(metadataPath),
+		filepath.ToSlash(parentRelative),
+		filepath.Base(parent),
+		filepath.ToSlash(parent),
+	} {
+		matched, matchErr := piMinimatch(patternValue, candidate)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func piMinimatch(patternValue, candidate string) (bool, error) {
+	if len(patternValue) > 4096 {
+		return false, errors.New("Pi Skill pattern exceeds safety bound")
+	}
+	for _, marker := range []string{"@(", "+(", "?(", "*(", "!("} {
+		if strings.Contains(patternValue, marker) {
+			return false, errors.New("Pi Skill extglob pattern is unsupported")
+		}
+	}
+	expanded, err := expandPiBracePatterns(patternValue)
+	if err != nil {
+		return false, err
+	}
+	for _, current := range expanded {
+		matched, matchErr := matchPiGlobSegments(strings.Split(current, "/"), strings.Split(candidate, "/"), 0, 0, map[[2]int]bool{})
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func matchPiGlobSegments(patternSegments, candidateSegments []string, patternIndex, candidateIndex int, visited map[[2]int]bool) (bool, error) {
+	key := [2]int{patternIndex, candidateIndex}
+	if visited[key] {
+		return false, nil
+	}
+	visited[key] = true
+	if patternIndex == len(patternSegments) {
+		return candidateIndex == len(candidateSegments), nil
+	}
+	if patternSegments[patternIndex] == "**" {
+		matched, err := matchPiGlobSegments(patternSegments, candidateSegments, patternIndex+1, candidateIndex, visited)
+		if err != nil || matched {
+			return matched, err
+		}
+		if candidateIndex < len(candidateSegments) {
+			return matchPiGlobSegments(patternSegments, candidateSegments, patternIndex, candidateIndex+1, visited)
+		}
+		return false, nil
+	}
+	if candidateIndex == len(candidateSegments) {
+		return false, nil
+	}
+	matched, err := path.Match(patternSegments[patternIndex], candidateSegments[candidateIndex])
+	if err != nil || !matched {
+		return false, err
+	}
+	return matchPiGlobSegments(patternSegments, candidateSegments, patternIndex+1, candidateIndex+1, visited)
+}
+
+func expandPiBracePatterns(patternValue string) ([]string, error) {
+	start := strings.IndexByte(patternValue, '{')
+	if start < 0 {
+		return []string{patternValue}, nil
+	}
+	endOffset := strings.IndexByte(patternValue[start+1:], '}')
+	if endOffset < 0 {
+		return []string{patternValue}, nil
+	}
+	end := start + 1 + endOffset
+	choices := strings.Split(patternValue[start+1:end], ",")
+	if len(choices) == 1 {
+		return []string{patternValue}, nil
+	}
+	if len(choices) > 32 {
+		return nil, errors.New("Pi Skill brace pattern exceeds safety bound")
+	}
+	expanded := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		current := patternValue[:start] + choice + patternValue[end+1:]
+		nested, err := expandPiBracePatterns(current)
+		if err != nil {
+			return nil, err
+		}
+		expanded = append(expanded, nested...)
+		if len(expanded) > 32 {
+			return nil, errors.New("Pi Skill brace expansion exceeds safety bound")
+		}
+	}
+	return expanded, nil
+}
+
+func anySkillBindingEnabled(bindings []SkillBinding) bool {
+	for _, binding := range bindings {
+		if binding.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // isManagedTarget returns true when the on-disk directory is a Zen-owned
@@ -659,6 +1110,9 @@ func (collector *inventoryCollector) isManagedTarget(sourcePath string, store St
 			// inspectable as package provenance and must not become a duplicate row.
 			return true
 		}
+		if !skill.Owned {
+			continue
+		}
 		for _, binding := range skill.Bindings {
 			if filepath.Clean(sourcePath) == filepath.Clean(binding.TargetPath) {
 				return true
@@ -678,6 +1132,7 @@ func mergeInstruction(skill *InstalledSkill, root inventoryRoot, binding SkillBi
 		}
 	}
 	skill.Bindings = append(skill.Bindings, binding)
+	skill.Enabled = anySkillBindingEnabled(skill.Bindings)
 }
 
 func boundedDiscoveryHash(sourcePath string) (string, error) {
@@ -898,11 +1353,8 @@ func finalizeRow(skill *InstalledSkill) {
 		}
 	}
 	if skill.Manager == ManagerZen && len(skill.Agents) == 0 {
-		skill.Capability = ManagementCapability{
-			CanManage:  true,
-			Operations: []MutationOperation{OperationBind, OperationUninstall, OperationUpdate},
-			Reason:     "The canonical package has no linked supported Agent target.",
-		}
+		skill.Capability.CanManage = true
+		skill.Capability.Reason = "The canonical package has no supported Agent binding."
 	}
 }
 

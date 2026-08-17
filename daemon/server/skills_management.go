@@ -134,6 +134,10 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 		s.sendSkillsError(conn, "skills_command_error", raw, "unsupported_operation", "Skills import is not part of local management.")
 		return
 	}
+	if raw.Operation != string(skillmgmt.OperationMigrate) && strings.TrimSpace(raw.SkillID) == "" {
+		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "A current Skill copy ID is required.")
+		return
+	}
 	request := skillsMutationWireRequest(raw)
 	go func() {
 		// Review and execution must resolve the same HOME, state and project
@@ -199,6 +203,10 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 	}
 	if raw.Operation == string(skillmgmt.OperationImport) {
 		s.sendSkillsError(conn, "skills_mutation_error", raw, "unsupported_operation", "Skills import is not part of local management.")
+		return
+	}
+	if raw.Operation != string(skillmgmt.OperationMigrate) && strings.TrimSpace(raw.SkillID) == "" {
+		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "A current Skill copy ID is required.")
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -347,6 +355,11 @@ func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {
 		s.sendSkillsError(conn, "skills_inspect_error", raw, "invalid_request", "A Skill name is required.")
 		return
 	}
+	copyID := strings.TrimSpace(raw.SkillID)
+	if copyID == "" {
+		s.sendSkillsError(conn, "skills_inspect_error", raw, "invalid_request", "A current Skill copy ID is required.")
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	next := skillsInspectRequest{requestID: raw.RequestID, generation: raw.Generation, cancel: cancel}
 	previous, hadPrevious := s.replaceSkillsInspect(conn, next)
@@ -363,15 +376,10 @@ func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {
 		options := skillsInventoryOptions(s, ctx, raw.Cwd)
 		var detail skillmgmt.PackageDetail
 		var err error
-		copyID := strings.TrimSpace(raw.SkillID)
-		if strings.TrimSpace(raw.Path) != "" && copyID != "" {
+		if strings.TrimSpace(raw.Path) != "" {
 			detail, err = skillmgmt.InspectPackageCopyFile(options, name, copyID, raw.Path)
-		} else if strings.TrimSpace(raw.Path) != "" {
-			detail, err = skillmgmt.InspectPackageFile(options, name, raw.Path)
-		} else if copyID != "" {
-			detail, err = skillmgmt.InspectPackageCopy(options, name, copyID)
 		} else {
-			detail, err = skillmgmt.InspectPackage(options, name)
+			detail, err = skillmgmt.InspectPackageCopy(options, name, copyID)
 		}
 		if !s.claimSkillsInspect(conn, next) {
 			return

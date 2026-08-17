@@ -6,7 +6,7 @@ export type SkillScope =
   "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
 export type SkillManager =
   "zen" | "external" | "plugin" | "builtin" | "unknown";
-export type BindingMode = "symlink" | "copy";
+export type BindingMode = "symlink" | "copy" | "direct";
 export type SkillMutationOperation =
   | "migrate"
   | "bind"
@@ -126,6 +126,7 @@ export interface SkillsMutationCommand {
   scope: "project" | "global";
   agents: SkillAgent[];
   skillName: string;
+  copyId?: string;
   source?: string;
   ref?: string;
   summary: string;
@@ -166,7 +167,7 @@ export interface FilePreview {
 }
 
 export interface PackageDetail {
-  copyId?: string;
+  copyId: string;
   skillName: string;
   description?: string;
   manager: SkillManager;
@@ -239,7 +240,7 @@ const OPERATIONS = new Set<SkillMutationOperation>([
   "adopt",
   "update",
 ]);
-const BINDING_MODES = new Set<BindingMode>(["symlink", "copy"]);
+const BINDING_MODES = new Set<BindingMode>(["symlink", "copy", "direct"]);
 const CHANGE_KINDS = new Set<string>([
   "create_dir",
   "copy_file",
@@ -433,6 +434,13 @@ export function normalizeSkillsMutationCommand(
     if (!isSkillName(skillName)) {
       throw new Error("Daemon returned an invalid Skills command.");
     }
+    const copyId = boundedString(raw.copy_id, 24);
+    if (!INSTALLED_ID_PATTERN.test(copyId)) {
+      throw new Error(
+        "Daemon returned a Skills command without copy identity.",
+      );
+    }
+    normalized.copyId = copyId;
     const source = boundedString(raw.source, 1024);
     const ref = boundedString(raw.ref, 128);
     if (source) {
@@ -511,10 +519,12 @@ function assertSkillsCommandMatchesRequest(
   if (
     command.operation !== expected.operation ||
     command.scope !== expected.scope ||
-    command.agents.length !== (expected.agents ?? []).length ||
-    command.agents.some(
-      (agent, index) => agent !== (expected.agents ?? [])[index],
-    ) ||
+    (expected.agents != null &&
+      (command.agents.length !== expected.agents.length ||
+        command.agents.some(
+          (agent, index) => agent !== expected.agents?.[index],
+        ))) ||
+    (expected.skillId != null && command.copyId !== expected.skillId) ||
     (expected.skillName != null && command.skillName !== expected.skillName)
   ) {
     throw new Error(
@@ -525,10 +535,12 @@ function assertSkillsCommandMatchesRequest(
 
 export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
   const raw = record(value);
+  const copyId = boundedString(raw.copy_id, 24);
   const skillName = boundedString(raw.skill_name, 128);
   const manager = raw.manager;
   const scope = raw.scope;
   if (
+    !INSTALLED_ID_PATTERN.test(copyId) ||
     !isSkillName(skillName) ||
     typeof manager !== "string" ||
     !MANAGERS.has(manager as SkillManager) ||
@@ -595,7 +607,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     );
   }
   return {
-    copyId: boundedString(raw.copy_id, 64) || undefined,
+    copyId,
     skillName,
     description: boundedString(raw.description, 240) || undefined,
     manager: manager as SkillManager,

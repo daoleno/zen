@@ -579,7 +579,7 @@ function LocalSkillsList(
       renderItem={({ item }) => (
         <SkillRow
           skill={item}
-          onOpen={() => props.onInspectSkill(item.activeCopy)}
+          onOpen={() => props.onInspectSkill(item.primaryCopy)}
         />
       )}
     />
@@ -590,7 +590,7 @@ function SkillRow({ skill, onOpen }: { skill: LogicalSkill; onOpen(): void }) {
   const colors = useAppColors();
   const agentText = skill.agents.length
     ? skill.agents.map(skillAgentLabel).join(", ")
-    : "Not active";
+    : "Not enabled";
   const copyText =
     skill.copies.length > 1 ? ` · ${skill.copies.length} copies` : "";
   return (
@@ -641,8 +641,10 @@ function SkillRow({ skill, onOpen }: { skill: LogicalSkill; onOpen(): void }) {
           ]}
         >
           {skill.hasConflict
-            ? `${skill.activeVersionCount} active versions · `
-            : ""}
+            ? "Copies need review · "
+            : skill.enabledVariantCount > 1
+              ? `${skill.enabledVariantCount} enabled content variants · `
+              : ""}
           {agentText}
           {copyText}
         </Text>
@@ -804,69 +806,109 @@ function Inspector(
               key={item.id}
               copy={item}
               selected={item.id === copy.id}
-              active={Object.values(props.logical!.activeByAgent).some(
-                (activeCopy) => activeCopy?.id === item.id,
-              )}
+              enabled={item.enabled}
               onPress={() => props.onInspectSkill(item)}
             />
           ))}
         </DetailSection>
         <DetailSection title="Agent bindings">
           {detail.bindings.length ? (
-            detail.bindings.map((binding) => (
-              <View
-                key={`${binding.agent}:${binding.scope}`}
-                style={[
-                  styles.bindingRow,
-                  { borderBottomColor: colors.borderSubtle },
-                ]}
-              >
-                <View style={styles.flex}>
-                  <Text style={{ color: colors.textPrimary }}>
-                    {skillAgentLabel(binding.agent)}
-                  </Text>
-                  <Text
-                    style={[styles.metadata, { color: colors.textTertiary }]}
-                  >
-                    {binding.scope} · {binding.mode}
-                  </Text>
-                </View>
-                <Pressable
-                  accessibilityRole="switch"
-                  accessibilityState={{ checked: binding.enabled }}
-                  accessibilityLabel={`${binding.enabled ? "Disable" : "Enable"} ${skillAgentLabel(binding.agent)} binding`}
-                  disabled={
-                    !binding.operations.includes(
-                      binding.enabled ? "disable" : "enable",
-                    )
-                  }
-                  onPress={() =>
-                    props.onBinding(
-                      copy,
-                      binding.enabled ? "disable" : "enable",
-                      binding.agent,
-                      binding.scope === "project" ? "project" : "global",
-                    )
-                  }
+            detail.bindings.map((binding) => {
+              const toggleOperation = binding.enabled ? "disable" : "enable";
+              const canToggle =
+                props.mutationOperations.includes(toggleOperation) &&
+                binding.operations.includes(toggleOperation);
+              const canUnbind =
+                props.mutationOperations.includes("unbind") &&
+                binding.operations.includes("unbind");
+              return (
+                <View
+                  key={`${binding.agent}:${binding.scope}`}
                   style={[
-                    styles.toggle,
-                    {
-                      backgroundColor: binding.enabled
-                        ? colors.accent
-                        : colors.borderStrong,
-                    },
+                    styles.bindingRow,
+                    { borderBottomColor: colors.borderSubtle },
                   ]}
                 >
-                  <View
-                    style={[
-                      styles.toggleKnob,
-                      binding.enabled && styles.toggleKnobOn,
-                      { backgroundColor: colors.bgPrimary },
-                    ]}
-                  />
-                </Pressable>
-              </View>
-            ))
+                  <View style={styles.flex}>
+                    <Text style={{ color: colors.textPrimary }}>
+                      {skillAgentLabel(binding.agent)}
+                    </Text>
+                    <Text
+                      style={[styles.metadata, { color: colors.textTertiary }]}
+                    >
+                      {binding.scope} · {binding.mode} ·{" "}
+                      {binding.enabled ? "enabled" : "disabled"}
+                    </Text>
+                    {binding.note ? (
+                      <Text
+                        style={[styles.metadata, { color: colors.textTertiary }]}
+                      >
+                        {binding.note}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View style={styles.bindingControls}>
+                    {canUnbind ? (
+                      <Pressable
+                        accessibilityLabel={`Unbind ${skillAgentLabel(binding.agent)} ${binding.scope} binding`}
+                        disabled={Boolean(props.preparingMutation)}
+                        onPress={() =>
+                          props.onBinding(
+                            copy,
+                            "unbind",
+                            binding.agent,
+                            binding.scope === "project" ? "project" : "global",
+                          )
+                        }
+                        style={({ pressed }) => [
+                          styles.bindingIcon,
+                          (pressed || props.preparingMutation) && styles.dimmed,
+                        ]}
+                      >
+                        <Ionicons
+                          name="unlink-outline"
+                          size={19}
+                          color={colors.textSecondary}
+                        />
+                      </Pressable>
+                    ) : null}
+                    {canToggle ? (
+                      <Pressable
+                        accessibilityRole="switch"
+                        accessibilityState={{ checked: binding.enabled }}
+                        accessibilityLabel={`${binding.enabled ? "Disable" : "Enable"} ${skillAgentLabel(binding.agent)} binding`}
+                        disabled={Boolean(props.preparingMutation)}
+                        onPress={() =>
+                          props.onBinding(
+                            copy,
+                            toggleOperation,
+                            binding.agent,
+                            binding.scope === "project" ? "project" : "global",
+                          )
+                        }
+                        style={[
+                          styles.toggle,
+                          {
+                            backgroundColor: binding.enabled
+                              ? colors.accent
+                              : colors.borderStrong,
+                          },
+                          props.preparingMutation && styles.dimmed,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.toggleKnob,
+                            binding.enabled && styles.toggleKnobOn,
+                            { backgroundColor: colors.bgPrimary },
+                          ]}
+                        />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })
           ) : (
             <Text style={{ color: colors.textTertiary }}>
               {copy.manager === "external"
@@ -874,8 +916,9 @@ function Inspector(
                 : "This managed copy is not bound to an Agent."}
             </Text>
           )}
+          <BindingTargets copy={copy} detail={detail} props={props} />
         </DetailSection>
-        <LifecycleActions copy={copy} props={props} />
+        <LifecycleActions copy={copy} detail={detail} props={props} />
       </ScrollView>
     </View>
   );
@@ -920,12 +963,12 @@ function StatusLabel({ enabled }: { enabled: boolean }) {
 function CopyRow({
   copy,
   selected,
-  active,
+  enabled,
   onPress,
 }: {
   copy: InstalledSkill;
   selected: boolean;
-  active: boolean;
+  enabled: boolean;
   onPress(): void;
 }) {
   const colors = useAppColors();
@@ -951,9 +994,9 @@ function CopyRow({
           >
             {location.label}
           </Text>
-          {active ? (
-            <Text style={[styles.activeLabel, { color: colors.accent }]}>
-              ACTIVE
+          {enabled ? (
+            <Text style={[styles.enabledLabel, { color: colors.accent }]}>
+              ENABLED
             </Text>
           ) : null}
         </View>
@@ -978,13 +1021,19 @@ function CopyRow({
 
 function LifecycleActions({
   copy,
+  detail,
   props,
 }: {
   copy: InstalledSkill;
+  detail: PackageDetail;
   props: SkillsPresentationProps;
 }) {
   const colors = useAppColors();
-  const ops = copy.capability.canManage ? copy.capability.operations : [];
+  const ops = detail.capability.canManage
+    ? detail.capability.operations.filter((operation) =>
+        props.mutationOperations.includes(operation),
+      )
+    : [];
   if (!ops.length) return null;
   return (
     <View style={styles.lifecycleSection}>
@@ -998,12 +1047,17 @@ function LifecycleActions({
             current external files stay in place and remain untouched. Agent
             bindings can be changed afterward.
           </Text>
-          <Action label="Manage with Zen" onPress={() => props.onAdopt(copy)} />
+          <Action
+            label="Manage with Zen"
+            disabled={Boolean(props.preparingMutation)}
+            onPress={() => props.onAdopt(copy)}
+          />
         </>
       ) : null}
       {ops.includes("update") ? (
         <Action
           label="Update managed copy"
+          disabled={Boolean(props.preparingMutation)}
           onPress={() => props.onUpdate(copy)}
         />
       ) : null}
@@ -1015,6 +1069,7 @@ function LifecycleActions({
           </Text>
           <Action
             label="Forget from Zen"
+            disabled={Boolean(props.preparingMutation)}
             onPress={() => props.onForget(copy)}
           />
         </>
@@ -1028,10 +1083,78 @@ function LifecycleActions({
           <Action
             label="Uninstall managed copy"
             destructive
+            disabled={Boolean(props.preparingMutation)}
             onPress={() => props.onUninstall(copy)}
           />
         </>
       ) : null}
+    </View>
+  );
+}
+
+function BindingTargets({
+  copy,
+  detail,
+  props,
+}: {
+  copy: InstalledSkill;
+  detail: PackageDetail;
+  props: SkillsPresentationProps;
+}) {
+  const colors = useAppColors();
+  const inventory = skillsRequestData(props.inventoryState);
+  if (
+    !inventory ||
+    !props.mutationOperations.includes("bind") ||
+    !detail.capability.canManage ||
+    !detail.capability.operations.includes("bind")
+  ) {
+    return null;
+  }
+  const existing = new Set(
+    detail.bindings.map((binding) => `${binding.agent}:${binding.scope}`),
+  );
+  const targets = inventory.agents.flatMap((agent) => {
+    if (!agent.supported) return [];
+    const scopes: Array<"global" | "project"> = [];
+    if (agent.globalScope && !existing.has(`${agent.agent}:global`)) {
+      scopes.push("global");
+    }
+    if (
+      inventory.cwd &&
+      agent.projectScope &&
+      !existing.has(`${agent.agent}:project`)
+    ) {
+      scopes.push("project");
+    }
+    return scopes.map((scope) => ({ agent: agent.agent, scope }));
+  });
+  if (!targets.length) return null;
+  return (
+    <View style={styles.bindTargets}>
+      <Text style={[styles.metadata, { color: colors.textTertiary }]}>Add binding</Text>
+      <View style={styles.optionWrap}>
+        {targets.map((target) => (
+          <Pressable
+            key={`${target.agent}:${target.scope}`}
+            accessibilityLabel={`Bind ${skillAgentLabel(target.agent)} ${target.scope}`}
+            disabled={Boolean(props.preparingMutation)}
+            onPress={() =>
+              props.onBinding(copy, "bind", target.agent, target.scope)
+            }
+            style={({ pressed }) => [
+              styles.bindTarget,
+              { borderColor: colors.borderSubtle },
+              (pressed || props.preparingMutation) && styles.dimmed,
+            ]}
+          >
+            <Ionicons name="link-outline" size={16} color={colors.accent} />
+            <Text style={{ color: colors.accent }}>
+              {skillAgentLabel(target.agent)} · {target.scope}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 }
@@ -1381,19 +1504,23 @@ function Code({ content }: { content: string }) {
 function Action({
   label,
   destructive,
+  disabled,
   onPress,
 }: {
   label: string;
   destructive?: boolean;
+  disabled?: boolean;
   onPress(): void;
 }) {
   const colors = useAppColors();
   return (
     <Pressable
+      disabled={disabled}
       onPress={onPress}
       style={[
         styles.action,
         { borderColor: destructive ? colors.dangerText : colors.borderSubtle },
+        disabled && styles.dimmed,
       ]}
     >
       <Text style={{ color: destructive ? colors.dangerText : colors.accent }}>
@@ -1622,16 +1749,34 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   path: { fontFamily: Typography.terminalFont, fontSize: 11, marginTop: 2 },
-  activeLabel: { fontFamily: Typography.uiFontMedium, fontSize: 10 },
+  enabledLabel: { fontFamily: Typography.uiFontMedium, fontSize: 10 },
   bindingRow: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  bindingControls: { flexDirection: "row", alignItems: "center", gap: 6 },
+  bindingIcon: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   toggle: { width: 46, height: 28, borderRadius: 14, padding: 3 },
   toggleKnob: { width: 22, height: 22, borderRadius: 11 },
   toggleKnobOn: { transform: [{ translateX: 18 }] },
+  bindTargets: { gap: 8, paddingTop: 4 },
+  bindTarget: {
+    minHeight: 38,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  dimmed: { opacity: 0.45 },
   lifecycleSection: { paddingHorizontal: 16, paddingVertical: 16, gap: 10 },
   action: {
     minHeight: 44,

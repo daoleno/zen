@@ -22,6 +22,16 @@ describe("local-only Skills surface contract", () => {
     ])
       expect(source).not.toContain(removed);
   });
+  test("production route contains no demo switch or embedded demo inventory", () => {
+    for (const removed of [
+      "SkillsProductDemo",
+      "DEMO_SKILLS",
+      "demoRequested",
+      "useLocalSearchParams",
+    ]) {
+      expect(screen).not.toContain(removed);
+    }
+  });
   test("uses pull refresh and no duplicate refresh button", () => {
     expect(presentation).toContain("RefreshControl");
     expect(presentation).not.toContain('accessibilityLabel="Refresh"');
@@ -56,6 +66,14 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).toContain("Uninstall managed copy");
     expect(screen).toContain("buildSkillsMutationConfirmation");
     expect(screen).toContain("Alert.alert");
+    expect(presentation).toContain('binding.operations.includes("unbind")');
+    expect(presentation).toContain('detail.capability.operations.includes("bind")');
+    expect(presentation).toContain("agent.projectScope");
+  });
+  test("async reads and mutations remain bound to the current server context", () => {
+    expect(screen).toContain("currentSkillsContext.current !== requestContext");
+    expect(screen).toContain("currentServerId.current !== requestServerId");
+    expect(screen).toContain("skillsContextKey");
   });
   test("Plugin catalog and lifecycle gates remain independent", () => {
     expect(screen).toContain("pluginsUnifiedView(plugins)");

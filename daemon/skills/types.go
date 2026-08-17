@@ -44,15 +44,15 @@ const (
 	ManagerUnknown  Manager = "unknown"
 )
 
-// BindingMode is how one (agent, scope) binding materializes the package.
-// Symlink fanout points the Agent at the canonical store; copy is the
-// deliberate materialization fallback for Agents that do not re-resolve
-// symlinked folders, and carries drift detection.
+// BindingMode is how one (agent, scope) binding reaches the package. Direct is
+// presentation-only for externally owned folders already living in an Agent
+// directory. Zen-owned inventory entries persist only symlink or copy modes.
 type BindingMode string
 
 const (
 	BindingSymlink BindingMode = "symlink"
 	BindingCopy    BindingMode = "copy"
+	BindingDirect  BindingMode = "direct"
 )
 
 // MutationOperation is the daemon-authoritative lifecycle operation set.
@@ -230,15 +230,18 @@ type MutationChange struct {
 // executes. Summary is human-readable and enters the confirmation dialog;
 // Changes are the exact effects that dialog must describe.
 type MutationCommand struct {
-	Operation   MutationOperation `json:"operation"`
-	Scope       Scope             `json:"scope"`
-	Agents      []Agent           `json:"agents"`
-	SkillName   string            `json:"skill_name"`
-	ImportID    string            `json:"-"`
-	Source      string            `json:"source,omitempty"`
-	Ref         string            `json:"ref,omitempty"`
-	InfoPath    string            `json:"-"`
-	Summary     string            `json:"summary"`
-	Changes     []MutationChange  `json:"changes"`
-	Destructive bool              `json:"destructive"`
+	Operation    MutationOperation `json:"operation"`
+	Scope        Scope             `json:"scope"`
+	Agents       []Agent           `json:"agents"`
+	SkillName    string            `json:"skill_name"`
+	CopyID       string            `json:"copy_id,omitempty"`
+	ImportID     string            `json:"-"`
+	Source       string            `json:"source,omitempty"`
+	Ref          string            `json:"ref,omitempty"`
+	InfoPath     string            `json:"-"`
+	Description  string            `json:"-"`
+	ExpectedHash string            `json:"-"`
+	Summary      string            `json:"summary"`
+	Changes      []MutationChange  `json:"changes"`
+	Destructive  bool              `json:"destructive"`
 }

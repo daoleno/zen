@@ -30,12 +30,13 @@ export interface LogicalSkill {
   name: string;
   description?: string;
   copies: InstalledSkill[];
-  activeCopy: InstalledSkill;
-  activeByAgent: Partial<Record<ManagedSkillAgent, InstalledSkill>>;
+  primaryCopy: InstalledSkill;
+  enabledByAgent: Partial<Record<ManagedSkillAgent, InstalledSkill[]>>;
+  installedAgents: ManagedSkillAgent[];
   agents: ManagedSkillAgent[];
   enabled: boolean;
   hasConflict: boolean;
-  activeVersionCount: number;
+  enabledVariantCount: number;
 }
 
 export interface SkillTreeNode {
@@ -81,17 +82,21 @@ const agentOrder = new Map(
   MANAGED_SKILL_AGENTS.map((agent, index) => [agent, index]),
 );
 
-function copyPriority(copy: InstalledSkill): number {
-  const scope = copy.scope === "project" ? 0 : copy.scope === "mixed" ? 1 : 2;
-  const enabled = copy.enabled ? 0 : 10;
-  const manager =
-    copy.manager === "zen" ? 0 : copy.manager === "builtin" ? 1 : 2;
-  return enabled + scope * 3 + manager;
+function copyEnabledForAgent(
+  copy: InstalledSkill,
+  agent: ManagedSkillAgent,
+): boolean {
+  if (copy.bindings.length > 0)
+    return copy.bindings.some(
+      (binding) => binding.agent === agent && binding.enabled,
+    );
+  return copy.enabled && copy.agents.includes(agent);
 }
 
 /**
  * Inventory entries are physical copies. The product surface is logical:
- * one name, with per-Agent effective resolution and every copy retained.
+ * one name with every daemon-reported copy retained. This projection never
+ * chooses a runtime winner; providers have different duplicate-name rules.
  */
 export function groupLogicalSkills(
   skills: readonly InstalledSkill[],
@@ -105,42 +110,52 @@ export function groupLogicalSkills(
   return [...groups.entries()]
     .map(([key, unsortedCopies]) => {
       const copies = [...unsortedCopies].sort(
-        (a, b) => copyPriority(a) - copyPriority(b) || a.id.localeCompare(b.id),
+        (a, b) =>
+          a.sourcePath.localeCompare(b.sourcePath) || a.id.localeCompare(b.id),
       );
-      const activeByAgent: LogicalSkill["activeByAgent"] = {};
+      const enabledByAgent: LogicalSkill["enabledByAgent"] = {};
       for (const agent of MANAGED_SKILL_AGENTS) {
-        const candidates = copies.filter(
-          (copy) => copy.enabled && copy.agents.includes(agent),
+        const candidates = copies.filter((copy) =>
+          copyEnabledForAgent(copy, agent),
         );
-        if (candidates.length) activeByAgent[agent] = candidates[0];
+        if (candidates.length) enabledByAgent[agent] = candidates;
       }
-      const activeCopies = [...new Set(Object.values(activeByAgent))];
-      const activeCopy = activeCopies[0] ?? copies[0]!;
-      const agents = Object.keys(activeByAgent).sort(
+      const enabledCopies = [
+        ...new Set(
+          Object.values(enabledByAgent).flatMap((items) => items ?? []),
+        ),
+      ];
+      const primaryCopy = copies[0]!;
+      const installedAgents = MANAGED_SKILL_AGENTS.filter((agent) =>
+        copies.some((copy) => copy.agents.includes(agent)),
+      );
+      const agents = Object.keys(enabledByAgent).sort(
         (a, b) =>
           (agentOrder.get(a as ManagedSkillAgent) ?? 99) -
           (agentOrder.get(b as ManagedSkillAgent) ?? 99),
       ) as ManagedSkillAgent[];
-      const versions = new Set(
-        activeCopies.map(
-          (copy) => copy.contentHash || `${copy.manager}:${copy.sourcePath}`,
-        ),
+      const contentVariants = new Set(
+        enabledCopies
+          .map((copy) => copy.contentHash)
+          .filter((hash): hash is string => Boolean(hash)),
       );
       return {
         key,
-        name: activeCopy.name,
+        name: primaryCopy.name,
         description:
-          activeCopy.description ||
+          primaryCopy.description ||
           copies.find((copy) => copy.description)?.description,
         copies,
-        activeCopy,
-        activeByAgent,
+        primaryCopy,
+        enabledByAgent,
+        installedAgents,
         agents,
         enabled: agents.length > 0,
-        hasConflict:
-          versions.size > 1 ||
-          copies.some((copy) => copy.migration === "conflict"),
-        activeVersionCount: versions.size,
+        hasConflict: copies.some(
+          (copy) =>
+            copy.migration === "conflict" || copy.migration === "duplicate",
+        ),
+        enabledVariantCount: contentVariants.size,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -165,7 +180,7 @@ export function filterLogicalSkills(
         return false;
       if (
         filters.agents.length > 0 &&
-        !filters.agents.some((agent) => skill.agents.includes(agent))
+        !filters.agents.some((agent) => skill.installedAgents.includes(agent))
       )
         return false;
       if (!needle) return true;

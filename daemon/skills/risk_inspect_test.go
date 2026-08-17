@@ -202,8 +202,9 @@ func TestInspectPackageFileIsBoundedAndTraversalSafe(t *testing.T) {
 	if err := os.Symlink(directoryEscape, filepath.Join(detail.Canonical, "linked-directory")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InspectPackage(f.options(""), "reader"); err == nil || !strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("directory symlink inspection error = %v", err)
+	detail, err = InspectPackage(f.options(""), "reader")
+	if err != nil || len(detail.Files) != 0 || len(detail.Warnings) == 0 || !strings.Contains(detail.Warnings[len(detail.Warnings)-1], "symlink") {
+		t.Fatalf("directory symlink must remain unread while detail stays available: %+v, %v", detail, err)
 	}
 }
 

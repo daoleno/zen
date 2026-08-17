@@ -2,6 +2,7 @@ package skills
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,6 +232,71 @@ func TestInventoryOwnedAndExternalRows(t *testing.T) {
 	}
 	if byAgent[AgentGrok].Supported != true {
 		t.Fatal("Grok has a real adapter and must be reported supported")
+	}
+}
+
+func TestUnboundOwnedPackageDoesNotInventUpdateCapability(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	storeDir := store.PackageDir("unbound")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), []byte("---\nname: unbound\n---\nunbound\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := folderContentHash(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInventory(InventoryFile{Version: inventoryVersion, Packages: map[string]PackageEntry{
+		"unbound": {
+			SkillName: "unbound", Source: "fixture/catalog", SourceType: string(SourceTypeCatalog), ContentHash: hash, Owned: true,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Skills) != 1 {
+		t.Fatalf("unbound inventory = %+v", inventory.Skills)
+	}
+	operations := inventory.Skills[0].Capability.Operations
+	if !operationAllowed(operations, OperationBind) || !operationAllowed(operations, OperationUninstall) || operationAllowed(operations, OperationUpdate) {
+		t.Fatalf("unbound capability invented an update action: %v", operations)
+	}
+}
+
+func TestMissingLocalUpdateSourceDoesNotAdvertiseUpdate(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	storeDir := store.PackageDir("missing-update-source")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), []byte("---\nname: missing-update-source\n---\nowned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := folderContentHash(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingSource := filepath.Join(f.Home, "missing-local-source")
+	if err := store.SaveInventory(InventoryFile{Version: inventoryVersion, Packages: map[string]PackageEntry{
+		"missing-update-source": {
+			SkillName: "missing-update-source", Source: missingSource, SourceType: string(SourceTypeLocal), ContentHash: hash, Owned: true,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Skills) != 1 || operationAllowed(inventory.Skills[0].Capability.Operations, OperationUpdate) {
+		t.Fatalf("missing local provenance advertised update: %+v", inventory.Skills)
 	}
 }
 
@@ -472,6 +538,8 @@ func TestInventoryDiscoversAllAdaptersBuiltinPluginAndSymlinkLayouts(t *testing.
 		want := 2
 		if agent == AgentCodex {
 			want = 4 // global + project + builtin + plugin
+		} else if agent == AgentPi {
+			want = 3 // Pi also loads Codex's shared project .agents/skills copy.
 		}
 		if counts[agent] != want {
 			t.Fatalf("%s count=%d, want %d", agent, counts[agent], want)
@@ -526,6 +594,39 @@ func TestMalformedExternalEntryIsIsolatedFromValidManagement(t *testing.T) {
 	}
 }
 
+func TestUnhashableExternalCopyDoesNotAdvertiseAdopt(t *testing.T) {
+	f := newFixture(t)
+	root := f.agentGlobalDir(AgentClaudeCode)
+	valid := f.writeSkill(root, "valid-adopt", "valid")
+	unsafe := f.writeSkill(root, "unsafe-adopt", "unsafe")
+	outside := filepath.Join(f.Home, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(unsafe, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]InstalledSkill{}
+	for _, skill := range inventory.Skills {
+		byPath[skill.SourcePath] = skill
+	}
+	if !byPath[valid].Capability.CanManage || !operationAllowed(byPath[valid].Capability.Operations, OperationAdopt) {
+		t.Fatalf("valid sibling lost adopt capability: %+v", byPath[valid])
+	}
+	unsafeRow, ok := byPath[unsafe]
+	if !ok {
+		t.Fatal("unsafe external row was dropped instead of isolated")
+	}
+	if unsafeRow.Capability.CanManage || unsafeRow.ContentHash != "" || !strings.Contains(unsafeRow.Capability.Reason, "could not be hashed") {
+		t.Fatalf("unsafe external row advertised a blocking action: %+v", unsafeRow)
+	}
+}
+
 func TestSharedRootEmitsOneValidBindingPerAgent(t *testing.T) {
 	f := newFixture(t)
 	root := filepath.Join(f.Project, ".agents", "skills")
@@ -555,6 +656,277 @@ func TestSharedRootEmitsOneValidBindingPerAgent(t *testing.T) {
 	}
 	if !seen[AgentCodex] || !seen[AgentPi] {
 		t.Fatalf("shared bindings = %+v", rows[0].Bindings)
+	}
+}
+
+func TestSharedUserRootMergesCodexAndPiAndHonorsCodexEnabledOverride(t *testing.T) {
+	f := newFixture(t)
+	shared := f.writeSkill(filepath.Join(f.Home, ".agents", "skills"), "shared-disabled", "shared")
+	configPath := filepath.Join(f.Home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf("[[skills.config]]\npath = %q\nenabled = false\n", filepath.Join(shared, "SKILL.md"))
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(f.Project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name == "shared-disabled" {
+			row = &inventory.Skills[index]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("shared Skill was not discovered")
+	}
+	if len(row.Bindings) != 2 || len(row.Agents) != 2 {
+		t.Fatalf("shared physical copy was not merged: %+v", row)
+	}
+	enabled := map[Agent]bool{}
+	for _, binding := range row.Bindings {
+		if binding.Scope != ScopeGlobal {
+			t.Fatalf("shared user binding was misclassified as %s: %+v", binding.Scope, binding)
+		}
+		if binding.Mode != string(BindingDirect) {
+			t.Fatalf("physical external directory was misreported as %q: %+v", binding.Mode, binding)
+		}
+		enabled[binding.Agent] = binding.Enabled
+	}
+	if enabled[AgentCodex] || !enabled[AgentPi] || !row.Enabled {
+		t.Fatalf("provider-specific enabled state = row %v bindings %+v", row.Enabled, enabled)
+	}
+}
+
+func TestPiEnabledOverridesMatchRuntimeGlobalAndProjectRules(t *testing.T) {
+	f := newFixture(t)
+	globalEnabled := f.writeSkill(f.agentGlobalDir(AgentPi), "global-enabled", "global enabled")
+	globalDisabled := f.writeSkill(f.agentGlobalDir(AgentPi), "global-disabled", "global disabled")
+	sharedDisabled := f.writeSkill(filepath.Join(f.Home, ".agents", "skills"), "shared-disabled", "shared disabled")
+	projectDisabled := f.writeSkill(f.agentProjectDir(AgentPi, f.Project), "project-disabled", "project disabled")
+	projectSharedDisabled := f.writeSkill(filepath.Join(f.Project, ".agents", "skills"), "project-shared-disabled", "project shared disabled")
+
+	globalSettings := filepath.Join(f.Home, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Force-includes are applied after globs, and force-excludes win last,
+	// matching Pi's DefaultPackageManager ordering rather than array order.
+	if err := os.WriteFile(globalSettings, []byte(`{"skills":["+skills/global-enabled","!skills/**","-skills/global-disabled"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectSettings := filepath.Join(f.Project, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectSettings, []byte(`{"skills":["-skills/project-disabled","-skills/project-shared-disabled"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(f.Project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		globalEnabled:         true,
+		globalDisabled:        false,
+		sharedDisabled:        false,
+		projectDisabled:       false,
+		projectSharedDisabled: false,
+	}
+	seen := map[string]bool{}
+	for _, skill := range inventory.Skills {
+		for _, binding := range skill.Bindings {
+			if binding.Agent != AgentPi {
+				continue
+			}
+			expected, ok := want[binding.TargetPath]
+			if !ok {
+				continue
+			}
+			seen[binding.TargetPath] = true
+			if binding.Enabled != expected {
+				t.Fatalf("Pi enabled state for %s = %v, want %v", binding.TargetPath, binding.Enabled, expected)
+			}
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("Pi override fixtures missing from inventory: got %v want %v", seen, want)
+	}
+}
+
+func TestPiDisabledOverrideRemovesNonExecutableOwnedToggle(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	storeDir := store.PackageDir("pi-owned")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "SKILL.md"), []byte("---\nname: pi-owned\n---\nowned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := folderContentHash(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(f.agentGlobalDir(AgentPi), "pi-owned")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(storeDir, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInventory(InventoryFile{Version: inventoryVersion, Packages: map[string]PackageEntry{
+		"pi-owned": {
+			SkillName: "pi-owned", Source: "fixture/catalog", SourceType: string(SourceTypeCatalog), ContentHash: hash, Owned: true,
+			Bindings: []BindingEntry{{Agent: AgentPi, Scope: ScopeGlobal, TargetPath: target, Enabled: true, Mode: BindingSymlink}},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(f.Home, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"skills":["-skills/pi-owned"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owned *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name == "pi-owned" {
+			owned = &inventory.Skills[index]
+			break
+		}
+	}
+	if owned == nil || owned.Enabled || len(owned.Bindings) != 1 {
+		t.Fatalf("owned Pi runtime state = %+v", owned)
+	}
+	binding := owned.Bindings[0]
+	if binding.Enabled || len(binding.Operations) != 1 || binding.Operations[0] != OperationUnbind {
+		t.Fatalf("provider-disabled binding advertised an inoperative toggle: %+v", binding)
+	}
+	if !strings.Contains(binding.Note, "runtime settings disable") {
+		t.Fatalf("provider-disabled binding reason missing: %+v", binding)
+	}
+}
+
+func TestMalformedPiConfigWarnsWithoutDroppingInventory(t *testing.T) {
+	f := newFixture(t)
+	f.writeSkill(f.agentGlobalDir(AgentPi), "still-visible-pi", "pi")
+	settingsPath := filepath.Join(f.Home, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"skills":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	warned := false
+	for _, skill := range inventory.Skills {
+		found = found || skill.Name == "still-visible-pi"
+	}
+	for _, warning := range inventory.Warnings {
+		warned = warned || strings.Contains(warning, "Pi global Skill enabled overrides could not be parsed")
+	}
+	if !found || !warned {
+		t.Fatalf("malformed Pi settings were not isolated: found=%v warnings=%v", found, inventory.Warnings)
+	}
+}
+
+func TestExternalBindingModeReflectsPhysicalDirectoryOrSymlink(t *testing.T) {
+	f := newFixture(t)
+	direct := f.writeSkill(f.agentGlobalDir(AgentClaudeCode), "direct-copy", "direct")
+	external := f.writeSkill(filepath.Join(f.Home, "external-source"), "linked-copy", "linked")
+	linked := filepath.Join(f.agentGlobalDir(AgentClaudeCode), "linked-copy")
+	if err := os.MkdirAll(filepath.Dir(linked), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, linked); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := map[string]string{}
+	for _, skill := range inventory.Skills {
+		for _, binding := range skill.Bindings {
+			modes[binding.TargetPath] = binding.Mode
+		}
+	}
+	if modes[direct] != string(BindingDirect) || modes[linked] != string(BindingSymlink) {
+		t.Fatalf("external binding modes = %v", modes)
+	}
+}
+
+func TestMalformedCodexConfigWarnsWithoutDroppingSharedInventory(t *testing.T) {
+	f := newFixture(t)
+	f.writeSkill(filepath.Join(f.Home, ".agents", "skills"), "still-visible", "shared")
+	configPath := filepath.Join(f.Home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[[skills.config]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, skill := range inventory.Skills {
+		found = found || skill.Name == "still-visible"
+	}
+	if !found {
+		t.Fatal("malformed Codex config dropped otherwise valid shared Skills")
+	}
+	warned := false
+	for _, warning := range inventory.Warnings {
+		warned = warned || strings.Contains(warning, "enabled overrides could not be parsed")
+	}
+	if !warned {
+		t.Fatalf("malformed Codex config warning missing: %v", inventory.Warnings)
+	}
+}
+
+func TestSharedProjectRootsStopBeforeHomeAndFilesystemRoot(t *testing.T) {
+	f := newFixture(t)
+	nested := filepath.Join(f.Project, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	roots := sharedProjectSkillRoots(nested, f.Home)
+	homeRoot := filepath.Join(f.Home, ".agents", "skills")
+	filesystemRoot := filepath.Join(filepath.VolumeName(f.Home)+string(filepath.Separator), ".agents", "skills")
+	for _, root := range roots {
+		if root == homeRoot || root == filesystemRoot {
+			t.Fatalf("project discovery escaped its boundary: %v", roots)
+		}
+	}
+	if len(roots) != 3 || roots[len(roots)-1] != filepath.Join(f.Project, ".agents", "skills") {
+		t.Fatalf("project ancestor roots = %v", roots)
+	}
+	if err := os.MkdirAll(filepath.Join(f.Project, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	roots = sharedProjectSkillRoots(nested, f.Home)
+	if roots[len(roots)-1] != filepath.Join(f.Project, ".agents", "skills") {
+		t.Fatalf("repository boundary was not included exactly once: %v", roots)
 	}
 }
 

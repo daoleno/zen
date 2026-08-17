@@ -29,11 +29,12 @@ type SourceFetcher func(ctx context.Context, request MutationRequest, stageDir s
 // environment bundles the resolved paths and extensions for one lifecycle
 // command: a store, the adapter env, and a validated working directory.
 type environment struct {
-	store   Store
-	env     EnvResolver
-	cwd     string
-	fetcher SourceFetcher
-	now     func() time.Time
+	store            Store
+	env              EnvResolver
+	cwd              string
+	fetcher          SourceFetcher
+	now              func() time.Time
+	inventoryOptions InventoryOptions
 }
 
 func environmentFor(options InventoryOptions, cwdRequired bool) (environment, error) {
@@ -42,11 +43,12 @@ func environmentFor(options InventoryOptions, cwdRequired bool) (environment, er
 		return environment{}, err
 	}
 	return environment{
-		store:   Store{StateDir: normalized.ZenStateDir, Home: normalized.Home, Now: normalized.Now},
-		env:     envResolverFor(normalized),
-		cwd:     normalized.CWD,
-		fetcher: normalized.Fetcher,
-		now:     normalized.Now,
+		store:            Store{StateDir: normalized.ZenStateDir, Home: normalized.Home, Now: normalized.Now},
+		env:              envResolverFor(normalized),
+		cwd:              normalized.CWD,
+		fetcher:          normalized.Fetcher,
+		now:              normalized.Now,
+		inventoryOptions: normalized,
 	}, nil
 }
 
@@ -82,7 +84,14 @@ func BuildMutationCommand(options InventoryOptions, request MutationRequest) (Mu
 			Destructive: false,
 		}, nil
 	case OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationForget, OperationAdopt, OperationUpdate:
-		return buildManagedPlan(request, env)
+		command, err := buildManagedPlan(request, env)
+		if err != nil {
+			return MutationCommand{}, err
+		}
+		if request.SkillID != "" {
+			command.CopyID = request.SkillID
+		}
+		return command, nil
 	default:
 		return MutationCommand{}, fmt.Errorf("unsupported Skill operation %q", request.Operation)
 	}
@@ -260,13 +269,28 @@ func buildManagedPlan(request MutationRequest, env environment) (MutationCommand
 	if err := ValidateSkillName(request.SkillName); err != nil {
 		return MutationCommand{}, err
 	}
+	var selected *InstalledSkill
+	if strings.TrimSpace(request.SkillID) != "" {
+		copy, err := resolveInstalledCopy(env.inventoryOptions, request.SkillName, request.SkillID)
+		if err != nil {
+			return MutationCommand{}, err
+		}
+		if err := validateCopyOperation(copy, request); err != nil {
+			return MutationCommand{}, err
+		}
+		selected = &copy
+	}
 	store := env.store
-	inventory, err := store.LoadInventory(true)
+	requireInventory := !(request.Operation == OperationAdopt && selected != nil && !selected.Tracked)
+	inventory, err := store.LoadInventory(requireInventory)
 	if err != nil {
 		return MutationCommand{}, err
 	}
 	entry, ok := inventory.Packages[request.SkillName]
 	if !ok {
+		if request.Operation == OperationAdopt && selected != nil {
+			return buildDiscoveredAdoptPlan(request, *selected, env)
+		}
 		return MutationCommand{}, fmt.Errorf("Skill %q is not in Zen's inventory", request.SkillName)
 	}
 
@@ -276,6 +300,107 @@ func buildManagedPlan(request MutationRequest, env environment) (MutationCommand
 	default:
 		return buildBindingPlan(request, entry, env)
 	}
+}
+
+func resolveInstalledCopy(options InventoryOptions, name, copyID string) (InstalledSkill, error) {
+	if !validInstalledSkillID(copyID) {
+		return InstalledSkill{}, errors.New("invalid Skill copy ID")
+	}
+	inventory, err := DiscoverInventory(options)
+	if err != nil {
+		return InstalledSkill{}, err
+	}
+	for _, copy := range inventory.Skills {
+		if copy.Name == name && copy.ID == copyID {
+			return copy, nil
+		}
+	}
+	return InstalledSkill{}, fmt.Errorf("the selected copy of Skill %q is stale or no longer installed", name)
+}
+
+func validInstalledSkillID(value string) bool {
+	if len(value) != 24 {
+		return false
+	}
+	for _, current := range value {
+		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validateCopyOperation(copy InstalledSkill, request MutationRequest) error {
+	if request.Operation == OperationBind {
+		if copy.Capability.CanManage && operationAllowed(copy.Capability.Operations, request.Operation) {
+			return nil
+		}
+		return copyOperationRejected(copy)
+	}
+	if request.Operation == OperationUnbind || request.Operation == OperationEnable || request.Operation == OperationDisable {
+		for _, agent := range request.Agents {
+			matched := false
+			for _, binding := range copy.Bindings {
+				if binding.Agent == agent && binding.Scope == request.Scope && operationAllowed(binding.Operations, request.Operation) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("the selected Skill copy does not allow %s for %s (%s)", request.Operation, agentName(agent), request.Scope)
+			}
+		}
+		return nil
+	}
+	if copy.Capability.CanManage && operationAllowed(copy.Capability.Operations, request.Operation) {
+		return nil
+	}
+	return copyOperationRejected(copy)
+}
+
+func copyOperationRejected(copy InstalledSkill) error {
+	reason := strings.TrimSpace(copy.Capability.Reason)
+	if reason == "" {
+		reason = "the daemon did not advertise this action for the selected copy"
+	}
+	return errors.New(reason)
+}
+
+func operationAllowed(operations []MutationOperation, operation MutationOperation) bool {
+	for _, current := range operations {
+		if current == operation {
+			return true
+		}
+	}
+	return false
+}
+
+func buildDiscoveredAdoptPlan(request MutationRequest, copy InstalledSkill, env environment) (MutationCommand, error) {
+	if copy.Manager != ManagerExternal || copy.Owned {
+		return MutationCommand{}, errors.New("only an external Skill copy can be managed with Zen")
+	}
+	sourcePath := copy.SourcePath
+	if _, err := exactExternalCopyDir(copy.Name, copy.ID, sourcePath); err != nil {
+		return MutationCommand{}, err
+	}
+	if copy.ContentHash == "" {
+		return MutationCommand{}, errors.New("the external Skill copy could not be hashed safely")
+	}
+	agents := append([]Agent{}, copy.Agents...)
+	if len(agents) == 0 {
+		return MutationCommand{}, errors.New("Manage with Zen requires a discovered Agent location")
+	}
+	return MutationCommand{
+		Operation: OperationAdopt, SkillName: copy.Name, Scope: copy.Scope, Agents: agents,
+		CopyID: copy.ID, Source: sourcePath, InfoPath: sourcePath,
+		Description: copy.Description, ExpectedHash: copy.ContentHash,
+		Summary: "Manage " + copy.Name + " with Zen by copying it into the managed store (the external source remains untouched; bind the managed copy explicitly afterward)",
+		Changes: []MutationChange{
+			{Kind: "copy_file", Path: sourcePath, Destination: env.store.PackageDir(copy.Name), Detail: "Copy external content into the canonical store"},
+			{Kind: "write", Path: env.store.InventoryPath(), Detail: "Record the Zen-owned copy; preserve the external source"},
+		},
+		Destructive: false,
+	}, nil
 }
 
 func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env environment) (MutationCommand, error) {
@@ -319,7 +444,6 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 		if err != nil {
 			return MutationCommand{}, fmt.Errorf("could not hash the external installation: %w", err)
 		}
-		_ = hash
 		agents := request.Agents
 		if len(agents) == 0 {
 			agents = entry.DiscoveredAgents
@@ -327,13 +451,22 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 		if len(agents) == 0 {
 			return MutationCommand{}, errors.New("adopt requires at least one discovered or requested agent")
 		}
+		copyID := request.SkillID
+		if copyID == "" {
+			realDir, resolveErr := filepath.EvalSymlinks(externalDir)
+			if resolveErr != nil {
+				return MutationCommand{}, resolveErr
+			}
+			copyID = installedSkillID(filepath.Clean(realDir))
+		}
 		changes := []MutationChange{
 			{Kind: "copy_file", Path: externalDir, Destination: store.PackageDir(request.SkillName), Detail: "Copy external content into the canonical store"},
 			{Kind: "write", Path: store.InventoryPath(), Detail: "Mark " + request.SkillName + " as Zen-owned"},
 		}
 		return MutationCommand{
 			Operation: OperationAdopt, SkillName: request.SkillName, Scope: request.Scope, Agents: agents,
-			Source: entry.Source, Ref: entry.Ref,
+			CopyID: copyID, Source: entry.Source, Ref: entry.Ref, InfoPath: externalDir,
+			Description: entry.Description, ExpectedHash: hash,
 			Summary:     "Manage " + request.SkillName + " with Zen by copying it into the managed store (the external source remains untouched; bind the managed copy explicitly afterward)",
 			Changes:     changes,
 			Destructive: false,
@@ -505,7 +638,7 @@ func executePlan(ctx context.Context, env environment, command MutationCommand) 
 	}
 	defer store.Unlock()
 
-	inventory, err := store.LoadInventory(command.Operation != OperationImport && command.Operation != OperationMigrate)
+	inventory, err := store.LoadInventory(command.Operation != OperationImport && command.Operation != OperationMigrate && command.Operation != OperationAdopt)
 	if err != nil {
 		return "", err
 	}
@@ -905,12 +1038,54 @@ func executeForget(env environment, command MutationCommand, inventory *Inventor
 }
 
 func executeAdopt(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry := inventory.Packages[command.SkillName]
-	externalDir, err := trackedExternalDir(entry)
+	entry, tracked := inventory.Packages[command.SkillName]
+	if tracked && entry.Owned {
+		return "", errors.New("Skill " + command.SkillName + " is already Zen-owned")
+	}
+	reviewedSource := command.InfoPath
+	if reviewedSource == "" && tracked {
+		var err error
+		reviewedSource, err = trackedExternalDir(entry)
+		if err != nil {
+			return "", err
+		}
+	}
+	reviewedSource = filepath.Clean(reviewedSource)
+	externalDir, err := exactExternalCopyDir(command.SkillName, command.CopyID, reviewedSource)
 	if err != nil {
 		return "", err
 	}
+	if tracked {
+		trackedDir, trackedErr := trackedExternalDir(entry)
+		if trackedErr != nil {
+			return "", trackedErr
+		}
+		trackedDir, trackedErr = filepath.EvalSymlinks(trackedDir)
+		if trackedErr != nil || filepath.Clean(trackedDir) != externalDir {
+			return "", errors.New("the tracked external Skill no longer matches the selected copy")
+		}
+	} else {
+		now := env.store.now().UTC().Format(time.RFC3339)
+		entry = PackageEntry{
+			SkillName: command.SkillName, Description: command.Description,
+			Source: reviewedSource, SourceType: string(SourceTypeExternal), ContentHash: command.ExpectedHash,
+			InstalledAt: now, UpdatedAt: now, Owned: false,
+			DiscoveredAgents: append([]Agent{}, command.Agents...), DiscoveredScope: command.Scope,
+		}
+	}
+	sourceHash, err := folderContentHash(externalDir)
+	if err != nil {
+		return "", fmt.Errorf("could not hash the external installation: %w", err)
+	}
+	if command.ExpectedHash == "" || sourceHash != command.ExpectedHash {
+		return "", errors.New("the selected external Skill changed after it was reviewed")
+	}
 	packageDir := env.store.PackageDir(command.SkillName)
+	if _, err := os.Lstat(packageDir); err == nil {
+		return "", errors.New("the Zen-managed Skill destination already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	if err := os.MkdirAll(packageDir, 0o700); err != nil {
 		return "", err
 	}
@@ -927,6 +1102,8 @@ func executeAdopt(ctx context.Context, env environment, command MutationCommand,
 		return "", err
 	}
 	entry.Owned = true
+	entry.Source = reviewedSource
+	entry.SourceType = string(SourceTypeExternal)
 	entry.ContentHash = hash
 	entry.UpdatedAt = env.store.now().UTC().Format(time.RFC3339)
 	// Adoption copies ownership into Zen but deliberately leaves the external
@@ -937,7 +1114,45 @@ func executeAdopt(ctx context.Context, env environment, command MutationCommand,
 		_ = os.RemoveAll(packageDir)
 		return "", err
 	}
-	return "Adopted " + command.SkillName + " into Zen's store (" + shortHash(hash) + "). The external source was left untouched.", nil
+	return "Managed " + command.SkillName + " with Zen (" + shortHash(hash) + "). The external source was left untouched.", nil
+}
+
+func exactExternalCopyDir(name, copyID, source string) (string, error) {
+	if err := ValidateSkillName(name); err != nil {
+		return "", err
+	}
+	if !validInstalledSkillID(copyID) {
+		return "", errors.New("invalid Skill copy ID")
+	}
+	path := filepath.Clean(strings.TrimSpace(source))
+	if !filepath.IsAbs(path) {
+		return "", errors.New("external Skill source must be an absolute directory")
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("external Skill directory is unavailable: %w", err)
+	}
+	realPath, err = filepath.Abs(realPath)
+	if err != nil {
+		return "", errors.New("external Skill directory could not be resolved")
+	}
+	realPath = filepath.Clean(realPath)
+	if installedSkillID(realPath) != copyID {
+		return "", errors.New("the selected Skill copy is stale or no longer matches its path")
+	}
+	info, err := os.Stat(realPath)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("external Skill source is not a directory")
+	}
+	frontmatter, ok, err := readSkillFrontmatter(filepath.Join(realPath, "SKILL.md"))
+	if err != nil || !ok {
+		return "", errors.New("external Skill source has no valid SKILL.md")
+	}
+	metadataName := cleanMetadata(frontmatter.Name, maxSkillNameLength)
+	if filepath.Base(path) != name || (metadataName != "" && metadataName != name) {
+		return "", errors.New("external Skill source no longer matches its inventory identity")
+	}
+	return realPath, nil
 }
 
 func executeUpdate(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {

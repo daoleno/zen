@@ -168,6 +168,36 @@ func TestSkillsImportOperationIsNotExposedOverWebSocket(t *testing.T) {
 	}
 }
 
+func TestSkillsCopyMutationWithoutIdentityFailsImmediately(t *testing.T) {
+	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	messages := messageSink(t, conn)
+	for _, messageType := range []string{"skills_command", "skills_mutation"} {
+		requestID := "missing-copy-" + messageType
+		if err := conn.WriteJSON(map[string]any{
+			"type": messageType, "request_id": requestID,
+			"operation": "adopt", "skill_name": "local-skill", "scope": "global",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		response := readUntil(t, messages, messageType+"_error", requestID)
+		if response["code"] != "invalid_request" || !strings.Contains(response["message"].(string), "copy ID") {
+			t.Fatalf("%s missing-copy response = %+v", messageType, response)
+		}
+	}
+	requestID := "missing-copy-skills-inspect"
+	if err := conn.WriteJSON(map[string]any{
+		"type": "skills_inspect", "request_id": requestID,
+		"skill_name": "local-skill", "generation": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := readUntil(t, messages, "skills_inspect_error", requestID)
+	if response["code"] != "invalid_request" || !strings.Contains(response["message"].(string), "copy ID") {
+		t.Fatalf("skills_inspect missing-copy response = %+v", response)
+	}
+}
+
 func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
 	home := t.TempDir()
 	stateDir := filepath.Join(home, ".zen")
@@ -198,20 +228,12 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 		return readUntil(t, messages, "skills_inventory", id)
 	}
 	initial := inventory("inventory-initial", 1)
-	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 1 {
+	if rows := skillsInventoryRows(t, initial); len(rows) != 1 {
 		t.Fatalf("initial Skills inventory = %d rows, want one local row", len(rows))
 	}
-
-	sequence := []map[string]any{
-		{"operation": "migrate", "scope": "global"},
-		{"operation": "adopt", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"codex"}},
-		{"operation": "bind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "disable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "enable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "unbind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "uninstall", "skill_name": "lifecycle-proof", "scope": "global"},
-	}
-	for _, input := range sequence {
+	externalCopyID := skillCopyID(t, initial, "lifecycle-proof", "external")
+	run := func(input map[string]any) {
+		t.Helper()
 		operation := input["operation"].(string)
 		commandID := "command-" + operation
 		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
@@ -224,6 +246,9 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 		if command["operation"] != operation || command["scope"] != "global" {
 			t.Fatalf("%s reviewed command contract = %+v", operation, command)
 		}
+		if operation != "migrate" && command["copy_id"] != input["skill_id"] {
+			t.Fatalf("%s reviewed command copy = %v, want %v", operation, command["copy_id"], input["skill_id"])
+		}
 
 		mutationID := "mutation-" + operation
 		mutationRequest := map[string]any{"type": "skills_mutation", "request_id": mutationID}
@@ -235,20 +260,35 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 		if result["success"] != true {
 			t.Fatalf("%s execution failed: %+v", operation, result)
 		}
-
-		if operation == "adopt" {
-			if err := os.RemoveAll(source); err != nil {
-				t.Fatal(err)
-			}
-			send(map[string]any{"type": "skills_inspect", "request_id": "inspect-adopted", "generation": 1, "skill_name": "lifecycle-proof"})
-			inspection := readUntil(t, messages, "skills_inspect_result", "inspect-adopted")
-			if inspection["detail"].(map[string]any)["skill_name"] != "lifecycle-proof" {
-				t.Fatalf("inspect response = %+v", inspection)
-			}
-		}
 	}
-	final := inventory("inventory-final", 2)
-	if rows := final["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
+
+	run(map[string]any{"operation": "migrate", "scope": "global"})
+	run(map[string]any{"operation": "adopt", "skill_id": externalCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"codex"}})
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	afterAdopt := inventory("inventory-adopted", 2)
+	managedCopyID := skillCopyID(t, afterAdopt, "lifecycle-proof", "zen")
+	send(map[string]any{
+		"type": "skills_inspect", "request_id": "inspect-adopted", "generation": 1,
+		"skill_id": managedCopyID, "skill_name": "lifecycle-proof",
+	})
+	inspection := readUntil(t, messages, "skills_inspect_result", "inspect-adopted")
+	detail := inspection["detail"].(map[string]any)
+	if detail["skill_name"] != "lifecycle-proof" || detail["copy_id"] != managedCopyID {
+		t.Fatalf("inspect response = %+v", inspection)
+	}
+	for _, input := range []map[string]any{
+		{"operation": "bind", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "disable", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "enable", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "unbind", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "uninstall", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global"},
+	} {
+		run(input)
+	}
+	final := inventory("inventory-final", 3)
+	if rows := skillsInventoryRows(t, final); len(rows) != 0 {
 		t.Fatalf("final Skills inventory = %d rows, want empty reconciliation", len(rows))
 	}
 }
@@ -318,18 +358,25 @@ func TestSkillsWebSocketExternalLifecycleUsesReviewedPlansAndReconcilesInventory
 	}
 
 	initial := inventory("external-inventory-initial", 1)
-	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 2 {
+	if rows := skillsInventoryRows(t, initial); len(rows) != 2 {
 		t.Fatalf("initial external Skills inventory = %d rows, want 2", len(rows))
 	}
-	send(map[string]any{"type": "skills_inspect", "request_id": "inspect-external", "generation": 1, "skill_name": "adopt-proof"})
+	adoptCopyID := skillCopyID(t, initial, "adopt-proof", "external")
+	forgetCopyID := skillCopyID(t, initial, "forget-proof", "external")
+	send(map[string]any{
+		"type": "skills_inspect", "request_id": "inspect-external", "generation": 1,
+		"skill_id": adoptCopyID, "skill_name": "adopt-proof",
+	})
 	inspection := readUntil(t, messages, "skills_inspect_result", "inspect-external")
-	if inspection["detail"].(map[string]any)["manager"] != "external" {
+	if detail := inspection["detail"].(map[string]any); detail["manager"] != "external" || detail["copy_id"] != adoptCopyID {
 		t.Fatalf("external inspect response = %+v", inspection)
 	}
 
 	run(map[string]any{"operation": "migrate", "scope": "global"})
-	run(map[string]any{"operation": "adopt", "skill_name": "adopt-proof", "scope": "global"})
-	run(map[string]any{"operation": "forget", "skill_name": "forget-proof", "scope": "global"})
+	run(map[string]any{"operation": "adopt", "skill_id": adoptCopyID, "skill_name": "adopt-proof", "scope": "global"})
+	run(map[string]any{"operation": "forget", "skill_id": forgetCopyID, "skill_name": "forget-proof", "scope": "global"})
+	managed := inventory("external-inventory-adopted", 2)
+	managedCopyID := skillCopyID(t, managed, "adopt-proof", "zen")
 
 	// Adopt and forget intentionally leave external source files untouched.
 	// Remove only this disposable fixture content before final reconciliation.
@@ -339,11 +386,39 @@ func TestSkillsWebSocketExternalLifecycleUsesReviewedPlansAndReconcilesInventory
 	if err := os.RemoveAll(forgetSource); err != nil {
 		t.Fatal(err)
 	}
-	run(map[string]any{"operation": "uninstall", "skill_name": "adopt-proof", "scope": "global"})
-	final := inventory("external-inventory-final", 2)
-	if rows := final["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
+	run(map[string]any{"operation": "uninstall", "skill_id": managedCopyID, "skill_name": "adopt-proof", "scope": "global"})
+	final := inventory("external-inventory-final", 3)
+	if rows := skillsInventoryRows(t, final); len(rows) != 0 {
 		t.Fatalf("final external Skills inventory = %d rows, want empty reconciliation", len(rows))
 	}
+}
+
+func skillsInventoryRows(t *testing.T, payload map[string]any) []any {
+	t.Helper()
+	inventory, ok := payload["inventory"].(map[string]any)
+	if !ok {
+		t.Fatalf("Skills inventory payload is invalid: %+v", payload)
+	}
+	rows, ok := inventory["skills"].([]any)
+	if !ok {
+		t.Fatalf("Skills inventory rows are invalid: %+v", inventory)
+	}
+	return rows
+}
+
+func skillCopyID(t *testing.T, payload map[string]any, name, manager string) string {
+	t.Helper()
+	for _, raw := range skillsInventoryRows(t, payload) {
+		row, ok := raw.(map[string]any)
+		if ok && row["name"] == name && row["manager"] == manager {
+			copyID, _ := row["id"].(string)
+			if copyID != "" {
+				return copyID
+			}
+		}
+	}
+	t.Fatalf("no %s copy of Skill %q in inventory: %+v", manager, name, payload)
+	return ""
 }
 
 func newSkillsMutationTestServer(t *testing.T, probe *mutationProbe) (*Server, *websocket.Conn, func()) {

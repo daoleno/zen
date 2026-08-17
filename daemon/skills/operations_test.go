@@ -542,6 +542,146 @@ func TestAdoptExternalPreservesWithoutTakeover(t *testing.T) {
 	}
 }
 
+func TestCopyAwareAdoptRejectsStaleMismatchAndPostReviewChanges(t *testing.T) {
+	f := newFixture(t)
+	selectedDir := f.writeSkill(f.agentGlobalDir(AgentClaudeCode), "selected", "selected v1")
+	otherDir := f.writeSkill(f.agentGlobalDir(AgentPi), "other", "other")
+	decoyDir := f.writeSkill(f.Home, "decoy", "decoy")
+	options := f.options("")
+	inventory, err := DiscoverInventory(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyID := func(name, source string) string {
+		t.Helper()
+		for _, skill := range inventory.Skills {
+			if skill.Name == name && skill.SourcePath == source {
+				return skill.ID
+			}
+		}
+		t.Fatalf("copy %q at %q missing from inventory", name, source)
+		return ""
+	}
+	selectedID := copyID("selected", selectedDir)
+	otherID := copyID("other", otherDir)
+	if _, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationAdopt, SkillID: otherID, SkillName: "selected", Scope: ScopeGlobal,
+	}); err == nil {
+		t.Fatal("copy ID from a different Skill name was accepted")
+	}
+	if _, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationAdopt, SkillID: strings.Repeat("f", 24), SkillName: "selected", Scope: ScopeGlobal,
+	}); err == nil {
+		t.Fatal("stale copy ID was accepted")
+	}
+
+	command, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationAdopt, SkillID: selectedID, SkillName: "selected",
+		InfoPath: decoyDir, Scope: ScopeGlobal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.CopyID != selectedID || command.InfoPath != selectedDir {
+		t.Fatalf("request path overrode daemon copy resolution: %+v", command)
+	}
+	if err := os.WriteFile(
+		filepath.Join(selectedDir, "SKILL.md"),
+		[]byte("---\nname: selected\ndescription: changed\n---\nselected v2\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options}); err == nil || !strings.Contains(err.Error(), "changed after it was reviewed") {
+		t.Fatalf("post-review source change was not rejected: %v", err)
+	}
+	if _, err := os.Stat(f.store().PackageDir("selected")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed adopt left managed content behind: %v", err)
+	}
+
+	currentBytes, err := os.ReadFile(filepath.Join(selectedDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err = BuildMutationCommand(options, MutationRequest{
+		Operation: OperationAdopt, SkillID: selectedID, SkillName: "selected", Scope: ScopeGlobal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options}); err != nil {
+		t.Fatal(err)
+	}
+	afterBytes, err := os.ReadFile(filepath.Join(selectedDir, "SKILL.md"))
+	if err != nil || string(afterBytes) != string(currentBytes) {
+		t.Fatal("Manage with Zen changed the external source")
+	}
+	if info, err := os.Lstat(selectedDir); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("Manage with Zen replaced the external source: %v, %v", info, err)
+	}
+}
+
+func TestCopyAwareAdoptPreservesExternalSymlinkIdentity(t *testing.T) {
+	f := newFixture(t)
+	realDir := filepath.Join(f.Home, "sources", "physical-directory")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), []byte("---\nname: linked-skill\n---\nlinked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedDir := filepath.Join(f.agentGlobalDir(AgentClaudeCode), "linked-skill")
+	if err := os.MkdirAll(filepath.Dir(linkedDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, linkedDir); err != nil {
+		t.Fatal(err)
+	}
+	options := f.options("")
+	inventory, err := DiscoverInventory(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copy *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name == "linked-skill" {
+			copy = &inventory.Skills[index]
+			break
+		}
+	}
+	if copy == nil || !operationAllowed(copy.Capability.Operations, OperationAdopt) {
+		t.Fatalf("symlink copy did not advertise executable adopt: %+v", copy)
+	}
+	command, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationAdopt, SkillID: copy.ID, SkillName: copy.Name, Scope: ScopeGlobal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.InfoPath != linkedDir || command.Source != linkedDir {
+		t.Fatalf("reviewed command lost the daemon-discovered symlink identity: %+v", command)
+	}
+	if _, err := ExecuteMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(linkedDir); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("Manage with Zen replaced the external symlink: %v, %v", info, err)
+	}
+	after, err := DiscoverInventory(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := 0
+	for _, skill := range after.Skills {
+		if skill.Name == "linked-skill" {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("adopted symlink origin became a duplicate row: %d", matches)
+	}
+}
+
 func TestBindingPlanValidation(t *testing.T) {
 	f := newFixture(t)
 	_ = f.writeSkill(f.Home, "val", "body")

@@ -57,7 +57,7 @@ describe("local Skills screen model", () => {
       ),
     ).toEqual(["alpha"]);
   });
-  test("merges same-name copies without losing active resolution", () => {
+  test("merges same-name copies without inventing cross-Agent conflicts", () => {
     const codex = skill("imagegen", true, {
       id: "a".repeat(24),
       agents: ["codex"],
@@ -72,12 +72,14 @@ describe("local Skills screen model", () => {
     });
     const [logical] = groupLogicalSkills([pi, codex]);
     expect(logical?.copies).toHaveLength(2);
-    expect(logical?.activeByAgent.codex?.id).toBe(codex.id);
-    expect(logical?.activeByAgent.pi?.id).toBe(pi.id);
-    expect(logical?.activeVersionCount).toBe(2);
-    expect(logical?.hasConflict).toBe(true);
+    expect(logical?.enabledByAgent.codex?.map((copy) => copy.id)).toEqual([
+      codex.id,
+    ]);
+    expect(logical?.enabledByAgent.pi?.map((copy) => copy.id)).toEqual([pi.id]);
+    expect(logical?.enabledVariantCount).toBe(2);
+    expect(logical?.hasConflict).toBe(false);
   });
-  test("project copy wins per Agent and filters stay secondary", () => {
+  test("keeps global and project copies without inventing scope priority", () => {
     const global = skill("review", true, {
       id: "c".repeat(24),
       agents: ["codex"],
@@ -94,8 +96,11 @@ describe("local Skills screen model", () => {
       skill("pi-only", true, { agents: ["pi"] }),
     ]);
     expect(
-      rows.find((row) => row.name === "review")?.activeByAgent.codex?.id,
-    ).toBe(project.id);
+      rows
+        .find((row) => row.name === "review")
+        ?.enabledByAgent.codex?.map((copy) => copy.id)
+        .sort(),
+    ).toEqual([global.id, project.id].sort());
     expect(
       filterLogicalSkills(rows, "", {
         agents: ["pi"],
@@ -110,6 +115,35 @@ describe("local Skills screen model", () => {
         scope: "project",
       }).map((row) => row.name),
     ).toEqual(["review"]);
+  });
+  test("keeps disabled Agent membership without inventing enabled content variants", () => {
+    const disabled = skill("disabled-codex", false, {
+      agents: ["codex"],
+      bindings: [
+        {
+          agent: "codex",
+          scope: "global",
+          mode: "direct",
+          targetPath: "/skills/disabled-codex",
+          sourcePath: "/skills/disabled-codex",
+          enabled: false,
+          boundAt: "",
+          operations: [],
+        },
+      ],
+      contentHash: undefined,
+    });
+    const [logical] = groupLogicalSkills([disabled]);
+    expect(logical?.installedAgents).toEqual(["codex"]);
+    expect(logical?.agents).toEqual([]);
+    expect(logical?.enabledVariantCount).toBe(0);
+    expect(
+      filterLogicalSkills([logical!], "", {
+        agents: ["codex"],
+        status: "disabled",
+        scope: "all",
+      }),
+    ).toHaveLength(1);
   });
   test("tree orders directories first and files by locale name", () => {
     const tree = buildSkillFileTree([

@@ -1134,6 +1134,39 @@ describe("Skills management transport", () => {
     client.disconnectAll();
   });
 
+  test("inspect rejects a valid but mismatched copy identity", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.getSkillsInspect(server.id, {
+      skillName: "useful",
+      skillId: "c".repeat(24),
+      generation: 7,
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "skills_inspect_result",
+      request_id: outbound.request_id,
+      generation: 7,
+      detail: {
+        copy_id: "d".repeat(24),
+        skill_name: "useful",
+        manager: "external",
+        owned: false,
+        tracked: false,
+        enabled: true,
+        scope: "global",
+        agents: [],
+        bindings: [],
+        capability: { can_manage: true, operations: ["adopt"] },
+      },
+    });
+
+    await expect(pending).rejects.toThrow("different Skill copy");
+    client.disconnectAll();
+  });
+
   test("a valid plan for different structured targets is rejected", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
@@ -1141,6 +1174,7 @@ describe("Skills management transport", () => {
 
     const pending = client.buildSkillsCommand(server.id, {
       operation: "unbind",
+      skillId: "a".repeat(24),
       skillName: "useful",
       scope: "global",
       agents: ["codex"],
@@ -1154,6 +1188,7 @@ describe("Skills management transport", () => {
         scope: "global",
         agents: ["codex"],
         skill_name: "other-skill",
+        copy_id: "a".repeat(24),
         summary: "Unbind other-skill from Codex",
         changes: [{ kind: "remove", path: "/home/.codex/skills/other-skill" }],
         destructive: false,
@@ -1173,6 +1208,7 @@ describe("Skills management transport", () => {
 
     const pending = client.buildSkillsCommand(server.id, {
       operation: "uninstall",
+      skillId: "b".repeat(24),
       skillName: "useful",
       scope: "global",
     });
@@ -1186,6 +1222,7 @@ describe("Skills management transport", () => {
         scope: "global",
         agents: ["codex", "cursor"],
         skill_name: "useful",
+        copy_id: "b".repeat(24),
         summary: "Uninstall useful and all of its bindings",
         changes: [{ kind: "remove", path: "/store/useful" }],
         destructive: true,

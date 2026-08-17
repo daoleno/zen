@@ -2152,6 +2152,7 @@ export class MultiServerWebSocketClient {
           if (
             (options.skillName != null &&
               command.skillName !== options.skillName) ||
+            (options.skillId != null && command.copyId !== options.skillId) ||
             (options.agents != null &&
               (command.agents.length !== options.agents.length ||
                 command.agents.some(
@@ -2309,9 +2310,18 @@ export class MultiServerWebSocketClient {
             return;
           }
           try {
+            const detail = normalizeSkillsInspectDetail(payload.detail);
+            if (
+              detail.skillName !== options.skillName ||
+              (options.skillId != null && detail.copyId !== options.skillId)
+            ) {
+              throw new Error(
+                "Daemon returned details for a different Skill copy.",
+              );
+            }
             resolve({
               generation: options.generation,
-              detail: normalizeSkillsInspectDetail(payload.detail),
+              detail,
             });
           } catch (error) {
             reject(error);

@@ -6,6 +6,7 @@ import {
 } from "./skillsManagement";
 
 const base = {
+  copy_id: "a".repeat(24),
   skill_name: "demo",
   manager: "external",
   owned: false,
@@ -181,6 +182,7 @@ describe("Skill lifecycle confirmation copy", () => {
     scope: "global",
     agents: ["codex"],
     skillName: "demo",
+    copyId: "a".repeat(24),
     summary: "Lifecycle summary",
     changes: [
       {

@@ -185,6 +185,9 @@ func inspectPackage(options InventoryOptions, name, copyID string) (PackageDetai
 	if err := ValidateSkillName(name); err != nil {
 		return PackageDetail{}, err
 	}
+	if copyID != "" && !validInstalledSkillID(copyID) {
+		return PackageDetail{}, errors.New("invalid Skill copy ID")
+	}
 	normalized, err := normalizeInventoryOptions(options)
 	if err != nil {
 		return PackageDetail{}, err
@@ -234,7 +237,8 @@ func inspectPackage(options InventoryOptions, name, copyID string) (PackageDetai
 		}
 		detail.Files, err = scanPackageFiles(contentRoot)
 		if err != nil {
-			return PackageDetail{}, fmt.Errorf("scan Skill package: %w", err)
+			detail.Warnings = append(detail.Warnings, "Skill package files are unavailable: "+err.Error())
+			return detail, nil
 		}
 		detail.Risk = scanRiskSignals(contentRoot)
 		defaultPath := ""
@@ -250,7 +254,8 @@ func inspectPackage(options InventoryOptions, name, copyID string) (PackageDetai
 		if defaultPath != "" {
 			detail.Preview, err = previewPackageFile(contentRoot, defaultPath)
 			if err != nil {
-				return PackageDetail{}, err
+				detail.Warnings = append(detail.Warnings, "The default Skill file preview is unavailable.")
+				return detail, nil
 			}
 		}
 	}
