@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   calendarReducer,
   initialCalendarState,
+  selectCurrentServerCalendar,
+  selectCurrentServerCalendarItems,
   type CalendarItem,
 } from "./calendar";
 const item = (id: string, next_at: string): CalendarItem => ({
@@ -58,5 +60,51 @@ describe("calendarReducer", () => {
     });
     state = calendarReducer(state, { type: "REMOVE_SERVER", serverId: "a" });
     expect(Object.keys(state.byServer)).toEqual(["b"]);
+  });
+});
+
+describe("current-server Calendar projection", () => {
+  test("exposes only the canonical current server and rebinds exactly", () => {
+    let state = calendarReducer(initialCalendarState, {
+      type: "CALENDAR_SNAPSHOT",
+      serverId: "old",
+      serverName: "Old Mac",
+      serverUrl: "ws://old",
+      items: [item("old-item", "2026-07-14T00:00:00Z")],
+    });
+    state = calendarReducer(state, {
+      type: "CALENDAR_SNAPSHOT",
+      serverId: "current",
+      serverName: "Current Mac",
+      serverUrl: "ws://current",
+      items: [item("current-item", "2026-07-15T00:00:00Z")],
+    });
+
+    expect(selectCurrentServerCalendar(state, "current")?.serverName).toBe(
+      "Current Mac",
+    );
+    expect(selectCurrentServerCalendarItems(state, "current")).toEqual([
+      expect.objectContaining({
+        id: "current-item",
+        serverId: "current",
+        serverName: "Current Mac",
+      }),
+    ]);
+    expect(selectCurrentServerCalendarItems(state, "old")).toEqual([
+      expect.objectContaining({ id: "old-item", serverId: "old" }),
+    ]);
+  });
+
+  test("never invents a fallback server", () => {
+    const state = calendarReducer(initialCalendarState, {
+      type: "CALENDAR_SNAPSHOT",
+      serverId: "only-configured",
+      serverName: "Configured Mac",
+      serverUrl: "ws://configured",
+      items: [item("configured-item", "2026-07-14T00:00:00Z")],
+    });
+
+    expect(selectCurrentServerCalendar(state, null)).toBeNull();
+    expect(selectCurrentServerCalendarItems(state, "missing")).toEqual([]);
   });
 });

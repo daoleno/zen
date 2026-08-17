@@ -1,7 +1,6 @@
 import React, {
   createContext,
   useContext,
-  useMemo,
   useReducer,
   type ReactNode,
 } from "react";
@@ -58,6 +57,10 @@ export interface ServerCalendar {
 export interface CalendarState {
   byServer: Record<string, ServerCalendar>;
 }
+export type ServerCalendarItem = CalendarItem & {
+  serverId: string;
+  serverName: string;
+};
 export const initialCalendarState: CalendarState = { byServer: {} };
 type Action =
   | {
@@ -123,6 +126,28 @@ function sortItems(items: CalendarItem[]) {
     (a, b) => Date.parse(a.next_at) - Date.parse(b.next_at),
   );
 }
+
+export function selectCurrentServerCalendar(
+  state: CalendarState,
+  currentServerId: string | null | undefined,
+): ServerCalendar | null {
+  const serverId = currentServerId?.trim() ?? "";
+  return serverId ? state.byServer[serverId] ?? null : null;
+}
+
+export function selectCurrentServerCalendarItems(
+  state: CalendarState,
+  currentServerId: string | null | undefined,
+): ServerCalendarItem[] {
+  const server = selectCurrentServerCalendar(state, currentServerId);
+  if (!server) return [];
+  return server.items.map((item) => ({
+    ...item,
+    serverId: server.serverId,
+    serverName: server.serverName,
+  }));
+}
+
 const StateContext = createContext<CalendarState | null>(null);
 const DispatchContext = createContext<React.Dispatch<Action> | null>(null);
 export function CalendarProvider({ children }: { children: ReactNode }) {
@@ -144,18 +169,4 @@ export function useCalendarDispatch() {
   if (!dispatch)
     throw new Error("useCalendarDispatch must be used within CalendarProvider");
   return dispatch;
-}
-export function useCalendarItems() {
-  const state = useCalendar();
-  return useMemo(
-    () =>
-      Object.values(state.byServer).flatMap((server) =>
-        server.items.map((item) => ({
-          ...item,
-          serverId: server.serverId,
-          serverName: server.serverName,
-        })),
-      ),
-    [state],
-  );
 }

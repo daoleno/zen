@@ -24,6 +24,19 @@ describe("ordinary CI contract", () => {
     expect(workflow).toContain("bunx expo export --platform ios");
   });
 
+  it("runs tests, vet, and build in the daemon job", () => {
+    const daemonJob = workflow.slice(
+      workflow.indexOf("  daemon:"),
+      workflow.indexOf("  app:"),
+    );
+    const test = daemonJob.indexOf("run: go test ./...");
+    const vet = daemonJob.indexOf("run: go vet ./...");
+    const build = daemonJob.indexOf("run: go build -o bin/zen ./cmd/zen/");
+    expect(test).toBeGreaterThan(-1);
+    expect(vet).toBeGreaterThan(test);
+    expect(build).toBeGreaterThan(vet);
+  });
+
   it("keeps bounded Android native PR evidence beside the iOS native job", () => {
     expect(workflow).toMatch(
       /ios-native:\s*[\s\S]*?name: iOS native \(unsigned Simulator\)/,
