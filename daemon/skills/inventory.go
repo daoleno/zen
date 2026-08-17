@@ -294,7 +294,7 @@ func (collector *inventoryCollector) addOwnedRow(store Store, entry PackageEntry
 		UpdatedAt:     entry.UpdatedAt,
 		Capability: ManagementCapability{
 			CanManage:  true,
-			Operations: []MutationOperation{OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationUpdate},
+			Operations: ownedPackageOperations(entry),
 		},
 	}
 	if drifted {
@@ -306,6 +306,7 @@ func (collector *inventoryCollector) addOwnedRow(store Store, entry PackageEntry
 			Agent: binding.Agent, Scope: binding.Scope, Mode: string(binding.Mode),
 			TargetPath: binding.TargetPath, SourcePath: binding.TargetPath,
 			Enabled: binding.Enabled, BoundAt: binding.BoundAt, Note: binding.Note,
+			Operations: bindingOperations(binding),
 		}
 		if binding.Mode == BindingCopy && binding.Enabled {
 			if driftHash := copyBindingDriftHash(binding, hash); driftHash != "" {
@@ -321,25 +322,57 @@ func (collector *inventoryCollector) addOwnedRow(store Store, entry PackageEntry
 	collector.add(skill)
 }
 
+func bindingOperations(binding BindingEntry) []MutationOperation {
+	operations := []MutationOperation{OperationUnbind}
+	if binding.Enabled {
+		return append(operations, OperationDisable)
+	}
+	return append(operations, OperationEnable)
+}
+
+func ownedPackageOperations(entry PackageEntry) []MutationOperation {
+	operations := []MutationOperation{OperationUninstall}
+	if len(entry.Bindings) < len(Adapters)*2 {
+		operations = append(operations, OperationBind)
+	}
+	if updateProvenancePinned(entry) {
+		operations = append(operations, OperationUpdate)
+	}
+	return operations
+}
+
+func updateProvenancePinned(entry PackageEntry) bool {
+	switch SourceType(entry.SourceType) {
+	case SourceTypeCatalog, SourceTypeGithub:
+		return entry.Ref != ""
+	case SourceTypeLocal, SourceTypeArchive:
+		return filepath.IsAbs(entry.Source) && entry.ContentHash != ""
+	default:
+		return false
+	}
+}
+
 func (collector *inventoryCollector) addTrackedExternalRow(store Store, entry PackageEntry) {
 	dir, err := trackedExternalDir(entry)
 	if err != nil {
 		collector.warn(fmt.Sprintf("Tracked external Skill %q is no longer available: %v", entry.SkillName, err))
 		skill := &InstalledSkill{
-			ID:          installedSkillID(entry.Source + "\x00" + entry.SkillName),
-			Name:        entry.SkillName,
-			Manager:     ManagerExternal,
-			Owned:       false,
-			Tracked:     true,
-			SourcePath:  entry.Source,
-			Provenance:  "Tracked external installation",
-			Source:      entry.Source,
-			SourceType:  entry.SourceType,
-			ContentHash: entry.ContentHash,
-			Migration:   "external",
+			ID:            installedSkillID(entry.Source + "\x00" + entry.SkillName),
+			Name:          entry.SkillName,
+			Manager:       ManagerExternal,
+			Owned:         false,
+			Tracked:       true,
+			CanonicalPath: entry.Source,
+			SourcePath:    entry.Source,
+			Provenance:    "Tracked external installation",
+			Source:        entry.Source,
+			SourceType:    entry.SourceType,
+			ContentHash:   entry.ContentHash,
+			Migration:     "external",
 			Capability: ManagementCapability{
 				CanManage:  true,
-				Operations: []MutationOperation{OperationAdopt, OperationForget},
+				Operations: []MutationOperation{OperationForget},
+				Reason:     err.Error(),
 			},
 		}
 		collector.add(skill)
@@ -606,6 +639,12 @@ func (collector *inventoryCollector) isManagedTarget(sourcePath string, store St
 		}
 	}
 	for _, skill := range collector.byReal {
+		if skill.Owned && skill.SourceType == string(SourceTypeExternal) &&
+			filepath.Clean(sourcePath) == filepath.Clean(skill.Source) {
+			// Adoption intentionally preserves this external origin. It remains
+			// inspectable as package provenance and must not become a duplicate row.
+			return true
+		}
 		for _, binding := range skill.Bindings {
 			if filepath.Clean(sourcePath) == filepath.Clean(binding.TargetPath) {
 				return true

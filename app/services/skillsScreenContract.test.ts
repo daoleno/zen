@@ -10,8 +10,11 @@ import {
   installedSkillCatalogId,
   skillsAgentCounts,
   skillsAgentProjection,
+  skillsSectionProjection,
   skillsEmptyLeaderboardCopy,
+  filterSkillsByFacets,
   skillsInstallTargets,
+  skillsInspectionTarget,
   skillsUnifiedRows,
 } from "./skillsScreenModel";
 import type {
@@ -47,6 +50,7 @@ function installedSkill(
       sourcePath: `/store/${name}`,
       enabled: true,
       boundAt: "2026-08-01T00:00:00Z",
+      operations: ["unbind", "disable"],
     })),
     provenance: "Zen canonical store",
     capability: {
@@ -133,6 +137,14 @@ describe("Skills screen behavior", () => {
     expect(owner.shouldRefresh(1, "server-a")).toBe(false);
   });
 
+  test("inspector Retry preserves the exact package or selected file identity", () => {
+    expect(skillsInspectionTarget("demo")).toEqual({ name: "demo" });
+    expect(skillsInspectionTarget("demo", "references/a.md")).toEqual({
+      name: "demo",
+      path: "references/a.md",
+    });
+  });
+
   test("unified rows keep installed and discovered together, deduplicated by canonical identity", () => {
     const installed = [
       installedSkill("000000000000000000000001", "codex-only", ["codex"], {
@@ -159,28 +171,54 @@ describe("Skills screen behavior", () => {
       "catalog",
       "catalog",
     ]);
-    expect(rows[0]).toMatchObject({ kind: "installed", skill: { name: "builtin-one" } });
-    expect(rows[1]).toMatchObject({ kind: "installed", skill: { name: "codex-only" } });
-    expect(rows[2]).toMatchObject({ kind: "catalog", skill: { name: "fresh-skill" } });
-    expect(rows[3]).toMatchObject({ kind: "catalog", skill: { name: "another" } });
+    expect(rows[0]).toMatchObject({
+      kind: "installed",
+      skill: { name: "builtin-one" },
+    });
+    expect(rows[1]).toMatchObject({
+      kind: "installed",
+      skill: { name: "codex-only" },
+    });
+    expect(rows[2]).toMatchObject({
+      kind: "catalog",
+      skill: { name: "fresh-skill" },
+    });
+    expect(rows[3]).toMatchObject({
+      kind: "catalog",
+      skill: { name: "another" },
+    });
     expect(
-      rows.filter((row) => row.kind === "catalog" && row.skill.name === "codex-only"),
+      rows.filter(
+        (row) => row.kind === "catalog" && row.skill.name === "codex-only",
+      ),
     ).toHaveLength(0);
   });
 
   test("canonical identities are exact and closed for unmanaged skills", () => {
-    const managed = installedSkill("000000000000000000000003", "cli-skill", ["codex"], {
-      source: "owner/repo-a",
-    });
-    const builtin = installedSkill("000000000000000000000004", "builtin-two", ["codex"], {
-      manager: "builtin",
-      owned: false,
-      tracked: false,
-      capability: { canManage: false, operations: [], reason: "Builtin." },
-    });
+    const managed = installedSkill(
+      "000000000000000000000003",
+      "cli-skill",
+      ["codex"],
+      {
+        source: "owner/repo-a",
+      },
+    );
+    const builtin = installedSkill(
+      "000000000000000000000004",
+      "builtin-two",
+      ["codex"],
+      {
+        manager: "builtin",
+        owned: false,
+        tracked: false,
+        capability: { canManage: false, operations: [], reason: "Builtin." },
+      },
+    );
     expect(installedSkillCatalogId(managed)).toBe("owner/repo-a/cli-skill");
     expect(installedSkillCatalogId(builtin)).toBeNull();
-    expect(catalogSkillId(catalogSkill("x", "owner/repo"))).toBe("owner/repo/x");
+    expect(catalogSkillId(catalogSkill("x", "owner/repo"))).toBe(
+      "owner/repo/x",
+    );
   });
 
   test("an honest empty leaderboard stays empty for each selected view", () => {
@@ -197,7 +235,9 @@ describe("Skills screen behavior", () => {
   test("switching Agent synchronously replaces the installed projection and counts across all six", () => {
     const current = inventory([
       installedSkill("000000000000000000000001", "codex-only", ["codex"]),
-      installedSkill("000000000000000000000002", "claude-only", ["claude-code"]),
+      installedSkill("000000000000000000000002", "claude-only", [
+        "claude-code",
+      ]),
       installedSkill("000000000000000000000003", "shared", ["codex", "cursor"]),
       installedSkill("000000000000000000000006", "grok-native", ["grok"]),
     ]);
@@ -227,6 +267,49 @@ describe("Skills screen behavior", () => {
     expect(skillsInstallTargets("pi")).toEqual(["pi"]);
   });
 
+  test("status, scope, and ownership are stable list facets", () => {
+    const owned = installedSkill("000000000000000000000010", "owned", [
+      "codex",
+    ]);
+    const external = installedSkill(
+      "000000000000000000000011",
+      "external",
+      ["codex"],
+      {
+        manager: "external",
+        owned: false,
+        enabled: false,
+        scope: "project",
+      },
+    );
+    const catalog = [catalogSkill("available", "owner/repo")];
+    expect(
+      filterSkillsByFacets([owned, external], catalog, {
+        status: "disabled",
+        scope: "project",
+        ownership: "external",
+      }),
+    ).toEqual({ installed: [external], catalog: [] });
+    expect(
+      filterSkillsByFacets([owned, external], catalog, {
+        status: "available",
+        scope: "all",
+        ownership: "catalog",
+      }),
+    ).toEqual({ installed: [], catalog });
+  });
+
+  test("an adopted unbound package remains visible for explicit binding", () => {
+    const adopted = installedSkill("000000000000000000000012", "adopted", [], {
+      bindings: [],
+      agents: [],
+      scope: "unknown",
+    });
+    expect(skillsSectionProjection(inventory([adopted]), "pi").skills).toEqual([
+      adopted,
+    ]);
+  });
+
   test("ranked and plain catalog rows share one canonical identity", () => {
     const ranked: RankedCatalogSkill = {
       id: "owner/repo/ranked",
@@ -238,15 +321,21 @@ describe("Skills screen behavior", () => {
       installable: true,
     };
     expect(catalogSkillId(ranked)).toBe("owner/repo/ranked");
-    expect(catalogSkillId(catalogSkill("plain", "owner/repo"))).toBe("owner/repo/plain");
+    expect(catalogSkillId(catalogSkill("plain", "owner/repo"))).toBe(
+      "owner/repo/plain",
+    );
   });
 
   test("shared mobile input geometry keeps one centered text lane at normal and enlarged font scales", () => {
     expect(MOBILE_SINGLE_LINE_INPUT_LAYOUT.controlHeight).toBe(48);
-    expect(mobileSingleLineTextLaneWidth(288, true, true)).toBeGreaterThanOrEqual(
+    expect(
+      mobileSingleLineTextLaneWidth(288, true, true),
+    ).toBeGreaterThanOrEqual(
       MOBILE_SINGLE_LINE_INPUT_LAYOUT.minimumTextLaneWidth,
     );
-    expect(mobileSingleLineTextLaneWidth(343, true, true)).toBeGreaterThanOrEqual(
+    expect(
+      mobileSingleLineTextLaneWidth(343, true, true),
+    ).toBeGreaterThanOrEqual(
       MOBILE_SINGLE_LINE_INPUT_LAYOUT.minimumTextLaneWidth,
     );
     expect(mobileSingleLineScaledLineHeight(1)).toBeLessThan(

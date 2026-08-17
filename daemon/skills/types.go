@@ -115,6 +115,9 @@ type SkillBinding struct {
 	BoundAt    string `json:"bound_at"`
 	DriftHash  string `json:"drift_hash,omitempty"`
 	Note       string `json:"note,omitempty"`
+	// Operations is the exact executable action set for this binding's current
+	// state. The App must not infer enable/disable availability from booleans.
+	Operations []MutationOperation `json:"operations,omitempty"`
 }
 
 // ManagementCapability is the fail-closed action authority for one row.

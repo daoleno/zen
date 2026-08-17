@@ -7,8 +7,12 @@ import {
   reduceSkillsSurface,
   skillRowOperations,
   skillRowSupports,
+  skillBindingSupports,
 } from "./skillsSurfaceModel";
-import type { InstalledSkill, SkillMutationOperation } from "./skillsManagement";
+import type {
+  InstalledSkill,
+  SkillMutationOperation,
+} from "./skillsManagement";
 
 const CAPABILITIES: readonly SkillMutationOperation[] = [
   "import",
@@ -46,6 +50,7 @@ function installedSkill(
         sourcePath: "/store/demo",
         enabled: true,
         boundAt: "2026-08-01T00:00:00Z",
+        operations: ["unbind", "disable"],
       },
     ],
     provenance: "Zen canonical store",
@@ -69,12 +74,17 @@ describe("surface navigation", () => {
     const initial = createSkillsSurfaceState();
     expect(initial.section).toBe("skills");
     expect(
-      reduceSkillsSurface(initial, { type: "select_section", section: "plugins" })
-        .section,
+      reduceSkillsSurface(initial, {
+        type: "select_section",
+        section: "plugins",
+      }).section,
     ).toBe("plugins");
     // Idempotent selection returns the same state.
     expect(
-      reduceSkillsSurface(initial, { type: "select_section", section: "skills" }),
+      reduceSkillsSurface(initial, {
+        type: "select_section",
+        section: "skills",
+      }),
     ).toBe(initial);
   });
 });
@@ -90,14 +100,19 @@ describe("evaluateSkillMutation gates every lifecycle action", () => {
       installable: true,
     };
     expect(
-      evaluateSkillMutation({ kind: "import", skill, scope: "global" }, CAPABILITIES),
+      evaluateSkillMutation(
+        { kind: "import", skill, scope: "global" },
+        CAPABILITIES,
+      ),
     ).toEqual({ supported: true, operation: "import" });
     const missingOp = evaluateSkillMutation(
       { kind: "import", skill, scope: "global" },
       CAPABILITIES.filter((op) => op !== "import"),
     );
     expect(missingOp.supported).toBe(false);
-    expect(intentOperation({ kind: "import", skill, scope: "global" })).toBe("import");
+    expect(intentOperation({ kind: "import", skill, scope: "global" })).toBe(
+      "import",
+    );
 
     const projectGate = evaluateSkillMutation(
       { kind: "import", skill, scope: "project" },
@@ -122,13 +137,25 @@ describe("evaluateSkillMutation gates every lifecycle action", () => {
     for (const operation of ["bind", "unbind", "enable", "disable"] as const) {
       expect(
         evaluateSkillMutation(
-          { kind: "binding", operation, skill, agent: "codex", scope: "global" },
+          {
+            kind: "binding",
+            operation,
+            skill,
+            agent: "codex",
+            scope: "global",
+          },
           CAPABILITIES,
         ),
       ).toEqual({ supported: true, operation });
     }
     const projectGate = evaluateSkillMutation(
-      { kind: "binding", operation: "bind", skill, agent: "pi", scope: "project" },
+      {
+        kind: "binding",
+        operation: "bind",
+        skill,
+        agent: "pi",
+        scope: "project",
+      },
       CAPABILITIES,
       false,
     );
@@ -137,8 +164,14 @@ describe("evaluateSkillMutation gates every lifecycle action", () => {
 
   test("uninstall, forget, adopt, update map to their exact operations", () => {
     const owned = installedSkill();
-    const external = installedSkill({ owned: false, tracked: true, manager: "external" });
-    const pairs: Array<[Parameters<typeof evaluateSkillMutation>[0], SkillMutationOperation]> = [
+    const external = installedSkill({
+      owned: false,
+      tracked: true,
+      manager: "external",
+    });
+    const pairs: Array<
+      [Parameters<typeof evaluateSkillMutation>[0], SkillMutationOperation]
+    > = [
       [{ kind: "uninstall", skill: owned }, "uninstall"],
       [{ kind: "forget", skill: external }, "forget"],
       [{ kind: "adopt", skill: external }, "adopt"],
@@ -197,5 +230,12 @@ describe("row operation helpers", () => {
         CAPABILITIES.filter((op) => op !== "update"),
       ),
     ).toBe(false);
+  });
+
+  test("binding actions are exact for the current binding state", () => {
+    const binding = installedSkill().bindings[0]!;
+    expect(skillBindingSupports(binding, "disable", CAPABILITIES)).toBe(true);
+    expect(skillBindingSupports(binding, "enable", CAPABILITIES)).toBe(false);
+    expect(skillBindingSupports(binding, "unbind", CAPABILITIES)).toBe(true);
   });
 });

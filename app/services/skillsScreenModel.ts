@@ -7,6 +7,34 @@ import type {
 } from "./skillsManagement";
 
 export type SkillsLeaderboardView = "all-time" | "trending" | "hot";
+export type SkillsStatusFacet = "all" | "enabled" | "disabled" | "available";
+export type SkillsScopeFacet = "all" | "global" | "project";
+export type SkillsOwnershipFacet = "all" | "zen" | "external" | "catalog";
+
+export interface SkillsFacets {
+  status: SkillsStatusFacet;
+  scope: SkillsScopeFacet;
+  ownership: SkillsOwnershipFacet;
+}
+
+export interface SkillsInspectionTarget {
+  name: string;
+  path?: string;
+}
+
+/** Exact package/file identity replayed by the inspector Retry action. */
+export function skillsInspectionTarget(
+  name: string,
+  path?: string,
+): SkillsInspectionTarget {
+  return path ? { name, path } : { name };
+}
+
+export const DEFAULT_SKILLS_FACETS: SkillsFacets = {
+  status: "all",
+  scope: "all",
+  ownership: "all",
+};
 
 export const MANAGED_SKILL_AGENTS: readonly ManagedSkillAgent[] = [
   "codex",
@@ -44,9 +72,7 @@ export type SkillsUnifiedRow =
  * provable repository source have no catalog identity and can never dedupe
  * against skills.sh entries.
  */
-export function installedSkillCatalogId(
-  skill: InstalledSkill,
-): string | null {
+export function installedSkillCatalogId(skill: InstalledSkill): string | null {
   return skill.source && skill.name ? `${skill.source}/${skill.name}` : null;
 }
 
@@ -145,8 +171,12 @@ export function skillsSectionProjection(
   inventory: SkillsInventory | undefined,
   agent: ManagedSkillAgent,
 ): SkillsAgentProjection {
-  const projection = skillsAgentProjection(inventory, agent);
-  const skills = projection.skills.filter((skill) => skill.manager !== "plugin");
+  const skills = (inventory?.skills ?? []).filter(
+    (skill) =>
+      skill.manager !== "plugin" &&
+      (skill.agents.includes(agent) ||
+        (skill.owned && skill.bindings.length === 0)),
+  );
   return { agent, count: skills.length, skills };
 }
 
@@ -154,6 +184,35 @@ export function skillsInstallTargets(
   agent: ManagedSkillAgent,
 ): ManagedSkillAgent[] {
   return [agent];
+}
+
+/** Applies secondary facets without changing authoritative identity/order. */
+export function filterSkillsByFacets(
+  installed: InstalledSkill[],
+  catalog: Array<CatalogSkill | RankedCatalogSkill>,
+  facets: SkillsFacets,
+): {
+  installed: InstalledSkill[];
+  catalog: Array<CatalogSkill | RankedCatalogSkill>;
+} {
+  const installedVisible = installed.filter((skill) => {
+    if (facets.status === "available") return false;
+    if (facets.status === "enabled" && !skill.enabled) return false;
+    if (facets.status === "disabled" && skill.enabled) return false;
+    if (facets.scope !== "all" && skill.scope !== facets.scope) return false;
+    if (facets.ownership === "zen" && !skill.owned) return false;
+    if (facets.ownership === "external" && skill.manager !== "external")
+      return false;
+    if (facets.ownership === "catalog") return false;
+    return true;
+  });
+  const catalogVisible =
+    (facets.status === "all" || facets.status === "available") &&
+    facets.scope === "all" &&
+    (facets.ownership === "all" || facets.ownership === "catalog")
+      ? catalog
+      : [];
+  return { installed: installedVisible, catalog: catalogVisible };
 }
 
 export function skillsLeaderboardLabel(view: SkillsLeaderboardView): string {

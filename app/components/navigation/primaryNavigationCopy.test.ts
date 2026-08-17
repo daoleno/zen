@@ -102,7 +102,7 @@ describe("navigation and Skills copy density", () => {
     )?.[0];
     expect(installedRowBlock).toContain("label={quickAction.label}");
     expect(installedRowBlock).not.toContain('label="Remove"');
-    expect(skillsSource).toContain('return { label: "Update"');
+    expect(skillsSource).toContain('label: "Update"');
   });
 
   test("ownership is progressive while loading, empty, and error reasons stay inline", () => {
@@ -125,9 +125,15 @@ describe("navigation and Skills copy density", () => {
     // Target, Ranking, and Discovery live inside one options sheet opened by a
     // single neutral icon button; none render as top toolbar labels.
     expect(skillsSource).toContain('accessibilityLabel="Skills options"');
-    expect(skillsSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
-    expect(skillsSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
-    expect(skillsSource).toContain("SheetSectionHeading>Discovery</SheetSectionHeading>");
+    expect(skillsSource).toContain(
+      "SheetSectionHeading>Target</SheetSectionHeading>",
+    );
+    expect(skillsSource).toContain(
+      "SheetSectionHeading>Ranking</SheetSectionHeading>",
+    );
+    expect(skillsSource).toContain(
+      "SheetSectionHeading>Discovery</SheetSectionHeading>",
+    );
     expect(skillsSource).toContain("managedAgentKind(agent)");
   });
 
@@ -180,7 +186,12 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('flexWrap: "wrap"');
     expect(skillsSource).toContain("PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER");
     expect(skillsSource).toContain("numberOfLines={2}");
-    for (const key of ["surfaceTab", "iconButton", "smallAction", "sheetOptionIcon"]) {
+    for (const key of [
+      "surfaceTab",
+      "iconButton",
+      "smallAction",
+      "sheetOptionIcon",
+    ]) {
       const block = skillsSource.match(
         new RegExp(`${key}: \\{[\\s\\S]*?\\},`),
       )?.[0];

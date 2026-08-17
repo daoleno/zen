@@ -16,10 +16,7 @@ import {
   installedSkillMetadata,
   installedSkillOwnership,
 } from "./pluginsSkillsSurfaceModel";
-import type {
-  AvailablePlugin,
-  InstalledPluginRow,
-} from "./pluginsManagement";
+import type { AvailablePlugin, InstalledPluginRow } from "./pluginsManagement";
 import type {
   CatalogSkill,
   InstalledSkill,
@@ -51,6 +48,7 @@ function skill(
       sourcePath: `/store/${name}`,
       enabled: true,
       boundAt: "2026-08-01T00:00:00Z",
+      operations: ["unbind", "disable"],
     })),
     provenance: "Zen canonical store",
     source: "acme/skills",
@@ -148,7 +146,9 @@ describe("Plugins & Skills V3 search and filtering", () => {
       }),
     ];
     expect(filterInstalledSkills(values, "ALPHA")).toEqual([values[0]]);
-    expect(filterInstalledSkills(values, "native provider")).toEqual([values[1]]);
+    expect(filterInstalledSkills(values, "native provider")).toEqual([
+      values[1],
+    ]);
     expect(filterInstalledSkills(values, "built in")).toEqual([values[1]]);
     expect(filterInstalledSkills(values, "codex builtin")).toEqual([values[1]]);
     expect(filterInstalledSkills(values, "   ")).toBe(values);
@@ -167,7 +167,9 @@ describe("Plugins & Skills V3 search and filtering", () => {
         ],
       }),
     ];
-    expect(filterInstalledPlugins(installed, "official")).toEqual([installed[0]]);
+    expect(filterInstalledPlugins(installed, "official")).toEqual([
+      installed[0],
+    ]);
     expect(filterInstalledPlugins(installed, "hidden-helper")).toEqual([
       installed[1],
     ]);
@@ -224,6 +226,7 @@ describe("Plugins & Skills V3 quiet ownership presentation", () => {
           sourcePath: "/store/shared",
           enabled: true,
           boundAt: "2026-08-01T00:00:00Z",
+          operations: ["unbind", "disable"],
         },
         {
           agent: "claude-code",
@@ -233,23 +236,27 @@ describe("Plugins & Skills V3 quiet ownership presentation", () => {
           sourcePath: "/store/shared",
           enabled: false,
           boundAt: "2026-08-01T00:00:00Z",
+          operations: ["unbind", "enable"],
         },
       ],
     });
     expect(installedSkillOwnership(shared, "codex")).toEqual({
       manageable: true,
       summary: "Bound · Global · Enabled",
-      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
+      detail:
+        "Content lives in Zen's store; bindings are managed per Agent and scope.",
     });
     expect(installedSkillOwnership(shared, "claude-code")).toEqual({
       manageable: true,
       summary: "Bound · Project · Disabled",
-      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
+      detail:
+        "Content lives in Zen's store; bindings are managed per Agent and scope.",
     });
     expect(installedSkillOwnership(shared, "grok")).toEqual({
       manageable: true,
       summary: "In the canonical store",
-      detail: "Content lives in Zen's store; bindings are managed per Agent and scope.",
+      detail:
+        "Content lives in Zen's store; bindings are managed per Agent and scope.",
     });
     expect(installedSkillMetadata(shared)).toBe("acme/skills · Mixed scopes");
   });
@@ -273,6 +280,36 @@ describe("Plugins & Skills V3 quiet ownership presentation", () => {
       manageable: false,
       summary: "Built in",
       detail: "Built-in Skills are owned by Codex.",
+    });
+  });
+
+  test("missing tracked external ownership exposes its item-specific reason", () => {
+    const reason =
+      "external skill directory is unavailable: stat /missing: no such file or directory";
+    const external = skill("missing-external", {
+      manager: "external",
+      owned: false,
+      tracked: true,
+      enabled: false,
+      canonicalPath: undefined,
+      sourcePath: "/missing",
+      source: "/missing",
+      sourceType: "external",
+      agents: [],
+      bindings: [],
+      scope: "unknown",
+      provenance: "Tracked external installation",
+      capability: {
+        canManage: true,
+        operations: ["forget"],
+        reason,
+      },
+    });
+
+    expect(installedSkillOwnership(external, "codex")).toEqual({
+      manageable: true,
+      summary: "External installation",
+      detail: reason,
     });
   });
 

@@ -57,7 +57,12 @@ import {
   type PluginMutationOperation,
   type PluginMutationResult,
 } from "./pluginsManagement";
-import { PLUGINS_INVENTORY_TIMEOUT_MS, PLUGIN_COMMAND_TIMEOUT_MS, PLUGIN_MUTATION_TIMEOUT_MS, SKILLS_MUTATION_TIMEOUT_MS } from "./pluginsDeadlines";
+import {
+  PLUGINS_INVENTORY_TIMEOUT_MS,
+  PLUGIN_COMMAND_TIMEOUT_MS,
+  PLUGIN_MUTATION_TIMEOUT_MS,
+  SKILLS_MUTATION_TIMEOUT_MS,
+} from "./pluginsDeadlines";
 import {
   dispatchStructuredCommand,
   sendWebSocketMessageNow,
@@ -149,11 +154,7 @@ export type CodexSlashCommandCategory =
   | string;
 
 export type CodexSlashCommandExecution =
-  | "terminal-required"
-  | "insert-only"
-  | "native"
-  | "unsupported"
-  | string;
+  "terminal-required" | "insert-only" | "native" | "unsupported" | string;
 
 export interface CodexSlashCommandInput {
   kind: "none" | "inline-args" | "form" | "picker" | "freeform" | string;
@@ -823,9 +824,7 @@ export class MultiServerWebSocketClient {
         client: input.client,
         executor_id: input.client,
         connection_id: input.connectionId,
-        ...(input.modelId?.trim()
-          ? { model_id: input.modelId.trim() }
-          : {}),
+        ...(input.modelId?.trim() ? { model_id: input.modelId.trim() } : {}),
         revision: input.revision,
       },
       "Timed out while updating Provider default.",
@@ -891,7 +890,9 @@ export class MultiServerWebSocketClient {
         try {
           const parsed = parseProviderModelsResult(payload, connectionId);
           if (!parsed) {
-            reject(invalidProviderReply("Daemon returned invalid provider models."));
+            reject(
+              invalidProviderReply("Daemon returned invalid provider models."),
+            );
             return;
           }
           resolve(parsed);
@@ -900,7 +901,9 @@ export class MultiServerWebSocketClient {
             error instanceof ProviderError
               ? error
               : invalidProviderReply(
-                  error instanceof Error ? error.message : "Invalid models payload.",
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid models payload.",
                 ),
           );
         }
@@ -972,7 +975,11 @@ export class MultiServerWebSocketClient {
             input.client,
           );
           if (!parsed) {
-            reject(invalidProviderReply("Daemon returned an invalid connection test result."));
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid connection test result.",
+              ),
+            );
             return;
           }
           resolve(parsed);
@@ -1064,7 +1071,11 @@ export class MultiServerWebSocketClient {
         try {
           const parsed = parseProviderConnectionTestResult(payload, client);
           if (!parsed) {
-            reject(invalidProviderReply("Daemon returned an invalid connection test result."));
+            reject(
+              invalidProviderReply(
+                "Daemon returned an invalid connection test result.",
+              ),
+            );
             return;
           }
           resolve(parsed);
@@ -1213,10 +1224,7 @@ export class MultiServerWebSocketClient {
             payload.runtime,
             input.agentId,
           );
-          if (
-            !selection ||
-            !assertThreadRuntimeMatches(selection, input)
-          ) {
+          if (!selection || !assertThreadRuntimeMatches(selection, input)) {
             reject(
               invalidProviderReply(
                 "Daemon returned an invalid activation selection.",
@@ -1366,7 +1374,6 @@ export class MultiServerWebSocketClient {
     });
   }
 
-
   private requestProvidersCatalog(
     serverId: string,
     body: Record<string, unknown>,
@@ -1399,11 +1406,11 @@ export class MultiServerWebSocketClient {
             return;
           }
           const persistence = isList
-            ? parseOptionalMutationPersistence(payload) ?? {
+            ? (parseOptionalMutationPersistence(payload) ?? {
                 applied: true,
                 durable: true,
                 outcome: "applied",
-              }
+              })
             : requireAppliedPersistence(payload);
           if (!isList) {
             // requireApplied already validated
@@ -2426,7 +2433,12 @@ export class MultiServerWebSocketClient {
 
   getSkillsInspect(
     serverId: string,
-    options: { skillName: string; generation: number; cwd?: string },
+    options: {
+      skillName: string;
+      generation: number;
+      cwd?: string;
+      path?: string;
+    },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<{ generation: number; detail: PackageDetail }>(
@@ -2488,6 +2500,7 @@ export class MultiServerWebSocketClient {
             generation: options.generation,
             skill_name: options.skillName,
             cwd: options.cwd,
+            path: options.path,
           },
           cleanup,
           reject,
@@ -2516,7 +2529,9 @@ export class MultiServerWebSocketClient {
           cleanup();
           if (payload.generation !== options.generation) {
             reject(
-              new Error("Daemon returned a stale Plugins inventory generation."),
+              new Error(
+                "Daemon returned a stale Plugins inventory generation.",
+              ),
             );
             return;
           }
@@ -2549,7 +2564,9 @@ export class MultiServerWebSocketClient {
         const handleGenericError = handleError;
         const timer = setTimeout(() => {
           cleanup();
-          reject(daemonRequestError("Timed out while loading Plugins.", "timeout"));
+          reject(
+            daemonRequestError("Timed out while loading Plugins.", "timeout"),
+          );
         }, PLUGINS_INVENTORY_TIMEOUT_MS);
         this.on("plugins_inventory", handleInventory);
         this.on("plugins_inventory_error", handleError);
@@ -2618,7 +2635,12 @@ export class MultiServerWebSocketClient {
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(daemonRequestError("Timed out while validating the plugin command.", "timeout"));
+        reject(
+          daemonRequestError(
+            "Timed out while validating the plugin command.",
+            "timeout",
+          ),
+        );
       }, PLUGIN_COMMAND_TIMEOUT_MS);
       this.on("plugin_command", handleCommand);
       this.on("plugin_command_error", handleError);

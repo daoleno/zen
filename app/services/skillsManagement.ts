@@ -1,20 +1,11 @@
 export type SkillAgent =
-  | "codex"
-  | "claude-code"
-  | "cursor"
-  | "grok"
-  | "opencode"
-  | "pi";
+  "codex" | "claude-code" | "cursor" | "grok" | "opencode" | "pi";
 /** Every Zen-supported Agent now has a real adapter; all six are managed. */
 export type ManagedSkillAgent = SkillAgent;
 export type SkillScope =
-  | "project"
-  | "global"
-  | "mixed"
-  | "plugin"
-  | "builtin"
-  | "unknown";
-export type SkillManager = "zen" | "external" | "plugin" | "builtin" | "unknown";
+  "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
+export type SkillManager =
+  "zen" | "external" | "plugin" | "builtin" | "unknown";
 export type BindingMode = "symlink" | "copy";
 export type SkillMutationOperation =
   | "import"
@@ -38,6 +29,7 @@ export interface SkillBinding {
   boundAt: string;
   driftHash?: string;
   note?: string;
+  operations: SkillMutationOperation[];
 }
 
 export interface SkillRiskSignal {
@@ -70,7 +62,7 @@ export type SkillManagementCapability =
   | {
       canManage: true;
       operations: SkillMutationOperation[];
-      reason?: undefined;
+      reason?: string;
     }
   | {
       canManage: false;
@@ -224,6 +216,8 @@ export interface PackageDetail {
   bindings: SkillBinding[];
   files?: PackageFile[];
   skillMd?: string;
+  filePath?: string;
+  fileContent?: string;
   risk?: SkillRiskSignal[];
   warnings?: string[];
   capability: SkillManagementCapability;
@@ -384,10 +378,12 @@ function boundedCount(value: unknown): number {
  * lifecycle affordance on this list; an absent field is rejected so an old
  * daemon can never silently disable every action.
  */
-function normalizeMutationOperations(
-  value: unknown,
-): SkillMutationOperation[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > OPERATIONS.size) {
+function normalizeMutationOperations(value: unknown): SkillMutationOperation[] {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > OPERATIONS.size
+  ) {
     throw new Error("Daemon returned an invalid Skills mutation capability.");
   }
   const seen = new Set<SkillMutationOperation>();
@@ -616,14 +612,18 @@ function assertSkillsCommandMatchesRequest(
     ) ||
     (expected.skillName != null && command.skillName !== expected.skillName)
   ) {
-    throw new Error("Daemon executed a Skills command for a different request.");
+    throw new Error(
+      "Daemon executed a Skills command for a different request.",
+    );
   }
   if (expected.operation === "import") {
     if (
       command.catalogId !== expected.skillId ||
       command.source !== expected.source
     ) {
-      throw new Error("Daemon executed a Skills command for a different request.");
+      throw new Error(
+        "Daemon executed a Skills command for a different request.",
+      );
     }
   }
 }
@@ -690,6 +690,8 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     bindings,
     files: files.length > 0 ? files : undefined,
     skillMd: boundedMultilineString(raw.skill_md, 70000) || undefined,
+    filePath: boundedString(raw.file_path, 1024) || undefined,
+    fileContent: boundedMultilineString(raw.file_content, 70000) || undefined,
     risk: (Array.isArray(raw.risk) ? raw.risk : [])
       .map(normalizeRisk)
       .filter((risk): risk is SkillRiskSignal => risk != null),
@@ -806,7 +808,11 @@ export function buildSkillsMutationConfirmation(
       ),
     );
   } else if (command.changes.length > 0) {
-    lines.push("", "Changes:", ...command.changes.map((change) => `• ${change.detail || change.path}`));
+    lines.push(
+      "",
+      "Changes:",
+      ...command.changes.map((change) => `• ${change.detail || change.path}`),
+    );
   }
   return {
     title: `${verb} ${command.skillName || "Skills"}?`,
@@ -1157,7 +1163,8 @@ function normalizeCapability(value: unknown): SkillManagementCapability {
     const operations = rawOps
       .filter(
         (op): op is SkillMutationOperation =>
-          typeof op === "string" && OPERATIONS.has(op as SkillMutationOperation),
+          typeof op === "string" &&
+          OPERATIONS.has(op as SkillMutationOperation),
       )
       .slice(0, OPERATIONS.size);
     if (operations.length !== rawOps.length || operations.length === 0) {
@@ -1167,7 +1174,11 @@ function normalizeCapability(value: unknown): SkillManagementCapability {
         reason: boundedString(raw.reason, 240) || undefined,
       };
     }
-    return { canManage: true, operations };
+    return {
+      canManage: true,
+      operations,
+      reason: boundedString(raw.reason, 240) || undefined,
+    };
   }
   return {
     canManage: false,
@@ -1184,6 +1195,14 @@ function normalizeBinding(value: unknown): SkillBinding | null {
   const targetPath = boundedString(raw.target_path, 4096);
   const sourcePath = boundedString(raw.source_path, 4096);
   const boundAt = boundedString(raw.bound_at, 64);
+  const rawOperations = Array.isArray(raw.operations) ? raw.operations : [];
+  const operations = rawOperations.filter(
+    (operation): operation is SkillMutationOperation =>
+      typeof operation === "string" &&
+      (operation === "enable" ||
+        operation === "disable" ||
+        operation === "unbind"),
+  );
   if (
     typeof agent !== "string" ||
     !AGENTS.has(agent as SkillAgent) ||
@@ -1194,7 +1213,8 @@ function normalizeBinding(value: unknown): SkillBinding | null {
     !targetPath ||
     !sourcePath ||
     !boundAt ||
-    typeof raw.enabled !== "boolean"
+    typeof raw.enabled !== "boolean" ||
+    operations.length !== rawOperations.length
   ) {
     return null;
   }
@@ -1208,6 +1228,7 @@ function normalizeBinding(value: unknown): SkillBinding | null {
     boundAt,
     driftHash: boundedString(raw.drift_hash, 64) || undefined,
     note: boundedString(raw.note, 240) || undefined,
+    operations,
   };
 }
 
@@ -1221,8 +1242,8 @@ function normalizeAgentSupport(value: unknown): SkillAgentSupport | null {
     typeof agent !== "string" ||
     !AGENTS.has(agent as SkillAgent) ||
     !name ||
-    (typeof bindingMode !== "string" ||
-      !BINDING_MODES.has(bindingMode as BindingMode)) ||
+    typeof bindingMode !== "string" ||
+    !BINDING_MODES.has(bindingMode as BindingMode) ||
     !defaultGlobalDir
   ) {
     return null;

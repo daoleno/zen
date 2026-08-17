@@ -72,6 +72,7 @@ import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
+import { SkillsScreenshotDemo } from "../components/skills/SkillsScreenshotDemo";
 
 const NOOP = () => undefined;
 const loadNoDemoAsset = async () => null;
@@ -106,6 +107,8 @@ export default function ScreenshotDemoRoute() {
       return <CalendarDemo />;
     case "providers":
       return <ProvidersDemo />;
+    case "skills":
+      return <SkillsScreenshotDemo />;
     case "profile":
       return <InterfaceDevicePerformanceDemoGate />;
     case "composer":
@@ -995,7 +998,8 @@ function ComposerStatesDemo() {
 function SessionsDemo() {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
-  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;  return (
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
+  return (
     <PrimaryDrawerShell activePrimaryRoute="list" onSelectPrimaryRoute={NOOP}>
       <View
         style={[

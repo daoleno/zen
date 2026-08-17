@@ -182,6 +182,7 @@ export function installedSkillOwnership(
       manageable: true,
       summary: "External installation",
       detail:
+        skill.capability.reason ||
         "Tracked for adopt/forget. Zen never edits external files unless you adopt.",
     };
   }

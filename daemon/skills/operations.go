@@ -335,30 +335,19 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 			{Kind: "copy", Path: externalDir, Destination: store.PackageDir(request.SkillName), Detail: "Copy external content into the canonical store"},
 			{Kind: "write", Path: store.InventoryPath(), Detail: "Mark " + request.SkillName + " as Zen-owned"},
 		}
-		for _, agent := range agents {
-			adapter, _ := adapterFor(agent)
-			dir := ""
-			if scope == ScopeGlobal {
-				dir = globalSkillsDir(adapter, env.store.Home, env.env)
-			} else {
-				dir = projectSkillsDir(adapter, env.cwd)
-			}
-			changes = append(changes, MutationChange{
-				Kind: "symlink", Path: filepath.Join(dir, request.SkillName),
-				Destination: store.PackageDir(request.SkillName),
-				Detail:      "Rebind " + agentName(agent) + " from the external copy to the canonical store",
-			})
-		}
 		return MutationCommand{
 			Operation: OperationAdopt, SkillName: request.SkillName, Scope: scope, Agents: agents,
 			Source: entry.Source, Ref: entry.Ref,
-			Summary:     "Adopt external skill " + request.SkillName + " into Zen's store (content is preserved in the store; external copies are replaced by managed bindings)",
+			Summary:     "Adopt external skill " + request.SkillName + " into Zen's store (the external source remains untouched; bind the owned copy explicitly afterward)",
 			Changes:     changes,
 			Destructive: false,
 		}, nil
 	case OperationUpdate:
 		if !entry.Owned {
 			return MutationCommand{}, errors.New("external installations cannot be updated by Zen")
+		}
+		if !updateProvenancePinned(entry) {
+			return MutationCommand{}, errors.New("Skill update requires pinned, validated provenance")
 		}
 		summary := "Update " + request.SkillName + " to its pinned provenance"
 		if entry.Ref != "" {
@@ -937,61 +926,22 @@ func executeAdopt(ctx context.Context, env environment, command MutationCommand,
 	if err != nil {
 		return "", err
 	}
-	// Re-materialize every tracked binding from the store so the canonical
-	// content is the single source of truth going forward.
-	if entry.Bindings != nil {
-		for _, binding := range entry.Bindings {
-			_ = removeMaterialization(binding)
-		}
+	if err := ctx.Err(); err != nil {
+		_ = os.RemoveAll(packageDir)
+		return "", err
 	}
 	entry.Owned = true
 	entry.ContentHash = hash
 	entry.UpdatedAt = env.store.now().UTC().Format(time.RFC3339)
-	entry.Bindings = adoptBindings(ctx, env, command, entry)
+	// Adoption copies ownership into Zen but deliberately leaves the external
+	// installation unchanged. Managed bindings are an explicit later action.
+	entry.Bindings = nil
 	inventory.Packages[command.SkillName] = entry
 	if err := env.store.SaveInventory(*inventory); err != nil {
+		_ = os.RemoveAll(packageDir)
 		return "", err
 	}
-	return "Adopted " + command.SkillName + " into Zen's store (" + shortHash(hash) + ").", nil
-}
-
-// adoptBindings rebinds each requested (or discovered) agent from its external
-// copy to the canonical store. Content is already safely copied, so the old
-// materialization at the target path is replaced by the managed binding.
-func adoptBindings(ctx context.Context, env environment, command MutationCommand, entry PackageEntry) []BindingEntry {
-	agents := command.Agents
-	if len(agents) == 0 {
-		agents = entry.DiscoveredAgents
-	}
-	scope := entry.DiscoveredScope
-	if scope == "" {
-		scope = ScopeGlobal
-	}
-	bindings := make([]BindingEntry, 0, len(agents))
-	for _, agent := range agents {
-		adapter, err := adapterFor(agent)
-		if err != nil {
-			continue
-		}
-		dir := ""
-		if scope == ScopeGlobal {
-			dir = globalSkillsDir(adapter, env.store.Home, env.env)
-		} else {
-			dir = projectSkillsDir(adapter, env.cwd)
-		}
-		// The external copy at this path is now redundant: content lives in
-		// the store. Replace it with the managed binding.
-		_ = os.RemoveAll(filepath.Join(dir, command.SkillName))
-		binding, err := materializeBinding(env.store, entry, agent, scope, env)
-		if err != nil {
-			continue
-		}
-		bindings = append(bindings, binding)
-		if err := ctx.Err(); err != nil {
-			break
-		}
-	}
-	return bindings
+	return "Adopted " + command.SkillName + " into Zen's store (" + shortHash(hash) + "). The external source was left untouched.", nil
 }
 
 func executeUpdate(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
@@ -1059,6 +1009,15 @@ func executeUpdate(ctx context.Context, env environment, command MutationCommand
 	if err := copyDirBounded(sourceRoot, oldPackage); err != nil {
 		return "", err
 	}
+	copyRollbacks, err := replaceEnabledCopyBindings(entry.Bindings, oldPackage)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		for index := len(copyRollbacks) - 1; index >= 0; index-- {
+			copyRollbacks[index].finish(committed)
+		}
+	}()
 	entry.PreviousHash = entry.ContentHash
 	entry.ContentHash = newHash
 	entry.UpdatedAt = env.store.now().UTC().Format(time.RFC3339)
@@ -1068,6 +1027,97 @@ func executeUpdate(ctx context.Context, env environment, command MutationCommand
 	}
 	committed = true
 	return fmt.Sprintf("Updated %s: %s -> %s with exact rollback retained.", command.SkillName, shortHash(entry.PreviousHash), shortHash(newHash)), nil
+}
+
+type copyBindingRollback struct {
+	target    string
+	backup    string
+	hadTarget bool
+}
+
+func (rollback copyBindingRollback) finish(committed bool) {
+	if committed {
+		_ = os.RemoveAll(rollback.backup)
+		return
+	}
+	_ = os.RemoveAll(rollback.target)
+	if rollback.hadTarget {
+		_ = os.Rename(rollback.backup, rollback.target)
+	}
+}
+
+// Copy adapters must advance with the canonical package. Each replacement is
+// staged beside its target so rename remains atomic on that filesystem, and
+// every prior target remains available until inventory commit succeeds.
+func replaceEnabledCopyBindings(bindings []BindingEntry, source string) ([]copyBindingRollback, error) {
+	prepared := make([]struct {
+		target string
+		stage  string
+	}, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.Mode != BindingCopy || !binding.Enabled {
+			continue
+		}
+		parent := filepath.Dir(binding.TargetPath)
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return nil, err
+		}
+		stage, err := os.MkdirTemp(parent, ".zen-skill-update-*")
+		if err != nil {
+			return nil, err
+		}
+		if err := copyDirBounded(source, stage); err != nil {
+			_ = os.RemoveAll(stage)
+			for _, item := range prepared {
+				_ = os.RemoveAll(item.stage)
+			}
+			return nil, err
+		}
+		prepared = append(prepared, struct {
+			target string
+			stage  string
+		}{target: binding.TargetPath, stage: stage})
+	}
+
+	rollbacks := make([]copyBindingRollback, 0, len(prepared))
+	for index, item := range prepared {
+		backup := item.stage + "-previous"
+		_, statErr := os.Lstat(item.target)
+		hadTarget := statErr == nil
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			for _, pending := range prepared[index:] {
+				_ = os.RemoveAll(pending.stage)
+			}
+			for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
+				rollbacks[rollbackIndex].finish(false)
+			}
+			return nil, statErr
+		}
+		if hadTarget {
+			if err := os.Rename(item.target, backup); err != nil {
+				for _, pending := range prepared[index:] {
+					_ = os.RemoveAll(pending.stage)
+				}
+				for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
+					rollbacks[rollbackIndex].finish(false)
+				}
+				return nil, err
+			}
+		}
+		rollback := copyBindingRollback{target: item.target, backup: backup, hadTarget: hadTarget}
+		if err := os.Rename(item.stage, item.target); err != nil {
+			rollback.finish(false)
+			for _, pending := range prepared[index+1:] {
+				_ = os.RemoveAll(pending.stage)
+			}
+			for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
+				rollbacks[rollbackIndex].finish(false)
+			}
+			return nil, err
+		}
+		rollbacks = append(rollbacks, rollback)
+	}
+	return rollbacks, nil
 }
 
 func fetchCommand(entry PackageEntry) MutationCommand {

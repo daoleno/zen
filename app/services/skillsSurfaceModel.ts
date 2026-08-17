@@ -4,6 +4,7 @@ import type {
   RankedCatalogSkill,
   SkillMutationOperation,
   CatalogSkill,
+  SkillBinding,
 } from "./skillsManagement";
 
 /**
@@ -31,8 +32,22 @@ export interface SkillsSurfaceState {
   section: SkillsSurfaceSection;
 }
 
+export function skillBindingSupports(
+  binding: SkillBinding,
+  operation: "enable" | "disable" | "unbind",
+  capabilities: readonly SkillMutationOperation[],
+): boolean {
+  return (
+    capabilities.includes(operation) && binding.operations.includes(operation)
+  );
+}
+
 export type SkillMutationIntent =
-  | { kind: "import"; skill: CatalogSkill | RankedCatalogSkill; scope: "project" | "global" }
+  | {
+      kind: "import";
+      skill: CatalogSkill | RankedCatalogSkill;
+      scope: "project" | "global";
+    }
   | { kind: "migrate" }
   | {
       kind: "binding";

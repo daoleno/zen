@@ -97,9 +97,43 @@ type PackageDetail struct {
 	Bindings    []SkillBinding       `json:"bindings"`
 	Files       []PackageFile        `json:"files,omitempty"`
 	SKILLMD     string               `json:"skill_md,omitempty"`
+	FilePath    string               `json:"file_path,omitempty"`
+	FileContent string               `json:"file_content,omitempty"`
 	Risk        []RiskSignal         `json:"risk,omitempty"`
 	Warnings    []string             `json:"warnings,omitempty"`
 	Capability  ManagementCapability `json:"capability"`
+}
+
+// InspectPackageFile extends package detail with one bounded, read-only text
+// file. Traversal and symlinks are rejected before content is read.
+func InspectPackageFile(options InventoryOptions, name, relative string) (PackageDetail, error) {
+	detail, err := InspectPackage(options, name)
+	if err != nil {
+		return PackageDetail{}, err
+	}
+	relative = filepath.ToSlash(filepath.Clean(relative))
+	if relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, "../") {
+		return PackageDetail{}, errors.New("invalid Skill file path")
+	}
+	root := detail.Canonical
+	if root == "" {
+		root = detail.SourcePath
+	}
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return PackageDetail{}, errors.New("Skill file is unavailable or not a regular file")
+	}
+	content, ok, err := readTextFileBounded(path, maxInspectSKILLBytes)
+	if err != nil {
+		return PackageDetail{}, fmt.Errorf("read Skill file: %w", err)
+	}
+	if !ok {
+		return PackageDetail{}, errors.New("Skill file exceeds the inspection size limit")
+	}
+	detail.FilePath = relative
+	detail.FileContent = content
+	return detail, nil
 }
 
 const (
@@ -142,6 +176,7 @@ func InspectPackage(options InventoryOptions, name string) (PackageDetail, error
 				Mode: string(binding.Mode), TargetPath: binding.TargetPath,
 				SourcePath: binding.TargetPath, Enabled: binding.Enabled,
 				BoundAt: binding.BoundAt, Note: binding.Note,
+				Operations: bindingOperations(binding),
 			})
 			if binding.Enabled {
 				detail.Enabled = true
@@ -150,10 +185,18 @@ func InspectPackage(options InventoryOptions, name string) (PackageDetail, error
 		if entry.Owned {
 			detail.Manager = ManagerZen
 			detail.Canonical = store.PackageDir(name)
-			detail.Capability = ManagementCapability{CanManage: true, Operations: ownedCapabilities(normalized)}
+			detail.Capability = ManagementCapability{CanManage: true, Operations: ownedPackageOperations(entry)}
 		} else {
 			detail.Manager = ManagerExternal
-			detail.Capability = ManagementCapability{CanManage: true, Operations: trackedExternalCapabilities()}
+			detail.SourcePath = entry.Source
+			if _, sourceErr := trackedExternalDir(entry); sourceErr != nil {
+				detail.Capability = ManagementCapability{
+					CanManage: true, Operations: []MutationOperation{OperationForget}, Reason: sourceErr.Error(),
+				}
+				detail.Warnings = append(detail.Warnings, sourceErr.Error())
+			} else {
+				detail.Capability = ManagementCapability{CanManage: true, Operations: trackedExternalCapabilities()}
+			}
 		}
 	} else {
 		// Untracked external: discover from agent surfaces.
@@ -191,10 +234,6 @@ func InspectPackage(options InventoryOptions, name string) (PackageDetail, error
 		detail.Risk = scanRiskSignals(contentRoot)
 	}
 	return detail, nil
-}
-
-func ownedCapabilities(_ InventoryOptions) []MutationOperation {
-	return []MutationOperation{OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationUpdate}
 }
 
 func trackedExternalCapabilities() []MutationOperation {

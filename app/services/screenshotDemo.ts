@@ -15,6 +15,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "calendar",
   "profile",
   "providers",
+  "skills",
   "composer",
 ] as const;
 

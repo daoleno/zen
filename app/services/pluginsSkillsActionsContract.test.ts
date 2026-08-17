@@ -132,6 +132,20 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(presentationSource).toContain("function MutationNoticeBanner");
   });
 
+  test("package and file inspection failures stay visible and retry through the existing owner", () => {
+    expect(presentationSource).toContain('label="Retry"');
+    expect(presentationSource).toContain("function SkillInspectorStatus(");
+    expect(presentationSource).toContain("function SkillInspectorStatusSheet(");
+    expect(presentationSource).toContain(
+      "onInspectSkill(inspectionTarget.name, inspectionTarget.path)",
+    );
+    expect(screenSource).toContain(
+      "onInspectSkill={(name, path) => void inspectSkill(name, path)}",
+    );
+    expect(screenSource).toContain('requestOwnerRef.current.issue("inspect")');
+    expect(screenSource.match(/issue\("inspect"\)/g)).toHaveLength(1);
+  });
+
   test("unsupported ownership exposes inspection, not fake mutation callbacks", () => {
     expect(presentationSource).toContain("installedSkillOwnership");
     expect(presentationSource).toContain("installedPluginOwnership");

@@ -307,7 +307,11 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 	}
 	request := skillsMutationWireRequest(raw)
 	go func() {
-		command, err := skillmgmt.BuildMutationCommand(skillmgmt.InventoryOptions{}, request)
+		// Review and execution must resolve the same HOME, state and project
+		// roots. Otherwise a command can be advertised but fail when executed.
+		command, err := skillmgmt.BuildMutationCommand(
+			skillsInventoryOptions(s, context.Background(), raw.Cwd), request,
+		)
 		if err != nil {
 			s.sendSkillsError(conn, "skills_command_error", raw, "command_rejected", err.Error())
 			return
@@ -523,7 +527,14 @@ func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {
 		})
 	}
 	go func() {
-		detail, err := skillmgmt.InspectPackage(skillsInventoryOptions(s, ctx, raw.Cwd), name)
+		options := skillsInventoryOptions(s, ctx, raw.Cwd)
+		var detail skillmgmt.PackageDetail
+		var err error
+		if strings.TrimSpace(raw.Path) != "" {
+			detail, err = skillmgmt.InspectPackageFile(options, name, raw.Path)
+		} else {
+			detail, err = skillmgmt.InspectPackage(options, name)
+		}
 		if !s.claimSkillsInspect(conn, next) {
 			return
 		}

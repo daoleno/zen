@@ -145,6 +145,24 @@ func TestInspectPackageDetail(t *testing.T) {
 	}
 }
 
+func TestInspectPackageFileIsBoundedAndTraversalSafe(t *testing.T) {
+	f := newFixture(t)
+	source := f.writeSkill(f.Home, "reader", "reader body\n")
+	if err := os.WriteFile(filepath.Join(source, "notes.md"), []byte("read only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "reader", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentPi}})
+	detail, err := InspectPackageFile(f.options(""), "reader", "notes.md")
+	if err != nil || detail.FilePath != "notes.md" || detail.FileContent != "read only" {
+		t.Fatalf("file inspection = %+v, %v", detail, err)
+	}
+	for _, unsafe := range []string{"../inventory.json", "/etc/passwd", "."} {
+		if _, err := InspectPackageFile(f.options(""), "reader", unsafe); err == nil {
+			t.Fatalf("unsafe file path %q was accepted", unsafe)
+		}
+	}
+}
+
 func TestTemporaryDirectoriesAreOwnedAndCleaned(t *testing.T) {
 	f := newFixture(t)
 	store := f.store()

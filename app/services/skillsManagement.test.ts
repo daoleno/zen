@@ -220,6 +220,48 @@ describe("skills inventory normalization", () => {
       "forget",
     ]);
   });
+
+  test("missing tracked external rows preserve their executable operation and exact reason", () => {
+    const reason =
+      "external skill directory is unavailable: stat /missing: no such file or directory";
+    const inventory = normalizeSkillsInventory({
+      generated_at: "2026-08-01T00:00:00Z",
+      skills: [
+        {
+          id: "444455556666444455556666",
+          name: "missing-external",
+          manager: "external",
+          owned: false,
+          tracked: true,
+          enabled: false,
+          canonical_path: "/missing",
+          source_path: "/missing",
+          scope: "unknown",
+          agents: [],
+          bindings: [],
+          provenance: "Tracked external installation",
+          source: "/missing",
+          source_type: "external",
+          content_hash: "recorded-hash",
+          migration: "external",
+          capability: {
+            can_manage: true,
+            operations: ["forget"],
+            reason,
+          },
+        },
+      ],
+      agents: [],
+      warnings: [],
+      mutation_operations: ["forget"],
+    });
+
+    expect(inventory.skills[0]!.capability).toEqual({
+      canManage: true,
+      operations: ["forget"],
+      reason,
+    });
+  });
 });
 
 describe("mutation command normalization", () => {

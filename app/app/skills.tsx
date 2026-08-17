@@ -63,10 +63,7 @@ import {
   SkillsServerRequestOwner,
   type SkillsServerRequestToken,
 } from "../services/skillsServerBoundary";
-import {
-  DaemonRequestError,
-  wsClient,
-} from "../services/websocket";
+import { DaemonRequestError, wsClient } from "../services/websocket";
 import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
 
@@ -272,9 +269,7 @@ export default function SkillsScreen() {
 
   const loadPlugins = useCallback(async () => {
     const token = requestOwnerRef.current.issue("plugins");
-    setPluginsState((current) =>
-      beginSkillsRequest(current, token.generation),
-    );
+    setPluginsState((current) => beginSkillsRequest(current, token.generation));
     if (!token.serverId || !currentServer) {
       setPluginsState((current) =>
         failSkillsRequest(
@@ -360,9 +355,7 @@ export default function SkillsScreen() {
 
   const loadLeaderboards = useCallback(async () => {
     const token = requestOwnerRef.current.issue("catalog");
-    setCatalogState((current) =>
-      beginSkillsRequest(current, token.generation),
-    );
+    setCatalogState((current) => beginSkillsRequest(current, token.generation));
     if (!token.serverId || !currentServer) {
       setCatalogState((current) =>
         failSkillsRequest(
@@ -446,11 +439,7 @@ export default function SkillsScreen() {
       }
       const token = requestOwnerRef.current.issue("search");
       setSearchState((current) =>
-        beginSkillsRequest(
-          current,
-          token.generation,
-          intent === "same-query",
-        ),
+        beginSkillsRequest(current, token.generation, intent === "same-query"),
       );
       if (!token.serverId || !currentServer) {
         setSearchState((current) =>
@@ -592,7 +581,7 @@ export default function SkillsScreen() {
 
   /** Loads the inspector detail for one Skill name (generation-cancelable). */
   const inspectSkill = useCallback(
-    async (name: string) => {
+    async (name: string, path?: string) => {
       setInspectedName(name);
       const token = requestOwnerRef.current.issue("inspect");
       setInspectState((current) =>
@@ -613,6 +602,7 @@ export default function SkillsScreen() {
           skillName: name,
           generation: token.generation,
           cwd: projectCwd || undefined,
+          path,
         });
         if (
           !focusedRef.current ||
@@ -900,7 +890,11 @@ export default function SkillsScreen() {
           cwd: projectCwd || undefined,
         });
       },
-      () => ({ operation: "migrate", scope: "global", cwd: projectCwd || undefined }),
+      () => ({
+        operation: "migrate",
+        scope: "global",
+        cwd: projectCwd || undefined,
+      }),
       "migrate",
       false,
     );
@@ -1223,7 +1217,7 @@ export default function SkillsScreen() {
       onOpenSettings={() => router.push("/settings")}
       onRefreshSkills={refreshSkills}
       onRetryPlugins={() => void loadPlugins()}
-      onInspectSkill={(name) => void inspectSkill(name)}
+      onInspectSkill={(name, path) => void inspectSkill(name, path)}
       onDismissInspector={dismissInspector}
       onImport={(skill) => void prepareImport(skill, "global")}
       onMigrate={() => void prepareMigrate()}

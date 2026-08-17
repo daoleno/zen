@@ -330,7 +330,7 @@ func TestImportCatalogViaFetcherAndProjectScope(t *testing.T) {
 func TestUpdateAtomicRollbackAndPin(t *testing.T) {
 	f := newFixture(t)
 	source := f.writeSkill(f.Home, "evolving", "v1")
-	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "evolving", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex}})
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "evolving", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex, AgentCursor}})
 	store := f.store()
 	before, _ := store.LoadInventory(false)
 	beforeHash := before.Packages["evolving"].ContentHash
@@ -346,6 +346,10 @@ func TestUpdateAtomicRollbackAndPin(t *testing.T) {
 	}
 	if after.Packages["evolving"].PreviousHash != beforeHash {
 		t.Fatal("update must retain the previous hash for rollback")
+	}
+	cursorCopy, err := os.ReadFile(filepath.Join(f.agentGlobalDir(AgentCursor), "evolving", "SKILL.md"))
+	if err != nil || !strings.Contains(string(cursorCopy), "v2 content") {
+		t.Fatalf("update must advance enabled copy bindings: %v, %q", err, cursorCopy)
 	}
 	if command.Changes == nil {
 		t.Fatal("update plan must describe changes")
@@ -368,13 +372,31 @@ func TestUpdateAtomicRollbackAndPin(t *testing.T) {
 	}
 	catalogCommand, err := BuildMutationCommand(catalogOptions, MutationRequest{
 		Operation: OperationImport, SkillName: "versioned", Source: "owner/versioned",
-		SkillID: "owner/versioned/versioned", Scope: ScopeGlobal, Agents: []Agent{AgentCodex},
+		SkillID: "owner/versioned/versioned", Ref: "deadbeef", Scope: ScopeGlobal, Agents: []Agent{AgentCodex},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ExecuteMutationCommand(context.Background(), catalogCommand, MutationExecutionOptions{InventoryOptions: catalogOptions}); err != nil {
 		t.Fatal(err)
+	}
+	catalogOptions.Fetcher = func(ctx context.Context, request MutationRequest, stageDir string) error {
+		dir := filepath.Join(stageDir, "skills", "versioned")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: versioned\n---\nupdated\n"), 0o600)
+	}
+	catalogUpdate, err := BuildMutationCommand(catalogOptions, MutationRequest{Operation: OperationUpdate, SkillName: "versioned"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteMutationCommand(context.Background(), catalogUpdate, MutationExecutionOptions{InventoryOptions: catalogOptions}); err != nil {
+		t.Fatalf("pinned catalog/git update failed: %v", err)
+	}
+	updatedCatalog, err := os.ReadFile(filepath.Join(store.PackageDir("versioned"), "SKILL.md"))
+	if err != nil || !strings.Contains(string(updatedCatalog), "updated") {
+		t.Fatalf("pinned catalog/git update did not replace content: %v, %q", err, updatedCatalog)
 	}
 	failing := f.options("")
 	failing.Fetcher = func(context.Context, MutationRequest, string) error {
@@ -400,7 +422,85 @@ func TestUpdateAtomicRollbackAndPin(t *testing.T) {
 	}
 }
 
-func TestAdoptExternalPreservesAndRebinds(t *testing.T) {
+func TestArchiveUpdateUsesPinnedSource(t *testing.T) {
+	f := newFixture(t)
+	archivePath := filepath.Join(f.Home, "archive-update.zip")
+	mustCreateZip(t, archivePath, map[string]string{
+		"skill/SKILL.md": "---\nname: archive-update\n---\nv1\n",
+	})
+	mustRunMutation(t, f, MutationRequest{
+		Operation: OperationImport, SkillName: "archive-update", InfoPath: archivePath,
+		Scope: ScopeGlobal, Agents: []Agent{AgentGrok},
+	})
+	mustCreateZip(t, archivePath, map[string]string{
+		"skill/SKILL.md": "---\nname: archive-update\n---\nv2\n",
+	})
+	mustRunMutation(t, f, MutationRequest{Operation: OperationUpdate, SkillName: "archive-update"})
+	content, err := os.ReadFile(filepath.Join(f.store().PackageDir("archive-update"), "SKILL.md"))
+	if err != nil || !strings.Contains(string(content), "v2") {
+		t.Fatalf("archive update did not use its pinned source: %v, %q", err, content)
+	}
+	copyContent, err := os.ReadFile(filepath.Join(f.agentGlobalDir(AgentGrok), "archive-update", "SKILL.md"))
+	if err != nil || !strings.Contains(string(copyContent), "v2") {
+		t.Fatalf("archive update did not advance the Grok copy: %v, %q", err, copyContent)
+	}
+}
+
+func TestAllAdaptersGlobalAndProjectBindingLifecycle(t *testing.T) {
+	f := newFixture(t)
+	agents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi}
+	source := f.writeSkill(f.Home, "all-adapters", "adapter body")
+	mustRunMutation(t, f, MutationRequest{
+		Operation: OperationImport, SkillName: "all-adapters", InfoPath: source,
+		Scope: ScopeGlobal, Agents: agents,
+	})
+	mustRunMutation(t, f, MutationRequest{
+		Operation: OperationBind, SkillName: "all-adapters", CWD: f.Project,
+		Scope: ScopeProject, Agents: agents,
+	})
+
+	assertMaterialized := func(scope Scope) {
+		t.Helper()
+		for _, agent := range agents {
+			adapter := Adapters[agent]
+			dir := globalSkillsDir(adapter, f.Home, envResolverFor(f.options(f.Project)))
+			if scope == ScopeProject {
+				dir = projectSkillsDir(adapter, f.Project)
+			}
+			target := filepath.Join(dir, "all-adapters")
+			info, err := os.Lstat(target)
+			if err != nil {
+				t.Fatalf("%s %s binding missing: %v", agent, scope, err)
+			}
+			if adapter.Mode == BindingSymlink && info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("%s %s binding must be a symlink", agent, scope)
+			}
+			if adapter.Mode == BindingCopy && info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("%s %s binding must be a copy", agent, scope)
+			}
+		}
+	}
+	assertMaterialized(ScopeGlobal)
+	assertMaterialized(ScopeProject)
+
+	for _, operation := range []MutationOperation{OperationDisable, OperationEnable, OperationUnbind} {
+		mustRunMutation(t, f, MutationRequest{
+			Operation: operation, SkillName: "all-adapters", CWD: f.Project,
+			Scope: ScopeProject, Agents: agents,
+		})
+	}
+	file, err := f.store().LoadInventory(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range file.Packages["all-adapters"].Bindings {
+		if binding.Scope == ScopeProject {
+			t.Fatalf("project binding survived unbind: %+v", binding)
+		}
+	}
+}
+
+func TestAdoptExternalPreservesWithoutTakeover(t *testing.T) {
 	f := newFixture(t)
 	externalDir := f.writeSkill(f.agentGlobalDir(AgentClaudeCode), "legacy", "legacy body")
 	mustRunMutation(t, f, MutationRequest{Operation: OperationMigrate})
@@ -413,8 +513,8 @@ func TestAdoptExternalPreservesAndRebinds(t *testing.T) {
 		if !file.Packages["legacy"].Owned {
 			t.Fatal("adopt must create an owned entry")
 		}
-		if len(file.Packages["legacy"].Bindings) < 1 {
-			t.Fatal("adopt must bind the discovered agent")
+		if len(file.Packages["legacy"].Bindings) != 0 {
+			t.Fatal("adopt must require an explicit later bind")
 		}
 		if _, err := os.Stat(filepath.Join(store.PackageDir("legacy"), "SKILL.md")); err != nil {
 			t.Fatalf("adopt must copy content into the store: %v", err)
@@ -422,6 +522,22 @@ func TestAdoptExternalPreservesAndRebinds(t *testing.T) {
 		content, err := os.ReadFile(filepath.Join(externalDir, "SKILL.md"))
 		if err != nil || !strings.Contains(string(content), "legacy body") {
 			t.Fatal("adopt must preserve external content on disk")
+		}
+		if info, err := os.Lstat(externalDir); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatal("adopt must not replace the external source with a managed binding")
+		}
+		inventory, err := DiscoverInventory(f.options(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		matches := 0
+		for _, skill := range inventory.Skills {
+			if skill.Name == "legacy" {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("adopted origin must remain provenance, not a duplicate row: %d", matches)
 		}
 	}
 }
@@ -442,5 +558,27 @@ func TestBindingPlanValidation(t *testing.T) {
 	_, _, err := runMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "noagents", InfoPath: filepath.Join(f.Home, "noagents"), Scope: ScopeGlobal})
 	if err == nil {
 		t.Fatal("agents are required for import")
+	}
+}
+
+func TestUpdateRejectsUnpinnedCatalogProvenance(t *testing.T) {
+	f := newFixture(t)
+	source := f.writeSkill(f.Home, "unpinned", "body")
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "unpinned", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex}})
+	store := f.store()
+	file, err := store.LoadInventory(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := file.Packages["unpinned"]
+	entry.Source = "owner/repo"
+	entry.SourceType = string(SourceTypeCatalog)
+	entry.Ref = ""
+	file.Packages["unpinned"] = entry
+	if err := store.SaveInventory(file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildMutationCommand(f.options(""), MutationRequest{Operation: OperationUpdate, SkillName: "unpinned"}); err == nil {
+		t.Fatal("unpinned catalog provenance must not reach update execution")
 	}
 }

@@ -139,10 +139,16 @@ func TestInventoryOwnedAndExternalRows(t *testing.T) {
 	for _, op := range alpha.Capability.Operations {
 		hasOperations[op] = true
 	}
-	for _, required := range []MutationOperation{OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationUpdate} {
+	for _, required := range []MutationOperation{OperationBind, OperationUninstall} {
 		if !hasOperations[required] {
 			t.Fatalf("owned row missing operation %q", required)
 		}
+	}
+	if hasOperations[OperationUpdate] {
+		t.Fatal("catalog package without a pinned ref must not advertise update")
+	}
+	if len(alpha.Bindings) != 1 || len(alpha.Bindings[0].Operations) != 2 {
+		t.Fatalf("binding must carry exact current-state operations: %+v", alpha.Bindings)
 	}
 	if grokOnly == nil {
 		t.Fatal("external row missing")
@@ -169,6 +175,54 @@ func TestInventoryOwnedAndExternalRows(t *testing.T) {
 	}
 	if byAgent[AgentGrok].Supported != true {
 		t.Fatal("Grok has a real adapter and must be reported supported")
+	}
+}
+
+func TestTrackedExternalMissingSourceOnlyAdvertisesForget(t *testing.T) {
+	f := newFixture(t)
+	missing := filepath.Join(f.Home, "missing-external")
+	store := f.store()
+	if err := store.SaveInventory(InventoryFile{
+		Version: inventoryVersion,
+		Packages: map[string]PackageEntry{
+			"missing-external": {
+				SkillName: "missing-external", Source: missing,
+				SourceType: string(SourceTypeExternal), ContentHash: "recorded-hash",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name == "missing-external" {
+			row = &inventory.Skills[index]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("missing tracked external row")
+	}
+	if row.CanonicalPath != missing || row.SourcePath != missing {
+		t.Fatalf("missing row did not preserve its recorded path: %+v", row)
+	}
+	if !row.Capability.CanManage || len(row.Capability.Operations) != 1 || row.Capability.Operations[0] != OperationForget {
+		t.Fatalf("missing source capability must be Forget only: %+v", row.Capability)
+	}
+	if !strings.Contains(row.Capability.Reason, missing) || !strings.Contains(row.Capability.Reason, "unavailable") {
+		t.Fatalf("missing source reason was not preserved: %q", row.Capability.Reason)
+	}
+	detail, err := InspectPackage(f.options(""), "missing-external")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Capability.Operations) != 1 || detail.Capability.Operations[0] != OperationForget || detail.Capability.Reason != row.Capability.Reason {
+		t.Fatalf("inventory and inspector capability diverged: row=%+v detail=%+v", row.Capability, detail.Capability)
 	}
 }
 
