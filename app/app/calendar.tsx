@@ -53,17 +53,15 @@ import {
 import { wsClient } from "../services/websocket";
 import {
   selectCurrentServerCalendar,
-  selectCurrentServerCalendarItems,
   useCalendar,
   type CalendarItem,
   type CalendarKind,
   type CalendarRecurrence,
-  type ServerCalendarItem,
 } from "../store/calendar";
 import { useBrain } from "../store/brain";
 import { useCurrentServer } from "../store/currentServer";
 
-type ServerItem = ServerCalendarItem;
+type ServerItem = CalendarItem & { serverId: string; serverName: string };
 const CALENDAR_FONT_SCALE_MAX = 1.25;
 const statuses: Record<CalendarItem["status"], string> = {
   scheduled: "Scheduled",
@@ -115,11 +113,16 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       props.notificationStateOverride ?? "undetermined",
     );
   const serverScopeRef = useRef(scopedServerId);
-  const items = useMemo(
-    () => selectCurrentServerCalendarItems(state, scopedServerId),
-    [scopedServerId, state],
-  );
   const activeServer = selectCurrentServerCalendar(state, scopedServerId);
+  const items = useMemo(
+    () =>
+      activeServer?.items.map((item) => ({
+        ...item,
+        serverId: activeServer.serverId,
+        serverName: activeServer.serverName,
+      })) ?? [],
+    [activeServer],
+  );
   useEffect(() => {
     if (serverScopeRef.current === scopedServerId) return;
     serverScopeRef.current = scopedServerId;

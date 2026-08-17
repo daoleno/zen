@@ -156,12 +156,12 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 			fallbackMetadata[id] = mergeModelPresentationMetadata(pinned, fallbackMetadata[id])
 		}
 		for _, id := range ids {
-			metadata[id] = mergeModelPresentationMetadata(metadata[id], localMetadata[id])
 			// The daemon-pinned catalog is the final metadata authority for
 			// managed Codex: the installed CLI cache is volatile (rewritten by
 			// every codex run) and must never decide whether a model identity
 			// has daemon-known display/effort metadata.
-			metadata[id] = mergeModelPresentationMetadata(pinnedMetadata[id], metadata[id])
+			metadata[id] = mergeModelPresentationMetadata(pinnedMetadata[id],
+				mergeModelPresentationMetadata(metadata[id], localMetadata[id]))
 		}
 	}
 	required := o.connectionRequiredModels(profile)
