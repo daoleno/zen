@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
+	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/watcher"
+	"github.com/daoleno/zen/daemon/work"
 )
 
 func TestRunWithReadyCallsBackAfterListenAndShutsDownCompatibly(t *testing.T) {
@@ -65,6 +68,85 @@ func TestRunWithReadyDoesNotCallBackWhenListenFails(t *testing.T) {
 	}
 	if called {
 		t.Fatal("ready callback ran after listen failure")
+	}
+}
+
+func TestRunWithReadyClosesAllEventSubscriptionsOnShutdown(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve address: %v", err)
+	}
+	addr := reserved.Addr().String()
+	if err := reserved.Close(); err != nil {
+		t.Fatalf("release address: %v", err)
+	}
+
+	srv := newEventSubscriptionServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	err = srv.RunWithReady(ctx, addr, cancel)
+	if !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("RunWithReady error = %v, want http.ErrServerClosed", err)
+	}
+	assertServerEventSubscriptionsClosed(t, srv)
+}
+
+func TestRunWithReadyClosesAllEventSubscriptionsWhenListenFails(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy address: %v", err)
+	}
+	defer occupied.Close()
+
+	srv := newEventSubscriptionServer(t)
+	if err := srv.RunWithReady(context.Background(), occupied.Addr().String(), nil); err == nil {
+		t.Fatal("RunWithReady unexpectedly succeeded")
+	}
+	assertServerEventSubscriptionsClosed(t, srv)
+}
+
+func newEventSubscriptionServer(t *testing.T) *Server {
+	t.Helper()
+	root := t.TempDir()
+	authManager, err := auth.NewManager(filepath.Join(root, "auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := watcher.New(time.Second)
+	workStore, err := work.NewStore(filepath.Join(root, "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = workStore.Close() })
+	brainStore, err := brain.NewStore(filepath.Join(root, "brain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brainService := brain.NewService(brainStore, w, nil)
+	calendarStore, err := calendar.NewStore(filepath.Join(root, "calendar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(authManager, w, nil, nil, workStore, nil, brainService)
+	srv.SetCalendar(calendarStore, nil)
+	return srv
+}
+
+func assertServerEventSubscriptionsClosed(t *testing.T, srv *Server) {
+	t.Helper()
+	assertSubscriptionClosed(t, "Work", srv.workSub)
+	assertSubscriptionClosed(t, "Calendar", srv.calendarSub)
+	assertSubscriptionClosed(t, "Brain Work", srv.brainWorkSub)
+}
+
+func assertSubscriptionClosed[T any](t *testing.T, name string, subscription <-chan T) {
+	t.Helper()
+	select {
+	case _, ok := <-subscription:
+		if ok {
+			t.Fatalf("%s subscription remained open", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s subscription teardown", name)
 	}
 }
 

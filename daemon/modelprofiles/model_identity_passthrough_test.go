@@ -2,6 +2,7 @@ package modelprofiles
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,8 +121,29 @@ func TestUnknownCodexModelRuntimeAndEffectPassThrough(t *testing.T) {
 }
 
 func TestAccountCodexProjectionAddsKnownEffectMetadataWithoutGatingUnknownModels(t *testing.T) {
+	codexHome := t.TempDir()
+	volatileCache, err := json.Marshal(CodexModelsResponse{Models: []CodexModelCatalogWireEntry{
+		{
+			Slug:                  "gpt-5.6-sol",
+			DisplayName:           "volatile host label",
+			DefaultReasoningLevel: ReasoningEffortLow,
+			SupportedReasoningLevels: []CodexReasoningEffortPreset{
+				{Effort: ReasoningEffortLow},
+				{Effort: ReasoningEffortMedium},
+			},
+			ContextWindow: 123456,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "models_cache.json"), volatileCache, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+
 	owner := startBuiltinVerifierOwner(t)
-	if _, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+	if _, err = owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "metadata-gateway", Name: "Metadata gateway", Client: ClientCodex,
 		PresetID: ProviderPresetCustom, BaseURL: "https://gateway.example/v1",
 		Advanced: true,
@@ -142,7 +164,9 @@ func TestAccountCodexProjectionAddsKnownEffectMetadataWithoutGatingUnknownModels
 		byID[entry.ID] = entry
 	}
 	known := byID["gpt-5.6-sol"]
-	if !known.Known || known.ReasoningEffortDefault != ReasoningEffortMedium || len(known.ReasoningEfforts) == 0 {
+	if !known.Known || known.DisplayName != "GPT-5.6-Sol" ||
+		known.ReasoningEffortDefault != ReasoningEffortMedium ||
+		len(known.ReasoningEfforts) != 5 {
 		t.Fatalf("known metadata missing: %#v", known)
 	}
 	unknown := byID["vendor/private-alpha"]

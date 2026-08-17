@@ -63,6 +63,8 @@ deploy/zen-link/secrets/
 .cache/
 .turbo/
 .next/
+__pycache__/
+*.py[cod]
 
 # zen-terminal-vt native module (binaries + generated pin outputs; lock/NOTICE stay tracked)
 app/modules/zen-terminal-vt/android/build/

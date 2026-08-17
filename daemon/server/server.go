@@ -122,6 +122,7 @@ type Server struct {
 	calendarSub                 <-chan calendar.Event
 	brainWorkSubID              int
 	brainWorkSub                <-chan brain.WorkChange
+	eventSubscriptionsCloseOnce sync.Once
 	signalSystemStartupComplete bool
 
 	clients            map[*websocket.Conn]*authenticatedClient
@@ -142,6 +143,23 @@ func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Schedule
 	if store != nil {
 		s.calendarSubID, s.calendarSub = store.Subscribe()
 	}
+}
+
+func (s *Server) closeEventSubscriptions() {
+	if s == nil {
+		return
+	}
+	s.eventSubscriptionsCloseOnce.Do(func() {
+		if s.work != nil && s.workSub != nil {
+			s.work.Unsubscribe(s.workSubID)
+		}
+		if s.calendar != nil && s.calendarSub != nil {
+			s.calendar.Unsubscribe(s.calendarSubID)
+		}
+		if s.brain != nil && s.brainWorkSub != nil {
+			s.brain.UnsubscribeWork(s.brainWorkSubID)
+		}
+	})
 }
 
 type codexConversationSubscription struct {
@@ -365,6 +383,7 @@ func (s *Server) Handler() http.Handler {
 // RunWithReady starts the HTTP server and calls onReady only after the TCP
 // listener has been acquired successfully.
 func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
+	defer s.closeEventSubscriptions()
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		s.shutdownAuthenticatedClients()
@@ -2906,13 +2925,7 @@ func (s *Server) sendErrorWithRequestID(conn *websocket.Conn, requestID, code, m
 
 func (s *Server) broadcastEvents(ctx context.Context) {
 	calendarSub := s.calendarSub
-	if s.calendar != nil && calendarSub != nil {
-		defer s.calendar.Unsubscribe(s.calendarSubID)
-	}
 	brainWorkSub := s.brainWorkSub
-	if s.brain != nil && brainWorkSub != nil {
-		defer s.brain.UnsubscribeWork(s.brainWorkSubID)
-	}
 	for {
 		select {
 		case <-ctx.Done():

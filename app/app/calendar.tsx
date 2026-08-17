@@ -1,4 +1,10 @@
-import React, { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   AppState,
@@ -46,14 +52,18 @@ import {
 } from "../services/calendarNotifications";
 import { wsClient } from "../services/websocket";
 import {
+  selectCurrentServerCalendar,
+  selectCurrentServerCalendarItems,
   useCalendar,
   type CalendarItem,
   type CalendarKind,
   type CalendarRecurrence,
+  type ServerCalendarItem,
 } from "../store/calendar";
 import { useBrain } from "../store/brain";
+import { useCurrentServer } from "../store/currentServer";
 
-type ServerItem = CalendarItem & { serverId: string; serverName: string };
+type ServerItem = ServerCalendarItem;
 const CALENDAR_FONT_SCALE_MAX = 1.25;
 const statuses: Record<CalendarItem["status"], string> = {
   scheduled: "Scheduled",
@@ -79,6 +89,7 @@ type CalendarScreenProps = {
   notificationStateOverride?: CalendarNotificationState;
   initialError?: string;
   loading?: boolean;
+  serverIdOverride?: string;
 };
 
 export default function CalendarScreen(props: CalendarScreenProps = {}) {
@@ -88,6 +99,8 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   const navigation = useNavigation();
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const state = useCalendar();
+  const { currentServerId } = useCurrentServer();
+  const scopedServerId = props.serverIdOverride ?? currentServerId;
   const viewerZone = useMemo(() => viewerTimezone(), []);
   const now = new Date();
   const todayKey = calendarDateKey(now, viewerZone);
@@ -101,21 +114,19 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
     useState<CalendarNotificationState>(
       props.notificationStateOverride ?? "undetermined",
     );
+  const serverScopeRef = useRef(scopedServerId);
   const items = useMemo(
-    () =>
-      Object.values(state.byServer)
-        .flatMap((server) =>
-          server.items.map((item) => ({
-            ...item,
-            serverId: server.serverId,
-            serverName: server.serverName,
-          })),
-        )
-        .sort((a, b) => Date.parse(a.next_at) - Date.parse(b.next_at)),
-    [state],
+    () => selectCurrentServerCalendarItems(state, scopedServerId),
+    [scopedServerId, state],
   );
-  const activeServer =
-    Object.values(state.byServer).find((server) => server.hydrated) ?? null;
+  const activeServer = selectCurrentServerCalendar(state, scopedServerId);
+  useEffect(() => {
+    if (serverScopeRef.current === scopedServerId) return;
+    serverScopeRef.current = scopedServerId;
+    setSelected(null);
+    setEditing(null);
+    setError("");
+  }, [scopedServerId]);
   useLayoutEffect(() => {
     navigation.setOptions({
       headerShown: true,
@@ -194,11 +205,10 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       const next = await calendarNotificationState();
       if (!active) return;
       setNotificationState(next);
-      if (next === "granted") {
-        await Promise.all(
-          Object.values(state.byServer).map((server) =>
-            syncCalendarNotifications(server.serverId, server.items),
-          ),
+      if (next === "granted" && activeServer) {
+        await syncCalendarNotifications(
+          activeServer.serverId,
+          activeServer.items,
         );
       }
     };
@@ -210,7 +220,7 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       active = false;
       subscription.remove();
     };
-  }, [props.notificationStateOverride, state.byServer]);
+  }, [activeServer, props.notificationStateOverride]);
   useEffect(() => {
     if (!params.id) return;
     const found = items.find(
@@ -254,11 +264,12 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       return;
     }
     try {
-      await Promise.all(
-        Object.values(state.byServer).map((server) =>
-          syncCalendarNotifications(server.serverId, server.items),
-        ),
-      );
+      if (activeServer) {
+        await syncCalendarNotifications(
+          activeServer.serverId,
+          activeServer.items,
+        );
+      }
       setNotificationState("granted");
     } catch (value) {
       setNotificationState("unavailable");

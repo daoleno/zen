@@ -131,6 +131,7 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 	localIDs, localMetadata, _ := loadInstalledCodexModelCatalog()
 	ids := discovered.IDs
 	metadata := cloneModelMetadataMap(discovered.Metadata)
+	fallbackMetadata := localMetadata
 	source := ModelSourceDiscovered
 	if discovered.Err != "" || len(ids) == 0 {
 		if executorID == ExecutorCodex {
@@ -142,11 +143,17 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 			metadata = cloneModelMetadataMap(discovered.LastGoodMeta)
 			source = ModelSourceLKG
 		}
-	} else if executorID == ExecutorCodex {
+	}
+	if executorID == ExecutorCodex {
 		// Legacy cache entries predate the metadata field and deserialize with a
 		// nil Metadata map. Never write into a nil map.
 		if metadata == nil {
 			metadata = map[string]modelPresentationMetadata{}
+		}
+		pinnedMetadata := pinnedCodexPresentationMetadata()
+		fallbackMetadata = cloneModelMetadataMap(localMetadata)
+		for id, pinned := range pinnedMetadata {
+			fallbackMetadata[id] = mergeModelPresentationMetadata(pinned, fallbackMetadata[id])
 		}
 		for _, id := range ids {
 			metadata[id] = mergeModelPresentationMetadata(metadata[id], localMetadata[id])
@@ -154,11 +161,11 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 			// managed Codex: the installed CLI cache is volatile (rewritten by
 			// every codex run) and must never decide whether a model identity
 			// has daemon-known display/effort metadata.
-			metadata[id] = mergeModelPresentationMetadata(metadata[id], pinnedCodexPresentationMetadata()[id])
+			metadata[id] = mergeModelPresentationMetadata(pinnedMetadata[id], metadata[id])
 		}
 	}
 	required := o.connectionRequiredModels(profile)
-	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, localMetadata, executorID == ExecutorCodex)
+	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, fallbackMetadata, executorID == ExecutorCodex)
 }
 
 func (o *Owner) connectionRequiredModels(profile Profile) []string {

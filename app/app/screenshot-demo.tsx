@@ -149,6 +149,7 @@ function CalendarDemo() {
 
   return (
     <CalendarScreen
+      serverIdOverride="screenshot-calendar"
       notificationStateOverride={notificationState}
       initialError={
         fixture === "error"
