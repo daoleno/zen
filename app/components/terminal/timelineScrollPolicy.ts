@@ -47,7 +47,7 @@ export function timelineListStabilityProps(followSuspended: boolean) {
 }
 
 export interface TimelineScrollState {
-  mode: "attached" | "detached";
+  mode: "attached" | "focused" | "detached";
 }
 
 export const INITIAL_TIMELINE_SCROLL_STATE: TimelineScrollState = {
@@ -58,19 +58,39 @@ export function reduceTimelineScrollPosition(
   state: TimelineScrollState,
   distanceFromBottom: number,
   userDriven: boolean,
+  previousDistanceFromBottom: number = distanceFromBottom,
 ): TimelineScrollState {
   // FlatList also reports offsets caused by layout and content mutations. Those
   // events describe geometry, not a change in the reader's follow intent.
   if (!userDriven) {
     return state;
   }
-  return Math.max(0, distanceFromBottom) <= TIMELINE_BOTTOM_THRESHOLD
-    ? INITIAL_TIMELINE_SCROLL_STATE
-    : { mode: "detached" };
+  const distance = Math.max(0, distanceFromBottom);
+  const previousDistance = Math.max(0, previousDistanceFromBottom);
+  if (distance > previousDistance + 1) {
+    return { mode: "detached" };
+  }
+  if (
+    distance < previousDistance - 1 &&
+    distance <= TIMELINE_BOTTOM_THRESHOLD
+  ) {
+    return INITIAL_TIMELINE_SCROLL_STATE;
+  }
+  return state;
 }
 
 export function returnTimelineToBottom(): TimelineScrollState {
   return INITIAL_TIMELINE_SCROLL_STATE;
+}
+
+export function focusTimelineOnSentMessage(): TimelineScrollState {
+  return { mode: "focused" };
+}
+
+export function settleFocusedTimeline(
+  state: TimelineScrollState,
+): TimelineScrollState {
+  return state.mode === "focused" ? { mode: "detached" } : state;
 }
 
 export function timelineDistanceFromLatest(

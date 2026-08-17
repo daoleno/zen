@@ -3,21 +3,31 @@ import { describe, expect, test } from "bun:test";
 import {
   INITIAL_TIMELINE_SCROLL_STATE,
   TIMELINE_BOTTOM_THRESHOLD,
+  focusTimelineOnSentMessage,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  settleFocusedTimeline,
   timelineDragContinuesWithMomentum,
   timelineListStabilityProps,
   timelineDistanceFromLatest,
 } from "./timelineScrollPolicy";
 
 describe("timeline scroll policy", () => {
-  test("only user movement beyond the threshold detaches", () => {
+  test("layout movement never changes follow intent", () => {
     expect(
       reduceTimelineScrollPosition(INITIAL_TIMELINE_SCROLL_STATE, 320, false),
     ).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
+  });
+
+  test("any user movement away from latest detaches immediately", () => {
     expect(
-      reduceTimelineScrollPosition(INITIAL_TIMELINE_SCROLL_STATE, 48, true),
-    ).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
+      reduceTimelineScrollPosition(
+        INITIAL_TIMELINE_SCROLL_STATE,
+        12,
+        true,
+        0,
+      ),
+    ).toEqual({ mode: "detached" });
   });
 
   test("layout movement cannot override detached user intent near the latest content", () => {
@@ -35,8 +45,20 @@ describe("timeline scroll policy", () => {
   test("user movement reattaches only after returning within the latest threshold", () => {
     const detached = { mode: "detached" as const };
 
-    expect(reduceTimelineScrollPosition(detached, 97, true)).toEqual(detached);
-    expect(reduceTimelineScrollPosition(detached, 96, true)).toEqual(
+    expect(reduceTimelineScrollPosition(detached, 97, true, 160)).toEqual(
+      detached,
+    );
+    expect(reduceTimelineScrollPosition(detached, 96, true, 160)).toEqual(
+      INITIAL_TIMELINE_SCROLL_STATE,
+    );
+  });
+
+  test("a sent-message focus settles detached until the reader follows again", () => {
+    const focused = focusTimelineOnSentMessage();
+
+    expect(focused).toEqual({ mode: "focused" });
+    expect(settleFocusedTimeline(focused)).toEqual({ mode: "detached" });
+    expect(settleFocusedTimeline(INITIAL_TIMELINE_SCROLL_STATE)).toBe(
       INITIAL_TIMELINE_SCROLL_STATE,
     );
   });

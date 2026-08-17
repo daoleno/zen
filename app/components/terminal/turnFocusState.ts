@@ -1,7 +1,12 @@
 export type TurnFocusPhase = "idle" | "awaiting-row" | "arming" | "active";
 
 export type TurnFocusCancelReason =
-  "touch" | "drag" | "momentum" | "selection" | "lifecycle";
+  | "touch"
+  | "drag"
+  | "momentum"
+  | "selection"
+  | "lifecycle"
+  | "return-to-latest";
 
 export type TurnFocusSpacerRequest = {
   height: number;

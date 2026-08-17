@@ -17,8 +17,10 @@ import {
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import {
   INITIAL_TIMELINE_SCROLL_STATE,
+  focusTimelineOnSentMessage,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  settleFocusedTimeline,
   timelineDragContinuesWithMomentum,
   timelineDistanceFromLatest,
   type TimelineScrollState,
@@ -162,9 +164,25 @@ export function usePinnedTimeline(
 
   const updateJumpButton = useCallback(() => {
     setShowJumpToLatest(
-      scrollStateRef.current.mode === "detached" && itemCount > 0,
+      scrollStateRef.current.mode !== "attached" && itemCount > 0,
     );
   }, [itemCount]);
+
+  const scrollToLatestOffset = useCallback(
+    (animated: boolean, exactLatestOffset?: number) => {
+      if (!scrollRef.current) {
+        return;
+      }
+      const latestOffset = exactLatestOffset ?? latestOffsetRef.current;
+      scrollRef.current.scrollToOffset({
+        offset: latestOffset,
+        animated,
+      });
+      rawContentOffsetRef.current = latestOffset;
+      distanceFromLatestRef.current = 0;
+    },
+    [],
+  );
 
   const clearTextSelectionTimer = useCallback(() => {
     if (!textSelectionTimerRef.current) {
@@ -225,18 +243,39 @@ export function usePinnedTimeline(
         if (next.pendingMessageId !== previous.pendingMessageId) {
           setTurnFocusPendingMessageId(next.pendingMessageId);
         }
+        if (
+          event.type !== "cancel" &&
+          event.type !== "reset" &&
+          previous.phase !== "idle" &&
+          next.phase === "idle"
+        ) {
+          const settled = settleFocusedTimeline(scrollStateRef.current);
+          if (settled !== scrollStateRef.current) {
+            scrollStateRef.current = settled;
+            setNativeFollowSuspended(true);
+            setShowJumpToLatest(itemCount > 0);
+          }
+        }
       }
       return transition;
     },
-    [turnFocusClearanceRequest, turnFocusSpacer],
+    [itemCount, turnFocusClearanceRequest, turnFocusSpacer],
   );
 
   const cancelTurnFocus = useCallback(
     (reason: TurnFocusCancelReason) => {
       automaticReturnsInFlightRef.current = 0;
       applyTurnFocusEvent({ type: "cancel", reason });
+      if (
+        reason !== "return-to-latest" &&
+        scrollStateRef.current.mode === "focused"
+      ) {
+        scrollStateRef.current = settleFocusedTimeline(scrollStateRef.current);
+        setNativeFollowSuspended(true);
+        setShowJumpToLatest(itemCount > 0);
+      }
     },
-    [applyTurnFocusEvent],
+    [applyTurnFocusEvent, itemCount],
   );
 
   const handleTimelineTouchActiveChange = useCallback(
@@ -270,20 +309,17 @@ export function usePinnedTimeline(
 
   const scrollToLatest = useCallback(
     (animated: boolean = true, exactLatestOffset?: number) => {
+      cancelTurnFocus("return-to-latest");
       resumeImplicitAnchorAfterTextSelection();
       attachToLatest();
-      if (!scrollRef.current) {
-        return;
-      }
-      const latestOffset = exactLatestOffset ?? latestOffsetRef.current;
-      scrollRef.current.scrollToOffset({
-        offset: latestOffset,
-        animated,
-      });
-      rawContentOffsetRef.current = latestOffset;
-      distanceFromLatestRef.current = 0;
+      scrollToLatestOffset(animated, exactLatestOffset);
     },
-    [attachToLatest, resumeImplicitAnchorAfterTextSelection],
+    [
+      attachToLatest,
+      cancelTurnFocus,
+      resumeImplicitAnchorAfterTextSelection,
+      scrollToLatestOffset,
+    ],
   );
 
   const performTurnFocusEffect = useCallback(
@@ -299,9 +335,9 @@ export function usePinnedTimeline(
         automaticReturnsInFlightRef.current += 1;
       }
       latestOffsetRef.current = effect.latestOffset;
-      scrollToLatest(effect.animated, effect.latestOffset);
+      scrollToLatestOffset(effect.animated, effect.latestOffset);
     },
-    [cancelTurnFocus, implicitAnchorSuspended, scrollToLatest],
+    [cancelTurnFocus, implicitAnchorSuspended, scrollToLatestOffset],
   );
 
   const transitionTurnFocus = useCallback(
@@ -315,10 +351,13 @@ export function usePinnedTimeline(
 
   const requestTurnFocus = useCallback(
     (pendingMessageId: string) => {
-      if (Platform.OS === "web" || !pendingMessageId) {
+      if (!pendingMessageId) {
         return;
       }
       turnFocusIntentSeqRef.current += 1;
+      scrollStateRef.current = focusTimelineOnSentMessage();
+      setNativeFollowSuspended(false);
+      setShowJumpToLatest(itemCount > 0);
       transitionTurnFocus({
         type: "intent",
         generation: resetKey,
@@ -338,12 +377,11 @@ export function usePinnedTimeline(
         );
         return;
       }
-      attachToLatest();
     },
     [
-      attachToLatest,
       cancelTurnFocus,
       implicitAnchorSuspended,
+      itemCount,
       reducedMotion,
       resetKey,
       transitionTurnFocus,
@@ -464,8 +502,9 @@ export function usePinnedTimeline(
         contentOffset.y,
         latestOffsetRef.current,
       );
-      distanceFromLatestRef.current = distanceFromLatest;
+      const previousDistanceFromLatest = distanceFromLatestRef.current;
       if (textSelectionActiveRef.current && !userDriven) {
+        distanceFromLatestRef.current = distanceFromLatest;
         updateJumpButton();
         return;
       }
@@ -473,7 +512,9 @@ export function usePinnedTimeline(
         scrollStateRef.current,
         distanceFromLatest,
         userDriven,
+        previousDistanceFromLatest,
       );
+      distanceFromLatestRef.current = distanceFromLatest;
       if (nextScrollState.mode === "attached") {
         attachToLatest();
         return;

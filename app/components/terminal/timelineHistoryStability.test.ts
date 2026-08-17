@@ -112,6 +112,45 @@ describe("timeline history viewport stability", () => {
     expect(itemCountOwner).toContain("updateJumpButton();");
   });
 
+  test("send focus is cross-platform and settles without restoring native follow", async () => {
+    const hooksSource = await Bun.file(
+      new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
+    ).text();
+    const requestOwner = sourceBetween(
+      hooksSource,
+      "const requestTurnFocus = useCallback(",
+      "const handleTurnFocusRowLayout = useCallback(",
+    );
+    const transitionOwner = sourceBetween(
+      hooksSource,
+      "const applyTurnFocusEvent = useCallback(",
+      "const cancelTurnFocus = useCallback(",
+    );
+
+    expect(requestOwner).not.toContain('Platform.OS === "web"');
+    expect(requestOwner).toContain("focusTimelineOnSentMessage()");
+    expect(transitionOwner).toContain("settleFocusedTimeline(");
+    expect(transitionOwner).toContain("setNativeFollowSuspended(true);");
+    expect(hooksSource).toContain(
+      'reason !== "return-to-latest" &&\n        scrollStateRef.current.mode === "focused"',
+    );
+  });
+
+  test("jump-to-latest cancels sent-message focus before restoring follow", async () => {
+    const hooksSource = await Bun.file(
+      new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
+    ).text();
+    const jumpOwner = sourceBetween(
+      hooksSource,
+      "const scrollToLatest = useCallback(",
+      "const performTurnFocusEffect = useCallback(",
+    );
+
+    expect(jumpOwner).toContain('cancelTurnFocus("return-to-latest");');
+    expect(jumpOwner).toContain("attachToLatest();");
+    expect(jumpOwner).toContain("scrollToLatestOffset(");
+  });
+
   test("touch, selection, drag and momentum all drive the native follow suspension", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
