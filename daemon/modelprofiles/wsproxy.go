@@ -1,55 +1,35 @@
 package modelprofiles
 
-// Transparent Responses WebSocket upstream proxy shared by the per-session
-// Router and the machine-level Gateway.
-//
-// Codex (responses wire API, supports_websockets=true) opens the Responses
-// stream by upgrading GET <base_url>/responses to WebSocket. The frames are a
-// fixed sequence of JSON protocol events (`response.create` request frames,
-// `response.*` event frames) but Zen never needs to understand them: the
-// proxy forwards every Text/Binary frame byte-for-byte in both directions,
-// which preserves the user's model, effort, instructions, tools, MCP, and
-// payload exactly (the machine-level contract).
-//
-// Ordering invariant: the upstream dial must reach 101 BEFORE the client
-// handshake is completed. An upstream that rejects or cannot reach WebSocket
-// therefore surfaces as an honest HTTP failure to the client (Codex then
-// falls back to HTTPS POST through the same endpoint) instead of a phantom
-// 101 followed by an abort.
-//
-// Control frames stay local to each leg (gorilla answers pings per
-// connection); close frames and abrupt failures propagate to the peer with
-// the received code so both sides see the same terminal state.
+// Durable Responses WebSocket proxy shared by the machine Gateway and the
+// per-session Router. The downstream Codex connection survives an upstream
+// that closes after response.completed; the next response.create resolves and
+// binds a fresh immutable upstream turn.
 
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// wsProxyMaxMessage caps one forwarded frame so a misbehaving peer cannot pin
-// unbounded memory in the daemon. Codex Responses frames (JSON event batches)
-// are far below this bound.
 const wsProxyMaxMessage = 64 << 20
-
-// websocketCloseGoingAway is the server-side close code for daemon shutdown.
 const websocketCloseGoingAway = 1001
-
-// wsProxyUpstreamDialTimeout bounds a single upstream WebSocket handshake.
 const wsProxyUpstreamDialTimeout = 15 * time.Second
 
-// wsConnRegistry tracks hijacked WebSocket connections so daemon shutdown
-// (and gateway/router Close) tears them down deterministically; hijacked
-// connections are not covered by http.Server.Shutdown.
+var wsProxyConnectionSequence atomic.Uint64
+
 type wsConnRegistry struct {
 	mu    sync.Mutex
 	conns map[*websocket.Conn]struct{}
@@ -58,7 +38,6 @@ type wsConnRegistry struct {
 func newWSConnRegistry() *wsConnRegistry {
 	return &wsConnRegistry{conns: map[*websocket.Conn]struct{}{}}
 }
-
 func (r *wsConnRegistry) add(c *websocket.Conn) {
 	if r == nil || c == nil {
 		return
@@ -67,7 +46,6 @@ func (r *wsConnRegistry) add(c *websocket.Conn) {
 	r.conns[c] = struct{}{}
 	r.mu.Unlock()
 }
-
 func (r *wsConnRegistry) remove(c *websocket.Conn) {
 	if r == nil || c == nil {
 		return
@@ -76,9 +54,6 @@ func (r *wsConnRegistry) remove(c *websocket.Conn) {
 	delete(r.conns, c)
 	r.mu.Unlock()
 }
-
-// closeAll sends a server-initiated close (daemon shutdown) and drops every
-// tracked connection.
 func (r *wsConnRegistry) closeAll(code int, reason string) {
 	if r == nil {
 		return
@@ -96,10 +71,6 @@ func (r *wsConnRegistry) closeAll(code int, reason string) {
 	}
 }
 
-// wsUpstreamDialer is the SSRF-safe upstream WebSocket dialer. It mirrors
-// NewSafeHTTPClient's outbound policy: no ambient proxy, safe-host dialing,
-// default TLS (system roots, no insecure skip), and pmde compression enabled
-// so an upstream that supports permessage-deflate is used transparently.
 var wsUpstreamDialer = websocket.Dialer{
 	HandshakeTimeout:  wsProxyUpstreamDialTimeout,
 	NetDialContext:    safeDialContext,
@@ -108,8 +79,6 @@ var wsUpstreamDialer = websocket.Dialer{
 	EnableCompression: true,
 }
 
-// wsUpstreamURL swaps an http(s) upstream URL to ws(s), preserving path and
-// query. Codex derives its own WebSocket URL the same way.
 func wsUpstreamURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -125,17 +94,12 @@ func wsUpstreamURL(raw string) (string, error) {
 	case "https":
 		u.Scheme = "wss"
 	case "ws", "wss":
-		// already a websocket URL (test callers)
 	default:
 		return "", ErrUpstreamInvalid
 	}
 	return u.String(), nil
 }
 
-// buildWebSocketUpstreamHeaders forwards the client's own headers
-// transparently (excluding WebSocket handshake state and auth, which are
-// generated/injected by the proxy) so the upstream still sees user-agent,
-// OpenAI-Beta, x-client-request-id, x-codex-*, and so on.
 func buildWebSocketUpstreamHeaders(inbound http.Header) http.Header {
 	h := http.Header{}
 	for name, values := range inbound {
@@ -144,8 +108,7 @@ func buildWebSocketUpstreamHeaders(inbound http.Header) http.Header {
 			continue
 		}
 		switch canon {
-		case "Authorization", "Proxy-Authorization", "X-Api-Key", "Api-Key",
-			"Content-Length", "Host", "Origin":
+		case "Authorization", "Proxy-Authorization", "X-Api-Key", "Api-Key", "Content-Length", "Host", "Origin":
 			continue
 		}
 		for _, value := range values {
@@ -155,120 +118,270 @@ func buildWebSocketUpstreamHeaders(inbound http.Header) http.Header {
 	return h
 }
 
-// proxyWebSocketToUpstream completes the transparent proxy for an admitted
-// inbound WebSocket Upgrade. The upstream dial happens first; only a real
-// upstream 101 upgrades the client. The registry (never nil) tracks the
-// client connection for lifecycle teardown.
-func proxyWebSocketToUpstream(
-	ctx context.Context,
-	w http.ResponseWriter,
-	req *http.Request,
-	upstreamWSURL string,
-	upstreamHeaders http.Header,
-	registry *wsConnRegistry,
-) {
+type wsProxyTarget struct {
+	key     string
+	url     string
+	headers http.Header
+	done    func(bool)
+}
+
+type wsProxyTargetResolver func(turn bool) (wsProxyTarget, error)
+
+type wsProxyRead struct {
+	messageType int
+	payload     []byte
+	err         error
+}
+
+type wsProxyLeg struct {
+	target wsProxyTarget
+	conn   *websocket.Conn
+	read   <-chan wsProxyRead
+	stop   chan struct{}
+}
+
+func (l *wsProxyLeg) close() {
+	if l == nil {
+		return
+	}
+	select {
+	case <-l.stop:
+	default:
+		close(l.stop)
+	}
+	_ = l.conn.Close()
+}
+
+func proxyWebSocketToUpstream(ctx context.Context, w http.ResponseWriter, req *http.Request, resolve wsProxyTargetResolver, registry *wsConnRegistry) {
 	if registry == nil {
 		registry = newWSConnRegistry()
 	}
-	upConn, resp, err := wsUpstreamDialer.DialContext(ctx, upstreamWSURL, upstreamHeaders)
+	initial, err := resolve(false)
 	if err != nil {
-		// Honest relay: an upstream handshake that answered with an HTTP status
-		// keeps that status (Codex retries then falls back to HTTPS POST); a
-		// transport failure is a 502. Never fabricate a client 101.
+		writeRouteError(w, http.StatusBadGateway, err)
+		return
+	}
+	leg, resp, err := dialWSProxyLeg(ctx, initial)
+	if err != nil {
 		status := http.StatusBadGateway
-		if resp != nil && resp.StatusCode >= 400 {
-			status = resp.StatusCode
+		if resp != nil {
+			status = http.StatusUpgradeRequired
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
 		}
 		writeRouteError(w, status, ErrUpstreamInvalid)
 		return
 	}
-
 	upgrader := wsClientUpgrader()
 	clientConn, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
-		_ = upConn.Close()
+		leg.close()
 		return
 	}
+	connectionID := fmt.Sprintf("ws-%08x", wsProxyConnectionSequence.Add(1))
 	registry.add(clientConn)
 	defer registry.remove(clientConn)
 	clientConn.SetReadLimit(wsProxyMaxMessage)
-	upConn.SetReadLimit(wsProxyMaxMessage)
+	defer clientConn.Close()
+	defer func() {
+		if leg != nil {
+			leg.close()
+		}
+	}()
 
-	pumpWebSocketPair(clientConn, upConn)
-}
-
-// wsClientUpgrader accepts the loopback client handshake with optional
-// permessage-deflate. CheckOrigin admits only empty origins or loopback
-// origins; admission already restricted the peer address.
-func wsClientUpgrader() websocket.Upgrader {
-	return websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			origin := strings.TrimSpace(r.Header.Get("Origin"))
-			if origin == "" {
-				return true
-			}
-			parsed, err := url.Parse(origin)
-			if err != nil {
-				return false
-			}
-			host := strings.Trim(parsed.Hostname(), "[]")
-			if host == "" {
-				return false
-			}
-			if host == "localhost" {
-				return true
-			}
-			ip := net.ParseIP(host)
-			return ip != nil && ip.IsLoopback()
-		},
-		EnableCompression: true,
-	}
-}
-
-// pumpWebSocketPair forwards frames in both directions until either side
-// terminates, then propagates the terminal state to the peer and closes both
-// connections. One goroutine per direction keeps writes serialized per conn.
-func pumpWebSocketPair(a, b *websocket.Conn) {
-	done := make(chan struct{}, 2)
-	go pumpWebSocketOneWay(a, b, done)
-	go pumpWebSocketOneWay(b, a, done)
-	<-done
-	<-done
-	_ = a.Close()
-	_ = b.Close()
-}
-
-// pumpWebSocketOneWay copies app frames from src to dst until src ends. The
-// terminal close code is propagated to dst (a received close keeps its code;
-// an abrupt failure becomes 1011 internal error) before this leg returns.
-func pumpWebSocketOneWay(src, dst *websocket.Conn, done chan<- struct{}) {
-	defer func() { done <- struct{}{} }()
+	clientStop := make(chan struct{})
+	defer close(clientStop)
+	clientRead := startWSProxyReader(clientConn, clientStop)
+	var turnActive, completedForwarded bool
+	var finishTurn func(bool)
 	for {
-		mtype, data, err := src.ReadMessage()
-		if err != nil {
-			code, reason := wsCloseFromError(err)
-			_ = dst.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(2*time.Second))
-			return
+		var upstreamRead <-chan wsProxyRead
+		if leg != nil {
+			upstreamRead = leg.read
 		}
-		if err := dst.WriteMessage(mtype, data); err != nil {
-			_ = src.Close()
-			return
+		select {
+		case item := <-clientRead:
+			if item.err != nil {
+				code, reason, category := wsCloseDetails(item.err)
+				wsProxyLog(connectionID, "client", code, category, completedForwarded)
+				if finishTurn != nil {
+					finishTurn(false)
+				}
+				if leg != nil {
+					_ = leg.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(time.Second))
+				}
+				return
+			}
+			kind := wsJSONType(item.messageType, item.payload)
+			if kind == "response.create" {
+				if turnActive {
+					if finishTurn != nil {
+						finishTurn(false)
+					}
+					wsProxyClose(clientConn, websocket.CloseProtocolError, "overlapping response.create")
+					return
+				}
+				target, targetErr := resolve(true)
+				if targetErr != nil {
+					wsProxyClose(clientConn, websocket.CloseInternalServerErr, "upstream unavailable")
+					return
+				}
+				if leg == nil || leg.target.key != target.key {
+					if leg != nil {
+						_ = leg.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "provider changed"), time.Now().Add(time.Second))
+						leg.close()
+					}
+					var dialErr error
+					leg, _, dialErr = dialWSProxyLeg(ctx, target)
+					if dialErr != nil {
+						if target.done != nil {
+							target.done(false)
+						}
+						wsProxyLog(connectionID, "upstream", websocket.CloseAbnormalClosure, "dial_failed", false)
+						wsProxyClose(clientConn, websocket.CloseTryAgainLater, "upstream websocket unavailable")
+						return
+					}
+				}
+				finishTurn = target.done
+				turnActive = true
+				completedForwarded = false
+			}
+			if kind == "response.processed" && leg == nil {
+				continue
+			}
+			if leg == nil {
+				wsProxyClose(clientConn, websocket.CloseTryAgainLater, "upstream websocket unavailable")
+				return
+			}
+			if err := leg.conn.WriteMessage(item.messageType, item.payload); err != nil {
+				if finishTurn != nil {
+					finishTurn(false)
+				}
+				wsProxyLog(connectionID, "upstream", closeCode(err), "write_failed", completedForwarded)
+				wsProxyClose(clientConn, websocket.CloseInternalServerErr, "upstream write failed")
+				return
+			}
+		case item := <-upstreamRead:
+			if item.err != nil {
+				code, reason, category := wsCloseDetails(item.err)
+				wsProxyLog(connectionID, "upstream", code, category, completedForwarded)
+				leg.close()
+				leg = nil
+				if !turnActive || completedForwarded {
+					continue
+				}
+				if finishTurn != nil {
+					finishTurn(false)
+					finishTurn = nil
+				}
+				wsProxyClose(clientConn, code, reason)
+				return
+			}
+			if err := clientConn.WriteMessage(item.messageType, item.payload); err != nil {
+				if finishTurn != nil {
+					finishTurn(false)
+				}
+				return
+			}
+			if wsJSONType(item.messageType, item.payload) == "response.completed" {
+				completedForwarded = true
+				turnActive = false
+				if finishTurn != nil {
+					finishTurn(true)
+					finishTurn = nil
+				}
+				// A completed response is the turn boundary. Discard the old leg
+				// even when the provider keeps it open so the next response.create
+				// resolves and dials the current provider without an EOF race.
+				leg.close()
+				leg = nil
+			}
 		}
 	}
 }
 
-// wsCloseFromError derives the close code to propagate to the peer.
-func wsCloseFromError(err error) (int, string) {
+func dialWSProxyLeg(ctx context.Context, target wsProxyTarget) (*wsProxyLeg, *http.Response, error) {
+	conn, resp, err := wsUpstreamDialer.DialContext(ctx, target.url, target.headers)
+	if err != nil {
+		return nil, resp, err
+	}
+	conn.SetReadLimit(wsProxyMaxMessage)
+	stop := make(chan struct{})
+	return &wsProxyLeg{target: target, conn: conn, read: startWSProxyReader(conn, stop), stop: stop}, resp, nil
+}
+
+func startWSProxyReader(conn *websocket.Conn, stop <-chan struct{}) <-chan wsProxyRead {
+	ch := make(chan wsProxyRead, 1)
+	// Do not close ch: the single terminal result must disable this select arm,
+	// not turn it into an always-ready stream of zero values.
+	go func() {
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			select {
+			case ch <- wsProxyRead{messageType: messageType, payload: payload, err: err}:
+			case <-stop:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return ch
+}
+
+func wsJSONType(messageType int, payload []byte) string {
+	if messageType != websocket.TextMessage {
+		return ""
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil {
+		return ""
+	}
+	return envelope.Type
+}
+
+func wsClientUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{CheckOrigin: func(r *http.Request) bool {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		host := strings.Trim(parsed.Hostname(), "[]")
+		if host == "localhost" {
+			return true
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}, EnableCompression: true}
+}
+
+func wsProxyClose(conn *websocket.Conn, code int, reason string) {
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(2*time.Second))
+}
+func closeCode(err error) int        { code, _, _ := wsCloseDetails(err); return code }
+func closeCategory(err error) string { _, _, category := wsCloseDetails(err); return category }
+func wsCloseDetails(err error) (int, string, string) {
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
 		code := closeErr.Code
-		if code == websocket.CloseNoStatusReceived { // must not be sent on the wire
+		if code == websocket.CloseNoStatusReceived {
 			code = websocket.CloseNormalClosure
 		}
-		return code, strings.TrimSpace(closeErr.Text)
+		return code, strings.TrimSpace(closeErr.Text), "close_frame"
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
-		return websocket.CloseInternalServerErr, "upstream connection dropped"
+		return websocket.CloseInternalServerErr, "upstream connection dropped", "transport_eof"
 	}
-	return websocket.CloseInternalServerErr, "proxy connection error"
+	return websocket.CloseInternalServerErr, "proxy connection error", "transport_error"
+}
+func wsProxyLog(connectionID, leg string, code int, category string, completed bool) {
+	log.Printf("codex websocket connection=%s leg=%s close_code=%d close_category=%s response_completed_forwarded=%t", connectionID, leg, code, category, completed)
 }

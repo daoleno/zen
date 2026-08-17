@@ -259,6 +259,146 @@ func TestCodexWSUpstreamProxyLive(t *testing.T) {
 	})
 }
 
+func TestCodexWSImmediateTerminationLive(t *testing.T) {
+	if os.Getenv("ZEN_CODEX_WS_INTEGRATION") == "" {
+		t.Skip("set ZEN_CODEX_WS_INTEGRATION=1 to run the Codex WebSocket live proof")
+	}
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatalf("codex not on PATH: %v", err)
+	}
+	for _, mode := range []wsCompletionCloseMode{wsCompletionNormalClose, wsCompletionTCPEOF} {
+		t.Run(string(mode), func(t *testing.T) {
+			upstream := newWSCompletionUpstream(t, mode, 1)
+			gateway := NewGateway("127.0.0.1:0", NewMemoryCredentialStore())
+			if err := gateway.Listen(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = gateway.Close() })
+			gateway.SetUpstream(gatewayUpstreamFor(upstream.server.URL))
+
+			home := t.TempDir()
+			codexHome := filepath.Join(home, "codex-home")
+			if err := os.MkdirAll(codexHome, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			config := "model_provider = \"zen-gateway\"\nmodel = \"gpt-4o\"\n" +
+				"[model_providers.zen-gateway]\n" +
+				"name = \"zen-gateway\"\n" +
+				"base_url = \"http://" + gateway.ActualAddr() + "/v1\"\n" +
+				"wire_api = \"responses\"\n" +
+				"requires_openai_auth = false\n" +
+				"supports_websockets = true\n" +
+				"request_max_retries = 0\n" +
+				"stream_max_retries = 0\n"
+			if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			out := runCodex(t, codexPath,
+				[]string{"exec", "--skip-git-repo-check",
+					"--dangerously-bypass-approvals-and-sandbox",
+					"-c", `model_provider="zen-gateway"`,
+					"-c", `model="gpt-4o"`,
+					"reply with no text"},
+				append(scrubEnv(os.Environ(), "CODEX_HOME"), "CODEX_HOME="+codexHome, "HOME="+home),
+				home,
+			)
+			if strings.Contains(out, "Falling back from WebSockets") || strings.Contains(out, "stream disconnected before completion") {
+				t.Fatalf("codex rejected completed stream followed by %s:\n%s", mode, trimTail(out, 2000))
+			}
+			if upstream.seenTurns() != 2 {
+				t.Fatalf("upstream turns = %d, want 2 (prewarm + actual)", upstream.seenTurns())
+			}
+		})
+	}
+}
+
+func TestCodexWSHandshakeRejectionFallsBackSilentlyLive(t *testing.T) {
+	if os.Getenv("ZEN_CODEX_WS_INTEGRATION") == "" {
+		t.Skip("set ZEN_CODEX_WS_INTEGRATION=1 to run the Codex WebSocket live proof")
+	}
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatalf("codex not on PATH: %v", err)
+	}
+	var wsHits, postHits int
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketUpgrade(r) {
+			mu.Lock()
+			wsHits++
+			mu.Unlock()
+			http.Error(w, "websocket unsupported", http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		postHits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "resp-fallback"}},
+			{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{
+				"id": "msg-fallback", "type": "message", "role": "assistant", "content": []any{},
+			}},
+			{"type": "response.content_part.added", "item_id": "msg-fallback", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+			{"type": "response.output_text.delta", "item_id": "msg-fallback", "output_index": 0, "content_index": 0, "delta": "ok"},
+			{"type": "response.output_text.done", "item_id": "msg-fallback", "output_index": 0, "content_index": 0, "text": "ok"},
+			{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{
+				"id": "msg-fallback", "type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "ok", "annotations": []any{}}},
+			}},
+			{"type": "response.completed", "response": map[string]any{
+				"id": "resp-fallback", "status": "completed",
+				"usage": map[string]any{"input_tokens": 1, "input_tokens_details": nil, "output_tokens": 1, "output_tokens_details": nil, "total_tokens": 2},
+			}},
+		} {
+			raw, _ := json.Marshal(event)
+			_, _ = w.Write([]byte("data: " + string(raw) + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	gateway := NewGateway("127.0.0.1:0", NewMemoryCredentialStore())
+	if err := gateway.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.Close()
+	gateway.SetUpstream(gatewayUpstreamFor(upstream.URL))
+
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "model_provider = \"zen-gateway\"\nmodel = \"gpt-4o\"\n" +
+		"[model_providers.zen-gateway]\n" +
+		"name = \"zen-gateway\"\n" +
+		"base_url = \"http://" + gateway.ActualAddr() + "/v1\"\n" +
+		"wire_api = \"responses\"\n" +
+		"requires_openai_auth = false\n" +
+		"supports_websockets = true\n" +
+		"request_max_retries = 0\n" +
+		"stream_max_retries = 0\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := runCodex(t, codexPath,
+		[]string{"exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "reply with the single word ok"},
+		append(scrubEnv(os.Environ(), "CODEX_HOME"), "CODEX_HOME="+codexHome, "HOME="+home), home)
+	if strings.Contains(out, "Falling back from WebSockets") {
+		t.Fatalf("Codex 0.147 exposed capability fallback warning:\n%s", trimTail(out, 2000))
+	}
+	if !strings.Contains(out, "ok") {
+		t.Fatalf("Codex did not complete over HTTPS fallback:\n%s", trimTail(out, 2000))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if wsHits < 1 || postHits < 1 {
+		t.Fatalf("upstream hits websocket=%d post=%d, want both", wsHits, postHits)
+	}
+}
+
 // runCodex executes the installed codex CLI with the given env/dir; combined
 // output is returned and a fatal error is raised on non-zero exit.
 func runCodex(t *testing.T, codexPath string, args []string, env []string, dir string) string {

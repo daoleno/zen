@@ -233,22 +233,39 @@ func TestGatewayWebSocketInjectsStoredCredential(t *testing.T) {
 	}
 }
 
-func TestGatewayWebSocketHotSwitchNewConnectionUsesNewUpstream(t *testing.T) {
-	upstreamA := newWSUpstreamSimulator(t, []string{wsEventCreated})
-	upstreamB := newWSUpstreamSimulator(t, []string{wsEventCreated})
+func TestGatewayWebSocketHotSwitchRebindsNextTurn(t *testing.T) {
+	upstreamA := newWSUpstreamSimulator(t, []string{wsEventCreated, wsEventCompleted})
+	upstreamB := newWSUpstreamSimulator(t, []string{wsEventCreated, wsEventCompleted})
 	g := gatewayTest(t)
 	g.SetUpstream(gatewayUpstreamFor(upstreamA.server.URL))
 	addr := "http://" + g.ActualAddr()
 
-	// Same long-lived client stays on its bound upstream after the switch.
+	// The same long-lived Codex connection rebinds at the next response.create.
 	client, status := wsClientDial(t, addr, "/v1/responses", nil)
 	if status != 101 {
 		t.Fatalf("handshake 1 status = %d", status)
 	}
 	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"m","input":["a"]}`))
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && upstreamA.frameCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if upstreamA.frameCount() != 1 {
+		t.Fatal("first request did not reach upstream A before switch")
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := client.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	g.SetUpstream(gatewayUpstreamFor(upstreamB.server.URL))
 	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"m","input":["b"]}`))
+	for i := 0; i < 2; i++ {
+		if _, _, err := client.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// A NEW connection after the switch must reach upstream B.
 	client2, status2 := wsClientDial(t, addr, "/v1/responses", nil)
@@ -256,9 +273,29 @@ func TestGatewayWebSocketHotSwitchNewConnectionUsesNewUpstream(t *testing.T) {
 		t.Fatalf("handshake 2 status = %d", status2)
 	}
 	_ = client2.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"m","input":["c"]}`))
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && upstreamB.frameCount() < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if upstreamB.frameCount() != 2 {
+		t.Fatal("new connection request did not reach upstream B before switch back")
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := client2.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && (upstreamA.frameCount() < 2 || upstreamB.frameCount() < 1) {
+	g.SetUpstream(gatewayUpstreamFor(upstreamA.server.URL))
+	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"m","input":["d"]}`))
+	for i := 0; i < 2; i++ {
+		if _, _, err := client.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && (upstreamA.frameCount() < 2 || upstreamB.frameCount() < 2) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	upstreamA.mu.Lock()
@@ -269,17 +306,14 @@ func TestGatewayWebSocketHotSwitchNewConnectionUsesNewUpstream(t *testing.T) {
 	bFrames := len(upstreamB.frames)
 	bHandshakes := upstreamB.handshakes
 	upstreamB.mu.Unlock()
-	if aHandshakes != 1 || bHandshakes != 1 {
-		t.Fatalf("handshakes a=%d b=%d, want 1 each", aHandshakes, bHandshakes)
+	if aHandshakes != 2 || bHandshakes != 2 {
+		t.Fatalf("handshakes a=%d b=%d, want 2 each", aHandshakes, bHandshakes)
 	}
-	// The established connection finished its two turns on A (binding is per
-	// connection; the switch governs the next connection) and the new client
-	// went to B — the hot-switch contract.
 	if aFrames != 2 {
-		t.Fatalf("upstream A frames = %d, want 2 (established conn keeps A)", aFrames)
+		t.Fatalf("upstream A frames = %d, want 2", aFrames)
 	}
-	if bFrames != 1 {
-		t.Fatalf("upstream B frames = %d, want 1 (new conn uses B)", bFrames)
+	if bFrames != 2 {
+		t.Fatalf("upstream B frames = %d, want 2", bFrames)
 	}
 	if !g.Listening() {
 		t.Fatal("gateway listener disappeared across the upstream switch")
@@ -304,6 +338,19 @@ func TestGatewayWebSocketUpstreamFailureIsHonest(t *testing.T) {
 	}
 	if status != http.StatusBadGateway {
 		t.Fatalf("dead upstream ws status = %d, want 502", status)
+	}
+}
+
+func TestGatewayWebSocketUpstreamHandshakeRejectionBecomesCapabilityFallback(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "websocket unsupported", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+	g := gatewayTest(t)
+	g.SetUpstream(gatewayUpstreamFor(upstream.URL))
+	_, status := wsClientDial(t, "http://"+g.ActualAddr(), "/v1/responses", nil)
+	if status != http.StatusUpgradeRequired {
+		t.Fatalf("rejected upstream ws status = %d, want 426 capability fallback", status)
 	}
 }
 

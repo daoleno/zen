@@ -294,22 +294,29 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRouteError(w, http.StatusNotImplemented, ErrRouteWebSocket)
 			return
 		}
-		target, targetErr := gatewayUpstreamRequestURL(upstream.BaseURL, req.URL)
-		if targetErr != nil {
-			writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
-			return
+		resolve := func(bool) (wsProxyTarget, error) {
+			selected, selectedOK := g.Upstream()
+			if !selectedOK {
+				return wsProxyTarget{}, ErrUpstreamInvalid
+			}
+			target, targetErr := gatewayUpstreamRequestURL(selected.BaseURL, req.URL)
+			if targetErr != nil {
+				return wsProxyTarget{}, ErrUpstreamInvalid
+			}
+			wsURL, wsErr := wsUpstreamURL(target)
+			if wsErr != nil {
+				return wsProxyTarget{}, ErrUpstreamInvalid
+			}
+			headers := buildWebSocketUpstreamHeaders(req.Header)
+			if authErr := applyGatewayAuth(headers, selected, req.Header, g.lookup, g.creds); authErr != nil {
+				return wsProxyTarget{}, ErrCredentialNotReady
+			}
+			return wsProxyTarget{
+				key: strings.Join([]string{selected.ProfileID, selected.BaseURL, selected.AuthMode, selected.CredentialEnv, selected.CredentialRef}, "\x00"),
+				url: wsURL, headers: headers,
+			}, nil
 		}
-		wsURL, wsErr := wsUpstreamURL(target)
-		if wsErr != nil {
-			writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
-			return
-		}
-		headers := buildWebSocketUpstreamHeaders(req.Header)
-		if authErr := applyGatewayAuth(headers, upstream, req.Header, g.lookup, g.creds); authErr != nil {
-			writeRouteError(w, http.StatusBadGateway, ErrCredentialNotReady)
-			return
-		}
-		proxyWebSocketToUpstream(req.Context(), w, req, wsURL, headers, g.ws)
+		proxyWebSocketToUpstream(req.Context(), w, req, resolve, g.ws)
 		return
 	}
 	if req.Method != http.MethodPost && req.Method != http.MethodGet {
@@ -433,7 +440,7 @@ func gatewayUpstreamRequestURL(base string, reqURL *url.URL) (string, error) {
 // and the selected upstream profile id (never secrets, never the upstream URL —
 // restart resolves the profile from the Provider catalog).
 type gatewayStateDocument struct {
-	ListenAddr       string `json:"listen_addr"`
+	ListenAddr        string `json:"listen_addr"`
 	UpstreamProfileID string `json:"upstream_profile_id,omitempty"`
 }
 

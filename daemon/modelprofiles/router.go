@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daoleno/zen/daemon/codexctl"
@@ -427,47 +428,58 @@ func (r *Router) serveRouteWebSocket(w http.ResponseWriter, req *http.Request, p
 		writeRouteError(w, http.StatusNotImplemented, ErrRouteWebSocket)
 		return
 	}
-	binding, flightToken, err := r.table.BeginRouteFlight(parsed.RouteID)
-	if err != nil {
-		writeRouteError(w, http.StatusNotFound, ErrRouteNotFound)
-		return
+	resolve := func(turn bool) (wsProxyTarget, error) {
+		var binding RouteBinding
+		var flightToken string
+		var err error
+		if turn {
+			binding, flightToken, err = r.table.BeginRouteFlight(parsed.RouteID)
+		} else {
+			var ok bool
+			binding, ok = r.table.GetByRouteID(parsed.RouteID)
+			if !ok {
+				err = ErrRouteNotFound
+			}
+		}
+		if err != nil {
+			return wsProxyTarget{}, err
+		}
+		release := func(bool) {}
+		if turn {
+			var once sync.Once
+			release = func(markOpaque bool) {
+				once.Do(func() { _ = r.table.EndRouteFlight(parsed.RouteID, flightToken, markOpaque) })
+			}
+		}
+		fail := func(err error) (wsProxyTarget, error) {
+			release(false)
+			return wsProxyTarget{}, err
+		}
+		if !EndpointAllowedForProtocol(binding.RouteProtocol, parsed.Endpoint) {
+			return fail(ErrRouteProtocolMismatch)
+		}
+		upstreamURL, urlErr := UpstreamRequestURL(binding.UpstreamBaseURL, parsed.APIPath)
+		if urlErr != nil {
+			return fail(ErrUpstreamInvalid)
+		}
+		upstreamURL, urlErr = withRawQuery(upstreamURL, req.URL.RawQuery)
+		if urlErr != nil {
+			return fail(ErrUpstreamInvalid)
+		}
+		wsURL, urlErr := wsUpstreamURL(upstreamURL)
+		if urlErr != nil {
+			return fail(ErrUpstreamInvalid)
+		}
+		headers := buildWebSocketUpstreamHeaders(req.Header)
+		if authErr := applyUpstreamAuth(headers, binding, captureInboundAuth(req.Header), r.credentialLookup(), r.creds); authErr != nil {
+			return fail(ErrCredentialNotReady)
+		}
+		return wsProxyTarget{
+			key: fmt.Sprintf("%s:%d", binding.ProfileID, binding.Generation),
+			url: wsURL, headers: headers, done: release,
+		}, nil
 	}
-	if !EndpointAllowedForProtocol(binding.RouteProtocol, parsed.Endpoint) {
-		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
-		writeRouteError(w, http.StatusBadRequest, ErrRouteProtocolMismatch)
-		return
-	}
-
-	upstreamURL, err := UpstreamRequestURL(binding.UpstreamBaseURL, parsed.APIPath)
-	if err != nil {
-		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
-		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
-		return
-	}
-	upstreamURL, err = withRawQuery(upstreamURL, req.URL.RawQuery)
-	if err != nil {
-		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
-		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
-		return
-	}
-	wsURL, err := wsUpstreamURL(upstreamURL)
-	if err != nil {
-		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
-		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
-		return
-	}
-	headers := buildWebSocketUpstreamHeaders(req.Header)
-	if err := applyUpstreamAuth(headers, binding, captureInboundAuth(req.Header), r.credentialLookup(), r.creds); err != nil {
-		_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, false)
-		writeRouteError(w, http.StatusBadGateway, ErrCredentialNotReady)
-		return
-	}
-
-	// The flight lease spans the WebSocket session (the equivalent of the
-	// per-request POST lease): a successful upstream session marks opaque
-	// history on release, every failure releases without marking.
-	proxyWebSocketToUpstream(req.Context(), w, req, wsURL, headers, r.ws)
-	_ = r.table.EndRouteFlight(parsed.RouteID, flightToken, true)
+	proxyWebSocketToUpstream(req.Context(), w, req, resolve, r.ws)
 }
 
 // serveLocalModels answers GET /v1/models with the synced model catalog of

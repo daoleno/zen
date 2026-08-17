@@ -42,6 +42,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/modelprofiles"
+	"github.com/daoleno/zen/daemon/work"
 )
 
 func gatewayPortFree() bool {
@@ -430,6 +431,158 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 	_ = exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", "zenproof").Run()
 	stopped = true
 	_ = daemonCmd.Process.Signal(os.Interrupt)
+}
+
+func TestIsolatedRealProviderWebSocketGatewayProof(t *testing.T) {
+	if os.Getenv("ZEN_PROOF_REAL_WS") == "" {
+		t.Skip("set ZEN_PROOF_REAL_WS=1 with ZEN_PROOF_PROFILE_A/B to run the real-provider WebSocket proof")
+	}
+	profileAID := strings.TrimSpace(os.Getenv("ZEN_PROOF_PROFILE_A"))
+	profileBID := strings.TrimSpace(os.Getenv("ZEN_PROOF_PROFILE_B"))
+	if profileAID == "" || profileBID == "" {
+		t.Fatal("ZEN_PROOF_PROFILE_A and ZEN_PROOF_PROFILE_B are required")
+	}
+	profilesPath, err := work.DefaultModelProfilesPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialsPath, err := work.DefaultProviderCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := modelprofiles.NewStore(profilesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err := store.Get(profileAID)
+	if err != nil {
+		t.Fatalf("load profile A %s: %v", profileAID, err)
+	}
+	profileB, err := store.Get(profileBID)
+	if err != nil {
+		t.Fatalf("load profile B %s: %v", profileBID, err)
+	}
+	credentials, err := modelprofiles.NewFileCredentialStore(credentialsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofUpstream := func(profile modelprofiles.Profile) modelprofiles.GatewayUpstream {
+		upstream := modelprofiles.GatewayUpstreamFromProfile(profile)
+		if credentialEnv := strings.TrimSpace(os.Getenv("ZEN_PROOF_AUTH_ENV")); credentialEnv != "" {
+			upstream.AuthMode = modelprofiles.AuthModeBearerEnv
+			upstream.CredentialEnv = credentialEnv
+			upstream.CredentialRef = ""
+		}
+		return upstream
+	}
+	gateway := modelprofiles.NewGateway("127.0.0.1:0", credentials)
+	gateway.SetUpstream(proofUpstream(profileA))
+	if err := gateway.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gateway.Close() })
+
+	model := strings.TrimSpace(os.Getenv("ZEN_PROOF_MODEL"))
+	if model == "" {
+		model = store.DefaultModelID(modelprofiles.ClientCodex)
+	}
+	if model == "" {
+		t.Fatal("no Codex default model; set ZEN_PROOF_MODEL")
+	}
+
+	scratch := t.TempDir()
+	home := filepath.Join(scratch, "home")
+	codexHome := filepath.Join(scratch, "codex-home")
+	for _, dir := range []string{home, codexHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rc := range []string{".zshenv", ".zshrc", ".zprofile"} {
+		if err := os.WriteFile(filepath.Join(home, rc), []byte("# isolated real websocket proof\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := "model_provider = \"zen-gateway\"\nmodel = " + strconv.Quote(model) + "\n" +
+		"[model_providers.zen-gateway]\n" +
+		"name = \"zen-gateway\"\n" +
+		"base_url = \"http://" + gateway.ActualAddr() + "/v1\"\n" +
+		"wire_api = \"responses\"\n" +
+		"requires_openai_auth = false\n" +
+		"supports_websockets = true\n" +
+		"[projects." + strconv.Quote(scratch) + "]\ntrust_level = \"trusted\"\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tmuxSocket := filepath.Join(scratch, "tmux.sock")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run() })
+	newTmux := exec.Command("tmux", "-S", tmuxSocket, "new-session", "-d", "-s", "zenrealws", "-x", "220", "-y", "60")
+	newTmux.Env = proofEnv(home, codexHome, scratch, tmuxSocket)
+	if out, err := newTmux.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux: %v: %s", err, out)
+	}
+	launch := exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenrealws",
+		"cd "+scratch+" && "+absCodexTUI()+" --dangerously-bypass-approvals-and-sandbox -C "+scratch, "Enter")
+	launch.Env = proofEnv(home, codexHome, scratch, tmuxSocket)
+	if out, err := launch.CombinedOutput(); err != nil {
+		t.Fatalf("launch codex: %v: %s", err, out)
+	}
+	panePID := tmuxPanePID(t, tmuxSocket, "zenrealws")
+	if panePID <= 0 {
+		t.Fatal("Codex pane has no pid")
+	}
+	readyDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(readyDeadline) {
+		pane, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenrealws", "-p").Output()
+		if bytes.Contains(pane, []byte("›")) && bytes.Contains(pane, []byte(model)) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	markers := []string{"ZEN_WS_A1_OK", "ZEN_WS_B_OK", "ZEN_WS_A2_OK"}
+	submit := func(marker string) {
+		t.Helper()
+		prompt := "Reply with exactly " + marker + " and nothing else. Do not use tools."
+		_, _ = exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenrealws", prompt, "Enter").Output()
+		deadline := time.Now().Add(90 * time.Second)
+		nextEnter := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			pane, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenrealws", "-p", "-S", "-2000").Output()
+			if bytes.Count(pane, []byte(marker)) >= 2 {
+				return
+			}
+			if bytes.Contains(pane, []byte("Falling back from WebSockets")) || bytes.Contains(pane, []byte("stream disconnected before completion")) {
+				t.Fatalf("Codex WebSocket warning while waiting for %s:\n%s", marker, trimTo(pane, 4000))
+			}
+			if time.Now().After(nextEnter) {
+				_, _ = exec.Command("tmux", "-S", tmuxSocket, "send-keys", "-t", "zenrealws", "Enter").Output()
+				nextEnter = time.Now().Add(3 * time.Second)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		pane, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenrealws", "-p", "-S", "-2000").Output()
+		t.Fatalf("timed out waiting for %s:\n%s", marker, trimTo(pane, 4000))
+	}
+
+	submit(markers[0])
+	gateway.SetUpstream(proofUpstream(profileB))
+	submit(markers[1])
+	gateway.SetUpstream(proofUpstream(profileA))
+	submit(markers[2])
+	if got := tmuxPanePID(t, tmuxSocket, "zenrealws"); got != panePID {
+		t.Fatalf("Codex pane pid changed across A-B-A: %d -> %d", panePID, got)
+	}
+	pane, _ := exec.Command("tmux", "-S", tmuxSocket, "capture-pane", "-t", "zenrealws", "-p", "-S", "-2000").Output()
+	if bytes.Contains(pane, []byte("Falling back from WebSockets")) || bytes.Contains(pane, []byte("stream disconnected before completion")) {
+		t.Fatalf("Codex emitted WebSocket fallback/disconnect warning:\n%s", trimTo(pane, 4000))
+	}
+	for _, marker := range markers {
+		if count := bytes.Count(pane, []byte(marker)); count != 2 {
+			t.Fatalf("marker %s count = %d, want 2 (one prompt + one response):\n%s", marker, count, trimTo(pane, 4000))
+		}
+	}
 }
 
 func trimTo(b []byte, n int) string {
