@@ -29,13 +29,13 @@ import type {
 } from "../../services/pluginsManagement";
 import type {
   InstalledSkill,
-  ManagedSkillAgent,
   PackageDetail,
   SkillMutationOperation,
   SkillsInventory,
   SkillsRequestState,
 } from "../../services/skillsManagement";
 import {
+  scopeLabel,
   skillAgentLabel,
   skillsRequestData,
 } from "../../services/skillsManagement";
@@ -53,6 +53,7 @@ import {
   type SkillTreeNode,
 } from "../../services/skillsScreenModel";
 import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
+import { skillRowSupportsDelete } from "../../services/skillsSurfaceModel";
 
 export interface SurfaceMutationNotice {
   kind: "success" | "error";
@@ -78,16 +79,7 @@ export interface SkillsPresentationProps {
   onRetryPlugins(): void;
   onInspectSkill(skill: InstalledSkill, path?: string): void;
   onDismissInspector(): void;
-  onBinding(
-    skill: InstalledSkill,
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(skill: InstalledSkill): void;
-  onForget(skill: InstalledSkill): void;
-  onAdopt(skill: InstalledSkill): void;
-  onUpdate(skill: InstalledSkill): void;
+  onDeleteSkill(skill: InstalledSkill): void;
   onInstallPlugin(entry: AvailablePlugin): void;
   onUpdatePlugin(row: InstalledPluginRow): void;
   onUninstallPlugin(row: InstalledPluginRow): void;
@@ -107,8 +99,12 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<SkillFilters>(DEFAULT_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [deletePickerKey, setDeletePickerKey] = useState<string | null>(null);
   const wide = width >= WIDE_INSPECTOR;
   const inventory = skillsRequestData(props.inventoryState);
+  useEffect(() => {
+    setDeletePickerKey(null);
+  }, [inventory?.generatedAt]);
   const visible = useMemo(
     () => filterLogicalSkills(props.logicalSkills, query, filters),
     [filters, props.logicalSkills, query],
@@ -116,6 +112,9 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
   const detail = skillsRequestData(props.inspectState);
   const selectedLogical = props.logicalSkills.find(
     (skill) => skill.key === props.inspectedName?.toLocaleLowerCase(),
+  );
+  const deletePicker = props.logicalSkills.find(
+    (skill) => skill.key === deletePickerKey,
   );
   const activeFilterCount =
     filters.agents.length +
@@ -252,7 +251,12 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           {activeFilterCount ? (
             <ActiveFilters filters={filters} onChange={setFilters} />
           ) : null}
-          <LocalSkillsList {...props} rows={visible} inventory={inventory} />
+          <LocalSkillsList
+            {...props}
+            rows={visible}
+            inventory={inventory}
+            onChooseCopy={(skill) => setDeletePickerKey(skill.key)}
+          />
           <FilterSheet
             visible={filtersOpen}
             filters={filters}
@@ -296,6 +300,16 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           />
         </BottomSheetFrame>
       ) : null}
+      <DeleteCopySheet
+        logical={deletePicker ?? null}
+        mutationOperations={props.mutationOperations}
+        preparingMutation={props.preparingMutation}
+        onClose={() => setDeletePickerKey(null)}
+        onDelete={(copy) => {
+          setDeletePickerKey(null);
+          props.onDeleteSkill(copy);
+        }}
+      />
     </View>
   );
 }
@@ -512,6 +526,7 @@ function LocalSkillsList(
   props: SkillsPresentationProps & {
     rows: LogicalSkill[];
     inventory?: SkillsInventory;
+    onChooseCopy(skill: LogicalSkill): void;
   },
 ) {
   const colors = useAppColors();
@@ -579,78 +594,218 @@ function LocalSkillsList(
       renderItem={({ item }) => (
         <SkillRow
           skill={item}
+          mutationOperations={props.mutationOperations}
+          preparingMutation={props.preparingMutation}
           onOpen={() => props.onInspectSkill(item.primaryCopy)}
+          onDelete={() => {
+            if (item.copies.length > 1) props.onChooseCopy(item);
+            else props.onDeleteSkill(item.copies[0]!);
+          }}
         />
       )}
     />
   );
 }
 
-function SkillRow({ skill, onOpen }: { skill: LogicalSkill; onOpen(): void }) {
+function SkillRow({
+  skill,
+  mutationOperations,
+  preparingMutation,
+  onOpen,
+  onDelete,
+}: {
+  skill: LogicalSkill;
+  mutationOperations: readonly SkillMutationOperation[];
+  preparingMutation: string;
+  onOpen(): void;
+  onDelete(): void;
+}) {
   const colors = useAppColors();
   const agentText = skill.agents.length
     ? skill.agents.map(skillAgentLabel).join(", ")
-    : "Not enabled";
+    : "No Agent";
   const copyText =
     skill.copies.length > 1 ? ` · ${skill.copies.length} copies` : "";
+  const canDelete = skill.copies.some((copy) =>
+    skillRowSupportsDelete(copy, mutationOperations),
+  );
+  const deleting = skill.copies.some(
+    (copy) => preparingMutation === `delete:${copy.id}`,
+  );
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${skill.name}`}
-      onPress={onOpen}
-      style={({ pressed }) => [
-        styles.row,
-        {
-          borderBottomColor: colors.borderSubtle,
-          backgroundColor: pressed ? colors.surfacePressed : "transparent",
-        },
-      ]}
-    >
-      <View style={styles.flex}>
-        <View style={styles.rowHeading}>
+    <View style={[styles.row, { borderBottomColor: colors.borderSubtle }]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${skill.name}`}
+        onPress={onOpen}
+        style={({ pressed }) => [
+          styles.rowOpen,
+          { backgroundColor: pressed ? colors.surfacePressed : "transparent" },
+        ]}
+      >
+        <View style={styles.flex}>
+          <View style={styles.rowHeading}>
+            <Text
+              style={[styles.rowTitle, { color: colors.textPrimary }]}
+              numberOfLines={1}
+            >
+              {skill.name}
+            </Text>
+            <View
+              style={[
+                styles.statusDot,
+                {
+                  backgroundColor: skill.enabled
+                    ? colors.success
+                    : colors.textTertiary,
+                },
+              ]}
+            />
+          </View>
+          {skill.description ? (
+            <Text
+              numberOfLines={1}
+              style={[styles.description, { color: colors.textSecondary }]}
+            >
+              {skill.description}
+            </Text>
+          ) : null}
           <Text
-            style={[styles.rowTitle, { color: colors.textPrimary }]}
             numberOfLines={1}
+            style={[styles.metadata, { color: colors.textTertiary }]}
           >
-            {skill.name}
+            {agentText}
+            {copyText}
           </Text>
-          <View
-            style={[
-              styles.statusDot,
-              {
-                backgroundColor: skill.enabled
-                  ? colors.success
-                  : colors.textTertiary,
-              },
-            ]}
-          />
         </View>
-        {skill.description ? (
-          <Text
-            numberOfLines={1}
-            style={[styles.description, { color: colors.textSecondary }]}
-          >
-            {skill.description}
-          </Text>
-        ) : null}
-        <Text
-          numberOfLines={1}
-          style={[
-            styles.metadata,
-            { color: skill.hasConflict ? colors.warning : colors.textTertiary },
+        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+      </Pressable>
+      {canDelete ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${skill.name}`}
+          disabled={Boolean(preparingMutation)}
+          onPress={onDelete}
+          style={({ pressed }) => [
+            styles.rowDelete,
+            (pressed || Boolean(preparingMutation)) && styles.dimmed,
           ]}
         >
-          {skill.hasConflict
-            ? "Copies need review · "
-            : skill.enabledVariantCount > 1
-              ? `${skill.enabledVariantCount} enabled content variants · `
-              : ""}
-          {agentText}
-          {copyText}
-        </Text>
+          {deleting ? (
+            <ActivityIndicator size="small" color={colors.dangerText} />
+          ) : (
+            <Ionicons name="trash-outline" size={20} color={colors.dangerText} />
+          )}
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function DeleteCopySheet({
+  logical,
+  mutationOperations,
+  preparingMutation,
+  onClose,
+  onDelete,
+}: {
+  logical: LogicalSkill | null;
+  mutationOperations: readonly SkillMutationOperation[];
+  preparingMutation: string;
+  onClose(): void;
+  onDelete(copy: InstalledSkill): void;
+}) {
+  const colors = useAppColors();
+  return (
+    <BottomSheetFrame
+      visible={Boolean(logical)}
+      onClose={onClose}
+      maxHeight="76%"
+      dragToDismiss
+      contentStyle={styles.deleteSheet}
+    >
+      <View style={styles.sheetHeader}>
+        <View style={styles.flex}>
+          <Text
+            style={[styles.sheetTitle, { color: colors.textPrimary }]}
+          >
+            Delete copy
+          </Text>
+          <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+            {logical?.name}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityLabel="Close copy selector"
+          onPress={onClose}
+          style={styles.close}
+        >
+          <Ionicons name="close" size={22} color={colors.textSecondary} />
+        </Pressable>
       </View>
-      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-    </Pressable>
+      <ScrollView contentContainerStyle={styles.deleteSheetBody}>
+        {(logical?.copies ?? []).map((copy) => {
+          const location = skillCopyLocation(copy);
+          const canDelete = skillRowSupportsDelete(copy, mutationOperations);
+          const deleting = preparingMutation === `delete:${copy.id}`;
+          return (
+            <View
+              key={copy.id}
+              style={[
+                styles.deleteCopyRow,
+                { borderColor: colors.borderSubtle },
+              ]}
+            >
+              <View style={styles.copyContent}>
+                <Text
+                  numberOfLines={2}
+                  style={[styles.copyLabel, { color: colors.textPrimary }]}
+                >
+                  {location.label}
+                </Text>
+                <Text
+                  selectable
+                  numberOfLines={1}
+                  style={[styles.path, { color: colors.textTertiary }]}
+                >
+                  {location.path}
+                </Text>
+                {!canDelete ? (
+                  <Text
+                    style={[styles.metadata, { color: colors.textTertiary }]}
+                  >
+                    {copy.capability.reason ||
+                      "This copy cannot be deleted from here."}
+                  </Text>
+                ) : null}
+              </View>
+              {canDelete ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Delete ${copy.name} from ${copy.location}`}
+                  disabled={Boolean(preparingMutation)}
+                  onPress={() => onDelete(copy)}
+                  style={({ pressed }) => [
+                    styles.rowDelete,
+                    (pressed || Boolean(preparingMutation)) && styles.dimmed,
+                  ]}
+                >
+                  {deleting ? (
+                    <ActivityIndicator size="small" color={colors.dangerText} />
+                  ) : (
+                    <Ionicons
+                      name="trash-outline"
+                      size={20}
+                      color={colors.dangerText}
+                    />
+                  )}
+                </Pressable>
+              ) : null}
+            </View>
+          );
+        })}
+      </ScrollView>
+    </BottomSheetFrame>
   );
 }
 
@@ -714,6 +869,11 @@ function Inspector(
   const renderer = preview
     ? skillRenderer(preview.kind, preview.content)
     : null;
+  const canDelete =
+    props.mutationOperations.includes("delete") &&
+    copy.capability.canDelete &&
+    detail.capability.canDelete;
+  const deleting = props.preparingMutation === `delete:${copy.id}`;
   return (
     <View style={styles.inspector}>
       <View
@@ -750,9 +910,8 @@ function Inspector(
           ) : null}
           <View style={styles.summaryRow}>
             <StatusLabel enabled={detail.enabled} />
-            <Text style={{ color: colors.textTertiary }}>{detail.scope}</Text>
             <Text style={{ color: colors.textTertiary }}>
-              {copy.manager === "zen" ? "Managed by Zen" : "Available to Agent"}
+              {scopeLabel(detail.scope)}
             </Text>
           </View>
           {(detail.warnings ?? []).map((warning) => (
@@ -800,125 +959,67 @@ function Inspector(
             }
           />
         </DetailSection>
-        <DetailSection title={`Copies (${props.logical.copies.length})`}>
-          {props.logical.copies.map((item) => (
-            <CopyRow
-              key={item.id}
-              copy={item}
-              selected={item.id === copy.id}
-              enabled={item.enabled}
-              onPress={() => props.onInspectSkill(item)}
-            />
-          ))}
-        </DetailSection>
-        <DetailSection title="Agent bindings">
-          {detail.bindings.length ? (
-            detail.bindings.map((binding) => {
-              const toggleOperation = binding.enabled ? "disable" : "enable";
-              const canToggle =
-                props.mutationOperations.includes(toggleOperation) &&
-                binding.operations.includes(toggleOperation);
-              const canUnbind =
-                props.mutationOperations.includes("unbind") &&
-                binding.operations.includes("unbind");
-              return (
+        <DetailSection title="Available to">
+          {detail.agents.length ? (
+            <View style={styles.optionWrap}>
+              {detail.agents.map((agent) => (
                 <View
-                  key={`${binding.agent}:${binding.scope}`}
+                  key={agent}
                   style={[
-                    styles.bindingRow,
-                    { borderBottomColor: colors.borderSubtle },
+                    styles.agentLabel,
+                    { backgroundColor: colors.surfaceSubtle },
                   ]}
                 >
-                  <View style={styles.flex}>
-                    <Text style={{ color: colors.textPrimary }}>
-                      {skillAgentLabel(binding.agent)}
-                    </Text>
-                    <Text
-                      style={[styles.metadata, { color: colors.textTertiary }]}
-                    >
-                      {binding.scope} · {binding.mode} ·{" "}
-                      {binding.enabled ? "enabled" : "disabled"}
-                    </Text>
-                    {binding.note ? (
-                      <Text
-                        style={[styles.metadata, { color: colors.textTertiary }]}
-                      >
-                        {binding.note}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <View style={styles.bindingControls}>
-                    {canUnbind ? (
-                      <Pressable
-                        accessibilityLabel={`Unbind ${skillAgentLabel(binding.agent)} ${binding.scope} binding`}
-                        disabled={Boolean(props.preparingMutation)}
-                        onPress={() =>
-                          props.onBinding(
-                            copy,
-                            "unbind",
-                            binding.agent,
-                            binding.scope === "project" ? "project" : "global",
-                          )
-                        }
-                        style={({ pressed }) => [
-                          styles.bindingIcon,
-                          (pressed || props.preparingMutation) && styles.dimmed,
-                        ]}
-                      >
-                        <Ionicons
-                          name="unlink-outline"
-                          size={19}
-                          color={colors.textSecondary}
-                        />
-                      </Pressable>
-                    ) : null}
-                    {canToggle ? (
-                      <Pressable
-                        accessibilityRole="switch"
-                        accessibilityState={{ checked: binding.enabled }}
-                        accessibilityLabel={`${binding.enabled ? "Disable" : "Enable"} ${skillAgentLabel(binding.agent)} binding`}
-                        disabled={Boolean(props.preparingMutation)}
-                        onPress={() =>
-                          props.onBinding(
-                            copy,
-                            toggleOperation,
-                            binding.agent,
-                            binding.scope === "project" ? "project" : "global",
-                          )
-                        }
-                        style={[
-                          styles.toggle,
-                          {
-                            backgroundColor: binding.enabled
-                              ? colors.accent
-                              : colors.borderStrong,
-                          },
-                          props.preparingMutation && styles.dimmed,
-                        ]}
-                      >
-                        <View
-                          style={[
-                            styles.toggleKnob,
-                            binding.enabled && styles.toggleKnobOn,
-                            { backgroundColor: colors.bgPrimary },
-                          ]}
-                        />
-                      </Pressable>
-                    ) : null}
-                  </View>
+                  <Text style={{ color: colors.textSecondary }}>
+                    {skillAgentLabel(agent)}
+                  </Text>
                 </View>
-              );
-            })
+              ))}
+            </View>
           ) : (
             <Text style={{ color: colors.textTertiary }}>
-              {copy.manager === "external"
-                ? "This Skill is read directly from an Agent location."
-                : "This managed copy is not bound to an Agent."}
+              No supported Agent currently sees this copy.
             </Text>
           )}
-          <BindingTargets copy={copy} detail={detail} props={props} />
         </DetailSection>
-        <LifecycleActions copy={copy} detail={detail} props={props} />
+        {props.logical.copies.length > 1 ? (
+          <DetailSection title={`Locations (${props.logical.copies.length})`}>
+            {props.logical.copies.map((item) => (
+              <CopyRow
+                key={item.id}
+                copy={item}
+                selected={item.id === copy.id}
+                onPress={() => props.onInspectSkill(item)}
+              />
+            ))}
+          </DetailSection>
+        ) : null}
+        {canDelete ? (
+          <View style={styles.lifecycleSection}>
+            <Text
+              style={[styles.sectionTitle, { color: colors.textPrimary }]}
+            >
+              Delete
+            </Text>
+            <Text
+              style={[styles.metadata, { color: colors.textTertiary }]}
+            >
+              Permanently delete this copy from {location.label}.
+            </Text>
+            <Action
+              label={deleting ? "Deleting..." : "Delete Skill"}
+              destructive
+              disabled={Boolean(props.preparingMutation)}
+              onPress={() => props.onDeleteSkill(copy)}
+            />
+          </View>
+        ) : detail.capability.reason || copy.capability.reason ? (
+          <View style={styles.lifecycleSection}>
+            <Text style={{ color: colors.textTertiary }}>
+              {detail.capability.reason || copy.capability.reason}
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -963,12 +1064,10 @@ function StatusLabel({ enabled }: { enabled: boolean }) {
 function CopyRow({
   copy,
   selected,
-  enabled,
   onPress,
 }: {
   copy: InstalledSkill;
   selected: boolean;
-  enabled: boolean;
   onPress(): void;
 }) {
   const colors = useAppColors();
@@ -992,11 +1091,6 @@ function CopyRow({
           >
             {location.label}
           </Text>
-          {enabled ? (
-            <Text style={[styles.enabledLabel, { color: colors.accent }]}>
-              ENABLED
-            </Text>
-          ) : null}
         </View>
         <Text
           selectable
@@ -1014,146 +1108,6 @@ function CopyRow({
         />
       ) : null}
     </Pressable>
-  );
-}
-
-function LifecycleActions({
-  copy,
-  detail,
-  props,
-}: {
-  copy: InstalledSkill;
-  detail: PackageDetail;
-  props: SkillsPresentationProps;
-}) {
-  const colors = useAppColors();
-  const ops = detail.capability.canManage
-    ? detail.capability.operations.filter((operation) =>
-        props.mutationOperations.includes(operation),
-      )
-    : [];
-  if (!ops.length) return null;
-  return (
-    <View style={styles.lifecycleSection}>
-      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-        Management
-      </Text>
-      {ops.includes("adopt") ? (
-        <>
-          <Text style={{ color: colors.textSecondary }}>
-            Manage with Zen copies this Skill into Zen's managed store. The
-            current external files stay in place and remain untouched. Agent
-            bindings can be changed afterward.
-          </Text>
-          <Action
-            label="Manage with Zen"
-            disabled={Boolean(props.preparingMutation)}
-            onPress={() => props.onAdopt(copy)}
-          />
-        </>
-      ) : null}
-      {ops.includes("update") ? (
-        <Action
-          label="Update managed copy"
-          disabled={Boolean(props.preparingMutation)}
-          onPress={() => props.onUpdate(copy)}
-        />
-      ) : null}
-      {ops.includes("forget") ? (
-        <>
-          <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-            Forget removes only Zen bookkeeping. It never deletes the external
-            Skill files.
-          </Text>
-          <Action
-            label="Forget from Zen"
-            disabled={Boolean(props.preparingMutation)}
-            onPress={() => props.onForget(copy)}
-          />
-        </>
-      ) : null}
-      {ops.includes("uninstall") ? (
-        <>
-          <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-            Uninstall removes Zen's managed copy and its bindings. External
-            source folders are not deleted.
-          </Text>
-          <Action
-            label="Uninstall managed copy"
-            destructive
-            disabled={Boolean(props.preparingMutation)}
-            onPress={() => props.onUninstall(copy)}
-          />
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-function BindingTargets({
-  copy,
-  detail,
-  props,
-}: {
-  copy: InstalledSkill;
-  detail: PackageDetail;
-  props: SkillsPresentationProps;
-}) {
-  const colors = useAppColors();
-  const inventory = skillsRequestData(props.inventoryState);
-  if (
-    !inventory ||
-    !props.mutationOperations.includes("bind") ||
-    !detail.capability.canManage ||
-    !detail.capability.operations.includes("bind")
-  ) {
-    return null;
-  }
-  const existing = new Set(
-    detail.bindings.map((binding) => `${binding.agent}:${binding.scope}`),
-  );
-  const targets = inventory.agents.flatMap((agent) => {
-    if (!agent.supported) return [];
-    const scopes: Array<"global" | "project"> = [];
-    if (agent.globalScope && !existing.has(`${agent.agent}:global`)) {
-      scopes.push("global");
-    }
-    if (
-      inventory.cwd &&
-      agent.projectScope &&
-      !existing.has(`${agent.agent}:project`)
-    ) {
-      scopes.push("project");
-    }
-    return scopes.map((scope) => ({ agent: agent.agent, scope }));
-  });
-  if (!targets.length) return null;
-  return (
-    <View style={styles.bindTargets}>
-      <Text style={[styles.metadata, { color: colors.textTertiary }]}>Add binding</Text>
-      <View style={styles.optionWrap}>
-        {targets.map((target) => (
-          <Pressable
-            key={`${target.agent}:${target.scope}`}
-            accessibilityLabel={`Bind ${skillAgentLabel(target.agent)} ${target.scope}`}
-            disabled={Boolean(props.preparingMutation)}
-            onPress={() =>
-              props.onBinding(copy, "bind", target.agent, target.scope)
-            }
-            style={({ pressed }) => [
-              styles.bindTarget,
-              { borderColor: colors.borderSubtle },
-              (pressed || props.preparingMutation) && styles.dimmed,
-            ]}
-          >
-            <Ionicons name="link-outline" size={16} color={colors.accent} />
-            <Text style={{ color: colors.accent }}>
-              {skillAgentLabel(target.agent)} · {target.scope}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-    </View>
   );
 }
 
@@ -1644,10 +1598,25 @@ const styles = StyleSheet.create({
     minHeight: 82,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  rowOpen: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 82,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingLeft: 16,
+    paddingRight: 6,
+    paddingVertical: 11,
+  },
+  rowDelete: {
+    width: 44,
+    height: 44,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
   },
   rowHeading: { flexDirection: "row", alignItems: "center", gap: 7 },
   rowTitle: {
@@ -1703,6 +1672,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
   },
+  agentLabel: {
+    minHeight: 36,
+    borderRadius: 6,
+    paddingHorizontal: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   statusLabel: { flexDirection: "row", alignItems: "center", gap: 6 },
   treeRow: {
     minHeight: 38,
@@ -1753,36 +1729,18 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   path: { fontFamily: Typography.terminalFont, fontSize: 11, marginTop: 2 },
-  enabledLabel: {
-    flexShrink: 0,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 10,
-  },
-  bindingRow: {
-    minHeight: 56,
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  bindingControls: { flexDirection: "row", alignItems: "center", gap: 6 },
-  bindingIcon: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toggle: { width: 46, height: 28, borderRadius: 14, padding: 3 },
-  toggleKnob: { width: 22, height: 22, borderRadius: 11 },
-  toggleKnobOn: { transform: [{ translateX: 18 }] },
-  bindTargets: { gap: 8, paddingTop: 4 },
-  bindTarget: {
-    minHeight: 38,
+  deleteSheet: { maxHeight: 620 },
+  deleteSheetBody: { gap: 10, paddingTop: 8, paddingBottom: 20 },
+  deleteCopyRow: {
+    minHeight: 68,
     borderWidth: 1,
     borderRadius: 6,
-    paddingHorizontal: 10,
+    paddingLeft: 11,
+    paddingRight: 4,
+    paddingVertical: 9,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
   },
   dimmed: { opacity: 0.45 },
   lifecycleSection: { paddingHorizontal: 16, paddingVertical: 16, gap: 10 },

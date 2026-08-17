@@ -1,57 +1,29 @@
 import { describe, expect, test } from "bun:test";
 import {
   createSkillsSurfaceState,
-  evaluateSkillMutation,
   reduceSkillsSurface,
-  skillBindingSupports,
-  skillRowSupports,
+  skillRowSupportsDelete,
 } from "./skillsSurfaceModel";
-import type {
-  InstalledSkill,
-  SkillMutationOperation,
-} from "./skillsManagement";
+import type { InstalledSkill } from "./skillsManagement";
 
-const capabilities: SkillMutationOperation[] = [
-  "migrate",
-  "bind",
-  "unbind",
-  "enable",
-  "disable",
-  "uninstall",
-  "forget",
-  "adopt",
-  "update",
-];
-const skill = {
-  id: "a".repeat(24),
-  name: "demo",
-  manager: "zen",
-  owned: true,
-  tracked: true,
-  enabled: true,
-  canonicalPath: "/store/demo",
-  sourcePath: "/store/demo",
-  scope: "global",
-  agents: ["codex"],
-  bindings: [
-    {
-      agent: "codex",
-      scope: "global",
-      mode: "symlink",
-      targetPath: "/target",
-      sourcePath: "/store/demo",
-      enabled: true,
-      operations: ["disable", "unbind"],
-    },
-  ],
-  provenance: "Zen",
-  capability: {
-    canManage: true,
-    operations: ["bind", "disable", "unbind", "uninstall", "update"],
-  },
-} as InstalledSkill;
+function skill(canDelete: boolean): InstalledSkill {
+  return {
+    id: "a".repeat(24),
+    name: "demo",
+    enabled: true,
+    rootPath: "/home/test/.codex/skills/demo",
+    canonicalPath: "/home/test/.codex/skills/demo",
+    allowedRoot: "/home/test/.codex/skills",
+    location: "Codex global Skills",
+    scope: "global",
+    agents: ["codex"],
+    capability: canDelete
+      ? { canDelete: true }
+      : { canDelete: false, reason: "Provided by Codex and cannot be deleted from here." },
+  };
+}
 
-describe("local Skills lifecycle gates", () => {
+describe("local Skills action gates", () => {
   test("Plugins and Skills remain separate top-level sections", () => {
     const initial = createSkillsSurfaceState();
     expect(initial.section).toBe("skills");
@@ -62,29 +34,10 @@ describe("local Skills lifecycle gates", () => {
       }).section,
     ).toBe("plugins");
   });
-  test("only daemon-advertised local lifecycle actions pass", () => {
-    expect(
-      evaluateSkillMutation({ kind: "update", skill }, capabilities),
-    ).toEqual({ supported: true, operation: "update" });
-    expect(
-      evaluateSkillMutation(
-        { kind: "update", skill },
-        capabilities.filter((item) => item !== "update"),
-      ).supported,
-    ).toBe(false);
-    expect(evaluateSkillMutation({ kind: "migrate" }, capabilities)).toEqual({
-      supported: true,
-      operation: "migrate",
-    });
-  });
-  test("row and binding helpers fail closed", () => {
-    expect(skillRowSupports(skill, "update", capabilities)).toBe(true);
-    expect(skillRowSupports(skill, "adopt", capabilities)).toBe(false);
-    expect(
-      skillBindingSupports(skill.bindings[0]!, "disable", capabilities),
-    ).toBe(true);
-    expect(
-      skillBindingSupports(skill.bindings[0]!, "enable", capabilities),
-    ).toBe(false);
+
+  test("delete requires both copy and daemon capability", () => {
+    expect(skillRowSupportsDelete(skill(true), ["delete"])).toBe(true);
+    expect(skillRowSupportsDelete(skill(true), [])).toBe(false);
+    expect(skillRowSupportsDelete(skill(false), ["delete"])).toBe(false);
   });
 });

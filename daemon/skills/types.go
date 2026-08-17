@@ -2,9 +2,8 @@ package skills
 
 import "time"
 
-// Agent is a Zen-supported target Executor family. The six adapters in
-// adapters.go map each Agent to a real skills-directory contract; custom
-// executor names that infer to one of these providers reuse that adapter.
+// Agent is one supported local Agent family whose native Skills roots Zen can
+// discover. Custom executor names may resolve to one of these families.
 type Agent string
 
 const (
@@ -16,79 +15,30 @@ const (
 	AgentPi         Agent = "pi"
 )
 
-// Scope names the reach of an Agent binding.
 type Scope string
 
 const (
 	ScopeProject Scope = "project"
 	ScopeGlobal  Scope = "global"
-	ScopeMixed   Scope = "mixed"
 	ScopePlugin  Scope = "plugin"
 	ScopeBuiltin Scope = "builtin"
 	ScopeUnknown Scope = "unknown"
 )
 
-// Manager names the ownership authority for an installed skill row.
-type Manager string
-
-const (
-	// ManagerZen marks a Zen-owned package: content lives in the canonical
-	// store and Zen fully manages its bindings and lifecycle.
-	ManagerZen Manager = "zen"
-	// ManagerExternal marks a skill discovered in an Agent directory that Zen
-	// does not own. Zen may track it in inventory for adopt/forget bookkeeping
-	// but never edits its files.
-	ManagerExternal Manager = "external"
-	ManagerPlugin   Manager = "plugin"
-	ManagerBuiltin  Manager = "builtin"
-	ManagerUnknown  Manager = "unknown"
-)
-
-// BindingMode is how one (agent, scope) binding reaches the package. Direct is
-// presentation-only for externally owned folders already living in an Agent
-// directory. Zen-owned inventory entries persist only symlink or copy modes.
-type BindingMode string
-
-const (
-	BindingSymlink BindingMode = "symlink"
-	BindingCopy    BindingMode = "copy"
-	BindingDirect  BindingMode = "direct"
-)
-
-// MutationOperation is the daemon-authoritative lifecycle operation set.
-// The App gates every affordance on this list; anything absent never renders.
 type MutationOperation string
 
-const (
-	OperationImport    MutationOperation = "import"
-	OperationMigrate   MutationOperation = "migrate"
-	OperationBind      MutationOperation = "bind"
-	OperationUnbind    MutationOperation = "unbind"
-	OperationEnable    MutationOperation = "enable"
-	OperationDisable   MutationOperation = "disable"
-	OperationUninstall MutationOperation = "uninstall"
-	OperationForget    MutationOperation = "forget"
-	OperationAdopt     MutationOperation = "adopt"
-	OperationUpdate    MutationOperation = "update"
-)
+const OperationDelete MutationOperation = "delete"
 
-// AgentSupport describes one canonical Agent adapter: its display name, the
-// scopes it truly supports, how bindings are materialized, and any reason for
-// a limitation.
 type AgentSupport struct {
 	Agent            Agent  `json:"agent"`
 	Name             string `json:"name"`
 	Supported        bool   `json:"supported"`
 	GlobalScope      bool   `json:"global_scope"`
 	ProjectScope     bool   `json:"project_scope"`
-	BindingMode      string `json:"binding_mode"`
-	BindingModeNote  string `json:"binding_mode_note,omitempty"`
 	DefaultGlobalDir string `json:"default_global_dir"`
 	Reason           string `json:"reason,omitempty"`
 }
 
-// ExecutorSupport maps a configured (possibly custom) executor identity to the
-// provider adapter it infers to. The alias reuses the provider's lifecycle.
 type ExecutorSupport struct {
 	Name    string `json:"name"`
 	Kind    string `json:"kind,omitempty"`
@@ -96,71 +46,40 @@ type ExecutorSupport struct {
 	Command string `json:"command,omitempty"`
 }
 
-// RiskSignal is one bounded static signal from a package scan. It is a warning
-// aid, never a safety verdict.
 type RiskSignal struct {
 	Type     string `json:"type"`
 	Detail   string `json:"detail,omitempty"`
-	Severity string `json:"severity"` // "info" | "warn" | "alert"
+	Severity string `json:"severity"`
 	File     string `json:"file,omitempty"`
 }
 
-type SkillBinding struct {
-	Agent      Agent  `json:"agent"`
-	Scope      Scope  `json:"scope"`
-	Mode       string `json:"mode"`
-	TargetPath string `json:"target_path"`
-	SourcePath string `json:"source_path"`
-	Enabled    bool   `json:"enabled"`
-	BoundAt    string `json:"bound_at"`
-	DriftHash  string `json:"drift_hash,omitempty"`
-	Note       string `json:"note,omitempty"`
-	// Operations is the exact executable action set for this binding's current
-	// state. The App must not infer enable/disable availability from booleans.
-	Operations []MutationOperation `json:"operations,omitempty"`
+// DeleteCapability is the daemon's fail-closed authority for one exact copy.
+// Read-only and provider-owned copies carry a human reason and no action.
+type DeleteCapability struct {
+	CanDelete bool   `json:"can_delete"`
+	Reason    string `json:"reason,omitempty"`
 }
 
-// ManagementCapability is the fail-closed action authority for one row.
-type ManagementCapability struct {
-	CanManage  bool                `json:"can_manage"`
-	Operations []MutationOperation `json:"operations,omitempty"`
-	Reason     string              `json:"reason,omitempty"`
-}
-
+// InstalledSkill is one physical directory entry discovered beneath one
+// allowed Skills root. RootPath identifies the entry Zen may remove;
+// CanonicalPath is its resolved content location and is diagnostic identity,
+// never a deletion target supplied by the App.
 type InstalledSkill struct {
-	ID            string               `json:"id"`
-	Name          string               `json:"name"`
-	Description   string               `json:"description,omitempty"`
-	Manager       Manager              `json:"manager"`
-	Owned         bool                 `json:"owned"`
-	Tracked       bool                 `json:"tracked"`
-	Enabled       bool                 `json:"enabled"`
-	CanonicalPath string               `json:"canonical_path"`
-	SourcePath    string               `json:"source_path"`
-	Scope         Scope                `json:"scope"`
-	Agents        []Agent              `json:"agents"`
-	Bindings      []SkillBinding       `json:"bindings"`
-	Provenance    string               `json:"provenance"`
-	Source        string               `json:"source,omitempty"`
-	SourceType    string               `json:"source_type,omitempty"`
-	SourceURL     string               `json:"source_url,omitempty"`
-	Ref           string               `json:"ref,omitempty"`
-	ContentHash   string               `json:"content_hash,omitempty"`
-	InstalledAt   string               `json:"installed_at,omitempty"`
-	UpdatedAt     string               `json:"updated_at,omitempty"`
-	Plugin        string               `json:"plugin,omitempty"`
-	Risk          []RiskSignal         `json:"risk,omitempty"`
-	Warnings      []string             `json:"warnings,omitempty"`
-	Migration     string               `json:"migration,omitempty"`
-	Capability    ManagementCapability `json:"capability"`
-}
-
-type MigrationStatus struct {
-	Owned     int `json:"owned"`
-	External  int `json:"external"`
-	Duplicate int `json:"duplicate"`
-	Conflict  int `json:"conflict"`
-	Tracked   int `json:"tracked"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description,omitempty"`
+	Enabled       bool             `json:"enabled"`
+	RootPath      string           `json:"root_path"`
+	CanonicalPath string           `json:"canonical_path"`
+	AllowedRoot   string           `json:"allowed_root"`
+	Location      string           `json:"location"`
+	Scope         Scope            `json:"scope"`
+	Agents        []Agent          `json:"agents"`
+	ContentHash   string           `json:"content_hash,omitempty"`
+	Plugin        string           `json:"plugin,omitempty"`
+	Risk          []RiskSignal     `json:"risk,omitempty"`
+	Warnings      []string         `json:"warnings,omitempty"`
+	Capability    DeleteCapability `json:"capability"`
 }
 
 type Inventory struct {
@@ -170,78 +89,39 @@ type Inventory struct {
 	Agents             []AgentSupport      `json:"agents"`
 	Executors          []ExecutorSupport   `json:"executors,omitempty"`
 	Warnings           []string            `json:"warnings,omitempty"`
-	MutationOperations []MutationOperation `json:"mutation_operations,omitempty"`
-	Migration          MigrationStatus     `json:"migration,omitempty"`
+	MutationOperations []MutationOperation `json:"mutation_operations"`
 	incomplete         bool
 }
 
-// SupportedMutationOperations is the authoritative mutation capability set.
 func SupportedMutationOperations() []MutationOperation {
-	return []MutationOperation{
-		OperationMigrate,
-		OperationBind,
-		OperationUnbind,
-		OperationEnable,
-		OperationDisable,
-		OperationUninstall,
-		OperationForget,
-		OperationAdopt,
-		OperationUpdate,
-	}
+	return []MutationOperation{OperationDelete}
 }
 
-// SourceType is how a package's content was acquired.
-type SourceType string
-
-const (
-	SourceTypeCatalog SourceType = "catalog"
-	SourceTypeLocal   SourceType = "local"
-	SourceTypeArchive SourceType = "archive"
-	SourceTypeGithub  SourceType = "github"
-	// SourceTypeExternal marks an unowned inventory entry that points at an
-	// external installation (never edited by Zen).
-	SourceTypeExternal SourceType = "external"
-)
-
-// MutationRequest carries structured, validated lifecycle inputs. The same
-// inputs build the reviewable plan (skills_command) and then execute it
-// (skills_mutation); the daemon never trusts displayed text.
+// MutationRequest carries the complete inventory identity selected by the
+// App. Every field is matched against fresh discovery; none is used as an
+// unchecked filesystem path.
 type MutationRequest struct {
-	Operation MutationOperation
-	CWD       string
-	SkillID   string
-	Source    string
-	SkillName string
-	Ref       string
-	InfoPath  string
-	Scope     Scope
-	Agents    []Agent
+	Operation     MutationOperation
+	CWD           string
+	CopyID        string
+	SkillName     string
+	RootPath      string
+	CanonicalPath string
+	AllowedRoot   string
 }
 
-// MutationChange is one exact before/after filesystem effect in the plan.
-type MutationChange struct {
-	Kind        string `json:"kind"` // "create_dir" | "copy_file" | "symlink" | "remove" | "keep" | "write"
-	Path        string `json:"path"`
-	Destination string `json:"destination,omitempty"`
-	Detail      string `json:"detail,omitempty"`
-}
-
-// MutationCommand is the reviewed plan the App confirms and the daemon
-// executes. Summary is human-readable and enters the confirmation dialog;
-// Changes are the exact effects that dialog must describe.
+// MutationCommand is the reviewed delete identity. Execution re-discovers and
+// revalidates the same tuple immediately before touching the filesystem.
 type MutationCommand struct {
-	Operation    MutationOperation `json:"operation"`
-	Scope        Scope             `json:"scope"`
-	Agents       []Agent           `json:"agents"`
-	SkillName    string            `json:"skill_name"`
-	CopyID       string            `json:"copy_id,omitempty"`
-	ImportID     string            `json:"-"`
-	Source       string            `json:"source,omitempty"`
-	Ref          string            `json:"ref,omitempty"`
-	InfoPath     string            `json:"-"`
-	Description  string            `json:"-"`
-	ExpectedHash string            `json:"-"`
-	Summary      string            `json:"summary"`
-	Changes      []MutationChange  `json:"changes"`
-	Destructive  bool              `json:"destructive"`
+	Operation     MutationOperation `json:"operation"`
+	CopyID        string            `json:"copy_id"`
+	SkillName     string            `json:"skill_name"`
+	RootPath      string            `json:"root_path"`
+	CanonicalPath string            `json:"canonical_path"`
+	AllowedRoot   string            `json:"allowed_root"`
+	Location      string            `json:"location"`
+	Scope         Scope             `json:"scope"`
+	Agents        []Agent           `json:"agents"`
+	Summary       string            `json:"summary"`
+	Destructive   bool              `json:"destructive"`
 }

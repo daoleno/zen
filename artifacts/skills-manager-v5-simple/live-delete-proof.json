@@ -1,0 +1,34 @@
+{
+  "transport": "paired live WebSocket daemon API",
+  "proofs": [
+    {
+      "name": "zen-v5-live-codex",
+      "agents": ["codex"],
+      "location": "Codex global Skills",
+      "deleted": true,
+      "neighbor_unchanged": true,
+      "inventory_reconciled": true
+    },
+    {
+      "name": "zen-v5-live-pi",
+      "agents": ["pi"],
+      "location": "Pi global Skills",
+      "deleted": true,
+      "neighbor_unchanged": true,
+      "inventory_reconciled": true
+    },
+    {
+      "name": "zen-v5-live-shared",
+      "agents": ["codex", "pi"],
+      "location": "Shared user Skills",
+      "deleted": true,
+      "neighbor_unchanged": true,
+      "inventory_reconciled": true
+    }
+  ],
+  "cleanup": {
+    "temporary_skill_roots_removed": true,
+    "temporary_neighbor_files_removed": true,
+    "temporary_device_revoked": true
+  }
+}

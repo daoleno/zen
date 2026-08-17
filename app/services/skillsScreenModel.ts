@@ -31,12 +31,8 @@ export interface LogicalSkill {
   description?: string;
   copies: InstalledSkill[];
   primaryCopy: InstalledSkill;
-  enabledByAgent: Partial<Record<ManagedSkillAgent, InstalledSkill[]>>;
-  installedAgents: ManagedSkillAgent[];
   agents: ManagedSkillAgent[];
   enabled: boolean;
-  hasConflict: boolean;
-  enabledVariantCount: number;
 }
 
 export interface SkillTreeNode {
@@ -59,7 +55,6 @@ export function skillsSectionAgentCounts(
     pi: 0,
   };
   for (const skill of inventory?.skills ?? []) {
-    if (skill.manager === "plugin") continue;
     for (const agent of skill.agents) counts[agent] += 1;
   }
   return counts;
@@ -70,10 +65,7 @@ export function skillsSectionProjection(
   agent: ManagedSkillAgent,
 ): { agent: ManagedSkillAgent; count: number; skills: InstalledSkill[] } {
   const skills = (inventory?.skills ?? []).filter(
-    (skill) =>
-      skill.manager !== "plugin" &&
-      (skill.agents.includes(agent) ||
-        (skill.owned && skill.bindings.length === 0)),
+    (skill) => skill.agents.includes(agent),
   );
   return { agent, count: skills.length, skills };
 }
@@ -81,17 +73,6 @@ export function skillsSectionProjection(
 const agentOrder = new Map(
   MANAGED_SKILL_AGENTS.map((agent, index) => [agent, index]),
 );
-
-function copyEnabledForAgent(
-  copy: InstalledSkill,
-  agent: ManagedSkillAgent,
-): boolean {
-  if (copy.bindings.length > 0)
-    return copy.bindings.some(
-      (binding) => binding.agent === agent && binding.enabled,
-    );
-  return copy.enabled && copy.agents.includes(agent);
-}
 
 /**
  * Inventory entries are physical copies. The product surface is logical:
@@ -103,7 +84,6 @@ export function groupLogicalSkills(
 ): LogicalSkill[] {
   const groups = new Map<string, InstalledSkill[]>();
   for (const skill of skills) {
-    if (skill.manager === "plugin") continue;
     const key = skill.name.toLocaleLowerCase();
     groups.set(key, [...(groups.get(key) ?? []), skill]);
   }
@@ -111,33 +91,14 @@ export function groupLogicalSkills(
     .map(([key, unsortedCopies]) => {
       const copies = [...unsortedCopies].sort(
         (a, b) =>
-          a.sourcePath.localeCompare(b.sourcePath) || a.id.localeCompare(b.id),
+          a.rootPath.localeCompare(b.rootPath) || a.id.localeCompare(b.id),
       );
-      const enabledByAgent: LogicalSkill["enabledByAgent"] = {};
-      for (const agent of MANAGED_SKILL_AGENTS) {
-        const candidates = copies.filter((copy) =>
-          copyEnabledForAgent(copy, agent),
-        );
-        if (candidates.length) enabledByAgent[agent] = candidates;
-      }
-      const enabledCopies = [
-        ...new Set(
-          Object.values(enabledByAgent).flatMap((items) => items ?? []),
-        ),
-      ];
       const primaryCopy = copies[0]!;
-      const installedAgents = MANAGED_SKILL_AGENTS.filter((agent) =>
+      const agents = MANAGED_SKILL_AGENTS.filter((agent) =>
         copies.some((copy) => copy.agents.includes(agent)),
       );
-      const agents = Object.keys(enabledByAgent).sort(
-        (a, b) =>
-          (agentOrder.get(a as ManagedSkillAgent) ?? 99) -
-          (agentOrder.get(b as ManagedSkillAgent) ?? 99),
-      ) as ManagedSkillAgent[];
-      const contentVariants = new Set(
-        enabledCopies
-          .map((copy) => copy.contentHash)
-          .filter((hash): hash is string => Boolean(hash)),
+      agents.sort(
+        (a, b) => (agentOrder.get(a) ?? 99) - (agentOrder.get(b) ?? 99),
       );
       return {
         key,
@@ -147,15 +108,8 @@ export function groupLogicalSkills(
           copies.find((copy) => copy.description)?.description,
         copies,
         primaryCopy,
-        enabledByAgent,
-        installedAgents,
         agents,
-        enabled: agents.length > 0,
-        hasConflict: copies.some(
-          (copy) =>
-            copy.migration === "conflict" || copy.migration === "duplicate",
-        ),
-        enabledVariantCount: contentVariants.size,
+        enabled: copies.some((copy) => copy.enabled),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -173,21 +127,19 @@ export function filterLogicalSkills(
       if (filters.status === "disabled" && skill.enabled) return false;
       if (
         filters.scope !== "all" &&
-        !skill.copies.some(
-          (copy) => copy.scope === filters.scope || copy.scope === "mixed",
-        )
+        !skill.copies.some((copy) => copy.scope === filters.scope)
       )
         return false;
       if (
         filters.agents.length > 0 &&
-        !filters.agents.some((agent) => skill.installedAgents.includes(agent))
+        !filters.agents.some((agent) => skill.agents.includes(agent))
       )
         return false;
       if (!needle) return true;
       return [
         skill.name,
         skill.description,
-        ...skill.copies.flatMap((copy) => [copy.source, copy.provenance]),
+        ...skill.copies.flatMap((copy) => [copy.location, copy.rootPath]),
       ].some((value) => value?.toLocaleLowerCase().includes(needle));
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -203,12 +155,12 @@ export function filterInstalledSkills(
   return skills.filter((skill) => {
     if (status === "enabled" && !skill.enabled) return false;
     if (status === "disabled" && skill.enabled) return false;
-    if (scope !== "all" && skill.scope !== scope && skill.scope !== "mixed")
+    if (scope !== "all" && skill.scope !== scope)
       return false;
     const needle = query.trim().toLocaleLowerCase();
     return (
       !needle ||
-      [skill.name, skill.description, skill.source, skill.provenance].some(
+      [skill.name, skill.description, skill.location, skill.rootPath].some(
         (value) => value?.toLocaleLowerCase().includes(needle),
       )
     );
@@ -219,17 +171,11 @@ export function skillCopyLocation(copy: InstalledSkill): {
   label: string;
   path: string;
 } {
-  const agents = copy.agents.map(skillAgentLabel).join(", ") || "Unbound";
-  const ownership =
-    copy.manager === "zen"
-      ? "Zen managed"
-      : copy.manager === "builtin"
-        ? "Built in"
-        : "Agent location";
-  const parts = copy.sourcePath.replace(/\\/g, "/").split("/").filter(Boolean);
+  const agents = copy.agents.map(skillAgentLabel).join(", ") || "Local copy";
+  const parts = copy.rootPath.replace(/\\/g, "/").split("/").filter(Boolean);
   const path =
     parts.length > 3 ? `.../${parts.slice(-3).join("/")}` : parts.join("/");
-  return { label: `${ownership} · ${agents} · ${copy.scope}`, path };
+  return { label: `${copy.location} · ${agents}`, path };
 }
 
 export function buildSkillFileTree(

@@ -1048,6 +1048,16 @@ describe("executor switch transport", () => {
 });
 
 describe("Skills management transport", () => {
+  const identity = {
+    operation: "delete" as const,
+    skillId: "a".repeat(24),
+    skillName: "useful",
+    rootPath: "/home/test/.codex/skills/useful",
+    canonicalPath: "/home/test/.codex/skills/useful",
+    allowedRoot: "/home/test/.codex/skills",
+    cwd: "/workspace/project",
+  };
+
   test("inventory is request-correlated and generation-safe", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
@@ -1082,24 +1092,7 @@ describe("Skills management transport", () => {
         agents: [],
         executors: [],
         warnings: [],
-        mutation_operations: [
-          "migrate",
-          "bind",
-          "unbind",
-          "enable",
-          "disable",
-          "uninstall",
-          "forget",
-          "adopt",
-          "update",
-        ],
-        migration: {
-          owned: 0,
-          external: 0,
-          duplicate: 0,
-          conflict: 0,
-          tracked: 0,
-        },
+        mutation_operations: ["delete"],
       },
     });
 
@@ -1111,24 +1104,7 @@ describe("Skills management transport", () => {
         skills: [],
         agents: [],
         warnings: [],
-        mutationOperations: [
-          "migrate",
-          "bind",
-          "unbind",
-          "enable",
-          "disable",
-          "uninstall",
-          "forget",
-          "adopt",
-          "update",
-        ],
-        migration: {
-          owned: 0,
-          external: 0,
-          duplicate: 0,
-          conflict: 0,
-          tracked: 0,
-        },
+        mutationOperations: ["delete"],
       },
     });
     client.disconnectAll();
@@ -1152,14 +1128,14 @@ describe("Skills management transport", () => {
       detail: {
         copy_id: "d".repeat(24),
         skill_name: "useful",
-        manager: "external",
-        owned: false,
-        tracked: false,
         enabled: true,
+        root_path: identity.rootPath,
+        canonical_path: identity.canonicalPath,
+        allowed_root: identity.allowedRoot,
+        location: "Codex global Skills",
         scope: "global",
-        agents: [],
-        bindings: [],
-        capability: { can_manage: true, operations: ["adopt"] },
+        agents: ["codex"],
+        capability: { can_delete: true },
       },
     });
 
@@ -1167,71 +1143,125 @@ describe("Skills management transport", () => {
     client.disconnectAll();
   });
 
-  test("a valid plan for different structured targets is rejected", async () => {
+  test("a reviewed delete command for a different exact copy is rejected", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
 
-    const pending = client.buildSkillsCommand(server.id, {
-      operation: "unbind",
-      skillId: "a".repeat(24),
-      skillName: "useful",
-      scope: "global",
-      agents: ["codex"],
-    });
+    const pending = client.buildSkillsCommand(server.id, identity);
     const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_command",
+      operation: "delete",
+      skill_id: identity.skillId,
+      skill_name: identity.skillName,
+      root_path: identity.rootPath,
+      canonical_path: identity.canonicalPath,
+      allowed_root: identity.allowedRoot,
+    });
     socket.receive({
       type: "skills_command",
       request_id: outbound.request_id,
       command: {
-        operation: "unbind",
+        operation: "delete",
         scope: "global",
         agents: ["codex"],
-        skill_name: "other-skill",
-        copy_id: "a".repeat(24),
-        summary: "Unbind other-skill from Codex",
-        changes: [{ kind: "remove", path: "/home/.codex/skills/other-skill" }],
-        destructive: false,
+        skill_name: "useful",
+        copy_id: identity.skillId,
+        root_path: "/home/test/.codex/skills/other-copy",
+        canonical_path: identity.canonicalPath,
+        allowed_root: identity.allowedRoot,
+        location: "Codex global Skills",
+        summary: "Delete useful",
+        destructive: true,
       },
     });
 
-    await expect(pending).rejects.toThrow(
-      "Skills command for a different request",
-    );
+    await expect(pending).rejects.toThrow("different copy");
     client.disconnectAll();
   });
 
-  test("an untargeted package request accepts daemon-derived affected agents", async () => {
+  test("delete accepts daemon-derived affected Agents after exact identity review", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
     socket.open();
 
-    const pending = client.buildSkillsCommand(server.id, {
-      operation: "uninstall",
-      skillId: "b".repeat(24),
-      skillName: "useful",
-      scope: "global",
-    });
+    const pending = client.buildSkillsCommand(server.id, identity);
     const outbound = JSON.parse(socket.sent.at(-1)!);
-    expect(outbound.agents).toBeUndefined();
     socket.receive({
       type: "skills_command",
       request_id: outbound.request_id,
       command: {
-        operation: "uninstall",
+        operation: "delete",
         scope: "global",
-        agents: ["codex", "cursor"],
-        skill_name: "useful",
-        copy_id: "b".repeat(24),
-        summary: "Uninstall useful and all of its bindings",
-        changes: [{ kind: "remove", path: "/store/useful" }],
+        agents: ["codex", "pi"],
+        skill_name: identity.skillName,
+        copy_id: identity.skillId,
+        root_path: identity.rootPath,
+        canonical_path: identity.canonicalPath,
+        allowed_root: identity.allowedRoot,
+        location: "Shared Agent Skills",
+        summary: "Delete useful from Shared Agent Skills",
         destructive: true,
       },
     });
 
     await expect(pending).resolves.toMatchObject({
-      operation: "uninstall",
-      agents: ["codex", "cursor"],
+      operation: "delete",
+      agents: ["codex", "pi"],
+    });
+    client.disconnectAll();
+  });
+
+  test("delete accepts the daemon top-level mutation result", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.executeSkillsMutation(server.id, identity);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_mutation",
+      operation: "delete",
+      skill_id: identity.skillId,
+      skill_name: identity.skillName,
+      root_path: identity.rootPath,
+      canonical_path: identity.canonicalPath,
+      allowed_root: identity.allowedRoot,
+    });
+    socket.receive({
+      type: "skills_mutation_result",
+      request_id: outbound.request_id,
+      command: {
+        operation: "delete",
+        scope: "global",
+        agents: ["codex"],
+        skill_name: identity.skillName,
+        copy_id: identity.skillId,
+        root_path: identity.rootPath,
+        canonical_path: identity.canonicalPath,
+        allowed_root: identity.allowedRoot,
+        location: "Codex global Skills",
+        summary: "Delete useful from Codex global Skills",
+        destructive: true,
+      },
+      success: true,
+      exit_code: 0,
+      output: "Deleted useful.",
+      duration_ms: 12,
+    });
+
+    await expect(pending).resolves.toEqual({
+      command: expect.objectContaining({
+        copyId: identity.skillId,
+        skillName: identity.skillName,
+      }),
+      execution: {
+        success: true,
+        exitCode: 0,
+        output: "Deleted useful.",
+        durationMs: 12,
+      },
     });
     client.disconnectAll();
   });

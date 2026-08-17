@@ -20,6 +20,9 @@ import (
 const (
 	hashMaxFileBytes  = 8 << 20
 	hashNameSeparator = "\x00"
+	maxPackageFiles   = 512
+	maxPackageBytes   = 64 << 20
+	maxPackageDepth   = 16
 )
 
 var ErrHashLimit = errors.New("package content exceeds the hash bound")
@@ -79,7 +82,7 @@ func folderContentHash(root string) (string, error) {
 
 // collectRegularFiles returns sorted slash-separated relative paths of every
 // regular file under root, following the materialization bounds and skipping
-// nothing silently except dot-entries at the top level of an Agent binding
+// nothing silently except dot-entries at the top level of an Agent root
 // (those are never package content).
 func collectRegularFiles(root string) ([]string, error) {
 	var files []string

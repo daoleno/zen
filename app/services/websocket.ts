@@ -36,9 +36,9 @@ import {
   normalizeSkillsMutationCommand,
   normalizeSkillsMutationResult,
   assertSkillsMutationMatchesRequest,
+  assertSkillsCommandMatchesRequest,
   type PackageDetail,
-  type SkillAgent,
-  type SkillMutationOperation,
+  type SkillDeleteIdentity,
   type SkillsInventory,
   type SkillsMutationCommand,
   type SkillsMutationResult,
@@ -2113,17 +2113,7 @@ export class MultiServerWebSocketClient {
 
   buildSkillsCommand(
     serverId: string,
-    options: {
-      operation: SkillMutationOperation;
-      cwd?: string;
-      skillId?: string;
-      source?: string;
-      skillName?: string;
-      scope: "project" | "global";
-      agents?: SkillAgent[];
-      ref?: string;
-      path?: string;
-    },
+    options: SkillDeleteIdentity,
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<SkillsMutationCommand>((resolve, reject) => {
@@ -2139,30 +2129,7 @@ export class MultiServerWebSocketClient {
         cleanup();
         try {
           const command = normalizeSkillsMutationCommand(payload.command);
-          if (command.operation !== options.operation) {
-            throw new Error(
-              "Daemon returned a Skills command for a different request.",
-            );
-          }
-          if (command.scope !== options.scope) {
-            throw new Error(
-              "Daemon returned a Skills command for a different request.",
-            );
-          }
-          if (
-            (options.skillName != null &&
-              command.skillName !== options.skillName) ||
-            (options.skillId != null && command.copyId !== options.skillId) ||
-            (options.agents != null &&
-              (command.agents.length !== options.agents.length ||
-                command.agents.some(
-                  (agent, index) => agent !== options.agents?.[index],
-                )))
-          ) {
-            throw new Error(
-              "Daemon returned a Skills command for a different request.",
-            );
-          }
+          assertSkillsCommandMatchesRequest(command, options);
           resolve(command);
         } catch (error) {
           reject(error);
@@ -2189,12 +2156,10 @@ export class MultiServerWebSocketClient {
           operation: options.operation,
           cwd: options.cwd,
           skill_id: options.skillId,
-          source: options.source,
           skill_name: options.skillName,
-          scope: options.scope,
-          agents: options.agents,
-          ref: options.ref,
-          path: options.path,
+          root_path: options.rootPath,
+          canonical_path: options.canonicalPath,
+          allowed_root: options.allowedRoot,
         },
         cleanup,
         reject,
@@ -2204,17 +2169,7 @@ export class MultiServerWebSocketClient {
 
   executeSkillsMutation(
     serverId: string,
-    options: {
-      operation: SkillMutationOperation;
-      cwd?: string;
-      skillId?: string;
-      source?: string;
-      skillName?: string;
-      scope: "project" | "global";
-      agents?: SkillAgent[];
-      ref?: string;
-      path?: string;
-    },
+    options: SkillDeleteIdentity,
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<SkillsMutationResult>((resolve, reject) => {
@@ -2230,7 +2185,7 @@ export class MultiServerWebSocketClient {
         }
         cleanup();
         try {
-          const result = normalizeSkillsMutationResult(payload.result);
+          const result = normalizeSkillsMutationResult(payload);
           assertSkillsMutationMatchesRequest(result, options);
           resolve(result);
         } catch (error) {
@@ -2264,12 +2219,10 @@ export class MultiServerWebSocketClient {
           operation: options.operation,
           cwd: options.cwd,
           skill_id: options.skillId,
-          source: options.source,
           skill_name: options.skillName,
-          scope: options.scope,
-          agents: options.agents,
-          ref: options.ref,
-          path: options.path,
+          root_path: options.rootPath,
+          canonical_path: options.canonicalPath,
+          allowed_root: options.allowedRoot,
         },
         cleanup,
         reject,

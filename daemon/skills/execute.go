@@ -9,9 +9,8 @@ import (
 	"time"
 )
 
-// Native Skills mutations never shell out: every lifecycle effect is a
-// bounded filesystem or fetch operation implemented in operations.go with
-// exact rollback. The shell executor below exists only for the plugin
+// Native Skills deletion never shells out. The shell executor below exists
+// only for the independent plugin
 // subsystem, which still reviews and runs the official Claude plugin CLI
 // command exactly as a user's terminal would.
 
@@ -52,15 +51,9 @@ type MutationExecutionOptions struct {
 	InventoryOptions InventoryOptions
 }
 
-// MutationTimeoutFor selects the bounded timeout for a built command.
+// MutationTimeoutFor selects the bounded timeout for exact-copy deletion.
 func MutationTimeoutFor(command MutationCommand) time.Duration {
-	switch command.Operation {
-	case OperationUninstall, OperationForget, OperationBind, OperationUnbind,
-		OperationEnable, OperationDisable, OperationMigrate:
-		return DefaultRemovalTimeout
-	default:
-		return DefaultMutationTimeout
-	}
+	return DefaultRemovalTimeout
 }
 
 // PluginMutationTimeoutFor selects the bounded timeout for a plugin command.

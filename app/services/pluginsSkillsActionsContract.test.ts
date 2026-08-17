@@ -48,38 +48,64 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).not.toContain("agentCounts");
     expect(presentation).not.toContain("Track local Skills");
   });
-  test("rows open details and lifecycle actions stay in the inspector", () => {
+  test("rows expose a separate 44px exact-copy delete action", () => {
     const rowSource = presentation.slice(
       presentation.indexOf("function SkillRow"),
       presentation.indexOf("function Inspector"),
     );
-    expect(rowSource).not.toContain("Adopt");
-    expect(rowSource).not.toContain("Manage with Zen");
-    expect(presentation).toContain('label="Manage with Zen"');
-    expect(presentation).toContain("Copies (");
-    expect(presentation).toContain("Agent bindings");
+    expect(rowSource).toContain('accessibilityLabel={`Open ${skill.name}`}');
+    expect(rowSource).toContain('accessibilityLabel={`Delete ${skill.name}`}');
+    expect(rowSource).toContain("styles.rowOpen");
+    expect(rowSource).toContain("styles.rowDelete");
+    expect(presentation).toContain("width: 44");
+    expect(presentation).toContain("height: 44");
   });
-  test("copy-aware details preserve file and action states", () => {
+  test("copy-aware details preserve files, Agents, and exact deletion", () => {
     expect(screen).toContain("skillId: skill.id");
+    expect(screen).toContain("rootPath: skill.rootPath");
+    expect(screen).toContain("canonicalPath: skill.canonicalPath");
+    expect(screen).toContain("allowedRoot: skill.allowedRoot");
     expect(presentation).toContain("buildSkillFileTree");
     expect(presentation).toContain("Invalid JSON");
-    expect(presentation).toContain("Uninstall managed copy");
+    expect(presentation).toContain('title="Available to"');
+    expect(presentation).toContain("DeleteCopySheet");
+    expect(presentation).toContain('label={deleting ? "Deleting..." : "Delete Skill"}');
     expect(screen).toContain("buildSkillsMutationConfirmation");
     expect(screen).toContain("Alert.alert");
-    expect(presentation).toContain('binding.operations.includes("unbind")');
-    expect(presentation).toContain('detail.capability.operations.includes("bind")');
-    expect(presentation).toContain("agent.projectScope");
   });
-  test("copy rows keep status labels inside narrow inspectors", () => {
+  test("multi-copy picker includes every copy and hides actions for read-only copies", () => {
+    const pickerSource = presentation.slice(
+      presentation.indexOf("function DeleteCopySheet"),
+      presentation.indexOf("function Inspector"),
+    );
+    expect(pickerSource).toContain("logical?.copies");
+    expect(pickerSource).toContain("copy.capability.reason");
+    expect(pickerSource).toContain("{canDelete ? (");
+    expect(pickerSource).not.toContain("disabled={!canDelete}");
+
     const copyRowSource = presentation.slice(
       presentation.indexOf("function CopyRow"),
-      presentation.indexOf("function LifecycleActions"),
+      presentation.indexOf("function FilePreview"),
     );
     expect(copyRowSource).toContain("styles.copyContent");
     expect(copyRowSource).toContain("styles.copyLabel");
     expect(copyRowSource).toContain("numberOfLines={2}");
     expect(presentation).toContain("copyContent: { flex: 1, minWidth: 0 }");
-    expect(presentation).toContain("flexShrink: 0");
+  });
+  test("production Skills UI contains no rejected management abstraction", () => {
+    for (const removed of [
+      "Manage with Zen",
+      "Adopt",
+      "Track local Skills",
+      "Agent bindings",
+      "managed copy",
+      "binding.operations",
+      "canManage",
+      "copy.manager",
+      "Copies need review",
+    ]) {
+      expect(screen + presentation).not.toContain(removed);
+    }
   });
   test("async reads and mutations remain bound to the current server context", () => {
     expect(screen).toContain("currentSkillsContext.current !== requestContext");

@@ -10,8 +10,8 @@ import {
   filterInstalledSkills,
   installedPluginMetadata,
   installedPluginOwnership,
+  installedSkillAvailability,
   installedSkillMetadata,
-  installedSkillOwnership,
 } from "./pluginsSkillsSurfaceModel";
 import type { AvailablePlugin, InstalledPluginRow } from "./pluginsManagement";
 import type { InstalledSkill } from "./skillsManagement";
@@ -24,39 +24,14 @@ function skill(
     id: name.padEnd(24, "0").slice(0, 24),
     name,
     description: `${name} description`,
-    manager: "zen",
-    owned: true,
-    tracked: true,
     enabled: true,
-    canonicalPath: `/store/${name}`,
-    sourcePath: `/store/${name}`,
+    rootPath: `/home/test/.codex/skills/${name}`,
+    canonicalPath: `/home/test/.codex/skills/${name}`,
+    allowedRoot: "/home/test/.codex/skills",
+    location: "Codex global Skills",
     scope: "global",
     agents: ["codex"],
-    bindings: [
-      {
-        agent: "codex",
-        scope: "global",
-        mode: "symlink",
-        targetPath: `/home/test/.codex/skills/${name}`,
-        sourcePath: `/store/${name}`,
-        enabled: true,
-        boundAt: "2026-08-01T00:00:00Z",
-        operations: ["unbind", "disable"],
-      },
-    ],
-    provenance: "Zen canonical store",
-    source: "acme/skills",
-    capability: {
-      canManage: true,
-      operations: [
-        "bind",
-        "unbind",
-        "enable",
-        "disable",
-        "uninstall",
-        "update",
-      ],
-    },
+    capability: { canDelete: true },
     ...overrides,
   };
 }
@@ -143,18 +118,26 @@ describe("shared Plugins and Skills presentation model", () => {
     ]);
   });
 
-  test("Skill ownership metadata remains daemon-derived", () => {
+  test("Skill availability metadata remains daemon-derived", () => {
     const local = skill("shared");
-    expect(installedSkillMetadata(local)).toBe("acme/skills · Global");
-    expect(installedSkillOwnership(local, "codex")).toEqual({
-      manageable: true,
-      summary: "Bound · Global · Enabled",
-      detail:
-        "Content lives in Zen's store; bindings are managed per Agent and scope.",
-    });
-    expect(installedSkillOwnership(local, "pi").summary).toBe(
-      "In the canonical store",
+    expect(installedSkillMetadata(local)).toBe(
+      "Codex global Skills · Global · Codex",
     );
+    expect(installedSkillAvailability(local)).toEqual({
+      deletable: true,
+      summary: "Available to Codex",
+      detail: "Delete removes only the copy at Codex global Skills.",
+    });
+    expect(
+      installedSkillAvailability(
+        skill("builtin", {
+          capability: {
+            canDelete: false,
+            reason: "Provided by Codex and cannot be deleted from here.",
+          },
+        }),
+      ).detail,
+    ).toContain("cannot be deleted from here");
   });
 
   test("Plugin lifecycle ownership is unchanged by Skills catalog removal", () => {

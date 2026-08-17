@@ -4,42 +4,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// EnvResolver resolves one environment override; tests and fixtures inject a
-// table so adapter paths never depend on the real user's environment.
 type EnvResolver func(key string) string
 
-func osEnvResolver() EnvResolver {
-	return func(key string) string { return osGetenv(key) }
-}
+func osEnvResolver() EnvResolver { return os.Getenv }
 
-// Adapter is the real filesystem contract for one Agent. Every lifecycle
-// operation uses adapters exclusively: there is no agent-specific branching
-// anywhere else in the package.
+// Adapter is the native root contract for one supported Agent.
 type Adapter struct {
 	Agent   Agent
 	Name    string
 	Global  func(home string, env EnvResolver) string
 	Project func(cwd string) string
-	Mode    BindingMode
-	Note    string
 }
 
-// Adapters is the authoritative six-Agent registry. Global scope is supported
-// by every canonical Agent; project scope uses the per-Agent directory
-// convention below. Modes were chosen from the actual installed CLI behavior:
-//
-//   - Codex, Claude Code, Pi, and OpenCode walk their skills directories at
-//     session start and follow directory symlinks (Pi's own skill layout is a
-//     symlink fanout), so Zen uses symlink bindings there.
-//   - Cursor's desktop agent resolves skill folders from indexed workspace
-//     state and is not guaranteed to re-resolve a symlinked folder without an
-//     IDE restart; Zen therefore materializes copies and detects drift.
-//   - Grok's TUI keeps its own enabled/disabled skill registry with file
-//     watching; Zen materializes copies so enable/disable state stays fully
-//     observable and drift is detected.
 var Adapters = map[Agent]Adapter{
 	AgentCodex: {
 		Agent: AgentCodex, Name: "Codex",
@@ -49,11 +29,7 @@ var Adapters = map[Agent]Adapter{
 			}
 			return filepath.Join(home, ".codex", "skills")
 		},
-		Project: func(cwd string) string {
-			// Codex resolves project skills through the shared .agents store.
-			return filepath.Join(cwd, ".agents", "skills")
-		},
-		Mode: BindingSymlink,
+		Project: func(cwd string) string { return filepath.Join(cwd, ".agents", "skills") },
 	},
 	AgentClaudeCode: {
 		Agent: AgentClaudeCode, Name: "Claude Code",
@@ -63,32 +39,17 @@ var Adapters = map[Agent]Adapter{
 			}
 			return filepath.Join(home, ".claude", "skills")
 		},
-		Project: func(cwd string) string {
-			return filepath.Join(cwd, ".claude", "skills")
-		},
-		Mode: BindingSymlink,
+		Project: func(cwd string) string { return filepath.Join(cwd, ".claude", "skills") },
 	},
 	AgentCursor: {
 		Agent: AgentCursor, Name: "Cursor",
-		Global: func(home string, env EnvResolver) string {
-			return filepath.Join(home, ".cursor", "skills")
-		},
-		Project: func(cwd string) string {
-			return filepath.Join(cwd, ".cursor", "skills")
-		},
-		Mode: BindingCopy,
-		Note: "Cursor's desktop agent indexes skill folders; Zen materializes copies and detects drift.",
+		Global:  func(home string, _ EnvResolver) string { return filepath.Join(home, ".cursor", "skills") },
+		Project: func(cwd string) string { return filepath.Join(cwd, ".cursor", "skills") },
 	},
 	AgentGrok: {
 		Agent: AgentGrok, Name: "Grok",
-		Global: func(home string, env EnvResolver) string {
-			return filepath.Join(home, ".grok", "skills")
-		},
-		Project: func(cwd string) string {
-			return filepath.Join(cwd, ".grok", "skills")
-		},
-		Mode: BindingCopy,
-		Note: "Grok tracks skill state in its own registry with file watching; Zen materializes copies and detects drift.",
+		Global:  func(home string, _ EnvResolver) string { return filepath.Join(home, ".grok", "skills") },
+		Project: func(cwd string) string { return filepath.Join(cwd, ".grok", "skills") },
 	},
 	AgentOpenCode: {
 		Agent: AgentOpenCode, Name: "OpenCode",
@@ -99,31 +60,24 @@ var Adapters = map[Agent]Adapter{
 			}
 			return filepath.Join(configHome, "opencode", "skills")
 		},
-		Project: func(cwd string) string {
-			return filepath.Join(cwd, ".opencode", "skills")
-		},
-		Mode: BindingSymlink,
+		Project: func(cwd string) string { return filepath.Join(cwd, ".opencode", "skills") },
 	},
 	AgentPi: {
 		Agent: AgentPi, Name: "Pi",
-		Global: func(home string, env EnvResolver) string {
-			return filepath.Join(home, ".pi", "agent", "skills")
-		},
-		Project: func(cwd string) string {
-			return filepath.Join(cwd, ".pi", "skills")
-		},
-		Mode: BindingSymlink,
+		Global:  func(home string, _ EnvResolver) string { return filepath.Join(home, ".pi", "agent", "skills") },
+		Project: func(cwd string) string { return filepath.Join(cwd, ".pi", "skills") },
 	},
 }
 
-func osGetenv(key string) string { return os.Getenv(key) }
+var supportedAgents = []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi}
 
-// agentNamesForDisplay keeps one shared display-name source for the wire.
 func agentName(agent Agent) string {
-	return Adapters[agent].Name
+	if adapter, ok := Adapters[agent]; ok {
+		return adapter.Name
+	}
+	return string(agent)
 }
 
-// adapterFor returns the canonical adapter for one Agent.
 func adapterFor(agent Agent) (Adapter, error) {
 	adapter, ok := Adapters[agent]
 	if !ok {
@@ -132,13 +86,10 @@ func adapterFor(agent Agent) (Adapter, error) {
 	return adapter, nil
 }
 
-// globalSkillsDir resolves the Agent's user/global skills directory under a
-// fixture home and resolver.
 func globalSkillsDir(adapter Adapter, home string, env EnvResolver) string {
 	return filepath.Clean(adapter.Global(home, env))
 }
 
-// projectSkillsDir resolves the Agent's project skills directory under cwd.
 func projectSkillsDir(adapter Adapter, cwd string) string {
 	if strings.TrimSpace(cwd) == "" {
 		return ""
@@ -146,30 +97,30 @@ func projectSkillsDir(adapter Adapter, cwd string) string {
 	return filepath.Clean(adapter.Project(filepath.Clean(cwd)))
 }
 
-// AgentSupportEntries builds the canonical adapter capability table.
-func AgentSupportEntries() []AgentSupport {
-	agents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi}
-	entries := make([]AgentSupport, 0, len(agents))
-	for _, agent := range agents {
+func AgentSupportEntries(options InventoryOptions) []AgentSupport {
+	entries := make([]AgentSupport, 0, len(supportedAgents))
+	for _, agent := range supportedAgents {
 		adapter := Adapters[agent]
 		entries = append(entries, AgentSupport{
-			Agent:            agent,
-			Name:             adapter.Name,
-			Supported:        true,
-			GlobalScope:      true,
-			ProjectScope:     true,
-			BindingMode:      string(adapter.Mode),
-			BindingModeNote:  adapter.Note,
-			DefaultGlobalDir: globalSkillsDir(adapter, "~", osEnvResolver()),
+			Agent: agent, Name: adapter.Name, Supported: true,
+			GlobalScope: true, ProjectScope: true,
+			DefaultGlobalDir: globalRootForAgent(agent, options),
 		})
 	}
 	return entries
 }
 
-// resolveExecutorAgent infers the provider adapter for a configured executor
-// identity from its explicit kind, command, or name, mirroring the daemon's
-// executor inference rules. Unknown identities resolve to "" and are never
-// granted a lifecycle.
+func globalRootForAgent(agent Agent, options InventoryOptions) string {
+	switch agent {
+	case AgentCodex:
+		return filepath.Join(options.CodexHome, "skills")
+	case AgentClaudeCode:
+		return filepath.Join(options.ClaudeHome, "skills")
+	default:
+		return globalSkillsDir(Adapters[agent], options.Home, envResolverFor(options))
+	}
+}
+
 func resolveExecutorAgent(kind, command, name string) Agent {
 	if agent := executorKindAgent(kind); agent != "" {
 		return agent
@@ -202,17 +153,13 @@ func executorKindAgent(kind string) Agent {
 }
 
 func inferAgentFromToken(value string) Agent {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return ""
-	}
-	for _, candidate := range strings.Fields(value) {
+	for _, candidate := range strings.Fields(strings.ToLower(strings.TrimSpace(value))) {
 		base := strings.Trim(candidate, "\"'\x60")
 		if index := strings.LastIndexAny(base, "/\\"); index >= 0 {
 			base = base[index+1:]
 		}
 		switch {
-		case base == "cursor-agent" || strings.Contains(base, "cursor-agent"):
+		case strings.Contains(base, "cursor-agent"):
 			return AgentCursor
 		case strings.Contains(base, "codex"):
 			return AgentCodex
@@ -227,4 +174,20 @@ func inferAgentFromToken(value string) Agent {
 		}
 	}
 	return ""
+}
+
+func resolveExecutors(aliases []ExecutorAlias) []ExecutorSupport {
+	out := make([]ExecutorSupport, 0, len(aliases))
+	seen := map[string]bool{}
+	for _, alias := range aliases {
+		agent := resolveExecutorAgent(alias.Kind, alias.Command, alias.Name)
+		name := strings.TrimSpace(alias.Name)
+		if agent == "" || name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, ExecutorSupport{Name: name, Kind: alias.Kind, Agent: agent, Command: alias.Command})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

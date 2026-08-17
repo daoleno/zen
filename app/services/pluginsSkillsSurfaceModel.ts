@@ -9,11 +9,10 @@ import { MANAGED_SKILL_AGENTS } from "./skillsScreenModel";
  * Layout and presentation truth for the compact Plugins & Skills surface.
  *
  * The UI deliberately has only one first-level navigator (the Plugins and
- * Skills tabs) and one stable management list per tab. Installed Skills and
- * available Plugins retain their own lifecycle badges; search, target, and
- * refresh are tools inside the selected section, never additional full-width
- * navigation. Keeping the geometry here makes the narrow-phone and large-type
- * contract independently testable.
+ * Skills tabs) and one stable list per tab. Search, target, and refresh are
+ * tools inside the selected section, never additional full-width navigation.
+ * Keeping the geometry here makes the narrow-phone and large-type contract
+ * independently testable.
  */
 export const PLUGINS_SKILLS_TOUCH_TARGET = 44;
 export const PLUGINS_SKILLS_MIN_VIEWPORT = 360;
@@ -29,6 +28,12 @@ export interface CompactSkillTarget {
 
 export interface OwnershipPresentation {
   manageable: boolean;
+  summary: string;
+  detail: string;
+}
+
+export interface SkillAvailabilityPresentation {
+  deletable: boolean;
   summary: string;
   detail: string;
 }
@@ -59,9 +64,9 @@ export function filterInstalledSkills(
   return filterByQuery(skills, query, (skill) => [
     skill.name,
     skill.description,
-    skill.source,
-    skill.provenance,
-    ownershipLabel(skill),
+    skill.location,
+    skill.rootPath,
+    ...skill.agents.map(skillAgentLabel),
     scopeLabel(skill.scope),
   ]);
 }
@@ -92,72 +97,41 @@ export function filterAvailablePlugins(
 }
 
 export function installedSkillMetadata(skill: InstalledSkill): string {
-  const source = skill.source || skill.plugin || ownershipLabel(skill);
-  return [source, scopeLabel(skill.scope)].filter(Boolean).join(" · ");
+  const availableTo = skill.agents.map(skillAgentLabel).join(", ");
+  return [skill.location, scopeLabel(skill.scope), availableTo]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function installedSkillBadges(
   skill: InstalledSkill,
   installedCount: number,
 ): LifecycleBadge[] {
-  const badges: LifecycleBadge[] = [];
-  if (skill.owned) {
-    badges.push({
-      label: skill.enabled ? "Zen-owned · Enabled" : "Zen-owned · Disabled",
+  const badges: LifecycleBadge[] = [
+    {
+      label: skill.enabled ? "Available" : "Unavailable",
       tone: skill.enabled ? "accent" : "warning",
-    });
-  } else if (skill.tracked) {
-    badges.push({ label: "Tracked external", tone: "warning" });
-  } else {
-    badges.push({ label: "External", tone: "neutral" });
-  }
-  badges.push({ label: scopeLabel(skill.scope), tone: "neutral" });
+    },
+    { label: scopeLabel(skill.scope), tone: "neutral" },
+  ];
   if (installedCount > 1) {
-    badges.push({ label: `${installedCount} agents`, tone: "neutral" });
-  }
-  if (skill.migration === "duplicate" || skill.migration === "conflict") {
-    badges.push({
-      label: skill.migration === "conflict" ? "Conflict" : "Duplicate",
-      tone: "warning",
-    });
+    badges.push({ label: `${installedCount} copies`, tone: "neutral" });
   }
   return badges;
 }
 
-export function installedSkillOwnership(
+export function installedSkillAvailability(
   skill: InstalledSkill,
-  agent: ManagedSkillAgent,
-): OwnershipPresentation {
-  if (skill.capability.canManage) {
-    if (skill.owned) {
-      const binding = skill.bindings.find(
-        (candidate) => candidate.agent === agent,
-      );
-      return {
-        manageable: true,
-        summary: binding
-          ? `Bound · ${scopeLabel(binding.scope)} · ${
-              binding.enabled ? "Enabled" : "Disabled"
-            }`
-          : "In the canonical store",
-        detail: `Content lives in Zen's store; bindings are managed per Agent and scope.`,
-      };
-    }
-    return {
-      manageable: true,
-      summary: "External installation",
-      detail:
-        skill.capability.reason ||
-        "Tracked for adopt/forget. Zen never edits external files unless you adopt.",
-    };
-  }
-
+): SkillAvailabilityPresentation {
+  const agents = skill.agents.map(skillAgentLabel).join(", ");
   return {
-    manageable: false,
-    summary: ownershipLabel(skill),
+    deletable: skill.capability.canDelete,
+    summary: agents ? `Available to ${agents}` : "Local copy",
     detail:
       skill.capability.reason ||
-      `${ownershipLabel(skill)} owns this Skill outside Zen's management.`,
+      (skill.capability.canDelete
+        ? `Delete removes only the copy at ${skill.location}.`
+        : "This copy cannot be deleted from here."),
   };
 }
 
@@ -245,21 +219,6 @@ export function availablePluginOwnership(
       plugin.description ||
       "Installing runs the owning client's official installer for this plugin.",
   };
-}
-
-function ownershipLabel(skill: InstalledSkill): string {
-  switch (skill.manager) {
-    case "zen":
-      return "Zen-owned";
-    case "external":
-      return "External installation";
-    case "builtin":
-      return "Built in";
-    case "plugin":
-      return "Plugin owned";
-    case "unknown":
-      return "External install";
-  }
 }
 
 function filterByQuery<T>(

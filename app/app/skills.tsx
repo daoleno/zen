@@ -19,9 +19,7 @@ import {
   failSkillsRequest,
   skillsRequestData,
   type InstalledSkill,
-  type ManagedSkillAgent,
   type PackageDetail,
-  type SkillMutationOperation,
   type SkillsInventory,
   type SkillsRequestState,
 } from "../services/skillsManagement";
@@ -321,30 +319,24 @@ export default function SkillsScreen() {
     setInspectState(createSkillsRequestState());
   }, []);
 
-  const runSkillMutation = useCallback(
-    async (
-      skill: InstalledSkill | undefined,
-      operation: SkillMutationOperation,
-      agentTarget?: ManagedSkillAgent,
-      scope?: "project" | "global",
-    ) => {
+  const runSkillDelete = useCallback(
+    async (skill: InstalledSkill) => {
       if (!serverId || !connected || preparingMutation) return;
+      if (!skill.capability.canDelete) return;
       const requestContext = skillsContextKey;
       if (currentSkillsContext.current !== requestContext) return;
       const owner = ++mutationOwner.current;
-      const key = `${operation}:${skill?.id ?? "inventory"}`;
+      const key = `delete:${skill.id}`;
       setPreparingMutation(key);
       try {
-        const targetScope =
-          scope ?? (skill?.scope === "project" ? "project" : "global");
         const input = {
-          operation,
+          operation: "delete" as const,
           cwd: projectCwd || undefined,
-          skillId: skill?.id,
-          skillName: skill?.name,
-          scope: targetScope,
-          agents: agentTarget ? [agentTarget] : undefined,
-          path: operation === "adopt" ? skill?.sourcePath : undefined,
+          skillId: skill.id,
+          skillName: skill.name,
+          rootPath: skill.rootPath,
+          canonicalPath: skill.canonicalPath,
+          allowedRoot: skill.allowedRoot,
         };
         const command = await wsClient.buildSkillsCommand(serverId, input);
         if (currentSkillsContext.current !== requestContext) return;
@@ -362,21 +354,13 @@ export default function SkillsScreen() {
         setNotice({
           kind: result.execution.success ? "success" : "error",
           message: result.execution.success
-            ? `${command.summary} completed.`
-            : result.execution.output || "The Skills operation failed.",
+            ? `Deleted ${skill.name}.`
+            : result.execution.output || "The Skill could not be deleted.",
         });
         if (result.execution.success) {
           await refreshInventory();
           if (currentSkillsContext.current !== requestContext) return;
-          if (
-            operation === "adopt" ||
-            operation === "forget" ||
-            operation === "uninstall"
-          ) {
-            dismissInspector();
-          } else if (skill && inspectedCopyId === skill.id) {
-            void inspectSkill(skill);
-          }
+          if (inspectedCopyId === skill.id) dismissInspector();
         }
       } catch (error) {
         if (currentSkillsContext.current === requestContext)
@@ -385,7 +369,7 @@ export default function SkillsScreen() {
             message:
               error instanceof Error
                 ? error.message
-                : "The Skills operation failed.",
+                : "The Skill could not be deleted.",
           });
       } finally {
         if (mutationOwner.current === owner) setPreparingMutation("");
@@ -394,7 +378,6 @@ export default function SkillsScreen() {
     [
       connected,
       dismissInspector,
-      inspectSkill,
       inspectedCopyId,
       preparingMutation,
       projectCwd,
@@ -480,13 +463,7 @@ export default function SkillsScreen() {
       onRetryPlugins={() => void refreshPlugins()}
       onInspectSkill={(skill, path) => void inspectSkill(skill, path)}
       onDismissInspector={dismissInspector}
-      onBinding={(skill, operation, target, scope) =>
-        void runSkillMutation(skill, operation, target, scope)
-      }
-      onUninstall={(skill) => void runSkillMutation(skill, "uninstall")}
-      onForget={(skill) => void runSkillMutation(skill, "forget")}
-      onAdopt={(skill) => void runSkillMutation(skill, "adopt")}
-      onUpdate={(skill) => void runSkillMutation(skill, "update")}
+      onDeleteSkill={(skill) => void runSkillDelete(skill)}
       onInstallPlugin={(entry: AvailablePlugin) => {
         const decision = evaluatePluginMutation({
           kind: "install",

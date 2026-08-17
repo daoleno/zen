@@ -21,11 +21,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// mutationProbe stands in for the production command executor so handler
-// tests can prove the ownership protocol: execution starts while the request
-// still owns the mutation slot, superseding or disconnect cancels the
-// in-flight context, and only the still-current request emits a terminal
-// result.
 type mutationProbe struct {
 	started   chan struct{}
 	release   chan struct{}
@@ -34,13 +29,10 @@ type mutationProbe struct {
 }
 
 func newMutationProbe() *mutationProbe {
-	return &mutationProbe{
-		started: make(chan struct{}, 16),
-		release: make(chan struct{}),
-	}
+	return &mutationProbe{started: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
-func (p *mutationProbe) executeSkills(ctx context.Context, command skillmgmt.MutationCommand, options skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error) {
+func (p *mutationProbe) executeSkills(ctx context.Context, _ skillmgmt.MutationCommand, _ skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error) {
 	p.executed.Add(1)
 	p.started <- struct{}{}
 	select {
@@ -52,168 +44,43 @@ func (p *mutationProbe) executeSkills(ctx context.Context, command skillmgmt.Mut
 	}
 }
 
-func TestSkillsMutationSupersedeCancelsInFlightCommandAndSuppressesStaleResult(t *testing.T) {
-	probe := newMutationProbe()
-	srv, conn, closeConn := newSkillsMutationTestServer(t, probe)
-	defer closeConn()
-	messages := messageSink(t, conn)
-
-	send := func(requestID string) {
-		t.Helper()
-		if err := conn.WriteJSON(map[string]any{
-			"type":       "skills_mutation",
-			"request_id": requestID,
-			"operation":  "migrate",
-			"scope":      "global",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	send("req-first")
-	waitProbeStarted(t, probe)
-
-	// The first request still owns the slot while its command is executing:
-	// the ownership must NOT have been consumed by the start of execution.
-	if !srv.isCurrentSkillsMutation(serverSideConnection(t, srv), skillsMutationRequest{requestID: "req-first"}) {
-		t.Fatal("first request lost mutation ownership while its command was executing")
-	}
-
-	// A newer request replaces and cancels the in-flight command.
-	send("req-second")
-	waitProbeStarted(t, probe)
-	waitFor(t, func() bool { return probe.cancelled.Load() == 1 }, "first command was not canceled by supersede")
-
-	payload := readUntil(t, messages, "skills_mutation_error", "req-first")
-	if payload["code"] != "superseded" {
-		t.Fatalf("first request error = %v, want superseded", payload["code"])
-	}
-
-	// Disconnect cancels the second in-flight command too; its stale result
-	// must be suppressed (the slot was deleted, claim fails).
-	closeConn()
-	waitFor(t, func() bool { return probe.cancelled.Load() == 2 }, "second command was not canceled by disconnect")
-
-	if probe.executed.Load() != 2 {
-		t.Fatalf("executions = %d, want 2", probe.executed.Load())
-	}
-	expectNoMessage(t, messages, "skills_mutation_result")
-	expectNoMessage(t, messages, "skills_mutation_error")
-}
-
-func TestSkillsMutationOnlyCurrentRequestClaimsOnceAndEmitsResult(t *testing.T) {
-	probe := newMutationProbe()
-	srv, conn, closeConn := newSkillsMutationTestServer(t, probe)
-	defer closeConn()
-	messages := messageSink(t, conn)
-
-	send := func(requestID string) {
-		t.Helper()
-		if err := conn.WriteJSON(map[string]any{
-			"type":       "skills_mutation",
-			"request_id": requestID,
-			"operation":  "migrate",
-			"scope":      "global",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// First request runs to completion and claims exactly once.
-	send("req-one")
-	waitProbeStarted(t, probe)
-	close(probe.release)
-	first := readUntil(t, messages, "skills_mutation_result", "req-one")
-	if first["success"] != true {
-		t.Fatalf("first result success = %v, want true", first["success"])
-	}
-	if srv.isCurrentSkillsMutation(serverSideConnection(t, srv), skillsMutationRequest{requestID: "req-one"}) {
-		t.Fatal("completed request still owns the mutation slot")
-	}
-	expectNoMessage(t, messages, "skills_mutation_error")
-
-	// A second request claims and emits exactly once as well.
-	send("req-two")
-	waitProbeStarted(t, probe)
-	second := readUntil(t, messages, "skills_mutation_result", "req-two")
-	if second["success"] != true {
-		t.Fatalf("second result success = %v, want true", second["success"])
-	}
-	expectNoMessage(t, messages, "skills_mutation_result")
-	expectNoMessage(t, messages, "skills_mutation_error")
-}
-
-func TestSkillsImportOperationIsNotExposedOverWebSocket(t *testing.T) {
-	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
-	defer closeConn()
-	messages := messageSink(t, conn)
-	for _, messageType := range []string{"skills_command", "skills_mutation"} {
-		requestID := "removed-" + messageType
-		if err := conn.WriteJSON(map[string]any{
-			"type":       messageType,
-			"request_id": requestID,
-			"operation":  "import",
-			"skill_name": "remote-skill",
-			"skill_id":   "owner/repo/remote-skill",
-			"source":     "owner/repo",
-			"scope":      "global",
-			"agents":     []string{"codex"},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		response := readUntil(t, messages, messageType+"_error", requestID)
-		if response["code"] != "unsupported_operation" {
-			t.Fatalf("%s import response = %+v", messageType, response)
-		}
-	}
-}
-
-func TestSkillsCopyMutationWithoutIdentityFailsImmediately(t *testing.T) {
-	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
-	defer closeConn()
-	messages := messageSink(t, conn)
-	for _, messageType := range []string{"skills_command", "skills_mutation"} {
-		requestID := "missing-copy-" + messageType
-		if err := conn.WriteJSON(map[string]any{
-			"type": messageType, "request_id": requestID,
-			"operation": "adopt", "skill_name": "local-skill", "scope": "global",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		response := readUntil(t, messages, messageType+"_error", requestID)
-		if response["code"] != "invalid_request" || !strings.Contains(response["message"].(string), "copy ID") {
-			t.Fatalf("%s missing-copy response = %+v", messageType, response)
-		}
-	}
-	requestID := "missing-copy-skills-inspect"
-	if err := conn.WriteJSON(map[string]any{
-		"type": "skills_inspect", "request_id": requestID,
-		"skill_name": "local-skill", "generation": 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	response := readUntil(t, messages, "skills_inspect_error", requestID)
-	if response["code"] != "invalid_request" || !strings.Contains(response["message"].(string), "copy ID") {
-		t.Fatalf("skills_inspect missing-copy response = %+v", response)
-	}
-}
-
-func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
+func configureSkillsTestHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
-	stateDir := filepath.Join(home, ".zen")
 	t.Setenv("HOME", home)
-	t.Setenv("ZEN_STATE_DIR", stateDir)
+	t.Setenv("ZEN_STATE_DIR", filepath.Join(home, ".zen"))
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	source := filepath.Join(home, ".codex", "skills", "lifecycle-proof")
-	if err := os.MkdirAll(source, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("---\nname: lifecycle-proof\ndescription: websocket lifecycle fixture\n---\nproof\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	return home
+}
 
+func writeServerSkill(t *testing.T, root, name string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: websocket fixture\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func deleteWireInput(row map[string]any) map[string]any {
+	return map[string]any{
+		"operation": "delete", "skill_id": row["id"], "skill_name": row["name"],
+		"root_path": row["root_path"], "canonical_path": row["canonical_path"],
+		"allowed_root": row["allowed_root"],
+	}
+}
+
+func TestSkillsWebSocketDeleteUsesReviewedExactIdentityAndReconciles(t *testing.T) {
+	home := configureSkillsTestHome(t)
+	root := filepath.Join(home, ".codex", "skills")
+	selected := writeServerSkill(t, root, "delete-proof")
+	neighbor := writeServerSkill(t, root, "neighbor")
 	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
 	defer closeConn()
 	messages := messageSink(t, conn)
@@ -227,198 +94,151 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 		send(map[string]any{"type": "skills_inventory", "request_id": id, "generation": generation})
 		return readUntil(t, messages, "skills_inventory", id)
 	}
-	initial := inventory("inventory-initial", 1)
-	if rows := skillsInventoryRows(t, initial); len(rows) != 1 {
-		t.Fatalf("initial Skills inventory = %d rows, want one local row", len(rows))
+	initial := inventory("inventory-before", 1)
+	row := skillInventoryRow(t, initial, "delete-proof")
+	input := deleteWireInput(row)
+	commandRequest := map[string]any{"type": "skills_command", "request_id": "command-delete"}
+	for key, value := range input {
+		commandRequest[key] = value
 	}
-	externalCopyID := skillCopyID(t, initial, "lifecycle-proof", "external")
-	run := func(input map[string]any) {
-		t.Helper()
-		operation := input["operation"].(string)
-		commandID := "command-" + operation
-		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
-		for key, value := range input {
-			commandRequest[key] = value
+	send(commandRequest)
+	commandResponse := readUntil(t, messages, "skills_command", "command-delete")
+	command := commandResponse["command"].(map[string]any)
+	for _, key := range []string{"copy_id", "skill_name", "root_path", "canonical_path", "allowed_root"} {
+		inputKey := key
+		if key == "copy_id" {
+			inputKey = "skill_id"
 		}
-		send(commandRequest)
-		commandResponse := readUntil(t, messages, "skills_command", commandID)
-		command := commandResponse["command"].(map[string]any)
-		if command["operation"] != operation || command["scope"] != "global" {
-			t.Fatalf("%s reviewed command contract = %+v", operation, command)
-		}
-		if operation != "migrate" && command["copy_id"] != input["skill_id"] {
-			t.Fatalf("%s reviewed command copy = %v, want %v", operation, command["copy_id"], input["skill_id"])
-		}
-
-		mutationID := "mutation-" + operation
-		mutationRequest := map[string]any{"type": "skills_mutation", "request_id": mutationID}
-		for key, value := range input {
-			mutationRequest[key] = value
-		}
-		send(mutationRequest)
-		result := readUntil(t, messages, "skills_mutation_result", mutationID)
-		if result["success"] != true {
-			t.Fatalf("%s execution failed: %+v", operation, result)
+		if command[key] != input[inputKey] {
+			t.Fatalf("reviewed %s = %v, want %v", key, command[key], input[inputKey])
 		}
 	}
-
-	run(map[string]any{"operation": "migrate", "scope": "global"})
-	run(map[string]any{"operation": "adopt", "skill_id": externalCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"codex"}})
-	if err := os.RemoveAll(source); err != nil {
-		t.Fatal(err)
+	if command["destructive"] != true || command["location"] != "Codex global Skills" {
+		t.Fatalf("reviewed delete command = %+v", command)
 	}
-	afterAdopt := inventory("inventory-adopted", 2)
-	managedCopyID := skillCopyID(t, afterAdopt, "lifecycle-proof", "zen")
-	send(map[string]any{
-		"type": "skills_inspect", "request_id": "inspect-adopted", "generation": 1,
-		"skill_id": managedCopyID, "skill_name": "lifecycle-proof",
-	})
-	inspection := readUntil(t, messages, "skills_inspect_result", "inspect-adopted")
-	detail := inspection["detail"].(map[string]any)
-	if detail["skill_name"] != "lifecycle-proof" || detail["copy_id"] != managedCopyID {
-		t.Fatalf("inspect response = %+v", inspection)
+	mutationRequest := map[string]any{"type": "skills_mutation", "request_id": "mutation-delete"}
+	for key, value := range input {
+		mutationRequest[key] = value
 	}
-	for _, input := range []map[string]any{
-		{"operation": "bind", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "disable", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "enable", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "unbind", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
-		{"operation": "uninstall", "skill_id": managedCopyID, "skill_name": "lifecycle-proof", "scope": "global"},
-	} {
-		run(input)
+	send(mutationRequest)
+	result := readUntil(t, messages, "skills_mutation_result", "mutation-delete")
+	if result["success"] != true {
+		t.Fatalf("delete result = %+v", result)
 	}
-	final := inventory("inventory-final", 3)
-	if rows := skillsInventoryRows(t, final); len(rows) != 0 {
-		t.Fatalf("final Skills inventory = %d rows, want empty reconciliation", len(rows))
+	if _, err := os.Lstat(selected); !os.IsNotExist(err) {
+		t.Fatalf("selected root remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(neighbor, "SKILL.md")); err != nil {
+		t.Fatalf("neighbor was changed: %v", err)
+	}
+	after := inventory("inventory-after", 2)
+	if hasSkillInventoryRow(after, "delete-proof") || !hasSkillInventoryRow(after, "neighbor") {
+		t.Fatalf("reconciled inventory = %+v", after)
 	}
 }
 
-func TestSkillsWebSocketExternalLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
-	home := t.TempDir()
-	stateDir := filepath.Join(home, ".zen")
-	t.Setenv("HOME", home)
-	t.Setenv("ZEN_STATE_DIR", stateDir)
-	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	externalRoot := filepath.Join(home, ".claude", "skills")
-	writeExternal := func(name string) string {
-		t.Helper()
-		path := filepath.Join(externalRoot, name)
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		content := "---\nname: " + name + "\ndescription: websocket external lifecycle fixture\n---\nproof\n"
-		if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	adoptSource := writeExternal("adopt-proof")
-	forgetSource := writeExternal("forget-proof")
-
+func TestSkillsWebSocketRejectsObsoleteOperations(t *testing.T) {
+	configureSkillsTestHome(t)
 	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
 	defer closeConn()
 	messages := messageSink(t, conn)
-	send := func(payload map[string]any) {
-		t.Helper()
-		if err := conn.WriteJSON(payload); err != nil {
-			t.Fatal(err)
-		}
-	}
-	inventory := func(id string, generation int) map[string]any {
-		send(map[string]any{"type": "skills_inventory", "request_id": id, "generation": generation})
-		return readUntil(t, messages, "skills_inventory", id)
-	}
-	run := func(input map[string]any) {
-		t.Helper()
-		operation := input["operation"].(string)
-		commandID := "external-command-" + operation
-		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
-		for key, value := range input {
-			commandRequest[key] = value
-		}
-		send(commandRequest)
-		commandResponse := readUntil(t, messages, "skills_command", commandID)
-		command := commandResponse["command"].(map[string]any)
-		if command["operation"] != operation || command["scope"] != "global" {
-			t.Fatalf("%s reviewed command contract = %+v", operation, command)
-		}
-
-		mutationID := "external-mutation-" + operation
-		mutationRequest := map[string]any{"type": "skills_mutation", "request_id": mutationID}
-		for key, value := range input {
-			mutationRequest[key] = value
-		}
-		send(mutationRequest)
-		result := readUntil(t, messages, "skills_mutation_result", mutationID)
-		if result["success"] != true {
-			t.Fatalf("%s execution failed: %+v", operation, result)
-		}
-	}
-
-	initial := inventory("external-inventory-initial", 1)
-	if rows := skillsInventoryRows(t, initial); len(rows) != 2 {
-		t.Fatalf("initial external Skills inventory = %d rows, want 2", len(rows))
-	}
-	adoptCopyID := skillCopyID(t, initial, "adopt-proof", "external")
-	forgetCopyID := skillCopyID(t, initial, "forget-proof", "external")
-	send(map[string]any{
-		"type": "skills_inspect", "request_id": "inspect-external", "generation": 1,
-		"skill_id": adoptCopyID, "skill_name": "adopt-proof",
-	})
-	inspection := readUntil(t, messages, "skills_inspect_result", "inspect-external")
-	if detail := inspection["detail"].(map[string]any); detail["manager"] != "external" || detail["copy_id"] != adoptCopyID {
-		t.Fatalf("external inspect response = %+v", inspection)
-	}
-
-	run(map[string]any{"operation": "migrate", "scope": "global"})
-	run(map[string]any{"operation": "adopt", "skill_id": adoptCopyID, "skill_name": "adopt-proof", "scope": "global"})
-	run(map[string]any{"operation": "forget", "skill_id": forgetCopyID, "skill_name": "forget-proof", "scope": "global"})
-	managed := inventory("external-inventory-adopted", 2)
-	managedCopyID := skillCopyID(t, managed, "adopt-proof", "zen")
-
-	// Adopt and forget intentionally leave external source files untouched.
-	// Remove only this disposable fixture content before final reconciliation.
-	if err := os.RemoveAll(adoptSource); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(forgetSource); err != nil {
-		t.Fatal(err)
-	}
-	run(map[string]any{"operation": "uninstall", "skill_id": managedCopyID, "skill_name": "adopt-proof", "scope": "global"})
-	final := inventory("external-inventory-final", 3)
-	if rows := skillsInventoryRows(t, final); len(rows) != 0 {
-		t.Fatalf("final external Skills inventory = %d rows, want empty reconciliation", len(rows))
-	}
-}
-
-func skillsInventoryRows(t *testing.T, payload map[string]any) []any {
-	t.Helper()
-	inventory, ok := payload["inventory"].(map[string]any)
-	if !ok {
-		t.Fatalf("Skills inventory payload is invalid: %+v", payload)
-	}
-	rows, ok := inventory["skills"].([]any)
-	if !ok {
-		t.Fatalf("Skills inventory rows are invalid: %+v", inventory)
-	}
-	return rows
-}
-
-func skillCopyID(t *testing.T, payload map[string]any, name, manager string) string {
-	t.Helper()
-	for _, raw := range skillsInventoryRows(t, payload) {
-		row, ok := raw.(map[string]any)
-		if ok && row["name"] == name && row["manager"] == manager {
-			copyID, _ := row["id"].(string)
-			if copyID != "" {
-				return copyID
+	for _, operation := range []string{"migrate", "adopt", "bind", "unbind", "enable", "disable", "uninstall", "forget", "update", "import"} {
+		for _, messageType := range []string{"skills_command", "skills_mutation"} {
+			requestID := messageType + "-" + operation
+			if err := conn.WriteJSON(map[string]any{"type": messageType, "request_id": requestID, "operation": operation}); err != nil {
+				t.Fatal(err)
+			}
+			response := readUntil(t, messages, messageType+"_error", requestID)
+			if response["code"] != "unsupported_operation" {
+				t.Fatalf("%s %s response = %+v", messageType, operation, response)
 			}
 		}
 	}
-	t.Fatalf("no %s copy of Skill %q in inventory: %+v", manager, name, payload)
-	return ""
+}
+
+func TestSkillsDeleteRequiresCompleteIdentity(t *testing.T) {
+	configureSkillsTestHome(t)
+	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	messages := messageSink(t, conn)
+	for _, messageType := range []string{"skills_command", "skills_mutation"} {
+		requestID := "missing-" + messageType
+		if err := conn.WriteJSON(map[string]any{"type": messageType, "request_id": requestID, "operation": "delete", "skill_id": strings.Repeat("a", 24), "skill_name": "demo"}); err != nil {
+			t.Fatal(err)
+		}
+		response := readUntil(t, messages, messageType+"_error", requestID)
+		if response["code"] != "invalid_request" || !strings.Contains(response["message"].(string), "complete") {
+			t.Fatalf("missing identity response = %+v", response)
+		}
+	}
+}
+
+func TestSkillsMutationSupersedeCancelsInFlightDeleteAndSuppressesStaleResult(t *testing.T) {
+	home := configureSkillsTestHome(t)
+	writeServerSkill(t, filepath.Join(home, ".codex", "skills"), "first")
+	writeServerSkill(t, filepath.Join(home, ".pi", "agent", "skills"), "second")
+	inventory, err := skillmgmt.DiscoverInventory(skillmgmt.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]map[string]any{}
+	for _, copy := range inventory.Skills {
+		if copy.Name == "first" || copy.Name == "second" {
+			inputs[copy.Name] = map[string]any{
+				"operation": "delete", "skill_id": copy.ID, "skill_name": copy.Name,
+				"root_path": copy.RootPath, "canonical_path": copy.CanonicalPath, "allowed_root": copy.AllowedRoot,
+			}
+		}
+	}
+	probe := newMutationProbe()
+	srv, conn, closeConn := newSkillsMutationTestServer(t, probe)
+	messages := messageSink(t, conn)
+	send := func(requestID, name string) {
+		payload := map[string]any{"type": "skills_mutation", "request_id": requestID}
+		for key, value := range inputs[name] {
+			payload[key] = value
+		}
+		if err := conn.WriteJSON(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("req-first", "first")
+	waitProbeStarted(t, probe)
+	if !srv.isCurrentSkillsMutation(serverSideConnection(t, srv), skillsMutationRequest{requestID: "req-first"}) {
+		t.Fatal("first request lost ownership while executing")
+	}
+	send("req-second", "second")
+	waitProbeStarted(t, probe)
+	waitFor(t, func() bool { return probe.cancelled.Load() == 1 }, "first delete was not canceled")
+	if payload := readUntil(t, messages, "skills_mutation_error", "req-first"); payload["code"] != "superseded" {
+		t.Fatalf("superseded response = %+v", payload)
+	}
+	closeConn()
+	waitFor(t, func() bool { return probe.cancelled.Load() == 2 }, "disconnect did not cancel second delete")
+	expectNoMessage(t, messages, "skills_mutation_result")
+}
+
+func skillInventoryRow(t *testing.T, payload map[string]any, name string) map[string]any {
+	t.Helper()
+	inventory := payload["inventory"].(map[string]any)
+	for _, raw := range inventory["skills"].([]any) {
+		row := raw.(map[string]any)
+		if row["name"] == name {
+			return row
+		}
+	}
+	t.Fatalf("Skill %q not found in %+v", name, payload)
+	return nil
+}
+
+func hasSkillInventoryRow(payload map[string]any, name string) bool {
+	inventory := payload["inventory"].(map[string]any)
+	for _, raw := range inventory["skills"].([]any) {
+		if raw.(map[string]any)["name"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func newSkillsMutationTestServer(t *testing.T, probe *mutationProbe) (*Server, *websocket.Conn, func()) {
@@ -443,14 +263,9 @@ func newSkillsMutationTestServer(t *testing.T, probe *mutationProbe) (*Server, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	return srv, conn, func() {
-		_ = conn.Close()
-		httpServer.Close()
-	}
+	return srv, conn, func() { _ = conn.Close(); httpServer.Close() }
 }
 
-// serverSideConnection returns the server-side websocket for the single
-// connected test client, which is the key used in the ownership maps.
 func serverSideConnection(t *testing.T, srv *Server) *websocket.Conn {
 	t.Helper()
 	srv.mu.Lock()
@@ -462,8 +277,6 @@ func serverSideConnection(t *testing.T, srv *Server) *websocket.Conn {
 	return nil
 }
 
-// messageSink drains the client websocket into a channel so assertions never
-// depend on gorilla read deadlines.
 func messageSink(t *testing.T, conn *websocket.Conn) <-chan map[string]any {
 	t.Helper()
 	messages := make(chan map[string]any, 128)
@@ -475,10 +288,9 @@ func messageSink(t *testing.T, conn *websocket.Conn) <-chan map[string]any {
 				return
 			}
 			var payload map[string]any
-			if err := json.Unmarshal(raw, &payload); err != nil {
-				continue
+			if json.Unmarshal(raw, &payload) == nil {
+				messages <- payload
 			}
-			messages <- payload
 		}
 	}()
 	return messages
@@ -505,8 +317,6 @@ func waitFor(t *testing.T, condition func() bool, message string) {
 	t.Fatal(message)
 }
 
-// readUntil consumes sink messages, skipping unrelated server traffic, until
-// the wanted type for the wanted request id arrives.
 func readUntil(t *testing.T, messages <-chan map[string]any, wantType, wantRequestID string) map[string]any {
 	t.Helper()
 	for {
@@ -524,15 +334,13 @@ func readUntil(t *testing.T, messages <-chan map[string]any, wantType, wantReque
 	}
 }
 
-// expectNoMessage asserts no message of the given type arrives within the
-// grace window; unrelated server traffic is skipped.
 func expectNoMessage(t *testing.T, messages <-chan map[string]any, messageType string) {
 	t.Helper()
 	for {
 		select {
 		case payload, ok := <-messages:
 			if !ok {
-				return // connection closed: nothing more can arrive
+				return
 			}
 			if payload["type"] == messageType {
 				t.Fatalf("unexpected %s arrived", messageType)

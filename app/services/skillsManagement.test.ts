@@ -8,14 +8,14 @@ import {
 const base = {
   copy_id: "a".repeat(24),
   skill_name: "demo",
-  manager: "external",
-  owned: false,
-  tracked: false,
   enabled: true,
+  root_path: "/home/test/.codex/skills/demo",
+  canonical_path: "/home/test/.codex/skills/demo",
+  allowed_root: "/home/test/.codex/skills",
+  location: "Codex global Skills",
   scope: "global",
   agents: ["codex"],
-  bindings: [],
-  capability: { can_manage: true, operations: ["adopt"] },
+  capability: { can_delete: true },
 };
 
 describe("Skill inspection normalization", () => {
@@ -169,52 +169,32 @@ describe("Skill inspection normalization", () => {
           content: "test",
         },
       }),
-    ).toThrow("outside the Skill package file list");
+    ).toThrow("outside the Skill file list");
   });
 });
 
-describe("Skill lifecycle confirmation copy", () => {
-  const command = (
-    operation: SkillsMutationCommand["operation"],
-    destructive = false,
-  ): SkillsMutationCommand => ({
-    operation,
+describe("exact Skill deletion confirmation", () => {
+  const command = (): SkillsMutationCommand => ({
+    operation: "delete",
     scope: "global",
-    agents: ["codex"],
+    agents: ["codex", "pi"],
     skillName: "demo",
     copyId: "a".repeat(24),
-    summary: "Lifecycle summary",
-    changes: [
-      {
-        kind: destructive ? "remove" : "copy_file",
-        path: ".../.zen/skills/demo",
-        detail: destructive ? "Zen managed copy" : "Copy into managed store",
-      },
-    ],
-    destructive,
+    rootPath: "/home/test/.agents/skills/demo",
+    canonicalPath: "/home/test/.agents/skills/demo",
+    allowedRoot: "/home/test/.agents/skills",
+    location: "Shared project Skills",
+    summary: "Delete demo from Shared project Skills",
+    destructive: true,
   });
 
-  test("names adoption as Manage with Zen", () => {
-    const confirmation = buildSkillsMutationConfirmation(command("adopt"));
-    expect(confirmation.title).toBe("Manage with Zen demo?");
-    expect(confirmation.confirmLabel).toBe("Manage with Zen");
-    expect(confirmation.message).toContain("Copy into managed store");
-  });
-
-  test("makes managed uninstall destruction explicit", () => {
-    const confirmation = buildSkillsMutationConfirmation(
-      command("uninstall", true),
-    );
-    expect(confirmation.title).toBe("Uninstall demo?");
-    expect(confirmation.confirmLabel).toBe("Uninstall");
-    expect(confirmation.message).toContain("This removes the following:");
-    expect(confirmation.message).toContain("Zen managed copy");
-  });
-
-  test("keeps Forget non-destructive to external files", () => {
-    const confirmation = buildSkillsMutationConfirmation(command("forget"));
-    expect(confirmation.confirmLabel).toBe("Forget");
-    expect(confirmation.message).not.toContain("This removes the following:");
-    expect(confirmation.message).toContain("Changes:");
+  test("names the Skill, affected Agents, location, and permanence", () => {
+    const confirmation = buildSkillsMutationConfirmation(command());
+    expect(confirmation.title).toBe("Delete demo?");
+    expect(confirmation.confirmLabel).toBe("Delete");
+    expect(confirmation.message).toContain('permanently deletes "demo"');
+    expect(confirmation.message).toContain("Available to: Codex, Pi");
+    expect(confirmation.message).toContain("Location: Shared project Skills");
+    expect(confirmation.message).toContain("cannot be undone");
   });
 });

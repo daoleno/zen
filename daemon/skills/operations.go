@@ -2,1467 +2,254 @@ package skills
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// ExecutorAlias is one configured (possibly custom) executor identity. Custom
-// names that infer to one of the six providers reuse that provider's adapter;
-// anything else is never granted lifecycle authority.
-type ExecutorAlias struct {
-	Name    string
-	Kind    string
-	Command string
+const deleteTrashDir = ".zen-trash"
+
+type deleteTestHooks struct {
+	beforeRename func(InstalledSkill) error
+	afterRename  func(InstalledSkill) error
+	removeAll    func(*os.Root, string) error
 }
 
-// SourceFetcher stages package content for catalog/github provenance. The
-// default fetches via git; tests inject a fixture writer so lifecycle tests
-// are hermetic and never touch the network or real user state.
-type SourceFetcher func(ctx context.Context, request MutationRequest, stageDir string) error
-
-// environment bundles the resolved paths and extensions for one lifecycle
-// command: a store, the adapter env, and a validated working directory.
-type environment struct {
-	store            Store
-	env              EnvResolver
-	cwd              string
-	fetcher          SourceFetcher
-	now              func() time.Time
-	inventoryOptions InventoryOptions
-}
-
-func environmentFor(options InventoryOptions, cwdRequired bool) (environment, error) {
-	normalized, err := normalizeInventoryOptions(options)
-	if err != nil {
-		return environment{}, err
-	}
-	return environment{
-		store:            Store{StateDir: normalized.ZenStateDir, Home: normalized.Home, Now: normalized.Now},
-		env:              envResolverFor(normalized),
-		cwd:              normalized.CWD,
-		fetcher:          normalized.Fetcher,
-		now:              normalized.Now,
-		inventoryOptions: normalized,
-	}, nil
-}
-
-func envResolverFor(options InventoryOptions) EnvResolver {
-	if options.Env != nil {
-		return func(key string) string { return options.Env[key] }
-	}
-	return osEnvResolver()
-}
-
-type planContext struct {
-	env environment
-	ctx context.Context
-}
-
-// BuildMutationCommand validates structured inputs and produces the exact,
-// reviewable plan. This is the only place plan semantics are decided; the
-// server and App never build plans themselves.
 func BuildMutationCommand(options InventoryOptions, request MutationRequest) (MutationCommand, error) {
-	env, err := environmentFor(options, request.Scope == ScopeProject && request.Operation != OperationImport)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	switch request.Operation {
-	case OperationImport:
-		return buildImportPlan(request, env)
-	case OperationMigrate:
-		return MutationCommand{
-			Operation:   OperationMigrate,
-			Scope:       ScopeGlobal,
-			Summary:     "Track existing local Skills across all six agents in Zen's inventory (no files are changed; adopt or forget each one afterward)",
-			Changes:     []MutationChange{{Kind: "write", Path: env.store.InventoryPath(), Detail: "Track external local installations"}},
-			Destructive: false,
-		}, nil
-	case OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationForget, OperationAdopt, OperationUpdate:
-		command, err := buildManagedPlan(request, env)
-		if err != nil {
-			return MutationCommand{}, err
-		}
-		if request.SkillID != "" {
-			command.CopyID = request.SkillID
-		}
-		return command, nil
-	default:
+	if request.Operation != OperationDelete {
 		return MutationCommand{}, fmt.Errorf("unsupported Skill operation %q", request.Operation)
 	}
+	copy, err := resolveDeleteCopy(options, request)
+	if err != nil {
+		return MutationCommand{}, err
+	}
+	return commandForCopy(copy), nil
 }
 
-// ---------------------------------------------------------------------------
-// Import / adopt / forget
-// ---------------------------------------------------------------------------
-
-func buildImportPlan(request MutationRequest, env environment) (MutationCommand, error) {
-	if err := ValidateSkillName(request.SkillName); err != nil {
-		return MutationCommand{}, err
-	}
-	agents, err := validateAgents(request.Agents)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	if err := ValidateScope(request.Scope); err != nil {
-		return MutationCommand{}, err
-	}
-	cwd, err := ValidateCWD(request.CWD, request.Scope == ScopeProject)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	sourceType, err := detectImportSource(request)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	store := env.store
-	inventory, err := store.LoadInventory(false)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	if existing, ok := inventory.Packages[request.SkillName]; ok {
-		if existing.Owned {
-			return MutationCommand{}, fmt.Errorf("Skill %q is already installed", request.SkillName)
-		}
-		return MutationCommand{}, fmt.Errorf("Skill %q is tracked as an external installation; forget or adopt it first", request.SkillName)
-	}
-	targets, err := bindingTargetPaths(request, env, cwd)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	changes := []MutationChange{
-		{Kind: "create_dir", Path: store.PackageDir(request.SkillName), Detail: "Canonical Zen store entry (" + sourceDetail(sourceType, request) + ")"},
-	}
-	summary := fmt.Sprintf("Import %s into Zen's canonical store", request.SkillName)
-	if request.Source != "" {
-		summary += " from " + request.Source
-	}
-	for _, target := range targets {
-		changes = append(changes, target.change)
-	}
-	if len(agents) == 0 {
-		// Import always binds at least one target: ownership without a binding
-		// is expressible only through explicit uninstall after binding.
-		return MutationCommand{}, errors.New("choose at least one supported agent to bind")
-	}
+func commandForCopy(copy InstalledSkill) MutationCommand {
 	return MutationCommand{
-		Operation:   OperationImport,
-		Scope:       request.Scope,
-		Agents:      agents,
-		SkillName:   request.SkillName,
-		ImportID:    importIDFor(request),
-		Source:      request.Source,
-		Ref:         request.Ref,
-		InfoPath:    request.InfoPath,
-		Summary:     summary,
-		Changes:     changes,
-		Destructive: false,
-	}, nil
-}
-
-type bindingTarget struct {
-	agent  Agent
-	scope  Scope
-	dir    string
-	path   string
-	mode   BindingMode
-	change MutationChange
-}
-
-func bindingTargetPaths(request MutationRequest, env environment, cwd string) ([]bindingTarget, error) {
-	targets := make([]bindingTarget, 0, len(request.Agents))
-	for _, agent := range request.Agents {
-		adapter, err := adapterFor(agent)
-		if err != nil {
-			return nil, err
-		}
-		dir := ""
-		if request.Scope == ScopeGlobal {
-			dir = globalSkillsDir(adapter, env.store.Home, env.env)
-		} else {
-			if cwd == "" {
-				return nil, errors.New("project scope requires a working directory")
-			}
-			dir = projectSkillsDir(adapter, cwd)
-		}
-		target := bindingTarget{
-			agent: agent, scope: request.Scope, dir: dir,
-			path: filepath.Join(dir, request.SkillName), mode: adapter.Mode,
-		}
-		switch adapter.Mode {
-		case BindingSymlink:
-			target.change = MutationChange{
-				Kind: "symlink", Path: target.path, Destination: env.store.PackageDir(request.SkillName),
-				Detail: "Symlink " + request.SkillName + " for " + adapter.Name,
-			}
-		case BindingCopy:
-			target.change = MutationChange{
-				Kind: "copy_file", Path: env.store.PackageDir(request.SkillName), Destination: target.path,
-				Detail: "Materialize " + request.SkillName + " for " + adapter.Name + " (copy, drift-checked)",
-			}
-		}
-		targets = append(targets, target)
-	}
-	return targets, nil
-}
-
-func detectImportSource(request MutationRequest) (SourceType, error) {
-	if strings.TrimSpace(request.InfoPath) != "" {
-		path := filepath.Clean(request.InfoPath)
-		if !filepath.IsAbs(path) {
-			return "", errors.New("import path must be absolute")
-		}
-		for _, part := range strings.Split(path, string(filepath.Separator)) {
-			if part == ".." {
-				return "", errors.New("import path must not traverse directories")
-			}
-		}
-		switch {
-		case strings.HasSuffix(strings.ToLower(path), ".zip"),
-			strings.HasSuffix(strings.ToLower(path), ".tar"),
-			strings.HasSuffix(strings.ToLower(path), ".tar.gz"),
-			strings.HasSuffix(strings.ToLower(path), ".tgz"):
-			return SourceTypeArchive, nil
-		default:
-			return SourceTypeLocal, nil
-		}
-	}
-	if request.Source != "" {
-		if err := ValidateCatalogIdentity(request.SkillID, request.Source, request.SkillName); err != nil {
-			return "", err
-		}
-		return SourceTypeCatalog, nil
-	}
-	return "", errors.New("import requires a catalog identity, a local directory, or an archive")
-}
-
-func importIDFor(request MutationRequest) string {
-	if request.SkillID != "" {
-		return request.SkillID
-	}
-	if request.Source != "" {
-		return request.Source + "/" + request.SkillName
-	}
-	return ""
-}
-
-func sourceDetail(sourceType SourceType, request MutationRequest) string {
-	switch sourceType {
-	case SourceTypeArchive:
-		return "archive " + filepath.Base(request.InfoPath)
-	case SourceTypeLocal:
-		return "local directory"
-	default:
-		if request.Source != "" {
-			return "catalog " + request.Source
-		}
-		return "import"
+		Operation: OperationDelete, CopyID: copy.ID, SkillName: copy.Name,
+		RootPath: copy.RootPath, CanonicalPath: copy.CanonicalPath,
+		AllowedRoot: copy.AllowedRoot, Location: copy.Location,
+		Scope: copy.Scope, Agents: append([]Agent{}, copy.Agents...),
+		Summary:     "Delete " + copy.Name + " from " + copy.Location,
+		Destructive: true,
 	}
 }
 
-func buildManagedPlan(request MutationRequest, env environment) (MutationCommand, error) {
+func resolveDeleteCopy(options InventoryOptions, request MutationRequest) (InstalledSkill, error) {
 	if err := ValidateSkillName(request.SkillName); err != nil {
-		return MutationCommand{}, err
+		return InstalledSkill{}, err
 	}
-	var selected *InstalledSkill
-	if strings.TrimSpace(request.SkillID) != "" {
-		copy, err := resolveInstalledCopy(env.inventoryOptions, request.SkillName, request.SkillID)
-		if err != nil {
-			return MutationCommand{}, err
-		}
-		if err := validateCopyOperation(copy, request); err != nil {
-			return MutationCommand{}, err
-		}
-		selected = &copy
-	}
-	store := env.store
-	requireInventory := !(request.Operation == OperationAdopt && selected != nil && !selected.Tracked)
-	inventory, err := store.LoadInventory(requireInventory)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	entry, ok := inventory.Packages[request.SkillName]
-	if !ok {
-		if request.Operation == OperationAdopt && selected != nil {
-			return buildDiscoveredAdoptPlan(request, *selected, env)
-		}
-		return MutationCommand{}, fmt.Errorf("Skill %q is not in Zen's inventory", request.SkillName)
-	}
-
-	switch request.Operation {
-	case OperationUninstall, OperationForget, OperationAdopt, OperationUpdate:
-		return buildPackageLifecyclePlan(request, entry, env)
-	default:
-		return buildBindingPlan(request, entry, env)
-	}
-}
-
-func resolveInstalledCopy(options InventoryOptions, name, copyID string) (InstalledSkill, error) {
-	if !validInstalledSkillID(copyID) {
+	if !validInstalledSkillID(request.CopyID) {
 		return InstalledSkill{}, errors.New("invalid Skill copy ID")
+	}
+	for field, value := range map[string]string{
+		"root path":      request.RootPath,
+		"canonical path": request.CanonicalPath,
+		"allowed root":   request.AllowedRoot,
+	} {
+		if !filepath.IsAbs(value) || filepath.Clean(value) != value {
+			return InstalledSkill{}, fmt.Errorf("invalid Skill %s", field)
+		}
 	}
 	inventory, err := DiscoverInventory(options)
 	if err != nil {
 		return InstalledSkill{}, err
 	}
 	for _, copy := range inventory.Skills {
-		if copy.Name == name && copy.ID == copyID {
-			return copy, nil
-		}
-	}
-	return InstalledSkill{}, fmt.Errorf("the selected copy of Skill %q is stale or no longer installed", name)
-}
-
-func validInstalledSkillID(value string) bool {
-	if len(value) != 24 {
-		return false
-	}
-	for _, current := range value {
-		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func validateCopyOperation(copy InstalledSkill, request MutationRequest) error {
-	if request.Operation == OperationBind {
-		if copy.Capability.CanManage && operationAllowed(copy.Capability.Operations, request.Operation) {
-			return nil
-		}
-		return copyOperationRejected(copy)
-	}
-	if request.Operation == OperationUnbind || request.Operation == OperationEnable || request.Operation == OperationDisable {
-		for _, agent := range request.Agents {
-			matched := false
-			for _, binding := range copy.Bindings {
-				if binding.Agent == agent && binding.Scope == request.Scope && operationAllowed(binding.Operations, request.Operation) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return fmt.Errorf("the selected Skill copy does not allow %s for %s (%s)", request.Operation, agentName(agent), request.Scope)
-			}
-		}
-		return nil
-	}
-	if copy.Capability.CanManage && operationAllowed(copy.Capability.Operations, request.Operation) {
-		return nil
-	}
-	return copyOperationRejected(copy)
-}
-
-func copyOperationRejected(copy InstalledSkill) error {
-	reason := strings.TrimSpace(copy.Capability.Reason)
-	if reason == "" {
-		reason = "the daemon did not advertise this action for the selected copy"
-	}
-	return errors.New(reason)
-}
-
-func operationAllowed(operations []MutationOperation, operation MutationOperation) bool {
-	for _, current := range operations {
-		if current == operation {
-			return true
-		}
-	}
-	return false
-}
-
-func buildDiscoveredAdoptPlan(request MutationRequest, copy InstalledSkill, env environment) (MutationCommand, error) {
-	if copy.Manager != ManagerExternal || copy.Owned {
-		return MutationCommand{}, errors.New("only an external Skill copy can be managed with Zen")
-	}
-	sourcePath := copy.SourcePath
-	if _, err := exactExternalCopyDir(copy.Name, copy.ID, sourcePath); err != nil {
-		return MutationCommand{}, err
-	}
-	if copy.ContentHash == "" {
-		return MutationCommand{}, errors.New("the external Skill copy could not be hashed safely")
-	}
-	agents := append([]Agent{}, copy.Agents...)
-	if len(agents) == 0 {
-		return MutationCommand{}, errors.New("Manage with Zen requires a discovered Agent location")
-	}
-	return MutationCommand{
-		Operation: OperationAdopt, SkillName: copy.Name, Scope: copy.Scope, Agents: agents,
-		CopyID: copy.ID, Source: sourcePath, InfoPath: sourcePath,
-		Description: copy.Description, ExpectedHash: copy.ContentHash,
-		Summary: "Manage " + copy.Name + " with Zen by copying it into the managed store (the external source remains untouched; bind the managed copy explicitly afterward)",
-		Changes: []MutationChange{
-			{Kind: "copy_file", Path: sourcePath, Destination: env.store.PackageDir(copy.Name), Detail: "Copy external content into the canonical store"},
-			{Kind: "write", Path: env.store.InventoryPath(), Detail: "Record the Zen-owned copy; preserve the external source"},
-		},
-		Destructive: false,
-	}, nil
-}
-
-func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env environment) (MutationCommand, error) {
-	store := env.store
-	switch request.Operation {
-	case OperationUninstall:
-		if !entry.Owned {
-			return MutationCommand{}, errors.New("external installations are forgotten, not uninstalled")
-		}
-		changes := []MutationChange{{Kind: "remove", Path: store.PackageDir(request.SkillName), Detail: "Remove canonical store content"}}
-		for _, binding := range entry.Bindings {
-			changes = append(changes, removeBindingChange(binding))
-		}
-		changes = append(changes, MutationChange{Kind: "remove", Path: store.InventoryPath(), Detail: "Remove inventory entry for " + request.SkillName})
-		return MutationCommand{
-			Operation: OperationUninstall, SkillName: request.SkillName,
-			Agents: entryBindingAgents(entry), Scope: request.Scope,
-			Summary:     "Uninstall " + request.SkillName + " (remove all bindings, store content, and inventory entry)",
-			Changes:     changes,
-			Destructive: true,
-		}, nil
-	case OperationForget:
-		if entry.Owned {
-			return MutationCommand{}, errors.New("owned packages are uninstalled, not forgotten")
-		}
-		return MutationCommand{
-			Operation: OperationForget, SkillName: request.SkillName, Scope: request.Scope,
-			Summary:     "Forget external skill " + request.SkillName + " (Zen inventory entry only; no files are deleted)",
-			Changes:     []MutationChange{{Kind: "remove", Path: store.InventoryPath(), Detail: "Remove tracked inventory entry for " + request.SkillName}},
-			Destructive: false,
-		}, nil
-	case OperationAdopt:
-		if entry.Owned {
-			return MutationCommand{}, errors.New("Skill " + request.SkillName + " is already Zen-owned")
-		}
-		externalDir, err := trackedExternalDir(entry)
-		if err != nil {
-			return MutationCommand{}, err
-		}
-		hash, err := folderContentHash(externalDir)
-		if err != nil {
-			return MutationCommand{}, fmt.Errorf("could not hash the external installation: %w", err)
-		}
-		agents := request.Agents
-		if len(agents) == 0 {
-			agents = entry.DiscoveredAgents
-		}
-		if len(agents) == 0 {
-			return MutationCommand{}, errors.New("adopt requires at least one discovered or requested agent")
-		}
-		copyID := request.SkillID
-		if copyID == "" {
-			realDir, resolveErr := filepath.EvalSymlinks(externalDir)
-			if resolveErr != nil {
-				return MutationCommand{}, resolveErr
-			}
-			copyID = installedSkillID(filepath.Clean(realDir))
-		}
-		changes := []MutationChange{
-			{Kind: "copy_file", Path: externalDir, Destination: store.PackageDir(request.SkillName), Detail: "Copy external content into the canonical store"},
-			{Kind: "write", Path: store.InventoryPath(), Detail: "Mark " + request.SkillName + " as Zen-owned"},
-		}
-		return MutationCommand{
-			Operation: OperationAdopt, SkillName: request.SkillName, Scope: request.Scope, Agents: agents,
-			CopyID: copyID, Source: entry.Source, Ref: entry.Ref, InfoPath: externalDir,
-			Description: entry.Description, ExpectedHash: hash,
-			Summary:     "Manage " + request.SkillName + " with Zen by copying it into the managed store (the external source remains untouched; bind the managed copy explicitly afterward)",
-			Changes:     changes,
-			Destructive: false,
-		}, nil
-	case OperationUpdate:
-		if !entry.Owned {
-			return MutationCommand{}, errors.New("external installations cannot be updated by Zen")
-		}
-		if !updateProvenancePinned(entry) {
-			return MutationCommand{}, errors.New("Skill update requires pinned, validated provenance")
-		}
-		summary := "Update " + request.SkillName + " to its pinned provenance"
-		if entry.Ref != "" {
-			summary += " (" + entry.Ref + ")"
-		}
-		return MutationCommand{
-			Operation: OperationUpdate, SkillName: request.SkillName, Scope: request.Scope,
-			Source: entry.Source, Ref: entry.Ref,
-			Summary: summary,
-			Changes: []MutationChange{
-				{Kind: "keep", Path: store.PackageDir(request.SkillName), Detail: "Atomically replace content when the pinned source changed; exact rollback on failure"},
-				{Kind: "write", Path: store.InventoryPath(), Detail: "Refresh content hash and updated timestamp"},
-			},
-			Destructive: false,
-		}, nil
-	}
-	return MutationCommand{}, errors.New("unsupported operation")
-}
-
-func buildBindingPlan(request MutationRequest, entry PackageEntry, env environment) (MutationCommand, error) {
-	agents, err := validateAgents(request.Agents)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	if !entry.Owned {
-		return MutationCommand{}, errors.New("only Zen-owned packages can be bound; adopt the external skill first")
-	}
-	if err := ValidateScope(request.Scope); err != nil {
-		return MutationCommand{}, err
-	}
-	cwd, err := ValidateCWD(request.CWD, request.Scope == ScopeProject)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	store := env.store
-	existing := map[string]BindingEntry{}
-	for _, binding := range entry.Bindings {
-		existing[string(binding.Agent)+"/"+string(binding.Scope)] = binding
-	}
-
-	targets, err := bindingTargetPaths(request, env, cwd)
-	if err != nil {
-		return MutationCommand{}, err
-	}
-	verb := "bind"
-	summary := ""
-	changes := []MutationChange{}
-	destructive := false
-	switch request.Operation {
-	case OperationBind:
-		for _, target := range targets {
-			key := string(target.agent) + "/" + string(target.scope)
-			if _, ok := existing[key]; ok {
-				return MutationCommand{}, fmt.Errorf("Skill %q is already bound to %s (%s)", request.SkillName, agentName(target.agent), target.scope)
-			}
-			changes = append(changes, target.change)
-		}
-		summary = "Bind " + request.SkillName + " to " + agentsLabel(agents) + " (" + string(request.Scope) + ")"
-	case OperationUnbind:
-		verb = "unbind"
-		for _, target := range targets {
-			key := string(target.agent) + "/" + string(target.scope)
-			binding, ok := existing[key]
-			if !ok {
-				return MutationCommand{}, fmt.Errorf("Skill %q has no %s binding for %s", request.SkillName, target.scope, agentName(target.agent))
-			}
-			changes = append(changes, removeBindingChange(binding))
-			changes = append(changes, MutationChange{Kind: "write", Path: store.InventoryPath(), Detail: "Remove binding for " + agentName(target.agent)})
-		}
-		summary = "Unbind " + request.SkillName + " from " + agentsLabel(agents) + " (" + string(request.Scope) + "); package content stays in the store"
-	case OperationEnable, OperationDisable:
-		verb = string(request.Operation)
-		for _, target := range targets {
-			key := string(target.agent) + "/" + string(target.scope)
-			binding, ok := existing[key]
-			if !ok {
-				return MutationCommand{}, fmt.Errorf("Skill %q has no %s binding for %s to %s", request.SkillName, target.scope, agentName(target.agent), verb)
-			}
-			if request.Operation == OperationEnable && binding.Enabled {
-				return MutationCommand{}, fmt.Errorf("Skill %q is already enabled for %s", request.SkillName, agentName(target.agent))
-			}
-			if request.Operation == OperationDisable && !binding.Enabled {
-				return MutationCommand{}, fmt.Errorf("Skill %q is already disabled for %s", request.SkillName, agentName(target.agent))
-			}
-			if request.Operation == OperationDisable {
-				changes = append(changes, removeMaterializationChange(binding))
-			} else {
-				changes = append(changes, target.change)
-			}
-			changes = append(changes, MutationChange{Kind: "write", Path: store.InventoryPath(), Detail: "Update enabled state for " + agentName(target.agent)})
-		}
-		summary = strings.Title(verb) + " " + request.SkillName + " bindings (" + agentsLabel(agents) + ", " + string(request.Scope) + ")"
-	}
-	return MutationCommand{
-		Operation: MutationOperation(verb), Scope: request.Scope, Agents: agents,
-		SkillName: request.SkillName, Summary: summary, Changes: changes, Destructive: destructive,
-	}, nil
-}
-
-func removeBindingChange(binding BindingEntry) MutationChange {
-	return MutationChange{
-		Kind: "remove", Path: binding.TargetPath,
-		Detail: "Remove binding for " + agentName(binding.Agent) + " (" + string(binding.Scope) + ")",
-	}
-}
-
-func removeMaterializationChange(binding BindingEntry) MutationChange {
-	return MutationChange{
-		Kind: "remove", Path: binding.TargetPath,
-		Detail: "Remove " + string(binding.Mode) + " materialization for " + agentName(binding.Agent) + " (package content stays in the store)",
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Execution (native, atomic, cancelable)
-// ---------------------------------------------------------------------------
-
-// ExecuteMutationCommand runs the reviewed plan natively on the daemon host.
-// It never shells out; every effect is a bounded filesystem or fetch
-// operation that observes ctx cancellation at safe points. The returned
-// Execution reports the truthful outcome and a bounded human summary.
-func ExecuteMutationCommand(ctx context.Context, command MutationCommand, options MutationExecutionOptions) (MutationExecution, error) {
-	inventoryOptions := options.InventoryOptions
-	if inventoryOptions.Home == "" && options.CWD != "" {
-		// Project-scope mutations carry a validated working directory with the
-		// request itself when options do not otherwise set one.
-	}
-	env, err := environmentFor(inventoryOptions, command.Scope == ScopeProject)
-	if err != nil {
-		return MutationExecution{}, err
-	}
-	if options.CWD != "" {
-		env.cwd = options.CWD
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	startedAt := time.Now()
-	result, err := executePlan(ctx, env, command)
-	durationMS := time.Since(startedAt).Milliseconds()
-	if err != nil {
-		return MutationExecution{}, err
-	}
-	return MutationExecution{
-		Success:    true,
-		ExitCode:   0,
-		Output:     boundedMutationOutput([]byte(result)),
-		DurationMS: durationMS,
-	}, nil
-}
-
-func executePlan(ctx context.Context, env environment, command MutationCommand) (string, error) {
-	store := env.store
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if err := store.Lock(); err != nil {
-		return "", err
-	}
-	defer store.Unlock()
-
-	inventory, err := store.LoadInventory(command.Operation != OperationImport && command.Operation != OperationMigrate && command.Operation != OperationAdopt)
-	if err != nil {
-		return "", err
-	}
-	if inventory.Packages == nil {
-		inventory.Packages = map[string]PackageEntry{}
-	}
-
-	switch command.Operation {
-	case OperationImport:
-		return executeImport(ctx, env, command, &inventory)
-	case OperationMigrate:
-		return executeMigrate(ctx, env, &inventory)
-	case OperationBind, OperationUnbind, OperationEnable, OperationDisable:
-		return executeBindingMutation(ctx, env, command, &inventory)
-	case OperationUninstall:
-		return executeUninstall(env, command, &inventory)
-	case OperationForget:
-		return executeForget(env, command, &inventory)
-	case OperationAdopt:
-		return executeAdopt(ctx, env, command, &inventory)
-	case OperationUpdate:
-		return executeUpdate(ctx, env, command, &inventory)
-	default:
-		return "", fmt.Errorf("unsupported Skill operation %q", command.Operation)
-	}
-}
-
-func executeMigrate(ctx context.Context, env environment, inventory *InventoryFile) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if inventory.Packages == nil {
-		inventory.Packages = map[string]PackageEntry{}
-	}
-	report := MigrationReport{}
-	seenHash := map[string]string{}
-	for _, agent := range []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi} {
-		adapter, err := adapterFor(agent)
-		if err != nil {
+		if copy.ID != request.CopyID || copy.Name != request.SkillName {
 			continue
 		}
-		globalDir := globalSkillsDir(adapter, env.store.Home, env.env)
-		report.scanRoot(env.store, inventory, migrationSource{dir: globalDir, scope: ScopeGlobal, agents: []Agent{agent}}, seenHash)
-		if env.cwd != "" {
-			report.scanRoot(env.store, inventory, migrationSource{dir: projectSkillsDir(adapter, env.cwd), scope: ScopeProject, agents: []Agent{agent}}, seenHash)
+		if copy.RootPath != request.RootPath || copy.CanonicalPath != request.CanonicalPath || copy.AllowedRoot != request.AllowedRoot {
+			return InstalledSkill{}, fmt.Errorf("the selected copy of Skill %q changed after it was loaded", request.SkillName)
 		}
-	}
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Migrated %d external installation(s) into Zen's inventory without touching their files.", report.Tracked), nil
-}
-
-func executeImport(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	store := env.store
-	if _, exists := inventory.Packages[command.SkillName]; exists {
-		return "", fmt.Errorf("Skill %q already exists in Zen's inventory", command.SkillName)
-	}
-	staging, err := os.MkdirTemp(store.TmpDir(), "import-*")
-	if err != nil {
-		if mkErr := os.MkdirAll(store.TmpDir(), 0o700); mkErr != nil {
-			return "", mkErr
-		}
-		staging, err = os.MkdirTemp(store.TmpDir(), "import-*")
-		if err != nil {
-			return "", err
-		}
-	}
-	defer os.RemoveAll(staging)
-
-	sourceRoot, sourceType, err := stageImportSource(ctx, env, command, staging)
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
-		return "", ctx.Err()
-	}
-	// Verify the staged folder is a real Skill package.
-	if _, ok, err := readSkillFrontmatter(filepath.Join(sourceRoot, "SKILL.md")); err != nil || !ok {
-		return "", errors.New("the import source is not a valid Skill package (SKILL.md with frontmatter required)")
-	}
-	hash, err := folderContentHash(sourceRoot)
-	if err != nil {
-		return "", fmt.Errorf("could not hash the imported package: %w", err)
-	}
-
-	packageDir := store.PackageDir(command.SkillName)
-	if err := os.MkdirAll(packageDir, 0o700); err != nil {
-		return "", err
-	}
-	if err := copyDirBounded(sourceRoot, packageDir); err != nil {
-		_ = os.RemoveAll(packageDir)
-		return "", fmt.Errorf("materialize package: %w", err)
-	}
-	now := store.now().UTC().Format(time.RFC3339)
-	source := command.Source
-	if source == "" && (sourceType == SourceTypeLocal || sourceType == SourceTypeArchive) {
-		// Local/archive provenance keeps the import path so update can re-stage
-		// the same pinned source atomically.
-		source = command.InfoPath
-	}
-	entry := PackageEntry{
-		SkillName:   command.SkillName,
-		Source:      source,
-		SourceType:  string(sourceType),
-		Ref:         command.Ref,
-		ContentHash: hash,
-		InstalledAt: now,
-		UpdatedAt:   now,
-		Owned:       true,
-	}
-	bindings := make([]BindingEntry, 0, len(command.Agents))
-	for _, agent := range command.Agents {
-		binding, err := materializeBinding(store, entry, agent, command.Scope, env)
-		if err != nil {
-			// Roll back everything already created: bindings and store content.
-			for _, created := range bindings {
-				_ = removeMaterialization(created)
+		if !copy.Capability.CanDelete {
+			reason := strings.TrimSpace(copy.Capability.Reason)
+			if reason == "" {
+				reason = "this Skill copy cannot be deleted from here"
 			}
-			_ = os.RemoveAll(packageDir)
-			return "", err
+			return InstalledSkill{}, errors.New(reason)
 		}
-		bindings = append(bindings, binding)
-	}
-	entry.Bindings = bindings
-	inventory.Packages[command.SkillName] = entry
-	if err := store.SaveInventory(*inventory); err != nil {
-		// Best-effort rollback so a failed commit never leaves orphaned
-		// bindings or half-owned store content behind.
-		for _, created := range bindings {
-			_ = removeMaterialization(created)
+		if err := validateDeleteIdentity(copy); err != nil {
+			return InstalledSkill{}, err
 		}
-		_ = os.RemoveAll(packageDir)
-		return "", err
+		return copy, nil
 	}
-	return fmt.Sprintf("Imported %s (%d files, %s)", command.SkillName, countPackageFiles(packageDir), shortHash(hash)), nil
+	return InstalledSkill{}, fmt.Errorf("the selected copy of Skill %q is stale or no longer installed", request.SkillName)
 }
 
-// stageImportSource materializes the source package into staging and returns
-// the package root plus its source type. Archives are extracted safely; local
-// directories are used in place; catalog sources go through the fetcher.
-func stageImportSource(ctx context.Context, env environment, command MutationCommand, staging string) (string, SourceType, error) {
-	request := MutationRequest{
-		SkillName: command.SkillName, Source: command.Source,
-		SkillID: command.ImportID, Ref: command.Ref, Agents: command.Agents, Scope: command.Scope,
+func validateDeleteIdentity(copy InstalledSkill) error {
+	if !filepath.IsAbs(copy.RootPath) || !filepath.IsAbs(copy.CanonicalPath) || !filepath.IsAbs(copy.AllowedRoot) {
+		return errors.New("Skill copy identity is not absolute")
 	}
-	if command.InfoPath != "" {
-		request.InfoPath = command.InfoPath
+	if filepath.Clean(copy.RootPath) != copy.RootPath || filepath.Clean(copy.CanonicalPath) != copy.CanonicalPath || filepath.Clean(copy.AllowedRoot) != copy.AllowedRoot {
+		return errors.New("Skill copy identity is not canonical")
 	}
-	if request.InfoPath != "" {
-		path := filepath.Clean(request.InfoPath)
-		switch {
-		case strings.HasSuffix(strings.ToLower(path), ".zip"),
-			strings.HasSuffix(strings.ToLower(path), ".tar"),
-			strings.HasSuffix(strings.ToLower(path), ".tar.gz"),
-			strings.HasSuffix(strings.ToLower(path), ".tgz"):
-			root, err := ExtractArchiveSafe(path, staging)
-			return root, SourceTypeArchive, err
-		default:
-			info, err := os.Stat(path)
-			if err != nil {
-				return "", "", err
-			}
-			if !info.IsDir() {
-				return "", "", errors.New("local import path is not a directory")
-			}
-			return resolveSkillRoot(path, request.SkillName), SourceTypeLocal, nil
-		}
+	if copy.RootPath == copy.AllowedRoot {
+		return errors.New("refusing to delete a Skills inventory root")
 	}
-	// Catalog/github: stage through the fetcher into <staging>/content.
-	contentDir := filepath.Join(staging, "content")
-	if err := os.MkdirAll(contentDir, 0o700); err != nil {
-		return "", "", err
+	relative, err := filepath.Rel(copy.AllowedRoot, copy.RootPath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.Dir(relative) != "." {
+		return errors.New("Skill copy escaped its allowed root")
 	}
-	request.InfoPath = contentDir
-	fetch := env.fetcher
-	if fetch == nil {
-		fetch = fetchGitSkill
+	if relative != copy.Name || filepath.Base(copy.RootPath) != copy.Name {
+		return errors.New("Skill copy name does not match its exact root")
 	}
-	if err := fetch(ctx, request, contentDir); err != nil {
-		return "", "", err
-	}
-	return resolveSkillRoot(contentDir, request.SkillName), SourceTypeCatalog, nil
-}
-
-// resolveSkillRoot locates the skill folder inside a staged tree: the tree
-// itself, <tree>/<name>, or the common repository layout <tree>/skills/<name>.
-// A bounded single-chain wrapper is also unwrapped.
-func resolveSkillRoot(dir, name string) string {
-	candidates := []string{
-		filepath.Join(dir, name),
-		filepath.Join(dir, "skills", name),
-	}
-	for _, candidate := range candidates {
-		if fileExists(filepath.Join(candidate, "SKILL.md")) {
-			return candidate
-		}
-	}
-	if fileExists(filepath.Join(dir, "SKILL.md")) {
-		return dir
-	}
-	return locateSkillRoot(dir)
-}
-
-func materializeBinding(store Store, entry PackageEntry, agent Agent, scope Scope, env environment) (BindingEntry, error) {
-	adapter, err := adapterFor(agent)
-	if err != nil {
-		return BindingEntry{}, err
-	}
-	dir := ""
-	if scope == ScopeGlobal {
-		dir = globalSkillsDir(adapter, store.Home, env.env)
-	} else {
-		if env.cwd == "" {
-			return BindingEntry{}, errors.New("project scope requires a working directory")
-		}
-		dir = projectSkillsDir(adapter, env.cwd)
-	}
-	target := filepath.Join(dir, entry.SkillName)
-	now := store.now().UTC().Format(time.RFC3339)
-	binding := BindingEntry{
-		Agent: agent, Scope: scope, TargetPath: target, Enabled: true, BoundAt: now, Mode: adapter.Mode, Note: adapter.Note,
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return BindingEntry{}, err
-	}
-	if adapter.Mode == BindingSymlink {
-		if err := os.Symlink(store.PackageDir(entry.SkillName), target); err != nil {
-			return BindingEntry{}, err
-		}
-	} else {
-		if err := copyDirBounded(store.PackageDir(entry.SkillName), target); err != nil {
-			return BindingEntry{}, err
-		}
-	}
-	return binding, nil
-}
-
-func removeMaterialization(binding BindingEntry) error {
-	info, err := os.Lstat(binding.TargetPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
-		return os.RemoveAll(binding.TargetPath)
-	}
-	return os.Remove(binding.TargetPath)
-}
-
-func executeBindingMutation(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry := inventory.Packages[command.SkillName]
-	existing := map[string]BindingEntry{}
-	for _, binding := range entry.Bindings {
-		existing[string(binding.Agent)+"/"+string(binding.Scope)] = binding
-	}
-	bindings := make([]BindingEntry, 0, len(entry.Bindings))
-	for _, binding := range entry.Bindings {
-		bindings = append(bindings, binding)
-	}
-	changed := 0
-	for _, agent := range command.Agents {
-		key := string(agent) + "/" + string(command.Scope)
-		adapter, _ := adapterFor(agent)
-		dir := ""
-		if command.Scope == ScopeGlobal {
-			dir = globalSkillsDir(adapter, env.store.Home, env.env)
-		} else {
-			dir = projectSkillsDir(adapter, env.cwd)
-		}
-		targetPath := filepath.Join(dir, command.SkillName)
-		switch command.Operation {
-		case OperationBind:
-			if _, ok := existing[key]; ok {
-				continue
-			}
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				return "", err
-			}
-			now := env.store.now().UTC().Format(time.RFC3339)
-			binding := BindingEntry{Agent: agent, Scope: command.Scope, TargetPath: targetPath, Enabled: true, BoundAt: now, Mode: adapter.Mode, Note: adapter.Note}
-			if adapter.Mode == BindingSymlink {
-				if err := os.Symlink(env.store.PackageDir(command.SkillName), targetPath); err != nil {
-					return "", err
-				}
-			} else if err := copyDirBounded(env.store.PackageDir(command.SkillName), targetPath); err != nil {
-				return "", err
-			}
-			bindings = append(bindings, binding)
-			changed++
-		case OperationUnbind:
-			binding, ok := existing[key]
-			if !ok {
-				return "", fmt.Errorf("no %s binding for %s", command.Scope, agentName(agent))
-			}
-			if err := removeMaterialization(binding); err != nil {
-				return "", err
-			}
-			kept := bindings[:0]
-			for _, current := range bindings {
-				if current.Agent == agent && current.Scope == command.Scope {
-					continue
-				}
-				kept = append(kept, current)
-			}
-			bindings = kept
-			changed++
-		case OperationEnable:
-			binding, ok := existing[key]
-			if !ok {
-				return "", fmt.Errorf("no %s binding for %s to enable", command.Scope, agentName(agent))
-			}
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				return "", err
-			}
-			if adapter.Mode == BindingSymlink {
-				if err := os.Symlink(env.store.PackageDir(command.SkillName), targetPath); err != nil {
-					return "", err
-				}
-			} else if err := copyDirBounded(env.store.PackageDir(command.SkillName), targetPath); err != nil {
-				return "", err
-			}
-			binding.Enabled = true
-			replaceBinding(bindings, binding)
-			changed++
-		case OperationDisable:
-			binding, ok := existing[key]
-			if !ok {
-				return "", fmt.Errorf("no %s binding for %s to disable", command.Scope, agentName(agent))
-			}
-			if err := removeMaterialization(binding); err != nil {
-				return "", err
-			}
-			binding.Enabled = false
-			replaceBinding(bindings, binding)
-			changed++
-		}
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-	}
-	if changed == 0 {
-		return "No binding changes were needed.", nil
-	}
-	entry.Bindings = bindings
-	inventory.Packages[command.SkillName] = entry
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s %s: %d binding(s) changed", strings.Title(string(command.Operation)), command.SkillName, changed), nil
-}
-
-func replaceBinding(bindings []BindingEntry, updated BindingEntry) {
-	for index := range bindings {
-		if bindings[index].Agent == updated.Agent && bindings[index].Scope == updated.Scope {
-			bindings[index] = updated
-			return
-		}
-	}
-	bindings = append(bindings, updated)
-}
-
-func executeUninstall(env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry := inventory.Packages[command.SkillName]
-	if !entry.Owned {
-		return "", errors.New("external installations are forgotten, not uninstalled")
-	}
-	// Bindings first: removing them never touches store content.
-	for _, binding := range entry.Bindings {
-		if err := removeMaterialization(binding); err != nil {
-			return "", err
-		}
-	}
-	if err := env.store.stageToRollback(command.SkillName); err != nil {
-		return "", err
-	}
-	delete(inventory.Packages, command.SkillName)
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		return "", err
-	}
-	env.store.RemoveRollback(command.SkillName)
-	return "Uninstalled " + command.SkillName + ": bindings, store content, and inventory entry removed.", nil
-}
-
-func executeForget(env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry := inventory.Packages[command.SkillName]
-	if entry.Owned {
-		return "", errors.New("owned packages are uninstalled, not forgotten")
-	}
-	delete(inventory.Packages, command.SkillName)
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		return "", err
-	}
-	return "Forgot tracked external skill " + command.SkillName + ". External files were left untouched.", nil
-}
-
-func executeAdopt(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry, tracked := inventory.Packages[command.SkillName]
-	if tracked && entry.Owned {
-		return "", errors.New("Skill " + command.SkillName + " is already Zen-owned")
-	}
-	reviewedSource := command.InfoPath
-	if reviewedSource == "" && tracked {
-		var err error
-		reviewedSource, err = trackedExternalDir(entry)
-		if err != nil {
-			return "", err
-		}
-	}
-	reviewedSource = filepath.Clean(reviewedSource)
-	externalDir, err := exactExternalCopyDir(command.SkillName, command.CopyID, reviewedSource)
-	if err != nil {
-		return "", err
-	}
-	if tracked {
-		trackedDir, trackedErr := trackedExternalDir(entry)
-		if trackedErr != nil {
-			return "", trackedErr
-		}
-		trackedDir, trackedErr = filepath.EvalSymlinks(trackedDir)
-		if trackedErr != nil || filepath.Clean(trackedDir) != externalDir {
-			return "", errors.New("the tracked external Skill no longer matches the selected copy")
-		}
-	} else {
-		now := env.store.now().UTC().Format(time.RFC3339)
-		entry = PackageEntry{
-			SkillName: command.SkillName, Description: command.Description,
-			Source: reviewedSource, SourceType: string(SourceTypeExternal), ContentHash: command.ExpectedHash,
-			InstalledAt: now, UpdatedAt: now, Owned: false,
-			DiscoveredAgents: append([]Agent{}, command.Agents...), DiscoveredScope: command.Scope,
-		}
-	}
-	sourceHash, err := folderContentHash(externalDir)
-	if err != nil {
-		return "", fmt.Errorf("could not hash the external installation: %w", err)
-	}
-	if command.ExpectedHash == "" || sourceHash != command.ExpectedHash {
-		return "", errors.New("the selected external Skill changed after it was reviewed")
-	}
-	packageDir := env.store.PackageDir(command.SkillName)
-	if _, err := os.Lstat(packageDir); err == nil {
-		return "", errors.New("the Zen-managed Skill destination already exists")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if err := os.MkdirAll(packageDir, 0o700); err != nil {
-		return "", err
-	}
-	if err := copyDirBounded(externalDir, packageDir); err != nil {
-		_ = os.RemoveAll(packageDir)
-		return "", err
-	}
-	hash, err := folderContentHash(packageDir)
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
-		_ = os.RemoveAll(packageDir)
-		return "", err
-	}
-	entry.Owned = true
-	entry.Source = reviewedSource
-	entry.SourceType = string(SourceTypeExternal)
-	entry.ContentHash = hash
-	entry.UpdatedAt = env.store.now().UTC().Format(time.RFC3339)
-	// Adoption copies ownership into Zen but deliberately leaves the external
-	// installation unchanged. Managed bindings are an explicit later action.
-	entry.Bindings = nil
-	inventory.Packages[command.SkillName] = entry
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		_ = os.RemoveAll(packageDir)
-		return "", err
-	}
-	return "Managed " + command.SkillName + " with Zen (" + shortHash(hash) + "). The external source was left untouched.", nil
-}
-
-func exactExternalCopyDir(name, copyID, source string) (string, error) {
-	if err := ValidateSkillName(name); err != nil {
-		return "", err
-	}
-	if !validInstalledSkillID(copyID) {
-		return "", errors.New("invalid Skill copy ID")
-	}
-	path := filepath.Clean(strings.TrimSpace(source))
-	if !filepath.IsAbs(path) {
-		return "", errors.New("external Skill source must be an absolute directory")
-	}
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", fmt.Errorf("external Skill directory is unavailable: %w", err)
-	}
-	realPath, err = filepath.Abs(realPath)
-	if err != nil {
-		return "", errors.New("external Skill directory could not be resolved")
-	}
-	realPath = filepath.Clean(realPath)
-	if installedSkillID(realPath) != copyID {
-		return "", errors.New("the selected Skill copy is stale or no longer matches its path")
-	}
-	info, err := os.Stat(realPath)
-	if err != nil || !info.IsDir() {
-		return "", errors.New("external Skill source is not a directory")
-	}
-	frontmatter, ok, err := readSkillFrontmatter(filepath.Join(realPath, "SKILL.md"))
-	if err != nil || !ok {
-		return "", errors.New("external Skill source has no valid SKILL.md")
-	}
-	metadataName := cleanMetadata(frontmatter.Name, maxSkillNameLength)
-	if filepath.Base(path) != name || (metadataName != "" && metadataName != name) {
-		return "", errors.New("external Skill source no longer matches its inventory identity")
-	}
-	return realPath, nil
-}
-
-func executeUpdate(ctx context.Context, env environment, command MutationCommand, inventory *InventoryFile) (string, error) {
-	entry := inventory.Packages[command.SkillName]
-	staging, err := os.MkdirTemp(env.store.TmpDir(), "update-*")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(staging)
-
-	var sourceRoot string
-	switch entry.SourceType {
-	case string(SourceTypeLocal), string(SourceTypeArchive):
-		sourceRoot, _, err = stageImportSource(ctx, env, MutationCommand{
-			SkillName: command.SkillName, Source: entry.Source, InfoPath: entry.Source,
-		}, staging)
-		if err != nil {
-			return "", err
-		}
-	default:
-		contentDir := filepath.Join(staging, "content")
-		if err := os.MkdirAll(contentDir, 0o700); err != nil {
-			return "", err
-		}
-		request := MutationRequest{
-			SkillName: command.SkillName, Source: entry.Source, Ref: entry.Ref,
-			SkillID: entry.Source + "/" + command.SkillName, InfoPath: contentDir,
-		}
-		fetch := env.fetcher
-		if fetch == nil {
-			fetch = fetchGitSkill
-		}
-		if err := fetch(ctx, request, contentDir); err != nil {
-			return "", err
-		}
-		sourceRoot = resolveSkillRoot(contentDir, command.SkillName)
-	}
-	newHash, err := folderContentHash(sourceRoot)
-	if err != nil {
-		return "", fmt.Errorf("could not hash the updated package: %w", err)
-	}
-	if newHash == entry.ContentHash {
-		return "Skill " + command.SkillName + " is already up to date at " + shortHash(newHash) + ".", nil
-	}
-	// Atomic replacement with rollback: stage old content, write new, and only
-	// then commit the inventory. Any failure restores the old content.
-	oldPackage := env.store.PackageDir(command.SkillName)
-	backup := filepath.Join(env.store.RollbackDir(), command.SkillName+"-prev")
-	if err := os.MkdirAll(env.store.RollbackDir(), 0o700); err != nil {
-		return "", err
-	}
-	_ = os.RemoveAll(backup)
-	if err := os.Rename(oldPackage, backup); err != nil {
-		return "", err
-	}
-	committed := false
-	defer func() {
-		if committed {
-			_ = os.RemoveAll(backup)
-			return
-		}
-		_ = os.RemoveAll(oldPackage)
-		_ = os.Rename(backup, oldPackage)
-	}()
-	if err := copyDirBounded(sourceRoot, oldPackage); err != nil {
-		return "", err
-	}
-	copyRollbacks, err := replaceEnabledCopyBindings(entry.Bindings, oldPackage)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		for index := len(copyRollbacks) - 1; index >= 0; index-- {
-			copyRollbacks[index].finish(committed)
-		}
-	}()
-	entry.PreviousHash = entry.ContentHash
-	entry.ContentHash = newHash
-	entry.UpdatedAt = env.store.now().UTC().Format(time.RFC3339)
-	inventory.Packages[command.SkillName] = entry
-	if err := env.store.SaveInventory(*inventory); err != nil {
-		return "", err
-	}
-	committed = true
-	return fmt.Sprintf("Updated %s: %s -> %s with exact rollback retained.", command.SkillName, shortHash(entry.PreviousHash), shortHash(newHash)), nil
-}
-
-type copyBindingRollback struct {
-	target    string
-	backup    string
-	hadTarget bool
-}
-
-func (rollback copyBindingRollback) finish(committed bool) {
-	if committed {
-		_ = os.RemoveAll(rollback.backup)
-		return
-	}
-	_ = os.RemoveAll(rollback.target)
-	if rollback.hadTarget {
-		_ = os.Rename(rollback.backup, rollback.target)
-	}
-}
-
-// Copy adapters must advance with the canonical package. Each replacement is
-// staged beside its target so rename remains atomic on that filesystem, and
-// every prior target remains available until inventory commit succeeds.
-func replaceEnabledCopyBindings(bindings []BindingEntry, source string) ([]copyBindingRollback, error) {
-	prepared := make([]struct {
-		target string
-		stage  string
-	}, 0, len(bindings))
-	for _, binding := range bindings {
-		if binding.Mode != BindingCopy || !binding.Enabled {
-			continue
-		}
-		parent := filepath.Dir(binding.TargetPath)
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			return nil, err
-		}
-		stage, err := os.MkdirTemp(parent, ".zen-skill-update-*")
-		if err != nil {
-			return nil, err
-		}
-		if err := copyDirBounded(source, stage); err != nil {
-			_ = os.RemoveAll(stage)
-			for _, item := range prepared {
-				_ = os.RemoveAll(item.stage)
-			}
-			return nil, err
-		}
-		prepared = append(prepared, struct {
-			target string
-			stage  string
-		}{target: binding.TargetPath, stage: stage})
-	}
-
-	rollbacks := make([]copyBindingRollback, 0, len(prepared))
-	for index, item := range prepared {
-		backup := item.stage + "-previous"
-		_, statErr := os.Lstat(item.target)
-		hadTarget := statErr == nil
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			for _, pending := range prepared[index:] {
-				_ = os.RemoveAll(pending.stage)
-			}
-			for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
-				rollbacks[rollbackIndex].finish(false)
-			}
-			return nil, statErr
-		}
-		if hadTarget {
-			if err := os.Rename(item.target, backup); err != nil {
-				for _, pending := range prepared[index:] {
-					_ = os.RemoveAll(pending.stage)
-				}
-				for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
-					rollbacks[rollbackIndex].finish(false)
-				}
-				return nil, err
-			}
-		}
-		rollback := copyBindingRollback{target: item.target, backup: backup, hadTarget: hadTarget}
-		if err := os.Rename(item.stage, item.target); err != nil {
-			rollback.finish(false)
-			for _, pending := range prepared[index+1:] {
-				_ = os.RemoveAll(pending.stage)
-			}
-			for rollbackIndex := len(rollbacks) - 1; rollbackIndex >= 0; rollbackIndex-- {
-				rollbacks[rollbackIndex].finish(false)
-			}
-			return nil, err
-		}
-		rollbacks = append(rollbacks, rollback)
-	}
-	return rollbacks, nil
-}
-
-func fetchCommand(entry PackageEntry) MutationCommand {
-	return MutationCommand{SkillName: entry.SkillName, Source: entry.Source, Ref: entry.Ref, ImportID: entry.Source + "/" + entry.SkillName}
-}
-
-func trackedExternalDir(entry PackageEntry) (string, error) {
-	if entry.Source == "" {
-		return "", errors.New("tracked external skill has no recorded source directory")
-	}
-	path := filepath.Clean(entry.Source)
-	if !filepath.IsAbs(path) {
-		return "", errors.New("tracked external skill source must be an absolute directory")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("external skill directory is unavailable: %w", err)
-	}
-	if !info.IsDir() {
-		return "", errors.New("external skill source is not a directory")
-	}
-	if _, ok, err := readSkillFrontmatter(filepath.Join(path, "SKILL.md")); err != nil || !ok {
-		return "", errors.New("external skill source has no valid SKILL.md")
-	}
-	return path, nil
-}
-
-func entryBindingAgents(entry PackageEntry) []Agent {
-	seen := map[Agent]bool{}
-	agents := []Agent{}
-	for _, binding := range entry.Bindings {
-		if !seen[binding.Agent] {
-			seen[binding.Agent] = true
-			agents = append(agents, binding.Agent)
-		}
-	}
-	return agents
-}
-
-func (entry PackageEntry) Scope() Scope {
-	scopes := map[Scope]bool{}
-	for _, binding := range entry.Bindings {
-		scopes[binding.Scope] = true
-	}
-	if len(scopes) == 0 {
-		return ScopeUnknown
-	}
-	if len(scopes) == 1 {
-		for scope := range scopes {
-			return scope
-		}
-	}
-	return ScopeMixed
-}
-
-func agentsLabel(agents []Agent) string {
-	names := make([]string, 0, len(agents))
-	for _, agent := range agents {
-		names = append(names, agentName(agent))
-	}
-	return strings.Join(names, ", ")
-}
-
-// copyDirBounded materializes a package folder with the exact bounds the
-// store allows. Destination is created under an exclusive parent so partial
-// copies never look like committed content.
-func copyDirBounded(source, destination string) error {
-	if !filepath.IsAbs(destination) {
-		return errors.New("copy destination must be absolute")
-	}
-	info, err := os.Stat(source)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return errors.New("copy source is not a directory")
-	}
-	files, err := collectRegularFiles(source)
-	if err != nil {
-		return err
-	}
-	var total int64
-	for _, relative := range files {
-		src := filepath.Join(source, filepath.FromSlash(relative))
-		dst := filepath.Join(destination, filepath.FromSlash(relative))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
-		}
-		fileInfo, err := os.Stat(src)
-		if err != nil {
-			return err
-		}
-		if fileInfo.Size() > hashMaxFileBytes {
-			return ErrHashLimit
-		}
-		total += fileInfo.Size()
-		if total > maxPackageBytes {
-			return ErrHashLimit
-		}
-		if err := copyRegularFile(src, dst); err != nil {
-			return err
-		}
+	if installedSkillID(copy.Name, copy.RootPath, copy.CanonicalPath, copy.AllowedRoot) != copy.ID {
+		return errors.New("Skill copy identity does not match its roots")
 	}
 	return nil
 }
 
-func copyRegularFile(source, destination string) error {
-	in, err := os.Open(source)
+func ExecuteMutationCommand(ctx context.Context, command MutationCommand, options MutationExecutionOptions) (MutationExecution, error) {
+	if command.Operation != OperationDelete {
+		return MutationExecution{}, fmt.Errorf("unsupported Skill operation %q", command.Operation)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = DefaultRemovalTimeout
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	startedAt := time.Now()
+	request := MutationRequest{
+		Operation: OperationDelete, CopyID: command.CopyID, SkillName: command.SkillName,
+		RootPath: command.RootPath, CanonicalPath: command.CanonicalPath, AllowedRoot: command.AllowedRoot,
+	}
+	copy, err := resolveDeleteCopy(options.InventoryOptions, request)
 	if err != nil {
-		return err
+		return MutationExecution{}, err
 	}
-	defer in.Close()
-	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
+	if err := deleteExactCopy(runCtx, copy, options.InventoryOptions.deleteHooks); err != nil {
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			return MutationExecution{}, ErrMutationCancelled
+		}
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return MutationExecution{}, ErrMutationTimedOut
+		}
+		return MutationExecution{}, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
+	return MutationExecution{
+		Success: true, ExitCode: 0,
+		Output:     "Deleted " + copy.Name + ".",
+		DurationMS: time.Since(startedAt).Milliseconds(),
+	}, nil
 }
 
-func countPackageFiles(root string) int {
-	files, err := collectRegularFiles(root)
-	if err != nil {
-		return 0
+func deleteExactCopy(ctx context.Context, copy InstalledSkill, hooks *deleteTestHooks) error {
+	if err := validateDeleteIdentity(copy); err != nil {
+		return err
 	}
-	return len(files)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	allowed, err := os.OpenRoot(copy.AllowedRoot)
+	if err != nil {
+		return fmt.Errorf("open allowed Skills root: %w", err)
+	}
+	defer allowed.Close()
+	entryName := filepath.Base(copy.RootPath)
+	before, err := allowed.Lstat(entryName)
+	if err != nil {
+		return fmt.Errorf("the selected Skill copy is no longer available: %w", err)
+	}
+	if !before.IsDir() && before.Mode()&os.ModeSymlink == 0 {
+		return errors.New("the selected Skill root is neither a directory nor a directory link")
+	}
+	resolved, err := filepath.EvalSymlinks(copy.RootPath)
+	if err != nil {
+		return fmt.Errorf("resolve selected Skill root: %w", err)
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil || filepath.Clean(resolved) != copy.CanonicalPath {
+		return errors.New("the selected Skill root changed after discovery")
+	}
+	if before.Mode()&os.ModeSymlink == 0 {
+		resolvedAllowed, rootErr := filepath.EvalSymlinks(copy.AllowedRoot)
+		if rootErr != nil {
+			return fmt.Errorf("resolve allowed Skills root: %w", rootErr)
+		}
+		resolvedAllowed, rootErr = filepath.Abs(resolvedAllowed)
+		if rootErr != nil || filepath.Dir(copy.CanonicalPath) != filepath.Clean(resolvedAllowed) {
+			return errors.New("the selected Skill directory escaped its resolved allowed root")
+		}
+	}
+	if hooks != nil && hooks.beforeRename != nil {
+		if err := hooks.beforeRename(copy); err != nil {
+			return err
+		}
+	}
+	if err := ensureTrashDirectory(allowed); err != nil {
+		return err
+	}
+	quarantine, err := quarantinePath(copy)
+	if err != nil {
+		return err
+	}
+	if err := allowed.Rename(entryName, quarantine); err != nil {
+		return fmt.Errorf("move selected Skill for deletion: %w", err)
+	}
+	rollback := func(cause error) error {
+		if _, statErr := allowed.Lstat(entryName); errors.Is(statErr, os.ErrNotExist) {
+			if renameErr := allowed.Rename(quarantine, entryName); renameErr != nil {
+				return fmt.Errorf("%v; restore selected Skill: %w", cause, renameErr)
+			}
+		}
+		return cause
+	}
+	moved, err := allowed.Lstat(quarantine)
+	if err != nil || !os.SameFile(before, moved) {
+		return rollback(errors.New("selected Skill identity changed during deletion"))
+	}
+	if hooks != nil && hooks.afterRename != nil {
+		if err := hooks.afterRename(copy); err != nil {
+			return rollback(err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	removeAll := func(root *os.Root, name string) error { return root.RemoveAll(name) }
+	if hooks != nil && hooks.removeAll != nil {
+		removeAll = hooks.removeAll
+	}
+	if err := removeAll(allowed, quarantine); err != nil {
+		return rollback(fmt.Errorf("permanently delete selected Skill: %w", err))
+	}
+	_ = allowed.Remove(deleteTrashDir)
+	return nil
 }
 
-func shortHash(hash string) string {
-	if len(hash) > 12 {
-		return hash[:12]
+func ensureTrashDirectory(root *os.Root) error {
+	info, err := root.Lstat(deleteTrashDir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := root.Mkdir(deleteTrashDir, 0o700); err != nil {
+			return fmt.Errorf("create Skills deletion staging directory: %w", err)
+		}
+		return nil
 	}
-	return hash
+	if err != nil {
+		return fmt.Errorf("inspect Skills deletion staging directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Skills deletion staging path is not a safe directory")
+	}
+	return nil
+}
+
+func quarantinePath(copy InstalledSkill) (string, error) {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("create deletion identity: %w", err)
+	}
+	return filepath.Join(deleteTrashDir, copy.Name+"-"+copy.ID+"-"+hex.EncodeToString(random)), nil
 }

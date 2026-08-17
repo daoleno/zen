@@ -2,74 +2,16 @@ package skills
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
-
-// fetchGitSkill stages a catalog Skill by cloning its pinned provenance into
-// stageDir and locating the skill directory by name. It is the default
-// SourceFetcher; tests inject hermetic writers instead.
-func fetchGitSkill(ctx context.Context, request MutationRequest, stageDir string) error {
-	if err := ValidateCatalogIdentity(request.SkillID, request.Source, request.SkillName); err != nil {
-		return err
-	}
-	ref := strings.TrimSpace(request.Ref)
-	if ref != "" {
-		if err := ValidateRef(ref); err != nil {
-			return err
-		}
-	}
-	if _, err := os.Stat(stageDir); err != nil {
-		return err
-	}
-	cloneArgs := []string{"clone", "--depth", "1"}
-	if ref != "" {
-		cloneArgs = append(cloneArgs, "--branch", ref)
-	}
-	cloneArgs = append(cloneArgs, "https://github.com/"+request.Source+".git", stageDir)
-	if err := runGit(ctx, cloneArgs...); err != nil {
-		return fmt.Errorf("fetch skill source: %w", err)
-	}
-	// Locate the skill directory: <repo>/skills/<name> (the skills-sh
-	// convention) or <repo>/<name> when the whole repo is the skill.
-	found := filepath.Join(stageDir, "skills", request.SkillName)
-	if _, err := os.Stat(filepath.Join(found, "SKILL.md")); err != nil {
-		found = filepath.Join(stageDir, request.SkillName)
-	}
-	if _, err := os.Stat(filepath.Join(found, "SKILL.md")); err != nil {
-		return fmt.Errorf("repository %s contains no skill named %q", request.Source, request.SkillName)
-	}
-	return nil
-}
-
-func runGit(ctx context.Context, args ...string) error {
-	path, err := exec.LookPath("git")
-	if err != nil {
-		return ErrMutationBinaryMissing
-	}
-	command := exec.CommandContext(ctx, path, args...)
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if len(message) > 240 {
-			message = message[:240]
-		}
-		return errors.New(message)
-	}
-	return nil
-}
 
 // PackageFile is one entry of the bounded file listing used by inspect.
 type PackageFile struct {
@@ -92,34 +34,24 @@ type FilePreview struct {
 	Notice        string `json:"notice,omitempty"`
 }
 
-// PackageDetail is the full inspection surface for one Skill: rendered
-// SKILL.md content, bounded file listing, provenance, hash, bindings, enabled
-// state, and static risk signals. It is the payload behind the inspector UI.
+// PackageDetail is the read-only inspector projection for one exact copy.
 type PackageDetail struct {
-	CopyID      string               `json:"copy_id"`
-	SkillName   string               `json:"skill_name"`
-	Description string               `json:"description,omitempty"`
-	Manager     Manager              `json:"manager"`
-	Owned       bool                 `json:"owned"`
-	Tracked     bool                 `json:"tracked"`
-	Enabled     bool                 `json:"enabled"`
-	Canonical   string               `json:"canonical_path,omitempty"`
-	SourcePath  string               `json:"source_path,omitempty"`
-	Source      string               `json:"source,omitempty"`
-	SourceType  string               `json:"source_type,omitempty"`
-	SourceURL   string               `json:"source_url,omitempty"`
-	Ref         string               `json:"ref,omitempty"`
-	ContentHash string               `json:"content_hash,omitempty"`
-	InstalledAt string               `json:"installed_at,omitempty"`
-	UpdatedAt   string               `json:"updated_at,omitempty"`
-	Scope       Scope                `json:"scope"`
-	Agents      []Agent              `json:"agents"`
-	Bindings    []SkillBinding       `json:"bindings"`
-	Files       []PackageFile        `json:"files,omitempty"`
-	Preview     *FilePreview         `json:"preview,omitempty"`
-	Risk        []RiskSignal         `json:"risk,omitempty"`
-	Warnings    []string             `json:"warnings,omitempty"`
-	Capability  ManagementCapability `json:"capability"`
+	CopyID        string           `json:"copy_id"`
+	SkillName     string           `json:"skill_name"`
+	Description   string           `json:"description,omitempty"`
+	Enabled       bool             `json:"enabled"`
+	RootPath      string           `json:"root_path"`
+	CanonicalPath string           `json:"canonical_path"`
+	AllowedRoot   string           `json:"allowed_root"`
+	Location      string           `json:"location"`
+	ContentHash   string           `json:"content_hash,omitempty"`
+	Scope         Scope            `json:"scope"`
+	Agents        []Agent          `json:"agents"`
+	Files         []PackageFile    `json:"files,omitempty"`
+	Preview       *FilePreview     `json:"preview,omitempty"`
+	Risk          []RiskSignal     `json:"risk,omitempty"`
+	Warnings      []string         `json:"warnings,omitempty"`
+	Capability    DeleteCapability `json:"capability"`
 }
 
 // InspectPackageFile extends package detail with one bounded, read-only text
@@ -143,10 +75,7 @@ func inspectPackageFile(options InventoryOptions, name, copyID, relative string)
 	if relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, "../") {
 		return PackageDetail{}, errors.New("invalid Skill file path")
 	}
-	root := detail.Canonical
-	if root == "" {
-		root = detail.SourcePath
-	}
+	root := detail.CanonicalPath
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		return PackageDetail{}, errors.New("Skill package root is unavailable")
@@ -217,18 +146,14 @@ func inspectPackage(options InventoryOptions, name, copyID string) (PackageDetai
 	}
 	detail := PackageDetail{
 		CopyID: installed.ID, SkillName: name, Description: installed.Description,
-		Manager: installed.Manager, Owned: installed.Owned, Tracked: installed.Tracked,
-		Enabled: installed.Enabled, Canonical: installed.CanonicalPath, SourcePath: installed.SourcePath,
-		Source: installed.Source, SourceType: installed.SourceType, SourceURL: installed.SourceURL,
-		Ref: installed.Ref, ContentHash: installed.ContentHash, InstalledAt: installed.InstalledAt,
-		UpdatedAt: installed.UpdatedAt, Scope: installed.Scope, Agents: append([]Agent{}, installed.Agents...),
-		Bindings: append([]SkillBinding{}, installed.Bindings...), Risk: append([]RiskSignal{}, installed.Risk...),
+		Enabled: installed.Enabled, RootPath: installed.RootPath,
+		CanonicalPath: installed.CanonicalPath, AllowedRoot: installed.AllowedRoot,
+		Location: installed.Location, ContentHash: installed.ContentHash,
+		Scope: installed.Scope, Agents: append([]Agent{}, installed.Agents...),
+		Risk:     append([]RiskSignal{}, installed.Risk...),
 		Warnings: append([]string{}, installed.Warnings...), Capability: installed.Capability,
 	}
-	contentRoot := detail.Canonical
-	if contentRoot == "" {
-		contentRoot = detail.SourcePath
-	}
+	contentRoot := detail.CanonicalPath
 	if contentRoot != "" {
 		contentRoot, err = filepath.EvalSymlinks(contentRoot)
 		if err != nil {

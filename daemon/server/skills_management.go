@@ -130,12 +130,12 @@ func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "Invalid Skills command request.")
 		return
 	}
-	if raw.Operation == string(skillmgmt.OperationImport) {
-		s.sendSkillsError(conn, "skills_command_error", raw, "unsupported_operation", "Skills import is not part of local management.")
+	if raw.Operation != string(skillmgmt.OperationDelete) {
+		s.sendSkillsError(conn, "skills_command_error", raw, "unsupported_operation", "This Skills operation is not supported.")
 		return
 	}
-	if raw.Operation != string(skillmgmt.OperationMigrate) && strings.TrimSpace(raw.SkillID) == "" {
-		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "A current Skill copy ID is required.")
+	if !validSkillsDeleteIdentity(raw) {
+		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "A complete current Skill copy identity is required.")
 		return
 	}
 	request := skillsMutationWireRequest(raw)
@@ -170,24 +170,11 @@ func skillsInventoryOptions(s *Server, ctx context.Context, cwd string) skillmgm
 }
 
 func skillsMutationWireRequest(raw clientMessage) skillmgmt.MutationRequest {
-	agents := make([]skillmgmt.Agent, 0, len(raw.Agents))
-	for _, agent := range raw.Agents {
-		agents = append(agents, skillmgmt.Agent(agent))
-	}
-	scope := skillmgmt.Scope(raw.Scope)
-	if scope == "" && raw.Operation == "migrate" {
-		scope = skillmgmt.ScopeGlobal
-	}
 	return skillmgmt.MutationRequest{
-		Operation: skillmgmt.MutationOperation(raw.Operation),
-		CWD:       raw.Cwd,
-		SkillID:   raw.SkillID,
-		Source:    raw.Source,
-		SkillName: raw.SkillName,
-		Ref:       raw.Ref,
-		InfoPath:  raw.Path,
-		Scope:     scope,
-		Agents:    agents,
+		Operation: skillmgmt.MutationOperation(raw.Operation), CWD: raw.Cwd,
+		CopyID: raw.SkillID, SkillName: raw.SkillName,
+		RootPath: raw.SkillRoot, CanonicalPath: raw.SkillCanonical,
+		AllowedRoot: raw.SkillAllowedRoot,
 	}
 }
 
@@ -201,12 +188,12 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "Invalid Skills mutation request.")
 		return
 	}
-	if raw.Operation == string(skillmgmt.OperationImport) {
-		s.sendSkillsError(conn, "skills_mutation_error", raw, "unsupported_operation", "Skills import is not part of local management.")
+	if raw.Operation != string(skillmgmt.OperationDelete) {
+		s.sendSkillsError(conn, "skills_mutation_error", raw, "unsupported_operation", "This Skills operation is not supported.")
 		return
 	}
-	if raw.Operation != string(skillmgmt.OperationMigrate) && strings.TrimSpace(raw.SkillID) == "" {
-		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "A current Skill copy ID is required.")
+	if !validSkillsDeleteIdentity(raw) {
+		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "A complete current Skill copy identity is required.")
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -294,6 +281,14 @@ func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 	}()
 }
 
+func validSkillsDeleteIdentity(raw clientMessage) bool {
+	return strings.TrimSpace(raw.SkillID) != "" &&
+		strings.TrimSpace(raw.SkillName) != "" &&
+		strings.TrimSpace(raw.SkillRoot) != "" &&
+		strings.TrimSpace(raw.SkillCanonical) != "" &&
+		strings.TrimSpace(raw.SkillAllowedRoot) != ""
+}
+
 func (s *Server) replaceSkillsMutation(conn *websocket.Conn, next skillsMutationRequest) (skillsMutationRequest, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -342,7 +337,7 @@ func validSkillsRequest(requestID string, generation int64) bool {
 }
 
 // handleSkillsInspect serves the read-side inspector: rendered SKILL.md
-// content, bounded file listing, provenance, hash, bindings, and risk
+// content, bounded file listing, location, Agents, hash, and risk
 // signals for one Skill. Like the inventory, inspect is generation-cancelable
 // and never mutates state.
 func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {

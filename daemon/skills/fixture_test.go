@@ -43,10 +43,6 @@ func (f *fixture) options(cwd string) InventoryOptions {
 	}
 }
 
-func (f *fixture) store() Store {
-	return Store{StateDir: f.StateDir, Home: f.Home, Now: func() time.Time { return f.Now }}
-}
-
 // writeSkill creates <dir>/<name>/SKILL.md (+optional extra files).
 func (f *fixture) writeSkill(dir, name, body string) string {
 	f.T.Helper()

@@ -318,6 +318,9 @@ type clientMessage struct {
 	Scope                string                                 `json:"scope"`
 	Agents               []string                               `json:"agents"`
 	SkillID              string                                 `json:"skill_id"`
+	SkillRoot            string                                 `json:"root_path"`
+	SkillCanonical       string                                 `json:"canonical_path"`
+	SkillAllowedRoot     string                                 `json:"allowed_root"`
 	Source               string                                 `json:"source"`
 	SkillName            string                                 `json:"skill_name"`
 	Ref                  string                                 `json:"ref"`
