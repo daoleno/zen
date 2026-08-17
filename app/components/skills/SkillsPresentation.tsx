@@ -984,13 +984,11 @@ function CopyRow({
         },
       ]}
     >
-      <View style={styles.flex}>
+      <View style={styles.copyContent}>
         <View style={styles.rowHeading}>
           <Text
-            style={{
-              color: colors.textPrimary,
-              fontFamily: Typography.uiFontMedium,
-            }}
+            numberOfLines={2}
+            style={[styles.copyLabel, { color: colors.textPrimary }]}
           >
             {location.label}
           </Text>
@@ -1748,8 +1746,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  copyContent: { flex: 1, minWidth: 0 },
+  copyLabel: {
+    flex: 1,
+    flexShrink: 1,
+    fontFamily: Typography.uiFontMedium,
+  },
   path: { fontFamily: Typography.terminalFont, fontSize: 11, marginTop: 2 },
-  enabledLabel: { fontFamily: Typography.uiFontMedium, fontSize: 10 },
+  enabledLabel: {
+    flexShrink: 0,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 10,
+  },
   bindingRow: {
     minHeight: 56,
     flexDirection: "row",

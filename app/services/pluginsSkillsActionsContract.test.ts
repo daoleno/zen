@@ -70,6 +70,17 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).toContain('detail.capability.operations.includes("bind")');
     expect(presentation).toContain("agent.projectScope");
   });
+  test("copy rows keep status labels inside narrow inspectors", () => {
+    const copyRowSource = presentation.slice(
+      presentation.indexOf("function CopyRow"),
+      presentation.indexOf("function LifecycleActions"),
+    );
+    expect(copyRowSource).toContain("styles.copyContent");
+    expect(copyRowSource).toContain("styles.copyLabel");
+    expect(copyRowSource).toContain("numberOfLines={2}");
+    expect(presentation).toContain("copyContent: { flex: 1, minWidth: 0 }");
+    expect(presentation).toContain("flexShrink: 0");
+  });
   test("async reads and mutations remain bound to the current server context", () => {
     expect(screen).toContain("currentSkillsContext.current !== requestContext");
     expect(screen).toContain("currentServerId.current !== requestServerId");
