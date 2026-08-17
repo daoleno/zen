@@ -116,6 +116,12 @@ export function useInterfaceTimelineItems({
   );
 
   return useMemo(() => {
+    if (
+      pendingUserMessages.length === 0 &&
+      providerTimelineWithActivity === projectedTimelineItems
+    ) {
+      return projectedTimelineItems;
+    }
     const nextItems = mergePendingUserMessagesIntoTimeline(
       providerTimelineWithActivity,
       pendingUserMessages,
@@ -150,6 +156,7 @@ export function useInterfaceTimelineItems({
   }, [
     onRetryPendingUserMessage,
     pendingUserMessages,
+    projectedTimelineItems,
     providerTimelineWithActivity,
   ]);
 }

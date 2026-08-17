@@ -149,7 +149,8 @@ export const INTERFACE_DEVICE_PERF_LAUNCH_HINTS = [
   "Android: EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO=1 bun run app:android then open",
   "  zen://screenshot-demo?demo=1&state=profile&scenario=50-short",
   "iOS: EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO=1 bun run app:ios then open the same URL.",
-  "Scenarios: 50-short | 500-mixed | stream-8k | detached-append | detached-prepend",
+  "Long history: 1k-mixed | 5k-mixed | 10k-mixed | stream-10k",
+  "Anchoring: detached-append-10k | detached-prepend-10k (legacy small scenarios remain)",
   "Correlate summary with Android Studio FrameTimeline, adb shell dumpsys gfxinfo,",
   "Xcode Instruments Time Profiler, and Core Animation — JS rAF gaps are not native FPS.",
 ].join("\n");

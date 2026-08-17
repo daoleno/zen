@@ -22,8 +22,10 @@ import {
   recordListDataIdentitySample,
   recordMarkdownParseSample,
   recordMarkdownPrepareSample,
+  recordTimelineBlankWindowSample,
   recordTimelineListDataIdentityProbe,
   recordTimelineProjectionSample,
+  recordTimelineRenderProjectionSample,
   resetTimelineProjectionPerf,
   summarizeDurationPercentiles,
   summarizeTimelineProjectionPerf,
@@ -113,7 +115,23 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
         inputChars: 9,
         blockCount: 1,
       });
+      recordTimelineRenderProjectionSample({
+        mode: "update",
+        durationMs: 0.5,
+        sourceItemCount: 10,
+        renderItemCount: 11,
+        changedSourceCount: 1,
+        stableRenderReuse: 10,
+        stableRenderChurn: 1,
+      });
+      recordTimelineBlankWindowSample({
+        durationMs: 24,
+        scenarioRevision: 2,
+        itemCount: 10,
+      });
       expect(getTimelineProjectionPerfSnapshot().markdownPrepares.length).toBe(1);
+      expect(getTimelineProjectionPerfSnapshot().renderProjections).toHaveLength(1);
+      expect(getTimelineProjectionPerfSnapshot().blankWindows).toHaveLength(1);
       resetTimelineProjectionPerf();
       expect(getTimelineProjectionPerfSnapshot()).toMatchObject({
         projections: [],
@@ -121,6 +139,8 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
         markdownParses: [],
         listDataIdentities: [],
         jsFrameGaps: [],
+        renderProjections: [],
+        blankWindows: [],
       });
     } finally {
       disableTimelineProjectionPerf();
@@ -200,6 +220,20 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
         fallbackReason: "no-cache",
       });
       recordJsFrameGapSample({ gapMs: 18, scenarioRevision: 2 });
+      recordTimelineRenderProjectionSample({
+        mode: "update",
+        durationMs: 0.4,
+        sourceItemCount: 50,
+        renderItemCount: 51,
+        changedSourceCount: 1,
+        stableRenderReuse: 50,
+        stableRenderChurn: 1,
+      });
+      recordTimelineBlankWindowSample({
+        durationMs: 21,
+        scenarioRevision: 2,
+        itemCount: 50,
+      });
       recordTimelineListDataIdentityProbe({
         previousItems: [messageItem("a"), messageItem("b")],
         nextItems: [messageItem("a"), messageItem("c")],
@@ -209,6 +243,8 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
       const summary = summarizeTimelineProjectionPerf();
       expect(summary.projections.fallbackCount).toBe(1);
       expect(summary.jsFrameGaps.metricLabel).toBe(JS_FRAME_GAP_METRIC_LABEL);
+      expect(summary.renderProjections.incremental.p50).toBe(0.4);
+      expect(summary.blankWindows.count).toBe(1);
       expect(summary.jsFrameGaps.metricLabel).toContain("not native UI FPS");
 
       const text = formatTimelineProjectionPerfDeviceSummary({
@@ -219,6 +255,8 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
       expect(text).toContain("scenario=500-mixed");
       expect(text).toContain("followSuspended=1");
       expect(text).toContain(JS_FRAME_GAP_METRIC_LABEL);
+      expect(text).toContain("renderProjection.incremental.ms");
+      expect(text).toContain("blankWindow.count=1");
       expect(text).toContain("note=JS_rAF_gaps_are_proxy_not_native_UI_FPS");
       expect(text).not.toContain("SECRET");
       expect(text).not.toContain("body-for");
@@ -230,6 +268,13 @@ describe("interfaceDevicePerformanceHarness collector extensions", () => {
       disableTimelineProjectionPerf();
       resetTimelineProjectionPerf();
     }
+  });
+
+  test("canonical list observes post-mount blank windows only in the opt-in collector", () => {
+    expect(timelineViewSource).toContain("onViewableItemsChanged={handleViewableItemsChanged}");
+    expect(timelineViewSource).toContain("perfSawVisibleRowsRef.current");
+    expect(timelineViewSource).toContain("recordTimelineBlankWindowSample({");
+    expect(timelineViewSource).toContain("perfItemCountRef.current > 0");
   });
 
   test("list identity probe records reuse and churn without bodies", () => {

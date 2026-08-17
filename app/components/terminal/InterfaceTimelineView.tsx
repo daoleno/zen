@@ -11,6 +11,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ScrollViewProps,
+  type ViewToken,
 } from "react-native";
 import Reanimated, {
   measure,
@@ -38,9 +39,9 @@ import {
 } from "./InterfaceTimelineItemView";
 import { InterfaceTimelineDateDivider } from "./InterfaceTimelineDateDivider";
 import {
-  buildTimelineRenderItems,
-  stabilizeTimelineRenderItems,
+  projectTimelineRenderItems,
   type TimelineRenderItem,
+  type TimelineRenderProjectionCache,
 } from "./InterfaceTimelineGrouping";
 import type { PatchFileSummary } from "./InterfaceTimelineActivityTypes";
 import { timelineListStabilityProps } from "./timelineScrollPolicy";
@@ -54,6 +55,8 @@ import {
 import { INTERFACE_TIMELINE_HORIZONTAL_INSET } from "./interfaceTimelineGeometry";
 import {
   isTimelineProjectionPerfEnabled,
+  getTimelineProjectionPerfScenarioRevision,
+  recordTimelineBlankWindowSample,
   recordTimelineListDataIdentityProbe,
 } from "./timelineProjectionPerf";
 
@@ -180,9 +183,14 @@ export function InterfaceTimelineView({
   const turnFocusCellMeasurementRef = React.useRef<TurnFocusCellMeasurement>(
     {},
   );
-  const previousRenderItemsRef = React.useRef<TimelineRenderItem[]>([]);
+  const renderProjectionCacheRef =
+    React.useRef<TimelineRenderProjectionCache | null>(null);
   const previousItemsRef = React.useRef(items);
   const previousPerfItemsRef = React.useRef<ZenTimelineItem[] | null>(null);
+  const perfItemCountRef = React.useRef(items.length);
+  const perfSawVisibleRowsRef = React.useRef(false);
+  const perfBlankStartedAtRef = React.useRef<number | null>(null);
+  perfItemCountRef.current = items.length;
   React.useEffect(() => {
     const previousPerfItems = previousPerfItemsRef.current;
     if (
@@ -204,15 +212,11 @@ export function InterfaceTimelineView({
     onItemsMutated?.();
   }, [items, onItemsMutated]);
   const renderItems = React.useMemo(() => {
-    const next = buildTimelineRenderItems([...items].reverse(), {
+    const projected = projectTimelineRenderItems(items, {
       showDateDividers: zenTheme.chat.showDateDividers,
-    });
-    const stable = stabilizeTimelineRenderItems(
-      previousRenderItemsRef.current,
-      next,
-    );
-    previousRenderItemsRef.current = stable;
-    return stable;
+    }, renderProjectionCacheRef.current);
+    renderProjectionCacheRef.current = projected.cache;
+    return projected.items;
   }, [items, zenTheme.chat.showDateDividers]);
   const turnFocusAnchorItemId = resolveTurnFocusAnchorItemId(
     turnFocusPendingMessageId,
@@ -307,6 +311,37 @@ export function InterfaceTimelineView({
   const handleTouchCancel = React.useCallback(() => {
     onTouchActiveChange?.(false);
   }, [onTouchActiveChange]);
+  const handleViewableItemsChanged = React.useCallback(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      if (!isTimelineProjectionPerfEnabled()) {
+        perfSawVisibleRowsRef.current = false;
+        perfBlankStartedAtRef.current = null;
+        return;
+      }
+      const now = timelineViewNowMs();
+      if (viewableItems.length > 0) {
+        perfSawVisibleRowsRef.current = true;
+        const blankStartedAt = perfBlankStartedAtRef.current;
+        if (blankStartedAt !== null) {
+          recordTimelineBlankWindowSample({
+            durationMs: Math.max(0, now - blankStartedAt),
+            scenarioRevision: getTimelineProjectionPerfScenarioRevision(),
+            itemCount: perfItemCountRef.current,
+          });
+          perfBlankStartedAtRef.current = null;
+        }
+        return;
+      }
+      if (
+        perfItemCountRef.current > 0 &&
+        perfSawVisibleRowsRef.current &&
+        perfBlankStartedAtRef.current === null
+      ) {
+        perfBlankStartedAtRef.current = now;
+      }
+    },
+    [],
+  );
 
   const emptyContent = React.useMemo(
     () => (
@@ -388,6 +423,7 @@ export function InterfaceTimelineView({
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchCancel}
           onContentSizeChange={onContentSizeChange}
+          onViewableItemsChanged={handleViewableItemsChanged}
         />
 
         {items.length === 0 ? (
@@ -396,6 +432,11 @@ export function InterfaceTimelineView({
       </View>
     </TimelineTextSelectableContext.Provider>
   );
+}
+
+function timelineViewNowMs() {
+  const perf = (globalThis as { performance?: { now(): number } }).performance;
+  return perf?.now?.() ?? Date.now();
 }
 
 function ignoreClearanceChange() {}

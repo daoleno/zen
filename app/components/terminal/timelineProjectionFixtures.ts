@@ -65,12 +65,65 @@ export function makeMixedTimelineEvents(count: number): CodexConversationEvent[]
   return events;
 }
 
+/**
+ * Deterministic long-history fixture using the same provider event schema as
+ * production. It mixes long Markdown, fenced code, tables, tool payloads, and
+ * Work cards without introducing a benchmark-only render model.
+ */
+export function makeComplexTimelineEvents(
+  count: number,
+): CodexConversationEvent[] {
+  return makeMixedTimelineEvents(count).map((event, index) => {
+    if (event.kind === "assistant_message") {
+      const paragraph = `Long assistant paragraph ${index}: ${"analysis ".repeat(48)}`;
+      const code = Array.from(
+        { length: 18 },
+        (_, line) => `const value${line} = ${index + line};`,
+      ).join("\n");
+      return {
+        ...event,
+        body: `${paragraph}\n\n## Result ${index}\n\n- stable identity\n- incremental projection\n- native anchor\n\n| Metric | Value |\n| --- | ---: |\n| item | ${index} |\n\n\`\`\`ts\n${code}\n\`\`\``,
+      };
+    }
+    if (event.kind === "user_message") {
+      return {
+        ...event,
+        body: `Long user request ${index}: ${"context ".repeat(24)}`,
+      };
+    }
+    if (event.kind === "tool") {
+      return {
+        ...event,
+        input: JSON.stringify({
+          pattern: `fixture-${index}`,
+          path: "app/components/terminal",
+          context: "x".repeat(256),
+        }),
+        body: Array.from(
+          { length: 24 },
+          (_, line) => `app/file-${index}.ts:${line + 1}: match-${line}`,
+        ).join("\n"),
+      };
+    }
+    return event;
+  });
+}
+
 export function firstAssistantEventId(events: CodexConversationEvent[]) {
   const found = events.find((event) => event.kind === "assistant_message");
   if (!found) {
     throw new Error("fixture requires an assistant_message");
   }
   return found.id;
+}
+
+export function lastAssistantEventId(events: CodexConversationEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.kind === "assistant_message") {
+      return events[index]!.id;
+    }
+  }
+  throw new Error("fixture requires an assistant_message");
 }
 
 export function withAssistantBodyRevision(

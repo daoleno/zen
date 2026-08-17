@@ -35,6 +35,16 @@ export type TimelineProjectionSample = {
   stableRowChurn?: number;
 };
 
+export type TimelineRenderProjectionSample = {
+  mode: "full" | "stable" | "update" | "append" | "prepend";
+  durationMs: number;
+  sourceItemCount: number;
+  renderItemCount: number;
+  changedSourceCount: number;
+  stableRenderReuse: number;
+  stableRenderChurn: number;
+};
+
 export type MarkdownPrepareSample = {
   durationMs: number;
   streaming: boolean;
@@ -70,6 +80,12 @@ export type JsFrameGapSample = {
   jsSchedulingProxy: true;
 };
 
+export type TimelineBlankWindowSample = {
+  durationMs: number;
+  scenarioRevision: number;
+  itemCount: number;
+};
+
 export type DurationPercentileSummary = {
   count: number;
   min: number;
@@ -82,19 +98,23 @@ export type DurationPercentileSummary = {
 type CollectorState = {
   enabled: boolean;
   projections: TimelineProjectionSample[];
+  renderProjections: TimelineRenderProjectionSample[];
   markdownPrepares: MarkdownPrepareSample[];
   markdownParses: MarkdownParseSample[];
   listDataIdentities: ListDataIdentitySample[];
   jsFrameGaps: JsFrameGapSample[];
+  blankWindows: TimelineBlankWindowSample[];
 };
 
 const state: CollectorState = {
   enabled: false,
   projections: [],
+  renderProjections: [],
   markdownPrepares: [],
   markdownParses: [],
   listDataIdentities: [],
   jsFrameGaps: [],
+  blankWindows: [],
 };
 
 const MAX_SAMPLES = 10_000;
@@ -156,11 +176,25 @@ export function disableTimelineProjectionPerf() {
 
 export function resetTimelineProjectionPerf() {
   state.projections = [];
+  state.renderProjections = [];
   state.markdownPrepares = [];
   state.markdownParses = [];
   state.listDataIdentities = [];
   state.jsFrameGaps = [];
+  state.blankWindows = [];
   perfScenarioRevision = 0;
+}
+
+export function recordTimelineRenderProjectionSample(
+  sample: TimelineRenderProjectionSample,
+) {
+  if (!isTimelineProjectionPerfEnabled()) {
+    return;
+  }
+  if (state.renderProjections.length >= MAX_SAMPLES) {
+    state.renderProjections.shift();
+  }
+  state.renderProjections.push({ ...sample });
 }
 
 export function isTimelineProjectionPerfEnabled() {
@@ -311,24 +345,40 @@ export function recordJsFrameGapSample(sample: {
   });
 }
 
+export function recordTimelineBlankWindowSample(
+  sample: TimelineBlankWindowSample,
+) {
+  if (!isTimelineProjectionPerfEnabled()) {
+    return;
+  }
+  if (state.blankWindows.length >= MAX_SAMPLES) {
+    state.blankWindows.shift();
+  }
+  state.blankWindows.push({ ...sample });
+}
+
 export function getTimelineProjectionPerfSnapshot() {
   if (!timelineProjectionPerfCollectionAllowed()) {
     return {
       enabled: false,
       projections: [] as TimelineProjectionSample[],
+      renderProjections: [] as TimelineRenderProjectionSample[],
       markdownPrepares: [] as MarkdownPrepareSample[],
       markdownParses: [] as MarkdownParseSample[],
       listDataIdentities: [] as ListDataIdentitySample[],
       jsFrameGaps: [] as JsFrameGapSample[],
+      blankWindows: [] as TimelineBlankWindowSample[],
     };
   }
   return {
     enabled: state.enabled,
     projections: state.projections.slice(),
+    renderProjections: state.renderProjections.slice(),
     markdownPrepares: state.markdownPrepares.slice(),
     markdownParses: state.markdownParses.slice(),
     listDataIdentities: state.listDataIdentities.slice(),
     jsFrameGaps: state.jsFrameGaps.slice(),
+    blankWindows: state.blankWindows.slice(),
   };
 }
 
@@ -405,6 +455,11 @@ export type TimelineProjectionPerfDeviceSummary = {
     incremental: DurationPercentileSummary;
     fallbackCount: number;
   };
+  renderProjections: {
+    all: DurationPercentileSummary;
+    full: DurationPercentileSummary;
+    incremental: DurationPercentileSummary;
+  };
   markdownPrepare: DurationPercentileSummary;
   markdownParse: DurationPercentileSummary;
   listDataIdentity: {
@@ -418,6 +473,7 @@ export type TimelineProjectionPerfDeviceSummary = {
   jsFrameGaps: DurationPercentileSummary & {
     metricLabel: typeof JS_FRAME_GAP_METRIC_LABEL;
   };
+  blankWindows: DurationPercentileSummary;
 };
 
 export function summarizeTimelineProjectionPerf(): TimelineProjectionPerfDeviceSummary {
@@ -429,6 +485,15 @@ export function summarizeTimelineProjectionPerf(): TimelineProjectionPerfDeviceS
   const incrementalDurations = snapshot.projections
     .filter((s) => s.mode === "incremental")
     .map((s) => s.durationMs);
+  const renderProjectionDurations = snapshot.renderProjections.map(
+    (sample) => sample.durationMs,
+  );
+  const fullRenderProjectionDurations = snapshot.renderProjections
+    .filter((sample) => sample.mode === "full")
+    .map((sample) => sample.durationMs);
+  const incrementalRenderProjectionDurations = snapshot.renderProjections
+    .filter((sample) => sample.mode !== "full")
+    .map((sample) => sample.durationMs);
   return {
     enabled: snapshot.enabled,
     collectionAllowed: timelineProjectionPerfCollectionAllowed(),
@@ -437,6 +502,13 @@ export function summarizeTimelineProjectionPerf(): TimelineProjectionPerfDeviceS
       full: summarizeDurationPercentiles(fullDurations),
       incremental: summarizeDurationPercentiles(incrementalDurations),
       fallbackCount: snapshot.projections.filter((s) => s.fallbackReason).length,
+    },
+    renderProjections: {
+      all: summarizeDurationPercentiles(renderProjectionDurations),
+      full: summarizeDurationPercentiles(fullRenderProjectionDurations),
+      incremental: summarizeDurationPercentiles(
+        incrementalRenderProjectionDurations,
+      ),
     },
     markdownPrepare: summarizeDurationPercentiles(
       snapshot.markdownPrepares.map((s) => s.durationMs),
@@ -472,6 +544,9 @@ export function summarizeTimelineProjectionPerf(): TimelineProjectionPerfDeviceS
       ),
       metricLabel: JS_FRAME_GAP_METRIC_LABEL,
     },
+    blankWindows: summarizeDurationPercentiles(
+      snapshot.blankWindows.map((sample) => sample.durationMs),
+    ),
   };
 }
 
@@ -496,6 +571,15 @@ export function formatTimelineProjectionPerfDeviceSummary(input?: {
       summary.projections.incremental,
     ),
     `projection.fallbackCount=${summary.projections.fallbackCount}`,
+    formatPercentileLine("renderProjection.ms", summary.renderProjections.all),
+    formatPercentileLine(
+      "renderProjection.full.ms",
+      summary.renderProjections.full,
+    ),
+    formatPercentileLine(
+      "renderProjection.incremental.ms",
+      summary.renderProjections.incremental,
+    ),
     formatPercentileLine("markdown.prepare.ms", summary.markdownPrepare),
     formatPercentileLine("markdown.parse.ms", summary.markdownParse),
     `listData.samples=${summary.listDataIdentity.sampleCount}`,
@@ -505,6 +589,8 @@ export function formatTimelineProjectionPerfDeviceSummary(input?: {
     `listData.added=${summary.listDataIdentity.addedItemTotal}`,
     `listData.removed=${summary.listDataIdentity.removedItemTotal}`,
     formatPercentileLine(JS_FRAME_GAP_METRIC_LABEL, summary.jsFrameGaps),
+    formatPercentileLine("blankWindow.ms", summary.blankWindows),
+    `blankWindow.count=${summary.blankWindows.count}`,
     "note=JS_rAF_gaps_are_proxy_not_native_UI_FPS",
     "correlate=Android_Studio_FrameTimeline|adb_dumpsys_gfxinfo|Xcode_Instruments|Core_Animation",
   ];

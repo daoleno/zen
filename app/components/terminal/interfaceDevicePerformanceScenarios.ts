@@ -8,15 +8,23 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import {
   firstAssistantEventId,
+  lastAssistantEventId,
+  makeComplexTimelineEvents,
   makeMixedTimelineEvents,
 } from "./timelineProjectionFixtures";
 
 export const INTERFACE_DEVICE_PERF_SCENARIOS = [
   "50-short",
   "500-mixed",
+  "1k-mixed",
+  "5k-mixed",
+  "10k-mixed",
   "stream-8k",
+  "stream-10k",
   "detached-append",
+  "detached-append-10k",
   "detached-prepend",
+  "detached-prepend-10k",
 ] as const;
 
 export type InterfaceDevicePerfScenarioId =
@@ -119,17 +127,43 @@ export function prepareInterfaceDevicePerfScenario(
       return prepareShort(50);
     case "500-mixed":
       return prepareMixedWithTools(500);
+    case "1k-mixed":
+      return prepareComplex(1_000, "1k-mixed");
+    case "5k-mixed":
+      return prepareComplex(5_000, "5k-mixed");
+    case "10k-mixed":
+      return prepareComplex(10_000, "10k-mixed");
     case "stream-8k":
       return prepareStream8k();
+    case "stream-10k":
+      return prepareStream10k();
     case "detached-append":
       return prepareDetachedAppend();
+    case "detached-append-10k":
+      return prepareDetachedAppend(10_000, "detached-append-10k");
     case "detached-prepend":
       return prepareDetachedPrepend();
+    case "detached-prepend-10k":
+      return prepareDetachedPrepend(10_000, "detached-prepend-10k");
     default: {
       const _exhaustive: never = id;
       return _exhaustive;
     }
   }
+}
+
+function prepareComplex(
+  count: number,
+  id: "1k-mixed" | "5k-mixed" | "10k-mixed",
+): PreparedInterfaceDevicePerfScenario {
+  return {
+    id,
+    initialEvents: makeComplexTimelineEvents(count),
+    startsDetached: false,
+    steps: [],
+    streamTargetChars: 0,
+    streamEventId: null,
+  };
 }
 
 function prepareShort(count: number): PreparedInterfaceDevicePerfScenario {
@@ -204,12 +238,49 @@ function prepareStream8k(): PreparedInterfaceDevicePerfScenario {
   };
 }
 
-function prepareDetachedAppend(): PreparedInterfaceDevicePerfScenario {
-  const history = makeShortMessages(DETACHED_HISTORY);
+function prepareStream10k(): PreparedInterfaceDevicePerfScenario {
+  const base = makeComplexTimelineEvents(10_000);
+  const assistantId = lastAssistantEventId(base);
+  return prepareStreamScenario("stream-10k", base, assistantId);
+}
+
+function prepareStreamScenario(
+  id: "stream-10k",
+  base: CodexConversationEvent[],
+  assistantId: string,
+): PreparedInterfaceDevicePerfScenario {
+  const initialEvents = withStreamAssistantBody(base, assistantId, "", false);
+  const revisions = buildStreamBodyRevisions(initialEvents, assistantId);
+  return {
+    id,
+    initialEvents,
+    startsDetached: false,
+    steps: revisions.map(({ revision, events, body, terminal }, index) => ({
+      dueAtMs: Math.round(
+        ((index + 1) * STREAM_DURATION_MS) / revisions.length,
+      ),
+      events,
+      label: terminal
+        ? `stream-terminal chars=${body.length}`
+        : `stream chars=${body.length} rev=${revision}`,
+    })),
+    streamTargetChars: STREAM_TARGET_CHARS,
+    streamEventId: assistantId,
+  };
+}
+
+function prepareDetachedAppend(
+  historyCount = DETACHED_HISTORY,
+  id: "detached-append" | "detached-append-10k" = "detached-append",
+): PreparedInterfaceDevicePerfScenario {
+  const history =
+    historyCount >= 1_000
+      ? makeComplexTimelineEvents(historyCount)
+      : makeShortMessages(historyCount);
   const steps: InterfaceDevicePerfScenarioStep[] = [];
   let events = history;
   for (let index = 0; index < DETACHED_APPEND_COUNT; index += 1) {
-    const seq = DETACHED_HISTORY + index;
+    const seq = historyCount + index;
     const next: CodexConversationEvent = {
       id: `live-append-${index}`,
       seq,
@@ -227,7 +298,7 @@ function prepareDetachedAppend(): PreparedInterfaceDevicePerfScenario {
     });
   }
   return {
-    id: "detached-append",
+    id,
     initialEvents: history,
     startsDetached: true,
     steps,
@@ -236,8 +307,15 @@ function prepareDetachedAppend(): PreparedInterfaceDevicePerfScenario {
   };
 }
 
-function prepareDetachedPrepend(): PreparedInterfaceDevicePerfScenario {
-  const liveEdge = makeShortMessages(DETACHED_HISTORY).map((event) => ({
+function prepareDetachedPrepend(
+  historyCount = DETACHED_HISTORY,
+  id: "detached-prepend" | "detached-prepend-10k" = "detached-prepend",
+): PreparedInterfaceDevicePerfScenario {
+  const history =
+    historyCount >= 1_000
+      ? makeComplexTimelineEvents(historyCount)
+      : makeShortMessages(historyCount);
+  const liveEdge = history.map((event) => ({
     ...event,
     seq: event.seq + 10_000,
     id: `edge-${event.id}`,
@@ -266,7 +344,7 @@ function prepareDetachedPrepend(): PreparedInterfaceDevicePerfScenario {
     });
   }
   return {
-    id: "detached-prepend",
+    id,
     initialEvents: liveEdge,
     startsDetached: true,
     steps,

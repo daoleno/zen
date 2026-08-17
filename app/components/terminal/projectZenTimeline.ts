@@ -2,6 +2,7 @@ import type { CodexConversationEvent } from "../../services/codexConversation";
 import { compareConversationEvents } from "./interfaceConversationReconciliation";
 import { buildZenTimelineFromSortedEvents } from "./InterfaceTimelineModel";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
+import { isWaitSessionPoll } from "../../services/toolCallDetails";
 import {
   isTimelineProjectionPerfEnabled,
   recordTimelineProjectionSample,
@@ -78,6 +79,16 @@ export function projectZenTimeline(
     );
     if (appended) {
       return appended;
+    }
+    const prepended = tryProvenEventPrepend(
+      sortedEvents,
+      previous,
+      started,
+      measure,
+      ordered.source,
+    );
+    if (prepended) {
+      return prepended;
     }
     return finishFull(ordered, started, measure, "length-change");
   }
@@ -181,6 +192,89 @@ export function projectZenTimeline(
       stableRowReuse,
       stableRowChurn,
       eventOrder: ordered.source,
+    },
+    sortedEvents.length,
+    started,
+    measure,
+  );
+}
+
+/**
+ * Proof-gated historical prepend. Existing event/item references survive when
+ * the incoming prefix cannot merge an exploration group across the boundary
+ * or mutate the first retained command through a wait-session projection.
+ */
+function tryProvenEventPrepend(
+  sortedEvents: CodexConversationEvent[],
+  previous: ZenTimelineProjectionCache,
+  started: number,
+  measure: boolean,
+  eventOrder: ZenTimelineEventOrderSource,
+): ZenTimelineProjectionResult | null {
+  const addedCount = sortedEvents.length - previous.sortedEvents.length;
+  if (
+    addedCount <= 0 ||
+    !previous.incrementalSafe ||
+    !previous.itemIndexById
+  ) {
+    return null;
+  }
+  for (let index = 0; index < previous.sortedEvents.length; index += 1) {
+    const nextEvent = sortedEvents[addedCount + index];
+    const previousEvent = previous.sortedEvents[index];
+    if (
+      nextEvent.id !== previousEvent.id ||
+      (nextEvent !== previousEvent &&
+        !eventsEqualForProjection(previousEvent, nextEvent))
+    ) {
+      return null;
+    }
+  }
+  const prefixEvents = sortedEvents.slice(0, addedCount);
+  const prefixTail = prefixEvents[prefixEvents.length - 1];
+  const retainedHead = previous.sortedEvents[0];
+  if (
+    prefixTail?.kind === "command" ||
+    retainedHead?.kind === "command" ||
+    (retainedHead?.kind === "tool" &&
+      isWaitSessionPoll(
+        retainedHead.tool_name || retainedHead.title || "",
+        retainedHead.input || "",
+      ))
+  ) {
+    return null;
+  }
+  const prefixItems = buildZenTimelineFromSortedEvents(prefixEvents);
+  const itemIndexById = new Map<string, number>();
+  for (let index = 0; index < prefixItems.length; index += 1) {
+    const item = prefixItems[index];
+    if (
+      itemIndexById.has(item.id) ||
+      previous.itemIndexById.has(item.id)
+    ) {
+      return null;
+    }
+    itemIndexById.set(item.id, index);
+  }
+  for (const [id, index] of previous.itemIndexById) {
+    itemIndexById.set(id, prefixItems.length + index);
+  }
+  const items = prefixItems.concat(previous.items);
+  return finishMeasured(
+    {
+      items,
+      cache: {
+        sortedEvents,
+        items,
+        incrementalSafe: true,
+        itemIndexById,
+      },
+      mode: "incremental",
+      dirtyStart: 0,
+      dirtyEnd: addedCount - 1,
+      stableRowReuse: previous.items.length,
+      stableRowChurn: prefixItems.length,
+      eventOrder,
     },
     sortedEvents.length,
     started,

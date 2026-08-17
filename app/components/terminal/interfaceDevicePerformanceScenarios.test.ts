@@ -58,14 +58,47 @@ describe("interfaceDevicePerformanceScenarios", () => {
     expect(INTERFACE_DEVICE_PERF_SCENARIOS).toEqual([
       "50-short",
       "500-mixed",
+      "1k-mixed",
+      "5k-mixed",
+      "10k-mixed",
       "stream-8k",
+      "stream-10k",
       "detached-append",
+      "detached-append-10k",
       "detached-prepend",
+      "detached-prepend-10k",
     ]);
     expect(resolveInterfaceDevicePerfScenario("500-mixed")).toBe("500-mixed");
     expect(resolveInterfaceDevicePerfScenario(["stream-8k"])).toBe("stream-8k");
     expect(resolveInterfaceDevicePerfScenario("nope")).toBe("50-short");
     expect(resolveInterfaceDevicePerfScenario(undefined)).toBe("50-short");
+  });
+
+  test("long-history scenarios cover 1k, 5k, and 10k complex items", () => {
+    for (const [id, count] of [
+      ["1k-mixed", 1_000],
+      ["5k-mixed", 5_000],
+      ["10k-mixed", 10_000],
+    ] as const) {
+      const prepared = prepareInterfaceDevicePerfScenario(id);
+      expect(prepared.initialEvents).toHaveLength(count);
+      expect(
+        prepared.initialEvents.some(
+          (event) =>
+            event.kind === "assistant_message" &&
+            event.body?.includes("```ts"),
+        ),
+      ).toBe(true);
+      expect(
+        prepared.initialEvents.some((event) => event.kind === "tool"),
+      ).toBe(true);
+    }
+    expect(
+      prepareInterfaceDevicePerfScenario("stream-10k").initialEvents,
+    ).toHaveLength(10_000);
+    expect(
+      prepareInterfaceDevicePerfScenario("detached-prepend-10k").startsDetached,
+    ).toBe(true);
   });
 
   test("50-short and 500-mixed fixtures are deterministic and content-owned up front", () => {

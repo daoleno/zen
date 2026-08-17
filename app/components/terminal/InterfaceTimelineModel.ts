@@ -125,7 +125,8 @@ export function buildZenTimelineFromSortedEvents(
       flushExploration();
       const extracted = extractDisplayMessage(event.body || "");
       const heartbeatWake =
-        event.kind === "user_message"
+        event.kind === "user_message" &&
+        /^Heartbeat wake:/i.test(extracted.body.trimStart())
           ? parseHeartbeatWakeMessage(extracted.body)
           : null;
       if (
@@ -958,6 +959,10 @@ function extractDisplayMessage(value: string): {
   if (tagMatch) {
     attachments.push(...attachmentsFromTag(tagMatch[1]));
     body = cleanStructuredMessageText(body.replace(tagMatch[0], ""));
+  }
+
+  if (!/(?:^|\n)Uploaded files?:\s*(?:\n|$)/i.test(body)) {
+    return { body, attachments };
   }
 
   const legacy = stripLegacyUploadedFiles(body);
