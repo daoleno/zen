@@ -94,6 +94,9 @@ func DiscoverInventory(options InventoryOptions) (Inventory, error) {
 	}
 	collector.loadZenInventory(store)
 	if !collector.stopped {
+		collector.scanBuiltinSurfaces(store)
+	}
+	if !collector.stopped {
 		collector.scanExternalSurfaces(store)
 	}
 	if !collector.stopped {
@@ -236,6 +239,9 @@ func (collector *inventoryCollector) loadZenInventory(store Store) {
 		collector.markIncomplete()
 		collector.warn("The Zen Skills inventory could not be read; management is disabled for this snapshot.")
 		return
+	}
+	for _, warning := range file.Warnings {
+		collector.warn(warning)
 	}
 	names := make([]string, 0, len(file.Packages))
 	for name := range file.Packages {
@@ -424,6 +430,17 @@ func copyBindingDriftHash(binding BindingEntry, expectedHash string) string {
 // External surface discovery
 // ---------------------------------------------------------------------------
 
+func (collector *inventoryCollector) scanBuiltinSurfaces(store Store) {
+	collector.scanRoot(inventoryRoot{
+		path:       filepath.Join(collector.options.CodexHome, "skills", ".system"),
+		label:      "Codex builtin Skills directory",
+		scope:      ScopeBuiltin,
+		agents:     []Agent{AgentCodex},
+		manager:    ManagerBuiltin,
+		provenance: "Codex builtin Skills directory",
+	}, store)
+}
+
 func (collector *inventoryCollector) scanExternalSurfaces(store Store) {
 	for _, agent := range []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi} {
 		adapter, err := adapterFor(agent)
@@ -515,7 +532,6 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	sourcePath := filepath.Join(root.path, entry.Name())
 	isDirectory, directoryErr := isSkillDirectory(entry, sourcePath)
 	if directoryErr != nil {
-		collector.markIncomplete()
 		collector.warn(fmt.Sprintf("Could not inspect a Skill binding in the %s.", root.label))
 		return
 	}
@@ -528,7 +544,6 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	metadataPath := filepath.Join(sourcePath, "SKILL.md")
 	frontmatter, ok, metadataErr := readSkillFrontmatter(metadataPath)
 	if metadataErr != nil {
-		collector.markIncomplete()
 		collector.warn(fmt.Sprintf("Could not read or validate Skill metadata in the %s.", root.label))
 	}
 	if !ok {
@@ -542,13 +557,11 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	identityMismatch := frontmatterName != "" && frontmatterName != name
 	realPath, err := filepath.EvalSymlinks(sourcePath)
 	if err != nil {
-		collector.markIncomplete()
 		collector.warn(fmt.Sprintf("Could not resolve a Skill binding in the %s.", root.label))
 		return
 	}
 	realPath, err = filepath.Abs(realPath)
 	if err != nil {
-		collector.markIncomplete()
 		collector.warn(fmt.Sprintf("Could not resolve a Skill binding in the %s.", root.label))
 		return
 	}
@@ -558,16 +571,21 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 	if hashValue, hashErr := boundedDiscoveryHash(sourcePath); hashErr == nil {
 		hash = hashValue
 	}
-	binding := SkillBinding{
-		Agent:      mergeSingle(root.agents),
-		Scope:      root.scope,
-		Mode:       string(BindingSymlink),
-		TargetPath: filepath.Clean(sourcePath),
-		SourcePath: filepath.Clean(sourcePath),
-		Enabled:    true,
+	bindings := make([]SkillBinding, 0, len(root.agents))
+	for _, agent := range root.agents {
+		bindings = append(bindings, SkillBinding{
+			Agent:      agent,
+			Scope:      root.scope,
+			Mode:       string(BindingSymlink),
+			TargetPath: filepath.Clean(sourcePath),
+			SourcePath: filepath.Clean(sourcePath),
+			Enabled:    true,
+		})
 	}
 	if existing := collector.byReal[realPath]; existing != nil {
-		mergeInstruction(existing, root, binding)
+		for _, binding := range bindings {
+			mergeInstruction(existing, root, binding)
+		}
 		if identityMismatch {
 			collector.blockManagement(existing, "Skill metadata does not match its installed directory identity.")
 		}
@@ -600,23 +618,19 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		skill.Provenance = root.provenance
 		skill.Provenance += ":" + skill.Plugin
 		skill.Capability = ManagementCapability{Reason: "Plugin-owned Skills must be managed by their plugin owner."}
+	} else if root.manager == ManagerBuiltin {
+		skill.Provenance = root.provenance
+		skill.Capability = ManagementCapability{Reason: "Builtin Skills are managed by their provider."}
 	} else {
 		skill.Provenance = root.provenance
 	}
 	if identityMismatch {
 		collector.blockManagement(skill, "Skill metadata does not match its installed directory identity.")
 	}
-	skill.Bindings = []SkillBinding{binding}
+	skill.Bindings = bindings
 	collector.byReal[realPath] = skill
 	collector.byName[name] = append(collector.byName[name], skill)
 	collector.count++
-}
-
-func mergeSingle(agents []Agent) Agent {
-	if len(agents) == 1 {
-		return agents[0]
-	}
-	return ""
 }
 
 // isManagedTarget returns true when the on-disk directory is a Zen-owned
@@ -657,7 +671,9 @@ func (collector *inventoryCollector) isManagedTarget(sourcePath string, store St
 func mergeInstruction(skill *InstalledSkill, root inventoryRoot, binding SkillBinding) {
 	mergeAgents(&skill.Agents, root.agents)
 	for index := range skill.Bindings {
-		if skill.Bindings[index].TargetPath == binding.TargetPath && skill.Bindings[index].Scope == binding.Scope {
+		if skill.Bindings[index].Agent == binding.Agent &&
+			skill.Bindings[index].TargetPath == binding.TargetPath &&
+			skill.Bindings[index].Scope == binding.Scope {
 			return
 		}
 	}
@@ -722,7 +738,6 @@ func (collector *inventoryCollector) scanPluginCache(cachePath string, agent Age
 		directory, err := os.Open(current.path)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) || current.depth > 0 {
-				collector.markIncomplete()
 				collector.warn(fmt.Sprintf("Could not read the %s cache.", provenance))
 			}
 			continue
@@ -750,17 +765,15 @@ func (collector *inventoryCollector) scanPluginCache(cachePath string, agent Age
 				}
 				visited++
 				if !entry.IsDir() {
-					if entry.Type()&fs.ModeSymlink != 0 {
-						collector.markIncomplete()
-						collector.warn("Installed Skills inventory skipped a symbolic link in a plugin cache.")
-					}
+					// Plugin managers use cachebuster symlinks as internal cache
+					// metadata. They are not Skill roots and do not make discovery
+					// incomplete.
 					continue
 				}
 				path := filepath.Join(current.path, entry.Name())
 				nextDepth := current.depth + 1
 				if entry.Name() == "skills" {
 					if nextDepth > 7 {
-						collector.markIncomplete()
 						collector.warn("Installed Skills inventory skipped an over-depth plugin cache directory.")
 						continue
 					}
@@ -781,7 +794,6 @@ func (collector *inventoryCollector) scanPluginCache(cachePath string, agent Age
 					continue
 				}
 				if nextDepth >= 7 {
-					collector.markIncomplete()
 					collector.warn("Installed Skills inventory skipped an over-depth plugin cache directory.")
 					continue
 				}
@@ -791,7 +803,6 @@ func (collector *inventoryCollector) scanPluginCache(cachePath string, agent Age
 				break
 			}
 			if readErr != nil {
-				collector.markIncomplete()
 				collector.warn(fmt.Sprintf("Could not finish reading the %s cache.", provenance))
 				break
 			}

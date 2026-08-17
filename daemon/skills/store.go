@@ -142,6 +142,11 @@ type InventoryFile struct {
 	Version   int                     `json:"version"`
 	UpdatedAt string                  `json:"updated_at"`
 	Packages  map[string]PackageEntry `json:"packages"`
+	// InvalidPackages are preserved as raw JSON across later mutations but
+	// never enter executable inventory state. This lets one damaged package be
+	// isolated without either blocking valid packages or silently deleting it.
+	InvalidPackages map[string]json.RawMessage `json:"-"`
+	Warnings        []string                   `json:"-"`
 }
 
 // LoadInventory reads and validates the central inventory. A missing file is
@@ -161,22 +166,57 @@ func (s Store) LoadInventory(required bool) (InventoryFile, error) {
 	if len(data) == 0 || len(data) > maxInventoryFileBytes {
 		return InventoryFile{}, errors.New("Skills inventory has invalid size")
 	}
-	var file InventoryFile
-	if err := json.Unmarshal(data, &file); err != nil {
+	var envelope struct {
+		Version   int                        `json:"version"`
+		UpdatedAt string                     `json:"updated_at"`
+		Packages  map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		return InventoryFile{}, errors.New("Skills inventory is corrupt")
 	}
-	if file.Version != inventoryVersion || file.Packages == nil {
+	if envelope.Version != inventoryVersion || envelope.Packages == nil {
 		return InventoryFile{}, errors.New("Skills inventory has an unsupported schema")
 	}
-	for name, entry := range file.Packages {
-		if ValidateSkillName(name) != nil || entry.SkillName != name {
-			return InventoryFile{}, fmt.Errorf("Skills inventory contains an invalid package id %q", name)
+	file := InventoryFile{
+		Version:         envelope.Version,
+		UpdatedAt:       envelope.UpdatedAt,
+		Packages:        make(map[string]PackageEntry, len(envelope.Packages)),
+		InvalidPackages: make(map[string]json.RawMessage),
+	}
+	for name, raw := range envelope.Packages {
+		var entry PackageEntry
+		entryErr := json.Unmarshal(raw, &entry)
+		if entryErr == nil && ValidateSkillName(name) == nil && entry.SkillName == name {
+			entryErr = validatePackageEntry(entry)
+		} else if entryErr == nil {
+			entryErr = errors.New("package identity is invalid")
 		}
-		if err := validatePackageEntry(entry); err != nil {
-			return InventoryFile{}, fmt.Errorf("Skills inventory package %q is invalid: %w", name, err)
+		if entryErr != nil {
+			file.InvalidPackages[name] = append(json.RawMessage(nil), raw...)
+			if len(file.Warnings) < maxInventoryWarnings {
+				file.Warnings = append(file.Warnings, fmt.Sprintf("Installed Skill package %q could not be loaded and was skipped.", boundedPackageLabel(name)))
+			}
+			continue
 		}
+		file.Packages[name] = entry
 	}
 	return file, nil
+}
+
+func boundedPackageLabel(name string) string {
+	name = strings.Map(func(value rune) rune {
+		if value < 0x20 || value == 0x7f {
+			return -1
+		}
+		return value
+	}, name)
+	if len(name) > maxSkillNameLength {
+		name = name[:maxSkillNameLength]
+	}
+	if name == "" {
+		return "unknown"
+	}
+	return name
 }
 
 func validatePackageEntry(entry PackageEntry) error {
@@ -237,7 +277,22 @@ func (s Store) SaveInventory(file InventoryFile) error {
 	}
 	file.Version = inventoryVersion
 	file.UpdatedAt = s.now().UTC().Format(time.RFC3339)
-	data, err := json.MarshalIndent(file, "", "  ")
+	packages := make(map[string]json.RawMessage, len(file.InvalidPackages)+len(file.Packages))
+	for name, raw := range file.InvalidPackages {
+		packages[name] = append(json.RawMessage(nil), raw...)
+	}
+	for name, entry := range file.Packages {
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("encode Skills inventory package %q: %w", name, err)
+		}
+		packages[name] = raw
+	}
+	data, err := json.MarshalIndent(struct {
+		Version   int                        `json:"version"`
+		UpdatedAt string                     `json:"updated_at"`
+		Packages  map[string]json.RawMessage `json:"packages"`
+	}{Version: file.Version, UpdatedAt: file.UpdatedAt, Packages: packages}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode Skills inventory: %w", err)
 	}

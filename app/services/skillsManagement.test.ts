@@ -7,7 +7,9 @@ import {
   createSkillsRequestState,
   failSkillsRequest,
   normalizeSkillsInspectDetail,
+  normalizeSkillsCatalogResult,
   normalizeSkillsInventory,
+  normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
   normalizeSkillsMutationResult,
   skillsRequestData,
@@ -17,6 +19,97 @@ import {
 } from "./skillsManagement";
 
 describe("skills inventory normalization", () => {
+  test("normalizes the captured live daemon external-row shape", () => {
+    const captured = {
+      generated_at: "2026-08-17T10:11:19Z",
+      skills: [
+        {
+          id: "111122223333111122223333",
+          name: "captured-external",
+          manager: "external",
+          owned: false,
+          tracked: false,
+          enabled: true,
+          canonical_path: "/home/user/.claude/skills/captured-external",
+          source_path: "/home/user/.claude/skills/captured-external",
+          scope: "global",
+          agents: ["claude-code"],
+          bindings: [
+            {
+              agent: "claude-code",
+              scope: "global",
+              mode: "symlink",
+              target_path: "/home/user/.claude/skills/captured-external",
+              source_path: "/home/user/.claude/skills/captured-external",
+              enabled: true,
+              bound_at: "",
+            },
+          ],
+          provenance: "Claude Code global Skills directory",
+          source_type: "external",
+          migration: "external",
+          capability: { can_manage: true, operations: ["adopt", "migrate"] },
+        },
+      ],
+      agents: [],
+      mutation_operations: ["adopt", "migrate"],
+      migration: { external: 1 },
+    };
+
+    const inventory = normalizeSkillsInventory(captured);
+    expect(inventory.skills).toHaveLength(1);
+    expect(inventory.skills[0]?.agents).toEqual(["claude-code"]);
+    expect(inventory.skills[0]?.bindings[0]?.boundAt).toBeUndefined();
+    expect(inventory.warnings).not.toContain(
+      "1 installed Skill entry was unreadable and skipped.",
+    );
+  });
+
+  test("accepts one shared physical binding represented for multiple agents", () => {
+    const inventory = normalizeSkillsInventory({
+      generated_at: "2026-08-17T10:11:19Z",
+      skills: [
+        {
+          id: "999900001111222233334444",
+          name: "shared-project-skill",
+          manager: "external",
+          owned: false,
+          tracked: false,
+          enabled: true,
+          canonical_path: "/repo/.agents/skills/shared-project-skill",
+          source_path: "/repo/.agents/skills/shared-project-skill",
+          scope: "project",
+          agents: ["codex", "pi"],
+          bindings: [
+            {
+              agent: "codex",
+              scope: "project",
+              mode: "symlink",
+              target_path: "/repo/.agents/skills/shared-project-skill",
+              source_path: "/repo/.agents/skills/shared-project-skill",
+              enabled: true,
+            },
+            {
+              agent: "pi",
+              scope: "project",
+              mode: "symlink",
+              target_path: "/repo/.agents/skills/shared-project-skill",
+              source_path: "/repo/.agents/skills/shared-project-skill",
+              enabled: true,
+            },
+          ],
+          provenance: "Shared project Skills directory",
+          capability: { can_manage: true, operations: ["adopt", "migrate"] },
+        },
+      ],
+      agents: [],
+      warnings: [],
+      mutation_operations: ["adopt", "migrate"],
+    });
+    expect(inventory.skills[0]?.agents).toEqual(["codex", "pi"]);
+    expect(inventory.skills[0]?.bindings).toHaveLength(2);
+  });
+
   test("accepts the Zen-owned row contract with per-binding state", () => {
     const value = {
       generated_at: "2026-08-01T00:00:00Z",
@@ -63,7 +156,14 @@ describe("skills inventory normalization", () => {
           installed_at: "2026-08-01T00:00:00Z",
           updated_at: "2026-08-01T00:00:00Z",
           migration: "owned",
-          risk: [{ type: "script", severity: "info", detail: "Script file.", file: "run.sh" }],
+          risk: [
+            {
+              type: "script",
+              severity: "info",
+              detail: "Script file.",
+              file: "run.sh",
+            },
+          ],
           capability: {
             can_manage: true,
             operations: [
@@ -88,7 +188,14 @@ describe("skills inventory normalization", () => {
           default_global_dir: "/home/u/.grok/skills",
         },
       ],
-      executors: [{ name: "agent", kind: "cursor", agent: "cursor", command: "cursor-agent" }],
+      executors: [
+        {
+          name: "agent",
+          kind: "cursor",
+          agent: "cursor",
+          command: "cursor-agent",
+        },
+      ],
       warnings: ["A warning"],
       mutation_operations: [
         "import",
@@ -102,7 +209,13 @@ describe("skills inventory normalization", () => {
         "adopt",
         "update",
       ],
-      migration: { owned: 1, external: 2, duplicate: 1, conflict: 0, tracked: 3 },
+      migration: {
+        owned: 1,
+        external: 2,
+        duplicate: 1,
+        conflict: 0,
+        tracked: 3,
+      },
     };
     const inventory = normalizeSkillsInventory(value);
     expect(inventory.skills).toHaveLength(1);
@@ -119,7 +232,7 @@ describe("skills inventory normalization", () => {
     expect(inventory.executors?.[0]?.agent).toBe("cursor");
   });
 
-  test("rejects duplicate ids, unknown managers, and oversized rows", () => {
+  test("isolates duplicate and malformed rows while preserving valid management", () => {
     const base = {
       generated_at: "2026-08-01T00:00:00Z",
       skills: [
@@ -154,18 +267,27 @@ describe("skills inventory normalization", () => {
       mutation_operations: ["import", "uninstall"],
     };
     expect(() => normalizeSkillsInventory(base)).not.toThrow();
-    expect(() =>
-      normalizeSkillsInventory({
-        ...base,
-        skills: [base.skills[0], { ...base.skills[0], canonical_path: "/s/b", id: "abc123def456abc123def456" }],
-      }),
-    ).toThrow();
-    expect(() =>
-      normalizeSkillsInventory({
-        ...base,
-        skills: [{ ...base.skills[0], manager: "skills-cli" }],
-      }),
-    ).toThrow();
+    const partial = normalizeSkillsInventory({
+      ...base,
+      skills: [
+        base.skills[0],
+        {
+          ...base.skills[0],
+          canonical_path: "/s/b",
+          id: "abc123def456abc123def456",
+        },
+        {
+          ...base.skills[0],
+          manager: "skills-cli",
+          id: "111122223333111122223333",
+        },
+      ],
+    });
+    expect(partial.skills).toHaveLength(1);
+    expect(partial.skills[0]!.capability.operations).toContain("uninstall");
+    expect(partial.warnings).toContain(
+      "2 installed Skill entries were unreadable and skipped.",
+    );
     // Missing mutation operations: an older daemon is rejected (fail closed).
     expect(() =>
       normalizeSkillsInventory({
@@ -264,6 +386,115 @@ describe("skills inventory normalization", () => {
   });
 });
 
+describe("catalog partial-success normalization", () => {
+  test("keeps valid search identities when siblings are malformed or duplicated", () => {
+    const result = normalizeSkillsCatalogResult({
+      query: "demo",
+      skills: [
+        {
+          id: "owner/repo/one",
+          name: "one",
+          source: "owner/repo",
+          installs: 4,
+        },
+        { id: "bad", name: "bad", source: "bad", installs: 99 },
+        {
+          id: "owner/repo/one",
+          name: "one",
+          source: "owner/repo",
+          installs: 3,
+        },
+      ],
+    });
+    expect(result.skills.map((skill) => skill.id)).toEqual(["owner/repo/one"]);
+  });
+
+  test("derives deterministic ranks across gaps, ties, duplicates, and malformed rows", () => {
+    const ranked = (view: string, metricKey: string) => ({
+      view,
+      total_skills: 5,
+      skills: [
+        {
+          id: "owner/repo/two",
+          skill_id: "two",
+          name: "two",
+          source: "owner/repo",
+          rank: 9,
+          installable: true,
+          [metricKey]: 10,
+        },
+        {
+          id: "owner/repo/one",
+          skill_id: "one",
+          name: "one",
+          source: "owner/repo",
+          installable: true,
+          [metricKey]: 20,
+        },
+        {
+          id: "bad",
+          skill_id: "bad;id",
+          name: "bad",
+          source: "owner/repo",
+          rank: 1,
+          installable: false,
+          [metricKey]: 100,
+        },
+        {
+          id: "owner/repo/two",
+          skill_id: "two",
+          name: "two old",
+          source: "owner/repo",
+          rank: 2,
+          installable: true,
+          [metricKey]: 9,
+        },
+      ],
+    });
+    const result = normalizeSkillsLeaderboards({
+      all_time: ranked("all-time", "total_installs"),
+      trending: ranked("trending", "installs_24h"),
+      hot: {
+        view: "hot",
+        total_skills: 3,
+        skills: [
+          {
+            id: "owner/repo/one",
+            skill_id: "one",
+            name: "one",
+            source: "owner/repo",
+            installable: true,
+            current_installs: 20,
+            yesterday_installs: 10,
+            change: 10,
+          },
+          {
+            id: "broken",
+            skill_id: "broken",
+            name: "broken",
+            source: "owner/repo",
+            installable: false,
+            current_installs: 1,
+            yesterday_installs: 1,
+            change: 1,
+          },
+        ],
+      },
+    });
+    expect(
+      result.allTime.skills.map((skill) => [skill.skillId, skill.rank]),
+    ).toEqual([
+      ["one", 1],
+      ["two", 2],
+    ]);
+    expect(result.trending.skills.map((skill) => skill.skillId)).toEqual([
+      "one",
+      "two",
+    ]);
+    expect(result.hot.skills.map((skill) => skill.skillId)).toEqual(["one"]);
+  });
+});
+
 describe("mutation command normalization", () => {
   const planBase = {
     operation: "import",
@@ -280,7 +511,11 @@ describe("mutation command normalization", () => {
         path: "/home/u/.zen/skills/store/demo",
         detail: "Canonical Zen store entry",
       },
-      { kind: "symlink", path: "/home/u/.codex/skills/demo", destination: "/home/u/.zen/skills/store/demo" },
+      {
+        kind: "symlink",
+        path: "/home/u/.codex/skills/demo",
+        destination: "/home/u/.zen/skills/store/demo",
+      },
     ],
     destructive: false,
   };
@@ -300,10 +535,19 @@ describe("mutation command normalization", () => {
       scope: "global",
       agents: [],
       skill_name: "demo",
-      summary: "Uninstall demo (remove all bindings, store content, and inventory entry)",
+      summary:
+        "Uninstall demo (remove all bindings, store content, and inventory entry)",
       changes: [
-        { kind: "remove", path: "/home/u/.zen/skills/store/demo", detail: "Remove canonical store content" },
-        { kind: "remove", path: "/home/u/.codex/skills/demo", detail: "Remove binding for Codex" },
+        {
+          kind: "remove",
+          path: "/home/u/.zen/skills/store/demo",
+          detail: "Remove canonical store content",
+        },
+        {
+          kind: "remove",
+          path: "/home/u/.codex/skills/demo",
+          detail: "Remove binding for Codex",
+        },
       ],
       destructive: true,
     });
@@ -311,9 +555,54 @@ describe("mutation command normalization", () => {
     expect(command.destructive).toBe(true);
   });
 
+  test("normalizes every package lifecycle plan emitted by the daemon", () => {
+    const cases = [
+      {
+        operation: "adopt",
+        agents: ["claude-code"],
+        changes: [
+          {
+            kind: "copy_file",
+            path: "/home/u/.claude/skills/demo",
+            destination: "/home/u/.zen/skills/store/demo",
+          },
+        ],
+      },
+      {
+        operation: "forget",
+        agents: [],
+        changes: [
+          { kind: "remove", path: "/home/u/.zen/skills/inventory.json" },
+        ],
+      },
+      {
+        operation: "update",
+        agents: [],
+        changes: [{ kind: "keep", path: "/home/u/.zen/skills/store/demo" }],
+      },
+    ] as const;
+    for (const lifecycle of cases) {
+      const command = normalizeSkillsMutationCommand({
+        operation: lifecycle.operation,
+        scope: "global",
+        agents: lifecycle.agents,
+        skill_name: "demo",
+        summary: `${lifecycle.operation} demo`,
+        changes: lifecycle.changes,
+        destructive: false,
+      });
+      expect(command.operation).toBe(lifecycle.operation);
+      expect(command.scope).toBe("global");
+    }
+  });
+
   test("rejects unbound, unknown, or unreviewable plans", () => {
     expect(() =>
-      normalizeSkillsMutationCommand({ ...planBase, catalog_id: undefined, source: undefined }),
+      normalizeSkillsMutationCommand({
+        ...planBase,
+        catalog_id: undefined,
+        source: undefined,
+      }),
     ).toThrow();
     expect(() =>
       normalizeSkillsMutationCommand({ ...planBase, operation: "install" }),
@@ -360,7 +649,10 @@ describe("mutation command normalization", () => {
   test("executed plans must match the reviewed request exactly", () => {
     const command = normalizeSkillsMutationCommand(planBase);
     assertSkillsMutationMatchesRequest(
-      { command, execution: { success: true, exitCode: 0, output: "", durationMs: 1 } },
+      {
+        command,
+        execution: { success: true, exitCode: 0, output: "", durationMs: 1 },
+      },
       {
         operation: "import",
         skillId: "owner/repo/demo",
@@ -372,7 +664,10 @@ describe("mutation command normalization", () => {
     );
     expect(() =>
       assertSkillsMutationMatchesRequest(
-        { command, execution: { success: true, exitCode: 0, output: "", durationMs: 1 } },
+        {
+          command,
+          execution: { success: true, exitCode: 0, output: "", durationMs: 1 },
+        },
         {
           operation: "import",
           skillId: "owner/repo/demo",
@@ -416,7 +711,9 @@ describe("inspect detail normalization", () => {
       ],
       files: [{ path: "SKILL.md", size: 120, mode: "0644" }],
       skill_md: "# Demo\n\nBody with\nnewlines and tabs\there.\n",
-      risk: [{ type: "script", severity: "warn", detail: "Script.", file: "run.sh" }],
+      risk: [
+        { type: "script", severity: "warn", detail: "Script.", file: "run.sh" },
+      ],
       warnings: ["Store content drifted."],
       capability: { can_manage: true, operations: ["uninstall", "update"] },
     });
@@ -468,10 +765,19 @@ describe("confirmation builder describes exact effects", () => {
       scope: "global",
       agents: ["codex"],
       skillName: "demo",
-      summary: "Uninstall demo (remove all bindings, store content, and inventory entry)",
+      summary:
+        "Uninstall demo (remove all bindings, store content, and inventory entry)",
       changes: [
-        { kind: "remove", path: "/store/demo", detail: "Remove canonical store content" },
-        { kind: "remove", path: "/home/.codex/skills/demo", detail: "Remove binding for Codex" },
+        {
+          kind: "remove",
+          path: "/store/demo",
+          detail: "Remove canonical store content",
+        },
+        {
+          kind: "remove",
+          path: "/home/.codex/skills/demo",
+          detail: "Remove binding for Codex",
+        },
       ],
       destructive: true,
     };
@@ -505,20 +811,36 @@ describe("request state machine", () => {
     const initial = createSkillsRequestState<SkillsInventory>();
     const loading = beginSkillsRequest(initial);
     expect(loading.status).toBe("loading");
-    const ready = completeSkillsRequest(loading, loading.generation, {
-      generatedAt: "2026-08-01T00:00:00Z",
-      skills: [],
-      agents: [],
-      warnings: [],
-      mutationOperations: ["import"],
-      migration: { owned: 0, external: 0, duplicate: 0, conflict: 0, tracked: 0 },
-    } as SkillsInventory, true);
+    const ready = completeSkillsRequest(
+      loading,
+      loading.generation,
+      {
+        generatedAt: "2026-08-01T00:00:00Z",
+        skills: [],
+        agents: [],
+        warnings: [],
+        mutationOperations: ["import"],
+        migration: {
+          owned: 0,
+          external: 0,
+          duplicate: 0,
+          conflict: 0,
+          tracked: 0,
+        },
+      } as SkillsInventory,
+      true,
+    );
     expect(ready.status).toBe("empty");
     // A stale completion cannot overwrite a newer generation.
     const newer = beginSkillsRequest(ready);
-    expect(completeSkillsRequest(newer, loading.generation, {} as SkillsInventory, false)).toBe(
-      newer,
-    );
+    expect(
+      completeSkillsRequest(
+        newer,
+        loading.generation,
+        {} as SkillsInventory,
+        false,
+      ),
+    ).toBe(newer);
     const failed = failSkillsRequest(newer, newer.generation, "boom");
     expect(failed.status).toBe("error");
     expect(skillsRequestData(failed)).toBeDefined();

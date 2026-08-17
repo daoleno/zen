@@ -97,98 +97,96 @@ func TestParseLeaderboardDocumentKeepsRealColonSkillIDBrowseableButNotInstallabl
 	}
 }
 
-func TestParseLeaderboardDocumentRejectsDuplicateAndInvalidIdentities(t *testing.T) {
-	tests := []struct {
-		name   string
-		skills string
-		want   string
-	}{
-		{
-			name: "duplicate source and Skill ID",
-			skills: `[
-				{"source":"acme/skills","skillId":"one","name":"one","installs":20},
-				{"source":"acme/skills","skillId":"one","name":"one","installs":19}
-			]`,
-			want: "duplicate",
-		},
-		{
-			name:   "invalid source",
-			skills: `[{"source":"acme/skills;bad","skillId":"one","name":"one","installs":20}]`,
-			want:   "source is invalid",
-		},
-		{
-			name:   "invalid Skill ID",
-			skills: `[{"source":"acme/skills","skillId":"bad;id","name":"bad id","installs":20}]`,
-			want:   "Skill ID is invalid",
-		},
+func TestParseLeaderboardDocumentIsolatesMalformedRowsAndDeduplicates(t *testing.T) {
+	skills := `[
+		{"source":"acme/skills","skillId":"two","name":"two","installs":10,"rank":99},
+		{"source":"acme/skills","skillId":"one","name":"one","installs":20},
+		{"source":"acme/skills;bad","skillId":"bad","name":"bad","installs":100},
+		{"source":"acme/skills","skillId":"two","name":"two duplicate","installs":9},
+		{"source":"acme/skills","skillId":"tied","name":"tied","installs":10},
+		{"source":"acme/skills","skillId":"broken","name":"broken","installs":"many"}
+	]`
+	document := rscLeaderboardDocument(t, leaderboardEnvelope(CatalogViewTrending, skills))
+	leaderboard, _, err := parseLeaderboardDocument(document, CatalogViewTrending, 30)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			document := rscLeaderboardDocument(t, leaderboardEnvelope(CatalogViewTrending, test.skills))
-			_, _, err := parseLeaderboardDocument(document, CatalogViewTrending, 30)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
+	if len(leaderboard.Skills) != 3 {
+		t.Fatalf("valid rows = %#v", leaderboard.Skills)
+	}
+	got := []string{leaderboard.Skills[0].SkillID, leaderboard.Skills[1].SkillID, leaderboard.Skills[2].SkillID}
+	if strings.Join(got, ",") != "one,tied,two" {
+		t.Fatalf("deterministic order = %v", got)
+	}
+	for index, skill := range leaderboard.Skills {
+		if skill.Rank != index+1 {
+			t.Fatalf("derived rank[%d] = %d", index, skill.Rank)
+		}
 	}
 }
 
-func TestParseLeaderboardDocumentRejectsInvalidMetricsAndUpstreamShapeMismatch(t *testing.T) {
+func TestParseLeaderboardDocumentToleratesInvalidMetricsAndAddedFields(t *testing.T) {
 	tests := []struct {
 		name     string
 		view     CatalogView
 		envelope string
-		want     string
+		wantRows int
 	}{
 		{
 			name: "fractional metric",
 			view: CatalogViewTrending,
 			envelope: leaderboardEnvelope(CatalogViewTrending,
 				`[{"source":"acme/skills","skillId":"one","name":"one","installs":1.5}]`),
-			want: "malformed",
+			wantRows: 0,
 		},
 		{
 			name: "negative metric",
 			view: CatalogViewTrending,
 			envelope: leaderboardEnvelope(CatalogViewTrending,
 				`[{"source":"acme/skills","skillId":"one","name":"one","installs":-1}]`),
-			want: "metric is invalid",
+			wantRows: 0,
 		},
 		{
 			name: "hot arithmetic mismatch",
 			view: CatalogViewHot,
 			envelope: leaderboardEnvelope(CatalogViewHot,
 				`[{"source":"acme/skills","skillId":"one","name":"one","installs":8,"installsYesterday":3,"change":4}]`),
-			want: "metrics are invalid",
+			wantRows: 0,
 		},
 		{
 			name: "wrong view identity",
 			view: CatalogViewAllTime,
 			envelope: leaderboardEnvelope(CatalogViewTrending,
 				trendingFixtureSkills),
-			want: "does not match",
+			wantRows: -1,
 		},
 		{
 			name: "unknown candidate field",
 			view: CatalogViewTrending,
 			envelope: leaderboardEnvelope(CatalogViewTrending,
 				`[{"source":"acme/skills","skillId":"one","name":"one","installs":8,"score":99}]`),
-			want: "changed shape",
+			wantRows: 1,
 		},
 		{
 			name: "unknown envelope field",
 			view: CatalogViewTrending,
 			envelope: `{"initialSkills":` + trendingFixtureSkills +
 				`,"totalSkills":9576,"allTimeTotal":946763,"view":"trending","fallback":true}`,
-			want: "changed shape",
+			wantRows: 2,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			document := rscLeaderboardDocument(t, test.envelope)
-			_, _, err := parseLeaderboardDocument(document, test.view, 30)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
+			leaderboard, _, err := parseLeaderboardDocument(document, test.view, 30)
+			if test.wantRows < 0 {
+				if err == nil || !strings.Contains(err.Error(), "does not match") {
+					t.Fatalf("view mismatch error = %v", err)
+				}
+				return
+			}
+			if err != nil || len(leaderboard.Skills) != test.wantRows {
+				t.Fatalf("leaderboard = %#v, error = %v, want rows %d", leaderboard, err, test.wantRows)
 			}
 		})
 	}
@@ -261,6 +259,34 @@ func TestLeaderboardReaderFetchesAllThreeExactPagesAndFailsClosed(t *testing.T) 
 		if requested[path] != 1 {
 			t.Fatalf("requests[%q] = %d, want 1", path, requested[path])
 		}
+	}
+}
+
+func TestLeaderboardReaderKeepsHealthyViewsWhenOneViewFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/hot" {
+			http.Error(writer, "unavailable", http.StatusBadGateway)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		view, skills := CatalogViewAllTime, allTimeFixtureSkills
+		if request.URL.Path == "/trending" {
+			view, skills = CatalogViewTrending, trendingFixtureSkills
+		}
+		_, _ = writer.Write(rscLeaderboardDocument(t, leaderboardEnvelope(view, skills)))
+	}))
+	defer server.Close()
+
+	reader := &LeaderboardReader{Client: server.Client(), BaseURL: server.URL, Timeout: time.Second}
+	result, err := reader.Read(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AllTime.Skills) != 2 || len(result.Trending.Skills) != 2 {
+		t.Fatalf("healthy views were lost: %#v", result)
+	}
+	if result.Hot.View != CatalogViewHot || len(result.Hot.Skills) != 0 || result.Hot.Warning == "" {
+		t.Fatalf("failed view = %#v", result.Hot)
 	}
 }
 

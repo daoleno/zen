@@ -229,6 +229,7 @@ type CatalogLeaderboard struct {
 	View        CatalogView          `json:"view"`
 	TotalSkills int64                `json:"total_skills"`
 	Skills      []RankedCatalogSkill `json:"skills"`
+	Warning     string               `json:"warning,omitempty"`
 }
 
 type CatalogLeaderboards struct {

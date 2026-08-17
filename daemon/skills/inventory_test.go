@@ -70,6 +70,62 @@ func TestStoreInventoryRejectsCorruptAndInvalid(t *testing.T) {
 	}
 }
 
+func TestInventoryIsolatesMalformedPackageAndPreservesItAcrossSave(t *testing.T) {
+	f := newFixture(t)
+	store := f.store()
+	if err := os.MkdirAll(store.PackageDir("healthy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.PackageDir("healthy"), "SKILL.md"), []byte("---\nname: healthy\n---\nHealthy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"version":1,"packages":{"healthy":{"skill_name":"healthy","source":"owner/repo","source_type":"catalog","content_hash":"hash","owned":true},"broken":{"skill_name":"broken","source_type":"catalog","owned":true}}}`
+	if err := os.MkdirAll(filepath.Dir(store.InventoryPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.InventoryPath(), []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.LoadInventory(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.Packages["healthy"]; !ok {
+		t.Fatal("valid sibling package was not loaded")
+	}
+	if _, ok := loaded.Packages["broken"]; ok || len(loaded.InvalidPackages) != 1 || len(loaded.Warnings) != 1 {
+		t.Fatalf("malformed package isolation = %+v", loaded)
+	}
+	if err := store.SaveInventory(loaded); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(store.InventoryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted struct {
+		Packages map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := persisted.Packages["broken"]; !ok {
+		t.Fatal("isolated package was silently deleted during save")
+	}
+
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Skills) != 1 || inventory.Skills[0].Name != "healthy" {
+		t.Fatalf("usable inventory = %+v", inventory.Skills)
+	}
+	if len(inventory.Warnings) == 0 || !strings.Contains(inventory.Warnings[0], "broken") {
+		t.Fatalf("inventory warnings = %v", inventory.Warnings)
+	}
+}
+
 func TestInventoryOwnedAndExternalRows(t *testing.T) {
 	f := newFixture(t)
 	store := f.store()
@@ -378,6 +434,127 @@ func TestInventoryExecutorsAndAdapters(t *testing.T) {
 	}
 	if _, ok := byName["unknown-tool"]; ok {
 		t.Fatal("unknown executors must never gain lifecycle authority")
+	}
+}
+
+func TestInventoryDiscoversAllAdaptersBuiltinPluginAndSymlinkLayouts(t *testing.T) {
+	f := newFixture(t)
+	allAgents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi}
+	for _, agent := range allAgents {
+		f.writeSkill(f.agentGlobalDir(agent), "global-"+string(agent), "global")
+		f.writeSkill(f.agentProjectDir(agent, f.Project), "project-"+string(agent), "project")
+	}
+	f.writeSkill(filepath.Join(f.Home, ".codex", "skills", ".system"), "builtin-proof", "builtin")
+	f.writeSkill(filepath.Join(f.Home, ".codex", "plugins", "cache", "demo-plugin", "1.0.0", "skills"), "plugin-proof", "plugin")
+	cachebusterTarget := filepath.Join(f.Home, ".codex", "plugins", "cache", "demo-plugin", "1.0.0")
+	if err := os.Symlink(cachebusterTarget, filepath.Join(f.Home, ".codex", "plugins", "cache", "demo-plugin", "latest")); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverInventory(f.options(f.Project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[Agent]int{}
+	byName := map[string]InstalledSkill{}
+	for _, skill := range inventory.Skills {
+		byName[skill.Name] = skill
+		for _, agent := range skill.Agents {
+			counts[agent]++
+		}
+		for _, binding := range skill.Bindings {
+			if ValidateAgent(binding.Agent) != nil {
+				t.Fatalf("row %q emitted invalid binding agent %q", skill.Name, binding.Agent)
+			}
+		}
+	}
+	for _, agent := range allAgents {
+		want := 2
+		if agent == AgentCodex {
+			want = 4 // global + project + builtin + plugin
+		}
+		if counts[agent] != want {
+			t.Fatalf("%s count=%d, want %d", agent, counts[agent], want)
+		}
+	}
+	if row := byName["builtin-proof"]; row.Manager != ManagerBuiltin || row.Scope != ScopeBuiltin || row.Capability.CanManage {
+		t.Fatalf("builtin row contract = %+v", row)
+	}
+	if row := byName["plugin-proof"]; row.Manager != ManagerPlugin || row.Scope != ScopePlugin || row.Capability.CanManage {
+		t.Fatalf("plugin row contract = %+v", row)
+	}
+	for _, warning := range inventory.Warnings {
+		if strings.Contains(warning, "symbolic link") || strings.Contains(warning, "management is disabled") {
+			t.Fatalf("cachebuster symlink disabled valid inventory: %q", warning)
+		}
+	}
+	if !byName["global-codex"].Capability.CanManage {
+		t.Fatal("unrelated valid external row lost management authority")
+	}
+}
+
+func TestMalformedExternalEntryIsIsolatedFromValidManagement(t *testing.T) {
+	f := newFixture(t)
+	valid := f.writeSkill(f.agentGlobalDir(AgentClaudeCode), "valid-external", "valid")
+	broken := filepath.Join(f.agentGlobalDir(AgentClaudeCode), "broken-external")
+	if err := os.MkdirAll(broken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "SKILL.md"), []byte("---\nname: [invalid\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundValid := false
+	for _, skill := range inventory.Skills {
+		if skill.CanonicalPath == valid && !skill.Capability.CanManage {
+			t.Fatalf("valid sibling was globally disabled: %+v", skill.Capability)
+		}
+		if skill.CanonicalPath == valid {
+			foundValid = true
+		}
+	}
+	if !foundValid {
+		t.Fatal("valid external sibling was not discovered")
+	}
+	for _, warning := range inventory.Warnings {
+		if strings.Contains(warning, "management is disabled") {
+			t.Fatalf("row-local metadata failure became global: %q", warning)
+		}
+	}
+}
+
+func TestSharedRootEmitsOneValidBindingPerAgent(t *testing.T) {
+	f := newFixture(t)
+	root := filepath.Join(f.Project, ".agents", "skills")
+	f.writeSkill(root, "shared-skill", "shared")
+	options, err := normalizeInventoryOptions(f.options(f.Project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := &inventoryCollector{
+		options: options,
+		byReal:  map[string]*InstalledSkill{},
+		byName:  map[string][]*InstalledSkill{},
+		blocked: map[string]string{},
+		warned:  map[string]struct{}{},
+	}
+	collector.scanRoot(inventoryRoot{
+		path: root, label: "shared project Skills directory", scope: ScopeProject,
+		agents: []Agent{AgentCodex, AgentPi}, manager: ManagerExternal,
+	}, f.store())
+	rows := collector.rows()
+	if len(rows) != 1 || len(rows[0].Bindings) != 2 {
+		t.Fatalf("shared row = %+v", rows)
+	}
+	seen := map[Agent]bool{}
+	for _, binding := range rows[0].Bindings {
+		seen[binding.Agent] = true
+	}
+	if !seen[AgentCodex] || !seen[AgentPi] {
+		t.Fatalf("shared bindings = %+v", rows[0].Bindings)
 	}
 }
 

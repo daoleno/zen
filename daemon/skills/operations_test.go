@@ -63,7 +63,7 @@ func TestLifecycleImportBindDisableUnbindEnable(t *testing.T) {
 	if !commandDestructiveContains(command, "symlink", codexTarget) {
 		t.Fatalf("plan must declare the codex symlink: %+v", command.Changes)
 	}
-	if !commandDestructiveContains(command, "copy", cursorTarget) {
+	if !commandDestructiveContains(command, "copy_file", cursorTarget) {
 		t.Fatalf("plan must declare the cursor copy: %+v", command.Changes)
 	}
 	// Symlink materialization for codex; copy for cursor.

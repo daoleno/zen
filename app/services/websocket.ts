@@ -2298,10 +2298,11 @@ export class MultiServerWebSocketClient {
           if (
             (options.skillName != null &&
               command.skillName !== options.skillName) ||
-            command.agents.length !== (options.agents ?? []).length ||
-            command.agents.some(
-              (agent, index) => agent !== (options.agents ?? [])[index],
-            )
+            (options.agents != null &&
+              (command.agents.length !== options.agents.length ||
+                command.agents.some(
+                  (agent, index) => agent !== options.agents?.[index],
+                )))
           ) {
             throw new Error(
               "Daemon returned a Skills command for a different request.",

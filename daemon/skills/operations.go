@@ -193,7 +193,7 @@ func bindingTargetPaths(request MutationRequest, env environment, cwd string) ([
 			}
 		case BindingCopy:
 			target.change = MutationChange{
-				Kind: "copy", Path: env.store.PackageDir(request.SkillName), Destination: target.path,
+				Kind: "copy_file", Path: env.store.PackageDir(request.SkillName), Destination: target.path,
 				Detail: "Materialize " + request.SkillName + " for " + adapter.Name + " (copy, drift-checked)",
 			}
 		}
@@ -292,7 +292,7 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 		changes = append(changes, MutationChange{Kind: "remove", Path: store.InventoryPath(), Detail: "Remove inventory entry for " + request.SkillName})
 		return MutationCommand{
 			Operation: OperationUninstall, SkillName: request.SkillName,
-			Agents: entryBindingAgents(entry), Scope: entry.Scope(),
+			Agents: entryBindingAgents(entry), Scope: request.Scope,
 			Summary:     "Uninstall " + request.SkillName + " (remove all bindings, store content, and inventory entry)",
 			Changes:     changes,
 			Destructive: true,
@@ -302,7 +302,7 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 			return MutationCommand{}, errors.New("owned packages are uninstalled, not forgotten")
 		}
 		return MutationCommand{
-			Operation: OperationForget, SkillName: request.SkillName,
+			Operation: OperationForget, SkillName: request.SkillName, Scope: request.Scope,
 			Summary:     "Forget external skill " + request.SkillName + " (Zen inventory entry only; no files are deleted)",
 			Changes:     []MutationChange{{Kind: "remove", Path: store.InventoryPath(), Detail: "Remove tracked inventory entry for " + request.SkillName}},
 			Destructive: false,
@@ -324,19 +324,15 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 		if len(agents) == 0 {
 			agents = entry.DiscoveredAgents
 		}
-		scope := entry.DiscoveredScope
-		if scope == "" {
-			scope = ScopeGlobal
-		}
 		if len(agents) == 0 {
 			return MutationCommand{}, errors.New("adopt requires at least one discovered or requested agent")
 		}
 		changes := []MutationChange{
-			{Kind: "copy", Path: externalDir, Destination: store.PackageDir(request.SkillName), Detail: "Copy external content into the canonical store"},
+			{Kind: "copy_file", Path: externalDir, Destination: store.PackageDir(request.SkillName), Detail: "Copy external content into the canonical store"},
 			{Kind: "write", Path: store.InventoryPath(), Detail: "Mark " + request.SkillName + " as Zen-owned"},
 		}
 		return MutationCommand{
-			Operation: OperationAdopt, SkillName: request.SkillName, Scope: scope, Agents: agents,
+			Operation: OperationAdopt, SkillName: request.SkillName, Scope: request.Scope, Agents: agents,
 			Source: entry.Source, Ref: entry.Ref,
 			Summary:     "Adopt external skill " + request.SkillName + " into Zen's store (the external source remains untouched; bind the owned copy explicitly afterward)",
 			Changes:     changes,
@@ -354,7 +350,7 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 			summary += " (" + entry.Ref + ")"
 		}
 		return MutationCommand{
-			Operation: OperationUpdate, SkillName: request.SkillName,
+			Operation: OperationUpdate, SkillName: request.SkillName, Scope: request.Scope,
 			Source: entry.Source, Ref: entry.Ref,
 			Summary: summary,
 			Changes: []MutationChange{

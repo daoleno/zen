@@ -26,7 +26,7 @@ export interface SkillBinding {
   targetPath: string;
   sourcePath: string;
   enabled: boolean;
-  boundAt: string;
+  boundAt?: string;
   driftHash?: string;
   note?: string;
   operations: SkillMutationOperation[];
@@ -149,6 +149,7 @@ export interface SkillsLeaderboard {
   view: SkillsLeaderboardView;
   totalSkills: number;
   skills: RankedCatalogSkill[];
+  warning?: string;
 }
 
 export interface SkillsLeaderboards {
@@ -300,20 +301,23 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   if (rawSkills.length > MAX_INVENTORY_SKILLS) {
     throw new Error("Daemon returned too many installed Skills.");
   }
-  const skills = rawSkills
-    .map(normalizeInstalledSkill)
-    .filter((skill): skill is InstalledSkill => skill != null);
-  if (skills.length !== rawSkills.length) {
-    throw new Error("Daemon returned an invalid installed Skill.");
-  }
+  const skills: InstalledSkill[] = [];
+  let skippedSkills = 0;
   const installedIDs = new Set<string>();
   const canonicalPaths = new Set<string>();
-  for (const skill of skills) {
+  for (const rawSkill of rawSkills) {
+    const skill = normalizeInstalledSkill(rawSkill);
+    if (!skill) {
+      skippedSkills += 1;
+      continue;
+    }
     if (installedIDs.has(skill.id) || canonicalPaths.has(skill.canonicalPath)) {
-      throw new Error("Daemon returned a duplicate installed Skill.");
+      skippedSkills += 1;
+      continue;
     }
     installedIDs.add(skill.id);
     canonicalPaths.add(skill.canonicalPath);
+    skills.push(skill);
   }
   const rawAgents = Array.isArray(inventory.agents) ? inventory.agents : [];
   if (rawAgents.length > AGENTS.size) {
@@ -349,16 +353,22 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
     conflict: boundedCount(migrationRaw.conflict),
     tracked: boundedCount(migrationRaw.tracked),
   };
+  const warnings = (Array.isArray(inventory.warnings) ? inventory.warnings : [])
+    .map((warning) => boundedString(warning, 240))
+    .filter(Boolean)
+    .slice(0, 12);
+  if (skippedSkills > 0 && warnings.length < 12) {
+    warnings.push(
+      `${skippedSkills} installed Skill ${skippedSkills === 1 ? "entry was" : "entries were"} unreadable and skipped.`,
+    );
+  }
   return {
     generatedAt,
     cwd: boundedString(inventory.cwd, 4096) || undefined,
     skills,
     agents,
     executors: executors.length > 0 ? executors : undefined,
-    warnings: (Array.isArray(inventory.warnings) ? inventory.warnings : [])
-      .map((warning) => boundedString(warning, 240))
-      .filter(Boolean)
-      .slice(0, 12),
+    warnings,
     mutationOperations: normalizeMutationOperations(
       inventory.mutation_operations,
     ),
@@ -425,7 +435,7 @@ export function normalizeSkillsCatalogResult(
       installs > 1_000_000_000_000 ||
       identities.has(id)
     ) {
-      throw new Error("Daemon returned an invalid catalog identity.");
+      continue;
     }
     identities.add(id);
     skills.push({
@@ -644,7 +654,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
   }
   const agents = normalizeAgents(raw.agents) ?? [];
   const bindings = (Array.isArray(raw.bindings) ? raw.bindings : [])
-    .map(normalizeBinding)
+    .map((binding) => normalizeBinding(binding, manager === "zen"))
     .filter((binding): binding is SkillBinding => binding != null);
   if (bindings.some((binding) => !agents.includes(binding.agent))) {
     throw new Error("Daemon returned an inconsistent Skills detail.");
@@ -925,7 +935,7 @@ function normalizeSkillsLeaderboard(
   value: unknown,
   expectedView: SkillsLeaderboardView,
 ): SkillsLeaderboard {
-  const raw = exactRecord(value, ["view", "total_skills", "skills"]);
+  const raw = record(value);
   if (raw.view !== expectedView) {
     throw new Error("Daemon returned a mismatched Skills leaderboard view.");
   }
@@ -943,27 +953,48 @@ function normalizeSkillsLeaderboard(
     throw new Error("Daemon returned invalid Skills leaderboard bounds.");
   }
 
-  const identities = new Set<string>();
-  const skills: RankedCatalogSkill[] = [];
-  let previousMetric = Number.POSITIVE_INFINITY;
+  const byIdentity = new Map<string, RankedCatalogSkill>();
   for (let index = 0; index < rawSkills.length; index += 1) {
-    const candidate = normalizeRankedCatalogSkill(
-      rawSkills[index],
-      expectedView,
-      index + 1,
-    );
-    if (identities.has(candidate.id)) {
-      throw new Error("Daemon returned a duplicate ranked Skill identity.");
+    let candidate: RankedCatalogSkill;
+    try {
+      candidate = normalizeRankedCatalogSkill(
+        rawSkills[index],
+        expectedView,
+        0,
+      );
+    } catch {
+      continue;
     }
-    identities.add(candidate.id);
-    const metric = leaderboardPrimaryMetric(candidate, expectedView);
-    if (metric > previousMetric) {
-      throw new Error("Daemon returned invalid Skills leaderboard order.");
+    const current = byIdentity.get(candidate.id);
+    if (
+      !current ||
+      leaderboardPrimaryMetric(candidate, expectedView) >
+        leaderboardPrimaryMetric(current, expectedView) ||
+      (leaderboardPrimaryMetric(candidate, expectedView) ===
+        leaderboardPrimaryMetric(current, expectedView) &&
+        candidate.name < current.name)
+    ) {
+      byIdentity.set(candidate.id, candidate);
     }
-    previousMetric = metric;
-    skills.push(candidate);
   }
-  return { view: expectedView, totalSkills, skills };
+  const skills = [...byIdentity.values()]
+    .sort((left, right) => {
+      const metricDifference =
+        leaderboardPrimaryMetric(right, expectedView) -
+        leaderboardPrimaryMetric(left, expectedView);
+      return (
+        metricDifference ||
+        left.source.localeCompare(right.source) ||
+        left.skillId.localeCompare(right.skillId)
+      );
+    })
+    .map((skill, index) => ({ ...skill, rank: index + 1 }));
+  return {
+    view: expectedView,
+    totalSkills: Math.max(totalSkills, skills.length),
+    skills,
+    warning: boundedString(raw.warning, 240) || undefined,
+  };
 }
 
 function normalizeRankedCatalogSkill(
@@ -971,27 +1002,12 @@ function normalizeRankedCatalogSkill(
   view: SkillsLeaderboardView,
   expectedRank: number,
 ): RankedCatalogSkill {
-  const metricKeys =
-    view === "all-time"
-      ? ["total_installs"]
-      : view === "trending"
-        ? ["installs_24h"]
-        : ["current_installs", "yesterday_installs", "change"];
-  const raw = exactRecord(value, [
-    "id",
-    "skill_id",
-    "name",
-    "source",
-    "rank",
-    "installable",
-    ...metricKeys,
-  ]);
+  const raw = record(value);
   const id = boundedString(raw.id, 272);
   const skillId = boundedString(raw.skill_id, 128);
   const name = boundedString(raw.name, 128);
   const source = boundedString(raw.source, 141);
   if (
-    raw.rank !== expectedRank ||
     typeof raw.installable !== "boolean" ||
     !isLeaderboardSkillID(skillId) ||
     !isLeaderboardSource(source) ||
@@ -1105,17 +1121,22 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
   if (rawBindings.length > MAX_BINDINGS) {
     return null;
   }
-  const bindings = rawBindings.map(normalizeBinding);
+  const bindings = rawBindings.map((binding) =>
+    normalizeBinding(binding, manager === "zen"),
+  );
   if (bindings.some((binding) => binding == null)) {
     return null;
   }
   const validBindings = bindings as SkillBinding[];
-  const bindingPaths = new Set(
-    validBindings.map((binding) => binding.targetPath),
+  const bindingKeys = new Set(
+    validBindings.map(
+      (binding) =>
+        `${binding.agent}\u0000${binding.scope}\u0000${binding.targetPath}`,
+    ),
   );
   const bindingAgents = new Set(validBindings.map((binding) => binding.agent));
   if (
-    bindingPaths.size !== validBindings.length ||
+    bindingKeys.size !== validBindings.length ||
     agents.some((agent) => !bindingAgents.has(agent)) ||
     bindingAgents.size !== agents.length
   ) {
@@ -1187,7 +1208,10 @@ function normalizeCapability(value: unknown): SkillManagementCapability {
   };
 }
 
-function normalizeBinding(value: unknown): SkillBinding | null {
+function normalizeBinding(
+  value: unknown,
+  requireBoundAt = true,
+): SkillBinding | null {
   const raw = record(value);
   const agent = raw.agent;
   const scope = raw.scope;
@@ -1212,7 +1236,7 @@ function normalizeBinding(value: unknown): SkillBinding | null {
     !BINDING_MODES.has(mode as BindingMode) ||
     !targetPath ||
     !sourcePath ||
-    !boundAt ||
+    (requireBoundAt && !boundAt) ||
     typeof raw.enabled !== "boolean" ||
     operations.length !== rawOperations.length
   ) {
@@ -1225,7 +1249,7 @@ function normalizeBinding(value: unknown): SkillBinding | null {
     targetPath,
     sourcePath,
     enabled: raw.enabled,
-    boundAt,
+    boundAt: boundAt || undefined,
     driftHash: boundedString(raw.drift_hash, 64) || undefined,
     note: boundedString(raw.note, 240) || undefined,
     operations,

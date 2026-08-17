@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -125,22 +126,46 @@ func (reader *LeaderboardReader) Read(ctx context.Context, limit int) (CatalogLe
 	ordered := make([]result, len(leaderboardDefinitions))
 	for range leaderboardDefinitions {
 		current := <-results
-		if current.err != nil {
-			cancel()
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return CatalogLeaderboards{}, context.Canceled
-			}
-			if errors.Is(requestContext.Err(), context.DeadlineExceeded) {
-				return CatalogLeaderboards{}, errors.New("skills.sh leaderboard request timed out")
-			}
-			return CatalogLeaderboards{}, current.err
-		}
 		ordered[current.index] = current
 	}
-	if ordered[0].allTimeTotal <= 0 ||
-		ordered[0].allTimeTotal != ordered[1].allTimeTotal ||
-		ordered[0].allTimeTotal != ordered[2].allTimeTotal {
-		return CatalogLeaderboards{}, errors.New("skills.sh leaderboard totals changed shape")
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return CatalogLeaderboards{}, context.Canceled
+	}
+	successes := 0
+	var firstErr error
+	var expectedTotal int64
+	totalsDiffer := false
+	for index := range ordered {
+		if ordered[index].err != nil {
+			if firstErr == nil {
+				firstErr = ordered[index].err
+			}
+			ordered[index].leaderboard = CatalogLeaderboard{
+				View:    leaderboardDefinitions[index].view,
+				Skills:  []RankedCatalogSkill{},
+				Warning: "This catalog ranking is temporarily unavailable.",
+			}
+			continue
+		}
+		successes++
+		if expectedTotal == 0 {
+			expectedTotal = ordered[index].allTimeTotal
+		} else if ordered[index].allTimeTotal != expectedTotal {
+			totalsDiffer = true
+		}
+	}
+	if successes == 0 {
+		if errors.Is(requestContext.Err(), context.DeadlineExceeded) {
+			return CatalogLeaderboards{}, errors.New("skills.sh leaderboard request timed out")
+		}
+		return CatalogLeaderboards{}, firstErr
+	}
+	if totalsDiffer {
+		for index := range ordered {
+			if ordered[index].err == nil {
+				ordered[index].leaderboard.Warning = "Catalog totals are inconsistent; rankings use the valid entries returned for this view."
+			}
+		}
 	}
 
 	return CatalogLeaderboards{
@@ -228,14 +253,8 @@ func parseLeaderboardDocument(body []byte, expectedView CatalogView, limit int) 
 	if err != nil {
 		return CatalogLeaderboard{}, 0, errors.New("structured initialSkills payload is malformed")
 	}
-	if err := validateObjectKeys(rawEnvelope,
-		[]string{"initialSkills", "totalSkills", "allTimeTotal", "view"},
-		nil,
-	); err != nil {
-		return CatalogLeaderboard{}, 0, errors.New("structured leaderboard payload changed shape")
-	}
 	var upstream upstreamLeaderboard
-	if err := decodeExactJSON(rawEnvelope, &upstream); err != nil {
+	if err := json.Unmarshal(rawEnvelope, &upstream); err != nil {
 		return CatalogLeaderboard{}, 0, errors.New("structured leaderboard payload is malformed")
 	}
 	if upstream.View != expectedView {
@@ -244,35 +263,55 @@ func parseLeaderboardDocument(body []byte, expectedView CatalogView, limit int) 
 	if len(upstream.InitialSkills) < 1 || len(upstream.InitialSkills) > MaxUpstreamLeaderboardRows {
 		return CatalogLeaderboard{}, 0, errors.New("structured leaderboard row count is invalid")
 	}
-	if upstream.TotalSkills < int64(len(upstream.InitialSkills)) || upstream.TotalSkills > maxLeaderboardTotalSkills || upstream.AllTimeTotal <= 0 || upstream.AllTimeTotal > maxCatalogInstalls {
+	if upstream.TotalSkills < 0 || upstream.TotalSkills > maxLeaderboardTotalSkills || upstream.AllTimeTotal <= 0 || upstream.AllTimeTotal > maxCatalogInstalls {
 		return CatalogLeaderboard{}, 0, errors.New("structured leaderboard totals are invalid")
 	}
 
-	validated := make([]RankedCatalogSkill, 0, min(limit, len(upstream.InitialSkills)))
-	seen := make(map[string]struct{}, len(upstream.InitialSkills))
-	var previousMetric int64
-	for index, raw := range upstream.InitialSkills {
-		skill, metric, err := decodeRankedSkill(raw, expectedView, index+1)
+	type rankedCandidate struct {
+		skill  RankedCatalogSkill
+		metric int64
+	}
+	byIdentity := make(map[string]rankedCandidate, len(upstream.InitialSkills))
+	for _, raw := range upstream.InitialSkills {
+		skill, metric, err := decodeRankedSkill(raw, expectedView, 0)
 		if err != nil {
-			return CatalogLeaderboard{}, 0, err
+			continue
 		}
 		identity := skill.Source + "\x00" + skill.SkillID
-		if _, exists := seen[identity]; exists {
-			return CatalogLeaderboard{}, 0, errors.New("structured leaderboard contains a duplicate Skill identity")
+		current, exists := byIdentity[identity]
+		if !exists || metric > current.metric || (metric == current.metric && skill.Name < current.skill.Name) {
+			byIdentity[identity] = rankedCandidate{skill: skill, metric: metric}
 		}
-		seen[identity] = struct{}{}
-		if index > 0 && metric > previousMetric {
-			return CatalogLeaderboard{}, 0, errors.New("structured leaderboard rank order is invalid")
+	}
+	validated := make([]rankedCandidate, 0, len(byIdentity))
+	for _, candidate := range byIdentity {
+		validated = append(validated, candidate)
+	}
+	sort.Slice(validated, func(left, right int) bool {
+		if validated[left].metric != validated[right].metric {
+			return validated[left].metric > validated[right].metric
 		}
-		previousMetric = metric
-		if len(validated) < limit {
-			validated = append(validated, skill)
+		if validated[left].skill.Source != validated[right].skill.Source {
+			return validated[left].skill.Source < validated[right].skill.Source
 		}
+		return validated[left].skill.SkillID < validated[right].skill.SkillID
+	})
+	if len(validated) > limit {
+		validated = validated[:limit]
+	}
+	skills := make([]RankedCatalogSkill, len(validated))
+	for index := range validated {
+		skills[index] = validated[index].skill
+		skills[index].Rank = index + 1
+	}
+	totalSkills := upstream.TotalSkills
+	if totalSkills < int64(len(skills)) {
+		totalSkills = int64(len(skills))
 	}
 	return CatalogLeaderboard{
 		View:        expectedView,
-		TotalSkills: upstream.TotalSkills,
-		Skills:      validated,
+		TotalSkills: totalSkills,
+		Skills:      skills,
 	}, upstream.AllTimeTotal, nil
 }
 
@@ -282,14 +321,8 @@ func decodeRankedSkill(raw json.RawMessage, view CatalogView, rank int) (RankedC
 	result := RankedCatalogSkill{Rank: rank}
 	switch view {
 	case CatalogViewAllTime:
-		if err := validateObjectKeys(raw,
-			[]string{"source", "skillId", "name", "installs", "weeklyInstalls"},
-			[]string{"isOfficial"},
-		); err != nil {
-			return RankedCatalogSkill{}, 0, errors.New("all-time Skill payload changed shape")
-		}
 		var candidate upstreamAllTimeSkill
-		if err := decodeExactJSON(raw, &candidate); err != nil {
+		if err := json.Unmarshal(raw, &candidate); err != nil {
 			return RankedCatalogSkill{}, 0, errors.New("all-time Skill payload is malformed")
 		}
 		if len(candidate.WeeklyInstalls) != 8 {
@@ -303,27 +336,15 @@ func decodeRankedSkill(raw json.RawMessage, view CatalogView, rank int) (RankedC
 		source, skillID, name, metric = candidate.Source, candidate.SkillID, candidate.Name, candidate.Installs
 		result.TotalInstalls = int64Pointer(candidate.Installs)
 	case CatalogViewTrending:
-		if err := validateObjectKeys(raw,
-			[]string{"source", "skillId", "name", "installs"},
-			[]string{"isOfficial"},
-		); err != nil {
-			return RankedCatalogSkill{}, 0, errors.New("trending Skill payload changed shape")
-		}
 		var candidate upstreamTrendingSkill
-		if err := decodeExactJSON(raw, &candidate); err != nil {
+		if err := json.Unmarshal(raw, &candidate); err != nil {
 			return RankedCatalogSkill{}, 0, errors.New("trending Skill payload is malformed")
 		}
 		source, skillID, name, metric = candidate.Source, candidate.SkillID, candidate.Name, candidate.Installs
 		result.Installs24h = int64Pointer(candidate.Installs)
 	case CatalogViewHot:
-		if err := validateObjectKeys(raw,
-			[]string{"source", "skillId", "name", "installs", "installsYesterday", "change"},
-			[]string{"isOfficial"},
-		); err != nil {
-			return RankedCatalogSkill{}, 0, errors.New("hot Skill payload changed shape")
-		}
 		var candidate upstreamHotSkill
-		if err := decodeExactJSON(raw, &candidate); err != nil {
+		if err := json.Unmarshal(raw, &candidate); err != nil {
 			return RankedCatalogSkill{}, 0, errors.New("hot Skill payload is malformed")
 		}
 		if !validLeaderboardMetric(candidate.InstallsYesterday) || candidate.Change < -maxCatalogInstalls || candidate.Change > maxCatalogInstalls || candidate.Change != candidate.Installs-candidate.InstallsYesterday {

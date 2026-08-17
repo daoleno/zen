@@ -70,8 +70,10 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).not.toContain("Install targets");
     expect(skillsSource).not.toContain("Host snapshot");
     expect(skillsSource).toContain("AgentKindIcon");
-    expect(skillsSource).toContain("CompactToolbar");
+    expect(skillsSource).toContain("SkillTargetSelector");
+    expect(skillsSource).toContain("LeaderboardSelector");
     expect(skillsSource).toContain("SurfaceSearch");
+    expect(skillsSource).not.toContain("CompactToolbar");
   });
 
   test("Plugins and Skills have one first-level tablist and no second segmented navigator", () => {
@@ -79,7 +81,9 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain('label: "Plugins"');
     expect(skillsSource).toContain('{ section: "skills", label: "Skills"');
     expect(skillsSource).toContain("SurfaceTabs");
-    expect(skillsSource.match(/accessibilityRole="tablist"/g)).toHaveLength(1);
+    expect(skillsSource.match(/accessibilityRole="tablist"/g)).toHaveLength(3);
+    expect(skillsSource).toContain('accessibilityLabel="Skill target"');
+    expect(skillsSource).toContain('accessibilityLabel="Catalog ranking"');
     expect(skillsSource).toContain("accessibilityLabel={tab.label}");
     expect(skillsSource).not.toContain("ModeSwitch");
     expect(skillsSource).not.toContain("PluginsModeSwitch");
@@ -112,29 +116,21 @@ describe("navigation and Skills copy density", () => {
     expect(skillsSource).toContain("SkillInspectorSheet");
     expect(skillsSource).toContain('kind: "plugin-details"');
     expect(skillsSource).toContain("state.error");
-    expect(skillsSource).toContain("catalogState.error");
+    expect(skillsSource).toContain("Catalog partially available");
+    expect(skillsSource).toContain("InventoryWarnings");
     expect(skillsSource).toContain("searchState.error");
     expect(skillsSource).toContain('emptyTitle="No plugins found"');
     expect(skillsSource).toContain('loadingTitle="Loading installed Skills…"');
   });
 
-  test("the target carousel is replaced by one options sheet with the official-icon target control", () => {
+  test("target, ranking, and scan controls are explicit without a catch-all sheet", () => {
     expect(skillsSource).not.toContain("AgentSelector");
-    expect(skillsSource).not.toMatch(/\shorizontal(?:\s|=)/);
     expect(skillsSource).toContain("compactSkillTargets(agentCounts)");
-    // Target, Ranking, and Discovery live inside one options sheet opened by a
-    // single neutral icon button; none render as top toolbar labels.
-    expect(skillsSource).toContain('accessibilityLabel="Skills options"');
-    expect(skillsSource).toContain(
-      "SheetSectionHeading>Target</SheetSectionHeading>",
-    );
-    expect(skillsSource).toContain(
-      "SheetSectionHeading>Ranking</SheetSectionHeading>",
-    );
-    expect(skillsSource).toContain(
-      "SheetSectionHeading>Discovery</SheetSectionHeading>",
-    );
-    expect(skillsSource).toContain("managedAgentKind(agent)");
+    expect(skillsSource).toContain("function SkillTargetSelector");
+    expect(skillsSource).toContain("function LeaderboardSelector");
+    expect(skillsSource).toContain('accessibilityLabel="Scan existing Skills"');
+    expect(skillsSource).not.toContain('accessibilityLabel="Skills options"');
+    expect(skillsSource).not.toContain("ellipsis-horizontal-circle-outline");
   });
 
   test("one Plugin row gets one contextual trailing action and a client icon", () => {
@@ -151,9 +147,9 @@ describe("navigation and Skills copy density", () => {
     expect(rowBlock).not.toContain("trash-outline");
   });
 
-  test("tabs, sheet choices, and decorative icons have one explicit accessibility owner", () => {
+  test("tabs, explicit controls, sheet choices, and decorative icons have one accessibility owner", () => {
     const tabsBlock = skillsSource.match(
-      /function SurfaceTabs\([\s\S]*?function CompactToolbar\(/,
+      /function SurfaceTabs\([\s\S]*?function SkillTargetSelector\(/,
     )?.[0];
     const sheetOptionBlock = skillsSource.match(
       /function SheetOption\([\s\S]*?function SheetAction\(/,
@@ -163,6 +159,8 @@ describe("navigation and Skills copy density", () => {
     )?.[0];
     expect(tabsBlock).toContain("accessibilityLabel={tab.label}");
     expect(tabsBlock).toContain("accessible={false}");
+    expect(skillsSource).toContain('accessibilityLabel="Skill target"');
+    expect(skillsSource).toContain('accessibilityLabel="Catalog ranking"');
     expect(sheetOptionBlock).toContain(
       'accessibilityLabel={[label, detail].filter(Boolean).join(", ")}',
     );

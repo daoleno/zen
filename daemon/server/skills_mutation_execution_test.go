@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -149,6 +151,180 @@ func TestSkillsMutationOnlyCurrentRequestClaimsOnceAndEmitsResult(t *testing.T) 
 	expectNoMessage(t, messages, "skills_mutation_error")
 }
 
+func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
+	home := t.TempDir()
+	stateDir := filepath.Join(home, ".zen")
+	t.Setenv("HOME", home)
+	t.Setenv("ZEN_STATE_DIR", stateDir)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	source := filepath.Join(home, "source-skill")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("---\nname: lifecycle-proof\ndescription: websocket lifecycle fixture\n---\nproof\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	messages := messageSink(t, conn)
+	send := func(payload map[string]any) {
+		t.Helper()
+		if err := conn.WriteJSON(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inventory := func(id string, generation int) map[string]any {
+		send(map[string]any{"type": "skills_inventory", "request_id": id, "generation": generation})
+		return readUntil(t, messages, "skills_inventory", id)
+	}
+	initial := inventory("inventory-initial", 1)
+	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
+		t.Fatalf("initial Skills inventory = %d rows, want empty", len(rows))
+	}
+
+	sequence := []map[string]any{
+		{"operation": "import", "skill_name": "lifecycle-proof", "path": source, "scope": "global", "agents": []string{"codex"}},
+		{"operation": "bind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "disable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "enable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "unbind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
+		{"operation": "uninstall", "skill_name": "lifecycle-proof", "scope": "global"},
+	}
+	for index, input := range sequence {
+		operation := input["operation"].(string)
+		commandID := "command-" + operation
+		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
+		for key, value := range input {
+			commandRequest[key] = value
+		}
+		send(commandRequest)
+		commandResponse := readUntil(t, messages, "skills_command", commandID)
+		command := commandResponse["command"].(map[string]any)
+		if command["operation"] != operation || command["scope"] != "global" {
+			t.Fatalf("%s reviewed command contract = %+v", operation, command)
+		}
+
+		mutationID := "mutation-" + operation
+		mutationRequest := map[string]any{"type": "skills_mutation", "request_id": mutationID}
+		for key, value := range input {
+			mutationRequest[key] = value
+		}
+		send(mutationRequest)
+		result := readUntil(t, messages, "skills_mutation_result", mutationID)
+		if result["success"] != true {
+			t.Fatalf("%s execution failed: %+v", operation, result)
+		}
+
+		if index == 0 {
+			send(map[string]any{"type": "skills_inspect", "request_id": "inspect-imported", "generation": 1, "skill_name": "lifecycle-proof"})
+			inspection := readUntil(t, messages, "skills_inspect_result", "inspect-imported")
+			if inspection["detail"].(map[string]any)["skill_name"] != "lifecycle-proof" {
+				t.Fatalf("inspect response = %+v", inspection)
+			}
+		}
+	}
+	final := inventory("inventory-final", 2)
+	if rows := final["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
+		t.Fatalf("final Skills inventory = %d rows, want empty reconciliation", len(rows))
+	}
+}
+
+func TestSkillsWebSocketExternalLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
+	home := t.TempDir()
+	stateDir := filepath.Join(home, ".zen")
+	t.Setenv("HOME", home)
+	t.Setenv("ZEN_STATE_DIR", stateDir)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	externalRoot := filepath.Join(home, ".claude", "skills")
+	writeExternal := func(name string) string {
+		t.Helper()
+		path := filepath.Join(externalRoot, name)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + name + "\ndescription: websocket external lifecycle fixture\n---\nproof\n"
+		if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	adoptSource := writeExternal("adopt-proof")
+	forgetSource := writeExternal("forget-proof")
+
+	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	messages := messageSink(t, conn)
+	send := func(payload map[string]any) {
+		t.Helper()
+		if err := conn.WriteJSON(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inventory := func(id string, generation int) map[string]any {
+		send(map[string]any{"type": "skills_inventory", "request_id": id, "generation": generation})
+		return readUntil(t, messages, "skills_inventory", id)
+	}
+	run := func(input map[string]any) {
+		t.Helper()
+		operation := input["operation"].(string)
+		commandID := "external-command-" + operation
+		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
+		for key, value := range input {
+			commandRequest[key] = value
+		}
+		send(commandRequest)
+		commandResponse := readUntil(t, messages, "skills_command", commandID)
+		command := commandResponse["command"].(map[string]any)
+		if command["operation"] != operation || command["scope"] != "global" {
+			t.Fatalf("%s reviewed command contract = %+v", operation, command)
+		}
+
+		mutationID := "external-mutation-" + operation
+		mutationRequest := map[string]any{"type": "skills_mutation", "request_id": mutationID}
+		for key, value := range input {
+			mutationRequest[key] = value
+		}
+		send(mutationRequest)
+		result := readUntil(t, messages, "skills_mutation_result", mutationID)
+		if result["success"] != true {
+			t.Fatalf("%s execution failed: %+v", operation, result)
+		}
+	}
+
+	initial := inventory("external-inventory-initial", 1)
+	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 2 {
+		t.Fatalf("initial external Skills inventory = %d rows, want 2", len(rows))
+	}
+	send(map[string]any{"type": "skills_inspect", "request_id": "inspect-external", "generation": 1, "skill_name": "adopt-proof"})
+	inspection := readUntil(t, messages, "skills_inspect_result", "inspect-external")
+	if inspection["detail"].(map[string]any)["manager"] != "external" {
+		t.Fatalf("external inspect response = %+v", inspection)
+	}
+
+	run(map[string]any{"operation": "migrate", "scope": "global"})
+	run(map[string]any{"operation": "adopt", "skill_name": "adopt-proof", "scope": "global"})
+	run(map[string]any{"operation": "forget", "skill_name": "forget-proof", "scope": "global"})
+
+	// Adopt and forget intentionally leave external source files untouched.
+	// Remove only this disposable fixture content before final reconciliation.
+	if err := os.RemoveAll(adoptSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(forgetSource); err != nil {
+		t.Fatal(err)
+	}
+	run(map[string]any{"operation": "uninstall", "skill_name": "adopt-proof", "scope": "global"})
+	final := inventory("external-inventory-final", 2)
+	if rows := final["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
+		t.Fatalf("final external Skills inventory = %d rows, want empty reconciliation", len(rows))
+	}
+}
+
 func newSkillsMutationTestServer(t *testing.T, probe *mutationProbe) (*Server, *websocket.Conn, func()) {
 	t.Helper()
 	authManager, err := auth.NewManager(t.TempDir())
@@ -161,7 +337,9 @@ func newSkillsMutationTestServer(t *testing.T, probe *mutationProbe) (*Server, *
 		t.Fatal(err)
 	}
 	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
-	srv.skillsMutationExecuteOverride = probe.executeSkills
+	if probe != nil {
+		srv.skillsMutationExecuteOverride = probe.executeSkills
+	}
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
 	header := http.Header{}
 	header.Set("Authorization", calendarAuthHeader(privateKey, authManager.DaemonID(), "device-skills", "zen-connect"))

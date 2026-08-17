@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const screenSource = readFileSync(join(import.meta.dir, "../app/skills.tsx"), "utf8");
+const screenSource = readFileSync(
+  join(import.meta.dir, "../app/skills.tsx"),
+  "utf8",
+);
 const presentationSource = readFileSync(
   join(import.meta.dir, "../components/skills/SkillsPresentation.tsx"),
   "utf8",
@@ -27,10 +30,14 @@ const skillsScreenModelSource = readFileSync(
 describe("Plugins & Skills V4 management surface", () => {
   test("all inventory and discovery flows stay bound to the current server", () => {
     expect(screenSource).toContain("useCurrentServer");
-    expect(screenSource).toContain("requestOwnerRef.current.rebind(currentServerId)");
+    expect(screenSource).toContain(
+      "requestOwnerRef.current.rebind(currentServerId)",
+    );
     expect(screenSource).toContain("presentationIsCurrent");
     expect(screenSource).toContain('key={currentServerId ?? "none"}');
-    expect(screenSource).toContain("const visibleInventoryState = presentationIsCurrent");
+    expect(screenSource).toContain(
+      "const visibleInventoryState = presentationIsCurrent",
+    );
     expect(presentationSource).not.toContain("serverBindingKey");
   });
 
@@ -51,13 +58,17 @@ describe("Plugins & Skills V4 management surface", () => {
   });
 
   test("each tab renders one unified management list with installed and discovered rows", () => {
-    expect(presentationSource).toContain("skillsUnifiedRows(visibleSkills, visibleCatalog)");
+    expect(presentationSource).toContain(
+      "skillsUnifiedRows(visibleSkills, visibleCatalog)",
+    );
     expect(screenSource).toContain("pluginsUnifiedView");
     expect(presentationSource).toContain("function SkillsList");
-    expect(presentationSource).toContain("kind: \"installed\"");
+    expect(presentationSource).toContain('kind: "installed"');
     expect(presentationSource).toContain("function InstalledSkillRow");
     expect(presentationSource).toContain("function CatalogSkillRow");
-    expect(presentationSource).toContain("kind: \"available\"; plugin: AvailablePlugin");
+    expect(presentationSource).toContain(
+      'kind: "available"; plugin: AvailablePlugin',
+    );
     expect(skillsScreenModelSource).toContain("installedSkillCatalogId");
     expect(pluginModelSource).toContain("pluginsUnifiedView");
   });
@@ -70,43 +81,51 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(presentationSource).toContain("function BadgeRow");
   });
 
-  test("refresh retains the rendered list and stable chrome (no mode buttons, no flash)", () => {
-    expect(screenSource).toContain("beginSkillsRequest(current, token.generation)");
+  test("pull refresh retains rendered data without manual refresh chrome", () => {
+    expect(screenSource).toContain(
+      "beginSkillsRequest(current, token.generation)",
+    );
     expect(screenSource).toContain("skillsRequestData(visibleInventoryState)");
-    expect(presentationSource).toContain("skillsRequestData(state) !== undefined");
-    // The toolbar renders exactly the stable tool set: Target/Ranking/Update
-    // for Skills plus Refresh; no segmented state buttons.
-    expect(presentationSource).toContain("function CompactToolbar");
+    expect(presentationSource).toContain(
+      "skillsRequestData(state) !== undefined",
+    );
+    expect(presentationSource).toContain(
+      "refreshControl={surfaceRefreshControl(",
+    );
+    expect(presentationSource).not.toContain("function CompactToolbar");
+    expect(presentationSource).not.toContain('accessibilityLabel="Refresh"');
+    expect(presentationSource).not.toContain('name="refresh"');
     expect(presentationSource).not.toContain("onOpenMode");
     expect(presentationSource).not.toContain("View Installed");
     expect(presentationSource).not.toContain("View Discover");
   });
 
-  test("the top toolbar is at most one icon-only options control plus refresh", () => {
-    const toolbarBlock = presentationSource.match(
-      /function CompactToolbar\([\s\S]*?function SurfaceSearch\(/,
-    )?.[0]!;
-    expect(toolbarBlock).toBeDefined();
-    // Exactly one Skills options icon button and one Refresh icon button.
-    expect(toolbarBlock.match(/accessibilityLabel="Skills options"/g)).toHaveLength(1);
-    expect(toolbarBlock.match(/accessibilityLabel="Refresh"/g)).toHaveLength(1);
-    // No labeled top toolbar buttons and no leftover tool-button component.
-    expect(toolbarBlock).not.toContain("ToolButton");
-    expect(toolbarBlock).not.toContain("skillAgentLabel(selectedAgent)");
-    expect(toolbarBlock).not.toMatch(/label=\"Target\"/);
-    expect(toolbarBlock).not.toMatch(/label=\"Ranking\"/);
-    expect(toolbarBlock).not.toMatch(/label=\"Update\"/);
-    expect(toolbarBlock).not.toContain("skillsLeaderboardLabel");
-    // The Plugins toolbar has only refresh (the options button is Skills-only).
-    expect(presentationSource).toContain('{section === "skills" && onOpenOptions ? (');
-    // Target, Ranking, and Update controls still exist once, inside the sheet.
-    expect(presentationSource).toContain("SheetSectionHeading>Target</SheetSectionHeading>");
-    expect(presentationSource).toContain("SheetSectionHeading>Ranking</SheetSectionHeading>");
-    expect(presentationSource).toContain("SheetSectionHeading>Discovery</SheetSectionHeading>");
-    expect(presentationSource).toContain('kind: "options"');
-    expect(presentationSource).not.toContain('kind: "target"');
-    expect(presentationSource).not.toContain('kind: "ranking"');
-    expect(presentationSource).not.toContain('kind: "skills-update"');
+  test("screen-level controls have explicit information architecture", () => {
+    expect(presentationSource).toContain("function SkillTargetSelector");
+    expect(presentationSource).toContain("function LeaderboardSelector");
+    expect(presentationSource).toContain(
+      'accessibilityLabel="Scan existing Skills"',
+    );
+    expect(presentationSource).not.toContain(
+      'accessibilityLabel="Skills options"',
+    );
+    expect(presentationSource).not.toContain(
+      "ellipsis-horizontal-circle-outline",
+    );
+    expect(presentationSource).not.toContain('kind: "options"');
+    expect(presentationSource).toContain("function InstalledSkillRow");
+    expect(presentationSource).toContain("function SkillInspectorBody");
+  });
+
+  test("partial inventory and catalog errors stay localized around usable rows", () => {
+    expect(presentationSource).toContain("function InventoryWarnings");
+    expect(presentationSource).toContain("Showing the last usable inventory");
+    expect(presentationSource).toMatch(
+      /Installed Skills and search\s+remain available/,
+    );
+    expect(presentationSource).toContain(
+      '<SmallAction label="Retry" onPress={onRetryCatalog} />',
+    );
   });
 
   test("reviewed commands execute through the authoritative daemon mutation path", () => {
@@ -123,12 +142,14 @@ describe("Plugins & Skills V4 management surface", () => {
   });
 
   test("destructive actions confirm, then refresh inventory and show truthful state", () => {
-    expect(screenSource).toContain("confirmMutation(confirmation, destructive)");
+    expect(screenSource).toContain(
+      "confirmMutation(confirmation, destructive)",
+    );
     expect(screenSource).toContain("void refreshInventory()");
     expect(screenSource).toContain("void loadPlugins()");
     expect(screenSource).toContain("mutationNotice");
-    expect(screenSource).toContain("kind: \"success\"");
-    expect(screenSource).toContain("kind: \"error\"");
+    expect(screenSource).toContain('kind: "success"');
+    expect(screenSource).toContain('kind: "error"');
     expect(presentationSource).toContain("function MutationNoticeBanner");
   });
 
@@ -150,7 +171,9 @@ describe("Plugins & Skills V4 management surface", () => {
     expect(presentationSource).toContain("installedSkillOwnership");
     expect(presentationSource).toContain("installedPluginOwnership");
     expect(surfaceModelSource).toContain("manageable: false");
-    expect(surfaceModelSource).toContain("Codex-hosted plugins do not expose a supported lifecycle adapter");
+    expect(surfaceModelSource).toContain(
+      "Codex-hosted plugins do not expose a supported lifecycle adapter",
+    );
     expect(surfaceModelSource).toContain("Discovered from client cache");
   });
 

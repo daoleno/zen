@@ -1229,7 +1229,13 @@ describe("Skills management transport", () => {
           "adopt",
           "update",
         ],
-        migration: { owned: 0, external: 0, duplicate: 0, conflict: 0, tracked: 0 },
+        migration: {
+          owned: 0,
+          external: 0,
+          duplicate: 0,
+          conflict: 0,
+          tracked: 0,
+        },
       },
     });
     client.disconnectAll();
@@ -1348,6 +1354,39 @@ describe("Skills management transport", () => {
     await expect(pending).rejects.toThrow(
       "Skills command for a different request",
     );
+    client.disconnectAll();
+  });
+
+  test("an untargeted package request accepts daemon-derived affected agents", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.buildSkillsCommand(server.id, {
+      operation: "uninstall",
+      skillName: "useful",
+      scope: "global",
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound.agents).toBeUndefined();
+    socket.receive({
+      type: "skills_command",
+      request_id: outbound.request_id,
+      command: {
+        operation: "uninstall",
+        scope: "global",
+        agents: ["codex", "cursor"],
+        skill_name: "useful",
+        summary: "Uninstall useful and all of its bindings",
+        changes: [{ kind: "remove", path: "/store/useful" }],
+        destructive: true,
+      },
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      operation: "uninstall",
+      agents: ["codex", "cursor"],
+    });
     client.disconnectAll();
   });
 });

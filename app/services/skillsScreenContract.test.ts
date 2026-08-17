@@ -24,6 +24,7 @@ import type {
   RankedCatalogSkill,
   SkillsInventory,
 } from "./skillsManagement";
+import { readFileSync } from "node:fs";
 
 function installedSkill(
   id: string,
@@ -106,6 +107,41 @@ function catalogSkill(
 }
 
 describe("Skills screen behavior", () => {
+  test("native-stack header owns the top inset so tabs cannot regain a spacer", () => {
+    const presentation = readFileSync(
+      new URL("../components/skills/SkillsPresentation.tsx", import.meta.url),
+      "utf8",
+    );
+    const layout = readFileSync(
+      new URL("../app/_layout.tsx", import.meta.url),
+      "utf8",
+    );
+    const skillsRoute = layout.slice(
+      layout.indexOf('<Stack.Screen\n        name="skills"'),
+      layout.indexOf('<Stack.Screen\n        name="stats"'),
+    );
+    const rootStart = presentation.indexOf(
+      '<SafeAreaView edges={["left", "right"]} style={styles.root}>',
+    );
+    const tabsStart = presentation.indexOf(
+      "<SurfaceTabs section={section} onSelect={onSelectSection} />",
+      rootStart,
+    );
+    const tabsStyle = presentation.slice(
+      presentation.indexOf("  surfaceTabs: {"),
+      presentation.indexOf("  surfaceTab: {"),
+    );
+
+    expect(skillsRoute).toContain('title: "Skills"');
+    expect(skillsRoute).not.toContain("headerShown: false");
+    expect(rootStart).toBeGreaterThan(-1);
+    expect(presentation).not.toContain('<SafeAreaView edges={["top"]}');
+    expect(presentation.slice(rootStart, tabsStart).trim()).toBe(
+      '<SafeAreaView edges={["left", "right"]} style={styles.root}>',
+    );
+    expect(tabsStyle).not.toMatch(/paddingTop|marginTop/);
+  });
+
   test("automatic inventory is exactly once per focus and canonical server identity", () => {
     const owner = new SkillsAutomaticInventoryOwner();
 
@@ -122,16 +158,16 @@ describe("Skills screen behavior", () => {
     expect(owner.shouldRefresh(2, "server-b")).toBe(true);
   });
 
-  test("manual inventory refreshes remain repeatable outside the automatic gate", () => {
+  test("pull-to-refresh remains repeatable outside the automatic focus gate", () => {
     const owner = new SkillsAutomaticInventoryOwner();
     let requests = 0;
-    const manualRefresh = () => {
+    const pullToRefresh = () => {
       requests += 1;
     };
 
     if (owner.shouldRefresh(1, "server-a")) requests += 1;
-    manualRefresh();
-    manualRefresh();
+    pullToRefresh();
+    pullToRefresh();
 
     expect(requests).toBe(3);
     expect(owner.shouldRefresh(1, "server-a")).toBe(false);
