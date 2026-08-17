@@ -19,23 +19,11 @@ import (
 )
 
 func TestRunWithReadyCallsBackAfterListenAndShutsDownCompatibly(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve address: %v", err)
-	}
-	addr := reserved.Addr().String()
-	if err := reserved.Close(); err != nil {
-		t.Fatalf("release address: %v", err)
-	}
-
-	authManager, err := auth.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("new auth manager: %v", err)
-	}
-	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
+	addr := availableAddress(t)
+	srv := newEventSubscriptionServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := false
-	err = srv.RunWithReady(ctx, addr, func() {
+	err := srv.RunWithReady(ctx, addr, func() {
 		ready = true
 		second, listenErr := net.Listen("tcp", addr)
 		if listenErr == nil {
@@ -50,17 +38,14 @@ func TestRunWithReadyCallsBackAfterListenAndShutsDownCompatibly(t *testing.T) {
 	if !errors.Is(err, http.ErrServerClosed) {
 		t.Fatalf("RunWithReady error = %v, want http.ErrServerClosed", err)
 	}
+	assertServerEventSubscriptionsClosed(t, srv)
 }
 
 func TestRunWithReadyDoesNotCallBackWhenListenFails(t *testing.T) {
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("occupy address: %v", err)
-	}
-	defer occupied.Close()
-
+	occupied := testListener(t)
+	srv := newEventSubscriptionServer(t)
 	called := false
-	err = (&Server{}).RunWithReady(context.Background(), occupied.Addr().String(), func() {
+	err := srv.RunWithReady(context.Background(), occupied.Addr().String(), func() {
 		called = true
 	})
 	if err == nil {
@@ -69,48 +54,32 @@ func TestRunWithReadyDoesNotCallBackWhenListenFails(t *testing.T) {
 	if called {
 		t.Fatal("ready callback ran after listen failure")
 	}
-}
-
-func TestRunWithReadyClosesAllEventSubscriptionsOnShutdown(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve address: %v", err)
-	}
-	addr := reserved.Addr().String()
-	if err := reserved.Close(); err != nil {
-		t.Fatalf("release address: %v", err)
-	}
-
-	srv := newEventSubscriptionServer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	err = srv.RunWithReady(ctx, addr, cancel)
-	if !errors.Is(err, http.ErrServerClosed) {
-		t.Fatalf("RunWithReady error = %v, want http.ErrServerClosed", err)
-	}
 	assertServerEventSubscriptionsClosed(t, srv)
 }
 
-func TestRunWithReadyClosesAllEventSubscriptionsWhenListenFails(t *testing.T) {
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+func testListener(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("occupy address: %v", err)
+		t.Fatal(err)
 	}
-	defer occupied.Close()
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
 
-	srv := newEventSubscriptionServer(t)
-	if err := srv.RunWithReady(context.Background(), occupied.Addr().String(), nil); err == nil {
-		t.Fatal("RunWithReady unexpectedly succeeded")
+func availableAddress(t *testing.T) string {
+	t.Helper()
+	listener := testListener(t)
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
 	}
-	assertServerEventSubscriptionsClosed(t, srv)
+	return addr
 }
 
 func newEventSubscriptionServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
-	authManager, err := auth.NewManager(filepath.Join(root, "auth"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	w := watcher.New(time.Second)
 	workStore, err := work.NewStore(filepath.Join(root, "work"))
 	if err != nil {
@@ -126,7 +95,7 @@ func newEventSubscriptionServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(authManager, w, nil, nil, workStore, nil, brainService)
+	srv := New(nil, w, nil, nil, workStore, nil, brainService)
 	srv.SetCalendar(calendarStore, nil)
 	return srv
 }
@@ -145,8 +114,8 @@ func assertSubscriptionClosed[T any](t *testing.T, name string, subscription <-c
 		if ok {
 			t.Fatalf("%s subscription remained open", name)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %s subscription teardown", name)
+	default:
+		t.Fatalf("%s subscription remained open", name)
 	}
 }
 

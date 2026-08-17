@@ -57,10 +57,6 @@ export interface ServerCalendar {
 export interface CalendarState {
   byServer: Record<string, ServerCalendar>;
 }
-export type ServerCalendarItem = CalendarItem & {
-  serverId: string;
-  serverName: string;
-};
 export const initialCalendarState: CalendarState = { byServer: {} };
 type Action =
   | {
@@ -131,21 +127,7 @@ export function selectCurrentServerCalendar(
   state: CalendarState,
   currentServerId: string | null | undefined,
 ): ServerCalendar | null {
-  const serverId = currentServerId?.trim() ?? "";
-  return serverId ? state.byServer[serverId] ?? null : null;
-}
-
-export function selectCurrentServerCalendarItems(
-  state: CalendarState,
-  currentServerId: string | null | undefined,
-): ServerCalendarItem[] {
-  const server = selectCurrentServerCalendar(state, currentServerId);
-  if (!server) return [];
-  return server.items.map((item) => ({
-    ...item,
-    serverId: server.serverId,
-    serverName: server.serverName,
-  }));
+  return currentServerId ? state.byServer[currentServerId] ?? null : null;
 }
 
 const StateContext = createContext<CalendarState | null>(null);

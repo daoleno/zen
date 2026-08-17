@@ -29,12 +29,9 @@ describe("ordinary CI contract", () => {
       workflow.indexOf("  daemon:"),
       workflow.indexOf("  app:"),
     );
-    const test = daemonJob.indexOf("run: go test ./...");
-    const vet = daemonJob.indexOf("run: go vet ./...");
-    const build = daemonJob.indexOf("run: go build -o bin/zen ./cmd/zen/");
-    expect(test).toBeGreaterThan(-1);
-    expect(vet).toBeGreaterThan(test);
-    expect(build).toBeGreaterThan(vet);
+    expect(daemonJob).toMatch(
+      /run: go test \.\/\.\.\.[\s\S]*run: go vet \.\/\.\.\.[\s\S]*run: go build -o bin\/zen \.\/cmd\/zen\//,
+    );
   });
 
   it("keeps bounded Android native PR evidence beside the iOS native job", () => {

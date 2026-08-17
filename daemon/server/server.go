@@ -122,7 +122,6 @@ type Server struct {
 	calendarSub                 <-chan calendar.Event
 	brainWorkSubID              int
 	brainWorkSub                <-chan brain.WorkChange
-	eventSubscriptionsCloseOnce sync.Once
 	signalSystemStartupComplete bool
 
 	clients            map[*websocket.Conn]*authenticatedClient
@@ -146,20 +145,15 @@ func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Schedule
 }
 
 func (s *Server) closeEventSubscriptions() {
-	if s == nil {
-		return
+	if s.work != nil && s.workSub != nil {
+		s.work.Unsubscribe(s.workSubID)
 	}
-	s.eventSubscriptionsCloseOnce.Do(func() {
-		if s.work != nil && s.workSub != nil {
-			s.work.Unsubscribe(s.workSubID)
-		}
-		if s.calendar != nil && s.calendarSub != nil {
-			s.calendar.Unsubscribe(s.calendarSubID)
-		}
-		if s.brain != nil && s.brainWorkSub != nil {
-			s.brain.UnsubscribeWork(s.brainWorkSubID)
-		}
-	})
+	if s.calendar != nil && s.calendarSub != nil {
+		s.calendar.Unsubscribe(s.calendarSubID)
+	}
+	if s.brain != nil && s.brainWorkSub != nil {
+		s.brain.UnsubscribeWork(s.brainWorkSubID)
+	}
 }
 
 type codexConversationSubscription struct {
