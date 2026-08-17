@@ -2280,6 +2280,7 @@ export class MultiServerWebSocketClient {
     serverId: string,
     options: {
       skillName: string;
+      skillId?: string;
       generation: number;
       cwd?: string;
       path?: string;
@@ -2344,6 +2345,7 @@ export class MultiServerWebSocketClient {
             request_id: requestId,
             generation: options.generation,
             skill_name: options.skillName,
+            skill_id: options.skillId,
             cwd: options.cwd,
             path: options.path,
           },

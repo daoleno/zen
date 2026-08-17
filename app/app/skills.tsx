@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import { Alert } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   SkillsPresentation,
   type SurfaceMutationNotice,
@@ -38,8 +38,7 @@ import {
 } from "../services/pluginsScreenModel";
 import {
   SkillsAutomaticInventoryOwner,
-  skillsSectionAgentCounts,
-  skillsSectionProjection,
+  groupLogicalSkills,
 } from "../services/skillsScreenModel";
 import {
   createSkillsSurfaceState,
@@ -51,6 +50,7 @@ import { useAgents } from "../store/agents";
 import { useCurrentServer } from "../store/currentServer";
 
 export default function SkillsScreen() {
+  const params = useLocalSearchParams<{ demo?: string | string[] }>();
   const router = useRouter();
   const { state } = useAgents();
   const { currentServer } = useCurrentServer();
@@ -59,7 +59,6 @@ export default function SkillsScreen() {
     serverId && state.serverConnections[serverId] === "connected",
   );
   const [surface, setSurface] = useState(createSkillsSurfaceState);
-  const [agent, setAgent] = useState<ManagedSkillAgent>("codex");
   const [inventoryState, setInventoryState] = useState<
     SkillsRequestState<SkillsInventory>
   >(createSkillsRequestState);
@@ -70,6 +69,7 @@ export default function SkillsScreen() {
     SkillsRequestState<PackageDetail>
   >(createSkillsRequestState);
   const [inspectedName, setInspectedName] = useState<string | null>(null);
+  const [inspectedCopyId, setInspectedCopyId] = useState<string | null>(null);
   const [preparingMutation, setPreparingMutation] = useState("");
   const [notice, setNotice] = useState<SurfaceMutationNotice | null>(null);
   const [focusGeneration, setFocusGeneration] = useState(0);
@@ -103,6 +103,7 @@ export default function SkillsScreen() {
     setPluginsState(createSkillsRequestState());
     setInspectState(createSkillsRequestState());
     setInspectedName(null);
+    setInspectedCopyId(null);
     setNotice(null);
   }, [serverId]);
 
@@ -213,9 +214,10 @@ export default function SkillsScreen() {
   }, [focusGeneration, refreshPlugins, serverId, surface.section]);
 
   const inspectSkill = useCallback(
-    async (name: string, path?: string) => {
+    async (skill: InstalledSkill, path?: string) => {
       const generation = ++inspectGeneration.current;
-      setInspectedName(name);
+      setInspectedName(skill.name);
+      setInspectedCopyId(skill.id);
       setInspectState((current) => beginSkillsRequest(current, generation));
       if (!serverId || !connected) {
         setInspectState((current) =>
@@ -230,7 +232,8 @@ export default function SkillsScreen() {
       }
       try {
         const response = await wsClient.getSkillsInspect(serverId, {
-          skillName: name,
+          skillName: skill.name,
+          skillId: skill.id,
           path,
           generation,
           cwd: projectCwd || undefined,
@@ -258,6 +261,7 @@ export default function SkillsScreen() {
   const dismissInspector = useCallback(() => {
     inspectGeneration.current += 1;
     setInspectedName(null);
+    setInspectedCopyId(null);
     setInspectState(createSkillsRequestState());
   }, []);
 
@@ -297,7 +301,7 @@ export default function SkillsScreen() {
         });
         if (result.execution.success) {
           await refreshInventory();
-          if (inspectedName) void inspectSkill(inspectedName);
+          if (skill && inspectedCopyId === skill.id) void inspectSkill(skill);
         }
       } catch (error) {
         setNotice({
@@ -315,6 +319,7 @@ export default function SkillsScreen() {
       connected,
       inspectSkill,
       inspectedName,
+      inspectedCopyId,
       preparingMutation,
       projectCwd,
       refreshInventory,
@@ -367,15 +372,17 @@ export default function SkillsScreen() {
   );
 
   const inventory = skillsRequestData(inventoryState);
-  const projection = skillsSectionProjection(inventory, agent);
+  const logicalSkills = groupLogicalSkills(inventory?.skills ?? []);
   const plugins = skillsRequestData(pluginsState);
+  const demoRequested =
+    __DEV__ &&
+    (Array.isArray(params.demo) ? params.demo[0] : params.demo) === "1";
+  if (demoRequested) return <SkillsProductDemo />;
   return (
     <SkillsPresentation
       section={surface.section}
-      selectedAgent={agent}
-      agentCounts={skillsSectionAgentCounts(inventory)}
       inventoryState={inventoryState}
-      installedSkills={projection.skills}
+      logicalSkills={logicalSkills}
       pluginsState={pluginsState}
       pluginsView={pluginsUnifiedView(plugins)}
       mutationOperations={inventory?.mutationOperations ?? []}
@@ -383,19 +390,18 @@ export default function SkillsScreen() {
       mutationNotice={notice}
       currentServerAvailable={Boolean(currentServer)}
       inspectedName={inspectedName}
+      inspectedCopyId={inspectedCopyId}
       inspectState={inspectState}
       onSelectSection={(section: SkillsSurfaceSection) =>
         setSurface((current) =>
           reduceSkillsSurface(current, { type: "select_section", section }),
         )
       }
-      onSelectAgent={setAgent}
       onOpenSettings={() => router.push("/settings")}
       onRefreshSkills={() => void refreshInventory()}
       onRetryPlugins={() => void refreshPlugins()}
-      onInspectSkill={(name, path) => void inspectSkill(name, path)}
+      onInspectSkill={(skill, path) => void inspectSkill(skill, path)}
       onDismissInspector={dismissInspector}
-      onMigrate={() => void runSkillMutation(undefined, "migrate")}
       onBinding={(skill, operation, target, scope) =>
         void runSkillMutation(skill, operation, target, scope)
       }
@@ -423,6 +429,170 @@ export default function SkillsScreen() {
           void runPluginMutation("uninstall", row.id);
       }}
       onDismissNotice={() => setNotice(null)}
+    />
+  );
+}
+
+const DEMO_SKILLS: InstalledSkill[] = [
+  demoSkill(
+    "imagegen",
+    "a".repeat(24),
+    "codex",
+    "Create and edit raster images for product and creative work.",
+    "1".repeat(64),
+  ),
+  demoSkill(
+    "imagegen",
+    "b".repeat(24),
+    "pi",
+    "Generate images through the configured provider.",
+    "2".repeat(64),
+  ),
+  demoSkill(
+    "openai-docs",
+    "c".repeat(24),
+    "codex",
+    "Answer questions using current OpenAI product documentation.",
+    "3".repeat(64),
+  ),
+  demoSkill(
+    "hatch-pet",
+    "d".repeat(24),
+    "codex",
+    "Create and validate animated pet sprite packages.",
+    "4".repeat(64),
+  ),
+  demoSkill(
+    "x-growth",
+    "e".repeat(24),
+    "claude-code",
+    "Plan technical content and publishing experiments.",
+    "5".repeat(64),
+  ),
+];
+
+function demoSkill(
+  name: string,
+  id: string,
+  agent: ManagedSkillAgent,
+  description: string,
+  contentHash: string,
+): InstalledSkill {
+  return {
+    id,
+    name,
+    description,
+    manager: "external",
+    owned: false,
+    tracked: false,
+    enabled: true,
+    canonicalPath: `/demo/${agent}/${name}`,
+    sourcePath: `/home/demo/.${agent}/skills/${name}`,
+    scope: "global",
+    agents: [agent],
+    bindings: [],
+    provenance: `${agent} global Skills`,
+    contentHash,
+    migration: name === "imagegen" ? "conflict" : "external",
+    capability: { canManage: true, operations: ["adopt"] },
+  };
+}
+
+function SkillsProductDemo() {
+  const [selected, setSelected] = useState<InstalledSkill | null>(null);
+  const inventory: SkillsInventory = {
+    generatedAt: "2026-08-18T00:00:00Z",
+    skills: DEMO_SKILLS,
+    agents: [],
+    warnings: [],
+    mutationOperations: [
+      "adopt",
+      "bind",
+      "unbind",
+      "enable",
+      "disable",
+      "uninstall",
+      "forget",
+      "update",
+    ],
+    migration: { owned: 0, external: 5, duplicate: 1, conflict: 1, tracked: 0 },
+  };
+  const detail: PackageDetail | undefined = selected
+    ? {
+        copyId: selected.id,
+        skillName: selected.name,
+        description: selected.description,
+        manager: selected.manager,
+        owned: selected.owned,
+        tracked: selected.tracked,
+        enabled: selected.enabled,
+        sourcePath: selected.sourcePath,
+        scope: selected.scope,
+        agents: selected.agents,
+        bindings: selected.bindings,
+        files: [
+          {
+            path: "SKILL.md",
+            size: 180,
+            mode: "0600",
+            kind: "markdown",
+            mediaType: "text/markdown",
+            previewStatus: "ready",
+          },
+          {
+            path: "references/provider.json",
+            size: 48,
+            mode: "0600",
+            kind: "json",
+            mediaType: "application/json",
+            previewStatus: "ready",
+          },
+        ],
+        preview: {
+          path: "SKILL.md",
+          kind: "markdown",
+          mediaType: "text/markdown",
+          status: "ready",
+          size: 180,
+          bytesReturned: 180,
+          content: `# ${selected.name}\n\n${selected.description}`,
+        },
+        capability: selected.capability,
+      }
+    : undefined;
+  return (
+    <SkillsPresentation
+      section="skills"
+      inventoryState={{ status: "ready", generation: 1, data: inventory }}
+      logicalSkills={groupLogicalSkills(DEMO_SKILLS)}
+      pluginsState={createSkillsRequestState()}
+      pluginsView={pluginsUnifiedView(undefined)}
+      mutationOperations={inventory.mutationOperations}
+      preparingMutation=""
+      mutationNotice={null}
+      currentServerAvailable
+      inspectedName={selected?.name ?? null}
+      inspectedCopyId={selected?.id ?? null}
+      inspectState={
+        detail
+          ? { status: "ready", generation: 1, data: detail }
+          : createSkillsRequestState()
+      }
+      onSelectSection={() => undefined}
+      onOpenSettings={() => undefined}
+      onRefreshSkills={() => undefined}
+      onRetryPlugins={() => undefined}
+      onInspectSkill={(skill) => setSelected(skill)}
+      onDismissInspector={() => setSelected(null)}
+      onBinding={() => undefined}
+      onUninstall={() => undefined}
+      onForget={() => undefined}
+      onAdopt={() => undefined}
+      onUpdate={() => undefined}
+      onInstallPlugin={() => undefined}
+      onUpdatePlugin={() => undefined}
+      onUninstallPlugin={() => undefined}
+      onDismissNotice={() => undefined}
     />
   );
 }

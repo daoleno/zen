@@ -42,11 +42,13 @@ import {
 import {
   buildSkillFileTree,
   defaultSkillFile,
-  filterInstalledSkills,
+  filterLogicalSkills,
   MANAGED_SKILL_AGENTS,
+  skillCopyLocation,
   skillRenderer,
+  type LogicalSkill,
+  type SkillFilters,
   type SkillScopeFilter,
-  type SkillsAgentCounts,
   type SkillStatusFilter,
   type SkillTreeNode,
 } from "../../services/skillsScreenModel";
@@ -59,10 +61,8 @@ export interface SurfaceMutationNotice {
 
 export interface SkillsPresentationProps {
   section: SkillsSurfaceSection;
-  selectedAgent: ManagedSkillAgent;
-  agentCounts: SkillsAgentCounts;
   inventoryState: SkillsRequestState<SkillsInventory>;
-  installedSkills: InstalledSkill[];
+  logicalSkills: LogicalSkill[];
   pluginsState: SkillsRequestState<PluginInventory>;
   pluginsView: PluginsUnifiedView;
   mutationOperations: readonly SkillMutationOperation[];
@@ -70,15 +70,14 @@ export interface SkillsPresentationProps {
   mutationNotice: SurfaceMutationNotice | null;
   currentServerAvailable: boolean;
   inspectedName: string | null;
+  inspectedCopyId: string | null;
   inspectState: SkillsRequestState<PackageDetail>;
   onSelectSection(section: SkillsSurfaceSection): void;
-  onSelectAgent(agent: ManagedSkillAgent): void;
   onOpenSettings(): void;
   onRefreshSkills(): void;
   onRetryPlugins(): void;
-  onInspectSkill(name: string, path?: string): void;
+  onInspectSkill(skill: InstalledSkill, path?: string): void;
   onDismissInspector(): void;
-  onMigrate(): void;
   onBinding(
     skill: InstalledSkill,
     operation: "bind" | "unbind" | "enable" | "disable",
@@ -96,74 +95,71 @@ export interface SkillsPresentationProps {
 }
 
 const WIDE_INSPECTOR = 920;
+const DEFAULT_FILTERS: SkillFilters = {
+  agents: [],
+  status: "all",
+  scope: "all",
+};
 
 export function SkillsPresentation(props: SkillsPresentationProps) {
   const colors = useAppColors();
   const { width } = useWindowDimensions();
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<SkillStatusFilter>("all");
-  const [scope, setScope] = useState<SkillScopeFilter>("all");
+  const [filters, setFilters] = useState<SkillFilters>(DEFAULT_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const wide = width >= WIDE_INSPECTOR;
   const inventory = skillsRequestData(props.inventoryState);
   const visible = useMemo(
-    () => filterInstalledSkills(props.installedSkills, query, status, scope),
-    [props.installedSkills, query, status, scope],
+    () => filterLogicalSkills(props.logicalSkills, query, filters),
+    [filters, props.logicalSkills, query],
   );
-  const inspectedDetail = skillsRequestData(props.inspectState);
-  const detail =
-    inspectedDetail?.skillName === props.inspectedName
-      ? inspectedDetail
-      : undefined;
-  const refreshing =
-    props.inventoryState.status === "loading" && inventory !== undefined;
-
-  useEffect(() => {
-    setQuery("");
-  }, [props.selectedAgent, props.section]);
-
+  const detail = skillsRequestData(props.inspectState);
+  const selectedLogical = props.logicalSkills.find(
+    (skill) => skill.key === props.inspectedName?.toLocaleLowerCase(),
+  );
+  const activeFilterCount =
+    filters.agents.length +
+    Number(filters.status !== "all") +
+    Number(filters.scope !== "all");
   const main = (
     <SafeAreaView
       style={[styles.safe, { backgroundColor: colors.bgPrimary }]}
-      edges={["top"]}
+      edges={[]}
     >
-      <View style={[styles.tabs, { borderBottomColor: colors.borderSubtle }]}>
-        {(["skills", "plugins"] as const).map((item) => (
+      <View
+        style={[styles.modeBar, { borderBottomColor: colors.borderSubtle }]}
+      >
+        {(["skills", "plugins"] as const).map((section) => (
           <Pressable
-            key={item}
+            key={section}
             accessibilityRole="tab"
-            accessibilityState={{ selected: props.section === item }}
-            onPress={() => props.onSelectSection(item)}
+            accessibilityState={{ selected: props.section === section }}
+            onPress={() => props.onSelectSection(section)}
             style={[
-              styles.tab,
-              props.section === item && { borderBottomColor: colors.accent },
+              styles.modeItem,
+              props.section === section && { borderBottomColor: colors.accent },
             ]}
           >
-            <Ionicons
-              name={
-                item === "skills"
-                  ? "library-outline"
-                  : "extension-puzzle-outline"
-              }
-              size={18}
-              color={
-                props.section === item ? colors.accent : colors.textTertiary
-              }
-            />
             <Text
-              style={{
-                color:
-                  props.section === item
-                    ? colors.textPrimary
-                    : colors.textTertiary,
-              }}
+              style={[
+                styles.modeText,
+                {
+                  color:
+                    props.section === section
+                      ? colors.textPrimary
+                      : colors.textTertiary,
+                },
+              ]}
             >
-              {item === "skills" ? "Skills" : "Plugins"}
+              {section === "skills" ? "Skills" : "Plugins"}
             </Text>
           </Pressable>
         ))}
       </View>
       {props.mutationNotice ? (
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss status message"
           onPress={props.onDismissNotice}
           style={[
             styles.notice,
@@ -189,45 +185,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
       ) : null}
       {props.section === "skills" ? (
         <View style={styles.flex}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.agents}
-          >
-            {MANAGED_SKILL_AGENTS.map((agent) => (
-              <Pressable
-                key={agent}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: props.selectedAgent === agent }}
-                onPress={() => props.onSelectAgent(agent)}
-                style={[
-                  styles.pill,
-                  {
-                    borderColor:
-                      props.selectedAgent === agent
-                        ? colors.accent
-                        : colors.borderSubtle,
-                    backgroundColor:
-                      props.selectedAgent === agent
-                        ? colors.accentSoft
-                        : colors.surfaceSubtle,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color:
-                      props.selectedAgent === agent
-                        ? colors.accent
-                        : colors.textSecondary,
-                  }}
-                >
-                  {skillAgentLabel(agent)} {props.agentCounts[agent]}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          <View style={styles.filters}>
+          <View style={styles.searchArea}>
             <View
               style={[
                 styles.search,
@@ -239,10 +197,11 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             >
               <Ionicons
                 name="search-outline"
-                size={18}
+                size={19}
                 color={colors.textTertiary}
               />
               <TextInput
+                accessibilityLabel="Search local Skills"
                 value={query}
                 onChangeText={setQuery}
                 placeholder="Search local Skills"
@@ -253,35 +212,52 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
                 <Pressable
                   accessibilityLabel="Clear search"
                   onPress={() => setQuery("")}
+                  style={styles.smallIcon}
                 >
                   <Ionicons
                     name="close-circle"
-                    size={18}
+                    size={19}
                     color={colors.textTertiary}
                   />
                 </Pressable>
               ) : null}
             </View>
-            <Filter
-              value={status}
-              values={["all", "enabled", "disabled"]}
-              onChange={(value) => setStatus(value as SkillStatusFilter)}
-            />
-            <Filter
-              value={scope}
-              values={["all", "global", "project"]}
-              onChange={(value) => setScope(value as SkillScopeFilter)}
-            />
-            {(inventory?.migration.external ?? 0) > 0 &&
-            props.mutationOperations.includes("migrate") ? (
-              <Action label="Track local Skills" onPress={props.onMigrate} />
-            ) : null}
+            <Pressable
+              accessibilityLabel="Filter Skills"
+              onPress={() => setFiltersOpen(true)}
+              style={[
+                styles.filterButton,
+                {
+                  borderColor: activeFilterCount
+                    ? colors.accent
+                    : colors.borderSubtle,
+                  backgroundColor: activeFilterCount
+                    ? colors.accentSoft
+                    : colors.surfaceSubtle,
+                },
+              ]}
+            >
+              <Ionicons
+                name="options-outline"
+                size={20}
+                color={activeFilterCount ? colors.accent : colors.textSecondary}
+              />
+              {activeFilterCount ? (
+                <Text style={{ color: colors.accent }}>
+                  {activeFilterCount}
+                </Text>
+              ) : null}
+            </Pressable>
           </View>
-          <LocalSkillsList
-            {...props}
-            rows={visible}
-            inventory={inventory}
-            refreshing={refreshing}
+          {activeFilterCount ? (
+            <ActiveFilters filters={filters} onChange={setFilters} />
+          ) : null}
+          <LocalSkillsList {...props} rows={visible} inventory={inventory} />
+          <FilterSheet
+            visible={filtersOpen}
+            filters={filters}
+            onChange={setFilters}
+            onClose={() => setFiltersOpen(false)}
           />
         </View>
       ) : (
@@ -289,70 +265,253 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
       )}
     </SafeAreaView>
   );
-
   return (
     <View style={[styles.root, { backgroundColor: colors.bgPrimary }]}>
       <View style={styles.flex}>{main}</View>
-      {wide && props.inspectedName ? (
+      {wide && props.inspectedCopyId ? (
         <View style={[styles.panel, { borderLeftColor: colors.borderSubtle }]}>
-          <Inspector {...props} detail={detail} />
+          <Inspector
+            {...props}
+            logical={selectedLogical}
+            detail={
+              detail?.copyId === props.inspectedCopyId ? detail : undefined
+            }
+          />
         </View>
       ) : null}
       {!wide ? (
         <BottomSheetFrame
-          visible={Boolean(props.inspectedName)}
-          maxHeight="92%"
+          visible={Boolean(props.inspectedCopyId)}
+          maxHeight="94%"
           dragToDismiss
           onClose={props.onDismissInspector}
+          contentStyle={styles.sheetContent}
         >
-          <View style={styles.sheet}>
-            <Inspector {...props} detail={detail} />
-          </View>
+          <Inspector
+            {...props}
+            logical={selectedLogical}
+            detail={
+              detail?.copyId === props.inspectedCopyId ? detail : undefined
+            }
+          />
         </BottomSheetFrame>
       ) : null}
     </View>
   );
 }
 
-function Filter({
-  value,
-  values,
+function ActiveFilters({
+  filters,
   onChange,
 }: {
-  value: string;
-  values: string[];
-  onChange(value: string): void;
+  filters: SkillFilters;
+  onChange(value: SkillFilters): void;
+}) {
+  const colors = useAppColors();
+  const chips = [
+    ...filters.agents.map((agent) => ({
+      key: `agent:${agent}`,
+      label: skillAgentLabel(agent),
+      remove: () =>
+        onChange({
+          ...filters,
+          agents: filters.agents.filter((item) => item !== agent),
+        }),
+    })),
+    ...(filters.status !== "all"
+      ? [
+          {
+            key: "status",
+            label: filters.status,
+            remove: () => onChange({ ...filters, status: "all" }),
+          },
+        ]
+      : []),
+    ...(filters.scope !== "all"
+      ? [
+          {
+            key: "scope",
+            label: filters.scope,
+            remove: () => onChange({ ...filters, scope: "all" }),
+          },
+        ]
+      : []),
+  ];
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.chips}
+    >
+      {chips.map((chip) => (
+        <Pressable
+          key={chip.key}
+          accessibilityLabel={`Remove ${chip.label} filter`}
+          onPress={chip.remove}
+          style={[styles.chip, { backgroundColor: colors.accentSoft }]}
+        >
+          <Text style={{ color: colors.accent }}>{chip.label}</Text>
+          <Ionicons name="close" size={15} color={colors.accent} />
+        </Pressable>
+      ))}
+    </ScrollView>
+  );
+}
+
+function FilterSheet({
+  visible,
+  filters,
+  onChange,
+  onClose,
+}: {
+  visible: boolean;
+  filters: SkillFilters;
+  onChange(value: SkillFilters): void;
+  onClose(): void;
 }) {
   const colors = useAppColors();
   return (
-    <View style={[styles.segment, { borderColor: colors.borderSubtle }]}>
-      {values.map((item) => (
+    <BottomSheetFrame
+      visible={visible}
+      onClose={onClose}
+      maxHeight="76%"
+      contentStyle={styles.filterSheet}
+    >
+      <View style={styles.sheetHeader}>
+        <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>
+          Filters
+        </Text>
         <Pressable
-          key={item}
-          onPress={() => onChange(item)}
-          style={[
-            styles.segmentItem,
-            value === item && { backgroundColor: colors.accentSoft },
-          ]}
+          onPress={() => onChange(DEFAULT_FILTERS)}
+          style={styles.textButton}
         >
-          <Text
-            style={{
-              color: value === item ? colors.accent : colors.textSecondary,
-            }}
-          >
-            {item[0]!.toUpperCase() + item.slice(1)}
-          </Text>
+          <Text style={{ color: colors.accent }}>Reset</Text>
         </Pressable>
-      ))}
+      </View>
+      <ScrollView contentContainerStyle={styles.filterBody}>
+        <FilterSection title="Agents">
+          <View style={styles.optionWrap}>
+            {MANAGED_SKILL_AGENTS.map((agent) => {
+              const selected = filters.agents.includes(agent);
+              return (
+                <Choice
+                  key={agent}
+                  label={skillAgentLabel(agent)}
+                  selected={selected}
+                  onPress={() =>
+                    onChange({
+                      ...filters,
+                      agents: selected
+                        ? filters.agents.filter((item) => item !== agent)
+                        : [...filters.agents, agent],
+                    })
+                  }
+                />
+              );
+            })}
+          </View>
+        </FilterSection>
+        <FilterSection title="Status">
+          <View style={styles.optionWrap}>
+            {(["all", "enabled", "disabled"] as SkillStatusFilter[]).map(
+              (value) => (
+                <Choice
+                  key={value}
+                  label={titleCase(value)}
+                  selected={filters.status === value}
+                  onPress={() => onChange({ ...filters, status: value })}
+                />
+              ),
+            )}
+          </View>
+        </FilterSection>
+        <FilterSection title="Scope">
+          <View style={styles.optionWrap}>
+            {(["all", "global", "project"] as SkillScopeFilter[]).map(
+              (value) => (
+                <Choice
+                  key={value}
+                  label={titleCase(value)}
+                  selected={filters.scope === value}
+                  onPress={() => onChange({ ...filters, scope: value })}
+                />
+              ),
+            )}
+          </View>
+        </FilterSection>
+      </ScrollView>
+      <Pressable
+        onPress={onClose}
+        style={[styles.doneButton, { backgroundColor: colors.accent }]}
+      >
+        <Text
+          style={{
+            color: colors.textOnAccent,
+            fontFamily: Typography.uiFontMedium,
+          }}
+        >
+          Done
+        </Text>
+      </Pressable>
+    </BottomSheetFrame>
+  );
+}
+
+function FilterSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  const colors = useAppColors();
+  return (
+    <View style={styles.filterSection}>
+      <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>
+        {title}
+      </Text>
+      {children}
     </View>
+  );
+}
+
+function Choice({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress(): void;
+}) {
+  const colors = useAppColors();
+  return (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={[
+        styles.choice,
+        {
+          borderColor: selected ? colors.accent : colors.borderSubtle,
+          backgroundColor: selected ? colors.accentSoft : colors.surfaceSubtle,
+        },
+      ]}
+    >
+      <Text style={{ color: selected ? colors.accent : colors.textSecondary }}>
+        {label}
+      </Text>
+      {selected ? (
+        <Ionicons name="checkmark" size={16} color={colors.accent} />
+      ) : null}
+    </Pressable>
   );
 }
 
 function LocalSkillsList(
   props: SkillsPresentationProps & {
-    rows: InstalledSkill[];
+    rows: LogicalSkill[];
     inventory?: SkillsInventory;
-    refreshing: boolean;
   },
 ) {
   const colors = useAppColors();
@@ -395,16 +554,16 @@ function LocalSkillsList(
       <State
         icon="folder-open-outline"
         title="No local Skills"
-        detail="No Skill packages were found in the supported Agent locations."
+        detail="No Skill packages were found in supported Agent locations."
       />
     );
   return (
     <FlatList
       data={props.rows}
-      keyExtractor={(item) => item.id}
+      keyExtractor={(item) => item.key}
       refreshControl={
         <RefreshControl
-          refreshing={props.refreshing}
+          refreshing={state.status === "loading"}
           onRefresh={props.onRefreshSkills}
           tintColor={colors.accent}
         />
@@ -414,54 +573,30 @@ function LocalSkillsList(
         <State
           icon="search-outline"
           title="No matches"
-          detail="Adjust the local search or filters."
+          detail="Adjust your search or active filters."
         />
       }
       renderItem={({ item }) => (
         <SkillRow
           skill={item}
-          busy={props.preparingMutation}
-          onOpen={() => props.onInspectSkill(item.name)}
-          onUpdate={() => props.onUpdate(item)}
-          onAdopt={() => props.onAdopt(item)}
-          onForget={() => props.onForget(item)}
-          onUninstall={() => props.onUninstall(item)}
+          onOpen={() => props.onInspectSkill(item.activeCopy)}
         />
       )}
     />
   );
 }
 
-function SkillRow({
-  skill,
-  busy,
-  onOpen,
-  onUpdate,
-  onAdopt,
-  onForget,
-  onUninstall,
-}: {
-  skill: InstalledSkill;
-  busy: string;
-  onOpen(): void;
-  onUpdate(): void;
-  onAdopt(): void;
-  onForget(): void;
-  onUninstall(): void;
-}) {
+function SkillRow({ skill, onOpen }: { skill: LogicalSkill; onOpen(): void }) {
   const colors = useAppColors();
-  const ops = skill.capability.canManage ? skill.capability.operations : [];
-  const action = ops.includes("update")
-    ? (["Update", onUpdate] as const)
-    : ops.includes("adopt")
-      ? (["Adopt", onAdopt] as const)
-      : ops.includes("forget")
-        ? (["Forget", onForget] as const)
-        : ops.includes("uninstall")
-          ? (["Uninstall", onUninstall] as const)
-          : null;
+  const agentText = skill.agents.length
+    ? skill.agents.map(skillAgentLabel).join(", ")
+    : "Not active";
+  const copyText =
+    skill.copies.length > 1 ? ` · ${skill.copies.length} copies` : "";
   return (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${skill.name}`}
       onPress={onOpen}
       style={({ pressed }) => [
         styles.row,
@@ -472,50 +607,648 @@ function SkillRow({
       ]}
     >
       <View style={styles.flex}>
-        <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
-          {skill.name}
-        </Text>
-        <Text numberOfLines={1} style={{ color: colors.textTertiary }}>
-          {skill.description ||
-            `${skill.manager === "zen" ? "Zen-managed" : "Local external"} · ${skill.scope} · ${skill.enabled ? "enabled" : "disabled"}`}
+        <View style={styles.rowHeading}>
+          <Text
+            style={[styles.rowTitle, { color: colors.textPrimary }]}
+            numberOfLines={1}
+          >
+            {skill.name}
+          </Text>
+          <View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: skill.enabled
+                  ? colors.success
+                  : colors.textTertiary,
+              },
+            ]}
+          />
+        </View>
+        {skill.description ? (
+          <Text
+            numberOfLines={1}
+            style={[styles.description, { color: colors.textSecondary }]}
+          >
+            {skill.description}
+          </Text>
+        ) : null}
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.metadata,
+            { color: skill.hasConflict ? colors.warning : colors.textTertiary },
+          ]}
+        >
+          {skill.hasConflict
+            ? `${skill.activeVersionCount} active versions · `
+            : ""}
+          {agentText}
+          {copyText}
         </Text>
       </View>
-      {action ? (
-        <Pressable
-          disabled={Boolean(busy)}
-          onPress={(event) => {
-            event.stopPropagation();
-            action[1]();
-          }}
-          style={styles.iconAction}
-          accessibilityLabel={`${action[0]} ${skill.name}`}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color={colors.accent} />
-          ) : (
-            <Text
-              style={{
-                color:
-                  action[0] === "Uninstall" ? colors.dangerText : colors.accent,
-              }}
-            >
-              {action[0]}
-            </Text>
-          )}
-        </Pressable>
-      ) : null}
       <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
     </Pressable>
+  );
+}
+
+function Inspector(
+  props: SkillsPresentationProps & {
+    logical?: LogicalSkill;
+    detail?: PackageDetail;
+  },
+) {
+  const colors = useAppColors();
+  const detail = props.detail;
+  const copy = props.logical?.copies.find(
+    (item) => item.id === props.inspectedCopyId,
+  );
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string>();
+  const previousCopy = useRef<string | null>(null);
+  const tree = useMemo(
+    () => buildSkillFileTree(detail?.files ?? []),
+    [detail?.files],
+  );
+  useEffect(() => {
+    if (!detail || !copy) return;
+    const selected =
+      detail.preview?.path ?? defaultSkillFile(detail.files ?? []);
+    setSelectedPath(selected);
+    const changed = previousCopy.current !== copy.id;
+    previousCopy.current = copy.id;
+    if (changed)
+      setExpanded(
+        new Set(
+          selected
+            ?.split("/")
+            .slice(0, -1)
+            .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
+        ),
+      );
+  }, [copy?.id, detail?.skillName]);
+  useEffect(() => {
+    if (detail?.preview?.path) setSelectedPath(detail.preview.path);
+  }, [detail?.preview?.path]);
+  if (!detail && props.inspectState.status === "loading")
+    return (
+      <State
+        loading
+        title="Loading Skill"
+        detail="Reading the selected local copy."
+      />
+    );
+  if (!detail && props.inspectState.status === "error")
+    return (
+      <State
+        icon="warning-outline"
+        title="Skill unavailable"
+        detail={props.inspectState.error}
+      />
+    );
+  if (!detail || !copy || !props.logical) return null;
+  const location = skillCopyLocation(copy);
+  const preview = detail.preview;
+  const renderer = preview
+    ? skillRenderer(preview.kind, preview.content)
+    : null;
+  return (
+    <View style={styles.inspector}>
+      <View
+        style={[
+          styles.inspectorHeader,
+          { borderBottomColor: colors.borderSubtle },
+        ]}
+      >
+        <View style={styles.flex}>
+          <Text style={[styles.inspectorTitle, { color: colors.textPrimary }]}>
+            {detail.skillName}
+          </Text>
+          <Text
+            style={[styles.metadata, { color: colors.textTertiary }]}
+            numberOfLines={1}
+          >
+            {location.label}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityLabel="Close Skill details"
+          onPress={props.onDismissInspector}
+          style={styles.close}
+        >
+          <Ionicons name="close" size={22} color={colors.textSecondary} />
+        </Pressable>
+      </View>
+      <ScrollView contentContainerStyle={styles.inspectorScroll}>
+        <DetailSection title="Overview">
+          {detail.description ? (
+            <Text style={{ color: colors.textSecondary }}>
+              {detail.description}
+            </Text>
+          ) : null}
+          <View style={styles.summaryRow}>
+            <StatusLabel enabled={detail.enabled} />
+            <Text style={{ color: colors.textTertiary }}>{detail.scope}</Text>
+            <Text style={{ color: colors.textTertiary }}>
+              {copy.manager === "zen" ? "Managed by Zen" : "Available to Agent"}
+            </Text>
+          </View>
+          {(detail.warnings ?? []).map((warning) => (
+            <Text key={warning} style={{ color: colors.warning }}>
+              {warning}
+            </Text>
+          ))}
+        </DetailSection>
+        <DetailSection title="Files">
+          {tree.length ? (
+            tree.map((node) => (
+              <TreeNode
+                key={node.path}
+                node={node}
+                depth={0}
+                expanded={expanded}
+                selected={selectedPath}
+                onToggle={(path) =>
+                  setExpanded((current) => {
+                    const next = new Set(current);
+                    next.has(path) ? next.delete(path) : next.add(path);
+                    return next;
+                  })
+                }
+                onSelect={(path) => {
+                  setSelectedPath(path);
+                  props.onInspectSkill(copy, path);
+                }}
+              />
+            ))
+          ) : (
+            <Text style={{ color: colors.textTertiary }}>
+              This copy contains no readable files.
+            </Text>
+          )}
+          <FilePreview
+            detail={detail}
+            selectedPath={selectedPath}
+            renderer={renderer}
+            loading={props.inspectState.status === "loading"}
+            error={
+              props.inspectState.status === "error"
+                ? props.inspectState.error
+                : undefined
+            }
+          />
+        </DetailSection>
+        <DetailSection title={`Copies (${props.logical.copies.length})`}>
+          {props.logical.copies.map((item) => (
+            <CopyRow
+              key={item.id}
+              copy={item}
+              selected={item.id === copy.id}
+              active={Object.values(props.logical!.activeByAgent).some(
+                (activeCopy) => activeCopy?.id === item.id,
+              )}
+              onPress={() => props.onInspectSkill(item)}
+            />
+          ))}
+        </DetailSection>
+        <DetailSection title="Agent bindings">
+          {detail.bindings.length ? (
+            detail.bindings.map((binding) => (
+              <View
+                key={`${binding.agent}:${binding.scope}`}
+                style={[
+                  styles.bindingRow,
+                  { borderBottomColor: colors.borderSubtle },
+                ]}
+              >
+                <View style={styles.flex}>
+                  <Text style={{ color: colors.textPrimary }}>
+                    {skillAgentLabel(binding.agent)}
+                  </Text>
+                  <Text
+                    style={[styles.metadata, { color: colors.textTertiary }]}
+                  >
+                    {binding.scope} · {binding.mode}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: binding.enabled }}
+                  accessibilityLabel={`${binding.enabled ? "Disable" : "Enable"} ${skillAgentLabel(binding.agent)} binding`}
+                  disabled={
+                    !binding.operations.includes(
+                      binding.enabled ? "disable" : "enable",
+                    )
+                  }
+                  onPress={() =>
+                    props.onBinding(
+                      copy,
+                      binding.enabled ? "disable" : "enable",
+                      binding.agent,
+                      binding.scope === "project" ? "project" : "global",
+                    )
+                  }
+                  style={[
+                    styles.toggle,
+                    {
+                      backgroundColor: binding.enabled
+                        ? colors.accent
+                        : colors.borderStrong,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.toggleKnob,
+                      binding.enabled && styles.toggleKnobOn,
+                      { backgroundColor: colors.bgPrimary },
+                    ]}
+                  />
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <Text style={{ color: colors.textTertiary }}>
+              {copy.manager === "external"
+                ? "This Skill is read directly from an Agent location."
+                : "This managed copy is not bound to an Agent."}
+            </Text>
+          )}
+        </DetailSection>
+        <LifecycleActions copy={copy} props={props} />
+      </ScrollView>
+    </View>
+  );
+}
+
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  const colors = useAppColors();
+  return (
+    <View
+      style={[styles.detailSection, { borderBottomColor: colors.borderSubtle }]}
+    >
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
+        {title}
+      </Text>
+      {children}
+    </View>
+  );
+}
+function StatusLabel({ enabled }: { enabled: boolean }) {
+  const colors = useAppColors();
+  return (
+    <View style={styles.statusLabel}>
+      <View
+        style={[
+          styles.statusDot,
+          { backgroundColor: enabled ? colors.success : colors.textTertiary },
+        ]}
+      />
+      <Text style={{ color: colors.textSecondary }}>
+        {enabled ? "Enabled" : "Disabled"}
+      </Text>
+    </View>
+  );
+}
+
+function CopyRow({
+  copy,
+  selected,
+  active,
+  onPress,
+}: {
+  copy: InstalledSkill;
+  selected: boolean;
+  active: boolean;
+  onPress(): void;
+}) {
+  const colors = useAppColors();
+  const location = skillCopyLocation(copy);
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.copyRow,
+        {
+          borderColor: selected ? colors.accent : colors.borderSubtle,
+          backgroundColor: selected ? colors.accentSoft : "transparent",
+        },
+      ]}
+    >
+      <View style={styles.flex}>
+        <View style={styles.rowHeading}>
+          <Text
+            style={{
+              color: colors.textPrimary,
+              fontFamily: Typography.uiFontMedium,
+            }}
+          >
+            {location.label}
+          </Text>
+          {active ? (
+            <Text style={[styles.activeLabel, { color: colors.accent }]}>
+              ACTIVE
+            </Text>
+          ) : null}
+        </View>
+        <Text
+          selectable
+          numberOfLines={1}
+          style={[styles.path, { color: colors.textTertiary }]}
+        >
+          {location.path}
+        </Text>
+      </View>
+      {!selected ? (
+        <Ionicons
+          name="chevron-forward"
+          size={17}
+          color={colors.textTertiary}
+        />
+      ) : null}
+    </Pressable>
+  );
+}
+
+function LifecycleActions({
+  copy,
+  props,
+}: {
+  copy: InstalledSkill;
+  props: SkillsPresentationProps;
+}) {
+  const colors = useAppColors();
+  const ops = copy.capability.canManage ? copy.capability.operations : [];
+  if (!ops.length) return null;
+  return (
+    <View style={styles.lifecycleSection}>
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
+        Management
+      </Text>
+      {ops.includes("adopt") ? (
+        <>
+          <Text style={{ color: colors.textSecondary }}>
+            Manage with Zen copies this Skill into Zen's managed store. The
+            current external files stay in place and remain untouched. Agent
+            bindings can be changed afterward.
+          </Text>
+          <Action label="Manage with Zen" onPress={() => props.onAdopt(copy)} />
+        </>
+      ) : null}
+      {ops.includes("update") ? (
+        <Action
+          label="Update managed copy"
+          onPress={() => props.onUpdate(copy)}
+        />
+      ) : null}
+      {ops.includes("forget") ? (
+        <>
+          <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+            Forget removes only Zen bookkeeping. It never deletes the external
+            Skill files.
+          </Text>
+          <Action
+            label="Forget from Zen"
+            onPress={() => props.onForget(copy)}
+          />
+        </>
+      ) : null}
+      {ops.includes("uninstall") ? (
+        <>
+          <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+            Uninstall removes Zen's managed copy and its bindings. External
+            source folders are not deleted.
+          </Text>
+          <Action
+            label="Uninstall managed copy"
+            destructive
+            onPress={() => props.onUninstall(copy)}
+          />
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+function FilePreview({
+  detail,
+  selectedPath,
+  renderer,
+  loading,
+  error,
+}: {
+  detail: PackageDetail;
+  selectedPath?: string;
+  renderer: ReturnType<typeof skillRenderer> | null;
+  loading: boolean;
+  error?: string;
+}) {
+  const colors = useAppColors();
+  const preview = detail.preview;
+  const markdownStyle = useMemo(
+    () => ({
+      paragraph: {
+        color: colors.textSecondary,
+        fontFamily: Typography.uiFont,
+        fontSize: 15,
+        lineHeight: 23,
+      },
+      h1: {
+        color: colors.textPrimary,
+        fontFamily: Typography.uiFontMedium,
+        fontSize: 22,
+        lineHeight: 30,
+      },
+      h2: {
+        color: colors.textPrimary,
+        fontFamily: Typography.uiFontMedium,
+        fontSize: 19,
+        lineHeight: 27,
+      },
+      h3: {
+        color: colors.textPrimary,
+        fontFamily: Typography.uiFontMedium,
+        fontSize: 17,
+        lineHeight: 25,
+      },
+      h4: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
+      h5: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
+      h6: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
+      list: {
+        color: colors.textSecondary,
+        bulletColor: colors.accent,
+        markerColor: colors.accent,
+      },
+      link: { color: colors.accent },
+      strong: {
+        color: colors.textPrimary,
+        fontFamily: Typography.uiFontMedium,
+        fontWeight: "normal" as const,
+      },
+      code: {
+        color: colors.textPrimary,
+        backgroundColor: colors.surfaceSubtle,
+        fontFamily: Typography.terminalFont,
+      },
+      codeBlock: {
+        color: colors.textSecondary,
+        backgroundColor: colors.surfaceSubtle,
+        borderColor: colors.borderSubtle,
+        fontFamily: Typography.terminalFont,
+      },
+    }),
+    [colors],
+  );
+  return (
+    <View style={[styles.preview, { borderTopColor: colors.borderSubtle }]}>
+      <Text style={[styles.fileTitle, { color: colors.textPrimary }]}>
+        {selectedPath || "No file selected"}
+      </Text>
+      {loading ? (
+        <View style={styles.loadingRow}>
+          <ActivityIndicator size="small" color={colors.accent} />
+          <Text style={{ color: colors.textSecondary }}>Loading file</Text>
+        </View>
+      ) : null}
+      {error ? (
+        <State icon="warning-outline" title="File unavailable" detail={error} />
+      ) : null}
+      {preview?.notice ? (
+        <Text style={[styles.previewNotice, { color: colors.warning }]}>
+          {preview.notice}
+        </Text>
+      ) : null}
+      {preview?.status === "binary" ? (
+        <State
+          icon="document-attach-outline"
+          title="Binary file"
+          detail={`${preview.mediaType} · ${preview.size} bytes. Content preview is unavailable.`}
+        />
+      ) : null}
+      {renderer === "markdown" ? (
+        <EnrichedMarkdownText
+          markdown={preview?.content ?? ""}
+          markdownStyle={markdownStyle}
+          selectable
+          onLinkPress={(event) =>
+            void openSafeMarkdownUrl(event.url, (url) => Linking.openURL(url))
+          }
+        />
+      ) : null}
+      {renderer === "json" ? (
+        <Code
+          content={JSON.stringify(
+            JSON.parse(preview?.content ?? "null"),
+            null,
+            2,
+          )}
+        />
+      ) : null}
+      {renderer === "invalid-json" ? (
+        <>
+          <Text style={[styles.previewNotice, { color: colors.warning }]}>
+            Invalid JSON; showing original text.
+          </Text>
+          <Code content={preview?.content ?? ""} />
+        </>
+      ) : null}
+      {renderer === "text" ? <Code content={preview?.content ?? ""} /> : null}
+    </View>
+  );
+}
+
+function TreeNode({
+  node,
+  depth,
+  expanded,
+  selected,
+  onToggle,
+  onSelect,
+}: {
+  node: SkillTreeNode;
+  depth: number;
+  expanded: Set<string>;
+  selected?: string;
+  onToggle(path: string): void;
+  onSelect(path: string): void;
+}) {
+  const colors = useAppColors();
+  const open = expanded.has(node.path);
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={
+          node.kind === "directory"
+            ? { expanded: open }
+            : { selected: selected === node.path }
+        }
+        onPress={() =>
+          node.kind === "directory" ? onToggle(node.path) : onSelect(node.path)
+        }
+        style={[
+          styles.treeRow,
+          {
+            paddingLeft: 8 + depth * 16,
+            backgroundColor:
+              selected === node.path ? colors.accentSoft : "transparent",
+          },
+        ]}
+      >
+        <Ionicons
+          name={
+            node.kind === "directory"
+              ? open
+                ? "folder-open-outline"
+                : "folder-outline"
+              : node.file?.kind === "binary"
+                ? "document-attach-outline"
+                : "document-text-outline"
+          }
+          size={17}
+          color={
+            node.kind === "directory" ? colors.warning : colors.textTertiary
+          }
+        />
+        <Text
+          numberOfLines={1}
+          style={{
+            color:
+              selected === node.path ? colors.accent : colors.textSecondary,
+            flex: 1,
+          }}
+        >
+          {node.name}
+        </Text>
+      </Pressable>
+      {node.kind === "directory" && open
+        ? node.children.map((child) => (
+            <TreeNode
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              selected={selected}
+              onToggle={onToggle}
+              onSelect={onSelect}
+            />
+          ))
+        : null}
+    </>
   );
 }
 
 function PluginsList(props: SkillsPresentationProps) {
   const colors = useAppColors();
   const data = props.pluginsView.rows;
-  if (
-    props.pluginsState.status === "error" &&
-    !skillsRequestData(props.pluginsState)
-  )
+  const stored = skillsRequestData(props.pluginsState);
+  if (props.pluginsState.status === "error" && !stored)
     return (
       <State
         icon="warning-outline"
@@ -526,7 +1259,7 @@ function PluginsList(props: SkillsPresentationProps) {
   if (
     (props.pluginsState.status === "idle" ||
       props.pluginsState.status === "loading") &&
-    !skillsRequestData(props.pluginsState)
+    !stored
   )
     return (
       <State
@@ -621,347 +1354,19 @@ function PluginRow({
     </View>
   );
 }
-
 function installedPluginActions(
   plugin: InstalledPluginRow,
   props: Pick<SkillsPresentationProps, "onUpdatePlugin" | "onUninstallPlugin">,
-): Array<{ label: string; run(): void }> {
+) {
   const actions: Array<{ label: string; run(): void }> = [];
-  if (evaluatePluginMutation({ kind: "update", row: plugin }).supported) {
-    actions.push({
-      label: "Update",
-      run: () => props.onUpdatePlugin(plugin),
-    });
-  }
-  if (evaluatePluginMutation({ kind: "uninstall", row: plugin }).supported) {
+  if (evaluatePluginMutation({ kind: "update", row: plugin }).supported)
+    actions.push({ label: "Update", run: () => props.onUpdatePlugin(plugin) });
+  if (evaluatePluginMutation({ kind: "uninstall", row: plugin }).supported)
     actions.push({
       label: "Uninstall",
       run: () => props.onUninstallPlugin(plugin),
     });
-  }
   return actions;
-}
-
-function Inspector(
-  props: SkillsPresentationProps & { detail?: PackageDetail },
-) {
-  const colors = useAppColors();
-  const detail = props.detail;
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedPath, setSelectedPath] = useState<string | undefined>();
-  const previousSkill = useRef<string | null>(null);
-  const tree = useMemo(
-    () => buildSkillFileTree(detail?.files ?? []),
-    [detail?.files],
-  );
-  useEffect(() => {
-    if (!detail) return;
-    const selected =
-      detail.preview?.path ?? defaultSkillFile(detail.files ?? []);
-    setSelectedPath(selected);
-    if (selected && detail.preview?.path !== selected)
-      props.onInspectSkill(detail.skillName, selected);
-    const changedSkill = previousSkill.current !== detail.skillName;
-    previousSkill.current = detail.skillName;
-    setExpanded((current) =>
-      !changedSkill && current.size
-        ? current
-        : new Set(
-            selected
-              ?.split("/")
-              .slice(0, -1)
-              .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
-          ),
-    );
-  }, [detail?.skillName]);
-  useEffect(() => {
-    if (detail?.preview?.path) setSelectedPath(detail.preview.path);
-  }, [detail?.preview?.path]);
-  if (!detail && props.inspectState.status === "loading")
-    return (
-      <State
-        loading
-        title="Loading Skill"
-        detail="Reading the local package."
-      />
-    );
-  if (!detail && props.inspectState.status === "error")
-    return (
-      <State
-        icon="warning-outline"
-        title="Skill unavailable"
-        detail={props.inspectState.error}
-      />
-    );
-  if (!detail) return null;
-  const preview = detail.preview;
-  const renderer = preview
-    ? skillRenderer(preview.kind, preview.content)
-    : null;
-  return (
-    <View style={styles.inspector}>
-      <View
-        style={[
-          styles.inspectorHeader,
-          { borderBottomColor: colors.borderSubtle },
-        ]}
-      >
-        <View style={styles.flex}>
-          <Text style={[styles.inspectorTitle, { color: colors.textPrimary }]}>
-            {detail.skillName}
-          </Text>
-          <Text numberOfLines={1} style={{ color: colors.textTertiary }}>
-            {detail.manager === "zen"
-              ? "Zen-managed"
-              : detail.tracked
-                ? "Tracked local"
-                : "Local external"}{" "}
-            · {detail.scope} · {detail.enabled ? "enabled" : "disabled"}
-          </Text>
-        </View>
-        <Pressable
-          accessibilityLabel="Close inspector"
-          onPress={props.onDismissInspector}
-          style={styles.close}
-        >
-          <Ionicons name="close" size={22} color={colors.textSecondary} />
-        </Pressable>
-      </View>
-      <ScrollView contentContainerStyle={styles.inspectorScroll}>
-        {(detail.warnings ?? []).map((warning) => (
-          <Text key={warning} style={{ color: colors.warning }}>
-            {warning}
-          </Text>
-        ))}
-        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>
-          Files
-        </Text>
-        {tree.length ? (
-          tree.map((node) => (
-            <TreeNode
-              key={node.path}
-              node={node}
-              depth={0}
-              expanded={expanded}
-              selected={selectedPath}
-              onToggle={(path) =>
-                setExpanded((current) => {
-                  const next = new Set(current);
-                  next.has(path) ? next.delete(path) : next.add(path);
-                  return next;
-                })
-              }
-              onSelect={(path) => {
-                setSelectedPath(path);
-                props.onInspectSkill(detail.skillName, path);
-              }}
-            />
-          ))
-        ) : (
-          <Text style={{ color: colors.textTertiary }}>
-            This package contains no files.
-          </Text>
-        )}
-        <View style={[styles.preview, { borderTopColor: colors.borderSubtle }]}>
-          <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-            {selectedPath || "No file selected"}
-          </Text>
-          {props.inspectState.status === "loading" ? (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator size="small" color={colors.accent} />
-              <Text style={{ color: colors.textSecondary }}>Loading file</Text>
-            </View>
-          ) : null}
-          {props.inspectState.status === "error" ? (
-            <State
-              icon="warning-outline"
-              title="File unavailable"
-              detail={props.inspectState.error}
-            />
-          ) : null}
-          {preview?.notice ? (
-            <Text style={[styles.previewNotice, { color: colors.warning }]}>
-              {preview.notice}
-            </Text>
-          ) : null}
-          {preview?.status === "binary" ? (
-            <State
-              icon="document-attach-outline"
-              title="Binary file"
-              detail={`${preview.mediaType} · ${preview.size} bytes. Content preview is unavailable.`}
-            />
-          ) : null}
-          {renderer === "markdown" ? (
-            <EnrichedMarkdownText
-              markdown={preview?.content ?? ""}
-              selectable
-              onLinkPress={(event) =>
-                void openSafeMarkdownUrl(event.url, (url) =>
-                  Linking.openURL(url),
-                )
-              }
-            />
-          ) : null}
-          {renderer === "json" ? (
-            <Code
-              content={JSON.stringify(
-                JSON.parse(preview?.content ?? "null"),
-                null,
-                2,
-              )}
-            />
-          ) : null}
-          {renderer === "invalid-json" ? (
-            <>
-              <Text style={[styles.previewNotice, { color: colors.warning }]}>
-                Invalid JSON; showing the original text.
-              </Text>
-              <Code content={preview?.content ?? ""} />
-            </>
-          ) : null}
-          {renderer === "text" ? (
-            <Code content={preview?.content ?? ""} />
-          ) : null}
-        </View>
-        <View style={styles.lifecycle}>
-          {detail.capability.canManage &&
-          detail.capability.operations.includes("update") ? (
-            <Action
-              label="Update"
-              onPress={() =>
-                props.onUpdate(
-                  props.installedSkills.find(
-                    (item) => item.name === detail.skillName,
-                  )!,
-                )
-              }
-            />
-          ) : null}
-          {detail.capability.canManage &&
-          detail.capability.operations.includes("adopt") ? (
-            <Action
-              label="Adopt"
-              onPress={() =>
-                props.onAdopt(
-                  props.installedSkills.find(
-                    (item) => item.name === detail.skillName,
-                  )!,
-                )
-              }
-            />
-          ) : null}
-          {detail.capability.canManage &&
-          detail.capability.operations.includes("forget") ? (
-            <Action
-              label="Forget"
-              onPress={() =>
-                props.onForget(
-                  props.installedSkills.find(
-                    (item) => item.name === detail.skillName,
-                  )!,
-                )
-              }
-            />
-          ) : null}
-          {detail.capability.canManage &&
-          detail.capability.operations.includes("uninstall") ? (
-            <Action
-              label="Uninstall"
-              destructive
-              onPress={() =>
-                props.onUninstall(
-                  props.installedSkills.find(
-                    (item) => item.name === detail.skillName,
-                  )!,
-                )
-              }
-            />
-          ) : null}
-        </View>
-      </ScrollView>
-    </View>
-  );
-}
-
-function TreeNode({
-  node,
-  depth,
-  expanded,
-  selected,
-  onToggle,
-  onSelect,
-}: {
-  node: SkillTreeNode;
-  depth: number;
-  expanded: Set<string>;
-  selected?: string;
-  onToggle(path: string): void;
-  onSelect(path: string): void;
-}) {
-  const colors = useAppColors();
-  const open = expanded.has(node.path);
-  return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={
-          node.kind === "directory"
-            ? { expanded: open }
-            : { selected: selected === node.path }
-        }
-        onPress={() =>
-          node.kind === "directory" ? onToggle(node.path) : onSelect(node.path)
-        }
-        style={[
-          styles.treeRow,
-          {
-            paddingLeft: 8 + depth * 16,
-            backgroundColor:
-              selected === node.path ? colors.accentSoft : "transparent",
-          },
-        ]}
-      >
-        <Ionicons
-          name={
-            node.kind === "directory"
-              ? open
-                ? "folder-open-outline"
-                : "folder-outline"
-              : node.file?.kind === "binary"
-                ? "document-attach-outline"
-                : "document-text-outline"
-          }
-          size={17}
-          color={
-            node.kind === "directory" ? colors.warning : colors.textTertiary
-          }
-        />
-        <Text
-          numberOfLines={1}
-          style={{
-            color:
-              selected === node.path ? colors.accent : colors.textSecondary,
-            flex: 1,
-          }}
-        >
-          {node.name}
-        </Text>
-      </Pressable>
-      {node.kind === "directory" && open
-        ? node.children.map((child) => (
-            <TreeNode
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              expanded={expanded}
-              selected={selected}
-              onToggle={onToggle}
-              onSelect={onSelect}
-            />
-          ))
-        : null}
-    </>
-  );
 }
 function Code({ content }: { content: string }) {
   const colors = useAppColors();
@@ -1034,61 +1439,100 @@ function State({
     </View>
   );
 }
+function titleCase(value: string) {
+  return value[0]!.toUpperCase() + value.slice(1);
+}
 
 const styles = StyleSheet.create({
   root: { flex: 1, flexDirection: "row" },
   safe: { flex: 1 },
   flex: { flex: 1 },
-  tabs: {
-    height: 50,
+  modeBar: {
+    height: 44,
     flexDirection: "row",
+    paddingHorizontal: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  tab: {
-    flex: 1,
-    flexDirection: "row",
-    gap: 8,
+  modeItem: {
+    minWidth: 76,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderBottomWidth: 2,
     borderBottomColor: "transparent",
   },
-  notice: { marginHorizontal: 12, marginTop: 8, padding: 10 },
-  agents: { paddingHorizontal: 12, paddingVertical: 8, gap: 6 },
-  pill: {
-    height: 36,
+  modeText: { ...TypeScale.compact, fontFamily: Typography.uiFontMedium },
+  notice: {
+    marginHorizontal: 12,
+    marginTop: 8,
     paddingHorizontal: 12,
-    borderWidth: 1,
-    justifyContent: "center",
+    paddingVertical: 9,
+    borderRadius: 6,
   },
-  filters: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
+  searchArea: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
   search: {
-    height: 42,
+    flex: 1,
+    height: 44,
     borderWidth: 1,
+    borderRadius: 6,
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
+    paddingHorizontal: 11,
     gap: 8,
   },
   input: { flex: 1, fontFamily: Typography.uiFont, paddingVertical: 0 },
-  segment: { flexDirection: "row", borderWidth: 1, alignSelf: "flex-start" },
-  segmentItem: {
-    minHeight: 34,
+  smallIcon: {
+    width: 32,
+    height: 40,
+    alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
+  },
+  filterButton: {
+    minWidth: 44,
+    height: 44,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderRadius: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  chips: { paddingHorizontal: 12, paddingBottom: 8, gap: 6 },
+  chip: {
+    height: 30,
+    paddingHorizontal: 9,
+    borderRadius: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   list: { paddingBottom: 28 },
   emptyList: { flexGrow: 1 },
   row: {
-    minHeight: 68,
+    minHeight: 82,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  rowTitle: { ...TypeScale.body, fontFamily: Typography.uiFontMedium },
+  rowHeading: { flexDirection: "row", alignItems: "center", gap: 7 },
+  rowTitle: {
+    ...TypeScale.body,
+    fontFamily: Typography.uiFontMedium,
+    flexShrink: 1,
+  },
+  description: { ...TypeScale.compact, marginTop: 2 },
+  metadata: { ...TypeScale.compact },
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
   iconAction: {
     minWidth: 44,
     minHeight: 44,
@@ -1097,11 +1541,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   panel: {
-    width: 440,
-    maxWidth: "46%",
+    width: 470,
+    maxWidth: "48%",
     borderLeftWidth: StyleSheet.hairlineWidth,
   },
-  sheet: { height: "100%", minHeight: 520 },
+  sheetContent: { height: "100%", minHeight: 560 },
   inspector: { flex: 1 },
   inspectorHeader: {
     minHeight: 64,
@@ -1109,7 +1553,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   inspectorTitle: { ...TypeScale.title, fontFamily: Typography.uiFontMedium },
@@ -1119,24 +1563,40 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  inspectorScroll: { padding: 14, gap: 8, paddingBottom: 34 },
-  sectionTitle: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-    marginTop: 6,
+  inspectorScroll: { paddingBottom: 36 },
+  detailSection: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  sectionTitle: { ...TypeScale.body, fontFamily: Typography.uiFontMedium },
+  sectionLabel: { ...TypeScale.compact, fontFamily: Typography.uiFontMedium },
+  summaryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 12,
+  },
+  statusLabel: { flexDirection: "row", alignItems: "center", gap: 6 },
   treeRow: {
-    minHeight: 36,
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
     paddingRight: 8,
+    borderRadius: 4,
   },
   preview: {
-    marginTop: 10,
+    marginTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
-    minHeight: 180,
+    paddingTop: 12,
+    minHeight: 160,
+  },
+  fileTitle: {
+    ...TypeScale.compact,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 7,
   },
   previewNotice: { ...TypeScale.compact, marginBottom: 8 },
   loadingRow: {
@@ -1151,11 +1611,66 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     paddingVertical: 8,
   },
-  lifecycle: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  action: {
-    minHeight: 40,
+  copyRow: {
+    minHeight: 58,
     borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  path: { fontFamily: Typography.terminalFont, fontSize: 11, marginTop: 2 },
+  activeLabel: { fontFamily: Typography.uiFontMedium, fontSize: 10 },
+  bindingRow: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  toggle: { width: 46, height: 28, borderRadius: 14, padding: 3 },
+  toggleKnob: { width: 22, height: 22, borderRadius: 11 },
+  toggleKnobOn: { transform: [{ translateX: 18 }] },
+  lifecycleSection: { paddingHorizontal: 16, paddingVertical: 16, gap: 10 },
+  action: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 6,
     paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-start",
+  },
+  filterSheet: { maxHeight: 600 },
+  sheetHeader: {
+    height: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sheetTitle: { ...TypeScale.title, fontFamily: Typography.uiFontMedium },
+  textButton: {
+    minWidth: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterBody: { gap: 18, paddingBottom: 18 },
+  filterSection: { gap: 8 },
+  optionWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  choice: {
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderRadius: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  doneButton: {
+    height: 46,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },

@@ -96,6 +96,7 @@ type FilePreview struct {
 // SKILL.md content, bounded file listing, provenance, hash, bindings, enabled
 // state, and static risk signals. It is the payload behind the inspector UI.
 type PackageDetail struct {
+	CopyID      string               `json:"copy_id"`
 	SkillName   string               `json:"skill_name"`
 	Description string               `json:"description,omitempty"`
 	Manager     Manager              `json:"manager"`
@@ -124,7 +125,17 @@ type PackageDetail struct {
 // InspectPackageFile extends package detail with one bounded, read-only text
 // file. Traversal and symlinks are rejected before content is read.
 func InspectPackageFile(options InventoryOptions, name, relative string) (PackageDetail, error) {
-	detail, err := InspectPackage(options, name)
+	return inspectPackageFile(options, name, "", relative)
+}
+
+// InspectPackageCopyFile reads a file from one exact inventory copy. Copy IDs
+// are opaque inventory identities; callers never submit or navigate host paths.
+func InspectPackageCopyFile(options InventoryOptions, name, copyID, relative string) (PackageDetail, error) {
+	return inspectPackageFile(options, name, copyID, relative)
+}
+
+func inspectPackageFile(options InventoryOptions, name, copyID, relative string) (PackageDetail, error) {
+	detail, err := inspectPackage(options, name, copyID)
 	if err != nil {
 		return PackageDetail{}, err
 	}
@@ -158,6 +169,19 @@ const maxInspectPreviewBytes = 64 << 10
 // InspectPackage builds the inspection detail for one Skill name. It reads
 // the central inventory plus the agent surfaces and never mutates state.
 func InspectPackage(options InventoryOptions, name string) (PackageDetail, error) {
+	return inspectPackage(options, name, "")
+}
+
+// InspectPackageCopy resolves a duplicate name to the exact copy advertised
+// by the same inventory contract. A stale or mismatched ID fails closed.
+func InspectPackageCopy(options InventoryOptions, name, copyID string) (PackageDetail, error) {
+	if strings.TrimSpace(copyID) == "" {
+		return PackageDetail{}, errors.New("a Skill copy ID is required")
+	}
+	return inspectPackage(options, name, copyID)
+}
+
+func inspectPackage(options InventoryOptions, name, copyID string) (PackageDetail, error) {
 	if err := ValidateSkillName(name); err != nil {
 		return PackageDetail{}, err
 	}
@@ -174,16 +198,22 @@ func InspectPackage(options InventoryOptions, name string) (PackageDetail, error
 		if inventory.Skills[index].Name != name {
 			continue
 		}
+		if copyID != "" && inventory.Skills[index].ID != copyID {
+			continue
+		}
 		if installed != nil {
 			return PackageDetail{}, fmt.Errorf("multiple local Skills named %q are installed; resolve the duplicate before inspecting", name)
 		}
 		installed = &inventory.Skills[index]
 	}
 	if installed == nil {
+		if copyID != "" {
+			return PackageDetail{}, fmt.Errorf("no matching copy of Skill %q is installed", name)
+		}
 		return PackageDetail{}, fmt.Errorf("no Skill named %q is installed or tracked", name)
 	}
 	detail := PackageDetail{
-		SkillName: name, Description: installed.Description,
+		CopyID: installed.ID, SkillName: name, Description: installed.Description,
 		Manager: installed.Manager, Owned: installed.Owned, Tracked: installed.Tracked,
 		Enabled: installed.Enabled, Canonical: installed.CanonicalPath, SourcePath: installed.SourcePath,
 		Source: installed.Source, SourceType: installed.SourceType, SourceURL: installed.SourceURL,

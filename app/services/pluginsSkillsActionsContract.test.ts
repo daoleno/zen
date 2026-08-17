@@ -27,9 +27,35 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).not.toContain('accessibilityLabel="Refresh"');
   });
   test("wide panel and mobile sheet share one inspector", () => {
-    expect(presentation).toContain("wide && props.inspectedName");
+    expect(presentation).toContain("wide && props.inspectedCopyId");
     expect(presentation).toContain("<BottomSheetFrame");
     expect(presentation.match(/<Inspector/g)?.length).toBe(2);
+  });
+  test("default Skills page is compact and has no Agent tab rail", () => {
+    expect(presentation).toContain('accessibilityLabel="Filter Skills"');
+    expect(presentation).toContain("<FilterSheet");
+    expect(presentation).not.toContain("onSelectAgent");
+    expect(presentation).not.toContain("agentCounts");
+    expect(presentation).not.toContain("Track local Skills");
+  });
+  test("rows open details and lifecycle actions stay in the inspector", () => {
+    const rowSource = presentation.slice(
+      presentation.indexOf("function SkillRow"),
+      presentation.indexOf("function Inspector"),
+    );
+    expect(rowSource).not.toContain("Adopt");
+    expect(rowSource).not.toContain("Manage with Zen");
+    expect(presentation).toContain('label="Manage with Zen"');
+    expect(presentation).toContain("Copies (");
+    expect(presentation).toContain("Agent bindings");
+  });
+  test("copy-aware details preserve file and action states", () => {
+    expect(screen).toContain("skillId: skill.id");
+    expect(presentation).toContain("buildSkillFileTree");
+    expect(presentation).toContain("Invalid JSON");
+    expect(presentation).toContain("Uninstall managed copy");
+    expect(screen).toContain("buildSkillsMutationConfirmation");
+    expect(screen).toContain("Alert.alert");
   });
   test("Plugin catalog and lifecycle gates remain independent", () => {
     expect(screen).toContain("pluginsUnifiedView(plugins)");

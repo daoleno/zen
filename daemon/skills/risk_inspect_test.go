@@ -207,6 +207,50 @@ func TestInspectPackageFileIsBoundedAndTraversalSafe(t *testing.T) {
 	}
 }
 
+func TestInspectPackageCopyResolvesDuplicateNameAndReadsSelectedFiles(t *testing.T) {
+	f := newFixture(t)
+	codex := f.writeSkill(f.agentGlobalDir(AgentCodex), "duplicate", "codex copy")
+	pi := f.writeSkill(f.agentGlobalDir(AgentPi), "duplicate", "pi copy")
+	if err := os.WriteFile(filepath.Join(pi, "agent.txt"), []byte("pi-specific"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codexID, piID string
+	for _, installed := range inventory.Skills {
+		if installed.Name != "duplicate" {
+			continue
+		}
+		switch installed.SourcePath {
+		case codex:
+			codexID = installed.ID
+		case pi:
+			piID = installed.ID
+		}
+	}
+	if codexID == "" || piID == "" || codexID == piID {
+		t.Fatalf("duplicate copy identities missing: codex=%q pi=%q", codexID, piID)
+	}
+	if _, err := InspectPackage(f.options(""), "duplicate"); err == nil {
+		t.Fatal("name-only duplicate inspection must remain fail closed")
+	}
+	detail, err := InspectPackageCopyFile(f.options(""), "duplicate", piID, "agent.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.CopyID != piID || detail.SourcePath != pi || detail.Preview == nil || detail.Preview.Content != "pi-specific" {
+		t.Fatalf("selected copy inspection mismatch: %+v", detail)
+	}
+	if _, err := InspectPackageCopy(f.options(""), "duplicate", codexID); err != nil {
+		t.Fatalf("Codex copy inspect failed: %v", err)
+	}
+	if _, err := InspectPackageCopy(f.options(""), "duplicate", "stale-copy-id"); err == nil {
+		t.Fatal("stale copy ID was accepted")
+	}
+}
+
 func TestInspectClassifiesNestedFilesAndBoundedPreviews(t *testing.T) {
 	f := newFixture(t)
 	source := f.writeSkill(f.Home, "formats", "# Formats\n")

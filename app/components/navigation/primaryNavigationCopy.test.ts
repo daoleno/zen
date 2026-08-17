@@ -2,16 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const drawerSource = readFileSync(join(import.meta.dir, "PrimaryDrawerPanel.tsx"), "utf8");
-const skillsSource = readFileSync(join(import.meta.dir, "../skills/SkillsPresentation.tsx"), "utf8");
-const settingsSource = readFileSync(join(import.meta.dir, "../../app/settings.tsx"), "utf8");
+const drawerSource = readFileSync(
+  join(import.meta.dir, "PrimaryDrawerPanel.tsx"),
+  "utf8",
+);
+const skillsSource = readFileSync(
+  join(import.meta.dir, "../skills/SkillsPresentation.tsx"),
+  "utf8",
+);
+const settingsSource = readFileSync(
+  join(import.meta.dir, "../../app/settings.tsx"),
+  "utf8",
+);
 
 function drawerRowContractBlock(source: string): string {
   const propsStart = source.indexOf("interface DrawerRowProps");
   const propsEnd = source.indexOf("}", propsStart);
   const fnStart = source.indexOf("function DrawerRow(");
   const fnEnd = source.indexOf("\nexport function PrimaryDrawerPanel", fnStart);
-  if (propsStart < 0 || propsEnd < 0 || fnStart < 0 || fnEnd < 0) throw new Error("DrawerRow contract block not found");
+  if (propsStart < 0 || propsEnd < 0 || fnStart < 0 || fnEnd < 0)
+    throw new Error("DrawerRow contract block not found");
   return `${source.slice(propsStart, propsEnd + 1)}\n${source.slice(fnStart, fnEnd)}`;
 }
 
@@ -23,7 +33,8 @@ describe("navigation and Skills copy density", () => {
     expect(contract).not.toMatch(/\bdetail\b/);
   });
   test("drawer rows and connection strip remain concise", () => {
-    for (const label of ["Skills", "Stats", "Settings"]) expect(drawerSource).toContain(`label="${label}"`);
+    for (const label of ["Skills", "Stats", "Settings"])
+      expect(drawerSource).toContain(`label="${label}"`);
     expect(drawerSource).toContain('"Connected"');
     expect(drawerSource).toContain('"Offline"');
     expect(drawerSource).not.toContain("Installed and discover");
@@ -36,7 +47,8 @@ describe("navigation and Skills copy density", () => {
   test("Skills chrome is a compact local manager", () => {
     expect(skillsSource).toContain('placeholder="Search local Skills"');
     expect(skillsSource).toContain("RefreshControl");
-    expect(skillsSource).toContain("Track local Skills");
+    expect(skillsSource).toContain('accessibilityLabel="Filter Skills"');
+    expect(skillsSource).not.toContain("Track local Skills");
     expect(skillsSource).not.toContain("LeaderboardSelector");
     expect(skillsSource).not.toContain("CatalogSkillRow");
   });

@@ -363,8 +363,13 @@ func (s *Server) handleSkillsInspect(conn *websocket.Conn, raw clientMessage) {
 		options := skillsInventoryOptions(s, ctx, raw.Cwd)
 		var detail skillmgmt.PackageDetail
 		var err error
-		if strings.TrimSpace(raw.Path) != "" {
+		copyID := strings.TrimSpace(raw.SkillID)
+		if strings.TrimSpace(raw.Path) != "" && copyID != "" {
+			detail, err = skillmgmt.InspectPackageCopyFile(options, name, copyID, raw.Path)
+		} else if strings.TrimSpace(raw.Path) != "" {
 			detail, err = skillmgmt.InspectPackageFile(options, name, raw.Path)
+		} else if copyID != "" {
+			detail, err = skillmgmt.InspectPackageCopy(options, name, copyID)
 		} else {
 			detail, err = skillmgmt.InspectPackage(options, name)
 		}

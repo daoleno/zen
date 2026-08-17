@@ -334,7 +334,7 @@ func buildPackageLifecyclePlan(request MutationRequest, entry PackageEntry, env 
 		return MutationCommand{
 			Operation: OperationAdopt, SkillName: request.SkillName, Scope: request.Scope, Agents: agents,
 			Source: entry.Source, Ref: entry.Ref,
-			Summary:     "Adopt external skill " + request.SkillName + " into Zen's store (the external source remains untouched; bind the owned copy explicitly afterward)",
+			Summary:     "Manage " + request.SkillName + " with Zen by copying it into the managed store (the external source remains untouched; bind the managed copy explicitly afterward)",
 			Changes:     changes,
 			Destructive: false,
 		}, nil

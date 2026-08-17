@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeSkillsInspectDetail } from "./skillsManagement";
+import {
+  buildSkillsMutationConfirmation,
+  normalizeSkillsInspectDetail,
+  type SkillsMutationCommand,
+} from "./skillsManagement";
 
 const base = {
   skill_name: "demo",
@@ -95,25 +99,25 @@ describe("Skill inspection normalization", () => {
   test("accepts large external file metadata while keeping previews bounded", () => {
     const detail = normalizeSkillsInspectDetail({
       ...base,
-        files: [
-          {
-            path: "model.bin",
-            size: 128 * 1024 * 1024,
-            mode: "0600",
-            kind: "binary",
-            media_type: "application/octet-stream",
-            preview_status: "binary",
-          },
-        ],
-        preview: {
+      files: [
+        {
           path: "model.bin",
+          size: 128 * 1024 * 1024,
+          mode: "0600",
           kind: "binary",
           media_type: "application/octet-stream",
-          status: "binary",
-          size: 128 * 1024 * 1024,
-          bytes_returned: 0,
-          notice: "Binary files are shown as metadata only.",
+          preview_status: "binary",
         },
+      ],
+      preview: {
+        path: "model.bin",
+        kind: "binary",
+        media_type: "application/octet-stream",
+        status: "binary",
+        size: 128 * 1024 * 1024,
+        bytes_returned: 0,
+        notice: "Binary files are shown as metadata only.",
+      },
     });
     expect(detail.files?.[0]?.size).toBe(128 * 1024 * 1024);
     expect(detail.preview?.bytesReturned).toBe(0);
@@ -165,5 +169,50 @@ describe("Skill inspection normalization", () => {
         },
       }),
     ).toThrow("outside the Skill package file list");
+  });
+});
+
+describe("Skill lifecycle confirmation copy", () => {
+  const command = (
+    operation: SkillsMutationCommand["operation"],
+    destructive = false,
+  ): SkillsMutationCommand => ({
+    operation,
+    scope: "global",
+    agents: ["codex"],
+    skillName: "demo",
+    summary: "Lifecycle summary",
+    changes: [
+      {
+        kind: destructive ? "remove" : "copy_file",
+        path: ".../.zen/skills/demo",
+        detail: destructive ? "Zen managed copy" : "Copy into managed store",
+      },
+    ],
+    destructive,
+  });
+
+  test("names adoption as Manage with Zen", () => {
+    const confirmation = buildSkillsMutationConfirmation(command("adopt"));
+    expect(confirmation.title).toBe("Manage with Zen demo?");
+    expect(confirmation.confirmLabel).toBe("Manage with Zen");
+    expect(confirmation.message).toContain("Copy into managed store");
+  });
+
+  test("makes managed uninstall destruction explicit", () => {
+    const confirmation = buildSkillsMutationConfirmation(
+      command("uninstall", true),
+    );
+    expect(confirmation.title).toBe("Uninstall demo?");
+    expect(confirmation.confirmLabel).toBe("Uninstall");
+    expect(confirmation.message).toContain("This removes the following:");
+    expect(confirmation.message).toContain("Zen managed copy");
+  });
+
+  test("keeps Forget non-destructive to external files", () => {
+    const confirmation = buildSkillsMutationConfirmation(command("forget"));
+    expect(confirmation.confirmLabel).toBe("Forget");
+    expect(confirmation.message).not.toContain("This removes the following:");
+    expect(confirmation.message).toContain("Changes:");
   });
 });

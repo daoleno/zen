@@ -166,6 +166,7 @@ export interface FilePreview {
 }
 
 export interface PackageDetail {
+  copyId?: string;
   skillName: string;
   description?: string;
   manager: SkillManager;
@@ -594,6 +595,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     );
   }
   return {
+    copyId: boundedString(raw.copy_id, 64) || undefined,
     skillName,
     description: boundedString(raw.description, 240) || undefined,
     manager: manager as SkillManager,
@@ -796,7 +798,7 @@ function mutationVerb(operation: SkillMutationOperation): string {
     case "forget":
       return "Forget";
     case "adopt":
-      return "Adopt";
+      return "Manage with Zen";
     case "update":
       return "Update";
   }
