@@ -8,7 +8,6 @@ export type SkillManager =
   "zen" | "external" | "plugin" | "builtin" | "unknown";
 export type BindingMode = "symlink" | "copy";
 export type SkillMutationOperation =
-  | "import"
   | "migrate"
   | "bind"
   | "unbind"
@@ -115,49 +114,6 @@ export interface SkillsInventory {
   };
 }
 
-export interface CatalogSkill {
-  id: string;
-  skillId: string;
-  name: string;
-  installs: number;
-  source: string;
-  installable: boolean;
-}
-
-export interface SkillsCatalogResult {
-  query: string;
-  skills: CatalogSkill[];
-}
-
-export type SkillsLeaderboardView = "all-time" | "trending" | "hot";
-
-export interface RankedCatalogSkill {
-  id: string;
-  skillId: string;
-  name: string;
-  source: string;
-  rank: number;
-  totalInstalls?: number;
-  installs24h?: number;
-  currentInstalls?: number;
-  yesterdayInstalls?: number;
-  change?: number;
-  installable: boolean;
-}
-
-export interface SkillsLeaderboard {
-  view: SkillsLeaderboardView;
-  totalSkills: number;
-  skills: RankedCatalogSkill[];
-  warning?: string;
-}
-
-export interface SkillsLeaderboards {
-  allTime: SkillsLeaderboard;
-  trending: SkillsLeaderboard;
-  hot: SkillsLeaderboard;
-}
-
 export interface SkillMutationChange {
   kind: "create_dir" | "copy_file" | "symlink" | "remove" | "keep" | "write";
   path: string;
@@ -170,7 +126,6 @@ export interface SkillsMutationCommand {
   scope: "project" | "global";
   agents: SkillAgent[];
   skillName: string;
-  catalogId?: string;
   source?: string;
   ref?: string;
   summary: string;
@@ -194,6 +149,20 @@ export interface PackageFile {
   path: string;
   size: number;
   mode: string;
+  kind: "markdown" | "json" | "text" | "binary";
+  mediaType: string;
+  previewStatus: "ready" | "large" | "binary";
+}
+
+export interface FilePreview {
+  path: string;
+  kind: PackageFile["kind"];
+  mediaType: string;
+  status: "ready" | "truncated" | "binary";
+  size: number;
+  bytesReturned: number;
+  content?: string;
+  notice?: string;
 }
 
 export interface PackageDetail {
@@ -216,9 +185,7 @@ export interface PackageDetail {
   agents: SkillAgent[];
   bindings: SkillBinding[];
   files?: PackageFile[];
-  skillMd?: string;
-  filePath?: string;
-  fileContent?: string;
+  preview?: FilePreview;
   risk?: SkillRiskSignal[];
   warnings?: string[];
   capability: SkillManagementCapability;
@@ -261,7 +228,6 @@ const MANAGERS = new Set<SkillManager>([
   "unknown",
 ]);
 const OPERATIONS = new Set<SkillMutationOperation>([
-  "import",
   "migrate",
   "bind",
   "unbind",
@@ -287,13 +253,9 @@ const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 const INSTALLED_ID_PATTERN = /^[a-f0-9]{24}$/;
 const MAX_INVENTORY_SKILLS = 600;
-const MAX_CATALOG_SKILLS = 30;
-const MAX_LEADERBOARD_SKILLS = 30;
-const MAX_LEADERBOARD_TOTAL = 10_000_000;
-const MAX_CATALOG_METRIC = 1_000_000_000_000;
 const MAX_BINDINGS = 12;
 const MAX_CHANGES = 24;
-const MAX_FILES = 128;
+const MAX_FILES = 512;
 
 export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   const inventory = record(value);
@@ -410,57 +372,6 @@ function normalizeMutationOperations(value: unknown): SkillMutationOperation[] {
   return [...seen];
 }
 
-export function normalizeSkillsCatalogResult(
-  value: unknown,
-): SkillsCatalogResult {
-  const result = record(value);
-  const query = boundedString(result.query, 80).trim();
-  const rawSkills = Array.isArray(result.skills) ? result.skills : [];
-  if (rawSkills.length > MAX_CATALOG_SKILLS) {
-    throw new Error("Daemon returned too many catalog Skills.");
-  }
-  const skills: CatalogSkill[] = [];
-  const identities = new Set<string>();
-  for (const raw of rawSkills) {
-    const candidate = record(raw);
-    const id = boundedString(candidate.id, 272);
-    const name = boundedString(candidate.name, 128);
-    const source = boundedString(candidate.source, 141);
-    const installs = candidate.installs;
-    if (
-      !isCatalogIdentity(id, source, name) ||
-      typeof installs !== "number" ||
-      !Number.isSafeInteger(installs) ||
-      installs < 0 ||
-      installs > 1_000_000_000_000 ||
-      identities.has(id)
-    ) {
-      continue;
-    }
-    identities.add(id);
-    skills.push({
-      id,
-      skillId: name,
-      name,
-      source,
-      installs,
-      installable: true,
-    });
-  }
-  return { query, skills };
-}
-
-export function normalizeSkillsLeaderboards(
-  value: unknown,
-): SkillsLeaderboards {
-  const raw = exactRecord(value, ["all_time", "trending", "hot"]);
-  return {
-    allTime: normalizeSkillsLeaderboard(raw.all_time, "all-time"),
-    trending: normalizeSkillsLeaderboard(raw.trending, "trending"),
-    hot: normalizeSkillsLeaderboard(raw.hot, "hot"),
-  };
-}
-
 export function normalizeSkillsMutationCommand(
   value: unknown,
 ): SkillsMutationCommand {
@@ -517,24 +428,7 @@ export function normalizeSkillsMutationCommand(
     changes,
     destructive,
   };
-  if (operation === "import") {
-    const catalogId = boundedString(raw.catalog_id, 272);
-    const source = boundedString(raw.source, 1024);
-    const ref = boundedString(raw.ref, 128);
-    if (!catalogId || !source) {
-      throw new Error("Daemon returned an unbound Skills import command.");
-    }
-    if (
-      !isRepository(source) ||
-      !isSkillName(skillName) ||
-      catalogId !== `${source}/${skillName}`
-    ) {
-      throw new Error("Daemon returned an invalid Skills import command.");
-    }
-    normalized.catalogId = catalogId;
-    normalized.source = source;
-    normalized.ref = ref || undefined;
-  } else if (operation !== "migrate") {
+  if (operation !== "migrate") {
     if (!isSkillName(skillName)) {
       throw new Error("Daemon returned an invalid Skills command.");
     }
@@ -626,16 +520,6 @@ function assertSkillsCommandMatchesRequest(
       "Daemon executed a Skills command for a different request.",
     );
   }
-  if (expected.operation === "import") {
-    if (
-      command.catalogId !== expected.skillId ||
-      command.source !== expected.source
-    ) {
-      throw new Error(
-        "Daemon executed a Skills command for a different request.",
-      );
-    }
-  }
 }
 
 export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
@@ -659,26 +543,56 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
   if (bindings.some((binding) => !agents.includes(binding.agent))) {
     throw new Error("Daemon returned an inconsistent Skills detail.");
   }
-  const files = (Array.isArray(raw.files) ? raw.files : [])
-    .slice(0, MAX_FILES)
+  const rawFiles = Array.isArray(raw.files) ? raw.files : [];
+  if (rawFiles.length > MAX_FILES) {
+    throw new Error("Daemon returned too many Skill package files.");
+  }
+  const files = rawFiles
     .map((candidate): PackageFile | null => {
       const file = record(candidate);
       const path = boundedString(file.path, 1024);
       const size = file.size;
       const mode = boundedString(file.mode, 16);
+      const kind = file.kind;
+      const mediaType = boundedString(file.media_type, 128);
+      const previewStatus = file.preview_status;
       if (
         !path ||
+        !isSafeSkillFilePath(path) ||
         typeof size !== "number" ||
         !Number.isSafeInteger(size) ||
         size < 0 ||
-        size > 64 << 20 ||
-        !mode
+        size > Number.MAX_SAFE_INTEGER ||
+        !mode ||
+        (kind !== "markdown" &&
+          kind !== "json" &&
+          kind !== "text" &&
+          kind !== "binary") ||
+        !mediaType ||
+        (previewStatus !== "ready" &&
+          previewStatus !== "large" &&
+          previewStatus !== "binary")
       ) {
         return null;
       }
-      return { path, size, mode };
+      return { path, size, mode, kind, mediaType, previewStatus };
     })
     .filter((file): file is PackageFile => file != null);
+  if (
+    files.length !== rawFiles.length ||
+    new Set(files.map((file) => file.path)).size !== files.length
+  ) {
+    throw new Error("Daemon returned an invalid Skill package file list.");
+  }
+  const preview = normalizeFilePreview(raw.preview);
+  if (
+    preview &&
+    (files.length === 0 || !files.some((file) => file.path === preview.path))
+  ) {
+    throw new Error(
+      "Daemon returned a preview outside the Skill package file list.",
+    );
+  }
   return {
     skillName,
     description: boundedString(raw.description, 240) || undefined,
@@ -699,9 +613,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     agents,
     bindings,
     files: files.length > 0 ? files : undefined,
-    skillMd: boundedMultilineString(raw.skill_md, 70000) || undefined,
-    filePath: boundedString(raw.file_path, 1024) || undefined,
-    fileContent: boundedMultilineString(raw.file_content, 70000) || undefined,
+    preview,
     risk: (Array.isArray(raw.risk) ? raw.risk : [])
       .map(normalizeRisk)
       .filter((risk): risk is SkillRiskSignal => risk != null),
@@ -710,6 +622,48 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
       .filter(Boolean)
       .slice(0, 12),
     capability: normalizeCapability(raw.capability),
+  };
+}
+
+function isSafeSkillFilePath(path: string): boolean {
+  if (path.startsWith("/") || path.includes("\\")) return false;
+  const parts = path.split("/");
+  return parts.every((part) => part !== "" && part !== "." && part !== "..");
+}
+
+function normalizeFilePreview(value: unknown): FilePreview | undefined {
+  if (value == null) return undefined;
+  const raw = record(value);
+  const path = boundedString(raw.path, 1024);
+  const kind = raw.kind;
+  const mediaType = boundedString(raw.media_type, 128);
+  const status = raw.status;
+  const size = raw.size;
+  const bytesReturned = raw.bytes_returned;
+  if (
+    !path ||
+    (kind !== "markdown" &&
+      kind !== "json" &&
+      kind !== "text" &&
+      kind !== "binary") ||
+    !mediaType ||
+    (status !== "ready" && status !== "truncated" && status !== "binary") ||
+    !Number.isSafeInteger(size) ||
+    (size as number) < 0 ||
+    !Number.isSafeInteger(bytesReturned) ||
+    (bytesReturned as number) < 0
+  ) {
+    throw new Error("Daemon returned an invalid Skill file preview.");
+  }
+  return {
+    path,
+    kind,
+    mediaType,
+    status,
+    size: size as number,
+    bytesReturned: bytesReturned as number,
+    content: boundedMultilineString(raw.content, 70000) || undefined,
+    notice: boundedString(raw.notice, 240) || undefined,
   };
 }
 
@@ -802,12 +756,6 @@ export function buildSkillsMutationConfirmation(
         .join(", ")}`,
     );
   }
-  if (command.operation === "import" && command.source) {
-    lines.push(`Source: ${command.source}`);
-    if (command.ref) {
-      lines.push(`Pinned ref: ${command.ref}`);
-    }
-  }
   if (command.destructive) {
     lines.push(
       "",
@@ -833,10 +781,8 @@ export function buildSkillsMutationConfirmation(
 
 function mutationVerb(operation: SkillMutationOperation): string {
   switch (operation) {
-    case "import":
-      return "Import";
     case "migrate":
-      return "Discover";
+      return "Track";
     case "bind":
       return "Bind";
     case "unbind":
@@ -890,16 +836,6 @@ export function scopeLabel(scope: SkillScope | "project" | "global"): string {
   }
 }
 
-export function isCatalogIdentity(
-  id: string,
-  source: string,
-  name: string,
-): boolean {
-  return (
-    isRepository(source) && isSkillName(name) && id === `${source}/${name}`
-  );
-}
-
 export function isSkillName(value: string): boolean {
   return value !== "." && value !== ".." && SKILL_PATTERN.test(value);
 }
@@ -928,168 +864,6 @@ function isValidMutationCommand(command: SkillsMutationCommand): boolean {
   }
   return command.changes.every(
     (change) => change.path.length > 0 && change.path.length <= 4096,
-  );
-}
-
-function normalizeSkillsLeaderboard(
-  value: unknown,
-  expectedView: SkillsLeaderboardView,
-): SkillsLeaderboard {
-  const raw = record(value);
-  if (raw.view !== expectedView) {
-    throw new Error("Daemon returned a mismatched Skills leaderboard view.");
-  }
-  const totalSkills = raw.total_skills;
-  const rawSkills = raw.skills;
-  if (
-    typeof totalSkills !== "number" ||
-    !Number.isSafeInteger(totalSkills) ||
-    totalSkills < 0 ||
-    totalSkills > MAX_LEADERBOARD_TOTAL ||
-    !Array.isArray(rawSkills) ||
-    rawSkills.length > MAX_LEADERBOARD_SKILLS ||
-    totalSkills < rawSkills.length
-  ) {
-    throw new Error("Daemon returned invalid Skills leaderboard bounds.");
-  }
-
-  const byIdentity = new Map<string, RankedCatalogSkill>();
-  for (let index = 0; index < rawSkills.length; index += 1) {
-    let candidate: RankedCatalogSkill;
-    try {
-      candidate = normalizeRankedCatalogSkill(
-        rawSkills[index],
-        expectedView,
-        0,
-      );
-    } catch {
-      continue;
-    }
-    const current = byIdentity.get(candidate.id);
-    if (
-      !current ||
-      leaderboardPrimaryMetric(candidate, expectedView) >
-        leaderboardPrimaryMetric(current, expectedView) ||
-      (leaderboardPrimaryMetric(candidate, expectedView) ===
-        leaderboardPrimaryMetric(current, expectedView) &&
-        candidate.name < current.name)
-    ) {
-      byIdentity.set(candidate.id, candidate);
-    }
-  }
-  const skills = [...byIdentity.values()]
-    .sort((left, right) => {
-      const metricDifference =
-        leaderboardPrimaryMetric(right, expectedView) -
-        leaderboardPrimaryMetric(left, expectedView);
-      return (
-        metricDifference ||
-        left.source.localeCompare(right.source) ||
-        left.skillId.localeCompare(right.skillId)
-      );
-    })
-    .map((skill, index) => ({ ...skill, rank: index + 1 }));
-  return {
-    view: expectedView,
-    totalSkills: Math.max(totalSkills, skills.length),
-    skills,
-    warning: boundedString(raw.warning, 240) || undefined,
-  };
-}
-
-function normalizeRankedCatalogSkill(
-  value: unknown,
-  view: SkillsLeaderboardView,
-  expectedRank: number,
-): RankedCatalogSkill {
-  const raw = record(value);
-  const id = boundedString(raw.id, 272);
-  const skillId = boundedString(raw.skill_id, 128);
-  const name = boundedString(raw.name, 128);
-  const source = boundedString(raw.source, 141);
-  if (
-    typeof raw.installable !== "boolean" ||
-    !isLeaderboardSkillID(skillId) ||
-    !isLeaderboardSource(source) ||
-    id !== `${source}/${skillId}` ||
-    !name ||
-    name.trim() !== name ||
-    /[\u0000-\u001f\u007f]/.test(name) ||
-    raw.installable !== isCatalogIdentity(id, source, skillId)
-  ) {
-    throw new Error("Daemon returned an invalid ranked Skill identity.");
-  }
-  const result: RankedCatalogSkill = {
-    id,
-    skillId,
-    name,
-    source,
-    rank: expectedRank,
-    installable: raw.installable,
-  };
-  if (view === "all-time") {
-    result.totalInstalls = catalogMetric(raw.total_installs);
-  } else if (view === "trending") {
-    result.installs24h = catalogMetric(raw.installs_24h);
-  } else {
-    result.currentInstalls = catalogMetric(raw.current_installs);
-    result.yesterdayInstalls = catalogMetric(raw.yesterday_installs);
-    const change = raw.change;
-    if (
-      typeof change !== "number" ||
-      !Number.isSafeInteger(change) ||
-      change < -MAX_CATALOG_METRIC ||
-      change > MAX_CATALOG_METRIC ||
-      change !== result.currentInstalls - result.yesterdayInstalls
-    ) {
-      throw new Error("Daemon returned invalid Hot leaderboard metrics.");
-    }
-    result.change = change;
-  }
-  return result;
-}
-
-function leaderboardPrimaryMetric(
-  skill: RankedCatalogSkill,
-  view: SkillsLeaderboardView,
-): number {
-  if (view === "all-time") return skill.totalInstalls!;
-  if (view === "trending") return skill.installs24h!;
-  return skill.currentInstalls!;
-}
-
-function catalogMetric(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    value > MAX_CATALOG_METRIC
-  ) {
-    throw new Error("Daemon returned an invalid Skills leaderboard metric.");
-  }
-  return value;
-}
-
-function isLeaderboardSource(value: string): boolean {
-  if (isRepository(value)) return true;
-  if (!value || value.length > 141 || value !== value.toLowerCase())
-    return false;
-  const labels = value.split(".");
-  return (
-    labels.length >= 2 &&
-    labels.every(
-      (label) =>
-        label.length <= 63 &&
-        /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label),
-    )
-  );
-}
-
-function isLeaderboardSkillID(value: string): boolean {
-  return (
-    value !== "." &&
-    value !== ".." &&
-    /^[a-z0-9](?:[a-z0-9._:-]{0,126}[a-z0-9])?$/.test(value)
   );
 }
 
@@ -1323,22 +1097,6 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function exactRecord(
-  value: unknown,
-  expectedKeys: readonly string[],
-): Record<string, unknown> {
-  const raw = record(value);
-  const keys = Object.keys(raw).sort();
-  const expected = [...expectedKeys].sort();
-  if (
-    keys.length !== expected.length ||
-    keys.some((key, index) => key !== expected[index])
-  ) {
-    throw new Error("Daemon returned an unexpected Skills catalog shape.");
-  }
-  return raw;
 }
 
 function boundedString(value: unknown, maxLength: number): string {

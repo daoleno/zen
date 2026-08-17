@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Linking,
   Pressable,
@@ -9,79 +8,49 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import {
-  Radii,
-  TypeScale,
-  Typography,
-  useAppColors,
-} from "../../constants/tokens";
+import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
-import type { AgentKind } from "../../services/agentPresentation";
-import type { PluginsUnifiedView } from "../../services/pluginsScreenModel";
+import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import {
-  PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER,
-  PLUGINS_SKILLS_TOUCH_TARGET,
-  availablePluginBadges,
-  availablePluginOwnership,
-  catalogSkillBadges,
-  compactSkillTargets,
-  filterAvailablePlugins,
-  filterInstalledPlugins,
-  filterInstalledSkills,
-  installedPluginBadges,
-  installedPluginMetadata,
-  installedPluginOwnership,
-  installedSkillBadges,
-  installedSkillMetadata,
-  installedSkillOwnership,
-  filterCatalogSkills,
-  type LifecycleBadge,
-} from "../../services/pluginsSkillsSurfaceModel";
+  evaluatePluginMutation,
+  type PluginsUnifiedView,
+} from "../../services/pluginsScreenModel";
 import type {
   AvailablePlugin,
   InstalledPluginRow,
   PluginInventory,
 } from "../../services/pluginsManagement";
 import type {
-  CatalogSkill,
   InstalledSkill,
   ManagedSkillAgent,
   PackageDetail,
-  RankedCatalogSkill,
-  SkillBinding,
   SkillMutationOperation,
   SkillsInventory,
-  SkillsCatalogResult,
-  SkillsLeaderboard,
-  SkillsLeaderboards,
   SkillsRequestState,
 } from "../../services/skillsManagement";
 import {
-  scopeLabel,
   skillAgentLabel,
   skillsRequestData,
 } from "../../services/skillsManagement";
 import {
-  skillsInspectionTarget,
-  skillsLeaderboardLabel,
+  buildSkillFileTree,
+  defaultSkillFile,
+  filterInstalledSkills,
+  MANAGED_SKILL_AGENTS,
+  skillRenderer,
+  type SkillScopeFilter,
   type SkillsAgentCounts,
-  type SkillsInspectionTarget,
-  type SkillsLeaderboardView,
-  type SkillsUnifiedRow,
-  skillsUnifiedRows,
+  type SkillStatusFilter,
+  type SkillTreeNode,
 } from "../../services/skillsScreenModel";
 import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
-import { skillBindingSupports } from "../../services/skillsSurfaceModel";
-import { AgentKindIcon } from "../terminal/AgentKindIcon";
-import { AnimatedPressable } from "../ui/AnimatedPressable";
-import { BottomSheetFrame } from "../ui/BottomSheetFrame";
-import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 
 export interface SurfaceMutationNotice {
   kind: "success" | "error";
@@ -94,21 +63,9 @@ export interface SkillsPresentationProps {
   agentCounts: SkillsAgentCounts;
   inventoryState: SkillsRequestState<SkillsInventory>;
   installedSkills: InstalledSkill[];
-  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
-  /** catalogId -> other Agent labels that already have this Skill installed. */
-  catalogInstalledElsewhere: Record<string, readonly string[]>;
-  browsing: boolean;
-  catalogState: SkillsRequestState<SkillsLeaderboards>;
-  leaderboard?: SkillsLeaderboard;
-  searchState: SkillsRequestState<SkillsCatalogResult>;
-  searchResult?: SkillsCatalogResult;
-  query: string;
-  submittedQuery: string;
-  leaderboardView: SkillsLeaderboardView;
   pluginsState: SkillsRequestState<PluginInventory>;
   pluginsView: PluginsUnifiedView;
   mutationOperations: readonly SkillMutationOperation[];
-  hasProjectCwd: boolean;
   preparingMutation: string;
   mutationNotice: SurfaceMutationNotice | null;
   currentServerAvailable: boolean;
@@ -121,7 +78,6 @@ export interface SkillsPresentationProps {
   onRetryPlugins(): void;
   onInspectSkill(name: string, path?: string): void;
   onDismissInspector(): void;
-  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
   onMigrate(): void;
   onBinding(
     skill: InstalledSkill,
@@ -136,3503 +92,1085 @@ export interface SkillsPresentationProps {
   onInstallPlugin(entry: AvailablePlugin): void;
   onUpdatePlugin(row: InstalledPluginRow): void;
   onUninstallPlugin(row: InstalledPluginRow): void;
-  onChangeQuery(value: string): void;
-  onSubmitSearch(): void;
-  onClearSearch(): void;
-  onSelectLeaderboard(view: SkillsLeaderboardView): void;
-  onRetryCatalog(): void;
-  onRetrySearch(): void;
   onDismissNotice(): void;
 }
 
-/** Desktop breakpoint: at wide widths the inspector becomes a persistent side panel. */
-const INSPECTOR_PANEL_BREAKPOINT = 920;
-const INSPECTOR_PANEL_WIDTH = 400;
-
-type PluginSheet =
-  | { kind: "plugin-details"; plugin: InstalledPluginRow }
-  | { kind: "plugin-available"; plugin: AvailablePlugin }
-  | null;
-
-type SurfaceSheet = PluginSheet;
+const WIDE_INSPECTOR = 920;
 
 export function SkillsPresentation(props: SkillsPresentationProps) {
-  const {
-    section,
-    selectedAgent,
-    agentCounts,
-    inventoryState,
-    installedSkills,
-    catalogSkills,
-    catalogInstalledElsewhere,
-    browsing,
-    catalogState,
-    leaderboard,
-    searchState,
-    searchResult,
-    query,
-    submittedQuery,
-    leaderboardView,
-    pluginsState,
-    pluginsView,
-    mutationOperations,
-    hasProjectCwd,
-    preparingMutation,
-    mutationNotice,
-    currentServerAvailable,
-    inspectedName,
-    inspectState,
-    onSelectSection,
-    onSelectAgent,
-    onOpenSettings,
-    onRefreshSkills,
-    onRetryPlugins,
-    onInspectSkill,
-    onDismissInspector,
-    onImport,
-    onMigrate,
-    onBinding,
-    onUninstall,
-    onForget,
-    onAdopt,
-    onUpdate,
-    onInstallPlugin,
-    onUpdatePlugin,
-    onUninstallPlugin,
-    onChangeQuery,
-    onSubmitSearch,
-    onClearSearch,
-    onSelectLeaderboard,
-    onRetryCatalog,
-    onRetrySearch,
-    onDismissNotice,
-  } = props;
   const colors = useAppColors();
   const { width } = useWindowDimensions();
-  const [localQuery, setLocalQuery] = useState("");
-  const [pluginSheet, setPluginSheet] = useState<PluginSheet>(null);
-  const [inspectionTarget, setInspectionTarget] =
-    useState<SkillsInspectionTarget | null>(null);
-
-  useEffect(() => {
-    setLocalQuery("");
-    setPluginSheet(null);
-  }, [section, selectedAgent]);
-
-  useEffect(() => {
-    if (!inspectedName) {
-      setInspectionTarget(null);
-      return;
-    }
-    setInspectionTarget((current) =>
-      current?.name === inspectedName
-        ? current
-        : skillsInspectionTarget(inspectedName),
-    );
-  }, [inspectedName]);
-
-  const requestInspection = (name: string, path?: string) => {
-    const target = skillsInspectionTarget(name, path);
-    setInspectionTarget(target);
-    onInspectSkill(target.name, target.path);
-  };
-  const retryInspection = () => {
-    if (inspectionTarget) {
-      onInspectSkill(inspectionTarget.name, inspectionTarget.path);
-    }
-  };
-
-  const desktopInspector =
-    width >= INSPECTOR_PANEL_BREAKPOINT &&
-    Boolean(inspectedName || pluginSheet);
-  const showingSkillsSearch = section === "skills" && browsing;
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<SkillStatusFilter>("all");
+  const [scope, setScope] = useState<SkillScopeFilter>("all");
+  const wide = width >= WIDE_INSPECTOR;
+  const inventory = skillsRequestData(props.inventoryState);
+  const visible = useMemo(
+    () => filterInstalledSkills(props.installedSkills, query, status, scope),
+    [props.installedSkills, query, status, scope],
+  );
+  const inspectedDetail = skillsRequestData(props.inspectState);
+  const detail =
+    inspectedDetail?.skillName === props.inspectedName
+      ? inspectedDetail
+      : undefined;
   const refreshing =
-    section === "plugins"
-      ? pluginsState.status === "loading"
-      : inventoryState.status === "loading" ||
-        catalogState.status === "loading" ||
-        searchState.status === "loading";
-  const inspectDetail = inspectedName
-    ? skillsRequestData(inspectState)
-    : undefined;
-  const inspectedInstalled = useMemo(
-    () => installedSkills.find((skill) => skill.name === inspectedName) ?? null,
-    [inspectedName, installedSkills],
-  );
-  const skillInspectorElement = inspectedName ? (
-    inspectDetail ? (
-      <SkillInspector
-        detail={inspectDetail}
-        installed={inspectedInstalled}
-        inspectState={inspectState}
-        selectedAgent={selectedAgent}
-        capabilities={mutationOperations}
-        hasProjectCwd={hasProjectCwd}
-        preparingMutation={preparingMutation}
-        retryPath={inspectionTarget?.path}
-        onClose={onDismissInspector}
-        onBinding={(operation, agent, scope) => {
-          if (inspectedInstalled) {
-            onBinding(inspectedInstalled, operation, agent, scope);
-          }
-        }}
-        onUninstall={() => {
-          if (inspectedInstalled) {
-            onUninstall(inspectedInstalled);
-          }
-        }}
-        onForget={() => {
-          if (inspectedInstalled) {
-            onForget(inspectedInstalled);
-          }
-        }}
-        onAdopt={() => {
-          if (inspectedInstalled) {
-            onAdopt(inspectedInstalled);
-          }
-        }}
-        onUpdate={() => {
-          if (inspectedInstalled) {
-            onUpdate(inspectedInstalled);
-          }
-        }}
-        onInspectFile={(path) =>
-          requestInspection(inspectDetail.skillName, path)
-        }
-        onRetryInspect={retryInspection}
-      />
-    ) : (
-      <SkillInspectorStatus
-        name={inspectedName}
-        inspectState={inspectState}
-        onClose={onDismissInspector}
-        onRetry={retryInspection}
-      />
-    )
-  ) : null;
-  const pluginInspectorElement = pluginSheet ? (
-    <View
-      style={[styles.inspectorPanel, { borderLeftColor: colors.borderSubtle }]}
+    props.inventoryState.status === "loading" && inventory !== undefined;
+
+  useEffect(() => {
+    setQuery("");
+  }, [props.selectedAgent, props.section]);
+
+  const main = (
+    <SafeAreaView
+      style={[styles.safe, { backgroundColor: colors.bgPrimary }]}
+      edges={["top"]}
     >
-      <ScrollView contentContainerStyle={styles.sheetContent}>
-        {pluginSheet.kind === "plugin-details" ? (
-          <PluginDetailSheet
-            plugin={pluginSheet.plugin}
-            onUpdate={() => onUpdatePlugin(pluginSheet.plugin)}
-            onUninstall={() => onUninstallPlugin(pluginSheet.plugin)}
-          />
-        ) : (
-          <AvailablePluginDetailSheet
-            plugin={pluginSheet.plugin}
-            onInstall={() => onInstallPlugin(pluginSheet.plugin)}
-          />
-        )}
-      </ScrollView>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Close inspector"
-        onPress={() => setPluginSheet(null)}
-        style={[styles.sheetClose, { borderTopColor: colors.borderSubtle }]}
-      >
-        <Text style={[styles.sheetCloseText, { color: colors.textSecondary }]}>
-          Close
-        </Text>
-      </Pressable>
-    </View>
-  ) : null;
-  const inspectorElement =
-    section === "plugins" ? pluginInspectorElement : skillInspectorElement;
-
-  return (
-    <SafeAreaView edges={["left", "right"]} style={styles.root}>
-      <SurfaceTabs section={section} onSelect={onSelectSection} />
-      {section === "skills" ? (
-        <View style={styles.tools}>
-          <SurfaceSearch
-            value={localQuery || query}
-            remote={showingSkillsSearch}
-            loading={searchState.status === "loading"}
-            placeholder={searchPlaceholder("skills")}
-            onChange={(value) => {
-              setLocalQuery(value);
-              onChangeQuery(value);
-            }}
-            onSubmit={onSubmitSearch}
-            onClear={() => {
-              setLocalQuery("");
-              onClearSearch();
-            }}
-          />
-          <SkillTargetSelector
-            selectedAgent={selectedAgent}
-            agentCounts={agentCounts}
-            scanning={preparingMutation === "migrate"}
-            onSelectAgent={onSelectAgent}
-            onScan={onMigrate}
-          />
-          <LeaderboardSelector
-            value={leaderboardView}
-            onChange={onSelectLeaderboard}
-          />
-        </View>
-      ) : (
-        <View style={styles.tools}>
-          <SurfaceSearch
-            value={localQuery || query}
-            remote={false}
-            loading={false}
-            placeholder={searchPlaceholder("plugins")}
-            onChange={(value) => {
-              setLocalQuery(value);
-              onChangeQuery(value);
-            }}
-            onClear={() => {
-              setLocalQuery("");
-              onClearSearch();
-            }}
-          />
-        </View>
-      )}
-      {mutationNotice ? (
-        <MutationNoticeBanner
-          notice={mutationNotice}
-          onDismiss={onDismissNotice}
-        />
-      ) : null}
-      {desktopInspector ? (
-        <View style={styles.desktopRow}>
-          <View style={styles.desktopList}>
-            <SurfaceBody
-              {...props}
-              installedSkills={installedSkills}
-              catalogSkills={catalogSkills}
-              section={section}
-              selectedAgent={selectedAgent}
-              query={localQuery || query}
-              refreshing={refreshing}
-              preparingMutation={preparingMutation}
-              onInspectSkill={requestInspection}
-              onInspectPlugin={(plugin) =>
-                setPluginSheet(
-                  "pluginId" in plugin
-                    ? { kind: "plugin-available", plugin }
-                    : { kind: "plugin-details", plugin },
-                )
-              }
-            />
-          </View>
-          <View style={styles.desktopPanel}>{inspectorElement}</View>
-        </View>
-      ) : (
-        <SurfaceBody
-          {...props}
-          installedSkills={installedSkills}
-          catalogSkills={catalogSkills}
-          section={section}
-          selectedAgent={selectedAgent}
-          query={localQuery || query}
-          refreshing={refreshing}
-          preparingMutation={preparingMutation}
-          onInspectSkill={requestInspection}
-          onInspectPlugin={(plugin) =>
-            setPluginSheet(
-              "pluginId" in plugin
-                ? { kind: "plugin-available", plugin }
-                : { kind: "plugin-details", plugin },
-            )
-          }
-        />
-      )}
-      <SurfaceSheet
-        sheet={desktopInspector ? null : pluginSheet}
-        onClose={() => {
-          setPluginSheet(null);
-        }}
-        onUpdatePlugin={(plugin) => {
-          setPluginSheet(null);
-          onUpdatePlugin(plugin);
-        }}
-        onInstallPlugin={(plugin) => {
-          setPluginSheet(null);
-          onInstallPlugin(plugin);
-        }}
-        onUninstallPlugin={(plugin) => {
-          setPluginSheet(null);
-          onUninstallPlugin(plugin);
-        }}
-      />
-      {inspectedName && !desktopInspector ? (
-        inspectDetail ? (
-          <SkillInspectorSheet
-            detail={inspectDetail}
-            inspectState={inspectState}
-            installed={inspectedInstalled}
-            selectedAgent={selectedAgent}
-            capabilities={mutationOperations}
-            hasProjectCwd={hasProjectCwd}
-            preparingMutation={preparingMutation}
-            retryPath={inspectionTarget?.path}
-            onClose={onDismissInspector}
-            onBinding={(operation, agent, scope) => {
-              if (inspectedInstalled) {
-                onBinding(inspectedInstalled, operation, agent, scope);
-              }
-            }}
-            onUninstall={() => {
-              if (inspectedInstalled) {
-                onUninstall(inspectedInstalled);
-              }
-            }}
-            onForget={() => {
-              if (inspectedInstalled) {
-                onForget(inspectedInstalled);
-              }
-            }}
-            onAdopt={() => {
-              if (inspectedInstalled) {
-                onAdopt(inspectedInstalled);
-              }
-            }}
-            onUpdate={() => {
-              if (inspectedInstalled) {
-                onUpdate(inspectedInstalled);
-              }
-            }}
-            onInspectFile={(path) =>
-              requestInspection(inspectDetail.skillName, path)
-            }
-            onRetryInspect={retryInspection}
-          />
-        ) : (
-          <SkillInspectorStatusSheet
-            name={inspectedName}
-            inspectState={inspectState}
-            onClose={onDismissInspector}
-            onRetry={retryInspection}
-          />
-        )
-      ) : null}
-      {mutationNotice ? null : null}
-    </SafeAreaView>
-  );
-}
-
-function SurfaceBody({
-  section,
-  selectedAgent,
-  query,
-  inventoryState,
-  installedSkills,
-  catalogSkills,
-  catalogInstalledElsewhere,
-  browsing,
-  catalogState,
-  leaderboard,
-  searchState,
-  searchResult,
-  submittedQuery,
-  leaderboardView,
-  pluginsState,
-  pluginsView,
-  currentServerAvailable,
-  refreshing,
-  preparingMutation,
-  onOpenSettings,
-  onRetryPlugins,
-  onRefreshSkills,
-  onInspectSkill,
-  onImport,
-  onBinding,
-  onUninstall,
-  onForget,
-  onAdopt,
-  onUpdate,
-  onInstallPlugin,
-  onChangeQuery,
-  onSubmitSearch,
-  onClearSearch,
-  onSelectLeaderboard,
-  onRetryCatalog,
-  onRetrySearch,
-  onInspectPlugin,
-}: {
-  section: SkillsSurfaceSection;
-  selectedAgent: ManagedSkillAgent;
-  query: string;
-  inventoryState: SkillsRequestState<SkillsInventory>;
-  installedSkills: InstalledSkill[];
-  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
-  catalogInstalledElsewhere: Record<string, readonly string[]>;
-  browsing: boolean;
-  catalogState: SkillsRequestState<SkillsLeaderboards>;
-  leaderboard?: SkillsLeaderboard;
-  searchState: SkillsRequestState<SkillsCatalogResult>;
-  searchResult?: SkillsCatalogResult;
-  submittedQuery: string;
-  leaderboardView: SkillsLeaderboardView;
-  pluginsState: SkillsRequestState<PluginInventory>;
-  pluginsView: PluginsUnifiedView;
-  currentServerAvailable: boolean;
-  refreshing: boolean;
-  preparingMutation: string;
-  onOpenSettings(): void;
-  onRetryPlugins(): void;
-  onRefreshSkills(): void;
-  onInspectSkill(name: string, path?: string): void;
-  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
-  onBinding(
-    skill: InstalledSkill,
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(skill: InstalledSkill): void;
-  onForget(skill: InstalledSkill): void;
-  onAdopt(skill: InstalledSkill): void;
-  onUpdate(skill: InstalledSkill): void;
-  onInstallPlugin(entry: AvailablePlugin): void;
-  onChangeQuery(value: string): void;
-  onSubmitSearch(): void;
-  onClearSearch(): void;
-  onSelectLeaderboard(view: SkillsLeaderboardView): void;
-  onRetryCatalog(): void;
-  onRetrySearch(): void;
-  onInspectPlugin(plugin: InstalledPluginRow | AvailablePlugin): void;
-}) {
-  if (section === "plugins") {
-    return (
-      <PluginsList
-        query={query}
-        state={pluginsState}
-        view={pluginsView}
-        currentServerAvailable={currentServerAvailable}
-        refreshing={refreshing}
-        preparingMutation={preparingMutation}
-        onOpenSettings={onOpenSettings}
-        onRetry={onRetryPlugins}
-        onInstall={onInstallPlugin}
-        onInspectInstalled={(plugin) => onInspectPlugin(plugin)}
-        onInspectAvailable={(plugin) => onInspectPlugin(plugin)}
-      />
-    );
-  }
-  return (
-    <SkillsList
-      selectedAgent={selectedAgent}
-      query={query}
-      state={inventoryState}
-      skills={installedSkills}
-      catalogSkills={catalogSkills}
-      catalogInstalledElsewhere={catalogInstalledElsewhere}
-      leaderboardView={leaderboardView}
-      browsing={browsing}
-      submittedQuery={submittedQuery}
-      leaderboard={leaderboard}
-      catalogState={catalogState}
-      searchState={searchState}
-      searchResult={searchResult}
-      currentServerAvailable={currentServerAvailable}
-      refreshing={refreshing}
-      preparingMutation={preparingMutation}
-      onOpenSettings={onOpenSettings}
-      onRefresh={onRefreshSkills}
-      onInspect={onInspectSkill}
-      onImport={onImport}
-      onBinding={onBinding}
-      onUninstall={onUninstall}
-      onForget={onForget}
-      onAdopt={onAdopt}
-      onUpdate={onUpdate}
-      onRetryCatalog={onRetryCatalog}
-      onRetrySearch={onRetrySearch}
-    />
-  );
-}
-
-function SurfaceTabs({
-  section,
-  onSelect,
-}: {
-  section: SkillsSurfaceSection;
-  onSelect(section: SkillsSurfaceSection): void;
-}) {
-  const colors = useAppColors();
-  const tabs: Array<{
-    section: SkillsSurfaceSection;
-    label: string;
-    icon: "extension-puzzle-outline" | "library-outline";
-  }> = [
-    { section: "skills", label: "Skills", icon: "library-outline" },
-    {
-      section: "plugins",
-      label: "Plugins",
-      icon: "extension-puzzle-outline",
-    },
-  ];
-  return (
-    <View
-      accessibilityRole="tablist"
-      accessibilityLabel="Plugins and Skills"
-      style={[styles.surfaceTabs, { borderBottomColor: colors.borderSubtle }]}
-    >
-      {tabs.map((tab) => {
-        const selected = tab.section === section;
-        return (
+      <View style={[styles.tabs, { borderBottomColor: colors.borderSubtle }]}>
+        {(["skills", "plugins"] as const).map((item) => (
           <Pressable
-            key={tab.section}
+            key={item}
             accessibilityRole="tab"
-            accessibilityLabel={tab.label}
-            accessibilityState={{ selected }}
-            onPress={() => onSelect(tab.section)}
-            style={({ pressed }) => [
-              styles.surfaceTab,
-              pressed ? { backgroundColor: colors.surfacePressed } : null,
+            accessibilityState={{ selected: props.section === item }}
+            onPress={() => props.onSelectSection(item)}
+            style={[
+              styles.tab,
+              props.section === item && { borderBottomColor: colors.accent },
             ]}
           >
             <Ionicons
-              accessible={false}
-              name={tab.icon}
+              name={
+                item === "skills"
+                  ? "library-outline"
+                  : "extension-puzzle-outline"
+              }
               size={18}
-              color={selected ? colors.accent : colors.textTertiary}
+              color={
+                props.section === item ? colors.accent : colors.textTertiary
+              }
             />
             <Text
-              numberOfLines={1}
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[
-                styles.surfaceTabLabel,
-                {
-                  color: selected ? colors.textPrimary : colors.textTertiary,
-                  fontFamily: selected
-                    ? Typography.uiFontMedium
-                    : Typography.uiFont,
-                },
-              ]}
+              style={{
+                color:
+                  props.section === item
+                    ? colors.textPrimary
+                    : colors.textTertiary,
+              }}
             >
-              {tab.label}
+              {item === "skills" ? "Skills" : "Plugins"}
             </Text>
-            {selected ? (
-              <View
-                style={[
-                  styles.selectedTabLine,
-                  { backgroundColor: colors.accent },
-                ]}
-              />
-            ) : null}
           </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-function SkillTargetSelector({
-  selectedAgent,
-  agentCounts,
-  scanning,
-  onSelectAgent,
-  onScan,
-}: {
-  selectedAgent: ManagedSkillAgent;
-  agentCounts: SkillsAgentCounts;
-  scanning: boolean;
-  onSelectAgent(agent: ManagedSkillAgent): void;
-  onScan(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <View style={styles.targetRow}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.targetList}
-        accessibilityRole="tablist"
-        accessibilityLabel="Skill target"
-      >
-        {compactSkillTargets(agentCounts).map((target) => {
-          const selected = target.agent === selectedAgent;
-          return (
-            <Pressable
-              key={target.agent}
-              accessibilityRole="tab"
-              accessibilityLabel={`${target.label}, ${target.count} installed`}
-              accessibilityState={{ selected }}
-              onPress={() => onSelectAgent(target.agent)}
-              style={[
-                styles.targetOption,
-                {
-                  backgroundColor: selected
-                    ? colors.accentSoft
-                    : colors.surfaceSubtle,
-                  borderColor: selected ? colors.accent : colors.borderSubtle,
-                },
-              ]}
-            >
-              <Text
-                numberOfLines={1}
-                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+        ))}
+      </View>
+      {props.mutationNotice ? (
+        <Pressable
+          onPress={props.onDismissNotice}
+          style={[
+            styles.notice,
+            {
+              backgroundColor:
+                props.mutationNotice.kind === "error"
+                  ? colors.dangerSoft
+                  : colors.accentSoft,
+            },
+          ]}
+        >
+          <Text
+            style={{
+              color:
+                props.mutationNotice.kind === "error"
+                  ? colors.dangerText
+                  : colors.textPrimary,
+            }}
+          >
+            {props.mutationNotice.message}
+          </Text>
+        </Pressable>
+      ) : null}
+      {props.section === "skills" ? (
+        <View style={styles.flex}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.agents}
+          >
+            {MANAGED_SKILL_AGENTS.map((agent) => (
+              <Pressable
+                key={agent}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: props.selectedAgent === agent }}
+                onPress={() => props.onSelectAgent(agent)}
                 style={[
-                  styles.targetOptionText,
-                  { color: selected ? colors.accent : colors.textSecondary },
+                  styles.pill,
+                  {
+                    borderColor:
+                      props.selectedAgent === agent
+                        ? colors.accent
+                        : colors.borderSubtle,
+                    backgroundColor:
+                      props.selectedAgent === agent
+                        ? colors.accentSoft
+                        : colors.surfaceSubtle,
+                  },
                 ]}
               >
-                {target.label} {target.count}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-      <View
-        style={[styles.targetDivider, { backgroundColor: colors.borderSubtle }]}
-      />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Scan existing Skills"
-        accessibilityState={{ busy: scanning }}
-        disabled={scanning}
-        onPress={onScan}
-        style={({ pressed }) => [
-          styles.scanButton,
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
-        ]}
-      >
-        {scanning ? (
-          <ActivityIndicator size="small" color={colors.accent} />
-        ) : (
-          <Ionicons
-            name="scan-outline"
-            size={17}
-            color={colors.textSecondary}
-          />
-        )}
-        <Text style={[styles.scanButtonText, { color: colors.textSecondary }]}>
-          Scan
-        </Text>
-      </Pressable>
-    </View>
-  );
-}
-
-function LeaderboardSelector({
-  value,
-  onChange,
-}: {
-  value: SkillsLeaderboardView;
-  onChange(view: SkillsLeaderboardView): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <View
-      accessibilityRole="tablist"
-      accessibilityLabel="Catalog ranking"
-      style={styles.rankingSelector}
-    >
-      {(["all-time", "trending", "hot"] as const).map((view) => {
-        const selected = value === view;
-        return (
-          <Pressable
-            key={view}
-            accessibilityRole="tab"
-            accessibilityState={{ selected }}
-            onPress={() => onChange(view)}
-            style={[
-              styles.rankingOption,
-              selected ? { backgroundColor: colors.surfaceSubtle } : null,
-            ]}
-          >
-            <Text
-              numberOfLines={1}
+                <Text
+                  style={{
+                    color:
+                      props.selectedAgent === agent
+                        ? colors.accent
+                        : colors.textSecondary,
+                  }}
+                >
+                  {skillAgentLabel(agent)} {props.agentCounts[agent]}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <View style={styles.filters}>
+            <View
               style={[
-                styles.rankingOptionText,
-                { color: selected ? colors.textPrimary : colors.textTertiary },
+                styles.search,
+                {
+                  borderColor: colors.borderSubtle,
+                  backgroundColor: colors.surfaceSubtle,
+                },
               ]}
             >
-              {skillsLeaderboardLabel(view)}
-            </Text>
-          </Pressable>
-        );
-      })}
+              <Ionicons
+                name="search-outline"
+                size={18}
+                color={colors.textTertiary}
+              />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search local Skills"
+                placeholderTextColor={colors.textTertiary}
+                style={[styles.input, { color: colors.textPrimary }]}
+              />
+              {query ? (
+                <Pressable
+                  accessibilityLabel="Clear search"
+                  onPress={() => setQuery("")}
+                >
+                  <Ionicons
+                    name="close-circle"
+                    size={18}
+                    color={colors.textTertiary}
+                  />
+                </Pressable>
+              ) : null}
+            </View>
+            <Filter
+              value={status}
+              values={["all", "enabled", "disabled"]}
+              onChange={(value) => setStatus(value as SkillStatusFilter)}
+            />
+            <Filter
+              value={scope}
+              values={["all", "global", "project"]}
+              onChange={(value) => setScope(value as SkillScopeFilter)}
+            />
+            {(inventory?.migration.external ?? 0) > 0 &&
+            props.mutationOperations.includes("migrate") ? (
+              <Action label="Track local Skills" onPress={props.onMigrate} />
+            ) : null}
+          </View>
+          <LocalSkillsList
+            {...props}
+            rows={visible}
+            inventory={inventory}
+            refreshing={refreshing}
+          />
+        </View>
+      ) : (
+        <PluginsList {...props} />
+      )}
+    </SafeAreaView>
+  );
+
+  return (
+    <View style={[styles.root, { backgroundColor: colors.bgPrimary }]}>
+      <View style={styles.flex}>{main}</View>
+      {wide && props.inspectedName ? (
+        <View style={[styles.panel, { borderLeftColor: colors.borderSubtle }]}>
+          <Inspector {...props} detail={detail} />
+        </View>
+      ) : null}
+      {!wide ? (
+        <BottomSheetFrame
+          visible={Boolean(props.inspectedName)}
+          maxHeight="92%"
+          dragToDismiss
+          onClose={props.onDismissInspector}
+        >
+          <View style={styles.sheet}>
+            <Inspector {...props} detail={detail} />
+          </View>
+        </BottomSheetFrame>
+      ) : null}
     </View>
   );
 }
 
-function SurfaceSearch({
+function Filter({
   value,
-  remote,
-  loading,
-  placeholder,
+  values,
   onChange,
-  onSubmit,
-  onClear,
 }: {
   value: string;
-  remote: boolean;
-  loading: boolean;
-  placeholder: string;
+  values: string[];
   onChange(value: string): void;
-  onSubmit?(): void;
-  onClear(): void;
-}) {
-  const colors = useAppColors();
-  const trailing = loading ? (
-    <ActivityIndicator size="small" color={colors.accent} />
-  ) : value ? (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Clear search"
-      onPress={onClear}
-      style={styles.searchClearButton}
-    >
-      <Ionicons
-        accessible={false}
-        name="close-circle"
-        size={20}
-        color={colors.textTertiary}
-      />
-    </Pressable>
-  ) : null;
-  return (
-    <MobileSingleLineInput
-      value={value}
-      onChangeText={onChange}
-      placeholder={placeholder}
-      placeholderTextColor={colors.textTertiary}
-      accessibilityLabel={placeholder}
-      accessibilityHint={remote ? "Type a query, then press Search" : undefined}
-      autoCapitalize="none"
-      autoCorrect={false}
-      returnKeyType="search"
-      onSubmitEditing={onSubmit}
-      leading={
-        <Ionicons
-          accessible={false}
-          name="search"
-          size={18}
-          color={colors.textTertiary}
-        />
-      }
-      trailing={trailing}
-      containerStyle={[
-        styles.searchBox,
-        {
-          backgroundColor: colors.inputBackground,
-          borderColor: colors.borderSubtle,
-        },
-      ]}
-      inputStyle={{ color: colors.textPrimary }}
-    />
-  );
-}
-
-function MutationNoticeBanner({
-  notice,
-  onDismiss,
-}: {
-  notice: SurfaceMutationNotice;
-  onDismiss(): void;
 }) {
   const colors = useAppColors();
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${notice.kind === "success" ? "Success" : "Failed"}: ${notice.message}`}
-      onPress={onDismiss}
-      style={[
-        styles.noticeBanner,
-        {
-          backgroundColor:
-            notice.kind === "success" ? colors.successSoft : colors.dangerSoft,
-          borderColor:
-            notice.kind === "success" ? colors.success : colors.dangerText,
-        },
-      ]}
-    >
-      <Ionicons
-        accessible={false}
-        name={notice.kind === "success" ? "checkmark-circle" : "alert-circle"}
-        size={19}
-        color={notice.kind === "success" ? colors.success : colors.dangerText}
-      />
-      <Text
-        numberOfLines={3}
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[
-          styles.noticeText,
-          {
-            color:
-              notice.kind === "success"
-                ? colors.textPrimary
-                : colors.dangerText,
-          },
-        ]}
-      >
-        {notice.message}
-      </Text>
-      <Ionicons
-        accessible={false}
-        name="close"
-        size={18}
-        color={colors.textTertiary}
-      />
-    </Pressable>
-  );
-}
-
-function PluginsList({
-  query,
-  state,
-  view,
-  currentServerAvailable,
-  refreshing,
-  preparingMutation,
-  onOpenSettings,
-  onRetry,
-  onInstall,
-  onInspectInstalled,
-  onInspectAvailable,
-}: {
-  query: string;
-  state: SkillsRequestState<PluginInventory>;
-  view: PluginsUnifiedView;
-  currentServerAvailable: boolean;
-  refreshing: boolean;
-  preparingMutation: string;
-  onOpenSettings(): void;
-  onRetry(): void;
-  onInstall(plugin: AvailablePlugin): void;
-  onInspectInstalled(plugin: InstalledPluginRow): void;
-  onInspectAvailable(plugin: AvailablePlugin): void;
-}) {
-  const colors = useAppColors();
-  const hasData = skillsRequestData(state) !== undefined;
-  const visibleInstalled = useMemo(
-    () =>
-      view.rows
-        .filter((row) => row.kind === "installed")
-        .map((row) => (row.kind === "installed" ? row.plugin : null))
-        .filter((plugin): plugin is InstalledPluginRow => plugin != null),
-    [view],
-  );
-  const visibleAvailable = useMemo(
-    () =>
-      view.rows
-        .filter((row) => row.kind === "available")
-        .map((row) => (row.kind === "available" ? row.plugin : null))
-        .filter((plugin): plugin is AvailablePlugin => plugin != null),
-    [view],
-  );
-  const filteredInstalled = useMemo(
-    () => filterInstalledPlugins(visibleInstalled, query),
-    [query, visibleInstalled],
-  );
-  const filteredAvailable = useMemo(
-    () => filterAvailablePlugins(visibleAvailable, query),
-    [query, visibleAvailable],
-  );
-  const data: Array<
-    | { kind: "installed"; plugin: InstalledPluginRow }
-    | { kind: "available"; plugin: AvailablePlugin }
-  > = [
-    ...filteredInstalled.map((plugin) => ({
-      kind: "installed" as const,
-      plugin,
-    })),
-    ...filteredAvailable.map((plugin) => ({
-      kind: "available" as const,
-      plugin,
-    })),
-  ];
-
-  return (
-    <FlatList
-      style={styles.list}
-      data={data}
-      keyExtractor={(row) =>
-        row.kind === "installed" ? row.plugin.id : row.plugin.pluginId
-      }
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(refreshing, onRetry, colors.accent)}
-      ItemSeparatorComponent={() => <Separator />}
-      ListHeaderComponent={
-        <ListStateHeader
-          loading={state.status === "loading" && !hasData}
-          loadingTitle="Loading plugins…"
-          error={state.status === "error" ? state.error : undefined}
-          errorTitle="Plugins unavailable"
-          empty={hasData && view.rows.length === 0 && view.catalogReady}
-          emptyTitle="No plugins found"
-          noMatches={
-            hasData &&
-            view.rows.length > 0 &&
-            filteredInstalled.length + filteredAvailable.length === 0
-          }
-          capabilityUnavailable={
-            hasData && !view.catalogReady && view.rows.length > 0
-          }
-          capabilityTitle={
-            view.rows.length === 0
-              ? "Plugin catalog unavailable"
-              : "Catalog unavailable — installed rows only"
-          }
-          catalogUnavailable={
-            hasData && !view.catalogReady && view.rows.length === 0
-          }
-          currentServerAvailable={currentServerAvailable}
-          onOpenSettings={onOpenSettings}
-          onRetry={onRetry}
-        />
-      }
-      renderItem={({ item }) =>
-        item.kind === "installed" ? (
-          <InstalledPluginItem
-            plugin={item.plugin}
-            onInspect={() => onInspectInstalled(item.plugin)}
-          />
-        ) : (
-          <AvailablePluginItem
-            plugin={item.plugin}
-            busy={
-              preparingMutation === `plugin:install:${item.plugin.pluginId}`
-            }
-            onInstall={() => onInstall(item.plugin)}
-            onInspect={() => onInspectAvailable(item.plugin)}
-          />
-        )
-      }
-    />
-  );
-}
-
-function InstalledPluginItem({
-  plugin,
-  onInspect,
-}: {
-  plugin: InstalledPluginRow;
-  onInspect(): void;
-}) {
-  const colors = useAppColors();
-  const ownership = installedPluginOwnership(plugin);
-  const badges = installedPluginBadges(plugin);
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${plugin.name}, ${installedPluginMetadata(plugin)}`}
-      accessibilityHint={
-        ownership.manageable ? "Open plugin actions" : "Show plugin ownership"
-      }
-      onPress={onInspect}
-      style={({ pressed }) => [
-        styles.itemRow,
-        pressed ? { backgroundColor: colors.surfacePressed } : null,
-      ]}
-    >
-      <View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
-      >
-        <AgentKindIcon
-          kind={pluginHostKind(plugin.host)}
-          size={22}
-          variant="compact"
-        />
-      </View>
-      <View style={styles.itemCopy}>
-        <Text
-          numberOfLines={2}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.itemName, { color: colors.textPrimary }]}
-        >
-          {plugin.name}
-        </Text>
-        <Text
-          numberOfLines={2}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.itemMetadata, { color: colors.textTertiary }]}
-        >
-          {installedPluginMetadata(plugin)}
-        </Text>
-        <BadgeRow badges={badges} />
-      </View>
-      <ItemActionIndicator
-        icon={
-          ownership.manageable
-            ? "ellipsis-horizontal"
-            : "information-circle-outline"
-        }
-      />
-    </Pressable>
-  );
-}
-
-function AvailablePluginItem({
-  plugin,
-  busy,
-  onInstall,
-  onInspect,
-}: {
-  plugin: AvailablePlugin;
-  busy: boolean;
-  onInstall(): void;
-  onInspect(): void;
-}) {
-  const colors = useAppColors();
-  const badges = availablePluginBadges(plugin);
-  return (
-    <View style={styles.itemRow}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${plugin.name}, available plugin`}
-        accessibilityHint="Show plugin details"
-        onPress={onInspect}
-        style={({ pressed }) => [
-          styles.itemMain,
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
-        ]}
-      >
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
-        >
-          <Ionicons
-            name="extension-puzzle-outline"
-            size={20}
-            color={colors.textSecondary}
-          />
-        </View>
-        <View style={styles.itemCopy}>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemName, { color: colors.textPrimary }]}
-          >
-            {plugin.name}
-          </Text>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemMetadata, { color: colors.textTertiary }]}
-          >
-            {plugin.description ||
-              [`@${plugin.marketplaceName}`, plugin.sourceRef]
-                .filter(Boolean)
-                .join(" · ")}
-          </Text>
-          <BadgeRow badges={badges} />
-        </View>
-      </Pressable>
-      {plugin.installable ? (
-        <SmallAction
-          label="Install"
-          accessibilityLabel={`Install ${plugin.name}`}
-          busy={busy}
-          onPress={onInstall}
-        />
-      ) : (
-        <InstalledCheck />
-      )}
-    </View>
-  );
-}
-
-function SkillsList({
-  selectedAgent,
-  query,
-  state,
-  skills,
-  catalogSkills,
-  catalogInstalledElsewhere,
-  leaderboardView,
-  browsing,
-  submittedQuery,
-  leaderboard,
-  catalogState,
-  searchState,
-  searchResult,
-  currentServerAvailable,
-  refreshing,
-  preparingMutation,
-  onOpenSettings,
-  onRefresh,
-  onInspect,
-  onImport,
-  onBinding,
-  onUninstall,
-  onForget,
-  onAdopt,
-  onUpdate,
-  onRetryCatalog,
-  onRetrySearch,
-}: {
-  selectedAgent: ManagedSkillAgent;
-  query: string;
-  state: SkillsRequestState<SkillsInventory>;
-  skills: InstalledSkill[];
-  catalogSkills: Array<CatalogSkill | RankedCatalogSkill>;
-  catalogInstalledElsewhere: Record<string, readonly string[]>;
-  leaderboardView: SkillsLeaderboardView;
-  browsing: boolean;
-  submittedQuery: string;
-  leaderboard?: SkillsLeaderboard;
-  catalogState: SkillsRequestState<SkillsLeaderboards>;
-  searchState: SkillsRequestState<SkillsCatalogResult>;
-  searchResult?: SkillsCatalogResult;
-  currentServerAvailable: boolean;
-  refreshing: boolean;
-  preparingMutation: string;
-  onOpenSettings(): void;
-  onRefresh(): void;
-  onInspect(name: string): void;
-  onImport(skill: CatalogSkill | RankedCatalogSkill): void;
-  onBinding(
-    skill: InstalledSkill,
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(skill: InstalledSkill): void;
-  onForget(skill: InstalledSkill): void;
-  onAdopt(skill: InstalledSkill): void;
-  onUpdate(skill: InstalledSkill): void;
-  onRetryCatalog(): void;
-  onRetrySearch(): void;
-}) {
-  const colors = useAppColors();
-  const hasInventory = skillsRequestData(state) !== undefined;
-  const visibleSkills = useMemo(
-    () => filterInstalledSkills(skills, query),
-    [query, skills],
-  );
-  const visibleCatalog = useMemo(
-    () => filterCatalogSkills(catalogSkills, query),
-    [query, catalogSkills],
-  );
-  const rows = useMemo(
-    () => skillsUnifiedRows(visibleSkills, visibleCatalog),
-    [visibleCatalog, visibleSkills],
-  );
-  const inventoryWarnings = [
-    ...(skillsRequestData(state)?.warnings ?? []),
-    ...(state.status === "error" && hasInventory
-      ? [
-          "Installed Skills could not be refreshed. Showing the last usable inventory.",
-        ]
-      : []),
-  ];
-  return (
-    <FlatList
-      style={styles.list}
-      data={rows}
-      keyExtractor={rowKey}
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.listContent}
-      refreshControl={surfaceRefreshControl(
-        refreshing,
-        onRefresh,
-        colors.accent,
-      )}
-      ItemSeparatorComponent={() => <Separator />}
-      ListHeaderComponent={
-        <>
-          <ListStateHeader
-            loading={state.status === "loading" && !hasInventory}
-            loadingTitle="Loading installed Skills…"
-            error={
-              state.status === "error" && !hasInventory
-                ? state.error
-                : undefined
-            }
-            errorTitle="Installed Skills unavailable"
-            empty={hasInventory && skills.length === 0 && !browsing}
-            emptyTitle={`No Skills for ${skillAgentLabel(selectedAgent)}`}
-            noMatches={
-              hasInventory &&
-              skills.length + catalogSkills.length > 0 &&
-              visibleSkills.length + visibleCatalog.length === 0
-            }
-            currentServerAvailable={currentServerAvailable}
-            onOpenSettings={onOpenSettings}
-            onRetry={onRefresh}
-          />
-          <InventoryWarnings warnings={inventoryWarnings} />
-        </>
-      }
-      ListFooterComponent={
-        <CatalogBrowseNote
-          browsing={browsing}
-          submittedQuery={submittedQuery}
-          leaderboard={leaderboard}
-          catalogState={catalogState}
-          searchState={searchState}
-          searchResult={searchResult}
-          showsInstalled={hasInventory && skills.length > 0}
-          currentServerAvailable={currentServerAvailable}
-          onOpenSettings={onOpenSettings}
-          onRetryCatalog={onRetryCatalog}
-          onRetrySearch={onRetrySearch}
-        />
-      }
-      renderItem={({ item }) =>
-        item.kind === "installed" ? (
-          <InstalledSkillRow
-            skill={item.skill}
-            selectedAgent={selectedAgent}
-            preparingMutation={preparingMutation}
-            onInspect={() => onInspect(item.skill.name)}
-            onBinding={onBinding}
-            onUninstall={onUninstall}
-            onForget={onForget}
-            onAdopt={onAdopt}
-            onUpdate={onUpdate}
-          />
-        ) : (
-          <CatalogSkillRow
-            skill={item.skill}
-            leaderboardView={leaderboardView}
-            installedElsewhere={catalogInstalledElsewhere[item.catalogId] ?? []}
-            selectedAgent={selectedAgent}
-            busy={preparingMutation === `install:${item.catalogId}`}
-            onImport={() => onImport(item.skill)}
-          />
-        )
-      }
-    />
-  );
-}
-
-/** One installed/discovered row: lifecycle state is row facets, not chrome. */
-function InstalledSkillRow({
-  skill,
-  selectedAgent,
-  preparingMutation,
-  onInspect,
-  onBinding,
-  onUninstall,
-  onForget,
-  onAdopt,
-  onUpdate,
-}: {
-  skill: InstalledSkill;
-  selectedAgent: ManagedSkillAgent;
-  preparingMutation: string;
-  onInspect(): void;
-  onBinding(
-    skill: InstalledSkill,
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(skill: InstalledSkill): void;
-  onForget(skill: InstalledSkill): void;
-  onAdopt(skill: InstalledSkill): void;
-  onUpdate(skill: InstalledSkill): void;
-}) {
-  const colors = useAppColors();
-  const ownership = installedSkillOwnership(skill, selectedAgent);
-  const badges = installedSkillBadges(skill, skill.agents.length);
-  const capabilities = skill.capability.canManage
-    ? skill.capability.operations
-    : [];
-  const binding = skill.bindings.find(
-    (candidate) => candidate.agent === selectedAgent,
-  );
-  const quickAction = skillQuickAction(
-    skill,
-    capabilities,
-    binding,
-    onUpdate,
-    onUninstall,
-    onForget,
-    onAdopt,
-  );
-  return (
-    <View style={styles.itemRow}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${skill.name}, ${installedSkillMetadata(skill)}`}
-        accessibilityHint="Open the Skill inspector"
-        onPress={onInspect}
-        style={({ pressed }) => [
-          styles.itemMain,
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
-        ]}
-      >
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
-        >
-          <Ionicons
-            name="library-outline"
-            size={21}
-            color={colors.textSecondary}
-          />
-        </View>
-        <View style={styles.itemCopy}>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemName, { color: colors.textPrimary }]}
-          >
-            {skill.name}
-          </Text>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemMetadata, { color: colors.textTertiary }]}
-          >
-            {installedSkillMetadata(skill)}
-          </Text>
-          <BadgeRow badges={badges} />
-        </View>
-      </Pressable>
-      {quickAction ? (
-        <SmallAction
-          label={quickAction.label}
-          accessibilityLabel={`${quickAction.label} ${skill.name}`}
-          destructive={quickAction.destructive}
-          busy={preparingMutation === quickAction.busyKey}
-          onPress={() => quickAction.run()}
-        />
-      ) : (
-        <ItemIconAction
-          label={`About ${skill.name}`}
-          icon="information-circle-outline"
-          onPress={onInspect}
-        />
-      )}
-    </View>
-  );
-}
-
-function InventoryWarnings({ warnings }: { warnings: readonly string[] }) {
-  const colors = useAppColors();
-  if (warnings.length === 0) return null;
-  return (
-    <View
-      accessibilityRole="alert"
-      style={[
-        styles.inventoryWarning,
-        {
-          backgroundColor: colors.warningSoft,
-          borderColor: colors.statusBlocked,
-        },
-      ]}
-    >
-      <Ionicons name="warning-outline" size={18} color={colors.statusBlocked} />
-      <View style={styles.inventoryWarningCopy}>
-        <Text
-          style={[styles.inventoryWarningTitle, { color: colors.textPrimary }]}
-        >
-          Inventory warning
-        </Text>
-        {warnings.slice(0, 3).map((warning, index) => (
-          <Text
-            key={`${index}:${warning}`}
-            style={[
-              styles.inventoryWarningDetail,
-              { color: colors.textSecondary },
-            ]}
-          >
-            {warning}
-          </Text>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-function skillQuickAction(
-  skill: InstalledSkill,
-  capabilities: readonly SkillMutationOperation[],
-  binding: SkillBinding | undefined,
-  onUpdate: (skill: InstalledSkill) => void,
-  onUninstall: (skill: InstalledSkill) => void,
-  onForget: (skill: InstalledSkill) => void,
-  onAdopt: (skill: InstalledSkill) => void,
-): {
-  label: string;
-  destructive?: boolean;
-  busyKey: string;
-  run(): void;
-} | null {
-  if (skill.owned) {
-    if (capabilities.includes("update")) {
-      return {
-        label: "Update",
-        busyKey: `update:${skill.id}`,
-        run: () => onUpdate(skill),
-      };
-    }
-    if (capabilities.includes("uninstall")) {
-      return {
-        label: "Uninstall",
-        destructive: true,
-        busyKey: `uninstall:${skill.id}`,
-        run: () => onUninstall(skill),
-      };
-    }
-    return null;
-  }
-  if (skill.tracked) {
-    if (capabilities.includes("forget")) {
-      return {
-        label: "Forget",
-        busyKey: `forget:${skill.id}`,
-        run: () => onForget(skill),
-      };
-    }
-    return null;
-  }
-  if (capabilities.includes("adopt")) {
-    return {
-      label: "Adopt",
-      busyKey: `adopt:${skill.id}`,
-      run: () => onAdopt(skill),
-    };
-  }
-  return null;
-}
-
-function CatalogSkillRow({
-  skill,
-  leaderboardView,
-  installedElsewhere,
-  selectedAgent,
-  busy,
-  onImport,
-}: {
-  skill: CatalogSkill | RankedCatalogSkill;
-  leaderboardView: SkillsLeaderboardView;
-  installedElsewhere: readonly string[];
-  selectedAgent: ManagedSkillAgent;
-  busy: boolean;
-  onImport(): void;
-}) {
-  const colors = useAppColors();
-  const ranked = isRankedCatalogSkill(skill);
-  const metadata = ranked
-    ? `${skill.source} · ${rankedMetric(skill, leaderboardView)}`
-    : `${skill.source} · ${formatInstalls(skill.installs)} installs`;
-  const badges = catalogSkillBadges(skill, [...installedElsewhere]);
-  return (
-    <View style={styles.itemRow}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${skill.name}, ${metadata}`}
-        accessibilityHint="Import this Skill from its pinned source"
-        onPress={() =>
-          Alert.alert(
-            skill.name,
-            `${skill.source}\n\nImporting pins this Skill at its recorded ref and binds it for ${skillAgentLabel(selectedAgent)}.`,
-          )
-        }
-        style={({ pressed }) => [
-          styles.itemMain,
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
-        ]}
-      >
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={[styles.itemIcon, { backgroundColor: colors.surfaceSubtle }]}
-        >
-          <Ionicons
-            name="library-outline"
-            size={21}
-            color={colors.textSecondary}
-          />
-        </View>
-        <View style={styles.itemCopy}>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemName, { color: colors.textPrimary }]}
-          >
-            {skill.name}
-          </Text>
-          <Text
-            numberOfLines={2}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.itemMetadata, { color: colors.textTertiary }]}
-          >
-            {metadata}
-          </Text>
-          <BadgeRow badges={badges} />
-        </View>
-      </Pressable>
-      {skill.installable ? (
-        <SmallAction
-          label="Import"
-          accessibilityLabel={`Import ${skill.name} for ${skillAgentLabel(selectedAgent)}`}
-          busy={busy}
-          onPress={onImport}
-        />
-      ) : (
-        <ItemIconAction
-          label={`Why ${skill.name} is unavailable`}
-          icon="information-circle-outline"
-          onPress={() =>
-            Alert.alert(
-              skill.name,
-              "This catalog entry does not expose an installable identity.",
-            )
-          }
-        />
-      )}
-    </View>
-  );
-}
-
-function CatalogBrowseNote({
-  browsing,
-  submittedQuery,
-  leaderboard,
-  catalogState,
-  searchState,
-  searchResult,
-  showsInstalled,
-  currentServerAvailable,
-  onOpenSettings,
-  onRetryCatalog,
-  onRetrySearch,
-}: {
-  browsing: boolean;
-  submittedQuery: string;
-  leaderboard?: SkillsLeaderboard;
-  catalogState: SkillsRequestState<SkillsLeaderboards>;
-  searchState: SkillsRequestState<SkillsCatalogResult>;
-  searchResult?: SkillsCatalogResult;
-  showsInstalled: boolean;
-  currentServerAvailable: boolean;
-  onOpenSettings(): void;
-  onRetryCatalog(): void;
-  onRetrySearch(): void;
-}) {
-  const colors = useAppColors();
-  if (!browsing) {
-    if (catalogState.status === "error") {
-      return (
-        <View
-          style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}
-        >
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
-          >
-            Catalog unavailable
-          </Text>
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
-          >
-            Discovery is temporarily unavailable. Installed Skills and search
-            remain available.
-          </Text>
-          <SmallAction label="Retry" onPress={onRetryCatalog} />
-        </View>
-      );
-    }
-    if (leaderboard?.warning) {
-      return (
-        <View
-          style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}
-        >
-          <Text style={[styles.browseNoteTitle, { color: colors.textPrimary }]}>
-            Catalog partially available
-          </Text>
-          <Text
-            style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
-          >
-            {leaderboard.warning}
-          </Text>
-          <SmallAction label="Retry" onPress={onRetryCatalog} />
-        </View>
-      );
-    }
-    if (leaderboard && leaderboard.skills.length === 0 && !showsInstalled) {
-      return (
-        <View
-          style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}
-        >
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
-          >
-            No catalog Skills
-          </Text>
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
-          >
-            Use Search above to discover Skills from skills.sh.
-          </Text>
-        </View>
-      );
-    }
-    return null;
-  }
-  if (searchState.status === "loading") {
-    return <LoadingNote title={`Searching for “${submittedQuery}”…`} />;
-  }
-  if (searchState.status === "error") {
-    return (
-      <View
-        style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}
-      >
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
-        >
-          Search unavailable
-        </Text>
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
-        >
-          {searchState.error}
-        </Text>
-        <SmallAction label="Retry" onPress={onRetrySearch} />
-      </View>
-    );
-  }
-  if (searchState.status === "empty") {
-    return (
-      <View
-        style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}
-      >
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
-        >
-          No results for “{submittedQuery}”
-        </Text>
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.browseNoteDetail, { color: colors.textTertiary }]}
-        >
-          {searchResult?.skills.length === 0
-            ? "Nothing on skills.sh matched this query."
-            : ""}
-        </Text>
-      </View>
-    );
-  }
-  return null;
-}
-
-function LoadingNote({ title }: { title: string }) {
-  const colors = useAppColors();
-  return (
-    <View style={[styles.browseNote, { borderTopColor: colors.borderSubtle }]}>
-      <ActivityIndicator size="small" color={colors.accent} />
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.browseNoteTitle, { color: colors.textPrimary }]}
-      >
-        {title}
-      </Text>
-    </View>
-  );
-}
-
-function BadgeRow({ badges }: { badges: LifecycleBadge[] }) {
-  const colors = useAppColors();
-  if (badges.length === 0) {
-    return null;
-  }
-  return (
-    <View style={styles.badgeRow}>
-      {badges.map((badge) => {
-        const toneColor =
-          badge.tone === "accent"
-            ? colors.accent
-            : badge.tone === "warning"
-              ? colors.warning
-              : colors.textTertiary;
-        return (
-          <View
-            key={badge.label}
-            style={[
-              styles.badgePill,
-              {
-                backgroundColor: colors.surfaceSubtle,
-                borderColor: colors.borderSubtle,
-              },
-            ]}
-          >
-            <Text
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[styles.badgeLabel, { color: toneColor }]}
-            >
-              {badge.label}
-            </Text>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-function SurfaceSheet({
-  sheet,
-  onClose,
-  onUpdatePlugin,
-  onUninstallPlugin,
-  onInstallPlugin,
-}: {
-  sheet: SurfaceSheet;
-  onClose(): void;
-  onUpdatePlugin(plugin: InstalledPluginRow): void;
-  onUninstallPlugin(plugin: InstalledPluginRow): void;
-  onInstallPlugin(plugin: AvailablePlugin): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <BottomSheetFrame
-      visible={sheet !== null}
-      maxHeight="82%"
-      dragToDismiss
-      onClose={onClose}
-    >
-      <ScrollView
-        contentContainerStyle={styles.sheetContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {sheet?.kind === "plugin-details" ? (
-          <PluginDetailSheet
-            plugin={sheet.plugin}
-            onUpdate={() => onUpdatePlugin(sheet.plugin)}
-            onUninstall={() => onUninstallPlugin(sheet.plugin)}
-          />
-        ) : null}
-        {sheet?.kind === "plugin-available" ? (
-          <AvailablePluginDetailSheet
-            plugin={sheet.plugin}
-            onInstall={() => onInstallPlugin(sheet.plugin)}
-          />
-        ) : null}
-      </ScrollView>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Close"
-        onPress={onClose}
-        style={({ pressed }) => [
-          styles.sheetClose,
-          { borderTopColor: useAppColors().borderSubtle },
-          pressed ? { backgroundColor: useAppColors().surfacePressed } : null,
-        ]}
-      >
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
+    <View style={[styles.segment, { borderColor: colors.borderSubtle }]}>
+      {values.map((item) => (
+        <Pressable
+          key={item}
+          onPress={() => onChange(item)}
           style={[
-            styles.sheetCloseText,
-            { color: useAppColors().textSecondary },
+            styles.segmentItem,
+            value === item && { backgroundColor: colors.accentSoft },
           ]}
         >
-          Close
-        </Text>
-      </Pressable>
-    </BottomSheetFrame>
-  );
-}
-
-function PluginDetailSheet({
-  plugin,
-  onUpdate,
-  onUninstall,
-}: {
-  plugin: InstalledPluginRow;
-  onUpdate(): void;
-  onUninstall(): void;
-}) {
-  const ownership = installedPluginOwnership(plugin);
-  const badges = installedPluginBadges(plugin);
-  return (
-    <>
-      <SheetTitle>{plugin.name}</SheetTitle>
-      <SheetMetadata>{installedPluginMetadata(plugin)}</SheetMetadata>
-      <BadgeRow badges={badges} />
-      <SheetSection title={ownership.summary}>
-        <SheetBody>{ownership.detail}</SheetBody>
-      </SheetSection>
-      {plugin.skills.length > 0 ? (
-        <SheetSkillList skills={plugin.skills.map((skill) => skill.name)} />
-      ) : null}
-      {ownership.manageable ? (
-        <View style={styles.sheetActions}>
-          <SheetAction
-            icon="arrow-up-circle-outline"
-            label="Update"
-            onPress={onUpdate}
-          />
-          <SheetAction
-            icon="trash-outline"
-            label="Uninstall"
-            destructive
-            onPress={onUninstall}
-          />
-        </View>
-      ) : null}
-    </>
-  );
-}
-
-function AvailablePluginDetailSheet({
-  plugin,
-  onInstall,
-}: {
-  plugin: AvailablePlugin;
-  onInstall(): void;
-}) {
-  const ownership = availablePluginOwnership(plugin);
-  return (
-    <>
-      <SheetTitle>{plugin.name}</SheetTitle>
-      <SheetMetadata>
-        {`@${plugin.marketplaceName}`}
-        {plugin.sourceRef ? ` · ${plugin.sourceRef}` : ""}
-      </SheetMetadata>
-      <SheetSection title={ownership.summary}>
-        <SheetBody>{ownership.detail}</SheetBody>
-      </SheetSection>
-      {plugin.installable ? (
-        <View style={styles.sheetActions}>
-          <SheetAction
-            icon="download-outline"
-            label="Install"
-            onPress={onInstall}
-          />
-        </View>
-      ) : null}
-    </>
-  );
-}
-
-/**
- * The Skill inspector body. Rendered inside a bottom sheet on mobile and as a
- * persistent right-side panel on desktop; content is identical either way.
- */
-function SkillInspectorBody({
-  detail,
-  inspectState,
-  retryPath,
-  installed,
-  selectedAgent,
-  capabilities,
-  hasProjectCwd,
-  preparingMutation,
-  onBinding,
-  onUninstall,
-  onForget,
-  onAdopt,
-  onUpdate,
-  onInspectFile,
-  onRetryInspect,
-}: {
-  detail: PackageDetail;
-  inspectState: SkillsRequestState<PackageDetail>;
-  retryPath?: string;
-  installed: InstalledSkill | null;
-  selectedAgent: ManagedSkillAgent;
-  capabilities: readonly SkillMutationOperation[];
-  hasProjectCwd: boolean;
-  preparingMutation: string;
-  onBinding(
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(): void;
-  onForget(): void;
-  onAdopt(): void;
-  onUpdate(): void;
-  onInspectFile(path: string): void;
-  onRetryInspect(): void;
-}) {
-  const colors = useAppColors();
-  const operationSupported = (operation: SkillMutationOperation) =>
-    capabilities.includes(operation) &&
-    (!installed ||
-      (installed.capability.canManage &&
-        installed.capability.operations.includes(operation)));
-  const boundTargets = new Set(
-    detail.bindings.map((binding) => `${binding.agent}:${binding.scope}`),
-  );
-  const showBody = Boolean(detail.skillMd?.trim());
-  return (
-    <>
-      <SheetTitle>{detail.skillName}</SheetTitle>
-      {inspectState.status === "error" ? (
-        <SheetSection
-          title={retryPath ? "File unavailable" : "Skill unavailable"}
-        >
-          <SheetBody>{inspectState.error}</SheetBody>
-          <View style={styles.sheetActions}>
-            <SheetAction
-              icon="refresh-outline"
-              label="Retry"
-              onPress={onRetryInspect}
-            />
-          </View>
-        </SheetSection>
-      ) : null}
-      {inspectState.status === "loading" ? (
-        <SheetSection title={retryPath ? "Loading file" : "Refreshing Skill"}>
-          <View style={styles.inspectLoadingRow}>
-            <ActivityIndicator size="small" color={colors.accent} />
-            <SheetBody>
-              {retryPath
-                ? `Loading ${retryPath}…`
-                : `Loading ${detail.skillName}…`}
-            </SheetBody>
-          </View>
-        </SheetSection>
-      ) : null}
-      <SheetMetadata>
-        {[
-          detail.source,
-          detail.ref ? `ref ${detail.ref}` : undefined,
-          detail.contentHash ? shortHash(detail.contentHash) : undefined,
-          scopeLabel(detail.scope),
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </SheetMetadata>
-      <BadgeRow
-        badges={[
-          detail.owned
-            ? {
-                label: detail.enabled
-                  ? "Zen-owned · Enabled"
-                  : "Zen-owned · Disabled",
-                tone: detail.enabled ? "accent" : "warning",
-              }
-            : {
-                label: detail.tracked ? "Tracked external" : "External",
-                tone: "warning",
-              },
-          { label: scopeLabel(detail.scope), tone: "neutral" },
-        ]}
-      />
-      {detail.description ? <SheetBody>{detail.description}</SheetBody> : null}
-
-      {(detail.warnings ?? []).length > 0 ? (
-        <SheetSection title="Warnings">
-          {detail.warnings!.map((warning) => (
-            <Text
-              key={warning}
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[styles.warningLine, { color: colors.warning }]}
-            >
-              ⚠ {warning}
-            </Text>
-          ))}
-        </SheetSection>
-      ) : null}
-
-      {(detail.risk ?? []).length > 0 ? (
-        <SheetSection title="Static risk signals">
-          {detail.risk!.map((signal, index) => (
-            <Text
-              key={`${signal.type}:${index}`}
-              maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-              style={[
-                styles.warningLine,
-                {
-                  color:
-                    signal.severity === "alert"
-                      ? colors.dangerText
-                      : signal.severity === "warn"
-                        ? colors.warning
-                        : colors.textSecondary,
-                },
-              ]}
-            >
-              {signal.severity === "alert" ? "▲" : "•"}{" "}
-              {signal.detail || signal.type}
-              {signal.file ? ` (${signal.file})` : ""}
-            </Text>
-          ))}
           <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.inspectNote, { color: colors.textTertiary }]}
-          >
-            Static signals only; they never prove safety.
-          </Text>
-        </SheetSection>
-      ) : null}
-
-      <SheetSection title="Provenance">
-        {[
-          ["Source", detail.source || "—"],
-          ["Source type", detail.sourceType || "—"],
-          ["Ref", detail.ref || "—"],
-          ["Content hash", detail.contentHash || "—"],
-          ["Installed", detail.installedAt || "—"],
-          ["Updated", detail.updatedAt || "—"],
-          ["Manager", detail.manager],
-        ].map(([label, value]) => (
-          <Text
-            key={label}
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.provenanceLine, { color: colors.textSecondary }]}
-          >
-            <Text style={{ color: colors.textTertiary }}>{label}: </Text>
-            {value}
-          </Text>
-        ))}
-      </SheetSection>
-
-      <SheetSection title="Files">
-        {detail.files && detail.files.length > 0 ? (
-          (detail.files.length > 64
-            ? detail.files.slice(0, 64)
-            : detail.files
-          ).map((file) => (
-            <Pressable
-              key={file.path}
-              accessibilityRole="button"
-              accessibilityLabel={`View ${file.path}`}
-              onPress={() => onInspectFile(file.path)}
-            >
-              <Text
-                numberOfLines={1}
-                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-                style={[styles.fileLine, { color: colors.accent }]}
-              >
-                {file.path} · {file.size} B
-              </Text>
-            </Pressable>
-          ))
-        ) : (
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.inspectNote, { color: colors.textTertiary }]}
-          >
-            No files listed.
-          </Text>
-        )}
-        {detail.files && detail.files.length > 64 ? (
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.inspectNote, { color: colors.textTertiary }]}
-          >
-            …{detail.files.length - 64} more files
-          </Text>
-        ) : null}
-      </SheetSection>
-
-      {detail.filePath ? (
-        <SheetSection title={detail.filePath}>
-          <Text
-            selectable
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.fileContent, { color: colors.textSecondary }]}
-          >
-            {detail.fileContent || "This file is empty."}
-          </Text>
-        </SheetSection>
-      ) : null}
-
-      <SheetSection title="Agent bindings">
-        {detail.bindings.length === 0 ? (
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.inspectNote, { color: colors.textTertiary }]}
-          >
-            No bindings yet.
-          </Text>
-        ) : null}
-        {detail.bindings.map((binding) => (
-          <View
-            key={`${binding.agent}:${binding.scope}`}
-            style={styles.bindingRow}
-          >
-            <View style={styles.bindingCopy}>
-              <Text
-                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-                style={[styles.bindingName, { color: colors.textPrimary }]}
-              >
-                {skillAgentLabel(binding.agent)} · {scopeLabel(binding.scope)}
-              </Text>
-              <Text
-                numberOfLines={1}
-                maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-                style={[styles.bindingDetail, { color: colors.textTertiary }]}
-              >
-                {binding.mode === "symlink" ? "symlink" : "copy"}
-                {binding.enabled ? "" : " · disabled"}
-                {binding.driftHash ? " · drifted" : ""}
-              </Text>
-            </View>
-            {skillBindingSupports(binding, "enable", capabilities) ? (
-              <SmallAction
-                label="Enable"
-                accessibilityLabel={`Enable ${detail.skillName} for ${skillAgentLabel(binding.agent)}`}
-                busy={
-                  preparingMutation ===
-                  `enable:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
-                }
-                onPress={() =>
-                  onBinding(
-                    "enable",
-                    binding.agent,
-                    binding.scope as "project" | "global",
-                  )
-                }
-              />
-            ) : null}
-            {skillBindingSupports(binding, "disable", capabilities) ? (
-              <SmallAction
-                label="Disable"
-                accessibilityLabel={`Disable ${detail.skillName} for ${skillAgentLabel(binding.agent)}`}
-                busy={
-                  preparingMutation ===
-                  `disable:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
-                }
-                onPress={() =>
-                  onBinding(
-                    "disable",
-                    binding.agent,
-                    binding.scope as "project" | "global",
-                  )
-                }
-              />
-            ) : null}
-            {skillBindingSupports(binding, "unbind", capabilities) ? (
-              <SmallAction
-                label="Unbind"
-                destructive
-                accessibilityLabel={`Unbind ${detail.skillName} from ${skillAgentLabel(binding.agent)}`}
-                busy={
-                  preparingMutation ===
-                  `unbind:${installed?.id ?? detail.skillName}:${binding.agent}:${binding.scope}`
-                }
-                onPress={() =>
-                  onBinding(
-                    "unbind",
-                    binding.agent,
-                    binding.scope as "project" | "global",
-                  )
-                }
-              />
-            ) : null}
-          </View>
-        ))}
-        {operationSupported("bind") && detail.owned ? (
-          <View style={styles.bindGrid}>
-            {compactSkillTargets(agentCountsFromDetail(detail)).flatMap(
-              (target) =>
-                (["global", "project"] as const).map((scope) => {
-                  if (
-                    boundTargets.has(`${target.agent}:${scope}`) ||
-                    (scope === "project" && !hasProjectCwd)
-                  ) {
-                    return null;
-                  }
-                  const scopeLabelText =
-                    scope === "global" ? "globally" : "to project";
-                  return (
-                    <SmallAction
-                      key={`${target.agent}:${scope}`}
-                      label={`Bind ${target.label} ${scopeLabelText}`}
-                      accessibilityLabel={`Bind ${detail.skillName} to ${target.label} ${scopeLabelText}`}
-                      busy={
-                        preparingMutation ===
-                        `bind:${installed?.id ?? detail.skillName}:${target.agent}:${scope}`
-                      }
-                      onPress={() => onBinding("bind", target.agent, scope)}
-                    />
-                  );
-                }),
-            )}
-          </View>
-        ) : null}
-      </SheetSection>
-
-      {showBody ? (
-        <SheetSection title="SKILL.md">
-          <EnrichedMarkdownText
-            markdown={detail.skillMd!}
-            selectable
-            containerStyle={styles.markdownBody}
-            markdownStyle={markdownStyle(
-              colors.textPrimary,
-              colors.textSecondary,
-              colors.accent,
-            )}
-            onLinkPress={(event) => {
-              void openSafeMarkdownUrl(event.url, (safeUrl) =>
-                Linking.openURL(safeUrl),
-              );
+            style={{
+              color: value === item ? colors.accent : colors.textSecondary,
             }}
-          />
-        </SheetSection>
-      ) : null}
-
-      <View style={styles.sheetActions}>
-        {operationSupported("update") && detail.owned ? (
-          <SheetAction
-            icon="arrow-up-circle-outline"
-            label="Update"
-            busy={
-              preparingMutation ===
-              `update:${installed?.id ?? detail.skillName}`
-            }
-            onPress={onUpdate}
-          />
-        ) : null}
-        {operationSupported("adopt") && !detail.owned ? (
-          <SheetAction
-            icon="arrow-forward-circle-outline"
-            label="Adopt"
-            busy={
-              preparingMutation === `adopt:${installed?.id ?? detail.skillName}`
-            }
-            onPress={onAdopt}
-          />
-        ) : null}
-        {operationSupported("forget") && !detail.owned && detail.tracked ? (
-          <SheetAction
-            icon="close-circle-outline"
-            label="Forget"
-            busy={
-              preparingMutation ===
-              `forget:${installed?.id ?? detail.skillName}`
-            }
-            onPress={onForget}
-          />
-        ) : null}
-        {operationSupported("uninstall") && detail.owned ? (
-          <SheetAction
-            icon="trash-outline"
-            label="Uninstall"
-            destructive
-            busy={
-              preparingMutation ===
-              `uninstall:${installed?.id ?? detail.skillName}`
-            }
-            onPress={onUninstall}
-          />
-        ) : null}
-      </View>
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[styles.inspectNote, { color: colors.textTertiary }]}
-      >
-        Mutations run on the daemon and refresh the authoritative inventory
-        afterward. Destructive actions always show an exact confirmation.
-      </Text>
-    </>
-  );
-}
-
-function agentCountsFromDetail(detail: PackageDetail): SkillsAgentCounts {
-  const counts: SkillsAgentCounts = {
-    codex: 0,
-    "claude-code": 0,
-    cursor: 0,
-    grok: 0,
-    opencode: 0,
-    pi: 0,
-  };
-  for (const binding of detail.bindings) {
-    counts[binding.agent] += 1;
-  }
-  return counts;
-}
-
-function markdownStyle(
-  text: string,
-  secondary: string,
-  accent: string,
-): Parameters<typeof EnrichedMarkdownText>[0]["markdownStyle"] {
-  return {
-    paragraph: { color: text, fontSize: 14, lineHeight: 20 },
-    h1: { color: text },
-    h2: { color: text },
-    h3: { color: text },
-    link: { color: accent },
-    codeBlock: { color: secondary },
-    strong: { color: text },
-    list: { color: text },
-    blockquote: { color: secondary },
-  };
-}
-
-/** Mobile presentation: bottom sheet. */
-function SkillInspectorSheet(props: {
-  detail: PackageDetail;
-  inspectState: SkillsRequestState<PackageDetail>;
-  installed: InstalledSkill | null;
-  selectedAgent: ManagedSkillAgent;
-  capabilities: readonly SkillMutationOperation[];
-  hasProjectCwd: boolean;
-  preparingMutation: string;
-  retryPath?: string;
-  onClose(): void;
-  onBinding(
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(): void;
-  onForget(): void;
-  onAdopt(): void;
-  onUpdate(): void;
-  onInspectFile(path: string): void;
-  onRetryInspect(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <BottomSheetFrame
-      visible
-      maxHeight="88%"
-      dragToDismiss
-      onClose={props.onClose}
-    >
-      <ScrollView
-        contentContainerStyle={styles.sheetContent}
-        showsVerticalScrollIndicator={false}
-      >
-        <SkillInspectorBody {...props} />
-      </ScrollView>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Close"
-        onPress={props.onClose}
-        style={({ pressed }) => [
-          styles.sheetClose,
-          { borderTopColor: colors.borderSubtle },
-          pressed ? { backgroundColor: colors.surfacePressed } : null,
-        ]}
-      >
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.sheetCloseText, { color: colors.textSecondary }]}
-        >
-          Close
-        </Text>
-      </Pressable>
-    </BottomSheetFrame>
-  );
-}
-
-/** Desktop presentation: persistent right-side panel. */
-function SkillInspector(props: {
-  detail: PackageDetail;
-  inspectState: SkillsRequestState<PackageDetail>;
-  installed: InstalledSkill | null;
-  selectedAgent: ManagedSkillAgent;
-  capabilities: readonly SkillMutationOperation[];
-  hasProjectCwd: boolean;
-  preparingMutation: string;
-  retryPath?: string;
-  onClose(): void;
-  onBinding(
-    operation: "bind" | "unbind" | "enable" | "disable",
-    agent: ManagedSkillAgent,
-    scope: "project" | "global",
-  ): void;
-  onUninstall(): void;
-  onForget(): void;
-  onAdopt(): void;
-  onUpdate(): void;
-  onInspectFile(path: string): void;
-  onRetryInspect(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <View
-      style={[styles.inspectorPanel, { borderLeftColor: colors.borderSubtle }]}
-    >
-      <View style={styles.inspectorHeader}>
-        <Text
-          numberOfLines={1}
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.inspectorHeaderTitle, { color: colors.textPrimary }]}
-        >
-          Inspector
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Close inspector"
-          onPress={props.onClose}
-          style={({ pressed }) => [
-            styles.iconButton,
-            pressed ? { backgroundColor: colors.surfacePressed } : null,
-          ]}
-        >
-          <Ionicons
-            accessible={false}
-            name="close"
-            size={20}
-            color={colors.textSecondary}
-          />
-        </Pressable>
-      </View>
-      <ScrollView
-        contentContainerStyle={styles.inspectorContent}
-        showsVerticalScrollIndicator={false}
-      >
-        <SkillInspectorBody {...props} />
-      </ScrollView>
-    </View>
-  );
-}
-
-function SkillInspectRequestBody({
-  name,
-  inspectState,
-  onRetry,
-}: {
-  name: string;
-  inspectState: SkillsRequestState<PackageDetail>;
-  onRetry(): void;
-}) {
-  const colors = useAppColors();
-  const loading =
-    inspectState.status === "loading" || inspectState.status === "idle";
-  return (
-    <>
-      <SheetTitle>{name}</SheetTitle>
-      {loading ? (
-        <View style={styles.inspectLoadingRow}>
-          <ActivityIndicator size="small" color={colors.accent} />
-          <SheetBody>Loading Skill…</SheetBody>
-        </View>
-      ) : null}
-      {inspectState.status === "error" ? (
-        <SheetSection title="Skill unavailable">
-          <SheetBody>{inspectState.error}</SheetBody>
-          <View style={styles.sheetActions}>
-            <SheetAction
-              icon="refresh-outline"
-              label="Retry"
-              onPress={onRetry}
-            />
-          </View>
-        </SheetSection>
-      ) : null}
-    </>
-  );
-}
-
-function SkillInspectorStatus({
-  name,
-  inspectState,
-  onClose,
-  onRetry,
-}: {
-  name: string;
-  inspectState: SkillsRequestState<PackageDetail>;
-  onClose(): void;
-  onRetry(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <View
-      style={[styles.inspectorPanel, { borderLeftColor: colors.borderSubtle }]}
-    >
-      <View style={styles.inspectorHeader}>
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.inspectorHeaderTitle, { color: colors.textPrimary }]}
-        >
-          Inspector
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Close inspector"
-          onPress={onClose}
-          style={styles.iconButton}
-        >
-          <Ionicons name="close" size={20} color={colors.textSecondary} />
-        </Pressable>
-      </View>
-      <View style={styles.inspectorContent}>
-        <SkillInspectRequestBody
-          name={name}
-          inspectState={inspectState}
-          onRetry={onRetry}
-        />
-      </View>
-    </View>
-  );
-}
-
-function SkillInspectorStatusSheet({
-  name,
-  inspectState,
-  onClose,
-  onRetry,
-}: {
-  name: string;
-  inspectState: SkillsRequestState<PackageDetail>;
-  onClose(): void;
-  onRetry(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <BottomSheetFrame visible maxHeight="88%" dragToDismiss onClose={onClose}>
-      <View style={styles.sheetContent}>
-        <SkillInspectRequestBody
-          name={name}
-          inspectState={inspectState}
-          onRetry={onRetry}
-        />
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Close"
-        onPress={onClose}
-        style={[styles.sheetClose, { borderTopColor: colors.borderSubtle }]}
-      >
-        <Text style={[styles.sheetCloseText, { color: colors.textSecondary }]}>
-          Close
-        </Text>
-      </Pressable>
-    </BottomSheetFrame>
-  );
-}
-
-function SheetTitle({ children }: { children: React.ReactNode }) {
-  const colors = useAppColors();
-  return (
-    <Text
-      maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-      style={[styles.sheetTitle, { color: colors.textPrimary }]}
-    >
-      {children}
-    </Text>
-  );
-}
-
-function SheetMetadata({ children }: { children: React.ReactNode }) {
-  const colors = useAppColors();
-  return (
-    <Text
-      maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-      style={[styles.sheetMetadata, { color: colors.textTertiary }]}
-    >
-      {children}
-    </Text>
-  );
-}
-
-function SheetBody({ children }: { children: React.ReactNode }) {
-  const colors = useAppColors();
-  return (
-    <Text
-      maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-      style={[styles.sheetBody, { color: colors.textSecondary }]}
-    >
-      {children}
-    </Text>
-  );
-}
-
-function SheetSectionHeading({ children }: { children: React.ReactNode }) {
-  const colors = useAppColors();
-  return (
-    <Text
-      maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-      style={[styles.sheetSectionHeading, { color: colors.textTertiary }]}
-    >
-      {children}
-    </Text>
-  );
-}
-
-function SheetSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  const colors = useAppColors();
-  return (
-    <View
-      style={[styles.sheetSection, { borderTopColor: colors.borderSubtle }]}
-    >
-      <SheetSectionHeading>{title}</SheetSectionHeading>
-      {children}
-    </View>
-  );
-}
-
-function SheetSkillList({ skills }: { skills: string[] }) {
-  const colors = useAppColors();
-  return (
-    <View style={styles.sheetSkillList}>
-      {skills.map((skill) => (
-        <View
-          key={skill}
-          style={[
-            styles.sheetSkillRow,
-            { borderTopColor: colors.borderSubtle },
-          ]}
-        >
-          <Ionicons
-            accessible={false}
-            name="library-outline"
-            size={16}
-            color={colors.textTertiary}
-          />
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.sheetSkillName, { color: colors.textSecondary }]}
           >
-            {skill}
+            {item[0]!.toUpperCase() + item.slice(1)}
           </Text>
-        </View>
+        </Pressable>
       ))}
     </View>
   );
 }
 
-function SheetOption({
-  agent,
-  icon,
-  label,
-  detail,
-  selected,
-  disabled,
-  busy,
-  onPress,
-}: {
-  agent?: ManagedSkillAgent;
-  icon?: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  detail?: string;
-  selected?: boolean;
-  disabled?: boolean;
-  busy?: boolean;
-  onPress(): void;
-}) {
+function LocalSkillsList(
+  props: SkillsPresentationProps & {
+    rows: InstalledSkill[];
+    inventory?: SkillsInventory;
+    refreshing: boolean;
+  },
+) {
   const colors = useAppColors();
+  const state = props.inventoryState;
+  if (!props.currentServerAvailable)
+    return (
+      <State
+        icon="server-outline"
+        title="No current server"
+        detail="Choose a server in Settings to view its local Skills."
+        action="Open Settings"
+        onAction={props.onOpenSettings}
+      />
+    );
+  if (state.status === "error" && !props.inventory)
+    return (
+      <State
+        icon="warning-outline"
+        title={
+          state.error.includes("offline")
+            ? "Server disconnected"
+            : "Skills unavailable"
+        }
+        detail={state.error}
+      />
+    );
+  if (
+    (state.status === "idle" || state.status === "loading") &&
+    !props.inventory
+  )
+    return (
+      <State
+        loading
+        title="Loading local Skills"
+        detail="Reading supported Agent locations on the current server."
+      />
+    );
+  if ((props.inventory?.skills.length ?? 0) === 0)
+    return (
+      <State
+        icon="folder-open-outline"
+        title="No local Skills"
+        detail="No Skill packages were found in the supported Agent locations."
+      />
+    );
   return (
-    <AnimatedPressable
-      accessibilityRole="button"
-      accessibilityLabel={[label, detail].filter(Boolean).join(", ")}
-      accessibilityState={{ selected: selected, disabled: disabled || busy }}
-      disabled={disabled || busy}
-      onPress={onPress}
-      style={[
-        styles.sheetOption,
-        selected ? { backgroundColor: colors.surfaceSubtle } : null,
-        disabled ? styles.disabled : null,
-      ]}
-    >
-      {agent ? (
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={styles.sheetOptionIcon}
-        >
-          <AgentKindIcon
-            kind={managedAgentKind(agent)}
-            size={20}
-            variant="compact"
-          />
-        </View>
-      ) : (
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={styles.sheetOptionIcon}
-        >
-          <Ionicons
-            accessible={false}
-            name={icon ?? "ellipse-outline"}
-            size={18}
-            color={selected ? colors.accent : colors.textTertiary}
-          />
-        </View>
+    <FlatList
+      data={props.rows}
+      keyExtractor={(item) => item.id}
+      refreshControl={
+        <RefreshControl
+          refreshing={props.refreshing}
+          onRefresh={props.onRefreshSkills}
+          tintColor={colors.accent}
+        />
+      }
+      contentContainerStyle={props.rows.length ? styles.list : styles.emptyList}
+      ListEmptyComponent={
+        <State
+          icon="search-outline"
+          title="No matches"
+          detail="Adjust the local search or filters."
+        />
+      }
+      renderItem={({ item }) => (
+        <SkillRow
+          skill={item}
+          busy={props.preparingMutation}
+          onOpen={() => props.onInspectSkill(item.name)}
+          onUpdate={() => props.onUpdate(item)}
+          onAdopt={() => props.onAdopt(item)}
+          onForget={() => props.onForget(item)}
+          onUninstall={() => props.onUninstall(item)}
+        />
       )}
-      <View style={styles.sheetOptionCopy}>
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[
-            styles.sheetOptionLabel,
-            { color: selected ? colors.accent : colors.textPrimary },
-          ]}
-        >
-          {label}
-        </Text>
-        {detail ? (
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.sheetOptionDetail, { color: colors.textTertiary }]}
-          >
-            {detail}
-          </Text>
-        ) : null}
-      </View>
-      {busy ? <ActivityIndicator size="small" color={colors.accent} /> : null}
-    </AnimatedPressable>
+    />
   );
 }
 
-function SheetAction({
-  icon,
-  label,
-  destructive,
+function SkillRow({
+  skill,
   busy,
-  onPress,
+  onOpen,
+  onUpdate,
+  onAdopt,
+  onForget,
+  onUninstall,
 }: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  destructive?: boolean;
-  busy?: boolean;
-  onPress(): void;
+  skill: InstalledSkill;
+  busy: string;
+  onOpen(): void;
+  onUpdate(): void;
+  onAdopt(): void;
+  onForget(): void;
+  onUninstall(): void;
 }) {
   const colors = useAppColors();
+  const ops = skill.capability.canManage ? skill.capability.operations : [];
+  const action = ops.includes("update")
+    ? (["Update", onUpdate] as const)
+    : ops.includes("adopt")
+      ? (["Adopt", onAdopt] as const)
+      : ops.includes("forget")
+        ? (["Forget", onForget] as const)
+        : ops.includes("uninstall")
+          ? (["Uninstall", onUninstall] as const)
+          : null;
   return (
-    <AnimatedPressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={[
-        styles.sheetAction,
+    <Pressable
+      onPress={onOpen}
+      style={({ pressed }) => [
+        styles.row,
         {
-          backgroundColor: destructive
-            ? colors.dangerSoft
-            : colors.surfaceSubtle,
-          borderColor: destructive ? colors.dangerText : colors.borderSubtle,
+          borderBottomColor: colors.borderSubtle,
+          backgroundColor: pressed ? colors.surfacePressed : "transparent",
         },
       ]}
     >
-      {busy ? (
-        <ActivityIndicator size="small" color={colors.accent} />
-      ) : (
-        <Ionicons
-          accessible={false}
-          name={icon}
-          size={18}
-          color={destructive ? colors.dangerText : colors.textSecondary}
-        />
-      )}
-      <Text
-        maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-        style={[
-          styles.sheetActionText,
-          { color: destructive ? colors.dangerText : colors.textSecondary },
-        ]}
-      >
-        {label}
-      </Text>
-    </AnimatedPressable>
+      <View style={styles.flex}>
+        <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+          {skill.name}
+        </Text>
+        <Text numberOfLines={1} style={{ color: colors.textTertiary }}>
+          {skill.description ||
+            `${skill.manager === "zen" ? "Zen-managed" : "Local external"} · ${skill.scope} · ${skill.enabled ? "enabled" : "disabled"}`}
+        </Text>
+      </View>
+      {action ? (
+        <Pressable
+          disabled={Boolean(busy)}
+          onPress={(event) => {
+            event.stopPropagation();
+            action[1]();
+          }}
+          style={styles.iconAction}
+          accessibilityLabel={`${action[0]} ${skill.name}`}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={colors.accent} />
+          ) : (
+            <Text
+              style={{
+                color:
+                  action[0] === "Uninstall" ? colors.dangerText : colors.accent,
+              }}
+            >
+              {action[0]}
+            </Text>
+          )}
+        </Pressable>
+      ) : null}
+      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+    </Pressable>
   );
 }
 
-function ListStateHeader({
-  loading,
-  loadingTitle = "Loading…",
-  error,
-  errorTitle = "Unavailable",
-  empty,
-  emptyTitle = "Nothing here yet",
-  noMatches,
-  capabilityUnavailable,
-  capabilityTitle = "Capability unavailable",
-  catalogUnavailable,
-  currentServerAvailable = true,
-  onOpenSettings,
-  onRetry,
-}: {
-  loading?: boolean;
-  loadingTitle?: string;
-  error?: string;
-  errorTitle?: string;
-  empty?: boolean;
-  emptyTitle?: string;
-  noMatches?: boolean;
-  capabilityUnavailable?: boolean;
-  capabilityTitle?: string;
-  catalogUnavailable?: boolean;
-  currentServerAvailable?: boolean;
-  onOpenSettings?(): void;
-  onRetry?(): void;
-}) {
-  if (loading) return <RequestState title={loadingTitle} busy />;
-  if (error) {
+function PluginsList(props: SkillsPresentationProps) {
+  const colors = useAppColors();
+  const data = props.pluginsView.rows;
+  if (
+    props.pluginsState.status === "error" &&
+    !skillsRequestData(props.pluginsState)
+  )
     return (
-      <RequestState
-        title={errorTitle}
-        detail={error}
-        action={currentServerAvailable ? "Retry" : "Settings"}
-        onAction={currentServerAvailable ? onRetry : onOpenSettings}
+      <State
+        icon="warning-outline"
+        title="Plugins unavailable"
+        detail={props.pluginsState.error}
       />
     );
-  }
-  if (capabilityUnavailable || catalogUnavailable) {
+  if (
+    (props.pluginsState.status === "idle" ||
+      props.pluginsState.status === "loading") &&
+    !skillsRequestData(props.pluginsState)
+  )
     return (
-      <RequestState
-        title={
-          catalogUnavailable && !capabilityUnavailable
-            ? "Plugin catalog unavailable"
-            : capabilityTitle
-        }
-        action={currentServerAvailable ? "Retry" : "Settings"}
-        onAction={currentServerAvailable ? onRetry : onOpenSettings}
+      <State
+        loading
+        title="Loading Plugins"
+        detail="Reading plugin state from the current server."
       />
     );
-  }
-  if (noMatches) return <RequestState title="No matches" />;
-  if (empty) return <RequestState title={emptyTitle} />;
-  return null;
+  return (
+    <FlatList
+      data={data}
+      keyExtractor={(row) =>
+        row.kind === "installed"
+          ? `i:${row.plugin.id}`
+          : `a:${row.plugin.pluginId}`
+      }
+      refreshControl={
+        <RefreshControl
+          refreshing={props.pluginsState.status === "loading"}
+          onRefresh={props.onRetryPlugins}
+          tintColor={colors.accent}
+        />
+      }
+      contentContainerStyle={styles.list}
+      ListEmptyComponent={
+        <State
+          icon="extension-puzzle-outline"
+          title="No Plugins"
+          detail="No Plugins are available on this server."
+        />
+      }
+      renderItem={({ item }) =>
+        item.kind === "installed" ? (
+          <PluginRow
+            name={item.plugin.name}
+            detail={`${item.plugin.host} · ${item.plugin.version}`}
+            actions={installedPluginActions(item.plugin, props)}
+          />
+        ) : (
+          <PluginRow
+            name={item.plugin.name}
+            detail={item.plugin.description || item.plugin.marketplaceName}
+            actions={[
+              {
+                label: "Install",
+                run: () => props.onInstallPlugin(item.plugin),
+              },
+            ]}
+          />
+        )
+      }
+    />
+  );
 }
 
-function RequestState({
-  title,
+function PluginRow({
+  name,
   detail,
-  busy,
-  action,
-  onAction,
+  actions,
 }: {
-  title: string;
-  detail?: string;
-  busy?: boolean;
-  action?: string;
-  onAction?(): void;
+  name: string;
+  detail: string;
+  actions: Array<{ label: string; run(): void }>;
 }) {
   const colors = useAppColors();
   return (
-    <View style={styles.requestState}>
-      {busy ? <ActivityIndicator size="small" color={colors.accent} /> : null}
-      <View style={styles.requestCopy}>
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[styles.requestTitle, { color: colors.textPrimary }]}
-        >
-          {title}
+    <View style={[styles.row, { borderBottomColor: colors.borderSubtle }]}>
+      <View style={styles.flex}>
+        <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+          {name}
         </Text>
-        {detail ? (
-          <Text
-            maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-            style={[styles.requestDetail, { color: colors.textTertiary }]}
-          >
-            {detail}
-          </Text>
-        ) : null}
+        <Text style={{ color: colors.textTertiary }}>{detail}</Text>
       </View>
-      {action && onAction ? (
-        <SmallAction label={action} onPress={onAction} />
-      ) : null}
+      {actions.map((action) => (
+        <Pressable
+          key={action.label}
+          onPress={action.run}
+          style={styles.iconAction}
+        >
+          <Text
+            style={{
+              color:
+                action.label === "Uninstall"
+                  ? colors.dangerText
+                  : colors.accent,
+            }}
+          >
+            {action.label}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
 
-function SmallAction({
+function installedPluginActions(
+  plugin: InstalledPluginRow,
+  props: Pick<SkillsPresentationProps, "onUpdatePlugin" | "onUninstallPlugin">,
+): Array<{ label: string; run(): void }> {
+  const actions: Array<{ label: string; run(): void }> = [];
+  if (evaluatePluginMutation({ kind: "update", row: plugin }).supported) {
+    actions.push({
+      label: "Update",
+      run: () => props.onUpdatePlugin(plugin),
+    });
+  }
+  if (evaluatePluginMutation({ kind: "uninstall", row: plugin }).supported) {
+    actions.push({
+      label: "Uninstall",
+      run: () => props.onUninstallPlugin(plugin),
+    });
+  }
+  return actions;
+}
+
+function Inspector(
+  props: SkillsPresentationProps & { detail?: PackageDetail },
+) {
+  const colors = useAppColors();
+  const detail = props.detail;
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selectedPath, setSelectedPath] = useState<string | undefined>();
+  const previousSkill = useRef<string | null>(null);
+  const tree = useMemo(
+    () => buildSkillFileTree(detail?.files ?? []),
+    [detail?.files],
+  );
+  useEffect(() => {
+    if (!detail) return;
+    const selected =
+      detail.preview?.path ?? defaultSkillFile(detail.files ?? []);
+    setSelectedPath(selected);
+    if (selected && detail.preview?.path !== selected)
+      props.onInspectSkill(detail.skillName, selected);
+    const changedSkill = previousSkill.current !== detail.skillName;
+    previousSkill.current = detail.skillName;
+    setExpanded((current) =>
+      !changedSkill && current.size
+        ? current
+        : new Set(
+            selected
+              ?.split("/")
+              .slice(0, -1)
+              .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
+          ),
+    );
+  }, [detail?.skillName]);
+  useEffect(() => {
+    if (detail?.preview?.path) setSelectedPath(detail.preview.path);
+  }, [detail?.preview?.path]);
+  if (!detail && props.inspectState.status === "loading")
+    return (
+      <State
+        loading
+        title="Loading Skill"
+        detail="Reading the local package."
+      />
+    );
+  if (!detail && props.inspectState.status === "error")
+    return (
+      <State
+        icon="warning-outline"
+        title="Skill unavailable"
+        detail={props.inspectState.error}
+      />
+    );
+  if (!detail) return null;
+  const preview = detail.preview;
+  const renderer = preview
+    ? skillRenderer(preview.kind, preview.content)
+    : null;
+  return (
+    <View style={styles.inspector}>
+      <View
+        style={[
+          styles.inspectorHeader,
+          { borderBottomColor: colors.borderSubtle },
+        ]}
+      >
+        <View style={styles.flex}>
+          <Text style={[styles.inspectorTitle, { color: colors.textPrimary }]}>
+            {detail.skillName}
+          </Text>
+          <Text numberOfLines={1} style={{ color: colors.textTertiary }}>
+            {detail.manager === "zen"
+              ? "Zen-managed"
+              : detail.tracked
+                ? "Tracked local"
+                : "Local external"}{" "}
+            · {detail.scope} · {detail.enabled ? "enabled" : "disabled"}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityLabel="Close inspector"
+          onPress={props.onDismissInspector}
+          style={styles.close}
+        >
+          <Ionicons name="close" size={22} color={colors.textSecondary} />
+        </Pressable>
+      </View>
+      <ScrollView contentContainerStyle={styles.inspectorScroll}>
+        {(detail.warnings ?? []).map((warning) => (
+          <Text key={warning} style={{ color: colors.warning }}>
+            {warning}
+          </Text>
+        ))}
+        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>
+          Files
+        </Text>
+        {tree.length ? (
+          tree.map((node) => (
+            <TreeNode
+              key={node.path}
+              node={node}
+              depth={0}
+              expanded={expanded}
+              selected={selectedPath}
+              onToggle={(path) =>
+                setExpanded((current) => {
+                  const next = new Set(current);
+                  next.has(path) ? next.delete(path) : next.add(path);
+                  return next;
+                })
+              }
+              onSelect={(path) => {
+                setSelectedPath(path);
+                props.onInspectSkill(detail.skillName, path);
+              }}
+            />
+          ))
+        ) : (
+          <Text style={{ color: colors.textTertiary }}>
+            This package contains no files.
+          </Text>
+        )}
+        <View style={[styles.preview, { borderTopColor: colors.borderSubtle }]}>
+          <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
+            {selectedPath || "No file selected"}
+          </Text>
+          {props.inspectState.status === "loading" ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <Text style={{ color: colors.textSecondary }}>Loading file</Text>
+            </View>
+          ) : null}
+          {props.inspectState.status === "error" ? (
+            <State
+              icon="warning-outline"
+              title="File unavailable"
+              detail={props.inspectState.error}
+            />
+          ) : null}
+          {preview?.notice ? (
+            <Text style={[styles.previewNotice, { color: colors.warning }]}>
+              {preview.notice}
+            </Text>
+          ) : null}
+          {preview?.status === "binary" ? (
+            <State
+              icon="document-attach-outline"
+              title="Binary file"
+              detail={`${preview.mediaType} · ${preview.size} bytes. Content preview is unavailable.`}
+            />
+          ) : null}
+          {renderer === "markdown" ? (
+            <EnrichedMarkdownText
+              markdown={preview?.content ?? ""}
+              selectable
+              onLinkPress={(event) =>
+                void openSafeMarkdownUrl(event.url, (url) =>
+                  Linking.openURL(url),
+                )
+              }
+            />
+          ) : null}
+          {renderer === "json" ? (
+            <Code
+              content={JSON.stringify(
+                JSON.parse(preview?.content ?? "null"),
+                null,
+                2,
+              )}
+            />
+          ) : null}
+          {renderer === "invalid-json" ? (
+            <>
+              <Text style={[styles.previewNotice, { color: colors.warning }]}>
+                Invalid JSON; showing the original text.
+              </Text>
+              <Code content={preview?.content ?? ""} />
+            </>
+          ) : null}
+          {renderer === "text" ? (
+            <Code content={preview?.content ?? ""} />
+          ) : null}
+        </View>
+        <View style={styles.lifecycle}>
+          {detail.capability.canManage &&
+          detail.capability.operations.includes("update") ? (
+            <Action
+              label="Update"
+              onPress={() =>
+                props.onUpdate(
+                  props.installedSkills.find(
+                    (item) => item.name === detail.skillName,
+                  )!,
+                )
+              }
+            />
+          ) : null}
+          {detail.capability.canManage &&
+          detail.capability.operations.includes("adopt") ? (
+            <Action
+              label="Adopt"
+              onPress={() =>
+                props.onAdopt(
+                  props.installedSkills.find(
+                    (item) => item.name === detail.skillName,
+                  )!,
+                )
+              }
+            />
+          ) : null}
+          {detail.capability.canManage &&
+          detail.capability.operations.includes("forget") ? (
+            <Action
+              label="Forget"
+              onPress={() =>
+                props.onForget(
+                  props.installedSkills.find(
+                    (item) => item.name === detail.skillName,
+                  )!,
+                )
+              }
+            />
+          ) : null}
+          {detail.capability.canManage &&
+          detail.capability.operations.includes("uninstall") ? (
+            <Action
+              label="Uninstall"
+              destructive
+              onPress={() =>
+                props.onUninstall(
+                  props.installedSkills.find(
+                    (item) => item.name === detail.skillName,
+                  )!,
+                )
+              }
+            />
+          ) : null}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function TreeNode({
+  node,
+  depth,
+  expanded,
+  selected,
+  onToggle,
+  onSelect,
+}: {
+  node: SkillTreeNode;
+  depth: number;
+  expanded: Set<string>;
+  selected?: string;
+  onToggle(path: string): void;
+  onSelect(path: string): void;
+}) {
+  const colors = useAppColors();
+  const open = expanded.has(node.path);
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={
+          node.kind === "directory"
+            ? { expanded: open }
+            : { selected: selected === node.path }
+        }
+        onPress={() =>
+          node.kind === "directory" ? onToggle(node.path) : onSelect(node.path)
+        }
+        style={[
+          styles.treeRow,
+          {
+            paddingLeft: 8 + depth * 16,
+            backgroundColor:
+              selected === node.path ? colors.accentSoft : "transparent",
+          },
+        ]}
+      >
+        <Ionicons
+          name={
+            node.kind === "directory"
+              ? open
+                ? "folder-open-outline"
+                : "folder-outline"
+              : node.file?.kind === "binary"
+                ? "document-attach-outline"
+                : "document-text-outline"
+          }
+          size={17}
+          color={
+            node.kind === "directory" ? colors.warning : colors.textTertiary
+          }
+        />
+        <Text
+          numberOfLines={1}
+          style={{
+            color:
+              selected === node.path ? colors.accent : colors.textSecondary,
+            flex: 1,
+          }}
+        >
+          {node.name}
+        </Text>
+      </Pressable>
+      {node.kind === "directory" && open
+        ? node.children.map((child) => (
+            <TreeNode
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              selected={selected}
+              onToggle={onToggle}
+              onSelect={onSelect}
+            />
+          ))
+        : null}
+    </>
+  );
+}
+function Code({ content }: { content: string }) {
+  const colors = useAppColors();
+  return (
+    <ScrollView horizontal>
+      <Text selectable style={[styles.code, { color: colors.textSecondary }]}>
+        {content || "This file is empty."}
+      </Text>
+    </ScrollView>
+  );
+}
+function Action({
   label,
-  accessibilityLabel,
-  busy,
   destructive,
   onPress,
 }: {
   label: string;
-  accessibilityLabel?: string;
-  busy?: boolean;
   destructive?: boolean;
-  onPress(): void;
-}) {
-  const colors = useAppColors();
-  return (
-    <AnimatedPressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? label}
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={[
-        styles.smallAction,
-        {
-          backgroundColor: destructive
-            ? colors.dangerSoft
-            : colors.surfaceSubtle,
-          borderColor: destructive ? colors.dangerText : colors.borderSubtle,
-        },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator size="small" color={colors.accent} />
-      ) : (
-        <Text
-          maxFontSizeMultiplier={PLUGINS_SKILLS_MAX_FONT_SIZE_MULTIPLIER}
-          style={[
-            styles.smallActionText,
-            { color: destructive ? colors.dangerText : colors.textSecondary },
-          ]}
-        >
-          {label}
-        </Text>
-      )}
-    </AnimatedPressable>
-  );
-}
-
-function ItemIconAction({
-  label,
-  icon,
-  onPress,
-}: {
-  label: string;
-  icon: React.ComponentProps<typeof Ionicons>["name"];
   onPress(): void;
 }) {
   const colors = useAppColors();
   return (
     <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={4}
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.itemIconAction,
-        pressed ? { backgroundColor: colors.surfacePressed } : null,
+      style={[
+        styles.action,
+        { borderColor: destructive ? colors.dangerText : colors.borderSubtle },
       ]}
     >
-      <Ionicons
-        accessible={false}
-        name={icon}
-        size={20}
-        color={colors.textTertiary}
-      />
+      <Text style={{ color: destructive ? colors.dangerText : colors.accent }}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
-
-function ItemActionIndicator({
+function State({
+  loading,
   icon,
+  title,
+  detail,
+  action,
+  onAction,
 }: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
+  loading?: boolean;
+  icon?: React.ComponentProps<typeof Ionicons>["name"];
+  title: string;
+  detail: string;
+  action?: string;
+  onAction?(): void;
 }) {
   const colors = useAppColors();
   return (
-    <View
-      accessible={false}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={styles.itemIconAction}
-    >
-      <Ionicons name={icon} size={20} color={colors.textTertiary} />
+    <View style={styles.state}>
+      {loading ? (
+        <ActivityIndicator color={colors.accent} />
+      ) : (
+        <Ionicons
+          name={icon ?? "information-circle-outline"}
+          size={28}
+          color={colors.textTertiary}
+        />
+      )}
+      <Text style={[styles.stateTitle, { color: colors.textPrimary }]}>
+        {title}
+      </Text>
+      <Text style={[styles.stateDetail, { color: colors.textTertiary }]}>
+        {detail}
+      </Text>
+      {action && onAction ? <Action label={action} onPress={onAction} /> : null}
     </View>
   );
-}
-
-function InstalledCheck() {
-  const colors = useAppColors();
-  return (
-    <View
-      accessible={false}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={styles.itemIconAction}
-    >
-      <Ionicons
-        accessible={false}
-        name="checkmark"
-        size={20}
-        color={colors.success}
-      />
-    </View>
-  );
-}
-
-function Separator() {
-  const colors = useAppColors();
-  return (
-    <View
-      style={[styles.separator, { backgroundColor: colors.borderSubtle }]}
-    />
-  );
-}
-
-function surfaceRefreshControl(
-  refreshing: boolean,
-  onRefresh: () => void,
-  accent: string,
-) {
-  return (
-    <RefreshControl
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-      colors={[accent]}
-      tintColor={accent}
-    />
-  );
-}
-
-function rowKey(row: SkillsUnifiedRow): string {
-  return row.kind === "installed"
-    ? `installed:${row.skill.id}`
-    : `catalog:${row.catalogId}`;
-}
-
-function searchPlaceholder(section: SkillsSurfaceSection): string {
-  return section === "plugins"
-    ? "Search plugins"
-    : "Search your Skills or skills.sh";
-}
-
-function managedAgentKind(agent: ManagedSkillAgent): AgentKind {
-  switch (agent) {
-    case "codex":
-      return "codex";
-    case "claude-code":
-      return "claude";
-    case "cursor":
-      return "cursor";
-    case "grok":
-      return "grok";
-    case "opencode":
-      return "opencode";
-    case "pi":
-      return "pi";
-  }
-}
-
-function pluginHostKind(host: "claude" | "codex"): AgentKind {
-  return host === "claude" ? "claude" : "codex";
-}
-
-function formatInstalls(value: number): string {
-  return Intl.NumberFormat(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function isRankedCatalogSkill(
-  skill: CatalogSkill | RankedCatalogSkill,
-): skill is RankedCatalogSkill {
-  return "rank" in skill;
-}
-
-function rankedMetric(
-  skill: RankedCatalogSkill,
-  view: SkillsLeaderboardView,
-): string {
-  switch (view) {
-    case "all-time":
-      return `${formatInstalls(skill.totalInstalls!)} total`;
-    case "trending":
-      return `${formatInstalls(skill.installs24h!)} · 24h`;
-    case "hot": {
-      const change = skill.change!;
-      const changeLabel =
-        change > 0 ? `+${formatInstalls(change)}` : formatInstalls(change);
-      return `${formatInstalls(skill.currentInstalls!)} now · ${changeLabel}`;
-    }
-  }
-}
-
-function shortHash(value: string): string {
-  return value.length > 12 ? `${value.slice(0, 12)}…` : value;
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  frame: {
-    width: "100%",
-    maxWidth: 720,
-    alignSelf: "center",
-    flex: 1,
-  },
-  desktopRow: { flex: 1, flexDirection: "row" },
-  desktopList: { flex: 1, minWidth: 0 },
-  desktopPanel: { width: INSPECTOR_PANEL_WIDTH, flexShrink: 0 },
-  surfaceTabs: {
-    minHeight: 48,
-    paddingHorizontal: 16,
+  root: { flex: 1, flexDirection: "row" },
+  safe: { flex: 1 },
+  flex: { flex: 1 },
+  tabs: {
+    height: 50,
     flexDirection: "row",
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  surfaceTab: {
+  tab: {
     flex: 1,
-    minWidth: 0,
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
     flexDirection: "row",
-    gap: 7,
-    paddingHorizontal: 8,
-    position: "relative",
-  },
-  surfaceTabLabel: { ...TypeScale.label },
-  selectedTabLine: {
-    position: "absolute",
-    left: 28,
-    right: 28,
-    bottom: -StyleSheet.hairlineWidth,
-    height: 2,
-    borderRadius: 1,
-  },
-  tools: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 8,
     gap: 8,
-  },
-  targetRow: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  targetList: { alignItems: "center", gap: 6, paddingRight: 8 },
-  targetOption: {
-    minHeight: 36,
-    justifyContent: "center",
-    paddingHorizontal: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.xs,
-  },
-  targetOptionText: { ...TypeScale.label, fontFamily: Typography.uiFontMedium },
-  targetDivider: { width: StyleSheet.hairlineWidth, height: 28 },
-  scanButton: {
-    minWidth: 68,
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    paddingLeft: 9,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
   },
-  scanButtonText: { ...TypeScale.label, fontFamily: Typography.uiFontMedium },
-  rankingSelector: {
-    minHeight: 36,
-    flexDirection: "row",
-    alignItems: "stretch",
-  },
-  rankingOption: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: Radii.xs,
-    paddingHorizontal: 4,
-  },
-  rankingOptionText: {
-    ...TypeScale.caption,
-    fontFamily: Typography.uiFontMedium,
-  },
-  toolbar: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 8,
-  },
-  toolbarSpacer: { flexGrow: 1, minWidth: 0 },
-  iconButton: {
-    width: PLUGINS_SKILLS_TOUCH_TARGET,
-    height: PLUGINS_SKILLS_TOUCH_TARGET,
-    borderRadius: Radii.xs,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchBox: {
-    borderRadius: Radii.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-  },
-  searchClearButton: {
-    width: PLUGINS_SKILLS_TOUCH_TARGET,
-    height: PLUGINS_SKILLS_TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  noticeBanner: {
-    marginHorizontal: 16,
-    marginBottom: 8,
+  notice: { marginHorizontal: 12, marginTop: 8, padding: 10 },
+  agents: { paddingHorizontal: 12, paddingVertical: 8, gap: 6 },
+  pill: {
+    height: 36,
     paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.sm,
+    borderWidth: 1,
+    justifyContent: "center",
+  },
+  filters: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
+  search: {
+    height: 42,
+    borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    paddingHorizontal: 10,
+    gap: 8,
   },
-  noticeText: {
-    ...TypeScale.compact,
-    flex: 1,
+  input: { flex: 1, fontFamily: Typography.uiFont, paddingVertical: 0 },
+  segment: { flexDirection: "row", borderWidth: 1, alignSelf: "flex-start" },
+  segmentItem: {
+    minHeight: 34,
+    justifyContent: "center",
+    paddingHorizontal: 12,
   },
-  list: { flex: 1 },
-  listContent: {
-    width: "100%",
+  list: { paddingBottom: 28 },
+  emptyList: { flexGrow: 1 },
+  row: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  rowTitle: { ...TypeScale.body, fontFamily: Typography.uiFontMedium },
+  iconAction: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
+  panel: {
+    width: 440,
+    maxWidth: "46%",
+    borderLeftWidth: StyleSheet.hairlineWidth,
+  },
+  sheet: { height: "100%", minHeight: 520 },
+  inspector: { flex: 1 },
+  inspectorHeader: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     paddingHorizontal: 16,
-    paddingBottom: 40,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  separator: { height: StyleSheet.hairlineWidth },
-  itemRow: {
-    minHeight: 76,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-  },
-  itemMain: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    borderRadius: Radii.xs,
-  },
-  itemIcon: {
-    width: 40,
-    height: 40,
-    flexShrink: 0,
-    borderRadius: Radii.sm,
+  inspectorTitle: { ...TypeScale.title, fontFamily: Typography.uiFontMedium },
+  close: {
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
   },
-  itemCopy: { flex: 1, minWidth: 0, gap: 2 },
-  itemName: {
+  inspectorScroll: { padding: 14, gap: 8, paddingBottom: 34 },
+  sectionTitle: {
+    ...TypeScale.compact,
+    fontFamily: Typography.uiFontMedium,
+    marginTop: 6,
+  },
+  treeRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingRight: 8,
+  },
+  preview: {
+    marginTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+    minHeight: 180,
+  },
+  previewNotice: { ...TypeScale.compact, marginBottom: 8 },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+  },
+  code: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 13,
+    lineHeight: 20,
+    paddingVertical: 8,
+  },
+  lifecycle: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  action: {
+    minHeight: 40,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  state: {
+    flex: 1,
+    minHeight: 180,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    gap: 7,
+  },
+  stateTitle: {
     ...TypeScale.body,
     fontFamily: Typography.uiFontMedium,
+    textAlign: "center",
   },
-  itemMetadata: { ...TypeScale.caption },
-  badgeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    paddingTop: 3,
-  },
-  badgePill: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.pill,
-    alignSelf: "flex-start",
-  },
-  badgeLabel: { ...TypeScale.micro },
-  browseNote: {
-    paddingVertical: 10,
-    gap: 4,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  browseNoteTitle: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-  },
-  browseNoteDetail: { ...TypeScale.caption },
-  itemIconAction: {
-    width: PLUGINS_SKILLS_TOUCH_TARGET,
-    height: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexShrink: 0,
-    borderRadius: Radii.xs,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  requestState: {
-    minHeight: 72,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  inventoryWarning: {
-    marginBottom: 8,
-    padding: 10,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.xs,
-  },
-  inventoryWarningCopy: { flex: 1, minWidth: 0, gap: 3 },
-  inventoryWarningTitle: {
-    ...TypeScale.label,
-    fontFamily: Typography.uiFontMedium,
-  },
-  inventoryWarningDetail: { ...TypeScale.caption },
-  requestCopy: { flex: 1, minWidth: 0, gap: 2 },
-  requestTitle: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-  },
-  requestDetail: { ...TypeScale.caption },
-  smallAction: {
-    minWidth: 70,
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexShrink: 0,
-    paddingHorizontal: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.xs,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  smallActionText: {
-    ...TypeScale.label,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetContent: { gap: 4, paddingBottom: 8 },
-  sheetTitle: {
-    ...TypeScale.heading,
-    paddingHorizontal: 4,
-    paddingBottom: 6,
-  },
-  sheetMetadata: {
-    ...TypeScale.caption,
-    paddingHorizontal: 4,
-    paddingBottom: 8,
-  },
-  sheetBody: { ...TypeScale.compact },
-  sheetSection: {
-    paddingHorizontal: 4,
-    paddingVertical: 10,
-    gap: 4,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  sheetSectionHeading: {
-    paddingHorizontal: 4,
-    paddingTop: 12,
-    paddingBottom: 2,
-  },
-  sheetSectionTitle: {
-    ...TypeScale.label,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetOption: {
-    minHeight: 58,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: Radii.sm,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  sheetOptionIcon: {
-    width: 30,
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sheetOptionCopy: { flex: 1, minWidth: 0, gap: 1 },
-  sheetOptionLabel: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetOptionDetail: { ...TypeScale.caption },
-  disabled: { opacity: 0.48 },
-  sheetSkillList: { paddingHorizontal: 4, paddingTop: 8 },
-  sheetSkillRow: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    paddingVertical: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  sheetSkillName: { ...TypeScale.compact, flex: 1 },
-  sheetActions: {
-    paddingTop: 8,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  sheetAction: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexGrow: 1,
-    paddingHorizontal: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radii.xs,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  sheetActionText: {
-    ...TypeScale.label,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetClose: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    marginTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sheetCloseText: { ...TypeScale.label },
-  inspectorPanel: {
-    flex: 1,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    backgroundColor: "transparent",
-  },
-  inspectorHeader: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  inspectorHeaderTitle: {
-    ...TypeScale.label,
-    fontFamily: Typography.uiFontMedium,
-    flex: 1,
-  },
-  inspectorContent: { padding: 12, gap: 4, paddingBottom: 40 },
-  inspectLoadingRow: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  warningLine: {
-    ...TypeScale.compact,
-    paddingVertical: 1,
-  },
-  inspectNote: {
-    ...TypeScale.caption,
-    paddingTop: 4,
-  },
-  provenanceLine: {
-    ...TypeScale.compact,
-    paddingVertical: 1,
-  },
-  fileLine: {
-    ...TypeScale.caption,
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    paddingVertical: 12,
-  },
-  fileContent: {
-    ...TypeScale.caption,
-    fontFamily: Typography.chatMonoFont,
-    lineHeight: 20,
-  },
-  bindingRow: {
-    minHeight: PLUGINS_SKILLS_TOUCH_TARGET,
-    paddingVertical: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  bindingCopy: { flex: 1, minWidth: 120, gap: 1 },
-  bindingName: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-  },
-  bindingDetail: { ...TypeScale.caption },
-  bindGrid: {
-    paddingTop: 8,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  markdownBody: { paddingTop: 4 },
+  stateDetail: { ...TypeScale.compact, textAlign: "center", maxWidth: 360 },
 });

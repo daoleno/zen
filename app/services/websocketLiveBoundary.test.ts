@@ -264,111 +264,6 @@ describe("generic WebSocket live boundary", () => {
     client.disconnectAll();
   });
 
-  test("Skills search cancellation is small and generation-correlated", async () => {
-    const client = new MultiServerWebSocketClient();
-    const socket = await connectClient(client);
-    socket.open();
-
-    const pending = client.searchSkillsCatalog(server.id, {
-      query: "react",
-      generation: 7,
-    });
-    const searchFrame = JSON.parse(socket.sent[0]!);
-    expect(client.cancelSkillsCatalogSearch(server.id, { generation: 7 })).toBe(
-      true,
-    );
-    expect(JSON.parse(socket.sent[1]!)).toMatchObject({
-      type: "skills_search_cancel",
-      generation: 7,
-    });
-    socket.receive({
-      type: "skills_search_error",
-      request_id: searchFrame.request_id,
-      generation: 7,
-      code: "canceled",
-      message: "The Skills search was canceled.",
-    });
-    await expect(pending).rejects.toThrow("canceled");
-    client.disconnectAll();
-  });
-
-  test("Skills rankings use one current-server frame and reject a stale generation", async () => {
-    const client = new MultiServerWebSocketClient();
-    const socket = await connectClient(client);
-    socket.open();
-
-    const pending = client.getSkillsLeaderboards(server.id, {
-      generation: 6,
-      limit: 30,
-    });
-    const outbound = JSON.parse(socket.sent.at(-1)!);
-    expect(outbound).toMatchObject({
-      type: "skills_catalog",
-      generation: 6,
-      limit: 30,
-    });
-    socket.receive({
-      type: "skills_catalog",
-      request_id: outbound.request_id,
-      generation: 5,
-      leaderboards: {},
-    });
-
-    await expect(pending).rejects.toThrow("stale Skills catalog generation");
-    client.disconnectAll();
-  });
-
-  test("Skills import response rejects a same-name different repository and unbound plans", async () => {
-    const client = new MultiServerWebSocketClient();
-    const socket = await connectClient(client);
-    socket.open();
-    const options = {
-      operation: "import" as const,
-      skillId: "acme/skills/useful",
-      source: "acme/skills",
-      skillName: "useful",
-      scope: "global" as const,
-      agents: ["codex" as const],
-    };
-
-    const mismatched = client.buildSkillsCommand(server.id, options);
-    const mismatchedRequest = JSON.parse(socket.sent.at(-1)!);
-    socket.receive({
-      type: "skills_command",
-      request_id: mismatchedRequest.request_id,
-      command: {
-        operation: "import",
-        scope: "global",
-        agents: ["codex"],
-        skill_name: "useful",
-        catalog_id: "other/skills/useful",
-        source: "other/skills",
-        summary: "Import useful from other/skills",
-        changes: [{ kind: "create_dir", path: "/store/useful" }],
-        destructive: false,
-      },
-    });
-    await expect(mismatched).rejects.toThrow("different request");
-
-    const unbound = client.buildSkillsCommand(server.id, options);
-    const unboundRequest = JSON.parse(socket.sent.at(-1)!);
-    socket.receive({
-      type: "skills_command",
-      request_id: unboundRequest.request_id,
-      command: {
-        operation: "import",
-        scope: "global",
-        agents: ["codex"],
-        skill_name: "useful",
-        summary: "Import useful",
-        changes: [{ kind: "create_dir", path: "/store/useful" }],
-        destructive: false,
-      },
-    });
-    await expect(unbound).rejects.toThrow("unbound Skills import command");
-    client.disconnectAll();
-  });
-
   test("structured Chat writes once now with minimal correlated responses", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
@@ -1188,7 +1083,6 @@ describe("Skills management transport", () => {
         executors: [],
         warnings: [],
         mutation_operations: [
-          "import",
           "migrate",
           "bind",
           "unbind",
@@ -1218,7 +1112,6 @@ describe("Skills management transport", () => {
         agents: [],
         warnings: [],
         mutationOperations: [
-          "import",
           "migrate",
           "bind",
           "unbind",
@@ -1237,90 +1130,6 @@ describe("Skills management transport", () => {
           tracked: 0,
         },
       },
-    });
-    client.disconnectAll();
-  });
-
-  test("a mismatched search generation is rejected without accepting results", async () => {
-    const client = new MultiServerWebSocketClient();
-    const socket = await connectClient(client);
-    socket.open();
-
-    const pending = client.searchSkillsCatalog(server.id, {
-      query: "react native",
-      limit: 20,
-      generation: 8,
-    });
-    const outbound = JSON.parse(socket.sent.at(-1)!);
-    expect(outbound).toMatchObject({
-      type: "skills_search",
-      prompt: "react native",
-      limit: 20,
-      generation: 8,
-    });
-
-    socket.receive({
-      type: "skills_search",
-      request_id: outbound.request_id,
-      generation: 7,
-      result: { query: "react native", skills: [] },
-    });
-
-    await expect(pending).rejects.toThrow("stale Skills search generation");
-    client.disconnectAll();
-  });
-
-  test("command construction sends structured fields and accepts one exact reviewable plan", async () => {
-    const client = new MultiServerWebSocketClient();
-    const socket = await connectClient(client);
-    socket.open();
-
-    const pending = client.buildSkillsCommand(server.id, {
-      operation: "import",
-      skillId: "acme/skills/useful",
-      source: "acme/skills",
-      skillName: "useful",
-      scope: "global",
-      agents: ["codex", "cursor"],
-      ref: "main",
-    });
-    const outbound = JSON.parse(socket.sent.at(-1)!);
-    expect(outbound).toMatchObject({
-      type: "skills_command",
-      operation: "import",
-      skill_id: "acme/skills/useful",
-      source: "acme/skills",
-      skill_name: "useful",
-      scope: "global",
-      agents: ["codex", "cursor"],
-      ref: "main",
-    });
-
-    socket.receive({
-      type: "skills_command",
-      request_id: outbound.request_id,
-      command: {
-        operation: "import",
-        scope: "global",
-        agents: ["codex", "cursor"],
-        skill_name: "useful",
-        catalog_id: "acme/skills/useful",
-        source: "acme/skills",
-        ref: "main",
-        summary: "Import useful into Zen's canonical store from acme/skills",
-        changes: [{ kind: "create_dir", path: "/store/useful" }],
-        destructive: false,
-      },
-    });
-
-    await expect(pending).resolves.toMatchObject({
-      operation: "import",
-      catalogId: "acme/skills/useful",
-      source: "acme/skills",
-      skillName: "useful",
-      scope: "global",
-      agents: ["codex", "cursor"],
-      ref: "main",
     });
     client.disconnectAll();
   });

@@ -1,13 +1,18 @@
 package skills
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // fetchGitSkill stages a catalog Skill by cloning its pinned provenance into
@@ -68,9 +73,23 @@ func runGit(ctx context.Context, args ...string) error {
 
 // PackageFile is one entry of the bounded file listing used by inspect.
 type PackageFile struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
-	Mode string `json:"mode"`
+	Path          string `json:"path"`
+	Size          int64  `json:"size"`
+	Mode          string `json:"mode"`
+	Kind          string `json:"kind"`
+	MediaType     string `json:"media_type"`
+	PreviewStatus string `json:"preview_status"`
+}
+
+type FilePreview struct {
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	MediaType     string `json:"media_type"`
+	Status        string `json:"status"`
+	Size          int64  `json:"size"`
+	BytesReturned int64  `json:"bytes_returned"`
+	Content       string `json:"content,omitempty"`
+	Notice        string `json:"notice,omitempty"`
 }
 
 // PackageDetail is the full inspection surface for one Skill: rendered
@@ -96,9 +115,7 @@ type PackageDetail struct {
 	Agents      []Agent              `json:"agents"`
 	Bindings    []SkillBinding       `json:"bindings"`
 	Files       []PackageFile        `json:"files,omitempty"`
-	SKILLMD     string               `json:"skill_md,omitempty"`
-	FilePath    string               `json:"file_path,omitempty"`
-	FileContent string               `json:"file_content,omitempty"`
+	Preview     *FilePreview         `json:"preview,omitempty"`
 	Risk        []RiskSignal         `json:"risk,omitempty"`
 	Warnings    []string             `json:"warnings,omitempty"`
 	Capability  ManagementCapability `json:"capability"`
@@ -119,27 +136,24 @@ func InspectPackageFile(options InventoryOptions, name, relative string) (Packag
 	if root == "" {
 		root = detail.SourcePath
 	}
-	path := filepath.Join(root, filepath.FromSlash(relative))
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return PackageDetail{}, errors.New("Skill file is unavailable or not a regular file")
-	}
-	content, ok, err := readTextFileBounded(path, maxInspectSKILLBytes)
+	rootFS, err := os.OpenRoot(root)
 	if err != nil {
-		return PackageDetail{}, fmt.Errorf("read Skill file: %w", err)
+		return PackageDetail{}, errors.New("Skill package root is unavailable")
 	}
-	if !ok {
-		return PackageDetail{}, errors.New("Skill file exceeds the inspection size limit")
+	defer rootFS.Close()
+	file, info, err := openPackageFile(rootFS, relative)
+	if err != nil {
+		return PackageDetail{}, err
 	}
-	detail.FilePath = relative
-	detail.FileContent = content
+	defer file.Close()
+	detail.Preview, err = previewOpenedPackageFile(file, relative, info)
+	if err != nil {
+		return PackageDetail{}, err
+	}
 	return detail, nil
 }
 
-const (
-	maxInspectSKILLBytes = 64 << 10
-	maxInspectFiles      = 128
-)
+const maxInspectPreviewBytes = 64 << 10
 
 // InspectPackage builds the inspection detail for one Skill name. It reads
 // the central inventory plus the agent surfaces and never mutates state.
@@ -151,133 +165,201 @@ func InspectPackage(options InventoryOptions, name string) (PackageDetail, error
 	if err != nil {
 		return PackageDetail{}, err
 	}
-	store := Store{StateDir: normalized.ZenStateDir, Home: normalized.Home, Now: normalized.Now}
-	inventory, err := store.LoadInventory(false)
+	inventory, err := DiscoverInventory(normalized)
 	if err != nil {
 		return PackageDetail{}, err
 	}
-	detail := PackageDetail{SkillName: name}
-	if entry, ok := inventory.Packages[name]; ok {
-		detail.Tracked = true
-		detail.Owned = entry.Owned
-		detail.Source = entry.Source
-		detail.SourceType = entry.SourceType
-		detail.SourceURL = entry.SourceURL
-		detail.Ref = entry.Ref
-		detail.ContentHash = entry.ContentHash
-		detail.InstalledAt = entry.InstalledAt
-		detail.UpdatedAt = entry.UpdatedAt
-		detail.Description = entry.Description
-		detail.Agents = entryBindingAgents(entry)
-		detail.Scope = entry.Scope()
-		for _, binding := range entry.Bindings {
-			detail.Bindings = append(detail.Bindings, SkillBinding{
-				Agent: binding.Agent, Scope: binding.Scope,
-				Mode: string(binding.Mode), TargetPath: binding.TargetPath,
-				SourcePath: binding.TargetPath, Enabled: binding.Enabled,
-				BoundAt: binding.BoundAt, Note: binding.Note,
-				Operations: bindingOperations(binding),
-			})
-			if binding.Enabled {
-				detail.Enabled = true
-			}
+	var installed *InstalledSkill
+	for index := range inventory.Skills {
+		if inventory.Skills[index].Name != name {
+			continue
 		}
-		if entry.Owned {
-			detail.Manager = ManagerZen
-			detail.Canonical = store.PackageDir(name)
-			detail.Capability = ManagementCapability{CanManage: true, Operations: ownedPackageOperations(entry)}
-		} else {
-			detail.Manager = ManagerExternal
-			detail.SourcePath = entry.Source
-			if _, sourceErr := trackedExternalDir(entry); sourceErr != nil {
-				detail.Capability = ManagementCapability{
-					CanManage: true, Operations: []MutationOperation{OperationForget}, Reason: sourceErr.Error(),
-				}
-				detail.Warnings = append(detail.Warnings, sourceErr.Error())
-			} else {
-				detail.Capability = ManagementCapability{CanManage: true, Operations: trackedExternalCapabilities()}
-			}
+		if installed != nil {
+			return PackageDetail{}, fmt.Errorf("multiple local Skills named %q are installed; resolve the duplicate before inspecting", name)
 		}
-	} else {
-		// Untracked external: discover from agent surfaces.
-		surface, found := discoverExternalSurface(normalized, name)
-		if !found {
-			return PackageDetail{}, fmt.Errorf("no Skill named %q is installed or tracked", name)
-		}
-		detail.Manager = ManagerExternal
-		detail.SourcePath = surface.dir
-		detail.Source = surface.dir
-		detail.SourceType = string(SourceTypeExternal)
-		detail.Scope = surface.scope
-		detail.Agents = append([]Agent{}, surface.agents...)
-		hash, err := folderContentHash(surface.dir)
-		if err != nil {
-			return PackageDetail{}, err
-		}
-		detail.ContentHash = hash
-		detail.Capability = ManagementCapability{CanManage: true, Operations: []MutationOperation{OperationAdopt, OperationMigrate}}
+		installed = &inventory.Skills[index]
+	}
+	if installed == nil {
+		return PackageDetail{}, fmt.Errorf("no Skill named %q is installed or tracked", name)
+	}
+	detail := PackageDetail{
+		SkillName: name, Description: installed.Description,
+		Manager: installed.Manager, Owned: installed.Owned, Tracked: installed.Tracked,
+		Enabled: installed.Enabled, Canonical: installed.CanonicalPath, SourcePath: installed.SourcePath,
+		Source: installed.Source, SourceType: installed.SourceType, SourceURL: installed.SourceURL,
+		Ref: installed.Ref, ContentHash: installed.ContentHash, InstalledAt: installed.InstalledAt,
+		UpdatedAt: installed.UpdatedAt, Scope: installed.Scope, Agents: append([]Agent{}, installed.Agents...),
+		Bindings: append([]SkillBinding{}, installed.Bindings...), Risk: append([]RiskSignal{}, installed.Risk...),
+		Warnings: append([]string{}, installed.Warnings...), Capability: installed.Capability,
 	}
 	contentRoot := detail.Canonical
 	if contentRoot == "" {
 		contentRoot = detail.SourcePath
 	}
 	if contentRoot != "" {
-		content, ok, err := readTextFileBounded(filepath.Join(contentRoot, "SKILL.md"), maxInspectSKILLBytes)
-		if err == nil && ok {
-			detail.SKILLMD = content
-		} else if err != nil {
-			detail.Warnings = append(detail.Warnings, "Could not read SKILL.md: "+err.Error())
-		} else {
-			detail.Warnings = append(detail.Warnings, "SKILL.md exceeds the inspection size limit.")
+		contentRoot, err = filepath.EvalSymlinks(contentRoot)
+		if err != nil {
+			detail.Warnings = append(detail.Warnings, "Skill package files are unavailable: "+err.Error())
+			return detail, nil
 		}
-		detail.Files = scanPackageFiles(contentRoot)
+		detail.Files, err = scanPackageFiles(contentRoot)
+		if err != nil {
+			return PackageDetail{}, fmt.Errorf("scan Skill package: %w", err)
+		}
 		detail.Risk = scanRiskSignals(contentRoot)
-	}
-	return detail, nil
-}
-
-func trackedExternalCapabilities() []MutationOperation {
-	return []MutationOperation{OperationAdopt, OperationForget}
-}
-func scanPackageFiles(root string) []PackageFile {
-	files, err := collectRegularFiles(root)
-	if err != nil {
-		return nil
-	}
-	if len(files) > maxInspectFiles {
-		files = files[:maxInspectFiles]
-	}
-	out := make([]PackageFile, 0, len(files))
-	for _, relative := range files {
-		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
-		if err != nil {
-			continue
+		defaultPath := ""
+		for _, file := range detail.Files {
+			if file.Path == "SKILL.md" {
+				defaultPath = file.Path
+				break
+			}
+			if defaultPath == "" && file.PreviewStatus != "binary" {
+				defaultPath = file.Path
+			}
 		}
-		out = append(out, PackageFile{
-			Path: relative, Size: info.Size(), Mode: fmt.Sprintf("%04o", info.Mode().Perm()),
-		})
-	}
-	return out
-}
-
-// discoverExternalSurface finds an untracked external Skill across the six
-// Agent surfaces (global, then project when known).
-func discoverExternalSurface(normalized InventoryOptions, name string) (migrationSource, bool) {
-	for _, agent := range []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentGrok, AgentOpenCode, AgentPi} {
-		adapter, err := adapterFor(agent)
-		if err != nil {
-			continue
-		}
-		globalDir := filepath.Join(globalSkillsDir(adapter, normalized.Home, envResolverFor(normalized)), name)
-		if _, err := os.Stat(filepath.Join(globalDir, "SKILL.md")); err == nil {
-			return migrationSource{dir: globalDir, scope: ScopeGlobal, agents: []Agent{agent}}, true
-		}
-		if normalized.CWD != "" {
-			projectDir := filepath.Join(projectSkillsDir(adapter, normalized.CWD), name)
-			if _, err := os.Stat(filepath.Join(projectDir, "SKILL.md")); err == nil {
-				return migrationSource{dir: projectDir, scope: ScopeProject, agents: []Agent{agent}}, true
+		if defaultPath != "" {
+			detail.Preview, err = previewPackageFile(contentRoot, defaultPath)
+			if err != nil {
+				return PackageDetail{}, err
 			}
 		}
 	}
-	return migrationSource{}, false
+	return detail, nil
+}
+func scanPackageFiles(root string) ([]PackageFile, error) {
+	files, err := collectRegularFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("Skill package root is unavailable")
+	}
+	defer rootFS.Close()
+	out := make([]PackageFile, 0, len(files))
+	for _, relative := range files {
+		file, info, err := openPackageFile(rootFS, relative)
+		if err != nil {
+			return nil, fmt.Errorf("read %q metadata: %w", relative, err)
+		}
+		kind, mediaType, status, err := classifyOpenedPackageFile(file, relative, info.Size())
+		_ = file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("classify %q: %w", relative, err)
+		}
+		out = append(out, PackageFile{Path: relative, Size: info.Size(), Mode: fmt.Sprintf("%04o", info.Mode().Perm()), Kind: kind, MediaType: mediaType, PreviewStatus: status})
+	}
+	return out, nil
+}
+
+func openPackageFile(rootFS *os.Root, relative string) (*os.File, os.FileInfo, error) {
+	path := filepath.FromSlash(relative)
+	info, err := rootFS.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, errors.New("Skill file is missing")
+		}
+		return nil, nil, fmt.Errorf("read Skill file metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, errors.New("Skill file is unavailable or not a regular file")
+	}
+	file, err := rootFS.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open Skill file: %w", err)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, nil, errors.New("Skill file changed while it was being opened")
+	}
+	return file, openedInfo, nil
+}
+
+func previewPackageFile(root, relative string) (*FilePreview, error) {
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, errors.New("Skill package root is unavailable")
+	}
+	defer rootFS.Close()
+	file, info, err := openPackageFile(rootFS, relative)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return previewOpenedPackageFile(file, relative, info)
+}
+
+func previewOpenedPackageFile(file *os.File, relative string, info os.FileInfo) (*FilePreview, error) {
+	data, err := io.ReadAll(io.LimitReader(file, maxInspectPreviewBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Skill file: %w", err)
+	}
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	kind, mediaType, status := classifyPackageSample(relative, info.Size(), sample)
+	preview := &FilePreview{Path: relative, Kind: kind, MediaType: mediaType, Status: status, Size: info.Size()}
+	if status == "binary" {
+		preview.Notice = "Binary files are shown as metadata only."
+		return preview, nil
+	}
+	if int64(len(data)) > maxInspectPreviewBytes {
+		data = data[:maxInspectPreviewBytes]
+		preview.Status = "truncated"
+		preview.Notice = fmt.Sprintf("Preview is limited to %d bytes of a %d-byte file.", maxInspectPreviewBytes, info.Size())
+	}
+	preview.Content = string(data)
+	preview.BytesReturned = int64(len(data))
+	return preview, nil
+}
+
+func classifyOpenedPackageFile(file *os.File, relative string, size int64) (string, string, string, error) {
+	buf := make([]byte, 512)
+	n, err := file.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", "", "", err
+	}
+	kind, mediaType, status := classifyPackageSample(relative, size, buf[:n])
+	return kind, mediaType, status, nil
+}
+
+func classifyPackageSample(relative string, size int64, sample []byte) (string, string, string) {
+	ext := strings.ToLower(filepath.Ext(relative))
+	mediaType := mime.TypeByExtension(ext)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(sample)
+	}
+	kind := "text"
+	switch ext {
+	case ".md", ".mdx":
+		kind = "markdown"
+	case ".json":
+		kind = "json"
+	}
+	textualBytes := validUTF8Sample(sample)
+	if !textualBytes {
+		return "binary", mediaType, "binary"
+	}
+	if size > maxInspectPreviewBytes {
+		return kind, mediaType, "large"
+	}
+	return kind, mediaType, "ready"
+}
+
+func validUTF8Sample(sample []byte) bool {
+	if bytes.ContainsRune(sample, '\x00') {
+		return false
+	}
+	if utf8.Valid(sample) {
+		return true
+	}
+	for trim := 1; trim <= 3 && trim < len(sample); trim++ {
+		prefix, suffix := sample[:len(sample)-trim], sample[len(sample)-trim:]
+		if utf8.Valid(prefix) && !utf8.FullRune(suffix) {
+			return true
+		}
+	}
+	return false
 }

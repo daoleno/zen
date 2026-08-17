@@ -178,7 +178,6 @@ type Inventory struct {
 // SupportedMutationOperations is the authoritative mutation capability set.
 func SupportedMutationOperations() []MutationOperation {
 	return []MutationOperation{
-		OperationImport,
 		OperationMigrate,
 		OperationBind,
 		OperationUnbind,
@@ -189,53 +188,6 @@ func SupportedMutationOperations() []MutationOperation {
 		OperationAdopt,
 		OperationUpdate,
 	}
-}
-
-type CatalogSkill struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Installs int64  `json:"installs"`
-	Source   string `json:"source"`
-}
-
-type CatalogResult struct {
-	Query  string         `json:"query"`
-	Skills []CatalogSkill `json:"skills"`
-}
-
-type CatalogView string
-
-const (
-	CatalogViewAllTime  CatalogView = "all-time"
-	CatalogViewTrending CatalogView = "trending"
-	CatalogViewHot      CatalogView = "hot"
-)
-
-type RankedCatalogSkill struct {
-	ID                string `json:"id"`
-	SkillID           string `json:"skill_id"`
-	Name              string `json:"name"`
-	Source            string `json:"source"`
-	Rank              int    `json:"rank"`
-	TotalInstalls     *int64 `json:"total_installs,omitempty"`
-	Installs24h       *int64 `json:"installs_24h,omitempty"`
-	CurrentInstalls   *int64 `json:"current_installs,omitempty"`
-	YesterdayInstalls *int64 `json:"yesterday_installs,omitempty"`
-	Change            *int64 `json:"change,omitempty"`
-	Installable       bool   `json:"installable"`
-}
-
-type CatalogLeaderboard struct {
-	View        CatalogView          `json:"view"`
-	TotalSkills int64                `json:"total_skills"`
-	Skills      []RankedCatalogSkill `json:"skills"`
-	Warning     string               `json:"warning,omitempty"`
-}
-
-type CatalogLeaderboards struct {
-	AllTime  CatalogLeaderboard `json:"all_time"`
-	Trending CatalogLeaderboard `json:"trending"`
-	Hot      CatalogLeaderboard `json:"hot"`
 }
 
 // SourceType is how a package's content was acquired.
@@ -282,7 +234,7 @@ type MutationCommand struct {
 	Scope       Scope             `json:"scope"`
 	Agents      []Agent           `json:"agents"`
 	SkillName   string            `json:"skill_name"`
-	CatalogID   string            `json:"catalog_id,omitempty"`
+	ImportID    string            `json:"-"`
 	Source      string            `json:"source,omitempty"`
 	Ref         string            `json:"ref,omitempty"`
 	InfoPath    string            `json:"-"`

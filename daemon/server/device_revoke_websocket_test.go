@@ -748,9 +748,11 @@ func TestRunWithReadyCleanupDrainJoinsRacingDetach(t *testing.T) {
 		len(server.active) +
 		len(server.writes) +
 		len(server.codexSubs) +
-		len(server.skillsSearches) +
 		len(server.skillsInventories) +
-		len(server.skillsCatalogs)
+		len(server.skillsMutations) +
+		len(server.skillsInspects) +
+		len(server.pluginsInventories) +
+		len(server.pluginsMutations)
 	server.mu.Unlock()
 	if ownershipRemaining != 0 {
 		t.Fatalf("shutdown left %d ownership entries", ownershipRemaining)
@@ -945,9 +947,11 @@ func testRunWithReadyJoinsCleanupBeforeFailedSessionDisappears(
 		len(server.active) +
 		len(server.writes) +
 		len(server.codexSubs) +
-		len(server.skillsSearches) +
 		len(server.skillsInventories) +
-		len(server.skillsCatalogs)
+		len(server.skillsMutations) +
+		len(server.skillsInspects) +
+		len(server.pluginsInventories) +
+		len(server.pluginsMutations)
 	server.mu.Unlock()
 	if ownershipRemaining != 0 {
 		t.Fatalf("shutdown left %d ownership entries", ownershipRemaining)
@@ -1096,9 +1100,8 @@ func TestClientDetachRaceClaimsEveryOwnershipKindExactlyOnce(t *testing.T) {
 	defer conn.Close()
 
 	codexContext, cancelCodex := context.WithCancel(context.Background())
-	searchContext, cancelSearch := context.WithCancel(context.Background())
 	inventoryContext, cancelInventory := context.WithCancel(context.Background())
-	catalogContext, cancelCatalog := context.WithCancel(context.Background())
+	inspectContext, cancelInspect := context.WithCancel(context.Background())
 	server.mu.Lock()
 	var ownedConn *websocket.Conn
 	var owner *authenticatedClient
@@ -1114,14 +1117,11 @@ func TestClientDetachRaceClaimsEveryOwnershipKindExactlyOnce(t *testing.T) {
 	server.codexSubs[ownedConn]["thread"] = codexConversationSubscription{
 		cancel: cancelCodex,
 	}
-	server.skillsSearches[ownedConn] = skillsSearchRequest{
-		cancel: cancelSearch,
-	}
 	server.skillsInventories[ownedConn] = skillsInventoryRequest{
 		cancel: cancelInventory,
 	}
-	server.skillsCatalogs[ownedConn] = skillsCatalogRequest{
-		cancel: cancelCatalog,
+	server.skillsInspects[ownedConn] = skillsInspectRequest{
+		cancel: cancelInspect,
 	}
 	server.mu.Unlock()
 
@@ -1172,18 +1172,16 @@ func TestClientDetachRaceClaimsEveryOwnershipKindExactlyOnce(t *testing.T) {
 		len(server.active) +
 		len(server.writes) +
 		len(server.codexSubs) +
-		len(server.skillsSearches) +
 		len(server.skillsInventories) +
-		len(server.skillsCatalogs)
+		len(server.skillsInspects)
 	server.mu.Unlock()
 	if ownershipRemaining != 0 {
 		t.Fatalf("raced detach left %d ownership entries", ownershipRemaining)
 	}
 	for name, done := range map[string]<-chan struct{}{
 		"codex":     codexContext.Done(),
-		"search":    searchContext.Done(),
 		"inventory": inventoryContext.Done(),
-		"catalog":   catalogContext.Done(),
+		"inspect":   inspectContext.Done(),
 	} {
 		select {
 		case <-done:
@@ -1274,20 +1272,18 @@ func TestRemoveClientLockedIsIdempotentAndClearsAllOwnership(t *testing.T) {
 	conn := &websocket.Conn{}
 	owner := &authenticatedClient{deviceID: "owned-device"}
 	codexContext, cancelCodex := context.WithCancel(context.Background())
-	searchContext, cancelSearch := context.WithCancel(context.Background())
 	inventoryContext, cancelInventory := context.WithCancel(context.Background())
-	catalogContext, cancelCatalog := context.WithCancel(context.Background())
+	inspectContext, cancelInspect := context.WithCancel(context.Background())
 	server.clients[conn] = owner
 	server.active[conn] = "agent"
 	server.writes[conn] = &sync.Mutex{}
 	server.codexSubs[conn] = map[string]codexConversationSubscription{
 		"thread": {cancel: cancelCodex},
 	}
-	server.skillsSearches[conn] = skillsSearchRequest{cancel: cancelSearch}
 	server.skillsInventories[conn] = skillsInventoryRequest{
 		cancel: cancelInventory,
 	}
-	server.skillsCatalogs[conn] = skillsCatalogRequest{cancel: cancelCatalog}
+	server.skillsInspects[conn] = skillsInspectRequest{cancel: cancelInspect}
 
 	server.mu.Lock()
 	server.removeClientLocked(conn)
@@ -1299,16 +1295,14 @@ func TestRemoveClientLockedIsIdempotentAndClearsAllOwnership(t *testing.T) {
 		len(server.active) != 0 ||
 		len(server.writes) != 0 ||
 		len(server.codexSubs) != 0 ||
-		len(server.skillsSearches) != 0 ||
 		len(server.skillsInventories) != 0 ||
-		len(server.skillsCatalogs) != 0 {
+		len(server.skillsInspects) != 0 {
 		t.Fatal("idempotent removal left socket ownership or subscriptions")
 	}
 	for name, done := range map[string]<-chan struct{}{
 		"codex":     codexContext.Done(),
-		"search":    searchContext.Done(),
 		"inventory": inventoryContext.Done(),
-		"catalog":   catalogContext.Done(),
+		"inspect":   inspectContext.Done(),
 	} {
 		select {
 		case <-done:

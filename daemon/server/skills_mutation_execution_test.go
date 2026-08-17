@@ -63,12 +63,8 @@ func TestSkillsMutationSupersedeCancelsInFlightCommandAndSuppressesStaleResult(t
 		if err := conn.WriteJSON(map[string]any{
 			"type":       "skills_mutation",
 			"request_id": requestID,
-			"operation":  "import",
-			"skill_id":   "owner/repo/skill",
-			"source":     "owner/repo",
-			"skill_name": "skill",
+			"operation":  "migrate",
 			"scope":      "global",
-			"agents":     []string{"codex"},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -116,12 +112,8 @@ func TestSkillsMutationOnlyCurrentRequestClaimsOnceAndEmitsResult(t *testing.T) 
 		if err := conn.WriteJSON(map[string]any{
 			"type":       "skills_mutation",
 			"request_id": requestID,
-			"operation":  "import",
-			"skill_id":   "owner/repo/skill",
-			"source":     "owner/repo",
-			"skill_name": "skill",
+			"operation":  "migrate",
 			"scope":      "global",
-			"agents":     []string{"codex"},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -151,6 +143,31 @@ func TestSkillsMutationOnlyCurrentRequestClaimsOnceAndEmitsResult(t *testing.T) 
 	expectNoMessage(t, messages, "skills_mutation_error")
 }
 
+func TestSkillsImportOperationIsNotExposedOverWebSocket(t *testing.T) {
+	_, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	messages := messageSink(t, conn)
+	for _, messageType := range []string{"skills_command", "skills_mutation"} {
+		requestID := "removed-" + messageType
+		if err := conn.WriteJSON(map[string]any{
+			"type":       messageType,
+			"request_id": requestID,
+			"operation":  "import",
+			"skill_name": "remote-skill",
+			"skill_id":   "owner/repo/remote-skill",
+			"source":     "owner/repo",
+			"scope":      "global",
+			"agents":     []string{"codex"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		response := readUntil(t, messages, messageType+"_error", requestID)
+		if response["code"] != "unsupported_operation" {
+			t.Fatalf("%s import response = %+v", messageType, response)
+		}
+	}
+}
+
 func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *testing.T) {
 	home := t.TempDir()
 	stateDir := filepath.Join(home, ".zen")
@@ -159,7 +176,7 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	source := filepath.Join(home, "source-skill")
+	source := filepath.Join(home, ".codex", "skills", "lifecycle-proof")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -181,19 +198,20 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 		return readUntil(t, messages, "skills_inventory", id)
 	}
 	initial := inventory("inventory-initial", 1)
-	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 0 {
-		t.Fatalf("initial Skills inventory = %d rows, want empty", len(rows))
+	if rows := initial["inventory"].(map[string]any)["skills"].([]any); len(rows) != 1 {
+		t.Fatalf("initial Skills inventory = %d rows, want one local row", len(rows))
 	}
 
 	sequence := []map[string]any{
-		{"operation": "import", "skill_name": "lifecycle-proof", "path": source, "scope": "global", "agents": []string{"codex"}},
+		{"operation": "migrate", "scope": "global"},
+		{"operation": "adopt", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"codex"}},
 		{"operation": "bind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
 		{"operation": "disable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
 		{"operation": "enable", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
 		{"operation": "unbind", "skill_name": "lifecycle-proof", "scope": "global", "agents": []string{"cursor"}},
 		{"operation": "uninstall", "skill_name": "lifecycle-proof", "scope": "global"},
 	}
-	for index, input := range sequence {
+	for _, input := range sequence {
 		operation := input["operation"].(string)
 		commandID := "command-" + operation
 		commandRequest := map[string]any{"type": "skills_command", "request_id": commandID}
@@ -218,9 +236,12 @@ func TestSkillsWebSocketLifecycleUsesReviewedPlansAndReconcilesInventory(t *test
 			t.Fatalf("%s execution failed: %+v", operation, result)
 		}
 
-		if index == 0 {
-			send(map[string]any{"type": "skills_inspect", "request_id": "inspect-imported", "generation": 1, "skill_name": "lifecycle-proof"})
-			inspection := readUntil(t, messages, "skills_inspect_result", "inspect-imported")
+		if operation == "adopt" {
+			if err := os.RemoveAll(source); err != nil {
+				t.Fatal(err)
+			}
+			send(map[string]any{"type": "skills_inspect", "request_id": "inspect-adopted", "generation": 1, "skill_name": "lifecycle-proof"})
+			inspection := readUntil(t, messages, "skills_inspect_result", "inspect-adopted")
 			if inspection["detail"].(map[string]any)["skill_name"] != "lifecycle-proof" {
 				t.Fatalf("inspect response = %+v", inspection)
 			}

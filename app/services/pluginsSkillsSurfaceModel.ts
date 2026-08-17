@@ -1,20 +1,7 @@
-import type {
-  AvailablePlugin,
-  InstalledPluginRow,
-} from "./pluginsManagement";
-import {
-  pluginHostLabel,
-} from "./pluginsManagement";
-import type {
-  CatalogSkill,
-  InstalledSkill,
-  ManagedSkillAgent,
-  RankedCatalogSkill,
-} from "./skillsManagement";
-import {
-  scopeLabel,
-  skillAgentLabel,
-} from "./skillsManagement";
+import type { AvailablePlugin, InstalledPluginRow } from "./pluginsManagement";
+import { pluginHostLabel } from "./pluginsManagement";
+import type { InstalledSkill, ManagedSkillAgent } from "./skillsManagement";
+import { scopeLabel, skillAgentLabel } from "./skillsManagement";
 import type { SkillsAgentCounts } from "./skillsScreenModel";
 import { MANAGED_SKILL_AGENTS } from "./skillsScreenModel";
 
@@ -22,8 +9,8 @@ import { MANAGED_SKILL_AGENTS } from "./skillsScreenModel";
  * Layout and presentation truth for the compact Plugins & Skills surface.
  *
  * The UI deliberately has only one first-level navigator (the Plugins and
- * Skills tabs) and one stable management list per tab. Installed and
- * discovered rows coexist with lifecycle badges; search, target, ranking, and
+ * Skills tabs) and one stable management list per tab. Installed Skills and
+ * available Plugins retain their own lifecycle badges; search, target, and
  * refresh are tools inside the selected section, never additional full-width
  * navigation. Keeping the geometry here makes the narrow-phone and large-type
  * contract independently testable.
@@ -62,10 +49,7 @@ export function compactSkillTargets(
 }
 
 export function compactToolbarContentWidth(viewportWidth: number): number {
-  return Math.max(
-    0,
-    viewportWidth - PLUGINS_SKILLS_SCREEN_PADDING * 2,
-  );
+  return Math.max(0, viewportWidth - PLUGINS_SKILLS_SCREEN_PADDING * 2);
 }
 
 export function filterInstalledSkills(
@@ -107,17 +91,6 @@ export function filterAvailablePlugins(
   ]);
 }
 
-export function filterCatalogSkills<T extends CatalogSkill | RankedCatalogSkill>(
-  skills: T[],
-  query: string,
-): T[] {
-  return filterByQuery(skills, query, (skill) => [
-    skill.name,
-    skill.skillId,
-    skill.source,
-  ]);
-}
-
 export function installedSkillMetadata(skill: InstalledSkill): string {
   const source = skill.source || skill.plugin || ownershipLabel(skill);
   return [source, scopeLabel(skill.scope)].filter(Boolean).join(" · ");
@@ -129,7 +102,10 @@ export function installedSkillBadges(
 ): LifecycleBadge[] {
   const badges: LifecycleBadge[] = [];
   if (skill.owned) {
-    badges.push({ label: skill.enabled ? "Zen-owned · Enabled" : "Zen-owned · Disabled", tone: skill.enabled ? "accent" : "warning" });
+    badges.push({
+      label: skill.enabled ? "Zen-owned · Enabled" : "Zen-owned · Disabled",
+      tone: skill.enabled ? "accent" : "warning",
+    });
   } else if (skill.tracked) {
     badges.push({ label: "Tracked external", tone: "warning" });
   } else {
@@ -140,19 +116,8 @@ export function installedSkillBadges(
     badges.push({ label: `${installedCount} agents`, tone: "neutral" });
   }
   if (skill.migration === "duplicate" || skill.migration === "conflict") {
-    badges.push({ label: skill.migration === "conflict" ? "Conflict" : "Duplicate", tone: "warning" });
-  }
-  return badges;
-}
-
-export function catalogSkillBadges(
-  skill: CatalogSkill | RankedCatalogSkill,
-  installedForOtherAgents: string[],
-): LifecycleBadge[] {
-  const badges: LifecycleBadge[] = [{ label: "Available", tone: "neutral" }];
-  if (installedForOtherAgents.length > 0) {
     badges.push({
-      label: `Installed for ${installedForOtherAgents.join(", ")}`,
+      label: skill.migration === "conflict" ? "Conflict" : "Duplicate",
       tone: "warning",
     });
   }
@@ -250,20 +215,23 @@ export function installedPluginOwnership(
     return {
       manageable: false,
       summary: "Managed by Codex",
-      detail: "Codex-hosted plugins do not expose a supported lifecycle adapter to Zen.",
+      detail:
+        "Codex-hosted plugins do not expose a supported lifecycle adapter to Zen.",
     };
   }
   if (plugin.source === "cache") {
     return {
       manageable: false,
       summary: "Discovered from client cache",
-      detail: "This cached plugin can be inspected here but not safely changed from Zen.",
+      detail:
+        "This cached plugin can be inspected here but not safely changed from Zen.",
     };
   }
   return {
     manageable: false,
     summary: `Managed by ${pluginHostLabel(plugin.host)}`,
-    detail: "The owning client does not currently allow Zen to change this plugin.",
+    detail:
+      "The owning client does not currently allow Zen to change this plugin.",
   };
 }
 

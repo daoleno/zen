@@ -102,13 +102,7 @@ func collectRegularFiles(root string) ([]string, error) {
 			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
-			target, statErr := os.Stat(path)
-			if statErr != nil || !target.IsDir() {
-				// Symlinked files inside a package are not materialized; treat
-				// as out-of-contract content rather than silently dropping.
-				return errors.New("symlink inside a skill package is not allowed")
-			}
-			return fs.SkipDir
+			return errors.New("symlink inside a skill package is not allowed")
 		}
 		if !entry.Type().IsRegular() {
 			return nil

@@ -77,8 +77,8 @@ func BuildMutationCommand(options InventoryOptions, request MutationRequest) (Mu
 		return MutationCommand{
 			Operation:   OperationMigrate,
 			Scope:       ScopeGlobal,
-			Summary:     "Discover existing local skills across all six agents and track external installations in Zen's inventory (no files are changed; adopt or forget each one afterward)",
-			Changes:     []MutationChange{{Kind: "write", Path: env.store.InventoryPath(), Detail: "Track discovered external installations"}},
+			Summary:     "Track existing local Skills across all six agents in Zen's inventory (no files are changed; adopt or forget each one afterward)",
+			Changes:     []MutationChange{{Kind: "write", Path: env.store.InventoryPath(), Detail: "Track external local installations"}},
 			Destructive: false,
 		}, nil
 	case OperationBind, OperationUnbind, OperationEnable, OperationDisable, OperationUninstall, OperationForget, OperationAdopt, OperationUpdate:
@@ -146,7 +146,7 @@ func buildImportPlan(request MutationRequest, env environment) (MutationCommand,
 		Scope:       request.Scope,
 		Agents:      agents,
 		SkillName:   request.SkillName,
-		CatalogID:   catalogIDFor(request),
+		ImportID:    importIDFor(request),
 		Source:      request.Source,
 		Ref:         request.Ref,
 		InfoPath:    request.InfoPath,
@@ -232,7 +232,7 @@ func detectImportSource(request MutationRequest) (SourceType, error) {
 	return "", errors.New("import requires a catalog identity, a local directory, or an archive")
 }
 
-func catalogIDFor(request MutationRequest) string {
+func importIDFor(request MutationRequest) string {
 	if request.SkillID != "" {
 		return request.SkillID
 	}
@@ -650,7 +650,7 @@ func executeImport(ctx context.Context, env environment, command MutationCommand
 func stageImportSource(ctx context.Context, env environment, command MutationCommand, staging string) (string, SourceType, error) {
 	request := MutationRequest{
 		SkillName: command.SkillName, Source: command.Source,
-		SkillID: command.CatalogID, Ref: command.Ref, Agents: command.Agents, Scope: command.Scope,
+		SkillID: command.ImportID, Ref: command.Ref, Agents: command.Agents, Scope: command.Scope,
 	}
 	if command.InfoPath != "" {
 		request.InfoPath = command.InfoPath
@@ -692,7 +692,7 @@ func stageImportSource(ctx context.Context, env environment, command MutationCom
 }
 
 // resolveSkillRoot locates the skill folder inside a staged tree: the tree
-// itself, <tree>/<name>, or the skills.sh convention <tree>/skills/<name>.
+// itself, <tree>/<name>, or the common repository layout <tree>/skills/<name>.
 // A bounded single-chain wrapper is also unwrapped.
 func resolveSkillRoot(dir, name string) string {
 	candidates := []string{
@@ -1117,7 +1117,7 @@ func replaceEnabledCopyBindings(bindings []BindingEntry, source string) ([]copyB
 }
 
 func fetchCommand(entry PackageEntry) MutationCommand {
-	return MutationCommand{SkillName: entry.SkillName, Source: entry.Source, Ref: entry.Ref, CatalogID: entry.Source + "/" + entry.SkillName}
+	return MutationCommand{SkillName: entry.SkillName, Source: entry.Source, Ref: entry.Ref, ImportID: entry.Source + "/" + entry.SkillName}
 }
 
 func trackedExternalDir(entry PackageEntry) (string, error) {

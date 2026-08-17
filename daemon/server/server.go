@@ -128,11 +128,7 @@ type Server struct {
 	active             map[*websocket.Conn]string
 	writes             map[*websocket.Conn]*sync.Mutex
 	codexSubs          map[*websocket.Conn]map[string]codexConversationSubscription
-	skillsSearcher     *skillmgmt.Searcher
-	skillsCatalog      *skillmgmt.LeaderboardReader
 	skillsInventories  map[*websocket.Conn]skillsInventoryRequest
-	skillsCatalogs     map[*websocket.Conn]skillsCatalogRequest
-	skillsSearches     map[*websocket.Conn]skillsSearchRequest
 	skillsMutations    map[*websocket.Conn]skillsMutationRequest
 	skillsInspects     map[*websocket.Conn]skillsInspectRequest
 	pluginsInventories map[*websocket.Conn]pluginsInventoryRequest
@@ -250,11 +246,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		active:             make(map[*websocket.Conn]string),
 		writes:             make(map[*websocket.Conn]*sync.Mutex),
 		codexSubs:          make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		skillsSearcher:     skillmgmt.NewSearcher(),
-		skillsCatalog:      skillmgmt.NewLeaderboardReader(),
 		skillsInventories:  make(map[*websocket.Conn]skillsInventoryRequest),
-		skillsCatalogs:     make(map[*websocket.Conn]skillsCatalogRequest),
-		skillsSearches:     make(map[*websocket.Conn]skillsSearchRequest),
 		skillsMutations:    make(map[*websocket.Conn]skillsMutationRequest),
 		skillsInspects:     make(map[*websocket.Conn]skillsInspectRequest),
 		pluginsInventories: make(map[*websocket.Conn]pluginsInventoryRequest),
@@ -587,10 +579,6 @@ func (s *Server) clientCount() int {
 }
 
 func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
-	if search, ok := s.skillsSearches[conn]; ok {
-		search.cancel()
-		delete(s.skillsSearches, conn)
-	}
 	if inventory, ok := s.skillsInventories[conn]; ok {
 		inventory.cancel()
 		delete(s.skillsInventories, conn)
@@ -598,10 +586,6 @@ func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
 	if plugins, ok := s.pluginsInventories[conn]; ok {
 		plugins.cancel()
 		delete(s.pluginsInventories, conn)
-	}
-	if catalog, ok := s.skillsCatalogs[conn]; ok {
-		catalog.cancel()
-		delete(s.skillsCatalogs, conn)
 	}
 	if mutation, ok := s.skillsMutations[conn]; ok {
 		mutation.cancel()
@@ -1151,15 +1135,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "skills_inventory":
 		s.handleSkillsInventory(conn, raw)
-
-	case "skills_catalog":
-		s.handleSkillsCatalog(conn, raw)
-
-	case "skills_search":
-		s.handleSkillsSearch(conn, raw)
-
-	case "skills_search_cancel":
-		s.handleSkillsSearchCancel(conn, raw)
 
 	case "skills_command":
 		s.handleSkillsCommand(conn, raw)

@@ -31,19 +31,15 @@ import {
 } from "./sessionFilePreview";
 import type { CalendarItem } from "../store/calendar";
 import {
-  normalizeSkillsCatalogResult,
   normalizeSkillsInspectDetail,
   normalizeSkillsInventory,
-  normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
   normalizeSkillsMutationResult,
   assertSkillsMutationMatchesRequest,
   type PackageDetail,
   type SkillAgent,
   type SkillMutationOperation,
-  type SkillsCatalogResult,
   type SkillsInventory,
-  type SkillsLeaderboards,
   type SkillsMutationCommand,
   type SkillsMutationResult,
 } from "./skillsManagement";
@@ -2115,148 +2111,6 @@ export class MultiServerWebSocketClient {
     );
   }
 
-  getSkillsLeaderboards(
-    serverId: string,
-    options: { generation: number; limit?: number },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise<{
-      generation: number;
-      leaderboards: SkillsLeaderboards;
-    }>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("skills_catalog", handleCatalog);
-        this.off("skills_catalog_error", handleError);
-      };
-      const handleCatalog = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        if (payload.generation !== options.generation) {
-          reject(
-            new Error("Daemon returned a stale Skills catalog generation."),
-          );
-          return;
-        }
-        try {
-          resolve({
-            generation: options.generation,
-            leaderboards: normalizeSkillsLeaderboards(payload.leaderboards),
-          });
-        } catch (error) {
-          reject(error);
-        }
-      };
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(
-          new Error(payload.message || "Failed to load skills.sh rankings."),
-        );
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while loading skills.sh rankings."));
-      }, 12000);
-      this.on("skills_catalog", handleCatalog);
-      this.on("skills_catalog_error", handleError);
-      this.sendRequestNow(
-        serverId,
-        {
-          type: "skills_catalog",
-          request_id: requestId,
-          generation: options.generation,
-          limit: options.limit ?? 30,
-        },
-        cleanup,
-        reject,
-      );
-    });
-  }
-
-  searchSkillsCatalog(
-    serverId: string,
-    options: { query: string; limit?: number; generation: number },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise<{ generation: number; result: SkillsCatalogResult }>(
-      (resolve, reject) => {
-        const cleanup = () => {
-          if (timer) clearTimeout(timer);
-          this.off("skills_search", handleSearch);
-          this.off("skills_search_error", handleError);
-        };
-        const handleSearch = (payload: any) => {
-          if (
-            payload.serverId !== serverId ||
-            payload.request_id !== requestId
-          ) {
-            return;
-          }
-          cleanup();
-          if (payload.generation !== options.generation) {
-            reject(
-              new Error("Daemon returned a stale Skills search generation."),
-            );
-            return;
-          }
-          try {
-            resolve({
-              generation: options.generation,
-              result: normalizeSkillsCatalogResult(payload.result),
-            });
-          } catch (error) {
-            reject(error);
-          }
-        };
-        const handleError = (payload: any) => {
-          if (
-            payload.serverId !== serverId ||
-            payload.request_id !== requestId
-          ) {
-            return;
-          }
-          cleanup();
-          reject(new Error(payload.message || "Failed to search skills.sh."));
-        };
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error("Timed out while searching skills.sh."));
-        }, 12000);
-        this.on("skills_search", handleSearch);
-        this.on("skills_search_error", handleError);
-        this.sendRequestNow(
-          serverId,
-          {
-            type: "skills_search",
-            request_id: requestId,
-            generation: options.generation,
-            prompt: options.query,
-            limit: options.limit ?? 20,
-          },
-          cleanup,
-          reject,
-        );
-      },
-    );
-  }
-
-  cancelSkillsCatalogSearch(
-    serverId: string,
-    options: { generation: number },
-  ): boolean {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    return this.trySendNow(serverId, {
-      type: "skills_search_cancel",
-      request_id: requestId,
-      generation: options.generation,
-    });
-  }
-
   buildSkillsCommand(
     serverId: string,
     options: {
@@ -2307,16 +2161,6 @@ export class MultiServerWebSocketClient {
             throw new Error(
               "Daemon returned a Skills command for a different request.",
             );
-          }
-          if (options.operation === "import") {
-            if (
-              command.catalogId !== options.skillId ||
-              command.source !== options.source
-            ) {
-              throw new Error(
-                "Daemon returned a Skills command for a different request.",
-              );
-            }
           }
           resolve(command);
         } catch (error) {

@@ -1,8 +1,11 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -110,7 +113,7 @@ func TestInspectPackageDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(detail.SKILLMD, "pet body") {
+	if detail.Preview == nil || detail.Preview.Path != "SKILL.md" || !strings.Contains(detail.Preview.Content, "pet body") {
 		t.Fatal("inspector must render SKILL.md content")
 	}
 	if detail.Owned != true || detail.Manager != ManagerZen {
@@ -140,8 +143,23 @@ func TestInspectPackageDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.Owned || detail.SourcePath == "" || !strings.Contains(detail.SKILLMD, "external body") {
+	if detail.Owned || detail.SourcePath == "" || detail.Preview == nil || !strings.Contains(detail.Preview.Content, "external body") {
 		t.Fatalf("external inspect wrong: %+v", detail)
+	}
+	shared := f.writeSkill(f.agentGlobalDir(AgentCodex), "shared-local", "shared body")
+	piRoot := f.agentGlobalDir(AgentPi)
+	if err := os.MkdirAll(piRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, filepath.Join(piRoot, "shared-local")); err != nil {
+		t.Fatal(err)
+	}
+	detail, err = InspectPackage(f.options(""), "shared-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(detail.Agents, []Agent{AgentCodex, AgentPi}) || len(detail.Bindings) != 2 {
+		t.Fatalf("shared local inspect identity = agents %v bindings %v", detail.Agents, detail.Bindings)
 	}
 }
 
@@ -153,13 +171,126 @@ func TestInspectPackageFileIsBoundedAndTraversalSafe(t *testing.T) {
 	}
 	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "reader", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentPi}})
 	detail, err := InspectPackageFile(f.options(""), "reader", "notes.md")
-	if err != nil || detail.FilePath != "notes.md" || detail.FileContent != "read only" {
+	if err != nil || detail.Preview == nil || detail.Preview.Path != "notes.md" || detail.Preview.Content != "read only" {
 		t.Fatalf("file inspection = %+v, %v", detail, err)
 	}
 	for _, unsafe := range []string{"../inventory.json", "/etc/passwd", "."} {
 		if _, err := InspectPackageFile(f.options(""), "reader", unsafe); err == nil {
 			t.Fatalf("unsafe file path %q was accepted", unsafe)
 		}
+	}
+	if _, err := InspectPackageFile(f.options(""), "reader", "missing.txt"); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing file error = %v", err)
+	}
+	escape := filepath.Join(f.Home, "escape.txt")
+	if err := os.WriteFile(escape, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escape, filepath.Join(detail.Canonical, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectPackageFile(f.options(""), "reader", "escape.txt"); err == nil {
+		t.Fatal("symlink escape was accepted")
+	}
+	directoryEscape := filepath.Join(f.Home, "outside")
+	if err := os.MkdirAll(directoryEscape, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directoryEscape, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(directoryEscape, filepath.Join(detail.Canonical, "linked-directory")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectPackage(f.options(""), "reader"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("directory symlink inspection error = %v", err)
+	}
+}
+
+func TestInspectClassifiesNestedFilesAndBoundedPreviews(t *testing.T) {
+	f := newFixture(t)
+	source := f.writeSkill(f.Home, "formats", "# Formats\n")
+	if err := os.MkdirAll(filepath.Join(source, "config", "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"config/nested/data.json": []byte(`{"ok":true}`),
+		"config/settings.yaml":    []byte("enabled: true\n"),
+		"binary.bin":              {0, 1, 2, 3, 0},
+		"binary.md":               {0, 1, 2, 3, 0},
+		"unicode.txt":             []byte(strings.Repeat("x", 511) + "明"),
+		"large.txt":               []byte(strings.Repeat("x", maxInspectPreviewBytes+32)),
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(source, filepath.FromSlash(name)), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "formats", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex}})
+	detail, err := InspectPackage(f.options(""), "formats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]PackageFile{}
+	for _, file := range detail.Files {
+		byPath[file.Path] = file
+	}
+	if byPath["SKILL.md"].Kind != "markdown" || byPath["config/nested/data.json"].Kind != "json" || byPath["binary.bin"].PreviewStatus != "binary" || byPath["binary.md"].Kind != "binary" || byPath["unicode.txt"].Kind != "text" || byPath["large.txt"].PreviewStatus != "large" {
+		t.Fatalf("classification = %#v", byPath)
+	}
+	large, err := InspectPackageFile(f.options(""), "formats", "large.txt")
+	if err != nil || large.Preview == nil || large.Preview.Status != "truncated" || large.Preview.BytesReturned != maxInspectPreviewBytes {
+		t.Fatalf("large preview = %#v, %v", large.Preview, err)
+	}
+}
+
+func TestInspectListsEverySupportedPackageFileDeterministically(t *testing.T) {
+	f := newFixture(t)
+	source := f.writeSkill(f.Home, "many-files", "# Many files\n")
+	for index := 179; index >= 0; index-- {
+		name := filepath.Join(source, "nested", fmt.Sprintf("file-%03d.txt", index))
+		if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte("content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "many-files", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex}})
+	first, err := InspectPackage(f.options(""), "many-files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := InspectPackage(f.options(""), "many-files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Files) != 181 {
+		t.Fatalf("listed files = %d, want all 181", len(first.Files))
+	}
+	if !reflect.DeepEqual(first.Files, second.Files) {
+		t.Fatal("package file order changed between inspections")
+	}
+}
+
+func TestInspectUnreadableFileReturnsReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are required")
+	}
+	f := newFixture(t)
+	source := f.writeSkill(f.Home, "unreadable", "# Unreadable\n")
+	secret := filepath.Join(source, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRunMutation(t, f, MutationRequest{Operation: OperationImport, SkillName: "unreadable", InfoPath: source, Scope: ScopeGlobal, Agents: []Agent{AgentCodex}})
+	canonicalSecret := filepath.Join(f.store().PackageDir("unreadable"), "secret.txt")
+	if err := os.Chmod(canonicalSecret, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(canonicalSecret, 0o600) })
+	if _, err := InspectPackageFile(f.options(""), "unreadable", "secret.txt"); err == nil {
+		t.Fatal("unreadable file inspection succeeded")
 	}
 }
 

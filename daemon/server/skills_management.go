@@ -10,19 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type skillsSearchRequest struct {
-	requestID  string
-	generation int64
-	cancel     context.CancelFunc
-}
-
 type skillsInventoryRequest struct {
-	requestID  string
-	generation int64
-	cancel     context.CancelFunc
-}
-
-type skillsCatalogRequest struct {
 	requestID  string
 	generation int64
 	cancel     context.CancelFunc
@@ -44,20 +32,6 @@ type skillsInventoryResponse struct {
 	RequestID  string              `json:"request_id"`
 	Generation int64               `json:"generation"`
 	Inventory  skillmgmt.Inventory `json:"inventory"`
-}
-
-type skillsSearchResponse struct {
-	Type       string                  `json:"type"`
-	RequestID  string                  `json:"request_id"`
-	Generation int64                   `json:"generation"`
-	Result     skillmgmt.CatalogResult `json:"result"`
-}
-
-type skillsCatalogResponse struct {
-	Type         string                        `json:"type"`
-	RequestID    string                        `json:"request_id"`
-	Generation   int64                         `json:"generation"`
-	Leaderboards skillmgmt.CatalogLeaderboards `json:"leaderboards"`
 }
 
 type skillsCommandResponse struct {
@@ -151,158 +125,13 @@ func (s *Server) claimSkillsInventory(conn *websocket.Conn, expected skillsInven
 	return true
 }
 
-func (s *Server) handleSkillsCatalog(conn *websocket.Conn, raw clientMessage) {
-	if !validSkillsRequest(raw.RequestID, raw.Generation) || raw.Limit < 0 || raw.Limit > skillmgmt.MaxLeaderboardLimit {
-		s.sendSkillsError(conn, "skills_catalog_error", raw, "invalid_request", "Invalid Skills catalog request.")
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	next := skillsCatalogRequest{requestID: raw.RequestID, generation: raw.Generation, cancel: cancel}
-	previous, hadPrevious := s.replaceSkillsCatalog(conn, next)
-	if hadPrevious {
-		s.sendJSON(conn, skillsErrorResponse{
-			Type:       "skills_catalog_error",
-			RequestID:  previous.requestID,
-			Generation: previous.generation,
-			Code:       "superseded",
-			Message:    "A newer Skills catalog request replaced this request.",
-		})
-	}
-	go func() {
-		leaderboards, err := s.skillsCatalog.Read(ctx, raw.Limit)
-		if !s.claimSkillsCatalog(conn, next) {
-			return
-		}
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			s.sendSkillsError(conn, "skills_catalog_error", raw, "catalog_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, skillsCatalogResponse{
-			Type:         "skills_catalog",
-			RequestID:    raw.RequestID,
-			Generation:   raw.Generation,
-			Leaderboards: leaderboards,
-		})
-	}()
-}
-
-func (s *Server) replaceSkillsCatalog(conn *websocket.Conn, next skillsCatalogRequest) (skillsCatalogRequest, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	previous, ok := s.skillsCatalogs[conn]
-	if ok {
-		previous.cancel()
-	}
-	s.skillsCatalogs[conn] = next
-	return previous, ok
-}
-
-func (s *Server) claimSkillsCatalog(conn *websocket.Conn, expected skillsCatalogRequest) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.skillsCatalogs[conn]
-	if !ok || current.requestID != expected.requestID || current.generation != expected.generation {
-		return false
-	}
-	delete(s.skillsCatalogs, conn)
-	return true
-}
-
-func (s *Server) handleSkillsSearch(conn *websocket.Conn, raw clientMessage) {
-	if !validSkillsRequest(raw.RequestID, raw.Generation) {
-		s.sendSkillsError(conn, "skills_search_error", raw, "invalid_request", "Invalid Skills search request.")
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	next := skillsSearchRequest{requestID: raw.RequestID, generation: raw.Generation, cancel: cancel}
-
-	s.mu.Lock()
-	previous, hadPrevious := s.skillsSearches[conn]
-	s.skillsSearches[conn] = next
-	s.mu.Unlock()
-	if hadPrevious {
-		previous.cancel()
-		s.sendJSON(conn, skillsErrorResponse{
-			Type:       "skills_search_error",
-			RequestID:  previous.requestID,
-			Generation: previous.generation,
-			Code:       "superseded",
-			Message:    "A newer Skills search replaced this request.",
-		})
-	}
-
-	go func() {
-		result, err := s.skillsSearcher.Search(ctx, raw.Prompt, raw.Limit)
-		if !s.claimSkillsSearch(conn, next) {
-			return
-		}
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			s.sendSkillsError(conn, "skills_search_error", raw, "search_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, skillsSearchResponse{
-			Type:       "skills_search",
-			RequestID:  raw.RequestID,
-			Generation: raw.Generation,
-			Result:     result,
-		})
-	}()
-}
-
-func (s *Server) handleSkillsSearchCancel(conn *websocket.Conn, raw clientMessage) {
-	if !validSkillsRequest(raw.RequestID, raw.Generation) {
-		s.sendSkillsError(conn, "skills_search_cancel_error", raw, "invalid_request", "Invalid Skills search cancellation request.")
-		return
-	}
-	canceled, ok := s.cancelSkillsSearch(conn, raw.Generation)
-	if ok {
-		s.sendJSON(conn, skillsErrorResponse{
-			Type:       "skills_search_error",
-			RequestID:  canceled.requestID,
-			Generation: canceled.generation,
-			Code:       "canceled",
-			Message:    "The Skills search was canceled.",
-		})
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "skills_search_canceled",
-		"request_id": raw.RequestID,
-		"generation": raw.Generation,
-	})
-}
-
-func (s *Server) cancelSkillsSearch(conn *websocket.Conn, generation int64) (skillsSearchRequest, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.skillsSearches[conn]
-	if !ok || current.generation != generation {
-		return skillsSearchRequest{}, false
-	}
-	delete(s.skillsSearches, conn)
-	current.cancel()
-	return current, true
-}
-
-func (s *Server) claimSkillsSearch(conn *websocket.Conn, expected skillsSearchRequest) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.skillsSearches[conn]
-	if !ok || current.requestID != expected.requestID || current.generation != expected.generation {
-		return false
-	}
-	delete(s.skillsSearches, conn)
-	return true
-}
-
 func (s *Server) handleSkillsCommand(conn *websocket.Conn, raw clientMessage) {
 	if !validSkillsRequestID(raw.RequestID) {
 		s.sendSkillsError(conn, "skills_command_error", raw, "invalid_request", "Invalid Skills command request.")
+		return
+	}
+	if raw.Operation == string(skillmgmt.OperationImport) {
+		s.sendSkillsError(conn, "skills_command_error", raw, "unsupported_operation", "Skills import is not part of local management.")
 		return
 	}
 	request := skillsMutationWireRequest(raw)
@@ -366,6 +195,10 @@ func skillsMutationWireRequest(raw clientMessage) skillmgmt.MutationRequest {
 func (s *Server) handleSkillsMutation(conn *websocket.Conn, raw clientMessage) {
 	if !validSkillsRequestID(raw.RequestID) {
 		s.sendSkillsError(conn, "skills_mutation_error", raw, "invalid_request", "Invalid Skills mutation request.")
+		return
+	}
+	if raw.Operation == string(skillmgmt.OperationImport) {
+		s.sendSkillsError(conn, "skills_mutation_error", raw, "unsupported_operation", "Skills import is not part of local management.")
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())

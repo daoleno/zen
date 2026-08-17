@@ -1,9 +1,7 @@
 import type {
   InstalledSkill,
   ManagedSkillAgent,
-  RankedCatalogSkill,
   SkillMutationOperation,
-  CatalogSkill,
   SkillBinding,
 } from "./skillsManagement";
 
@@ -43,11 +41,6 @@ export function skillBindingSupports(
 }
 
 export type SkillMutationIntent =
-  | {
-      kind: "import";
-      skill: CatalogSkill | RankedCatalogSkill;
-      scope: "project" | "global";
-    }
   | { kind: "migrate" }
   | {
       kind: "binding";
@@ -106,21 +99,6 @@ export function evaluateSkillMutation(
     };
   }
   switch (intent.kind) {
-    case "import": {
-      if (!intent.skill.installable) {
-        return {
-          supported: false,
-          reason: "This catalog identity cannot be installed on this server.",
-        };
-      }
-      if (intent.scope === "project" && !hasProjectCwd) {
-        return {
-          supported: false,
-          reason: SKILL_UPDATE_PROJECT_REQUIRES_CWD_REASON,
-        };
-      }
-      return { supported: true, operation: "import" };
-    }
     case "migrate":
       return { supported: true, operation: "migrate" };
     case "binding": {
@@ -144,8 +122,6 @@ export function intentOperation(
   intent: SkillMutationIntent,
 ): SkillMutationOperation {
   switch (intent.kind) {
-    case "import":
-      return "import";
     case "migrate":
       return "migrate";
     case "binding":
