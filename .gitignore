@@ -57,6 +57,7 @@ app/bun.lockb
 
 # Local zen workspace state
 .zen/
+/inbox/
 deploy/zen-link/secrets/
 
 # Caches
