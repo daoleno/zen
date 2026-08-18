@@ -180,6 +180,30 @@ func TestProviderProjectionSurvivesLegacyCacheEntryWithoutMetadata(t *testing.T)
 	}
 }
 
+func TestProviderProjectionWithoutInstalledOrDiscoveredMetadata(t *testing.T) {
+	// A clean CI host can have neither an installed Codex catalog nor discovery
+	// metadata. The daemon-pinned metadata must still project required models
+	// without mutating a nil clone.
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	owner := &Owner{}
+	entries := owner.projectConnectionModels(Profile{
+		ID:         "empty",
+		ExecutorID: ExecutorCodex,
+		Model:      "gpt-5.6-sol",
+	}, discoveryEntry{})
+	if len(entries) != 1 {
+		t.Fatalf("entries=%#v want one required model", entries)
+	}
+	entry := entries[0]
+	if entry.ID != "gpt-5.6-sol" || entry.Source != ModelSourceManual || !entry.Available || !entry.Known {
+		t.Fatalf("entry=%#v", entry)
+	}
+	if entry.DisplayName == "" || entry.ReasoningEffortDefault == "" || len(entry.ReasoningEfforts) == 0 {
+		t.Fatalf("pinned metadata missing: %#v", entry)
+	}
+}
+
 func TestProviderProjectionFallsBackToCodexCacheAndIncludesExactDefaultsAndSessions(t *testing.T) {
 	installTestCodexModelCache(t, []CodexModelCatalogWireEntry{
 		testCodexCacheEntry("cache-model", "Cache Model", ReasoningEffortHigh, ReasoningEffortLow, ReasoningEffortHigh),

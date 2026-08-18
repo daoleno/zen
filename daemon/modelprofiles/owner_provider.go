@@ -152,6 +152,9 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 		}
 		pinnedMetadata := pinnedCodexPresentationMetadata()
 		fallbackMetadata = cloneModelMetadataMap(localMetadata)
+		if fallbackMetadata == nil {
+			fallbackMetadata = make(map[string]modelPresentationMetadata, len(pinnedMetadata))
+		}
 		for id, pinned := range pinnedMetadata {
 			fallbackMetadata[id] = mergeModelPresentationMetadata(pinned, fallbackMetadata[id])
 		}
