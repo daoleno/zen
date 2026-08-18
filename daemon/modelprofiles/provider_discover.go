@@ -248,6 +248,8 @@ func (c *modelDiscoveryCache) putModels(key string, ids []string, metadata map[s
 }
 
 func cloneModelMetadataMap(input map[string]modelPresentationMetadata) map[string]modelPresentationMetadata {
+	// Preserve nil/empty metadata for durable omitempty semantics. Callers that
+	// need to mutate the clone must allocate at that mutation boundary.
 	if len(input) == 0 {
 		return nil
 	}
