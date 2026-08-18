@@ -47,10 +47,11 @@ import {
   normalizePluginsInventory,
   normalizePluginMutationCommand,
   normalizePluginMutationResult,
+  assertPluginCommandMatchesRequest,
   assertPluginMutationMatchesRequest,
   type PluginInventory,
   type PluginMutationCommand,
-  type PluginMutationOperation,
+  type PluginMutationInput,
   type PluginMutationResult,
 } from "./pluginsManagement";
 import {
@@ -2397,11 +2398,7 @@ export class MultiServerWebSocketClient {
 
   buildPluginCommand(
     serverId: string,
-    options: {
-      operation: PluginMutationOperation;
-      pluginId: string;
-      scope: "user";
-    },
+    options: PluginMutationInput,
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<PluginMutationCommand>((resolve, reject) => {
@@ -2417,15 +2414,7 @@ export class MultiServerWebSocketClient {
         cleanup();
         try {
           const command = normalizePluginMutationCommand(payload.command);
-          if (
-            command.operation !== options.operation ||
-            command.pluginId !== options.pluginId ||
-            command.scope !== options.scope
-          ) {
-            throw new Error(
-              "Daemon returned a plugin command for a different request.",
-            );
-          }
+          assertPluginCommandMatchesRequest(command, options);
           resolve(command);
         } catch (error) {
           reject(error);
@@ -2456,13 +2445,36 @@ export class MultiServerWebSocketClient {
       this.on("plugin_command_error", handleError);
       this.sendRequestNow(
         serverId,
-        {
-          type: "plugin_command",
-          request_id: requestId,
-          operation: options.operation,
-          plugin_id: options.pluginId,
-          scope: options.scope,
-        },
+          {
+            type: "plugin_command",
+            request_id: requestId,
+            operation: options.operation,
+            plugin_id: options.pluginId,
+            plugin_host: options.host,
+            plugin_source:
+              options.operation === "uninstall" ? options.source : undefined,
+            plugin_version:
+              options.operation === "uninstall" ? options.version : undefined,
+            agents:
+              options.operation === "uninstall" ? options.agents : undefined,
+            scope: options.scope,
+            plugin_copy_id:
+              options.operation === "uninstall" ? options.copyId : undefined,
+            plugin_name:
+              options.operation === "uninstall" ? options.name : undefined,
+            root_path:
+              options.operation === "uninstall" ? options.rootPath : undefined,
+            canonical_path:
+              options.operation === "uninstall"
+                ? options.canonicalPath
+                : undefined,
+            allowed_root:
+              options.operation === "uninstall"
+                ? options.allowedRoot
+                : undefined,
+            plugin_revision:
+              options.operation === "uninstall" ? options.revision : undefined,
+          },
         cleanup,
         reject,
       );
@@ -2471,11 +2483,7 @@ export class MultiServerWebSocketClient {
 
   executePluginMutation(
     serverId: string,
-    options: {
-      operation: PluginMutationOperation;
-      pluginId: string;
-      scope: "user";
-    },
+    options: PluginMutationInput,
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise<PluginMutationResult>((resolve, reject) => {
@@ -2491,7 +2499,7 @@ export class MultiServerWebSocketClient {
         }
         cleanup();
         try {
-          const result = normalizePluginMutationResult(payload.result);
+          const result = normalizePluginMutationResult(payload);
           assertPluginMutationMatchesRequest(result, options);
           resolve(result);
         } catch (error) {
@@ -2519,13 +2527,36 @@ export class MultiServerWebSocketClient {
       this.on("error", handleError);
       this.sendRequestNow(
         serverId,
-        {
-          type: "plugin_mutation",
-          request_id: requestId,
-          operation: options.operation,
-          plugin_id: options.pluginId,
-          scope: options.scope,
-        },
+          {
+            type: "plugin_mutation",
+            request_id: requestId,
+            operation: options.operation,
+            plugin_id: options.pluginId,
+            plugin_host: options.host,
+            plugin_source:
+              options.operation === "uninstall" ? options.source : undefined,
+            plugin_version:
+              options.operation === "uninstall" ? options.version : undefined,
+            agents:
+              options.operation === "uninstall" ? options.agents : undefined,
+            scope: options.scope,
+            plugin_copy_id:
+              options.operation === "uninstall" ? options.copyId : undefined,
+            plugin_name:
+              options.operation === "uninstall" ? options.name : undefined,
+            root_path:
+              options.operation === "uninstall" ? options.rootPath : undefined,
+            canonical_path:
+              options.operation === "uninstall"
+                ? options.canonicalPath
+                : undefined,
+            allowed_root:
+              options.operation === "uninstall"
+                ? options.allowedRoot
+                : undefined,
+            plugin_revision:
+              options.operation === "uninstall" ? options.revision : undefined,
+          },
         cleanup,
         reject,
       );

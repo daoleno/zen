@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
 	"github.com/gorilla/websocket"
@@ -68,9 +69,10 @@ func (s *Server) handlePluginsInventory(conn *websocket.Conn, raw clientMessage)
 		})
 	}
 	go func() {
+		options := skillsInventoryOptions(s, ctx, "")
 		inventory, err := skillmgmt.DiscoverPluginInventory(
-			skillmgmt.InventoryOptions{Context: ctx},
-			s.pluginCatalogCLI,
+			options,
+			s.pluginRuntime,
 		)
 		if !s.claimPluginsInventory(conn, next) {
 			return
@@ -118,13 +120,13 @@ func (s *Server) handlePluginCommand(conn *websocket.Conn, raw clientMessage) {
 		s.sendPluginsError(conn, "plugin_command_error", raw, "invalid_request", "Invalid Plugin command request.")
 		return
 	}
-	request := skillmgmt.PluginMutationRequest{
-		Operation: skillmgmt.PluginMutationOperation(raw.Operation),
-		PluginID:  raw.PluginID,
-		Scope:     raw.Scope,
+	request, err := pluginMutationWireRequest(raw)
+	if err != nil {
+		s.sendPluginsError(conn, "plugin_command_error", raw, "invalid_request", err.Error())
+		return
 	}
 	go func() {
-		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{}, request, s.pluginCatalogCLI)
+		command, err := skillmgmt.BuildPluginMutationCommand(skillsInventoryOptions(s, context.Background(), ""), request, s.pluginRuntime)
 		if err != nil {
 			s.sendPluginsError(conn, "plugin_command_error", raw, "command_rejected", err.Error())
 			return
@@ -145,6 +147,11 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 		s.sendPluginsError(conn, "plugin_mutation_error", raw, "invalid_request", "Invalid Plugin mutation request.")
 		return
 	}
+	request, err := pluginMutationWireRequest(raw)
+	if err != nil {
+		s.sendPluginsError(conn, "plugin_mutation_error", raw, "invalid_request", err.Error())
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	next := pluginsMutationRequest{requestID: raw.RequestID, cancel: cancel}
 	previous, hadPrevious := s.replacePluginsMutation(conn, next)
@@ -158,12 +165,8 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 		})
 	}
 	go func() {
-		request := skillmgmt.PluginMutationRequest{
-			Operation: skillmgmt.PluginMutationOperation(raw.Operation),
-			PluginID:  raw.PluginID,
-			Scope:     raw.Scope,
-		}
-		command, err := skillmgmt.BuildPluginMutationCommand(skillmgmt.InventoryOptions{Context: ctx}, request, s.pluginCatalogCLI)
+		buildOptions := skillsInventoryOptions(s, ctx, "")
+		command, err := skillmgmt.BuildPluginMutationCommand(buildOptions, request, s.pluginRuntime)
 		// Ownership stays registered (cancelable) through build + execute, so
 		// a newer mutation or a disconnect cancels the in-flight command and
 		// suppresses this goroutine's outcome. Only the still-current request
@@ -178,7 +181,10 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 			if s.pluginMutationExecuteOverride != nil {
 				execute = s.pluginMutationExecuteOverride
 			}
-			execution, execErr = execute(ctx, command, skillmgmt.MutationExecutionOptions{})
+			execution, execErr = execute(ctx, command, skillmgmt.MutationExecutionOptions{
+				InventoryOptions: buildOptions,
+				PluginRuntime:    s.pluginRuntime,
+			})
 		}
 		// Atomically consume the slot with the emission: a superseded or
 		// disconnected request can never claim, so its stale result is
@@ -224,6 +230,46 @@ func (s *Server) handlePluginMutation(conn *websocket.Conn, raw clientMessage) {
 			DurationMS: execution.DurationMS,
 		})
 	}()
+}
+
+func pluginMutationWireRequest(raw clientMessage) (skillmgmt.PluginMutationRequest, error) {
+	request := skillmgmt.PluginMutationRequest{
+		Operation: skillmgmt.PluginMutationOperation(raw.Operation),
+		PluginID:  raw.PluginID,
+		Host:      skillmgmt.PluginHost(raw.PluginHost),
+		Scope:     raw.Scope,
+	}
+	switch request.Operation {
+	case skillmgmt.PluginOperationInstall:
+		return request, nil
+	case skillmgmt.PluginOperationUninstall:
+		if strings.TrimSpace(raw.PluginCopyID) == "" ||
+			strings.TrimSpace(raw.PluginName) == "" ||
+			strings.TrimSpace(raw.PluginSource) == "" ||
+			strings.TrimSpace(raw.PluginVersion) == "" ||
+			strings.TrimSpace(raw.SkillRoot) == "" ||
+			strings.TrimSpace(raw.SkillCanonical) == "" ||
+			strings.TrimSpace(raw.SkillAllowedRoot) == "" ||
+			strings.TrimSpace(raw.PluginRevision) == "" ||
+			len(raw.Agents) == 0 {
+			return skillmgmt.PluginMutationRequest{}, errors.New("a complete current Plugin copy identity is required")
+		}
+		request.CopyID = raw.PluginCopyID
+		request.Name = raw.PluginName
+		request.Source = skillmgmt.PluginSource(raw.PluginSource)
+		request.Version = raw.PluginVersion
+		request.RootPath = raw.SkillRoot
+		request.CanonicalPath = raw.SkillCanonical
+		request.AllowedRoot = raw.SkillAllowedRoot
+		request.Revision = raw.PluginRevision
+		request.Agents = make([]skillmgmt.Agent, 0, len(raw.Agents))
+		for _, agent := range raw.Agents {
+			request.Agents = append(request.Agents, skillmgmt.Agent(agent))
+		}
+		return request, nil
+	default:
+		return skillmgmt.PluginMutationRequest{}, errors.New("this Plugin operation is not supported")
+	}
 }
 
 func (s *Server) replacePluginsMutation(conn *websocket.Conn, next pluginsMutationRequest) (pluginsMutationRequest, bool) {

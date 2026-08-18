@@ -7,6 +7,14 @@ const presentation = readFileSync(
   join(import.meta.dir, "../components/skills/SkillsPresentation.tsx"),
   "utf8",
 );
+const pluginsPresentation = readFileSync(
+  join(import.meta.dir, "../components/plugins/PluginsPresentation.tsx"),
+  "utf8",
+);
+const agentLogoSet = readFileSync(
+  join(import.meta.dir, "../components/agents/AgentLogoSet.tsx"),
+  "utf8",
+);
 const websocket = readFileSync(join(import.meta.dir, "websocket.ts"), "utf8");
 
 describe("local-only Skills surface contract", () => {
@@ -37,9 +45,11 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).not.toContain('accessibilityLabel="Refresh"');
   });
   test("wide panel and mobile sheet share one inspector", () => {
-    expect(presentation).toContain("wide && props.inspectedCopyId");
+    expect(presentation).toContain('props.section === "skills" && wide');
     expect(presentation).toContain("<BottomSheetFrame");
     expect(presentation.match(/<Inspector/g)?.length).toBe(2);
+    expect(pluginsPresentation).toContain("props.wide ? (");
+    expect(pluginsPresentation.match(/<PluginInspector/g)?.length).toBe(2);
   });
   test("default Skills page is compact and has no Agent tab rail", () => {
     expect(presentation).toContain('accessibilityLabel="Filter Skills"');
@@ -53,8 +63,8 @@ describe("local-only Skills surface contract", () => {
       presentation.indexOf("function SkillRow"),
       presentation.indexOf("function Inspector"),
     );
-    expect(rowSource).toContain('accessibilityLabel={`Open ${skill.name}`}');
-    expect(rowSource).toContain('accessibilityLabel={`Delete ${skill.name}`}');
+    expect(rowSource).toContain("accessibilityLabel={`Open ${skill.name}`}");
+    expect(rowSource).toContain("accessibilityLabel={`Delete ${skill.name}`}");
     expect(rowSource).toContain("styles.rowOpen");
     expect(rowSource).toContain("styles.rowDelete");
     expect(presentation).toContain("width: 44");
@@ -69,7 +79,9 @@ describe("local-only Skills surface contract", () => {
     expect(presentation).toContain("Invalid JSON");
     expect(presentation).toContain('title="Available to"');
     expect(presentation).toContain("DeleteCopySheet");
-    expect(presentation).toContain('label={deleting ? "Deleting..." : "Delete Skill"}');
+    expect(presentation).toContain(
+      'label={deleting ? "Deleting..." : "Delete Skill"}',
+    );
     expect(screen).toContain("buildSkillsMutationConfirmation");
     expect(screen).toContain("Alert.alert");
   });
@@ -112,14 +124,45 @@ describe("local-only Skills surface contract", () => {
     expect(screen).toContain("currentServerId.current !== requestServerId");
     expect(screen).toContain("skillsContextKey");
   });
-  test("Plugin catalog and lifecycle gates remain independent", () => {
-    expect(screen).toContain("pluginsUnifiedView(plugins)");
-    expect(screen).toContain("evaluatePluginMutation");
-    expect(presentation).toContain("installedPluginActions");
-    expect(presentation).toContain("evaluatePluginMutation");
-    expect(screen + presentation).toContain("onInstallPlugin");
-    expect(screen + presentation).toContain("onUpdatePlugin");
-    expect(screen + presentation).toContain("onUninstallPlugin");
+  test("Plugin lifecycle stays copy-exact and independent from Skills", () => {
+    expect(screen).toContain("pluginUninstallInput(copy)");
+    expect(screen).toContain("groupLogicalPlugins");
+    expect(screen).toContain("onUninstallPlugin");
+    expect(screen + presentation + pluginsPresentation).not.toContain(
+      "onDeletePluginSkill",
+    );
+    expect(pluginsPresentation).not.toContain("Install Plugin");
+    expect(pluginsPresentation).not.toContain("AvailablePlugin");
+    expect(pluginsPresentation).not.toContain("Discovered");
+    expect(pluginsPresentation).toContain("copy.capability.canUninstall");
+  });
+  test("Plugins use shared Agent brand owners and exact 44px row actions", () => {
+    expect(pluginsPresentation).toContain("<AgentLogoSet");
+    expect(presentation).toContain("<AgentLogoSet");
+    expect(agentLogoSet).toContain("<AgentKindIcon");
+    expect(agentLogoSet).toContain('accessibilityRole="image"');
+    expect(agentLogoSet).toContain('"pi"');
+    expect(agentLogoSet).toContain('"opencode"');
+    expect(agentLogoSet).toContain("UnknownAgent");
+    expect(pluginsPresentation).toContain("width: 44");
+    expect(pluginsPresentation).toContain("height: 44");
+    expect(pluginsPresentation).toContain(
+      "paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
+    );
+    expect(presentation).toContain(
+      "paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
+    );
+    expect(pluginsPresentation).toContain("styles.rowOpen");
+    expect(pluginsPresentation).toContain("styles.rowDelete");
+    expect(pluginsPresentation).toContain(
+      "list: {\n    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
+    );
+    expect(presentation).toContain(
+      "list: {\n    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
+    );
+    expect(pluginsPresentation).not.toContain(
+      "paddingLeft: PLUGINS_SKILLS_SCREEN_PADDING",
+    );
   });
   test("loading, disconnected, empty, read, binary, and large states are explicit", () => {
     for (const copy of [

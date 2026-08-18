@@ -25,14 +25,13 @@ import {
 } from "../services/skillsManagement";
 import {
   buildPluginMutationConfirmation,
-  type AvailablePlugin,
-  type InstalledPluginRow,
+  pluginUninstallInput,
+  type InstalledPluginCopy,
   type PluginInventory,
-  type PluginMutationOperation,
 } from "../services/pluginsManagement";
 import {
-  evaluatePluginMutation,
-  pluginsUnifiedView,
+  evaluatePluginUninstall,
+  groupLogicalPlugins,
 } from "../services/pluginsScreenModel";
 import {
   SkillsAutomaticInventoryOwner,
@@ -120,6 +119,11 @@ export default function SkillsScreen() {
     setInspectedCopyId(null);
     setNotice(null);
   }, [projectCwd]);
+  useEffect(() => {
+    if (notice?.kind !== "success") return;
+    const timer = setTimeout(() => setNotice(null), 3200);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const refreshInventory = useCallback(async () => {
     const requestContext = skillsContextKey;
@@ -213,9 +217,7 @@ export default function SkillsScreen() {
           current,
           generation,
           response.inventory,
-          response.inventory.installed.length === 0 &&
-            (response.inventory.catalog.status !== "ready" ||
-              response.inventory.catalog.available.length === 0),
+          response.inventory.installed.length === 0,
         ),
       );
     } catch (error) {
@@ -327,6 +329,7 @@ export default function SkillsScreen() {
       if (currentSkillsContext.current !== requestContext) return;
       const owner = ++mutationOwner.current;
       const key = `delete:${skill.id}`;
+      setNotice(null);
       setPreparingMutation(key);
       try {
         const input = {
@@ -387,37 +390,32 @@ export default function SkillsScreen() {
     ],
   );
 
-  const runPluginMutation = useCallback(
-    async (operation: PluginMutationOperation, pluginId: string) => {
+  const runPluginUninstall = useCallback(
+    async (copy: InstalledPluginCopy) => {
       if (!serverId || !connected || preparingMutation) return;
+      if (!evaluatePluginUninstall(copy).supported) return;
       const requestServerId = serverId;
       if (currentServerId.current !== requestServerId) return;
       const owner = ++mutationOwner.current;
-      setPreparingMutation(`${operation}:${pluginId}`);
+      const input = pluginUninstallInput(copy);
+      setNotice(null);
+      setPreparingMutation(`uninstall:${copy.copyId}`);
       try {
-        const command = await wsClient.buildPluginCommand(serverId, {
-          operation,
-          pluginId,
-          scope: "user",
-        });
+        const command = await wsClient.buildPluginCommand(serverId, input);
         if (currentServerId.current !== requestServerId) return;
         const approved = await confirm(
           buildPluginMutationConfirmation(command),
-          operation === "uninstall",
+          command.destructive,
         );
         if (!approved || currentServerId.current !== requestServerId)
           return;
-        const result = await wsClient.executePluginMutation(serverId, {
-          operation,
-          pluginId,
-          scope: "user",
-        });
+        const result = await wsClient.executePluginMutation(serverId, input);
         if (currentServerId.current !== requestServerId) return;
         setNotice({
           kind: result.execution.success ? "success" : "error",
           message: result.execution.success
-            ? `${command.pluginId} ${operation} completed.`
-            : result.execution.output || "The Plugin operation failed.",
+            ? `Uninstalled ${command.displayName || command.name}.`
+            : result.execution.output || "The Plugin could not be uninstalled.",
         });
         if (result.execution.success) await refreshPlugins();
       } catch (error) {
@@ -427,7 +425,7 @@ export default function SkillsScreen() {
             message:
               error instanceof Error
                 ? error.message
-                : "The Plugin operation failed.",
+                : "The Plugin could not be uninstalled.",
           });
       } finally {
         if (mutationOwner.current === owner) setPreparingMutation("");
@@ -439,13 +437,14 @@ export default function SkillsScreen() {
   const inventory = skillsRequestData(inventoryState);
   const logicalSkills = groupLogicalSkills(inventory?.skills ?? []);
   const plugins = skillsRequestData(pluginsState);
+  const logicalPlugins = groupLogicalPlugins(plugins?.installed ?? []);
   return (
     <SkillsPresentation
       section={surface.section}
       inventoryState={inventoryState}
       logicalSkills={logicalSkills}
       pluginsState={pluginsState}
-      pluginsView={pluginsUnifiedView(plugins)}
+      logicalPlugins={logicalPlugins}
       mutationOperations={inventory?.mutationOperations ?? []}
       preparingMutation={preparingMutation}
       mutationNotice={notice}
@@ -464,25 +463,9 @@ export default function SkillsScreen() {
       onInspectSkill={(skill, path) => void inspectSkill(skill, path)}
       onDismissInspector={dismissInspector}
       onDeleteSkill={(skill) => void runSkillDelete(skill)}
-      onInstallPlugin={(entry: AvailablePlugin) => {
-        const decision = evaluatePluginMutation({
-          kind: "install",
-          entry,
-          installedIds: new Set(
-            plugins?.installed.map((item) => item.id) ?? [],
-          ),
-        });
-        if (decision.supported)
-          void runPluginMutation("install", entry.pluginId);
-      }}
-      onUpdatePlugin={(row: InstalledPluginRow) => {
-        if (evaluatePluginMutation({ kind: "update", row }).supported)
-          void runPluginMutation("update", row.id);
-      }}
-      onUninstallPlugin={(row: InstalledPluginRow) => {
-        if (evaluatePluginMutation({ kind: "uninstall", row }).supported)
-          void runPluginMutation("uninstall", row.id);
-      }}
+      onUninstallPlugin={(copy: InstalledPluginCopy) =>
+        void runPluginUninstall(copy)
+      }
       onDismissNotice={() => setNotice(null)}
     />
   );

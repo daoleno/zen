@@ -5,15 +5,10 @@ import {
   PLUGINS_SKILLS_TOUCH_TARGET,
   compactSkillTargets,
   compactToolbarContentWidth,
-  filterAvailablePlugins,
-  filterInstalledPlugins,
   filterInstalledSkills,
-  installedPluginMetadata,
-  installedPluginOwnership,
   installedSkillAvailability,
   installedSkillMetadata,
 } from "./pluginsSkillsSurfaceModel";
-import type { AvailablePlugin, InstalledPluginRow } from "./pluginsManagement";
 import type { InstalledSkill } from "./skillsManagement";
 
 function skill(
@@ -36,34 +31,7 @@ function skill(
   };
 }
 
-function plugin(
-  id: string,
-  overrides: Partial<InstalledPluginRow> = {},
-): InstalledPluginRow {
-  const [name, marketplace] = id.split("@");
-  return {
-    id,
-    name: name!,
-    marketplace: marketplace!,
-    version: "1.2.3",
-    scope: "user",
-    enabled: true,
-    host: "claude",
-    mutable: true,
-    source: "catalog",
-    skillCount: 1,
-    skills: [
-      {
-        name: `${name}-skill`,
-        canonicalPath: `/plugins/${id}/skills/${name}-skill`,
-        sourcePath: `/plugins/${id}/skills/${name}-skill`,
-      },
-    ],
-    ...overrides,
-  };
-}
-
-describe("shared Plugins and Skills presentation model", () => {
+describe("shared Plugins and Skills geometry", () => {
   test("compact geometry and all Agent targets remain intact", () => {
     expect(PLUGINS_SKILLS_MIN_VIEWPORT).toBe(360);
     expect(compactToolbarContentWidth(PLUGINS_SKILLS_MIN_VIEWPORT)).toBe(
@@ -89,37 +57,9 @@ describe("shared Plugins and Skills presentation model", () => {
     ]);
   });
 
-  test("local Skills and Plugins retain their independent search metadata", () => {
+  test("local Skill search and availability remain daemon-derived", () => {
     const local = skill("alpha", { description: "Native provider helper" });
     expect(filterInstalledSkills([local], "native provider")).toEqual([local]);
-    expect(filterInstalledSkills([local], "remote marketplace")).toEqual([]);
-
-    const installed = plugin("alpha@official-market", {
-      skills: [
-        {
-          name: "hidden-helper",
-          canonicalPath: "/plugins/alpha/hidden-helper",
-          sourcePath: "/plugins/alpha/hidden-helper",
-        },
-      ],
-    });
-    expect(filterInstalledPlugins([installed], "hidden-helper")).toEqual([
-      installed,
-    ]);
-    const available: AvailablePlugin = {
-      pluginId: "beta@community-market",
-      name: "beta",
-      marketplaceName: "community-market",
-      sourceRef: "stable-v2",
-      installable: true,
-    };
-    expect(filterAvailablePlugins([available], "stable-v2")).toEqual([
-      available,
-    ]);
-  });
-
-  test("Skill availability metadata remains daemon-derived", () => {
-    const local = skill("shared");
     expect(installedSkillMetadata(local)).toBe(
       "Codex global Skills · Global · Codex",
     );
@@ -128,42 +68,5 @@ describe("shared Plugins and Skills presentation model", () => {
       summary: "Available to Codex",
       detail: "Delete removes only the copy at Codex global Skills.",
     });
-    expect(
-      installedSkillAvailability(
-        skill("builtin", {
-          capability: {
-            canDelete: false,
-            reason: "Provided by Codex and cannot be deleted from here.",
-          },
-        }),
-      ).detail,
-    ).toContain("cannot be deleted from here");
-  });
-
-  test("Plugin lifecycle ownership is unchanged by Skills catalog removal", () => {
-    const managed = plugin("alpha@official-market");
-    expect(installedPluginMetadata(managed)).toBe(
-      "Claude Code · @official-market · v1.2.3 · 1 Skill",
-    );
-    expect(installedPluginOwnership(managed).manageable).toBe(true);
-
-    const codex = plugin("codex@openai-market", {
-      host: "codex",
-      mutable: false,
-      source: "cache",
-    });
-    expect(installedPluginOwnership(codex)).toEqual({
-      manageable: false,
-      summary: "Managed by Codex",
-      detail:
-        "Codex-hosted plugins do not expose a supported lifecycle adapter to Zen.",
-    });
-    const cached = plugin("cached@official-market", {
-      mutable: false,
-      source: "cache",
-    });
-    expect(installedPluginOwnership(cached).summary).toBe(
-      "Discovered from client cache",
-    );
   });
 });

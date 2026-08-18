@@ -2,508 +2,647 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-type fakePluginCLI struct {
-	data []byte
-	err  error
+type fakePluginRuntime struct {
+	installed map[PluginHost][]managerInstalledPlugin
+	available map[PluginHost][]AvailablePlugin
+	listErr   map[PluginHost]error
+	executed  []fakePluginExecution
+	failure   string
 }
 
-func (cli *fakePluginCLI) ListAvailable(ctx context.Context) ([]byte, error) {
-	return cli.data, cli.err
+type fakePluginExecution struct {
+	host PluginHost
+	args []string
 }
 
-func catalogFixture() []byte {
-	return []byte(`{
-  "installed": [
-    {"id": "plug-one@market-a", "version": "1.0.0", "scope": "user", "enabled": true}
-  ],
-  "available": [
-    {"pluginId": "plug-one@market-a", "name": "plug-one", "marketplaceName": "market-a", "description": "One", "source": {"url": "https://github.com/a/one", "ref": "v1.0.0"}},
-    {"pluginId": "plug-two@market-b", "name": "plug-two", "marketplaceName": "market-b", "description": "Two", "source": {"url": "https://github.com/b/two", "ref": "v0.2.0"}}
-  ]
-}`)
+type concurrentPluginRuntime struct {
+	started chan PluginHost
+	release chan struct{}
 }
 
-func writePluginFixture(t *testing.T, root string, skills ...string) {
-	t.Helper()
-	for _, skill := range skills {
-		writeTestSkill(t, filepath.Join(root, "skills", skill), skill, "Hosted")
+func newFakePluginRuntime() *fakePluginRuntime {
+	return &fakePluginRuntime{
+		installed: map[PluginHost][]managerInstalledPlugin{},
+		available: map[PluginHost][]AvailablePlugin{},
+		listErr:   map[PluginHost]error{},
 	}
 }
 
-func TestParseClaudeCatalogMarksInstalledEntriesNonInstallable(t *testing.T) {
-	state, err := parseClaudeCatalog(catalogFixture())
+func (runtime *concurrentPluginRuntime) List(_ context.Context, host PluginHost, _ InventoryOptions, _ bool) ([]byte, error) {
+	runtime.started <- host
+	<-runtime.release
+	return []byte(`{"installed":[],"available":[]}`), nil
+}
+
+func (runtime *concurrentPluginRuntime) Execute(context.Context, PluginHost, []string, MutationExecutionOptions) (MutationExecution, error) {
+	return MutationExecution{}, errors.New("unexpected execution")
+}
+
+func (runtime *fakePluginRuntime) List(_ context.Context, host PluginHost, _ InventoryOptions, includeAvailable bool) ([]byte, error) {
+	if err := runtime.listErr[host]; err != nil {
+		return nil, err
+	}
+	if host == PluginHostClaude {
+		envelope := map[string]any{"installed": []any{}, "available": []any{}}
+		installed := envelope["installed"].([]any)
+		for _, entry := range runtime.installed[host] {
+			installed = append(installed, map[string]any{
+				"id": entry.pluginID, "version": entry.version, "scope": "user",
+				"enabled": entry.enabled, "installPath": entry.rootPath,
+			})
+		}
+		envelope["installed"] = installed
+		if includeAvailable {
+			available := envelope["available"].([]any)
+			for _, entry := range runtime.available[host] {
+				available = append(available, map[string]any{
+					"pluginId": entry.PluginID, "name": entry.Name,
+					"marketplaceName": entry.MarketplaceName,
+					"description":     entry.Description,
+				})
+			}
+			envelope["available"] = available
+		}
+		return json.Marshal(envelope)
+	}
+	envelope := map[string]any{"installed": []any{}, "available": []any{}}
+	installed := envelope["installed"].([]any)
+	for _, entry := range runtime.installed[host] {
+		installed = append(installed, map[string]any{
+			"pluginId": entry.pluginID, "name": entry.name,
+			"marketplaceName": entry.marketplace, "version": entry.version,
+			"installed": true, "enabled": entry.enabled,
+		})
+	}
+	envelope["installed"] = installed
+	if includeAvailable {
+		available := envelope["available"].([]any)
+		for _, entry := range runtime.available[host] {
+			available = append(available, map[string]any{
+				"pluginId": entry.PluginID, "name": entry.Name,
+				"marketplaceName": entry.MarketplaceName, "version": entry.Version,
+				"installed": false, "enabled": false,
+			})
+		}
+		envelope["available"] = available
+	}
+	return json.Marshal(envelope)
+}
+
+func (runtime *fakePluginRuntime) Execute(_ context.Context, host PluginHost, args []string, options MutationExecutionOptions) (MutationExecution, error) {
+	runtime.executed = append(runtime.executed, fakePluginExecution{host: host, args: append([]string{}, args...)})
+	if runtime.failure == "nonzero" {
+		return MutationExecution{Success: false, ExitCode: 1, Output: "manager rejected removal"}, nil
+	}
+	pluginID := ""
+	operation := ""
+	if len(args) >= 3 {
+		operation = args[1]
+		pluginID = args[2]
+	}
+	if operation == "install" || operation == "add" {
+		for _, entry := range runtime.available[host] {
+			if entry.PluginID != pluginID {
+				continue
+			}
+			name, marketplace, _ := splitPluginID(pluginID)
+			root := filepath.Join(pluginCacheRoot(options.InventoryOptions, host), marketplace, name, entry.Version)
+			if host == PluginHostClaude {
+				root = filepath.Join(pluginCacheRoot(options.InventoryOptions, host), marketplace, name, entry.Version)
+			}
+			if err := writePluginFixture(root, host, name, entry.Version); err != nil {
+				return MutationExecution{}, err
+			}
+			runtime.installed[host] = append(runtime.installed[host], managerInstalledPlugin{
+				pluginID: pluginID, name: name, marketplace: marketplace,
+				version: entry.Version, enabled: true, host: host, rootPath: root,
+			})
+			return MutationExecution{Success: true, ExitCode: 0}, nil
+		}
+		return MutationExecution{Success: false, ExitCode: 1, Output: "not available"}, nil
+	}
+	before := append([]managerInstalledPlugin{}, runtime.installed[host]...)
+	for index, entry := range runtime.installed[host] {
+		if entry.pluginID != pluginID {
+			continue
+		}
+		root := entry.rootPath
+		if root == "" {
+			root = filepath.Join(pluginCacheRoot(options.InventoryOptions, host), entry.marketplace, entry.name, entry.version)
+		}
+		if runtime.failure == "rollback" {
+			runtime.installed[host] = append(runtime.installed[host][:index], runtime.installed[host][index+1:]...)
+			runtime.installed[host] = before
+			return MutationExecution{}, errors.New("manager rolled back failed removal")
+		}
+		if runtime.failure == "partial" {
+			if err := os.RemoveAll(root); err != nil {
+				return MutationExecution{}, err
+			}
+			return MutationExecution{Success: false, ExitCode: 1, Output: "manager failed after deleting files"}, nil
+		}
+		if err := os.RemoveAll(root); err != nil {
+			return MutationExecution{}, err
+		}
+		runtime.installed[host] = append(runtime.installed[host][:index], runtime.installed[host][index+1:]...)
+		if runtime.failure == "neighbor" && len(runtime.installed[host]) > 0 {
+			neighbor := runtime.installed[host][0]
+			neighborRoot := neighbor.rootPath
+			if neighborRoot == "" {
+				neighborRoot = filepath.Join(pluginCacheRoot(options.InventoryOptions, host), neighbor.marketplace, neighbor.name, neighbor.version)
+			}
+			_ = os.RemoveAll(neighborRoot)
+			runtime.installed[host] = runtime.installed[host][1:]
+		}
+		return MutationExecution{Success: true, ExitCode: 0}, nil
+	}
+	return MutationExecution{Success: false, ExitCode: 1, Output: "not installed"}, nil
+}
+
+func pluginTestOptions(t *testing.T) InventoryOptions {
+	t.Helper()
+	home := t.TempDir()
+	return InventoryOptions{
+		Context:     context.Background(),
+		Home:        home,
+		CodexHome:   filepath.Join(home, ".codex"),
+		ClaudeHome:  filepath.Join(home, ".claude"),
+		ZenStateDir: filepath.Join(home, ".zen"),
+		Now:         func() time.Time { return time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC) },
+	}
+}
+
+func addManagedPlugin(t *testing.T, runtime *fakePluginRuntime, options InventoryOptions, host PluginHost, name, marketplace, version string) managerInstalledPlugin {
+	t.Helper()
+	root := filepath.Join(pluginCacheRoot(options, host), marketplace, name, version)
+	if err := writePluginFixture(root, host, name, version); err != nil {
+		t.Fatal(err)
+	}
+	entry := managerInstalledPlugin{
+		pluginID: name + "@" + marketplace, name: name, marketplace: marketplace,
+		version: version, enabled: true, host: host, rootPath: root,
+	}
+	runtime.installed[host] = append(runtime.installed[host], entry)
+	return entry
+}
+
+func writePluginFixture(root string, host PluginHost, name, version string) error {
+	manifestDir := filepath.Join(root, ".codex-plugin")
+	if host == PluginHostClaude {
+		manifestDir = filepath.Join(root, ".claude-plugin")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "skills", "helper"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		return err
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"name": name, "version": version, "description": name + " description",
+		"interface": map[string]any{"displayName": strings.ToUpper(name[:1]) + name[1:]},
+	})
+	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), manifest, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, "skills", "helper", "SKILL.md"), []byte("# Helper\n"), 0o644)
+}
+
+func requestFor(copy InstalledPluginCopy) PluginMutationRequest {
+	return PluginMutationRequest{
+		Operation: PluginOperationUninstall, PluginID: copy.PluginID,
+		Host: copy.Host, Source: copy.Source, Scope: copy.Scope,
+		CopyID: copy.CopyID, Name: copy.Name, Version: copy.Version,
+		RootPath: copy.RootPath, CanonicalPath: copy.CanonicalPath,
+		AllowedRoot: copy.AllowedRoot, Revision: copy.Revision,
+		Agents: append([]Agent{}, copy.Agents...),
+	}
+}
+
+func TestDiscoverPluginInventoryEmitsExactManagedAndReadonlyCopies(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostClaude, "shared", "official", "1.0.0")
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "shared", "personal", "2.0.0")
+	remoteRoot := filepath.Join(options.CodexHome, "plugins", "cache", "openai-curated-remote", "plugin-management")
+	if err := os.MkdirAll(remoteRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteRoot, ".codex-remote-plugin-install.json"), []byte(`{"schema_version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePluginFixture(filepath.Join(remoteRoot, "0.1.0"), PluginHostCodex, "plugin-management", "0.1.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := DiscoverPluginInventory(options, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Status != "ready" {
-		t.Fatalf("status = %q", state.Status)
+	if len(inventory.Installed) != 3 {
+		t.Fatalf("installed = %#v", inventory.Installed)
 	}
-	if len(state.Installed) != 1 || state.Installed[0].ID != "plug-one@market-a" || !state.Installed[0].Enabled {
-		t.Fatalf("installed = %#v", state.Installed)
-	}
-	if len(state.Available) != 2 {
-		t.Fatalf("available count = %d", len(state.Available))
-	}
-	byID := map[string]AvailablePlugin{}
-	for _, plugin := range state.Available {
-		byID[plugin.PluginID] = plugin
-	}
-	if byID["plug-one@market-a"].Installable {
-		t.Fatal("installed catalog entry must not be installable")
-	}
-	if !byID["plug-two@market-b"].Installable {
-		t.Fatal("available catalog entry must be installable")
-	}
-	if byID["plug-two@market-b"].SourceRef != "v0.2.0" {
-		t.Fatalf("source ref = %q", byID["plug-two@market-b"].SourceRef)
-	}
-}
-
-func TestParseClaudeCatalogRejectsMalformedAndOversizedPayloads(t *testing.T) {
-	for _, data := range [][]byte{
-		nil,
-		[]byte("not json"),
-		[]byte(`{"installed": [{"id": "bad id@market"}], "available": []}`),
-		[]byte(`{"installed": [], "available": [{"pluginId": "broken"}]}`),
-	} {
-		if _, err := parseClaudeCatalog(data); err == nil {
-			t.Fatalf("malformed payload %q was accepted", data)
+	ids := map[string]bool{}
+	for _, copy := range inventory.Installed {
+		if ids[copy.CopyID] || len(copy.CopyID) != 24 || len(copy.Revision) != 64 {
+			t.Fatalf("bad exact identity: %#v", copy)
+		}
+		ids[copy.CopyID] = true
+		if copy.Name == "shared" {
+			if !copy.Capability.CanUninstall || len(copy.Components) != 1 || copy.Description == "" {
+				t.Fatalf("managed copy = %#v", copy)
+			}
+			expectedAgent := pluginHostAgent(copy.Host)
+			if !slices.Equal(copy.Agents, []Agent{expectedAgent}) {
+				t.Fatalf("agents = %#v", copy.Agents)
+			}
+		}
+		if copy.Name == "plugin-management" {
+			if copy.Source != PluginSourceRemoteCache || copy.Capability.CanUninstall || !strings.Contains(copy.Capability.Reason, "cannot be removed") {
+				t.Fatalf("remote copy = %#v", copy)
+			}
 		}
 	}
-	oversized := append([]byte(`{"installed": [], "available": []}`), make([]byte, maxPluginCatalogBytes)...)
-	if _, err := parseClaudeCatalog(oversized); err == nil {
-		t.Fatal("oversized payload was accepted")
+}
+
+func TestDiscoverPluginInventoryReadsAgentManagersConcurrently(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := &concurrentPluginRuntime{
+		started: make(chan PluginHost, 2),
+		release: make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := DiscoverPluginInventory(options, runtime)
+		done <- err
+	}()
+
+	started := map[PluginHost]bool{}
+	for range 2 {
+		select {
+		case host := <-runtime.started:
+			started[host] = true
+		case <-time.After(time.Second):
+			t.Fatal("Plugin managers were read sequentially")
+		}
+	}
+	close(runtime.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !started[PluginHostClaude] || !started[PluginHostCodex] {
+		t.Fatalf("started = %#v", started)
 	}
 }
 
-func TestDiscoverPluginInventoryMergesCatalogTruthWithCacheRows(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-	writePluginFixture(t, filepath.Join(home, ".codex", "plugins", "cache", "market-b", "plug-two", "0.2.0"), "skill-b")
-
-	inventory, err := DiscoverPluginInventory(
-		InventoryOptions{Home: home},
-		&fakePluginCLI{data: catalogFixture()},
-	)
+func TestPluginManagerGapLeavesCacheReadonly(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	runtime.listErr[PluginHostCodex] = ErrPluginCLIUnavailable
+	root := filepath.Join(options.CodexHome, "plugins", "cache", "personal", "orphan", "1.0.0")
+	if err := writePluginFixture(root, PluginHostCodex, "orphan", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverPluginInventory(options, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.Catalog.Status != "ready" {
-		t.Fatalf("catalog status = %q (%s)", inventory.Catalog.Status, inventory.Catalog.Message)
+	if len(inventory.Installed) != 1 || inventory.Installed[0].Source != PluginSourceCache || inventory.Installed[0].Capability.CanUninstall {
+		t.Fatalf("inventory = %#v", inventory)
 	}
-	if len(inventory.Installed) != 2 {
-		t.Fatalf("installed rows = %d, want 2", len(inventory.Installed))
-	}
-	byID := map[string]InstalledPluginRow{}
-	for _, row := range inventory.Installed {
-		byID[row.ID] = row
-	}
-	claude := byID["plug-one@market-a"]
-	if claude.Host != PluginHostClaude || !claude.Mutable || claude.Source != "catalog" {
-		t.Fatalf("claude row = %#v", claude)
-	}
-	if claude.Version != "1.0.0" || !claude.Enabled {
-		t.Fatalf("claude row version/enabled = %q/%v", claude.Version, claude.Enabled)
-	}
-	if claude.SkillCount != 1 || len(claude.Skills) != 1 || claude.Skills[0].Name != "skill-a" {
-		t.Fatalf("claude hosted skills = %#v", claude.Skills)
-	}
-	codex := byID["plug-two@market-b"]
-	if codex.Host != PluginHostCodex || codex.Mutable {
-		t.Fatalf("codex row must be immutable, got %#v", codex)
-	}
-	if codex.Source != "cache" || codex.Version != "0.2.0" || codex.SkillCount != 1 {
-		t.Fatalf("codex row = %#v", codex)
+	if len(inventory.Warnings) == 0 || !strings.Contains(inventory.Warnings[0], "read-only") {
+		t.Fatalf("warnings = %#v", inventory.Warnings)
 	}
 }
 
-func TestDiscoverPluginInventoryReportsExplicitCatalogGaps(t *testing.T) {
-	home := t.TempDir()
-	for _, scenario := range []struct {
+func TestBuildPluginMutationCommandRequiresExactCurrentCopy(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "alpha", "personal", "1.0.0")
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := inventory.Installed[0]
+	command, err := BuildPluginMutationCommand(options, requestFor(copy), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.CopyID != copy.CopyID || command.Revision != copy.Revision || !command.Destructive || command.Host != PluginHostCodex {
+		t.Fatalf("command = %#v", command)
+	}
+
+	mutations := []struct {
 		name string
-		cli  PluginCLI
-		code string
+		edit func(*PluginMutationRequest)
 	}{
-		{"unavailable", &fakePluginCLI{err: ErrClaudeCLIUnavailable}, "claude_catalog_unavailable"},
-		{"timeout", &fakePluginCLI{err: ErrClaudeCatalogTimeout}, "claude_catalog_timeout"},
-		{"malformed", &fakePluginCLI{data: []byte("not json")}, "claude_catalog_malformed"},
-	} {
+		{"copy", func(request *PluginMutationRequest) { request.CopyID = strings.Repeat("f", 24) }},
+		{"name", func(request *PluginMutationRequest) { request.Name = "beta" }},
+		{"root", func(request *PluginMutationRequest) { request.RootPath = filepath.Join(copy.AllowedRoot, "2.0.0") }},
+		{"canonical", func(request *PluginMutationRequest) { request.CanonicalPath = filepath.Join(copy.AllowedRoot, "2.0.0") }},
+		{"allowed", func(request *PluginMutationRequest) { request.AllowedRoot = filepath.Dir(copy.AllowedRoot) }},
+		{"host", func(request *PluginMutationRequest) { request.Host = PluginHostClaude }},
+		{"source", func(request *PluginMutationRequest) { request.Source = PluginSourceCache }},
+		{"version", func(request *PluginMutationRequest) { request.Version = "2.0.0" }},
+		{"agent", func(request *PluginMutationRequest) { request.Agents = []Agent{AgentClaudeCode} }},
+		{"revision", func(request *PluginMutationRequest) { request.Revision = strings.Repeat("a", 64) }},
+	}
+	for _, scenario := range mutations {
 		t.Run(scenario.name, func(t *testing.T) {
-			inventory, err := DiscoverPluginInventory(InventoryOptions{Home: home}, scenario.cli)
+			request := requestFor(copy)
+			scenario.edit(&request)
+			if _, err := BuildPluginMutationCommand(options, request, runtime); err == nil {
+				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestBuildPluginMutationRejectsSymlinkAndRootEscape(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	outside := filepath.Join(options.Home, "outside")
+	if err := writePluginFixture(outside, PluginHostClaude, "linked", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(options.ClaudeHome, "plugins", "cache", "official", "linked")
+	if err := os.MkdirAll(allowed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(allowed, "1.0.0")
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	runtime.installed[PluginHostClaude] = []managerInstalledPlugin{{
+		pluginID: "linked@official", name: "linked", marketplace: "official",
+		version: "1.0.0", enabled: true, host: PluginHostClaude, rootPath: root,
+	}}
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := inventory.Installed[0]
+	if copy.Capability.CanUninstall {
+		t.Fatalf("symlink capability = %#v", copy.Capability)
+	}
+	if _, err := BuildPluginMutationCommand(options, requestFor(copy), runtime); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+
+	escapedRoot := filepath.Join(options.Home, "elsewhere", "1.0.0")
+	if err := writePluginFixture(escapedRoot, PluginHostClaude, "escaped", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	runtime.installed[PluginHostClaude] = []managerInstalledPlugin{{
+		pluginID: "escaped@official", name: "escaped", marketplace: "official",
+		version: "1.0.0", enabled: true, host: PluginHostClaude, rootPath: escapedRoot,
+	}}
+	inventory, err = DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Installed[0].Capability.CanUninstall {
+		t.Fatal("escaped manager path must be read-only")
+	}
+
+	linkedMarketplace := filepath.Join(options.CodexHome, "plugins", "cache", "linked-market")
+	linkedTarget := filepath.Join(options.Home, "linked-market-target")
+	if err := os.MkdirAll(linkedTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(linkedMarketplace), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkedTarget, linkedMarketplace); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(linkedMarketplace, "nested", "1.0.0")
+	if err := writePluginFixture(linkedRoot, PluginHostCodex, "nested", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	runtime.installed[PluginHostClaude] = nil
+	runtime.installed[PluginHostCodex] = []managerInstalledPlugin{{
+		pluginID: "nested@linked-market", name: "nested", marketplace: "linked-market",
+		version: "1.0.0", enabled: true, host: PluginHostCodex, rootPath: linkedRoot,
+	}}
+	inventory, err = DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Installed[0].Capability.CanUninstall || !strings.Contains(inventory.Installed[0].Capability.Reason, "symlink") {
+		t.Fatalf("parent symlink capability = %#v", inventory.Installed[0].Capability)
+	}
+}
+
+func TestExecutePluginMutationRemovesOnlySelectedCopyAndRefreshes(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "shared", "personal", "1.0.0")
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "shared", "team", "1.0.0")
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := inventory.Installed[0]
+	neighbor := inventory.Installed[1]
+	command, err := BuildPluginMutationCommand(options, requestFor(target), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options, PluginRuntime: runtime,
+	})
+	if err != nil || !execution.Success {
+		t.Fatalf("execution = %#v err=%v", execution, err)
+	}
+	if _, err := os.Stat(target.RootPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target still exists: %v", err)
+	}
+	if _, err := os.Stat(neighbor.RootPath); err != nil {
+		t.Fatalf("neighbor changed: %v", err)
+	}
+	after, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Installed) != 1 || after.Installed[0].CopyID != neighbor.CopyID {
+		t.Fatalf("after = %#v", after.Installed)
+	}
+	if len(runtime.executed) != 1 || !slices.Equal(runtime.executed[0].args, []string{"plugin", "remove", target.PluginID, "--json"}) {
+		t.Fatalf("executed = %#v", runtime.executed)
+	}
+}
+
+func TestExecuteClaudePluginUsesOwningManagerArgs(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostClaude, "alpha", "official", "1.0.0")
+	inventory, _ := DiscoverPluginInventory(options, runtime)
+	command, err := BuildPluginMutationCommand(options, requestFor(inventory.Installed[0]), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options, PluginRuntime: runtime}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plugin", "uninstall", "alpha@official", "--scope", "user", "--yes"}
+	if len(runtime.executed) != 1 || !slices.Equal(runtime.executed[0].args, want) {
+		t.Fatalf("executed = %#v", runtime.executed)
+	}
+}
+
+func TestPluginManagerFailureIsAtomicOrRolledBack(t *testing.T) {
+	for _, failure := range []string{"nonzero", "rollback"} {
+		t.Run(failure, func(t *testing.T) {
+			options := pluginTestOptions(t)
+			runtime := newFakePluginRuntime()
+			addManagedPlugin(t, runtime, options, PluginHostCodex, "alpha", "personal", "1.0.0")
+			inventory, _ := DiscoverPluginInventory(options, runtime)
+			copy := inventory.Installed[0]
+			command, err := BuildPluginMutationCommand(options, requestFor(copy), runtime)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if inventory.Catalog.Status != "unavailable" || inventory.Catalog.Code != scenario.code {
-				t.Fatalf("catalog state = %#v, want code %s", inventory.Catalog, scenario.code)
+			runtime.failure = failure
+			execution, execErr := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options, PluginRuntime: runtime})
+			if failure == "nonzero" && (execErr != nil || execution.Success) {
+				t.Fatalf("execution=%#v err=%v", execution, execErr)
 			}
-			if len(inventory.Catalog.Available) != 0 {
-				t.Fatal("unavailable catalog must not carry available entries")
+			if failure == "rollback" && execErr == nil {
+				t.Fatal("expected manager rollback error")
+			}
+			after, err := DiscoverPluginInventory(options, runtime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after.Installed) != 1 || after.Installed[0].CopyID != copy.CopyID {
+				t.Fatalf("registry changed: %#v", after.Installed)
+			}
+			if _, err := os.Stat(copy.RootPath); err != nil {
+				t.Fatalf("filesystem changed: %v", err)
 			}
 		})
 	}
 }
 
-func TestBuildPluginMutationCommandBuildsExactReviewedCommands(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-
-	options := InventoryOptions{Home: home}
-	cli := &fakePluginCLI{data: authorityCatalogFixture()}
-
-	install, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationInstall,
-		PluginID:  "explore-me@market-d",
-		Scope:     "user",
-	}, cli)
+func TestPluginManagerFailureDetectsPartialFilesystemMutation(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "alpha", "personal", "1.0.0")
+	inventory, _ := DiscoverPluginInventory(options, runtime)
+	copy := inventory.Installed[0]
+	command, err := BuildPluginMutationCommand(options, requestFor(copy), runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if install.Command != "claude plugin install explore-me@market-d --scope user" {
-		t.Fatalf("install command = %q", install.Command)
-	}
-	if install.Host != PluginHostClaude || install.Scope != "user" {
-		t.Fatalf("install metadata = %#v", install)
-	}
-
-	update, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationUpdate,
-		PluginID:  "plug-one@market-a",
-		Scope:     "user",
-	}, cli)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if update.Command != "claude plugin update plug-one@market-a --scope user" {
-		t.Fatalf("update command = %q", update.Command)
-	}
-
-	uninstall, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationUninstall,
-		PluginID:  "plug-one@market-a",
-		Scope:     "user",
-	}, cli)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uninstall.Command != "claude plugin uninstall plug-one@market-a --scope user --yes" {
-		t.Fatalf("uninstall command = %q", uninstall.Command)
+	runtime.failure = "partial"
+	execution, execErr := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options,
+		PluginRuntime:    runtime,
+	})
+	if execution.Success || execErr == nil || !strings.Contains(execErr.Error(), "reporting failure") {
+		t.Fatalf("execution=%#v err=%v", execution, execErr)
 	}
 }
 
-func TestBuildPluginMutationCommandFailsClosed(t *testing.T) {
-	cli := &fakePluginCLI{data: authorityCatalogFixture()}
-	options := InventoryOptions{}
-
-	cases := []struct {
-		name     string
-		request  PluginMutationRequest
-		fragment string
-	}{
-		{
-			"unsupported operation",
-			PluginMutationRequest{Operation: "sync", PluginID: "plug-one@market-a", Scope: "user"},
-			"unsupported plugin operation",
-		},
-		{
-			"invalid identity",
-			PluginMutationRequest{Operation: PluginOperationUpdate, PluginID: "plug one@market", Scope: "user"},
-			"plugin identity",
-		},
-		{
-			"invalid scope",
-			PluginMutationRequest{Operation: PluginOperationUpdate, PluginID: "plug-one@market-a", Scope: "project"},
-			"unsupported managed plugin scope",
-		},
-	}
-	for _, scenario := range cases {
-		t.Run(scenario.name, func(t *testing.T) {
-			_, err := BuildPluginMutationCommand(options, scenario.request, cli)
-			if err == nil || !strings.Contains(err.Error(), scenario.fragment) {
-				t.Fatalf("error = %v, want fragment %q", err, scenario.fragment)
+func TestPluginCommandEnvironmentReplacesIdentityRootsExactlyOnce(t *testing.T) {
+	t.Setenv("HOME", "/wrong-home")
+	t.Setenv("CODEX_HOME", "/wrong-codex")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/wrong-claude")
+	env := pluginCommandEnv(InventoryOptions{
+		Home:       "/right-home",
+		CodexHome:  "/right-codex",
+		ClaudeHome: "/right-claude",
+		Env:        map[string]string{"ZEN_PLUGIN_TEST": "present"},
+	})
+	for key, want := range map[string]string{
+		"HOME": "/right-home", "CODEX_HOME": "/right-codex",
+		"CLAUDE_CONFIG_DIR": "/right-claude", "ZEN_PLUGIN_TEST": "present",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	} {
+		count := 0
+		for _, entry := range env {
+			if strings.HasPrefix(entry, key+"=") {
+				count++
+				if entry != key+"="+want {
+					t.Fatalf("%s = %q", key, entry)
+				}
 			}
-		})
+		}
+		if count != 1 {
+			t.Fatalf("%s count = %d", key, count)
+		}
 	}
+}
 
-	if _, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationInstall,
-		PluginID:  "plug-one@market-a;rm -rf",
-		Scope:     "user",
-	}, cli); err == nil {
-		t.Fatal("shell-injected install identity was accepted")
+func TestExecutePluginMutationDetectsNeighborChanges(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "alpha", "personal", "1.0.0")
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "beta", "personal", "1.0.0")
+	inventory, _ := DiscoverPluginInventory(options, runtime)
+	command, err := BuildPluginMutationCommand(options, requestFor(inventory.Installed[0]), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.failure = "neighbor"
+	if _, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options, PluginRuntime: runtime}); err == nil || !strings.Contains(err.Error(), "another installed Plugin") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPluginInstallCapabilityRemainsManagerOwned(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	runtime.available[PluginHostCodex] = []AvailablePlugin{{
+		PluginID: "alpha@personal", Name: "alpha", DisplayName: "Alpha",
+		MarketplaceName: "personal", Version: "1.0.0", Host: PluginHostCodex, Installable: true,
+	}}
+	command, err := BuildPluginMutationCommand(options, PluginMutationRequest{
+		Operation: PluginOperationInstall, PluginID: "alpha@personal", Host: PluginHostCodex, Scope: "user",
+	}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Destructive || command.CopyID != "" || command.Summary != "Install alpha for Codex" {
+		t.Fatalf("command = %#v", command)
+	}
+	if _, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{InventoryOptions: options, PluginRuntime: runtime}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Installed) != 1 || after.Installed[0].PluginID != "alpha@personal" {
+		t.Fatalf("after = %#v", after.Installed)
 	}
 }
 
 func TestValidatePluginIDRejectsShellAndTraversalGrammars(t *testing.T) {
-	for _, valid := range []string{"clangd-lsp@claude-plugins-official", "codex@openai-codex", "42crunch-api-security-testing@claude-plugins-official"} {
-		if err := ValidatePluginID(valid); err != nil {
-			t.Fatalf("ValidatePluginID(%q): %v", valid, err)
+	for _, value := range []string{"", "plain", "../bad@market", "bad name@market", "bad@market;rm", "@market", "bad@"} {
+		if ValidatePluginID(value) == nil {
+			t.Fatalf("accepted %q", value)
 		}
 	}
-	for _, invalid := range []string{"", "../x@market", "plug-one@market-a;echo", "plug one@market", "plug-one@Market-A", "plug-one", "plug@market@extra"} {
-		if err := ValidatePluginID(invalid); err == nil {
-			t.Fatalf("ValidatePluginID(%q) succeeded", invalid)
-		}
+	if ValidatePluginID("valid-plugin@personal") != nil {
+		t.Fatal("valid identity rejected")
 	}
 }
 
-func TestPluginCatalogGapErrorsAreTyped(t *testing.T) {
-	if !errors.Is(ErrClaudeCLIUnavailable, ErrClaudeCLIUnavailable) {
-		t.Fatal("capability errors must be comparable")
-	}
-}
-
-func authorityCatalogFixture() []byte {
-	return []byte(`{
-  "installed": [
-    {"id": "plug-one@market-a", "version": "1.0.0", "scope": "user", "enabled": true},
-    {"id": "catalog-only@market-c", "version": "2.0.0", "scope": "user", "enabled": false}
-  ],
-  "available": [
-    {"pluginId": "plug-one@market-a", "name": "plug-one", "marketplaceName": "market-a", "description": "", "source": {"url": "https://github.com/a/one", "ref": "v1.0.0"}},
-    {"pluginId": "catalog-only@market-c", "name": "catalog-only", "marketplaceName": "market-c", "description": "", "source": {"url": "https://github.com/c/only", "ref": "v2.0.0"}},
-    {"pluginId": "explore-me@market-d", "name": "explore-me", "marketplaceName": "market-d", "description": "", "source": {"url": "https://github.com/d/explore", "ref": "v3.0.0"}}
-  ]
-}`)
-}
-
-func TestPluginLifecycleAuthorityRequiresCatalogInstalledMembership(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-x", "orphan", "0.5.0"), "orphan-skill")
-
-	inventory, err := DiscoverPluginInventory(
-		InventoryOptions{Home: home},
-		&fakePluginCLI{data: authorityCatalogFixture()},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inventory.Catalog.Status != "ready" {
-		t.Fatalf("catalog status = %q", inventory.Catalog.Status)
-	}
-	byID := map[string]InstalledPluginRow{}
-	for _, row := range inventory.Installed {
-		byID[row.ID] = row
-	}
-
-	// Catalog-installed membership is the only lifecycle authority: the row
-	// is manageable even though its cache dir exists, and its version and
-	// enabled state come from the catalog, not the cache.
-	managed := byID["plug-one@market-a"]
-	if managed.Host != PluginHostClaude || !managed.Mutable || managed.Source != "catalog" {
-		t.Fatalf("catalog-installed row = %#v", managed)
-	}
-	if managed.Version != "1.0.0" || !managed.Enabled {
-		t.Fatalf("catalog-installed version/enabled = %q/%v", managed.Version, managed.Enabled)
-	}
-	if managed.SkillCount != 1 || managed.Skills[0].Name != "skill-a" {
-		t.Fatalf("catalog-installed hosted skills = %#v", managed.Skills)
-	}
-
-	// Catalog-installed membership proves installed even without any cache
-	// directory; hosted skills are simply absent.
-	cacheless := byID["catalog-only@market-c"]
-	if cacheless.Host != PluginHostClaude || !cacheless.Mutable || cacheless.Source != "catalog" {
-		t.Fatalf("cacheless catalog row = %#v", cacheless)
-	}
-	if cacheless.Version != "2.0.0" || cacheless.Enabled {
-		t.Fatalf("cacheless catalog version/enabled = %q/%v", cacheless.Version, cacheless.Enabled)
-	}
-	if cacheless.SkillCount != 0 || len(cacheless.Skills) != 0 {
-		t.Fatalf("cacheless catalog hosted skills = %#v", cacheless.Skills)
-	}
-
-	// An orphan cache row that the owning client does not list as installed
-	// must never masquerade as installed or manageable.
-	orphan := byID["orphan@market-x"]
-	if orphan.Mutable || orphan.Source != "cache" {
-		t.Fatalf("orphan cache row must be read-only, got %#v", orphan)
-	}
-	if orphan.SkillCount != 1 || orphan.Skills[0].Name != "orphan-skill" {
-		t.Fatalf("orphan hosted skills = %#v", orphan.Skills)
-	}
-}
-
-func TestPluginLifecycleAuthorityFallsReadOnlyWhenCatalogUnavailable(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-
-	for _, cli := range []PluginCLI{
-		&fakePluginCLI{err: ErrClaudeCLIUnavailable},
-		&fakePluginCLI{err: ErrClaudeCatalogTimeout},
-		&fakePluginCLI{data: []byte("not json")},
-	} {
-		inventory, err := DiscoverPluginInventory(InventoryOptions{Home: home}, cli)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if inventory.Catalog.Status != "unavailable" {
-			t.Fatalf("catalog status = %q", inventory.Catalog.Status)
-		}
-		if len(inventory.Installed) != 1 {
-			t.Fatalf("installed rows = %d", len(inventory.Installed))
-		}
-		row := inventory.Installed[0]
-		if row.Mutable || row.Source != "cache" {
-			t.Fatalf("cache row under unavailable catalog must be read-only, got %#v", row)
-		}
-	}
-}
-
-func TestBuildPluginMutationCommandRevalidatesAgainstLiveCatalog(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-x", "orphan", "0.5.0"), "orphan-skill")
-	options := InventoryOptions{Home: home}
-	readyCLI := &fakePluginCLI{data: authorityCatalogFixture()}
-
-	install, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationInstall,
-		PluginID:  "explore-me@market-d",
-		Scope:     "user",
-	}, readyCLI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if install.Command != "claude plugin install explore-me@market-d --scope user" {
-		t.Fatalf("install command = %q", install.Command)
-	}
-
-	update, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationUpdate,
-		PluginID:  "plug-one@market-a",
-		Scope:     "user",
-	}, readyCLI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if update.Command != "claude plugin update plug-one@market-a --scope user" {
-		t.Fatalf("update command = %q", update.Command)
-	}
-
-	uninstall, err := BuildPluginMutationCommand(options, PluginMutationRequest{
-		Operation: PluginOperationUninstall,
-		PluginID:  "plug-one@market-a",
-		Scope:     "user",
-	}, readyCLI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uninstall.Command != "claude plugin uninstall plug-one@market-a --scope user --yes" {
-		t.Fatalf("uninstall command = %q", uninstall.Command)
-	}
-}
-
-func TestBuildPluginMutationCommandRejectsWithoutExactCatalogProof(t *testing.T) {
-	home := t.TempDir()
-	writePluginFixture(t, filepath.Join(home, ".claude", "plugins", "cache", "market-a", "plug-one", "1.0.0"), "skill-a")
-	writePluginFixture(t, filepath.Join(home, ".codex", "plugins", "cache", "market-b", "codex-plug", "0.2.0"), "skill-b")
-	options := InventoryOptions{Home: home}
-
-	catalogUnavailable := &fakePluginCLI{err: ErrClaudeCLIUnavailable}
-	catalogTimeout := &fakePluginCLI{err: ErrClaudeCatalogTimeout}
-	catalogMalformed := &fakePluginCLI{data: []byte("not json")}
-
-	cases := []struct {
-		name     string
-		request  PluginMutationRequest
-		cli      PluginCLI
-		fragment string
-	}{
-		{
-			"install with unavailable catalog",
-			PluginMutationRequest{Operation: PluginOperationInstall, PluginID: "explore-me@market-d", Scope: "user"},
-			catalogUnavailable,
-			"catalog",
-		},
-		{
-			"install with timed-out catalog",
-			PluginMutationRequest{Operation: PluginOperationInstall, PluginID: "explore-me@market-d", Scope: "user"},
-			catalogTimeout,
-			"catalog",
-		},
-		{
-			"install with malformed catalog",
-			PluginMutationRequest{Operation: PluginOperationInstall, PluginID: "explore-me@market-d", Scope: "user"},
-			catalogMalformed,
-			"catalog",
-		},
-		{
-			"install of an identity absent from the catalog",
-			PluginMutationRequest{Operation: PluginOperationInstall, PluginID: "ghost@market-z", Scope: "user"},
-			&fakePluginCLI{data: authorityCatalogFixture()},
-			"not present",
-		},
-		{
-			"install of an already-installed identity",
-			PluginMutationRequest{Operation: PluginOperationInstall, PluginID: "plug-one@market-a", Scope: "user"},
-			&fakePluginCLI{data: authorityCatalogFixture()},
-			"already installed",
-		},
-		{
-			"update of an orphan cache row absent from the catalog",
-			PluginMutationRequest{Operation: PluginOperationUpdate, PluginID: "orphan@market-x", Scope: "user"},
-			&fakePluginCLI{data: authorityCatalogFixture()},
-			"not present",
-		},
-		{
-			"uninstall of an orphan cache row absent from the catalog",
-			PluginMutationRequest{Operation: PluginOperationUninstall, PluginID: "orphan@market-x", Scope: "user"},
-			&fakePluginCLI{data: authorityCatalogFixture()},
-			"not present",
-		},
-		{
-			"update with unavailable catalog",
-			PluginMutationRequest{Operation: PluginOperationUpdate, PluginID: "plug-one@market-a", Scope: "user"},
-			catalogUnavailable,
-			"catalog",
-		},
-		{
-			"uninstall with unavailable catalog",
-			PluginMutationRequest{Operation: PluginOperationUninstall, PluginID: "plug-one@market-a", Scope: "user"},
-			catalogUnavailable,
-			"catalog",
-		},
-		{
-			"update with malformed catalog",
-			PluginMutationRequest{Operation: PluginOperationUpdate, PluginID: "plug-one@market-a", Scope: "user"},
-			catalogMalformed,
-			"catalog",
-		},
-		{
-			"uninstall of a codex-hosted cache row",
-			PluginMutationRequest{Operation: PluginOperationUninstall, PluginID: "codex-plug@market-b", Scope: "user"},
-			&fakePluginCLI{data: authorityCatalogFixture()},
-			"catalog",
-		},
-	}
-	for _, scenario := range cases {
-		t.Run(scenario.name, func(t *testing.T) {
-			_, err := BuildPluginMutationCommand(options, scenario.request, scenario.cli)
-			if err == nil || !strings.Contains(err.Error(), scenario.fragment) {
-				t.Fatalf("error = %v, want fragment %q", err, scenario.fragment)
-			}
-		})
-	}
-}
-
-// The daemon's bounded catalog deadline must expire before the App's plugin
-// inventory (10s) and plugin command (15s) request deadlines, so the App
-// never waits on a request the daemon has already given up on.
 func TestPluginCatalogDeadlinePrecedesAppRequestDeadlines(t *testing.T) {
-	const appInventoryDeadline = 10 * time.Second
-	const appCommandDeadline = 15 * time.Second
-	if defaultPluginCLITimeout >= appInventoryDeadline {
-		t.Fatalf("daemon catalog deadline %v must precede the App inventory deadline %v", defaultPluginCLITimeout, appInventoryDeadline)
-	}
-	if defaultPluginCLITimeout >= appCommandDeadline {
-		t.Fatalf("daemon catalog deadline %v must precede the App command deadline %v", defaultPluginCLITimeout, appCommandDeadline)
+	const appInventoryDeadline = 15 * time.Second
+	const appCommandDeadline = 12 * time.Second
+	if defaultPluginCLITimeout >= appInventoryDeadline || defaultPluginCLITimeout >= appCommandDeadline {
+		t.Fatalf("daemon Plugin deadline %v must precede App request deadlines", defaultPluginCLITimeout)
 	}
 }

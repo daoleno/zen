@@ -1,5 +1,3 @@
-import type { AvailablePlugin, InstalledPluginRow } from "./pluginsManagement";
-import { pluginHostLabel } from "./pluginsManagement";
 import type { InstalledSkill, ManagedSkillAgent } from "./skillsManagement";
 import { scopeLabel, skillAgentLabel } from "./skillsManagement";
 import type { SkillsAgentCounts } from "./skillsScreenModel";
@@ -24,12 +22,6 @@ export interface CompactSkillTarget {
   agent: ManagedSkillAgent;
   label: string;
   count: number;
-}
-
-export interface OwnershipPresentation {
-  manageable: boolean;
-  summary: string;
-  detail: string;
 }
 
 export interface SkillAvailabilityPresentation {
@@ -71,31 +63,6 @@ export function filterInstalledSkills(
   ]);
 }
 
-export function filterInstalledPlugins(
-  plugins: InstalledPluginRow[],
-  query: string,
-): InstalledPluginRow[] {
-  return filterByQuery(plugins, query, (plugin) => [
-    plugin.name,
-    plugin.marketplace,
-    plugin.version,
-    pluginHostLabel(plugin.host),
-    ...plugin.skills.map((skill) => skill.name),
-  ]);
-}
-
-export function filterAvailablePlugins(
-  plugins: AvailablePlugin[],
-  query: string,
-): AvailablePlugin[] {
-  return filterByQuery(plugins, query, (plugin) => [
-    plugin.name,
-    plugin.marketplaceName,
-    plugin.description,
-    plugin.sourceRef,
-  ]);
-}
-
 export function installedSkillMetadata(skill: InstalledSkill): string {
   const availableTo = skill.agents.map(skillAgentLabel).join(", ");
   return [skill.location, scopeLabel(skill.scope), availableTo]
@@ -132,92 +99,6 @@ export function installedSkillAvailability(
       (skill.capability.canDelete
         ? `Delete removes only the copy at ${skill.location}.`
         : "This copy cannot be deleted from here."),
-  };
-}
-
-export function installedPluginMetadata(plugin: InstalledPluginRow): string {
-  const count = `${plugin.skillCount} ${
-    plugin.skillCount === 1 ? "Skill" : "Skills"
-  }`;
-  return [
-    pluginHostLabel(plugin.host),
-    `@${plugin.marketplace}`,
-    `v${plugin.version}`,
-    count,
-  ].join(" · ");
-}
-
-export function installedPluginBadges(
-  plugin: InstalledPluginRow,
-): LifecycleBadge[] {
-  const badges: LifecycleBadge[] = [
-    { label: "Installed", tone: "accent" },
-    { label: pluginHostLabel(plugin.host), tone: "neutral" },
-  ];
-  if (plugin.source === "catalog") {
-    badges.push({ label: "Catalog", tone: "neutral" });
-  } else {
-    badges.push({ label: "Cached", tone: "warning" });
-  }
-  return badges;
-}
-
-export function availablePluginBadges(
-  plugin: AvailablePlugin,
-): LifecycleBadge[] {
-  return [
-    { label: "Available", tone: "neutral" },
-    { label: `@${plugin.marketplaceName}`, tone: "neutral" },
-  ];
-}
-
-export function installedPluginOwnership(
-  plugin: InstalledPluginRow,
-): OwnershipPresentation {
-  if (
-    plugin.mutable &&
-    plugin.host === "claude" &&
-    plugin.source === "catalog"
-  ) {
-    return {
-      manageable: true,
-      summary: "Managed by Claude Code",
-      detail: "Update or uninstall this plugin through its owning client.",
-    };
-  }
-  if (plugin.host === "codex") {
-    return {
-      manageable: false,
-      summary: "Managed by Codex",
-      detail:
-        "Codex-hosted plugins do not expose a supported lifecycle adapter to Zen.",
-    };
-  }
-  if (plugin.source === "cache") {
-    return {
-      manageable: false,
-      summary: "Discovered from client cache",
-      detail:
-        "This cached plugin can be inspected here but not safely changed from Zen.",
-    };
-  }
-  return {
-    manageable: false,
-    summary: `Managed by ${pluginHostLabel(plugin.host)}`,
-    detail:
-      "The owning client does not currently allow Zen to change this plugin.",
-  };
-}
-
-export function availablePluginOwnership(
-  plugin: AvailablePlugin,
-): OwnershipPresentation {
-  return {
-    manageable: false,
-    summary: `Install from @${plugin.marketplaceName}`,
-    detail:
-      plugin.description ||
-      "Installing runs the owning client's official installer for this plugin.",
   };
 }
 

@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// Native Skills deletion never shells out. The shell executor below exists
-// only for the independent plugin
-// subsystem, which still reviews and runs the official Claude plugin CLI
-// command exactly as a user's terminal would.
+// Native Skills deletion never shells out. Plugin lifecycle operations use
+// the owning Agent's exact argv through PluginRuntime, never a shell.
 
 const (
 	// DefaultMutationTimeout bounds import/update (network and package
@@ -49,6 +47,9 @@ type MutationExecutionOptions struct {
 	// InventoryOptions carries fixture home/state/env overrides for native
 	// operations. Empty keeps the production user home.
 	InventoryOptions InventoryOptions
+	// PluginRuntime is the owning-manager boundary for Plugin operations. Nil
+	// selects the production Codex/Claude CLI runtime.
+	PluginRuntime PluginRuntime
 }
 
 // MutationTimeoutFor selects the bounded timeout for exact-copy deletion.
@@ -56,65 +57,16 @@ func MutationTimeoutFor(command MutationCommand) time.Duration {
 	return DefaultRemovalTimeout
 }
 
-// PluginMutationTimeoutFor selects the bounded timeout for a plugin command.
-func PluginMutationTimeoutFor(command PluginMutationCommand) time.Duration {
-	if command.Operation == PluginOperationUninstall {
-		return DefaultRemovalTimeout
+// executeCommandTokens runs one validated argv without shell interpretation.
+func executeCommandTokens(ctx context.Context, binary string, args []string, options MutationExecutionOptions, fallbackTimeout time.Duration, env []string) (MutationExecution, error) {
+	if binary == "" || len(args) == 0 {
+		return MutationExecution{}, ErrMutationCommandInvalid
 	}
-	return DefaultMutationTimeout
-}
-
-// ExecutePluginMutationCommand runs a reviewed plugin-manager command with the
-// exact argv tokens (never a shell). A non-zero exit is a truthful failure
-// result with the bounded output tail; start/context errors are returned as
-// errors so the server can classify them on the wire.
-func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCommand, options MutationExecutionOptions) (MutationExecution, error) {
-	argv, err := mutationArgv(command.Command, "claude")
-	if err != nil {
-		return MutationExecution{}, err
-	}
-	return executeCommandTokens(ctx, argv[0], argv[1:], options, PluginMutationTimeoutFor(command))
-}
-
-func mutationArgv(command, expectedBinary string) ([]string, error) {
-	if command == "" || len(command) > 4096 {
-		return nil, ErrMutationCommandInvalid
-	}
-	argv := strings.Fields(command)
-	if len(argv) < 2 {
-		return nil, ErrMutationCommandInvalid
-	}
-	if argv[0] != expectedBinary {
-		return nil, ErrMutationCommandInvalid
-	}
-	for _, token := range argv {
-		if len(token) == 0 || len(token) > 1024 {
-			return nil, ErrMutationCommandInvalid
-		}
-		for _, current := range token {
-			if current > 0x7f || invalidCommandTokenRune(current) {
-				return nil, ErrMutationCommandInvalid
-			}
+	for _, token := range append([]string{binary}, args...) {
+		if token == "" || len(token) > 1024 || strings.ContainsAny(token, "\x00\r\n") {
+			return MutationExecution{}, ErrMutationCommandInvalid
 		}
 	}
-	return argv, nil
-}
-
-func invalidCommandTokenRune(current rune) bool {
-	switch current {
-	case 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-		'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-		'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-		'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'.', '_', '-', ':', '/', '@', '+':
-		return false
-	default:
-		return true
-	}
-}
-
-func executeCommandTokens(ctx context.Context, binary string, args []string, options MutationExecutionOptions, fallbackTimeout time.Duration) (MutationExecution, error) {
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return MutationExecution{}, ErrMutationBinaryMissing
@@ -127,7 +79,9 @@ func executeCommandTokens(ctx context.Context, binary string, args []string, opt
 	defer cancel()
 
 	command := exec.CommandContext(runCtx, path, args...)
-	env := append(os.Environ(), "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+	if len(env) == 0 {
+		env = os.Environ()
+	}
 	command.Env = env
 	if options.CWD != "" {
 		command.Dir = options.CWD

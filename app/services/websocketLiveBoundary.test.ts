@@ -1267,6 +1267,159 @@ describe("Skills management transport", () => {
   });
 });
 
+describe("Plugin management transport", () => {
+  const identity = {
+    operation: "uninstall" as const,
+    pluginId: "temporary@personal",
+    host: "codex" as const,
+    source: "manager" as const,
+    scope: "user" as const,
+    copyId: "b".repeat(24),
+    name: "temporary",
+    version: "1.0.0",
+    rootPath:
+      "/home/test/.codex/plugins/cache/personal/temporary/1.0.0",
+    canonicalPath:
+      "/home/test/.codex/plugins/cache/personal/temporary/1.0.0",
+    allowedRoot: "/home/test/.codex/plugins/cache/personal/temporary",
+    revision: "c".repeat(64),
+    agents: ["codex" as const],
+  };
+
+  const command = {
+    operation: "uninstall",
+    plugin_id: identity.pluginId,
+    host: identity.host,
+    source: identity.source,
+    scope: identity.scope,
+    copy_id: identity.copyId,
+    name: identity.name,
+    display_name: "Temporary",
+    version: identity.version,
+    root_path: identity.rootPath,
+    canonical_path: identity.canonicalPath,
+    allowed_root: identity.allowedRoot,
+    location: "Codex user Plugins",
+    revision: identity.revision,
+    agents: identity.agents,
+    summary: "Permanently uninstall Temporary from Codex user Plugins",
+    destructive: true,
+  };
+
+  test("inventory is request-correlated and generation-safe", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.getPluginsInventory(server.id, { generation: 9 });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "plugins_inventory",
+      request_id: "other-request",
+      generation: 9,
+      inventory: {},
+    });
+    socket.receive({
+      type: "plugins_inventory",
+      request_id: outbound.request_id,
+      generation: 9,
+      inventory: {
+        generated_at: "2026-08-18T00:00:00Z",
+        installed: [],
+        available: [],
+        warnings: [],
+      },
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      generation: 9,
+      inventory: { installed: [], available: [] },
+    });
+    client.disconnectAll();
+  });
+
+  test("review sends and verifies the complete exact-copy identity", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.buildPluginCommand(server.id, identity);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "plugin_command",
+      plugin_id: identity.pluginId,
+      plugin_host: identity.host,
+      plugin_source: identity.source,
+      plugin_version: identity.version,
+      plugin_copy_id: identity.copyId,
+      plugin_name: identity.name,
+      root_path: identity.rootPath,
+      canonical_path: identity.canonicalPath,
+      allowed_root: identity.allowedRoot,
+      plugin_revision: identity.revision,
+      agents: identity.agents,
+    });
+    socket.receive({
+      type: "plugin_command",
+      request_id: outbound.request_id,
+      command,
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      copyId: identity.copyId,
+      source: identity.source,
+      version: identity.version,
+      agents: identity.agents,
+    });
+    client.disconnectAll();
+  });
+
+  test("mutation accepts a top-level result and rejects identity drift", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.executePluginMutation(server.id, identity);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "plugin_mutation_result",
+      request_id: outbound.request_id,
+      command: { ...command, revision: "d".repeat(64) },
+      success: true,
+      exit_code: 0,
+      output: "Uninstalled Temporary.",
+      duration_ms: 10,
+    });
+
+    await expect(pending).rejects.toThrow("different Plugin copy");
+    client.disconnectAll();
+  });
+
+  test("mutation returns truthful loading success and failure outcomes", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.executePluginMutation(server.id, identity);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "plugin_mutation_result",
+      request_id: outbound.request_id,
+      command,
+      success: true,
+      exit_code: 0,
+      output: "Uninstalled Temporary.",
+      duration_ms: 10,
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      command: { copyId: identity.copyId, revision: identity.revision },
+      execution: { success: true, exitCode: 0 },
+    });
+    client.disconnectAll();
+  });
+});
+
 describe("structured input identity reuse", () => {
   test("a retry reuses its stable request id while a new input stays fresh", async () => {
     const client = new MultiServerWebSocketClient();

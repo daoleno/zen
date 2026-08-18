@@ -1,0 +1,25 @@
+{
+  "transport": "production Android App over paired live WebSocket daemon API",
+  "package": "com.daoleno.zen",
+  "version": "0.1.0-beta.19",
+  "device": "sdk_gphone64_x86_64 / Android 15 API 35 emulator",
+  "removed": {
+    "plugin_id": "zen-proof-target@zen-proof-market-copy",
+    "root": "/home/daoleno/.zen/t/g2Hbwt/zen-plugins-proof.ae8PO0/codex/plugins/cache/zen-proof-market-copy/zen-proof-target/0.1.0",
+    "root_absent": true,
+    "registration_absent": true
+  },
+  "retained": {
+    "same_logical_copy": "zen-proof-target@zen-proof-market",
+    "neighbor": "zen-proof-neighbor@zen-proof-market",
+    "neighbor_manifest_sha256": "3aac8bd87d6b48a9897bab1576b40b84977d8fd23c5f84be2b3cd13176de8ef4",
+    "marketplace_root": "/home/daoleno/.zen/t/g2Hbwt/zen-plugins-proof.ae8PO0/market-copy.aNTbe1",
+    "marketplace_registration_present": true
+  },
+  "ui": {
+    "multi_copy_selector": true,
+    "confirmation": true,
+    "success_toast": true,
+    "inventory_refreshed": true
+  }
+}

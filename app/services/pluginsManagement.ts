@@ -1,72 +1,106 @@
-/**
- * Plugins wire boundary. Plugin lifecycle is owned by the hosting client (the
- * Claude Code plugin manager in this release); the daemon relays the owning
- * client's authoritative catalog and builds exact reviewed commands. Nothing
- * here invents plugin state: catalog availability, installed rows, and
- * mutation capability all come from the daemon wire.
- */
+import type { ManagedSkillAgent } from "./skillsManagement";
+import { skillAgentLabel } from "./skillsManagement";
 
 export type PluginHost = "claude" | "codex";
-export type PluginMutationOperation = "install" | "update" | "uninstall";
-export type PluginCatalogStatus = "ready" | "unavailable";
-
-export interface CatalogInstalledPlugin {
-  id: string;
-  version: string;
-  enabled: boolean;
-}
+export type PluginSource = "manager" | "cache" | "remote_cache";
+export type PluginMutationOperation = "install" | "uninstall";
 
 export interface AvailablePlugin {
   pluginId: string;
   name: string;
+  displayName?: string;
   marketplaceName: string;
+  version?: string;
   description?: string;
   sourceUrl?: string;
   sourceRef?: string;
+  host: PluginHost;
   installable: boolean;
 }
 
-export interface PluginCatalogState {
-  status: PluginCatalogStatus;
-  available: AvailablePlugin[];
-  installed: CatalogInstalledPlugin[];
-  code?: string;
-  message?: string;
+export interface PluginComponent {
+  kind: string;
+  name: string;
+  path?: string;
 }
 
-export interface PluginHostedSkill {
-  name: string;
-  canonicalPath: string;
-  sourcePath: string;
+export interface PluginCapability {
+  canUninstall: boolean;
+  reason?: string;
 }
 
-export interface InstalledPluginRow {
-  id: string;
+export interface InstalledPluginCopy {
+  copyId: string;
+  pluginId: string;
   name: string;
+  displayName?: string;
+  description?: string;
   marketplace: string;
-  version: string;
-  scope: string;
+  version?: string;
+  scope: "user";
   enabled: boolean;
   host: PluginHost;
-  mutable: boolean;
-  source: "catalog" | "cache";
-  skillCount: number;
-  skills: PluginHostedSkill[];
+  source: PluginSource;
+  rootPath: string;
+  canonicalPath: string;
+  allowedRoot: string;
+  location: string;
+  revision: string;
+  agents: string[];
+  components: PluginComponent[];
+  capability: PluginCapability;
 }
 
 export interface PluginInventory {
   generatedAt: string;
-  catalog: PluginCatalogState;
-  installed: InstalledPluginRow[];
+  installed: InstalledPluginCopy[];
+  available: AvailablePlugin[];
   warnings: string[];
 }
 
+export interface PluginInstallInput {
+  operation: "install";
+  pluginId: string;
+  host: PluginHost;
+  scope: "user";
+}
+
+export interface PluginUninstallInput {
+  operation: "uninstall";
+  pluginId: string;
+  host: PluginHost;
+  source: "manager";
+  scope: "user";
+  copyId: string;
+  name: string;
+  version: string;
+  rootPath: string;
+  canonicalPath: string;
+  allowedRoot: string;
+  revision: string;
+  agents: string[];
+}
+
+export type PluginMutationInput = PluginInstallInput | PluginUninstallInput;
+
 export interface PluginMutationCommand {
   operation: PluginMutationOperation;
-  command: string;
   pluginId: string;
-  scope: "user";
   host: PluginHost;
+  source?: PluginSource;
+  scope: "user";
+  copyId?: string;
+  name: string;
+  displayName?: string;
+  version?: string;
+  rootPath?: string;
+  canonicalPath?: string;
+  allowedRoot?: string;
+  location?: string;
+  revision?: string;
+  agents: string[];
+  summary: string;
+  destructive: boolean;
 }
 
 export interface PluginMutationExecution {
@@ -81,19 +115,33 @@ export interface PluginMutationResult {
   execution: PluginMutationExecution;
 }
 
-export const PLUGIN_MUTATION_OPERATIONS = new Set<PluginMutationOperation>([
+const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9][a-z0-9-]{0,63}$/;
+const COPY_ID_PATTERN = /^[a-f0-9]{24}$/;
+const REVISION_PATTERN = /^[a-f0-9]{64}$/;
+const PLUGIN_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+const PLUGIN_HOSTS = new Set<PluginHost>(["claude", "codex"]);
+const PLUGIN_SOURCES = new Set<PluginSource>([
+  "manager",
+  "cache",
+  "remote_cache",
+]);
+const PLUGIN_OPERATIONS = new Set<PluginMutationOperation>([
   "install",
-  "update",
   "uninstall",
 ]);
-export const PLUGIN_HOSTS = new Set<PluginHost>(["claude", "codex"]);
-const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}@[a-z0-9][a-z0-9-]{0,63}$/;
-const PLUGIN_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-const MAX_PLUGIN_ID_LENGTH = 141;
-const MAX_CATALOG_PLUGINS = 512;
-const MAX_INSTALLED_PLUGINS = 128;
-const MAX_PLUGIN_HOSTED_SKILLS = 128;
-const MAX_PLUGIN_WARNINGS = 12;
+const KNOWN_PLUGIN_AGENTS = new Set<ManagedSkillAgent>([
+  "codex",
+  "claude-code",
+  "cursor",
+  "grok",
+  "opencode",
+  "pi",
+]);
+const PLUGIN_AGENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_INSTALLED = 128;
+const MAX_AVAILABLE = 512;
+const MAX_COMPONENTS = 128;
+const MAX_WARNINGS = 12;
 
 export function normalizePluginsInventory(value: unknown): PluginInventory {
   const raw = record(value);
@@ -101,29 +149,43 @@ export function normalizePluginsInventory(value: unknown): PluginInventory {
   if (!generatedAt || Number.isNaN(Date.parse(generatedAt))) {
     throw new Error("Daemon returned an invalid Plugins inventory timestamp.");
   }
-  const catalog = normalizeCatalogState(raw.catalog);
   const rawInstalled = Array.isArray(raw.installed) ? raw.installed : [];
-  if (rawInstalled.length > MAX_INSTALLED_PLUGINS) {
-    throw new Error("Daemon returned too many installed plugins.");
+  if (rawInstalled.length > MAX_INSTALLED) {
+    throw new Error("Daemon returned too many installed Plugin copies.");
   }
-  const installed: InstalledPluginRow[] = [];
-  const ids = new Set<string>();
+  const installed: InstalledPluginCopy[] = [];
+  const copyIds = new Set<string>();
   for (const candidate of rawInstalled) {
-    const row = normalizeInstalledPlugin(candidate);
-    if (row == null || ids.has(row.id)) {
-      throw new Error("Daemon returned an invalid installed plugin.");
+    const copy = normalizeInstalledPluginCopy(candidate);
+    if (!copy || copyIds.has(copy.copyId)) {
+      throw new Error("Daemon returned an invalid installed Plugin copy.");
     }
-    ids.add(row.id);
-    installed.push(row);
+    copyIds.add(copy.copyId);
+    installed.push(copy);
+  }
+  const rawAvailable = Array.isArray(raw.available) ? raw.available : [];
+  if (rawAvailable.length > MAX_AVAILABLE) {
+    throw new Error("Daemon returned too many available Plugins.");
+  }
+  const available: AvailablePlugin[] = [];
+  const availableIds = new Set<string>();
+  for (const candidate of rawAvailable) {
+    const plugin = normalizeAvailablePlugin(candidate);
+    const key = plugin ? `${plugin.host}:${plugin.pluginId}` : "";
+    if (!plugin || availableIds.has(key)) {
+      throw new Error("Daemon returned an invalid available Plugin.");
+    }
+    availableIds.add(key);
+    available.push(plugin);
   }
   return {
     generatedAt,
-    catalog,
     installed,
+    available,
     warnings: (Array.isArray(raw.warnings) ? raw.warnings : [])
       .map((warning) => boundedString(warning, 240))
       .filter(Boolean)
-      .slice(0, MAX_PLUGIN_WARNINGS),
+      .slice(0, MAX_WARNINGS),
   };
 }
 
@@ -132,32 +194,75 @@ export function normalizePluginMutationCommand(
 ): PluginMutationCommand {
   const raw = record(value);
   const operation = raw.operation;
-  const scope = raw.scope;
+  const pluginId = boundedString(raw.plugin_id, 141);
   const host = raw.host;
-  const pluginId = boundedString(raw.plugin_id, MAX_PLUGIN_ID_LENGTH);
-  const command = boundedString(raw.command, 1024);
+  const scope = raw.scope;
+  const source = raw.source;
+  const name = boundedString(raw.name, 128);
+  const summary = boundedString(raw.summary, 400);
+  const destructive = raw.destructive;
   if (
     typeof operation !== "string" ||
-    !PLUGIN_MUTATION_OPERATIONS.has(operation as PluginMutationOperation) ||
-    scope !== "user" ||
+    !PLUGIN_OPERATIONS.has(operation as PluginMutationOperation) ||
+    !isPluginID(pluginId) ||
     typeof host !== "string" ||
     !PLUGIN_HOSTS.has(host as PluginHost) ||
-    !isPluginID(pluginId) ||
-    !command
+    scope !== "user" ||
+    !name ||
+    !summary ||
+    typeof destructive !== "boolean"
   ) {
-    throw new Error("Daemon returned an invalid plugin command.");
+    throw new Error("Daemon returned an invalid Plugin command.");
   }
-  const normalized: PluginMutationCommand = {
+  const agents = normalizeAgents(raw.agents);
+  const command: PluginMutationCommand = {
     operation: operation as PluginMutationOperation,
-    command,
     pluginId,
-    scope: "user",
     host: host as PluginHost,
+    scope: "user",
+    name,
+    displayName: boundedString(raw.display_name, 128) || undefined,
+    agents,
+    summary,
+    destructive,
   };
-  if (!isExactOfficialPluginCommand(normalized)) {
-    throw new Error("Daemon returned a non-official plugin command.");
+  if (operation === "install") {
+    if (destructive || boundedString(raw.copy_id, 24)) {
+      throw new Error("Daemon returned an invalid Plugin install command.");
+    }
+    return command;
   }
-  return normalized;
+  const copyId = boundedString(raw.copy_id, 24);
+  const version = boundedString(raw.version, 64);
+  const rootPath = boundedString(raw.root_path, 4096);
+  const canonicalPath = boundedString(raw.canonical_path, 4096);
+  const allowedRoot = boundedString(raw.allowed_root, 4096);
+  const location = boundedString(raw.location, 240);
+  const revision = boundedString(raw.revision, 64);
+  if (
+    !COPY_ID_PATTERN.test(copyId) ||
+    source !== "manager" ||
+    !PLUGIN_VERSION_PATTERN.test(version) ||
+    !rootPath ||
+    !canonicalPath ||
+    !allowedRoot ||
+    !location ||
+    !REVISION_PATTERN.test(revision) ||
+    !destructive
+  ) {
+    throw new Error("Daemon returned an incomplete Plugin uninstall command.");
+  }
+  return {
+    ...command,
+    copyId,
+    source: "manager",
+    version,
+    rootPath,
+    canonicalPath,
+    allowedRoot,
+    location,
+    revision,
+  };
 }
 
 export function normalizePluginMutationResult(
@@ -177,285 +282,243 @@ export function normalizePluginMutationResult(
     typeof durationMs !== "number" ||
     !Number.isSafeInteger(durationMs) ||
     durationMs < 0 ||
-    durationMs > 3600_000
+    durationMs > 3_600_000 ||
+    success !== (exitCode === 0)
   ) {
     throw new Error("Daemon returned an invalid Plugin mutation outcome.");
   }
-  const output = boundedString(raw.output, 60000);
-  if (success !== (exitCode === 0)) {
-    throw new Error("Daemon returned inconsistent Plugin mutation state.");
-  }
   return {
     command,
-    execution: { success, exitCode, output, durationMs },
+    execution: {
+      success,
+      exitCode,
+      output: boundedString(raw.output, 60_000),
+      durationMs,
+    },
   };
 }
 
 export function assertPluginMutationMatchesRequest(
   result: PluginMutationResult,
-  expected: { operation: PluginMutationOperation; pluginId: string; scope: "user" },
+  expected: PluginMutationInput,
 ): void {
-  const command = result.command;
+  assertPluginCommandMatchesRequest(result.command, expected);
+}
+
+export function assertPluginCommandMatchesRequest(
+  command: PluginMutationCommand,
+  expected: PluginMutationInput,
+): void {
   if (
     command.operation !== expected.operation ||
     command.pluginId !== expected.pluginId ||
+    command.host !== expected.host ||
     command.scope !== expected.scope
   ) {
-    throw new Error("Daemon executed a Plugin command for a different request.");
+    throw new Error(
+      "Daemon executed a Plugin command for a different request.",
+    );
+  }
+  if (
+    expected.operation === "uninstall" &&
+    (command.copyId !== expected.copyId ||
+      command.name !== expected.name ||
+      command.source !== expected.source ||
+      command.version !== expected.version ||
+      command.rootPath !== expected.rootPath ||
+      command.canonicalPath !== expected.canonicalPath ||
+      command.allowedRoot !== expected.allowedRoot ||
+      command.revision !== expected.revision ||
+      command.agents.length !== expected.agents.length ||
+      command.agents.some((agent, index) => agent !== expected.agents[index]))
+  ) {
+    throw new Error("Daemon executed a different Plugin copy.");
   }
 }
 
-export function isPluginID(value: string): boolean {
-  return (
-    value !== "" &&
-    value.length <= MAX_PLUGIN_ID_LENGTH &&
-    PLUGIN_ID_PATTERN.test(value)
-  );
-}
-
-export function pluginMutationLabel(
-  operation: PluginMutationOperation,
-): string {
-  switch (operation) {
-    case "install":
-      return "Install";
-    case "update":
-      return "Update";
-    case "uninstall":
-      return "Uninstall";
-  }
+export function pluginUninstallInput(
+  copy: InstalledPluginCopy,
+): PluginUninstallInput {
+  return {
+    operation: "uninstall",
+    pluginId: copy.pluginId,
+    host: copy.host,
+    source: "manager",
+    scope: "user",
+    copyId: copy.copyId,
+    name: copy.name,
+    version: copy.version || "unknown",
+    rootPath: copy.rootPath,
+    canonicalPath: copy.canonicalPath,
+    allowedRoot: copy.allowedRoot,
+    revision: copy.revision,
+    agents: [...copy.agents],
+  };
 }
 
 export function buildPluginMutationConfirmation(
   command: PluginMutationCommand,
-): {
-  title: string;
-  message: string;
-  confirmLabel: string;
-} {
-  const verb = pluginMutationLabel(command.operation);
-  return {
-    title: `${verb} ${command.pluginId}?`,
-    message: [
-      `Plugin: ${command.pluginId}`,
-      `Scope: ${command.scope}`,
-      `Manager: ${pluginHostLabel(command.host)}`, 
-      "",
-      "Command:",
-      command.command,
-    ].join("\n"),
-    confirmLabel: verb,
-  };
-}
-
-function normalizeCatalogState(value: unknown): PluginCatalogState {
-  const raw = record(value);
-  const status = raw.status;
-  if (status === "unavailable") {
+): { title: string; message: string; confirmLabel: string } {
+  const name = command.displayName || command.name;
+  if (command.operation === "install") {
     return {
-      status,
-      available: [],
-      installed: [],
-      code: boundedString(raw.code, 64) || undefined,
-      message: boundedString(raw.message, 240) || undefined,
+      title: `Install ${name}?`,
+      message: [
+        `Plugin: ${name}`,
+        `Available to: ${command.agents.map(pluginAgentLabel).join(", ")}`,
+        `Manager: ${pluginHostLabel(command.host)}`,
+      ].join("\n"),
+      confirmLabel: "Install",
     };
   }
-  if (status !== "ready") {
-    throw new Error("Daemon returned an invalid plugin catalog state.");
-  }
-  const rawAvailable = Array.isArray(raw.available) ? raw.available : [];
-  if (rawAvailable.length > MAX_CATALOG_PLUGINS) {
-    throw new Error("Daemon returned too many available plugins.");
-  }
-  const available: AvailablePlugin[] = [];
-  const seen = new Set<string>();
-  for (const candidate of rawAvailable) {
-    const plugin = normalizeAvailablePlugin(candidate);
-    if (plugin == null || seen.has(plugin.pluginId)) {
-      throw new Error("Daemon returned an invalid available plugin.");
-    }
-    seen.add(plugin.pluginId);
-    available.push(plugin);
-  }
-  const rawInstalled = Array.isArray(raw.installed) ? raw.installed : [];
-  if (rawInstalled.length > MAX_INSTALLED_PLUGINS) {
-    throw new Error("Daemon returned too many catalog installed plugins.");
-  }
-  const installed: CatalogInstalledPlugin[] = [];
-  const installedIds = new Set<string>();
-  for (const candidate of rawInstalled) {
-    const rawEntry = record(candidate);
-    const id = boundedString(rawEntry.id, MAX_PLUGIN_ID_LENGTH);
-    if (
-      !isPluginID(id) ||
-      installedIds.has(id) ||
-      typeof rawEntry.enabled !== "boolean"
-    ) {
-      throw new Error("Daemon returned an invalid catalog installed plugin.");
-    }
-    installedIds.add(id);
-    installed.push({
-      id,
-      version: boundedString(rawEntry.version, 64),
-      enabled: rawEntry.enabled,
-    });
-  }
-  return { status: "ready", available, installed };
-}
-
-function normalizeAvailablePlugin(value: unknown): AvailablePlugin | null {
-  const raw = record(value);
-  const pluginId = boundedString(raw.plugin_id, MAX_PLUGIN_ID_LENGTH);
-  const name = boundedString(raw.name, 128);
-  const marketplaceName = boundedString(raw.marketplace_name, 128);
-  if (
-    !isPluginID(pluginId) ||
-    !name ||
-    !marketplaceName ||
-    typeof raw.installable !== "boolean"
-  ) {
-    return null;
-  }
-  const plugin: AvailablePlugin = {
-    pluginId,
-    name,
-    marketplaceName,
-    description: boundedString(raw.description, 400) || undefined,
-    sourceUrl: boundedString(raw.source_url, 1024) || undefined,
-    sourceRef: boundedString(raw.source_ref, 128) || undefined,
-    installable: raw.installable,
-  };
-  if (!installableIdentityConsistent(plugin)) {
-    return null;
-  }
-  return plugin;
-}
-
-function installableIdentityConsistent(plugin: AvailablePlugin): boolean {
-  const [name, marketplace] = plugin.pluginId.split("@");
-  return name === plugin.name && marketplace === plugin.marketplaceName;
-}
-
-function normalizeInstalledPlugin(value: unknown): InstalledPluginRow | null {
-  const raw = record(value);
-  const id = boundedString(raw.id, MAX_PLUGIN_ID_LENGTH);
-  const name = boundedString(raw.name, 128);
-  const marketplace = boundedString(raw.marketplace, 128);
-  const version = boundedString(raw.version, 64);
-  const scope = raw.scope;
-  const host = raw.host;
-  if (
-    !isPluginID(id) ||
-    !name ||
-    !marketplace ||
-    !version ||
-    scope !== "user" ||
-    typeof host !== "string" ||
-    !PLUGIN_HOSTS.has(host as PluginHost) ||
-    typeof raw.mutable !== "boolean" ||
-    (raw.source !== "catalog" && raw.source !== "cache") ||
-    typeof raw.enabled !== "boolean"
-  ) {
-    return null;
-  }
-  const [expectedName, expectedMarketplace] = id.split("@");
-  if (name !== expectedName || marketplace !== expectedMarketplace) {
-    return null;
-  }
-  const rawSkills = Array.isArray(raw.skills) ? raw.skills : [];
-  if (rawSkills.length > MAX_PLUGIN_HOSTED_SKILLS) {
-    return null;
-  }
-  const skills: PluginHostedSkill[] = [];
-  const paths = new Set<string>();
-  for (const candidate of rawSkills) {
-    const rawSkill = record(candidate);
-    const skillName = boundedString(rawSkill.name, 128);
-    const canonicalPath = boundedString(rawSkill.canonical_path, 4096);
-    const sourcePath = boundedString(rawSkill.source_path, 4096);
-    if (
-      !skillName ||
-      !canonicalPath ||
-      !sourcePath ||
-      paths.has(sourcePath)
-    ) {
-      return null;
-    }
-    paths.add(sourcePath);
-    skills.push({ name: skillName, canonicalPath, sourcePath });
-  }
-  if (skills.length !== rawSkills.length) {
-    return null;
-  }
-  const skillCount = raw.skill_count;
-  if (
-    typeof skillCount !== "number" ||
-    !Number.isSafeInteger(skillCount) ||
-    skillCount < 0 ||
-    skillCount > MAX_PLUGIN_HOSTED_SKILLS ||
-    skillCount !== skills.length
-  ) {
-    return null;
-  }
   return {
-    id,
-    name,
-    marketplace,
-    version,
-    scope: "user",
-    enabled: raw.enabled,
-    host: host as PluginHost,
-    mutable: raw.mutable,
-    source: raw.source as "catalog" | "cache",
-    skillCount,
-    skills,
+    title: `Uninstall ${name}?`,
+    message: [
+      `Plugin: ${name}`,
+      `Available to: ${command.agents.map(pluginAgentLabel).join(", ")}`,
+      `Location: ${command.location}`,
+      "",
+      "This permanently removes this exact Plugin copy and cannot be undone.",
+    ].join("\n"),
+    confirmLabel: "Uninstall",
   };
-}
-
-/**
- * Exact official plugin-manager commands only. Every token is a validated
- * literal; no shell syntax can pass.
- */
-function isExactOfficialPluginCommand(
-  value: PluginMutationCommand,
-): boolean {
-  if (/[^A-Za-z0-9._@:/ -]/.test(value.command)) {
-    return false;
-  }
-  const tokens = value.command.split(" ");
-  if (tokens.some((token) => token === "")) {
-    return false;
-  }
-  let index = 0;
-  if (tokens[index++] !== "claude" || tokens[index++] !== "plugin") {
-    return false;
-  }
-  const verb = tokens[index++] || "";
-  const expectedVerb =
-    value.operation === "install"
-      ? "install"
-      : value.operation === "update"
-        ? "update"
-        : "uninstall";
-  if (verb !== expectedVerb) {
-    return false;
-  }
-  if (tokens[index++] !== value.pluginId) {
-    return false;
-  }
-  if (tokens[index++] !== "--scope" || tokens[index++] !== "user") {
-    return false;
-  }
-  if (value.operation === "uninstall") {
-    if (tokens[index++] !== "--yes") {
-      return false;
-    }
-  }
-  return index === tokens.length;
 }
 
 export function pluginHostLabel(host: PluginHost): string {
   return host === "claude" ? "Claude Code" : "Codex";
+}
+
+export function pluginAgentLabel(agent: string): string {
+  return KNOWN_PLUGIN_AGENTS.has(agent as ManagedSkillAgent)
+    ? skillAgentLabel(agent as ManagedSkillAgent)
+    : agent;
+}
+
+export function isPluginID(value: string): boolean {
+  return value.length <= 141 && PLUGIN_ID_PATTERN.test(value);
+}
+
+function normalizeInstalledPluginCopy(
+  value: unknown,
+): InstalledPluginCopy | null {
+  const raw = record(value);
+  const copyId = boundedString(raw.copy_id, 24);
+  const pluginId = boundedString(raw.plugin_id, 141);
+  const name = boundedString(raw.name, 128);
+  const marketplace = boundedString(raw.marketplace, 128);
+  const host = raw.host;
+  const source = raw.source;
+  const rootPath = boundedString(raw.root_path, 4096);
+  const canonicalPath = boundedString(raw.canonical_path, 4096);
+  const allowedRoot = boundedString(raw.allowed_root, 4096);
+  const location = boundedString(raw.location, 240);
+  const revision = boundedString(raw.revision, 64);
+  if (
+    !COPY_ID_PATTERN.test(copyId) ||
+    !isPluginID(pluginId) ||
+    !name ||
+    !marketplace ||
+    pluginId !== `${name}@${marketplace}` ||
+    raw.scope !== "user" ||
+    typeof raw.enabled !== "boolean" ||
+    typeof host !== "string" ||
+    !PLUGIN_HOSTS.has(host as PluginHost) ||
+    typeof source !== "string" ||
+    !PLUGIN_SOURCES.has(source as PluginSource) ||
+    !rootPath ||
+    !canonicalPath ||
+    !allowedRoot ||
+    !location ||
+    !REVISION_PATTERN.test(revision)
+  ) {
+    return null;
+  }
+  const rawComponents = Array.isArray(raw.components) ? raw.components : [];
+  if (rawComponents.length > MAX_COMPONENTS) return null;
+  const components: PluginComponent[] = [];
+  const componentKeys = new Set<string>();
+  for (const candidate of rawComponents) {
+    const component = record(candidate);
+    const kind = boundedString(component.kind, 64);
+    const componentName = boundedString(component.name, 128);
+    const path = boundedString(component.path, 1024) || undefined;
+    const key = `${kind}\u0000${componentName}\u0000${path || ""}`;
+    if (!kind || !componentName || componentKeys.has(key)) return null;
+    componentKeys.add(key);
+    components.push({ kind, name: componentName, path });
+  }
+  const capability = record(raw.capability);
+  if (typeof capability.can_uninstall !== "boolean") return null;
+  return {
+    copyId,
+    pluginId,
+    name,
+    displayName: boundedString(raw.display_name, 128) || undefined,
+    description: boundedString(raw.description, 400) || undefined,
+    marketplace,
+    version: boundedString(raw.version, 64) || undefined,
+    scope: "user",
+    enabled: raw.enabled,
+    host: host as PluginHost,
+    source: source as PluginSource,
+    rootPath,
+    canonicalPath,
+    allowedRoot,
+    location,
+    revision,
+    agents: normalizeAgents(raw.agents),
+    components,
+    capability: {
+      canUninstall: capability.can_uninstall,
+      reason: boundedString(capability.reason, 400) || undefined,
+    },
+  };
+}
+
+function normalizeAvailablePlugin(value: unknown): AvailablePlugin | null {
+  const raw = record(value);
+  const pluginId = boundedString(raw.plugin_id, 141);
+  const name = boundedString(raw.name, 128);
+  const marketplaceName = boundedString(raw.marketplace_name, 128);
+  const host = raw.host;
+  if (
+    !isPluginID(pluginId) ||
+    !name ||
+    !marketplaceName ||
+    pluginId !== `${name}@${marketplaceName}` ||
+    typeof host !== "string" ||
+    !PLUGIN_HOSTS.has(host as PluginHost) ||
+    typeof raw.installable !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    pluginId,
+    name,
+    displayName: boundedString(raw.display_name, 128) || undefined,
+    marketplaceName,
+    version: boundedString(raw.version, 64) || undefined,
+    description: boundedString(raw.description, 400) || undefined,
+    sourceUrl: boundedString(raw.source_url, 1024) || undefined,
+    sourceRef: boundedString(raw.source_ref, 1024) || undefined,
+    host: host as PluginHost,
+    installable: raw.installable,
+  };
+}
+
+function normalizeAgents(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 6) {
+    throw new Error("Daemon returned invalid Plugin Agent availability.");
+  }
+  const agents: string[] = [];
+  for (const agent of value) {
+    const normalized = boundedString(agent, 64);
+    if (!PLUGIN_AGENT_PATTERN.test(normalized) || agents.includes(normalized)) {
+      throw new Error("Daemon returned invalid Plugin Agent availability.");
+    }
+    agents.push(normalized);
+  }
+  return agents;
 }
 
 function record(value: unknown): Record<string, unknown> {

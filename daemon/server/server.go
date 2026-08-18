@@ -98,8 +98,8 @@ type Server struct {
 	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
 	getAgentOverride             func(agentID string) *classifier.Agent
 	// skillsMutationExecuteOverride / pluginMutationExecuteOverride replace the
-	// production command executor in handler tests so the ownership/cancellation
-	// protocol can be proven without running real CLIs.
+	// production executor in handler tests so ownership and cancellation can be
+	// proven without touching real Plugin or Skill state.
 	skillsMutationExecuteOverride func(ctx context.Context, command skillmgmt.MutationCommand, options skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error)
 	pluginMutationExecuteOverride func(ctx context.Context, command skillmgmt.PluginMutationCommand, options skillmgmt.MutationExecutionOptions) (skillmgmt.MutationExecution, error)
 	// codexLiveDial opens the live native Codex app-server control surface for
@@ -133,7 +133,7 @@ type Server struct {
 	skillsInspects     map[*websocket.Conn]skillsInspectRequest
 	pluginsInventories map[*websocket.Conn]pluginsInventoryRequest
 	pluginsMutations   map[*websocket.Conn]pluginsMutationRequest
-	pluginCatalogCLI   skillmgmt.PluginCLI
+	pluginRuntime      skillmgmt.PluginRuntime
 	mu                 sync.Mutex
 }
 
@@ -263,7 +263,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		skillsInspects:     make(map[*websocket.Conn]skillsInspectRequest),
 		pluginsInventories: make(map[*websocket.Conn]pluginsInventoryRequest),
 		pluginsMutations:   make(map[*websocket.Conn]pluginsMutationRequest),
-		pluginCatalogCLI:   skillmgmt.NewClaudePluginCLI(),
+		pluginRuntime:      skillmgmt.NewPluginRuntime(),
 	}
 	if brainService != nil {
 		srv.brainWorkSubID, srv.brainWorkSub = brainService.SubscribeWork()
@@ -337,6 +337,12 @@ type clientMessage struct {
 	SkillName            string                                 `json:"skill_name"`
 	Ref                  string                                 `json:"ref"`
 	PluginID             string                                 `json:"plugin_id"`
+	PluginCopyID         string                                 `json:"plugin_copy_id"`
+	PluginName           string                                 `json:"plugin_name"`
+	PluginHost           string                                 `json:"plugin_host"`
+	PluginSource         string                                 `json:"plugin_source"`
+	PluginVersion        string                                 `json:"plugin_version"`
+	PluginRevision       string                                 `json:"plugin_revision"`
 	ProfileID            string                                 `json:"profile_id"`
 	ConnectionID         string                                 `json:"connection_id"`
 	ModelID              string                                 `json:"model_id"`

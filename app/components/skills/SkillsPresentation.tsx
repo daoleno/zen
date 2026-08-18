@@ -18,17 +18,14 @@ import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
-import {
-  evaluatePluginMutation,
-  type PluginsUnifiedView,
-} from "../../services/pluginsScreenModel";
 import type {
-  AvailablePlugin,
-  InstalledPluginRow,
+  InstalledPluginCopy,
   PluginInventory,
 } from "../../services/pluginsManagement";
+import type { LogicalPlugin } from "../../services/pluginsScreenModel";
 import type {
   InstalledSkill,
+  ManagedSkillAgent,
   PackageDetail,
   SkillMutationOperation,
   SkillsInventory,
@@ -54,6 +51,9 @@ import {
 } from "../../services/skillsScreenModel";
 import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
 import { skillRowSupportsDelete } from "../../services/skillsSurfaceModel";
+import { PLUGINS_SKILLS_SCREEN_PADDING } from "../../services/pluginsSkillsSurfaceModel";
+import { AgentLogoSet } from "../agents/AgentLogoSet";
+import { PluginsPresentation } from "../plugins/PluginsPresentation";
 
 export interface SurfaceMutationNotice {
   kind: "success" | "error";
@@ -65,7 +65,7 @@ export interface SkillsPresentationProps {
   inventoryState: SkillsRequestState<SkillsInventory>;
   logicalSkills: LogicalSkill[];
   pluginsState: SkillsRequestState<PluginInventory>;
-  pluginsView: PluginsUnifiedView;
+  logicalPlugins: LogicalPlugin[];
   mutationOperations: readonly SkillMutationOperation[];
   preparingMutation: string;
   mutationNotice: SurfaceMutationNotice | null;
@@ -80,9 +80,7 @@ export interface SkillsPresentationProps {
   onInspectSkill(skill: InstalledSkill, path?: string): void;
   onDismissInspector(): void;
   onDeleteSkill(skill: InstalledSkill): void;
-  onInstallPlugin(entry: AvailablePlugin): void;
-  onUpdatePlugin(row: InstalledPluginRow): void;
-  onUninstallPlugin(row: InstalledPluginRow): void;
+  onUninstallPlugin(copy: InstalledPluginCopy): void;
   onDismissNotice(): void;
 }
 
@@ -155,33 +153,6 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           </Pressable>
         ))}
       </View>
-      {props.mutationNotice ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Dismiss status message"
-          onPress={props.onDismissNotice}
-          style={[
-            styles.notice,
-            {
-              backgroundColor:
-                props.mutationNotice.kind === "error"
-                  ? colors.dangerSoft
-                  : colors.accentSoft,
-            },
-          ]}
-        >
-          <Text
-            style={{
-              color:
-                props.mutationNotice.kind === "error"
-                  ? colors.dangerText
-                  : colors.textPrimary,
-            }}
-          >
-            {props.mutationNotice.message}
-          </Text>
-        </Pressable>
-      ) : null}
       {props.section === "skills" ? (
         <View style={styles.flex}>
           <View style={styles.searchArea}>
@@ -265,14 +236,23 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           />
         </View>
       ) : (
-        <PluginsList {...props} />
+        <PluginsPresentation
+          state={props.pluginsState}
+          plugins={props.logicalPlugins}
+          preparingMutation={props.preparingMutation}
+          currentServerAvailable={props.currentServerAvailable}
+          wide={wide}
+          onOpenSettings={props.onOpenSettings}
+          onRefresh={props.onRetryPlugins}
+          onUninstall={props.onUninstallPlugin}
+        />
       )}
     </SafeAreaView>
   );
   return (
     <View style={[styles.root, { backgroundColor: colors.bgPrimary }]}>
       <View style={styles.flex}>{main}</View>
-      {wide && props.inspectedCopyId ? (
+      {props.section === "skills" && wide && props.inspectedCopyId ? (
         <View style={[styles.panel, { borderLeftColor: colors.borderSubtle }]}>
           <Inspector
             {...props}
@@ -283,7 +263,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           />
         </View>
       ) : null}
-      {!wide ? (
+      {props.section === "skills" && !wide ? (
         <BottomSheetFrame
           visible={Boolean(props.inspectedCopyId)}
           maxHeight="94%"
@@ -310,6 +290,55 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           props.onDeleteSkill(copy);
         }}
       />
+      <MutationToast
+        notice={props.mutationNotice}
+        onDismiss={props.onDismissNotice}
+      />
+    </View>
+  );
+}
+
+function MutationToast({
+  notice,
+  onDismiss,
+}: {
+  notice: SurfaceMutationNotice | null;
+  onDismiss(): void;
+}) {
+  const colors = useAppColors();
+  if (!notice) return null;
+  const error = notice.kind === "error";
+  return (
+    <View pointerEvents="box-none" style={styles.toastWrap}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss status message"
+        accessibilityLiveRegion={error ? "assertive" : "polite"}
+        onPress={onDismiss}
+        style={[
+          styles.toast,
+          {
+            backgroundColor: error ? colors.dangerSoft : colors.modalSurface,
+            borderColor: error ? colors.dangerText : colors.borderStrong,
+          },
+        ]}
+      >
+        <Ionicons
+          name={error ? "warning-outline" : "checkmark-circle-outline"}
+          size={20}
+          color={error ? colors.dangerText : colors.success}
+        />
+        <Text
+          numberOfLines={3}
+          style={[
+            styles.toastText,
+            { color: error ? colors.dangerText : colors.textPrimary },
+          ]}
+        >
+          {notice.message}
+        </Text>
+        <Ionicons name="close" size={18} color={colors.textTertiary} />
+      </Pressable>
     </View>
   );
 }
@@ -322,10 +351,16 @@ function ActiveFilters({
   onChange(value: SkillFilters): void;
 }) {
   const colors = useAppColors();
-  const chips = [
+  const chips: Array<{
+    key: string;
+    label: string;
+    agent?: ManagedSkillAgent;
+    remove(): void;
+  }> = [
     ...filters.agents.map((agent) => ({
       key: `agent:${agent}`,
       label: skillAgentLabel(agent),
+      agent,
       remove: () =>
         onChange({
           ...filters,
@@ -364,7 +399,11 @@ function ActiveFilters({
           onPress={chip.remove}
           style={[styles.chip, { backgroundColor: colors.accentSoft }]}
         >
-          <Text style={{ color: colors.accent }}>{chip.label}</Text>
+          {chip.agent ? (
+            <AgentLogoSet agents={[chip.agent]} size={16} />
+          ) : (
+            <Text style={{ color: colors.accent }}>{chip.label}</Text>
+          )}
           <Ionicons name="close" size={15} color={colors.accent} />
         </Pressable>
       ))}
@@ -411,6 +450,7 @@ function FilterSheet({
                 <Choice
                   key={agent}
                   label={skillAgentLabel(agent)}
+                  agent={agent}
                   selected={selected}
                   onPress={() =>
                     onChange({
@@ -491,10 +531,12 @@ function FilterSection({
 
 function Choice({
   label,
+  agent,
   selected,
   onPress,
 }: {
   label: string;
+  agent?: ManagedSkillAgent;
   selected: boolean;
   onPress(): void;
 }) {
@@ -512,9 +554,15 @@ function Choice({
         },
       ]}
     >
-      <Text style={{ color: selected ? colors.accent : colors.textSecondary }}>
-        {label}
-      </Text>
+      {agent ? (
+        <AgentLogoSet agents={[agent]} showLabels size={17} />
+      ) : (
+        <Text
+          style={{ color: selected ? colors.accent : colors.textSecondary }}
+        >
+          {label}
+        </Text>
+      )}
       {selected ? (
         <Ionicons name="checkmark" size={16} color={colors.accent} />
       ) : null}
@@ -621,11 +669,6 @@ function SkillRow({
   onDelete(): void;
 }) {
   const colors = useAppColors();
-  const agentText = skill.agents.length
-    ? skill.agents.map(skillAgentLabel).join(", ")
-    : "No Agent";
-  const copyText =
-    skill.copies.length > 1 ? ` · ${skill.copies.length} copies` : "";
   const canDelete = skill.copies.some((copy) =>
     skillRowSupportsDelete(copy, mutationOperations),
   );
@@ -670,15 +713,20 @@ function SkillRow({
               {skill.description}
             </Text>
           ) : null}
-          <Text
-            numberOfLines={1}
-            style={[styles.metadata, { color: colors.textTertiary }]}
-          >
-            {agentText}
-            {copyText}
-          </Text>
+          <View style={styles.metadataRow}>
+            <AgentLogoSet agents={skill.agents} size={18} />
+            {skill.copies.length > 1 ? (
+              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+                {skill.copies.length} copies
+              </Text>
+            ) : null}
+          </View>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+        <Ionicons
+          name="chevron-forward"
+          size={18}
+          color={colors.textTertiary}
+        />
       </Pressable>
       {canDelete ? (
         <Pressable
@@ -694,7 +742,11 @@ function SkillRow({
           {deleting ? (
             <ActivityIndicator size="small" color={colors.dangerText} />
           ) : (
-            <Ionicons name="trash-outline" size={20} color={colors.dangerText} />
+            <Ionicons
+              name="trash-outline"
+              size={20}
+              color={colors.dangerText}
+            />
           )}
         </Pressable>
       ) : null}
@@ -726,9 +778,7 @@ function DeleteCopySheet({
     >
       <View style={styles.sheetHeader}>
         <View style={styles.flex}>
-          <Text
-            style={[styles.sheetTitle, { color: colors.textPrimary }]}
-          >
+          <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>
             Delete copy
           </Text>
           <Text style={[styles.metadata, { color: colors.textTertiary }]}>
@@ -757,6 +807,7 @@ function DeleteCopySheet({
               ]}
             >
               <View style={styles.copyContent}>
+                <AgentLogoSet agents={copy.agents} size={17} />
                 <Text
                   numberOfLines={2}
                   style={[styles.copyLabel, { color: colors.textPrimary }]}
@@ -960,27 +1011,7 @@ function Inspector(
           />
         </DetailSection>
         <DetailSection title="Available to">
-          {detail.agents.length ? (
-            <View style={styles.optionWrap}>
-              {detail.agents.map((agent) => (
-                <View
-                  key={agent}
-                  style={[
-                    styles.agentLabel,
-                    { backgroundColor: colors.surfaceSubtle },
-                  ]}
-                >
-                  <Text style={{ color: colors.textSecondary }}>
-                    {skillAgentLabel(agent)}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={{ color: colors.textTertiary }}>
-              No supported Agent currently sees this copy.
-            </Text>
-          )}
+          <AgentLogoSet agents={detail.agents} showLabels size={20} />
         </DetailSection>
         {props.logical.copies.length > 1 ? (
           <DetailSection title={`Locations (${props.logical.copies.length})`}>
@@ -996,14 +1027,10 @@ function Inspector(
         ) : null}
         {canDelete ? (
           <View style={styles.lifecycleSection}>
-            <Text
-              style={[styles.sectionTitle, { color: colors.textPrimary }]}
-            >
+            <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
               Delete
             </Text>
-            <Text
-              style={[styles.metadata, { color: colors.textTertiary }]}
-            >
+            <Text style={[styles.metadata, { color: colors.textTertiary }]}>
               Permanently delete this copy from {location.label}.
             </Text>
             <Action
@@ -1084,6 +1111,7 @@ function CopyRow({
       ]}
     >
       <View style={styles.copyContent}>
+        <AgentLogoSet agents={copy.agents} size={17} />
         <View style={styles.rowHeading}>
           <Text
             numberOfLines={2}
@@ -1319,130 +1347,6 @@ function TreeNode({
   );
 }
 
-function PluginsList(props: SkillsPresentationProps) {
-  const colors = useAppColors();
-  const data = props.pluginsView.rows;
-  const stored = skillsRequestData(props.pluginsState);
-  if (props.pluginsState.status === "error" && !stored)
-    return (
-      <State
-        icon="warning-outline"
-        title="Plugins unavailable"
-        detail={props.pluginsState.error}
-      />
-    );
-  if (
-    (props.pluginsState.status === "idle" ||
-      props.pluginsState.status === "loading") &&
-    !stored
-  )
-    return (
-      <State
-        loading
-        title="Loading Plugins"
-        detail="Reading plugin state from the current server."
-      />
-    );
-  return (
-    <FlatList
-      data={data}
-      keyExtractor={(row) =>
-        row.kind === "installed"
-          ? `i:${row.plugin.id}`
-          : `a:${row.plugin.pluginId}`
-      }
-      refreshControl={
-        <RefreshControl
-          refreshing={props.pluginsState.status === "loading"}
-          onRefresh={props.onRetryPlugins}
-          tintColor={colors.accent}
-        />
-      }
-      contentContainerStyle={styles.list}
-      ListEmptyComponent={
-        <State
-          icon="extension-puzzle-outline"
-          title="No Plugins"
-          detail="No Plugins are available on this server."
-        />
-      }
-      renderItem={({ item }) =>
-        item.kind === "installed" ? (
-          <PluginRow
-            name={item.plugin.name}
-            detail={`${item.plugin.host} · ${item.plugin.version}`}
-            actions={installedPluginActions(item.plugin, props)}
-          />
-        ) : (
-          <PluginRow
-            name={item.plugin.name}
-            detail={item.plugin.description || item.plugin.marketplaceName}
-            actions={[
-              {
-                label: "Install",
-                run: () => props.onInstallPlugin(item.plugin),
-              },
-            ]}
-          />
-        )
-      }
-    />
-  );
-}
-
-function PluginRow({
-  name,
-  detail,
-  actions,
-}: {
-  name: string;
-  detail: string;
-  actions: Array<{ label: string; run(): void }>;
-}) {
-  const colors = useAppColors();
-  return (
-    <View style={[styles.row, { borderBottomColor: colors.borderSubtle }]}>
-      <View style={styles.flex}>
-        <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
-          {name}
-        </Text>
-        <Text style={{ color: colors.textTertiary }}>{detail}</Text>
-      </View>
-      {actions.map((action) => (
-        <Pressable
-          key={action.label}
-          onPress={action.run}
-          style={styles.iconAction}
-        >
-          <Text
-            style={{
-              color:
-                action.label === "Uninstall"
-                  ? colors.dangerText
-                  : colors.accent,
-            }}
-          >
-            {action.label}
-          </Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-function installedPluginActions(
-  plugin: InstalledPluginRow,
-  props: Pick<SkillsPresentationProps, "onUpdatePlugin" | "onUninstallPlugin">,
-) {
-  const actions: Array<{ label: string; run(): void }> = [];
-  if (evaluatePluginMutation({ kind: "update", row: plugin }).supported)
-    actions.push({ label: "Update", run: () => props.onUpdatePlugin(plugin) });
-  if (evaluatePluginMutation({ kind: "uninstall", row: plugin }).supported)
-    actions.push({
-      label: "Uninstall",
-      run: () => props.onUninstallPlugin(plugin),
-    });
-  return actions;
-}
 function Code({ content }: { content: string }) {
   const colors = useAppColors();
   return (
@@ -1529,7 +1433,7 @@ const styles = StyleSheet.create({
   modeBar: {
     height: 44,
     flexDirection: "row",
-    paddingHorizontal: 12,
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   modeItem: {
@@ -1541,17 +1445,31 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
   },
   modeText: { ...TypeScale.compact, fontFamily: Typography.uiFontMedium },
-  notice: {
-    marginHorizontal: 12,
-    marginTop: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 6,
+  toastWrap: {
+    position: "absolute",
+    left: PLUGINS_SKILLS_SCREEN_PADDING,
+    right: PLUGINS_SKILLS_SCREEN_PADDING,
+    bottom: 12,
+    zIndex: 20,
+    alignItems: "center",
   },
+  toast: {
+    width: "100%",
+    maxWidth: 560,
+    minHeight: 48,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  toastText: { ...TypeScale.compact, flex: 1 },
   searchArea: {
     flexDirection: "row",
     gap: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
     paddingTop: 10,
     paddingBottom: 8,
   },
@@ -1583,7 +1501,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 4,
   },
-  chips: { paddingHorizontal: 12, paddingBottom: 8, gap: 6 },
+  chips: {
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
+    paddingBottom: 8,
+    gap: 6,
+  },
   chip: {
     height: 30,
     paddingHorizontal: 9,
@@ -1592,8 +1514,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
   },
-  list: { paddingBottom: 28 },
-  emptyList: { flexGrow: 1 },
+  list: {
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
+    paddingBottom: 28,
+  },
+  emptyList: {
+    flexGrow: 1,
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
+  },
   row: {
     minHeight: 82,
     flexDirection: "row",
@@ -1607,7 +1535,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingLeft: 16,
     paddingRight: 6,
     paddingVertical: 11,
   },
@@ -1626,6 +1553,13 @@ const styles = StyleSheet.create({
   },
   description: { ...TypeScale.compact, marginTop: 2 },
   metadata: { ...TypeScale.compact },
+  metadataRow: {
+    marginTop: 3,
+    minHeight: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   statusDot: { width: 7, height: 7, borderRadius: 4 },
   iconAction: {
     minWidth: 44,
@@ -1646,7 +1580,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
     paddingVertical: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
@@ -1659,7 +1593,7 @@ const styles = StyleSheet.create({
   },
   inspectorScroll: { paddingBottom: 36 },
   detailSection: {
-    paddingHorizontal: 16,
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
     paddingVertical: 14,
     gap: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1743,7 +1677,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dimmed: { opacity: 0.45 },
-  lifecycleSection: { paddingHorizontal: 16, paddingVertical: 16, gap: 10 },
+  lifecycleSection: {
+    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
+    paddingVertical: 16,
+    gap: 10,
+  },
   action: {
     minHeight: 44,
     borderWidth: 1,
