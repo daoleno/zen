@@ -2,8 +2,6 @@ package skills
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,8 +9,6 @@ import (
 	"strings"
 	"time"
 )
-
-const deleteTrashDir = ".zen-trash"
 
 type deleteTestHooks struct {
 	beforeRename func(InstalledSkill) error
@@ -149,107 +145,27 @@ func deleteExactCopy(ctx context.Context, copy InstalledSkill, hooks *deleteTest
 	if err := validateDeleteIdentity(copy); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	allowed, err := os.OpenRoot(copy.AllowedRoot)
-	if err != nil {
-		return fmt.Errorf("open allowed Skills root: %w", err)
-	}
-	defer allowed.Close()
-	entryName := filepath.Base(copy.RootPath)
-	before, err := allowed.Lstat(entryName)
-	if err != nil {
-		return fmt.Errorf("the selected Skill copy is no longer available: %w", err)
-	}
-	if !before.IsDir() && before.Mode()&os.ModeSymlink == 0 {
-		return errors.New("the selected Skill root is neither a directory nor a directory link")
-	}
-	resolved, err := filepath.EvalSymlinks(copy.RootPath)
-	if err != nil {
-		return fmt.Errorf("resolve selected Skill root: %w", err)
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil || filepath.Clean(resolved) != copy.CanonicalPath {
-		return errors.New("the selected Skill root changed after discovery")
-	}
-	if before.Mode()&os.ModeSymlink == 0 {
-		resolvedAllowed, rootErr := filepath.EvalSymlinks(copy.AllowedRoot)
-		if rootErr != nil {
-			return fmt.Errorf("resolve allowed Skills root: %w", rootErr)
-		}
-		resolvedAllowed, rootErr = filepath.Abs(resolvedAllowed)
-		if rootErr != nil || filepath.Dir(copy.CanonicalPath) != filepath.Clean(resolvedAllowed) {
-			return errors.New("the selected Skill directory escaped its resolved allowed root")
+	var exactHooks *exactDeleteHooks
+	if hooks != nil {
+		exactHooks = &exactDeleteHooks{
+			beforeRename: func() error {
+				if hooks.beforeRename == nil {
+					return nil
+				}
+				return hooks.beforeRename(copy)
+			},
+			afterRename: func() error {
+				if hooks.afterRename == nil {
+					return nil
+				}
+				return hooks.afterRename(copy)
+			},
+			removeAll: hooks.removeAll,
 		}
 	}
-	if hooks != nil && hooks.beforeRename != nil {
-		if err := hooks.beforeRename(copy); err != nil {
-			return err
-		}
-	}
-	if err := ensureTrashDirectory(allowed); err != nil {
-		return err
-	}
-	quarantine, err := quarantinePath(copy)
-	if err != nil {
-		return err
-	}
-	if err := allowed.Rename(entryName, quarantine); err != nil {
-		return fmt.Errorf("move selected Skill for deletion: %w", err)
-	}
-	rollback := func(cause error) error {
-		if _, statErr := allowed.Lstat(entryName); errors.Is(statErr, os.ErrNotExist) {
-			if renameErr := allowed.Rename(quarantine, entryName); renameErr != nil {
-				return fmt.Errorf("%v; restore selected Skill: %w", cause, renameErr)
-			}
-		}
-		return cause
-	}
-	moved, err := allowed.Lstat(quarantine)
-	if err != nil || !os.SameFile(before, moved) {
-		return rollback(errors.New("selected Skill identity changed during deletion"))
-	}
-	if hooks != nil && hooks.afterRename != nil {
-		if err := hooks.afterRename(copy); err != nil {
-			return rollback(err)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return rollback(err)
-	}
-	removeAll := func(root *os.Root, name string) error { return root.RemoveAll(name) }
-	if hooks != nil && hooks.removeAll != nil {
-		removeAll = hooks.removeAll
-	}
-	if err := removeAll(allowed, quarantine); err != nil {
-		return rollback(fmt.Errorf("permanently delete selected Skill: %w", err))
-	}
-	_ = allowed.Remove(deleteTrashDir)
-	return nil
-}
-
-func ensureTrashDirectory(root *os.Root) error {
-	info, err := root.Lstat(deleteTrashDir)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := root.Mkdir(deleteTrashDir, 0o700); err != nil {
-			return fmt.Errorf("create Skills deletion staging directory: %w", err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect Skills deletion staging directory: %w", err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("Skills deletion staging path is not a safe directory")
-	}
-	return nil
-}
-
-func quarantinePath(copy InstalledSkill) (string, error) {
-	random := make([]byte, 8)
-	if _, err := rand.Read(random); err != nil {
-		return "", fmt.Errorf("create deletion identity: %w", err)
-	}
-	return filepath.Join(deleteTrashDir, copy.Name+"-"+copy.ID+"-"+hex.EncodeToString(random)), nil
+	return deleteExactDirectoryEntry(ctx, exactDirectoryEntry{
+		Kind: "Skill", RootPath: copy.RootPath, CanonicalPath: copy.CanonicalPath,
+		AllowedRoot: copy.AllowedRoot, EntryName: filepath.Base(copy.RootPath),
+		Identity: copy.ID, AllowSymlink: true,
+	}, exactHooks)
 }

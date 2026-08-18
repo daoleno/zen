@@ -69,7 +69,7 @@ export interface PluginUninstallInput {
   operation: "uninstall";
   pluginId: string;
   host: PluginHost;
-  source: "manager";
+  source: Exclude<PluginSource, "remote_cache">;
   scope: "user";
   copyId: string;
   name: string;
@@ -241,7 +241,7 @@ export function normalizePluginMutationCommand(
   const revision = boundedString(raw.revision, 64);
   if (
     !COPY_ID_PATTERN.test(copyId) ||
-    source !== "manager" ||
+    (source !== "manager" && source !== "cache") ||
     !PLUGIN_VERSION_PATTERN.test(version) ||
     !rootPath ||
     !canonicalPath ||
@@ -255,7 +255,7 @@ export function normalizePluginMutationCommand(
   return {
     ...command,
     copyId,
-    source: "manager",
+    source: source as Exclude<PluginSource, "remote_cache">,
     version,
     rootPath,
     canonicalPath,
@@ -339,11 +339,14 @@ export function assertPluginCommandMatchesRequest(
 export function pluginUninstallInput(
   copy: InstalledPluginCopy,
 ): PluginUninstallInput {
+  if (copy.source === "remote_cache") {
+    throw new Error("This provider-managed Plugin cannot be removed here.");
+  }
   return {
     operation: "uninstall",
     pluginId: copy.pluginId,
     host: copy.host,
-    source: "manager",
+    source: copy.source,
     scope: "user",
     copyId: copy.copyId,
     name: copy.name,

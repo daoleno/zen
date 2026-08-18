@@ -26,13 +26,13 @@ import {
   filterLogicalPlugins,
   pluginCopyLabel,
   pluginReadonlyReason,
-  pluginRowMetadata,
   type LogicalPlugin,
   type PluginCapabilityFilter,
   type PluginFilters,
 } from "../../services/pluginsScreenModel";
 import { MANAGED_SKILL_AGENTS } from "../../services/skillsScreenModel";
 import { AgentLogoSet } from "../agents/AgentLogoSet";
+import { ExtensionListRow } from "../extensions/ExtensionListRow";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 
 interface PluginsPresentationProps {
@@ -206,6 +206,7 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
           maxHeight="94%"
           dragToDismiss
           onClose={closeInspector}
+          cardStyle={styles.inspectorSheetCard}
           contentStyle={styles.sheetContent}
         >
           {selected ? (
@@ -301,20 +302,6 @@ function PluginsList(
         />
       }
       contentContainerStyle={props.rows.length ? styles.list : styles.emptyList}
-      ListHeaderComponent={
-        props.inventory?.warnings.length ? (
-          <View style={styles.warningList}>
-            {props.inventory.warnings.map((warning) => (
-              <Text
-                key={warning}
-                style={[styles.warning, { color: colors.warning }]}
-              >
-                {warning}
-              </Text>
-            ))}
-          </View>
-        ) : null
-      }
       ListEmptyComponent={
         <PluginState
           icon="search-outline"
@@ -345,84 +332,33 @@ function PluginRow({
   onOpen(): void;
   onUninstall(): void;
 }) {
-  const colors = useAppColors();
   const canUninstall = plugin.copies.some(
     (copy) => copy.capability.canUninstall,
   );
   const uninstalling = plugin.copies.some(
     (copy) => preparingMutation === `uninstall:${copy.copyId}`,
   );
+  const readonlyReason = plugin.copies.find(
+    (copy) => !copy.capability.canUninstall && copy.capability.reason,
+  )?.capability.reason;
   return (
-    <View style={[styles.row, { borderBottomColor: colors.borderSubtle }]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${plugin.displayName} Plugin details`}
-        onPress={onOpen}
-        style={({ pressed }) => [
-          styles.rowOpen,
-          { backgroundColor: pressed ? colors.surfacePressed : "transparent" },
-        ]}
-      >
-        <View style={styles.flex}>
-          <View style={styles.rowHeading}>
-            <Text
-              numberOfLines={1}
-              style={[styles.rowTitle, { color: colors.textPrimary }]}
-            >
-              {plugin.displayName}
-            </Text>
-            {pluginRowMetadata(plugin) ? (
-              <Text style={[styles.version, { color: colors.textTertiary }]}>
-                {pluginRowMetadata(plugin)}
-              </Text>
-            ) : null}
-          </View>
-          {plugin.description ? (
-            <Text
-              numberOfLines={1}
-              style={[styles.description, { color: colors.textSecondary }]}
-            >
-              {plugin.description}
-            </Text>
-          ) : null}
-          <View style={styles.metadataRow}>
-            <AgentLogoSet agents={plugin.agents} size={18} />
-            {plugin.copies.length > 1 ? (
-              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-                {plugin.copies.length} copies
-              </Text>
-            ) : null}
-          </View>
-        </View>
-        <Ionicons
-          name="chevron-forward"
-          size={18}
-          color={colors.textTertiary}
-        />
-      </Pressable>
-      {canUninstall ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Uninstall ${plugin.displayName}`}
-          disabled={Boolean(preparingMutation)}
-          onPress={onUninstall}
-          style={({ pressed }) => [
-            styles.rowDelete,
-            (pressed || Boolean(preparingMutation)) && styles.dimmed,
-          ]}
-        >
-          {uninstalling ? (
-            <ActivityIndicator size="small" color={colors.dangerText} />
-          ) : (
-            <Ionicons
-              name="trash-outline"
-              size={20}
-              color={colors.dangerText}
-            />
-          )}
-        </Pressable>
-      ) : null}
-    </View>
+    <ExtensionListRow
+      name={plugin.displayName}
+      summary={plugin.description || readonlyReason || "Local Plugin"}
+      agents={plugin.agents}
+      openAccessibilityLabel={`Open ${plugin.displayName} Plugin details`}
+      onOpen={onOpen}
+      action={{
+        accessibilityLabel: canUninstall
+          ? `Uninstall ${plugin.displayName}`
+          : `Open why ${plugin.displayName} is protected`,
+        icon: canUninstall ? "trash-outline" : "lock-closed-outline",
+        destructive: canUninstall,
+        busy: uninstalling,
+        disabled: canUninstall && Boolean(preparingMutation),
+        onPress: canUninstall ? onUninstall : onOpen,
+      }}
+    />
   );
 }
 
@@ -1033,27 +969,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
   },
-  warningList: {
-    paddingBottom: 8,
-    gap: 4,
-  },
-  warning: TypeScale.compact,
-  row: {
-    minHeight: 88,
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  rowOpen: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 88,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingRight: 6,
-    paddingVertical: 11,
-  },
   rowDelete: {
     width: 44,
     height: 44,
@@ -1061,29 +976,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  rowHeading: { flexDirection: "row", alignItems: "center", gap: 8 },
-  rowTitle: {
-    ...TypeScale.body,
-    fontFamily: Typography.uiFontMedium,
-    flexShrink: 1,
-  },
-  version: { ...TypeScale.compact, flexShrink: 0 },
-  description: { ...TypeScale.compact, marginTop: 2 },
   metadata: TypeScale.compact,
-  metadataRow: {
-    marginTop: 3,
-    minHeight: 28,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
   dimmed: { opacity: 0.45 },
   panel: {
-    width: 470,
-    maxWidth: "48%",
+    width: 420,
+    maxWidth: "44%",
     borderLeftWidth: StyleSheet.hairlineWidth,
   },
-  sheetContent: { height: "100%", minHeight: 560 },
+  inspectorSheetCard: { height: "90%" },
+  sheetContent: { flex: 1, minHeight: 0 },
   inspector: { flex: 1 },
   inspectorHeader: {
     minHeight: 64,

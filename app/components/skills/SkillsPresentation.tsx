@@ -53,6 +53,7 @@ import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
 import { skillRowSupportsDelete } from "../../services/skillsSurfaceModel";
 import { PLUGINS_SKILLS_SCREEN_PADDING } from "../../services/pluginsSkillsSurfaceModel";
 import { AgentLogoSet } from "../agents/AgentLogoSet";
+import { ExtensionListRow } from "../extensions/ExtensionListRow";
 import { PluginsPresentation } from "../plugins/PluginsPresentation";
 
 export interface SurfaceMutationNotice {
@@ -269,6 +270,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
           maxHeight="94%"
           dragToDismiss
           onClose={props.onDismissInspector}
+          cardStyle={styles.inspectorSheetCard}
           contentStyle={styles.sheetContent}
         >
           <Inspector
@@ -668,89 +670,33 @@ function SkillRow({
   onOpen(): void;
   onDelete(): void;
 }) {
-  const colors = useAppColors();
   const canDelete = skill.copies.some((copy) =>
     skillRowSupportsDelete(copy, mutationOperations),
   );
   const deleting = skill.copies.some(
     (copy) => preparingMutation === `delete:${copy.id}`,
   );
+  const readonlyReason = skill.copies.find(
+    (copy) => !copy.capability.canDelete && copy.capability.reason,
+  )?.capability.reason;
   return (
-    <View style={[styles.row, { borderBottomColor: colors.borderSubtle }]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${skill.name}`}
-        onPress={onOpen}
-        style={({ pressed }) => [
-          styles.rowOpen,
-          { backgroundColor: pressed ? colors.surfacePressed : "transparent" },
-        ]}
-      >
-        <View style={styles.flex}>
-          <View style={styles.rowHeading}>
-            <Text
-              style={[styles.rowTitle, { color: colors.textPrimary }]}
-              numberOfLines={1}
-            >
-              {skill.name}
-            </Text>
-            <View
-              style={[
-                styles.statusDot,
-                {
-                  backgroundColor: skill.enabled
-                    ? colors.success
-                    : colors.textTertiary,
-                },
-              ]}
-            />
-          </View>
-          {skill.description ? (
-            <Text
-              numberOfLines={1}
-              style={[styles.description, { color: colors.textSecondary }]}
-            >
-              {skill.description}
-            </Text>
-          ) : null}
-          <View style={styles.metadataRow}>
-            <AgentLogoSet agents={skill.agents} size={18} />
-            {skill.copies.length > 1 ? (
-              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-                {skill.copies.length} copies
-              </Text>
-            ) : null}
-          </View>
-        </View>
-        <Ionicons
-          name="chevron-forward"
-          size={18}
-          color={colors.textTertiary}
-        />
-      </Pressable>
-      {canDelete ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Delete ${skill.name}`}
-          disabled={Boolean(preparingMutation)}
-          onPress={onDelete}
-          style={({ pressed }) => [
-            styles.rowDelete,
-            (pressed || Boolean(preparingMutation)) && styles.dimmed,
-          ]}
-        >
-          {deleting ? (
-            <ActivityIndicator size="small" color={colors.dangerText} />
-          ) : (
-            <Ionicons
-              name="trash-outline"
-              size={20}
-              color={colors.dangerText}
-            />
-          )}
-        </Pressable>
-      ) : null}
-    </View>
+    <ExtensionListRow
+      name={skill.name}
+      summary={skill.description || readonlyReason || "Local Skill"}
+      agents={skill.agents}
+      openAccessibilityLabel={`Open ${skill.name}`}
+      onOpen={onOpen}
+      action={{
+        accessibilityLabel: canDelete
+          ? `Delete ${skill.name}`
+          : `Open why ${skill.name} is protected`,
+        icon: canDelete ? "trash-outline" : "lock-closed-outline",
+        destructive: canDelete,
+        busy: deleting,
+        disabled: canDelete && Boolean(preparingMutation),
+        onPress: canDelete ? onDelete : onOpen,
+      }}
+    />
   );
 }
 
@@ -1522,22 +1468,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING,
   },
-  row: {
-    minHeight: 82,
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  rowOpen: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 82,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingRight: 6,
-    paddingVertical: 11,
-  },
   rowDelete: {
     width: 44,
     height: 44,
@@ -1546,20 +1476,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   rowHeading: { flexDirection: "row", alignItems: "center", gap: 7 },
-  rowTitle: {
-    ...TypeScale.body,
-    fontFamily: Typography.uiFontMedium,
-    flexShrink: 1,
-  },
-  description: { ...TypeScale.compact, marginTop: 2 },
   metadata: { ...TypeScale.compact },
-  metadataRow: {
-    marginTop: 3,
-    minHeight: 28,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
   statusDot: { width: 7, height: 7, borderRadius: 4 },
   iconAction: {
     minWidth: 44,
@@ -1569,11 +1486,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   panel: {
-    width: 470,
-    maxWidth: "48%",
+    width: 420,
+    maxWidth: "44%",
     borderLeftWidth: StyleSheet.hairlineWidth,
   },
-  sheetContent: { height: "100%", minHeight: 560 },
+  inspectorSheetCard: { height: "90%" },
+  sheetContent: { flex: 1, minHeight: 0 },
   inspector: { flex: 1 },
   inspectorHeader: {
     minHeight: 64,

@@ -104,22 +104,6 @@ export function evaluatePluginInstall(
   return { supported: false, reason: "This Plugin is already installed." };
 }
 
-export function pluginRowMetadata(plugin: LogicalPlugin): string {
-  if (plugin.copies.length > 1) {
-    if (plugin.versions.length <= 2) {
-      return plugin.versions.map((version) => `v${version}`).join(" · ");
-    }
-    return `${plugin.versions.length} versions`;
-  }
-  const copy = plugin.copies[0]!;
-  return [
-    copy.version && copy.version !== "unknown" ? `v${copy.version}` : "",
-    `@${copy.marketplace}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
 export function pluginCopyLabel(copy: InstalledPluginCopy): string {
   return [
     pluginHostLabel(copy.host),

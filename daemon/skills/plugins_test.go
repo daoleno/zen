@@ -267,7 +267,7 @@ func TestDiscoverPluginInventoryEmitsExactManagedAndReadonlyCopies(t *testing.T)
 			}
 		}
 		if copy.Name == "plugin-management" {
-			if copy.Source != PluginSourceRemoteCache || copy.Capability.CanUninstall || !strings.Contains(copy.Capability.Reason, "cannot be removed") {
+			if copy.Source != PluginSourceRemoteCache || copy.Capability.CanUninstall || !strings.Contains(copy.Capability.Reason, "protected") {
 				t.Fatalf("remote copy = %#v", copy)
 			}
 		}
@@ -304,7 +304,7 @@ func TestDiscoverPluginInventoryReadsAgentManagersConcurrently(t *testing.T) {
 	}
 }
 
-func TestPluginManagerGapLeavesCacheReadonly(t *testing.T) {
+func TestPluginManagerGapLeavesLocalCopiesManageable(t *testing.T) {
 	options := pluginTestOptions(t)
 	runtime := newFakePluginRuntime()
 	runtime.listErr[PluginHostCodex] = ErrPluginCLIUnavailable
@@ -316,11 +316,98 @@ func TestPluginManagerGapLeavesCacheReadonly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inventory.Installed) != 1 || inventory.Installed[0].Source != PluginSourceCache || inventory.Installed[0].Capability.CanUninstall {
+	if len(inventory.Installed) != 1 || inventory.Installed[0].Source != PluginSourceCache || !inventory.Installed[0].Capability.CanUninstall {
 		t.Fatalf("inventory = %#v", inventory)
 	}
-	if len(inventory.Warnings) == 0 || !strings.Contains(inventory.Warnings[0], "read-only") {
+	if len(inventory.Warnings) == 0 || !strings.Contains(inventory.Warnings[0], "remain manageable") {
 		t.Fatalf("warnings = %#v", inventory.Warnings)
+	}
+}
+
+func TestExecuteUnregisteredPluginDeletesExactLocalCopyWithoutManager(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	target := filepath.Join(options.CodexHome, "plugins", "cache", "personal", "local-only", "1.0.0")
+	neighbor := filepath.Join(options.CodexHome, "plugins", "cache", "personal", "neighbor", "1.0.0")
+	if err := writePluginFixture(target, PluginHostCodex, "local-only", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePluginFixture(neighbor, PluginHostCodex, "neighbor", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := inventory.Installed[0]
+	if copy.Name != "local-only" || copy.Source != PluginSourceCache || !copy.Capability.CanUninstall {
+		t.Fatalf("local copy = %#v", copy)
+	}
+	command, err := BuildPluginMutationCommand(options, requestFor(copy), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options,
+		PluginRuntime:    runtime,
+	})
+	if err != nil || !execution.Success {
+		t.Fatalf("execution=%#v err=%v", execution, err)
+	}
+	if len(runtime.executed) != 0 {
+		t.Fatalf("local removal invoked manager: %#v", runtime.executed)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(neighbor, ".codex-plugin", "plugin.json")); err != nil {
+		t.Fatalf("neighbor changed: %v", err)
+	}
+	after, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Installed) != 1 || after.Installed[0].Name != "neighbor" {
+		t.Fatalf("after = %#v", after.Installed)
+	}
+}
+
+func TestUnregisteredPluginRejectsStaleRevisionAndUnsafeTrash(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	root := filepath.Join(options.CodexHome, "plugins", "cache", "personal", "local-only", "1.0.0")
+	if err := writePluginFixture(root, PluginHostCodex, "local-only", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := inventory.Installed[0]
+	stale := requestFor(copy)
+	stale.Revision = strings.Repeat("a", 64)
+	if _, err := BuildPluginMutationCommand(options, stale, runtime); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("stale revision error = %v", err)
+	}
+	outside := filepath.Join(options.Home, "outside-trash")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(copy.AllowedRoot, deleteTrashDir)); err != nil {
+		t.Fatal(err)
+	}
+	command, err := BuildPluginMutationCommand(options, requestFor(copy), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options,
+		PluginRuntime:    runtime,
+	}); err == nil || !strings.Contains(err.Error(), "safe directory") {
+		t.Fatalf("unsafe trash error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".codex-plugin", "plugin.json")); err != nil {
+		t.Fatalf("target changed after rejection: %v", err)
 	}
 }
 

@@ -15,7 +15,6 @@ import {
   groupLogicalPlugins,
   pluginCopyLabel,
   pluginReadonlyReason,
-  pluginRowMetadata,
 } from "./pluginsScreenModel";
 
 function copy(
@@ -99,7 +98,6 @@ describe("Plugin copy screen model", () => {
     ]);
     expect(logical?.agents).toEqual(["claude-code", "codex"]);
     expect(logical?.versions).toEqual(["1.2.3", "2.0.0"]);
-    expect(pluginRowMetadata(logical!)).toBe("v1.2.3 · v2.0.0");
   });
 
   test("filters installed Plugins by Agent, capability, component, and location", () => {
@@ -109,7 +107,7 @@ describe("Plugin copy screen model", () => {
         copyId: "c".repeat(24),
         source: "remote_cache",
         agents: ["codex"],
-        location: "Codex remote Plugin cache",
+        location: "Codex managed Plugins",
         capability: {
           canUninstall: false,
           reason: "Provided by Codex and cannot be removed here.",
@@ -123,7 +121,7 @@ describe("Plugin copy screen model", () => {
       }),
     ).toHaveLength(2);
     expect(
-      filterLogicalPlugins([managed, readonly], "remote", {
+      filterLogicalPlugins([managed, readonly], "managed", {
         agents: [],
         capability: "readonly",
       }),
@@ -286,6 +284,73 @@ describe("Plugin wire boundary", () => {
         revision: "c".repeat(64),
       }),
     ).toThrow("different Plugin copy");
+  });
+
+  test("accepts ordinary local copies as exact uninstall identities", () => {
+    const local = copy("local-only", { source: "cache" });
+    const input = pluginUninstallInput(local);
+    expect(input.source).toBe("cache");
+    const command = normalizePluginMutationCommand({
+      operation: "uninstall",
+      plugin_id: local.pluginId,
+      host: local.host,
+      source: "cache",
+      scope: "user",
+      copy_id: local.copyId,
+      name: local.name,
+      display_name: local.displayName,
+      version: local.version,
+      root_path: local.rootPath,
+      canonical_path: local.canonicalPath,
+      allowed_root: local.allowedRoot,
+      location: local.location,
+      revision: local.revision,
+      agents: local.agents,
+      summary: "Permanently uninstall local-only",
+      destructive: true,
+    });
+    expect(command.source).toBe("cache");
+    expect(() =>
+      assertPluginMutationMatchesRequest(
+        normalizePluginMutationResult({
+          command: {
+            operation: "uninstall",
+            plugin_id: local.pluginId,
+            host: local.host,
+            source: "cache",
+            scope: "user",
+            copy_id: local.copyId,
+            name: local.name,
+            display_name: local.displayName,
+            version: local.version,
+            root_path: local.rootPath,
+            canonical_path: local.canonicalPath,
+            allowed_root: local.allowedRoot,
+            location: local.location,
+            revision: local.revision,
+            agents: local.agents,
+            summary: "Permanently uninstall local-only",
+            destructive: true,
+          },
+          success: true,
+          exit_code: 0,
+          output: "Uninstalled local-only.",
+          duration_ms: 4,
+        }),
+        input,
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects provider-managed copies before creating an uninstall request", () => {
+    expect(() =>
+      pluginUninstallInput(
+        copy("protected", {
+          source: "remote_cache",
+          capability: { canUninstall: false, reason: "Package protected." },
+        }),
+      ),
+    ).toThrow("provider-managed");
   });
 
   test("install review remains available without exposing Discovery rows", () => {

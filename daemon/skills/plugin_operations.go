@@ -108,11 +108,25 @@ func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCom
 		}
 	}
 
-	args, err := pluginMutationArgs(command)
-	if err != nil {
-		return MutationExecution{}, err
+	var execution MutationExecution
+	var execErr error
+	if command.Operation == PluginOperationUninstall && target.Source == PluginSourceCache {
+		startedAt := time.Now()
+		execErr = deleteExactPluginCopy(runCtx, target)
+		execution = MutationExecution{
+			Success: execErr == nil, ExitCode: 0,
+			DurationMS: time.Since(startedAt).Milliseconds(),
+		}
+		if execErr != nil {
+			execution.ExitCode = -1
+		}
+	} else {
+		args, argsErr := pluginMutationArgs(command)
+		if argsErr != nil {
+			return MutationExecution{}, argsErr
+		}
+		execution, execErr = runtime.Execute(runCtx, command.Host, args, options)
 	}
-	execution, execErr := runtime.Execute(runCtx, command.Host, args, options)
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return MutationExecution{}, ErrMutationCancelled
 	}
@@ -125,7 +139,7 @@ func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCom
 			verifyErr = verifyPluginInventoryUnchanged(before, after)
 		}
 		if verifyErr != nil {
-			integrityErr := fmt.Errorf("Plugin manager changed installed state after reporting failure: %w", verifyErr)
+			integrityErr := fmt.Errorf("Plugin removal changed installed state after reporting failure: %w", verifyErr)
 			if execErr != nil {
 				return execution, errors.Join(execErr, integrityErr)
 			}
@@ -175,7 +189,7 @@ func resolvePluginCopy(options InventoryOptions, request PluginMutationRequest, 
 	if request.CopyID == "" || len(request.CopyID) != 24 {
 		return InstalledPluginCopy{}, errors.New("invalid Plugin copy ID")
 	}
-	if ValidatePluginSource(request.Source) != nil || request.Source != PluginSourceManager {
+	if ValidatePluginSource(request.Source) != nil || request.Source == PluginSourceRemoteCache {
 		return InstalledPluginCopy{}, errors.New("invalid uninstallable Plugin source")
 	}
 	name, _, ok := splitPluginID(request.PluginID)
@@ -256,6 +270,20 @@ func pluginMutationArgs(command PluginMutationCommand) ([]string, error) {
 	default:
 		return nil, ErrMutationCommandInvalid
 	}
+}
+
+func deleteExactPluginCopy(ctx context.Context, copy InstalledPluginCopy) error {
+	if copy.Source != PluginSourceCache {
+		return ErrMutationCommandInvalid
+	}
+	if err := validatePluginCopyIdentity(copy); err != nil {
+		return err
+	}
+	return deleteExactDirectoryEntry(ctx, exactDirectoryEntry{
+		Kind: "Plugin", RootPath: copy.RootPath, CanonicalPath: copy.CanonicalPath,
+		AllowedRoot: copy.AllowedRoot, EntryName: filepath.Base(copy.RootPath),
+		Identity: copy.CopyID, AllowSymlink: false,
+	}, nil)
 }
 
 func PluginMutationTimeoutForOperation(args []string) time.Duration {

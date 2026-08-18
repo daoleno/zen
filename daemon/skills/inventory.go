@@ -359,7 +359,7 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		if provider == "" {
 			provider = "its provider"
 		}
-		capability = DeleteCapability{Reason: "Provided by " + provider + " and cannot be deleted from here."}
+		capability = DeleteCapability{Reason: "Maintained by " + provider + ", so its package files are protected."}
 	}
 	hash, hashErr := boundedDiscoveryHash(canonical)
 	warnings := []string{}

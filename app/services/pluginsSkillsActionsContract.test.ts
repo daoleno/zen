@@ -15,6 +15,10 @@ const agentLogoSet = readFileSync(
   join(import.meta.dir, "../components/agents/AgentLogoSet.tsx"),
   "utf8",
 );
+const extensionRow = readFileSync(
+  join(import.meta.dir, "../components/extensions/ExtensionListRow.tsx"),
+  "utf8",
+);
 const websocket = readFileSync(join(import.meta.dir, "websocket.ts"), "utf8");
 
 describe("local-only Skills surface contract", () => {
@@ -63,12 +67,11 @@ describe("local-only Skills surface contract", () => {
       presentation.indexOf("function SkillRow"),
       presentation.indexOf("function Inspector"),
     );
-    expect(rowSource).toContain("accessibilityLabel={`Open ${skill.name}`}");
-    expect(rowSource).toContain("accessibilityLabel={`Delete ${skill.name}`}");
-    expect(rowSource).toContain("styles.rowOpen");
-    expect(rowSource).toContain("styles.rowDelete");
-    expect(presentation).toContain("width: 44");
-    expect(presentation).toContain("height: 44");
+    expect(rowSource).toContain("openAccessibilityLabel={`Open ${skill.name}`}");
+    expect(rowSource).toContain("? `Delete ${skill.name}`");
+    expect(rowSource).toContain("<ExtensionListRow");
+    expect(extensionRow).toContain("width: 44");
+    expect(extensionRow).toContain("height: 44");
   });
   test("copy-aware details preserve files, Agents, and exact deletion", () => {
     expect(screen).toContain("skillId: skill.id");
@@ -136,24 +139,25 @@ describe("local-only Skills surface contract", () => {
     expect(pluginsPresentation).not.toContain("Discovered");
     expect(pluginsPresentation).toContain("copy.capability.canUninstall");
   });
-  test("Plugins use shared Agent brand owners and exact 44px row actions", () => {
-    expect(pluginsPresentation).toContain("<AgentLogoSet");
-    expect(presentation).toContain("<AgentLogoSet");
+  test("Plugins and Skills use one shared row geometry and Agent brand owner", () => {
+    expect(pluginsPresentation).toContain("<ExtensionListRow");
+    expect(presentation).toContain("<ExtensionListRow");
+    expect(extensionRow).toContain("<AgentLogoSet");
+    expect(extensionRow).toContain("maxVisible={1}");
     expect(agentLogoSet).toContain("<AgentKindIcon");
     expect(agentLogoSet).toContain('accessibilityRole="image"');
     expect(agentLogoSet).toContain('"pi"');
     expect(agentLogoSet).toContain('"opencode"');
     expect(agentLogoSet).toContain("UnknownAgent");
-    expect(pluginsPresentation).toContain("width: 44");
-    expect(pluginsPresentation).toContain("height: 44");
+    expect(extensionRow).toContain("height: 88");
+    expect(extensionRow).toContain("width: 44");
+    expect(extensionRow).toContain("height: 44");
     expect(pluginsPresentation).toContain(
       "paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
     );
     expect(presentation).toContain(
       "paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
     );
-    expect(pluginsPresentation).toContain("styles.rowOpen");
-    expect(pluginsPresentation).toContain("styles.rowDelete");
     expect(pluginsPresentation).toContain(
       "list: {\n    paddingHorizontal: PLUGINS_SKILLS_SCREEN_PADDING",
     );
@@ -163,6 +167,26 @@ describe("local-only Skills surface contract", () => {
     expect(pluginsPresentation).not.toContain(
       "paddingLeft: PLUGINS_SKILLS_SCREEN_PADDING",
     );
+    expect(pluginsPresentation).not.toContain("copies.length} copies");
+    expect(presentation).not.toContain("copies.length} copies");
+    expect(pluginsPresentation).not.toContain("pluginRowMetadata");
+  });
+
+  test("primary rows keep technical provenance out of the default list", () => {
+    const pluginRow = pluginsPresentation.slice(
+      pluginsPresentation.indexOf("function PluginRow"),
+      pluginsPresentation.indexOf("function PluginInspector"),
+    );
+    const skillRow = presentation.slice(
+      presentation.indexOf("function SkillRow"),
+      presentation.indexOf("function DeleteCopySheet"),
+    );
+    for (const removed of ["marketplace", "version", "location"]) {
+      expect(pluginRow).not.toContain(removed);
+    }
+    for (const removed of ["rootPath", "location", "scope", "copies.length}"]) {
+      expect(skillRow).not.toContain(removed);
+    }
   });
   test("loading, disconnected, empty, read, binary, and large states are explicit", () => {
     for (const copy of [

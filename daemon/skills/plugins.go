@@ -425,10 +425,10 @@ func readPluginManagers(options InventoryOptions, runtime PluginRuntime) (manage
 func readPluginManager(options InventoryOptions, runtime PluginRuntime, host PluginHost) managerSnapshot {
 	data, err := runtime.List(options.Context, host, options, true)
 	if err != nil {
-		return managerSnapshot{warnings: []string{pluginHostLabel(host) + " Plugin manager is unavailable; cache copies are read-only."}}
+		return managerSnapshot{warnings: []string{pluginHostLabel(host) + " Plugin catalog is unavailable; locally discovered Plugins remain manageable."}}
 	}
 	if len(data) == 0 || len(data) > maxPluginCatalogBytes {
-		return managerSnapshot{warnings: []string{pluginHostLabel(host) + " Plugin manager returned invalid inventory; cache copies are read-only."}}
+		return managerSnapshot{warnings: []string{pluginHostLabel(host) + " Plugin catalog returned invalid inventory; locally discovered Plugins remain manageable."}}
 	}
 	switch host {
 	case PluginHostClaude:
@@ -443,7 +443,7 @@ func readPluginManager(options InventoryOptions, runtime PluginRuntime, host Plu
 func parseClaudeCatalog(data []byte) managerSnapshot {
 	var envelope claudeCatalogEnvelope
 	if json.Unmarshal(data, &envelope) != nil || len(envelope.Installed) > maxInstalledPlugins || len(envelope.Available) > maxCatalogPlugins {
-		return managerSnapshot{warnings: []string{"Claude Code Plugin manager returned malformed inventory; cache copies are read-only."}}
+		return managerSnapshot{warnings: []string{"Claude Code Plugin catalog returned malformed inventory; locally discovered Plugins remain manageable."}}
 	}
 	snapshot := managerSnapshot{}
 	installedIDs := make(map[string]struct{}, len(envelope.Installed))
@@ -482,7 +482,7 @@ func parseClaudeCatalog(data []byte) managerSnapshot {
 func parseCodexCatalog(data []byte) managerSnapshot {
 	var envelope codexCatalogEnvelope
 	if json.Unmarshal(data, &envelope) != nil || len(envelope.Installed) > maxInstalledPlugins || len(envelope.Available) > maxCatalogPlugins {
-		return managerSnapshot{warnings: []string{"Codex Plugin manager returned malformed inventory; cache copies are read-only."}}
+		return managerSnapshot{warnings: []string{"Codex Plugin catalog returned malformed inventory; locally discovered Plugins remain manageable."}}
 	}
 	snapshot := managerSnapshot{}
 	installedIDs := make(map[string]struct{}, len(envelope.Installed))
@@ -559,7 +559,7 @@ func managerPluginCopy(options InventoryOptions, entry managerInstalledPlugin) (
 	}
 	allowedRoot := filepath.Join(pluginCacheRoot(options, entry.host), entry.marketplace, entry.name)
 	copy := buildPluginCopy(entry.host, PluginSourceManager, entry.pluginID, entry.name, entry.marketplace, entry.version, rootPath, allowedRoot, entry.enabled)
-	reason := managedPluginUninstallReason(copy)
+	reason := localPluginUninstallReason(copy)
 	copy.Capability = PluginCapability{CanUninstall: reason == "", Reason: reason}
 	if reason != "" {
 		return copy, pluginHostLabel(entry.host) + " reports " + entry.pluginID + " installed, but Zen cannot safely uninstall this copy."
@@ -618,7 +618,8 @@ func walkPluginCaches(options InventoryOptions, managedRoots map[string]struct{}
 						pluginSource = PluginSourceRemoteCache
 					}
 					copy := buildPluginCopy(source.host, pluginSource, name+"@"+marketplace, name, marketplace, versionEntry.Name(), rootPath, pluginRoot, true)
-					copy.Capability = PluginCapability{Reason: readonlyPluginReason(copy)}
+					reason := localPluginUninstallReason(copy)
+					copy.Capability = PluginCapability{CanUninstall: reason == "", Reason: reason}
 					rows = append(rows, copy)
 				}
 			}
@@ -640,7 +641,7 @@ func buildPluginCopy(host PluginHost, source PluginSource, pluginID, name, marke
 	components := collectPluginComponents(rootPath)
 	location := pluginHostLabel(host) + " user Plugins"
 	if source == PluginSourceRemoteCache {
-		location = "Codex remote Plugin cache"
+		location = "Codex managed Plugins"
 	}
 	revision := pluginRevision(host, source, pluginID, version, rootPath, canonicalPath, allowedRoot)
 	copyID := installedPluginCopyID(host, source, pluginID, rootPath, canonicalPath, allowedRoot)
@@ -653,15 +654,15 @@ func buildPluginCopy(host PluginHost, source PluginSource, pluginID, name, marke
 	}
 }
 
-func managedPluginUninstallReason(copy InstalledPluginCopy) string {
-	if copy.Source != PluginSourceManager {
+func localPluginUninstallReason(copy InstalledPluginCopy) string {
+	if copy.Source == PluginSourceRemoteCache {
 		return readonlyPluginReason(copy)
 	}
 	if err := validatePluginCopyIdentity(copy); err != nil {
-		return "This manager record cannot be uninstalled safely: " + err.Error() + "."
+		return "This Plugin cannot be removed safely: " + err.Error() + "."
 	}
 	if info, err := os.Lstat(copy.RootPath); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "This manager record does not point to a safe local Plugin directory."
+		return "The Plugin's local files are unavailable or not a safe directory."
 	}
 	return ""
 }
@@ -669,11 +670,11 @@ func managedPluginUninstallReason(copy InstalledPluginCopy) string {
 func readonlyPluginReason(copy InstalledPluginCopy) string {
 	if copy.Source == PluginSourceRemoteCache {
 		if copy.Host == PluginHostCodex && copy.Name == "plugin-management" {
-			return "Provided by Codex to manage Plugins and connections; it cannot be removed from this page."
+			return "Built into Codex for managing Plugins and connections, so its package files are protected."
 		}
-		return "Provided by Codex's remote Plugin service and managed outside the local marketplace lifecycle."
+		return "Maintained by Codex's package service, so its package files are protected."
 	}
-	return "This cache copy is not registered with its Agent's local Plugin manager, so Zen will not delete it."
+	return "This Plugin is protected by its provider."
 }
 
 func validatePluginCopyIdentity(copy InstalledPluginCopy) error {

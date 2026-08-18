@@ -11,6 +11,7 @@ export interface AgentLogoSetProps {
   agents: readonly string[];
   size?: number;
   showLabels?: boolean;
+  maxVisible?: number;
   accessibilityLabel?: string;
 }
 
@@ -27,6 +28,7 @@ export function AgentLogoSet({
   agents,
   size = 18,
   showLabels = false,
+  maxVisible,
   accessibilityLabel,
 }: AgentLogoSetProps) {
   const colors = useAppColors();
@@ -34,6 +36,8 @@ export function AgentLogoSet({
     Boolean,
   );
   const labels = uniqueAgents.map(agentLabel);
+  const visibleAgents =
+    maxVisible === undefined ? uniqueAgents : uniqueAgents.slice(0, maxVisible);
   const label =
     accessibilityLabel ||
     (labels.length
@@ -60,7 +64,7 @@ export function AgentLogoSet({
       accessibilityLabel={label}
       style={styles.row}
     >
-      {uniqueAgents.map((agent) =>
+      {visibleAgents.map((agent) =>
         isManagedSkillAgent(agent) ? (
           <View key={agent} accessible={false} style={styles.item}>
             <AgentKindIcon kind={agentKind(agent)} size={size} />
@@ -71,14 +75,27 @@ export function AgentLogoSet({
             ) : null}
           </View>
         ) : (
-          <UnknownAgent key={agent} size={size} label={agent} />
+          <UnknownAgent
+            key={agent}
+            size={size}
+            label={agent}
+            showLabel={showLabels}
+          />
         ),
       )}
     </View>
   );
 }
 
-function UnknownAgent({ size, label }: { size: number; label: string }) {
+function UnknownAgent({
+  size,
+  label,
+  showLabel = true,
+}: {
+  size: number;
+  label: string;
+  showLabel?: boolean;
+}) {
   const colors = useAppColors();
   return (
     <View accessible={false} style={styles.item}>
@@ -87,7 +104,11 @@ function UnknownAgent({ size, label }: { size: number; label: string }) {
         size={size}
         color={colors.textTertiary}
       />
-      <Text style={[styles.label, { color: colors.textTertiary }]}>{label}</Text>
+      {showLabel ? (
+        <Text style={[styles.label, { color: colors.textTertiary }]}>
+          {label}
+        </Text>
+      ) : null}
     </View>
   );
 }

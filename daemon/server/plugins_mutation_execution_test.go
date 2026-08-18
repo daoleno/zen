@@ -82,6 +82,19 @@ func (runtime *serverPluginRuntime) add(t *testing.T, home, name, marketplace, v
 	return root
 }
 
+func writeServerLocalPlugin(t *testing.T, home, name, marketplace, version string) string {
+	t.Helper()
+	root := filepath.Join(home, ".codex", "plugins", "cache", marketplace, name, version)
+	if err := os.MkdirAll(filepath.Join(root, ".codex-plugin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"name":"` + name + `","version":"` + version + `"}`)
+	if err := os.WriteFile(filepath.Join(root, ".codex-plugin", "plugin.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func pluginWireInput(row map[string]any) map[string]any {
 	agents := make([]any, 0)
 	for _, agent := range row["agents"].([]any) {
@@ -157,6 +170,48 @@ func TestPluginsWebSocketUninstallUsesReviewedExactIdentityAndReconciles(t *test
 	}
 	after := inventory("plugins-after", 2)
 	if hasPluginInventoryRow(after, "remove-proof") || !hasPluginInventoryRow(after, "neighbor") {
+		t.Fatalf("reconciled inventory = %+v", after)
+	}
+}
+
+func TestPluginsWebSocketDeletesUnregisteredLocalCopyAndPreservesNeighbor(t *testing.T) {
+	home := configureSkillsTestHome(t)
+	runtime := newServerPluginRuntime()
+	selected := writeServerLocalPlugin(t, home, "local-proof", "personal", "1.0.0")
+	neighbor := writeServerLocalPlugin(t, home, "local-neighbor", "personal", "1.0.0")
+	srv, conn, closeConn := newSkillsMutationTestServer(t, nil)
+	defer closeConn()
+	srv.pluginRuntime = runtime
+	messages := messageSink(t, conn)
+	if err := conn.WriteJSON(map[string]any{"type": "plugins_inventory", "request_id": "local-before", "generation": 1}); err != nil {
+		t.Fatal(err)
+	}
+	row := pluginInventoryRow(t, readUntil(t, messages, "plugins_inventory", "local-before"), "local-proof")
+	if row["source"] != "cache" || row["capability"].(map[string]any)["can_uninstall"] != true {
+		t.Fatalf("local row = %+v", row)
+	}
+	mutation := map[string]any{"type": "plugin_mutation", "request_id": "local-delete"}
+	for key, value := range pluginWireInput(row) {
+		mutation[key] = value
+	}
+	if err := conn.WriteJSON(mutation); err != nil {
+		t.Fatal(err)
+	}
+	result := readUntil(t, messages, "plugin_mutation_result", "local-delete")
+	if result["success"] != true || result["exit_code"] != float64(0) {
+		t.Fatalf("mutation result = %+v", result)
+	}
+	if _, err := os.Lstat(selected); !os.IsNotExist(err) {
+		t.Fatalf("selected Plugin remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(neighbor, ".codex-plugin", "plugin.json")); err != nil {
+		t.Fatalf("neighbor changed: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "plugins_inventory", "request_id": "local-after", "generation": 2}); err != nil {
+		t.Fatal(err)
+	}
+	after := readUntil(t, messages, "plugins_inventory", "local-after")
+	if hasPluginInventoryRow(after, "local-proof") || !hasPluginInventoryRow(after, "local-neighbor") {
 		t.Fatalf("reconciled inventory = %+v", after)
 	}
 }
