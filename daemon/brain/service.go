@@ -187,7 +187,14 @@ func (s *Service) RetryTerminalFinalization(workID string) (Work, error) {
 	if !ok {
 		return item, nil
 	}
-	return s.retryTerminalFinalization(item, finalization)
+	updated, finalizeErr := s.retryTerminalFinalization(item, finalization)
+	// RecordSessionFinalization may append an actionable retry obligation even
+	// when teardown itself fails. Re-enter the same serialized Host lane after
+	// the durable write so the obligation cannot remain stranded until a later
+	// unrelated heartbeat. This is intentionally event-driven; no polling is
+	// introduced, and ClaimNextReviewAction remains the idempotence boundary.
+	_, dispatchErr := s.ReconcileHostLane()
+	return updated, errors.Join(finalizeErr, dispatchErr)
 }
 
 func (s *Service) retryTerminalFinalization(item Work, finalization SessionFinalization) (Work, error) {
@@ -1816,8 +1823,15 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 					Summary:     "Delegated Session is absent after restart; outcome is unknown",
 				})
 			}
-			if _, _, reconcileErr := s.store.ReconcileAbsentWorkOwner(item.ID, item.OwnerSessionID); reconcileErr != nil {
+			_, changed, reconcileErr := s.store.ReconcileAbsentWorkOwner(item.ID, item.OwnerSessionID)
+			if reconcileErr != nil {
 				log.Printf("brain absent Work owner reconciliation failed for %s: %v", item.ID, reconcileErr)
+			} else if changed {
+				// Owner absence is an actionable Work Event producer. Drive the
+				// canonical lane immediately after its atomic ledger write.
+				if _, dispatchErr := s.ReconcileHostLane(); dispatchErr != nil {
+					log.Printf("brain absent Work owner dispatch failed for %s: %v", item.ID, dispatchErr)
+				}
 			}
 			continue
 		}
