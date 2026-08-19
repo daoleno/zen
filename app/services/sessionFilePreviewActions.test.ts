@@ -761,9 +761,13 @@ describe("Session file preview download lifecycle", () => {
 
   test("reports failure, resets after cancellation, and can retry", async () => {
     const states: string[] = [];
+    const errors: unknown[] = [];
     let attempts = 0;
     const owner = createSessionFileDownloadLifecycleOwner({
-      onFeedbackChange: (state) => states.push(state),
+      onFeedbackChange: (state, error) => {
+        states.push(state);
+        if (error !== undefined) errors.push(error);
+      },
     });
 
     await expect(
@@ -773,6 +777,8 @@ describe("Session file preview download lifecycle", () => {
       }),
     ).rejects.toThrow("write failed");
     expect(states).toEqual(["busy", "failed"]);
+    expect(errors).toEqual([expect.any(Error)]);
+    expect((errors[0] as Error).message).toBe("write failed");
 
     await expect(owner.start(async () => "cancelled")).resolves.toBe(
       "cancelled",

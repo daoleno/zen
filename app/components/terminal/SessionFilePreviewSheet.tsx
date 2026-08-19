@@ -52,6 +52,7 @@ import {
   sessionFileDownloadFileName,
   sessionFileDownloadMimeType,
   sessionFileDownloadRequest,
+  sessionFileDownloadErrorMessage,
   type SessionFileDownloadFeedback,
 } from "../../services/sessionFilePreviewDownload";
 import { createExpoSessionFileDownloadBackend } from "../../services/sessionFilePreviewDownload.expo";
@@ -216,6 +217,7 @@ export function SessionFilePreviewSheet({
   const [pathCopied, setPathCopied] = useState(false);
   const [downloadFeedback, setDownloadFeedback] =
     useState<SessionFileDownloadFeedback>("idle");
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const downloadBackend = useMemo(
     () => createExpoSessionFileDownloadBackend(),
     [],
@@ -223,7 +225,14 @@ export function SessionFilePreviewSheet({
   const downloadOwner = useMemo(
     () =>
       createSessionFileDownloadLifecycleOwner({
-        onFeedbackChange: setDownloadFeedback,
+        onFeedbackChange: (feedback, error) => {
+          setDownloadFeedback(feedback);
+          setDownloadError(
+            feedback === "failed"
+              ? sessionFileDownloadErrorMessage(error)
+              : null,
+          );
+        },
       }),
     [],
   );
@@ -242,6 +251,7 @@ export function SessionFilePreviewSheet({
   useEffect(() => {
     copyOwner.replaceController();
     downloadOwner.reset();
+    setDownloadError(null);
   }, [copyOwner, downloadOwner, state.reference, state.requestEpoch]);
 
   useEffect(() => {
@@ -309,6 +319,7 @@ export function SessionFilePreviewSheet({
         chrome={chrome}
         pathCopied={pathCopied}
         downloadFeedback={downloadFeedback}
+        downloadError={downloadError}
         onCopyPath={copyPath}
         onDownload={downloadFile}
         onRefresh={retry}
@@ -333,6 +344,7 @@ function SessionFilePreviewHeader({
   chrome,
   pathCopied,
   downloadFeedback,
+  downloadError,
   onCopyPath,
   onDownload,
   onRefresh,
@@ -342,6 +354,7 @@ function SessionFilePreviewHeader({
   chrome: TerminalThemeChrome;
   pathCopied: boolean;
   downloadFeedback: SessionFileDownloadFeedback;
+  downloadError: string | null;
   onCopyPath(): void;
   onDownload(): void;
   onRefresh(): void;
@@ -364,7 +377,7 @@ function SessionFilePreviewHeader({
     downloadFeedback === "saved"
       ? "Saved"
       : downloadFeedback === "failed"
-        ? "Download failed"
+        ? `Download failed: ${downloadError || "Unknown error"}`
         : null;
   return (
     <View style={[styles.header, { borderBottomColor: chrome.border }]}>

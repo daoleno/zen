@@ -10,6 +10,17 @@ export const SESSION_FILE_BINARY_LIMIT_BYTES = 50 * 1024 * 1024;
 export type SessionFileDownloadResult = "saved" | "cancelled";
 export type SessionFileDownloadFeedback = "idle" | "busy" | "saved" | "failed";
 
+export function sessionFileDownloadErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Unknown download error.";
+  const normalized = message.trim();
+  return normalized || "Unknown download error.";
+}
+
 /**
  * A destination file this attempt created and therefore owns.
  * Cleanup may delete only this handle — never an unclaimed path.
@@ -50,7 +61,10 @@ export interface SessionFileDownloadLifecycleOwner {
 }
 
 export function createSessionFileDownloadLifecycleOwner(input: {
-  onFeedbackChange(feedback: SessionFileDownloadFeedback): void;
+  onFeedbackChange(
+    feedback: SessionFileDownloadFeedback,
+    error?: unknown,
+  ): void;
 }): SessionFileDownloadLifecycleOwner {
   let disposed = false;
   let active = false;
@@ -69,7 +83,9 @@ export function createSessionFileDownloadLifecycleOwner(input: {
         }
         return result;
       } catch (error) {
-        if (!disposed && epoch === taskEpoch) input.onFeedbackChange("failed");
+        if (!disposed && epoch === taskEpoch) {
+          input.onFeedbackChange("failed", error);
+        }
         throw error;
       } finally {
         active = false;

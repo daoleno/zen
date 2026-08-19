@@ -55,7 +55,10 @@ export function createExpoSessionFileDownloadBackend(): SessionFileDownloadBacke
       }
       const temporary = createTemporaryDownloadFile();
       try {
-        const downloaded = await File.downloadFileAsync(uri, temporary, options);
+        const downloaded = await File.downloadFileAsync(uri, temporary, {
+          headers: options.headers,
+          idempotent: true,
+        });
         if (
           options.expectedBytes !== undefined &&
           (downloaded.size ?? 0) !== options.expectedBytes
@@ -65,9 +68,19 @@ export function createExpoSessionFileDownloadBackend(): SessionFileDownloadBacke
           );
         }
         await downloaded.copy(target, { overwrite: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Session file download failed in Expo storage: ${message}`,
+          { cause: error },
+        );
       } finally {
-        if (temporary.exists) {
-          temporary.delete();
+        try {
+          if (temporary.exists) {
+            temporary.delete();
+          }
+        } catch {
+          // Cleanup must not replace the transfer or copy failure.
         }
       }
     },

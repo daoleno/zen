@@ -100,8 +100,12 @@ describe("Expo Session file download backend", () => {
     expect(calls[1]).toMatchObject({
       kind: "download",
       uri: "https://host.example/file?cap=1",
-      options: { headers: { "Cache-Control": "no-store" } },
+      options: {
+        headers: { "Cache-Control": "no-store" },
+        idempotent: true,
+      },
     });
+    expect(calls[1]?.options).not.toHaveProperty("expectedBytes");
     expect(calls[1]?.destination).toMatch(/^file:\/\/\/cache\/.zen-session-download-/);
     expect(calls[2]).toEqual({
       kind: "copy",
@@ -110,6 +114,24 @@ describe("Expo Session file download backend", () => {
       options: { overwrite: true },
     });
     expect(calls[3]).toEqual({ kind: "delete", uri: calls[1]?.destination });
+  });
+
+  test("keeps expected byte validation in JavaScript instead of native options", async () => {
+    calls.length = 0;
+    resetFakeFailures();
+    const { backend, destination } = await createDestination();
+
+    await expect(
+      backend.download("https://host.example/file", destination, {
+        headers: {},
+        expectedBytes: 7,
+      }),
+    ).rejects.toThrow("expected 7 bytes, received 0");
+
+    expect(calls.find((call) => call.kind === "download")?.options).toEqual({
+      headers: {},
+      idempotent: true,
+    });
   });
 
   test("cleans the temporary file after download failure, copy failure, or cancellation", async () => {
