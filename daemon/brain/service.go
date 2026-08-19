@@ -430,7 +430,13 @@ func (s *Service) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloa
 	if s == nil || s.store == nil {
 		return watcher.TurnSubmission{}, fmt.Errorf("brain store is not configured")
 	}
-	return s.store.AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256)
+	submission, abortErr := s.store.AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256)
+	// A proved non-submission may atomically create the actionable
+	// brain.submission_not_admitted review obligation. Re-drive the canonical
+	// lane after that durable write so a failed provider attempt cannot leave
+	// Brain attention queued until an unrelated trigger arrives.
+	_, dispatchErr := s.ReconcileHostLane()
+	return submission, errors.Join(abortErr, dispatchErr)
 }
 
 func (s *Service) Snapshot() (Snapshot, error) {
