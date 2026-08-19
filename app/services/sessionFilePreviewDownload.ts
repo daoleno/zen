@@ -8,6 +8,7 @@ import type {
 export const SESSION_FILE_BINARY_LIMIT_BYTES = 50 * 1024 * 1024;
 
 export type SessionFileDownloadResult = "saved" | "cancelled";
+export type SessionFileDownloadFeedback = "idle" | "busy" | "saved" | "failed";
 
 /**
  * A destination file this attempt created and therefore owns.
@@ -38,8 +39,52 @@ export interface SessionFileDownloadBackend {
   download(
     uri: string,
     destination: SessionFileOwnedDestination,
-    options: { headers: Record<string, string> },
+    options: { headers: Record<string, string>; expectedBytes?: number },
   ): Promise<void>;
+}
+
+export interface SessionFileDownloadLifecycleOwner {
+  start(task: () => Promise<SessionFileDownloadResult>): Promise<SessionFileDownloadResult | undefined>;
+  reset(): void;
+  dispose(): void;
+}
+
+export function createSessionFileDownloadLifecycleOwner(input: {
+  onFeedbackChange(feedback: SessionFileDownloadFeedback): void;
+}): SessionFileDownloadLifecycleOwner {
+  let disposed = false;
+  let active = false;
+  let epoch = 0;
+
+  return {
+    async start(task) {
+      if (disposed || active) return undefined;
+      active = true;
+      const taskEpoch = ++epoch;
+      input.onFeedbackChange("busy");
+      try {
+        const result = await task();
+        if (!disposed && epoch === taskEpoch) {
+          input.onFeedbackChange(result === "saved" ? "saved" : "idle");
+        }
+        return result;
+      } catch (error) {
+        if (!disposed && epoch === taskEpoch) input.onFeedbackChange("failed");
+        throw error;
+      } finally {
+        active = false;
+      }
+    },
+    reset() {
+      epoch += 1;
+      if (!disposed) input.onFeedbackChange("idle");
+    },
+    dispose() {
+      disposed = true;
+      epoch += 1;
+      active = false;
+    },
+  };
 }
 
 export function sessionFileDownloadFileName(
@@ -205,6 +250,7 @@ function deleteOwnedDestination(destination: SessionFileOwnedDestination) {
 export async function exportSessionFileDownload(input: {
   fileName: string;
   mimeType: string;
+  expectedBytes?: number;
   resolveSource(): Promise<SessionFileBinarySource>;
   backend: SessionFileDownloadBackend;
 }): Promise<SessionFileDownloadResult> {
@@ -228,6 +274,7 @@ export async function exportSessionFileDownload(input: {
     const source = await input.resolveSource();
     await input.backend.download(source.uri, owned, {
       headers: source.headers,
+      expectedBytes: input.expectedBytes,
     });
     return "saved";
   } catch (error) {

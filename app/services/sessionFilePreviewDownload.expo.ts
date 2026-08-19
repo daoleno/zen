@@ -56,7 +56,15 @@ export function createExpoSessionFileDownloadBackend(): SessionFileDownloadBacke
       const temporary = createTemporaryDownloadFile();
       try {
         const downloaded = await File.downloadFileAsync(uri, temporary, options);
-        await downloaded.copy(target);
+        if (
+          options.expectedBytes !== undefined &&
+          (downloaded.size ?? 0) !== options.expectedBytes
+        ) {
+          throw new Error(
+            `Session file download was truncated (expected ${options.expectedBytes} bytes, received ${downloaded.size ?? 0}).`,
+          );
+        }
+        await downloaded.copy(target, { overwrite: true });
       } finally {
         if (temporary.exists) {
           temporary.delete();

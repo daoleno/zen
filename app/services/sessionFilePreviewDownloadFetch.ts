@@ -69,6 +69,7 @@ export function createFetchSessionFileDownloadBackend(
         {
           fetch: api.fetch,
           maxBytes: SESSION_FILE_BINARY_LIMIT_BYTES,
+          expectedBytes: options.expectedBytes,
         },
       );
     },

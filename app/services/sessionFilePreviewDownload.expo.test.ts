@@ -13,8 +13,13 @@ class FakeFile {
     this.uri = parts.join("/").replace("file:////", "file:///");
   }
 
-  copy(destination: FakeFile) {
-    calls.push({ kind: "copy", source: this.uri, destination: destination.uri });
+  copy(destination: FakeFile, options?: Record<string, unknown>) {
+    calls.push({
+      kind: "copy",
+      source: this.uri,
+      destination: destination.uri,
+      options,
+    });
     if (copyError) {
       throw copyError;
     }
@@ -102,6 +107,7 @@ describe("Expo Session file download backend", () => {
       kind: "copy",
       source: calls[1]?.destination,
       destination: "content://picked/notes.md",
+      options: { overwrite: true },
     });
     expect(calls[3]).toEqual({ kind: "delete", uri: calls[1]?.destination });
   });

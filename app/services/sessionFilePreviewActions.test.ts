@@ -6,6 +6,7 @@ import {
 } from "./sessionFilePreviewCopy";
 import {
   exportSessionFileDownload,
+  createSessionFileDownloadLifecycleOwner,
   isSessionFileDownloadCancelError,
   isSessionFileDownloadReserveConflictError,
   reserveCollisionSafeDownloadDestination,
@@ -348,6 +349,25 @@ describe("Session file preview download stream", () => {
       },
     );
     expect(written.chunks).toEqual([]);
+  });
+
+  test("rejects a truncated response after the sink closes", async () => {
+    const written = { chunks: [] as Uint8Array[] };
+    await expect(
+      streamSessionFileDownloadToOwnedSink(
+        "https://host.example/truncated",
+        {},
+        collectingSink(written),
+        {
+          fetch: async () => ({
+            ok: true,
+            status: 200,
+            body: bytesStream([new TextEncoder().encode("short")]),
+          }),
+          expectedBytes: 10,
+        },
+      ),
+    ).rejects.toThrow("truncated");
   });
 
   test("stream write failure surfaces and byte limit aborts oversized payloads", async () => {
@@ -717,6 +737,51 @@ describe("Session file preview download", () => {
     });
     expect(result).toBe("cancelled");
     expect(resolvedSource).toBe(false);
+  });
+});
+
+describe("Session file preview download lifecycle", () => {
+  test("ignores duplicate taps while active and settles success", async () => {
+    const states: string[] = [];
+    let resolveTask: ((result: "saved") => void) | undefined;
+    const owner = createSessionFileDownloadLifecycleOwner({
+      onFeedbackChange: (state) => states.push(state),
+    });
+    const first = owner.start(
+      () => new Promise<"saved">((resolve) => (resolveTask = resolve)),
+    );
+    const duplicate = owner.start(async () => "saved");
+
+    expect(await duplicate).toBeUndefined();
+    expect(states).toEqual(["busy"]);
+    resolveTask?.("saved");
+    await expect(first).resolves.toBe("saved");
+    expect(states).toEqual(["busy", "saved"]);
+  });
+
+  test("reports failure, resets after cancellation, and can retry", async () => {
+    const states: string[] = [];
+    let attempts = 0;
+    const owner = createSessionFileDownloadLifecycleOwner({
+      onFeedbackChange: (state) => states.push(state),
+    });
+
+    await expect(
+      owner.start(async () => {
+        attempts += 1;
+        throw new Error("write failed");
+      }),
+    ).rejects.toThrow("write failed");
+    expect(states).toEqual(["busy", "failed"]);
+
+    await expect(owner.start(async () => "cancelled")).resolves.toBe(
+      "cancelled",
+    );
+    expect(states).toEqual(["busy", "failed", "busy", "idle"]);
+
+    await expect(owner.start(async () => "saved")).resolves.toBe("saved");
+    expect(attempts).toBe(1);
+    expect(states.at(-1)).toBe("saved");
   });
 });
 

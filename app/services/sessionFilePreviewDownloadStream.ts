@@ -20,6 +20,7 @@ export interface SessionFileDownloadStreamSink {
 export interface StreamSessionFileDownloadOptions {
   fetch: SessionFileDownloadFetch;
   maxBytes?: number;
+  expectedBytes?: number;
 }
 
 async function cancelBodyQuietly(
@@ -79,6 +80,14 @@ export async function streamSessionFileDownloadToOwnedSink(
   const writable = sink.writableStream();
   try {
     await response.body.pipeThrough(limit).pipeTo(writable);
+    if (
+      options.expectedBytes !== undefined &&
+      bytesWritten !== options.expectedBytes
+    ) {
+      throw new Error(
+        `Session file download was truncated (expected ${options.expectedBytes} bytes, received ${bytesWritten}).`,
+      );
+    }
   } catch (error) {
     try {
       await writable.abort?.(

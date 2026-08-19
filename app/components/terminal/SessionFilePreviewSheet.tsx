@@ -46,11 +46,13 @@ import {
   type SessionFilePreviewState,
 } from "../../services/sessionFilePreview";
 import {
+  createSessionFileDownloadLifecycleOwner,
   exportSessionFileDownload,
   sessionFileCanDownload,
   sessionFileDownloadFileName,
   sessionFileDownloadMimeType,
   sessionFileDownloadRequest,
+  type SessionFileDownloadFeedback,
 } from "../../services/sessionFilePreviewDownload";
 import { createExpoSessionFileDownloadBackend } from "../../services/sessionFilePreviewDownload.expo";
 import { wsClient } from "../../services/websocket";
@@ -212,10 +214,17 @@ export function SessionFilePreviewSheet({
     dispatch({ type: "failed", message, stale });
   }, []);
   const [pathCopied, setPathCopied] = useState(false);
-  const [downloadBusy, setDownloadBusy] = useState(false);
-  const downloadEpochRef = useRef(0);
+  const [downloadFeedback, setDownloadFeedback] =
+    useState<SessionFileDownloadFeedback>("idle");
   const downloadBackend = useMemo(
     () => createExpoSessionFileDownloadBackend(),
+    [],
+  );
+  const downloadOwner = useMemo(
+    () =>
+      createSessionFileDownloadLifecycleOwner({
+        onFeedbackChange: setDownloadFeedback,
+      }),
     [],
   );
   const copyOwner = useMemo(
@@ -232,13 +241,15 @@ export function SessionFilePreviewSheet({
 
   useEffect(() => {
     copyOwner.replaceController();
-    downloadEpochRef.current += 1;
-    setDownloadBusy(false);
-  }, [copyOwner, state.reference, state.requestEpoch]);
+    downloadOwner.reset();
+  }, [copyOwner, downloadOwner, state.reference, state.requestEpoch]);
 
   useEffect(() => {
-    return () => copyOwner.dispose();
-  }, [copyOwner]);
+    return () => {
+      copyOwner.dispose();
+      downloadOwner.dispose();
+    };
+  }, [copyOwner, downloadOwner]);
 
   const copyPath = useCallback(() => {
     const path = state.metadata?.path || state.reference;
@@ -250,7 +261,6 @@ export function SessionFilePreviewSheet({
     if (
       !metadata ||
       !sessionFileCanDownload(metadata) ||
-      downloadBusy ||
       !processId ||
       !startedAt
     ) {
@@ -262,29 +272,23 @@ export function SessionFilePreviewSheet({
       { agentId, processId, startedAt },
       metadata,
     );
-    const downloadEpoch = downloadEpochRef.current + 1;
-    downloadEpochRef.current = downloadEpoch;
-    setDownloadBusy(true);
-    void exportSessionFileDownload({
-      fileName,
-      mimeType,
-      resolveSource: () =>
-        buildSessionFileBinarySource(serverId, daemonId, request),
-      backend: downloadBackend,
-    })
-      .catch(() => {
-        // Keep preview open; download failures stay non-modal like copy.
-      })
-      .finally(() => {
-        if (downloadEpochRef.current === downloadEpoch) {
-          setDownloadBusy(false);
-        }
-      });
+    void downloadOwner
+      .start(() =>
+        exportSessionFileDownload({
+          fileName,
+          mimeType,
+          expectedBytes: metadata.size,
+          resolveSource: () =>
+            buildSessionFileBinarySource(serverId, daemonId, request),
+          backend: downloadBackend,
+        }),
+      )
+      .catch(() => {});
   }, [
     agentId,
     daemonId,
     downloadBackend,
-    downloadBusy,
+    downloadOwner,
     processId,
     serverId,
     startedAt,
@@ -304,7 +308,7 @@ export function SessionFilePreviewSheet({
         state={state}
         chrome={chrome}
         pathCopied={pathCopied}
-        downloadBusy={downloadBusy}
+        downloadFeedback={downloadFeedback}
         onCopyPath={copyPath}
         onDownload={downloadFile}
         onRefresh={retry}
@@ -328,7 +332,7 @@ function SessionFilePreviewHeader({
   state,
   chrome,
   pathCopied,
-  downloadBusy,
+  downloadFeedback,
   onCopyPath,
   onDownload,
   onRefresh,
@@ -337,7 +341,7 @@ function SessionFilePreviewHeader({
   state: SessionFilePreviewState;
   chrome: TerminalThemeChrome;
   pathCopied: boolean;
-  downloadBusy: boolean;
+  downloadFeedback: SessionFileDownloadFeedback;
   onCopyPath(): void;
   onDownload(): void;
   onRefresh(): void;
@@ -355,6 +359,13 @@ function SessionFilePreviewHeader({
         .join(" · ")
     : state.reference || "Current Session";
   const canDownload = sessionFileCanDownload(metadata);
+  const downloadBusy = downloadFeedback === "busy";
+  const downloadStatus =
+    downloadFeedback === "saved"
+      ? "Saved"
+      : downloadFeedback === "failed"
+        ? "Download failed"
+        : null;
   return (
     <View style={[styles.header, { borderBottomColor: chrome.border }]}>
       <View style={styles.headerCopy}>
@@ -372,6 +383,20 @@ function SessionFilePreviewHeader({
           {meta}
         </Text>
       </View>
+      {downloadStatus ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          style={[
+            styles.downloadStatus,
+            {
+              color:
+                downloadFeedback === "saved" ? chrome.accent : chrome.danger,
+            },
+          ]}
+        >
+          {downloadStatus}
+        </Text>
+      ) : null}
       {state.stale ? (
         <HeaderAction
           label="Refresh changed file"
@@ -783,6 +808,11 @@ const styles = StyleSheet.create({
   headerCopy: {
     flex: 1,
     minWidth: 0,
+  },
+  downloadStatus: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 11,
+    flexShrink: 1,
   },
   title: {
     fontFamily: Typography.uiFontMedium,
