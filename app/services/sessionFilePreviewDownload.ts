@@ -106,11 +106,13 @@ export function createSessionFileDownloadLifecycleOwner(input: {
 export function sessionFileDownloadFileName(
   metadata: Pick<SessionFileMetadata, "name" | "path">,
 ): string {
-  const raw =
-    metadata.name.trim() ||
-    metadata.path.replace(/\\/g, "/").split("/").at(-1)?.trim() ||
-    "file";
-  let sanitized = raw.replace(/[/\\]/g, "_").replace(/\u0000/g, "").trim();
+  const pathName = metadata.path.replace(/\\/g, "/").split("/").at(-1)?.trim() || "";
+  const raw = metadata.name.trim() || pathName || "file";
+  let sanitized = raw.replace(/[/\\]/g, "_").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const pathExtension = splitSessionFileDownloadName(sanitizeSessionFileName(pathName)).extension;
+  const { stem, extension } = splitSessionFileDownloadName(sanitized);
+  const cleanedStem = stripSessionFileImportNoise(stem);
+  sanitized = `${cleanedStem || stem}${extension || pathExtension}`;
   if (
     !sanitized ||
     sanitized === "." ||
@@ -120,6 +122,56 @@ export function sessionFileDownloadFileName(
     sanitized = "file";
   }
   return sanitized.slice(0, 255) || "file";
+}
+
+const SESSION_FILE_SOURCE_SUFFIXES = [
+  "airtable",
+  "box",
+  "confluence",
+  "databricks",
+  "dropbox",
+  "github",
+  "gitlab",
+  "google drive",
+  "google docs",
+  "jira",
+  "linear",
+  "microsoft 365",
+  "notion",
+  "onedrive",
+  "sharepoint",
+  "slack",
+].map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+const SESSION_FILE_SOURCE_SUFFIX_RE = new RegExp(
+  `(?:${SESSION_FILE_SOURCE_SUFFIXES.join("|")})(?:\\.com)?`,
+  "i",
+);
+const SESSION_FILE_DOMAIN_SUFFIX_RE = /(?:https?:\/\/|www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+/i;
+
+function sanitizeSessionFileName(value: string): string {
+  return value.replace(/[/\\]/g, "_").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+}
+
+function stripSessionFileImportNoise(stem: string): string {
+  let cleaned = stem.trim();
+  let previous = "";
+  while (cleaned && cleaned !== previous) {
+    previous = cleaned;
+    cleaned = cleaned
+      .replace(/\s*(?:[-–—|·•]|\b(?:from|on)\b)\s*\([^)]*\)\s*$/i, "")
+      .replace(
+        new RegExp(
+          `\\s*(?:[-–—|·•]|\\b(?:from|on)\\b)\\s*(?:${SESSION_FILE_SOURCE_SUFFIX_RE.source}|${SESSION_FILE_DOMAIN_SUFFIX_RE.source})\\s*$`,
+          "i",
+        ),
+        "",
+      )
+      .replace(/\s*[([]\s*(?:imported|exported|downloaded|uploaded)\s*[)\]]\s*$/i, "")
+      .replace(/\s*[-–—|·•]\s*(?:imported|exported|downloaded|uploaded|attachment|file)\s*$/i, "")
+      .trim();
+  }
+  return cleaned;
 }
 
 /** Prefer metadata content-type without parameters; else octet-stream. */

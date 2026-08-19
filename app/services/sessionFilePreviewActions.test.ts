@@ -542,6 +542,30 @@ describe("Session file preview download", () => {
         path: "/host/repo/docs/guide.md",
       }),
     ).toBe(".._evil_name.md");
+    expect(
+      sessionFileDownloadFileName({
+        name: "Quarterly report - Databricks.pdf",
+        path: "/host/repo/reports/Quarterly report - Databricks.pdf",
+      }),
+    ).toBe("Quarterly report.pdf");
+    expect(
+      sessionFileDownloadFileName({
+        name: "Architecture notes | Notion",
+        path: "/host/repo/docs/architecture-notes.md",
+      }),
+    ).toBe("Architecture notes.md");
+    expect(
+      sessionFileDownloadFileName({
+        name: "My report - custom.pdf",
+        path: "/host/repo/My report - custom.pdf",
+      }),
+    ).toBe("My report - custom.pdf");
+    expect(
+      sessionFileDownloadFileName({
+        name: "draft.txt",
+        path: "/host/repo/draft.txt\u0000",
+      }),
+    ).toBe("draft.txt");
     expect(sessionFileDownloadMimeType(metadata.contentType)).toBe(
       "text/markdown",
     );
