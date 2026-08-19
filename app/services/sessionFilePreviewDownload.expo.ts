@@ -1,6 +1,16 @@
 import { Directory, File, Paths } from "expo-file-system";
 import type { SessionFileDownloadBackend } from "./sessionFilePreviewDownload";
 
+let temporaryFileSequence = 0;
+
+function createTemporaryDownloadFile(): File {
+  temporaryFileSequence += 1;
+  return new File(
+    Paths.cache,
+    `.zen-session-download-${Date.now().toString(36)}-${temporaryFileSequence.toString(36)}-${Math.random().toString(36).slice(2)}`,
+  );
+}
+
 /**
  * Production Expo wiring: reserve through the system directory picker, download
  * into an app-private cache file, then copy into the reserved destination.
@@ -43,10 +53,7 @@ export function createExpoSessionFileDownloadBackend(): SessionFileDownloadBacke
       if (!target) {
         throw new Error("The download destination is no longer owned.");
       }
-      const temporary = new File(
-        Paths.cache,
-        `.zen-session-download-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-      );
+      const temporary = createTemporaryDownloadFile();
       try {
         const downloaded = await File.downloadFileAsync(uri, temporary, options);
         await downloaded.copy(target);

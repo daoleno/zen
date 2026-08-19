@@ -1,6 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 
 const calls: Array<Record<string, unknown>> = [];
+let downloadError: Error | undefined;
+let copyError: Error | undefined;
 
 class FakeFile {
   exists = true;
@@ -13,6 +15,9 @@ class FakeFile {
 
   copy(destination: FakeFile) {
     calls.push({ kind: "copy", source: this.uri, destination: destination.uri });
+    if (copyError) {
+      throw copyError;
+    }
     return Promise.resolve();
   }
 
@@ -31,6 +36,9 @@ class FakeFile {
     options: Record<string, unknown>,
   ) {
     calls.push({ kind: "download", uri, destination: destination.uri, options });
+    if (downloadError) {
+      throw downloadError;
+    }
     return destination;
   }
 }
@@ -51,11 +59,25 @@ mock.module("expo-file-system", () => ({
   Paths: { cache: "file:///cache" },
 }));
 
+const { createExpoSessionFileDownloadBackend } = await import(
+  "./sessionFilePreviewDownload.expo"
+);
+
 describe("Expo Session file download backend", () => {
+  function createDestination() {
+    const backend = createExpoSessionFileDownloadBackend();
+    return backend.pickDirectory().then((directory) => ({
+      backend,
+      destination: directory.reserve("notes.md", "text/plain"),
+    }));
+  }
+
+  function resetFakeFailures() {
+    downloadError = undefined;
+    copyError = undefined;
+  }
+
   test("uses a native cache download before copying into the owned SAF file", async () => {
-    const { createExpoSessionFileDownloadBackend } = await import(
-      "./sessionFilePreviewDownload.expo"
-    );
     calls.length = 0;
     const backend = createExpoSessionFileDownloadBackend();
     const directory = await backend.pickDirectory();
@@ -82,5 +104,55 @@ describe("Expo Session file download backend", () => {
       destination: "content://picked/notes.md",
     });
     expect(calls[3]).toEqual({ kind: "delete", uri: calls[1]?.destination });
+  });
+
+  test("cleans the temporary file after download failure, copy failure, or cancellation", async () => {
+    for (const [failure, expectedMessage] of [
+      ["download", "network failed"],
+      ["copy", "destination failed"],
+      ["download-cancel", "Download was cancelled"],
+    ] as const) {
+      calls.length = 0;
+      resetFakeFailures();
+      if (failure === "copy") {
+        copyError = new Error(expectedMessage);
+      } else {
+        downloadError = new Error(expectedMessage);
+      }
+
+      const { backend, destination } = await createDestination();
+      await expect(
+        backend.download("https://host.example/file", destination, {
+          headers: {},
+        }),
+      ).rejects.toThrow(expectedMessage);
+
+      const temporaryUri = calls.find((call) => call.kind === "download")
+        ?.destination;
+      expect(calls).toContainEqual({ kind: "delete", uri: temporaryUri });
+    }
+    resetFakeFailures();
+  });
+
+  test("uses distinct hidden cache files for repeated downloads", async () => {
+    calls.length = 0;
+    resetFakeFailures();
+    const { backend, destination } = await createDestination();
+
+    await backend.download("https://host.example/one", destination, {
+      headers: {},
+    });
+    await backend.download("https://host.example/two", destination, {
+      headers: {},
+    });
+
+    const temporaryUris = calls
+      .filter((call) => call.kind === "download")
+      .map((call) => call.destination);
+    expect(new Set(temporaryUris).size).toBe(2);
+    expect(temporaryUris.every((uri) =>
+      typeof uri === "string" && uri.startsWith("file:///cache/.zen-session-download-"),
+    )).toBe(true);
+    expect(calls.filter((call) => call.kind === "delete")).toHaveLength(2);
   });
 });
