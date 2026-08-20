@@ -1,9 +1,7 @@
 import * as DocumentPicker from "expo-document-picker";
-import {
-  File,
-  UploadType,
-  type UploadProgress as NativeUploadProgress,
-} from "expo-file-system";
+import { File, type UploadProgress as NativeUploadProgress } from "expo-file-system";
+
+const BINARY_UPLOAD_TYPE = 0;
 import { buildAuthorizationHeader } from "./auth";
 import { getServerById, type StoredServer } from "./storage";
 import { resolveCanonicalServerURL } from "./pinnedTransport";
@@ -124,7 +122,7 @@ export function createAttachmentUploadOperation(
 
       task = file.createUploadTask(uploadUrl, {
         httpMethod: "POST",
-        uploadType: UploadType.BINARY_CONTENT,
+        uploadType: BINARY_UPLOAD_TYPE,
         headers: {
           ...headers,
           "Content-Type": contentType,
