@@ -377,6 +377,94 @@ func TestFaultSignalTurnProviderTerminalNeverTerminalizes(t *testing.T) {
 	}
 }
 
+func TestBoundedSignalProviderDoneCompletesWorkIdempotently(t *testing.T) {
+	store, sessionID, at := pendingSubmissionTestStore(t)
+	store.now = func() time.Time { return at }
+	turnID := "turn:bounded-provider-done"
+	pending := prepareSignalSubmission(t, store, sessionID, turnID, "bounded prompt", at)
+	if _, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00bounded-running", At: at.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tuple := watcher.TurnAdmission{Stream: "provider", ID: "bounded-admission", Cursor: 1,
+		SHA256: pending.PayloadSHA256, At: at.Add(2 * time.Second)}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: pending.Receipt,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "bounded-activity",
+		Admission: tuple, ResolvedAt: at.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := watcher.TurnFact{SessionID: sessionID, TurnID: turnID,
+		Class: watcher.EvidenceProvider, Kind: "done",
+		SourceID:  "provider\x00" + sessionID + "\x00stream\x00bounded-activity\x001",
+		Admission: tuple, ActivityID: "bounded-activity", StartedAt: at.Add(3 * time.Second),
+		SettledAt: at.Add(4 * time.Second), At: at.Add(5 * time.Second), Summary: "worker complete"}
+	snapshot, changed, err := store.ApplyTurnFact(done)
+	if err != nil || !changed || snapshot.Status != watcher.TurnDone {
+		t.Fatalf("bounded provider done = (%+v, %v, %v)", snapshot, changed, err)
+	}
+	item, err := store.Work(pending.WorkID)
+	if err != nil || item.Status != WorkDone || item.TerminalRevision != item.Revision || item.OwnerSessionID != "" {
+		t.Fatalf("bounded Work did not close = %+v err=%v", item, err)
+	}
+	row, found := turnEvent(t, store, pending.WorkID, "session:"+sessionID+":turn:"+turnID+":session.done")
+	if !found || !row.Actionable {
+		t.Fatalf("bounded completion event = %+v found=%v", row, found)
+	}
+	before := item.Revision
+	replayed, replayChanged, err := store.ApplyTurnFact(done)
+	if err != nil || replayChanged || replayed.Status != watcher.TurnDone {
+		t.Fatalf("replayed bounded completion = (%+v, %v, %v)", replayed, replayChanged, err)
+	}
+	after, err := store.Work(pending.WorkID)
+	if err != nil || after.Revision != before {
+		t.Fatalf("replayed bounded completion changed Work = before=%d after=%+v err=%v", before, after, err)
+	}
+}
+
+func TestUntilDoneSignalProviderDoneStillAwaitsControl(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-until-done:@1"
+	item, err := store.CreateWork(Work{Title: "Until done", Objective: "Require exact control confirmation",
+		Status: WorkRunning, OwnerSessionID: sessionID, CompletionPolicy: CompletionUntilDone,
+		DoneCriteriaRef: "control-confirmation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 9, 4, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return at }
+	pending := prepareSignalSubmission(t, store, sessionID, "turn:until-done", "until prompt", at)
+	if _, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{SessionID: sessionID, TurnID: pending.ProposedTurnID,
+		Class: watcher.EvidenceControl, Kind: "running", SourceID: "control\x00until-running", At: at.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	tuple := watcher.TurnAdmission{Stream: "provider", ID: "until-admission", Cursor: 1, SHA256: pending.PayloadSHA256, At: at.Add(2 * time.Second)}
+	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{SessionID: sessionID, ProposedTurnID: pending.ProposedTurnID,
+		Receipt: pending.Receipt, PayloadSHA256: pending.PayloadSHA256, ActivityID: "until-activity", Admission: tuple, ResolvedAt: at.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.ApplyTurnFact(watcher.TurnFact{SessionID: sessionID, TurnID: pending.ProposedTurnID,
+		Class: watcher.EvidenceProvider, Kind: "done", SourceID: "provider\x00until-done", Admission: tuple,
+		ActivityID: "until-activity", StartedAt: at.Add(3 * time.Second), SettledAt: at.Add(4 * time.Second), At: at.Add(5 * time.Second)})
+	if err != nil || snapshot.Status != watcher.TurnRunning {
+		t.Fatalf("until_done provider done terminalized = %+v err=%v", snapshot, err)
+	}
+	current, err := store.Work(item.ID)
+	if err != nil || current.Status != WorkRunning || current.NextAction == "" {
+		t.Fatalf("until_done Work changed = %+v err=%v", current, err)
+	}
+	row, found := turnEvent(t, store, item.ID, "session:"+sessionID+":turn:"+pending.ProposedTurnID+":session.done")
+	if !found || row.Actionable {
+		t.Fatalf("until_done provider event = %+v found=%v", row, found)
+	}
+}
+
 func TestFaultMatchingControlDoneAtomicallyAdmitsAndSettlesAcrossRestart(t *testing.T) {
 	store, sessionID, at := pendingSubmissionTestStore(t)
 	store.now = func() time.Time { return at }

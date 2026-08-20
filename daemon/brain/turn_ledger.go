@@ -1694,6 +1694,17 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	return WorkUpdate{Status: &waiting}
 }
 
+func boundedTerminalWorkUpdate() WorkUpdate {
+	status := WorkDone
+	empty := ""
+	var noWake *WorkWake
+	var noOwner string
+	return WorkUpdate{
+		Status: &status, OwnerSessionID: &noOwner,
+		NextAction: &empty, WaitFor: &empty, Wake: &noWake,
+	}
+}
+
 // ReassertLiveTurnOwnership repairs only the exact current nonterminal Turn's
 // execution projection. It is used when authoritative provider activity stays
 // live after a progress lease expires; Attention rows remain untouched and
@@ -2029,12 +2040,40 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	if workIndex >= 0 {
 		workItem = database.BrainWork[workIndex]
 		terminalWork = workItem.Status == WorkDone || workItem.Status == WorkCancelled
+		dispositionRevisionFrozen = workHostLaneOwned(database, turn.WorkID)
+		// A bounded Work is complete when its bound worker reports done. Signal
+		// protocol normally reserves semantic terminal authority for exact
+		// Control completion, but bounded Work has no follow-up acceptance gate:
+		// the provider's exact bound terminal is sufficient. Until-done Work
+		// deliberately remains on the non-actionable hint path.
+		if !terminalWork && !dispositionRevisionFrozen &&
+			workItem.CompletionPolicy == CompletionBounded && turn.SignalProtocol &&
+			fact.Class == watcher.EvidenceProvider && fact.Kind == "done" &&
+			providerFactBinds(&turn, fact) && mutation.hint != nil &&
+			mutation.hint.Kind == "session.done" {
+			settled := now
+			if !fact.SettledAt.IsZero() {
+				settled = fact.SettledAt.UTC()
+			}
+			mutation.status = watcher.TurnDone
+			mutation.attention = ""
+			mutation.settledAt = &settled
+			mutation.summary = firstNonEmpty(fact.Summary, "session.done")
+			mutation.eventActionable = true
+			mutation.eventSummary = mutation.summary
+			mutation.hint = nil
+			mutation.dropHintKind = "session.done"
+			mutation.workUpdate = boundedTerminalWorkUpdate()
+			turn.Status = watcher.TurnDone
+			turn.Attention = ""
+			turn.SettledAt = &settled
+			turn.Summary = mutation.summary
+		}
 		// A delivered Host handling carries the exact Work revision required
 		// for its eventual disposition. A newly admitted successor can report
 		// progress before that disposition commits; its Turn facts/outbox rows
 		// remain durable, but they cannot mutate Work or advance the capability's
 		// revision fence. ResolveWorkEvent is the sole owner of that transition.
-		dispositionRevisionFrozen = workHostLaneOwned(database, turn.WorkID)
 	}
 	if !terminalWork && !dispositionRevisionFrozen && mutation.hint != nil && workIndex >= 0 {
 		note := "Delegated Session reported " +
@@ -2106,6 +2145,9 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			if workIndex >= 0 {
 				if workChanged {
 					workItem.Revision++
+					if workItem.Status == WorkDone || workItem.Status == WorkCancelled {
+						workItem.TerminalRevision = workItem.Revision
+					}
 					database.BrainWork[workIndex] = workItem
 					revisionBumped = true
 				}
@@ -2147,6 +2189,9 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	}
 	if workChanged && !revisionBumped && !dispositionRevisionFrozen && workIndex >= 0 {
 		workItem.Revision++
+		if workItem.Status == WorkDone || workItem.Status == WorkCancelled {
+			workItem.TerminalRevision = workItem.Revision
+		}
 		database.BrainWork[workIndex] = workItem
 	}
 	if eventCreated && eventID != "" && workIndex >= 0 {
