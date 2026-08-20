@@ -13,10 +13,11 @@ export function brainWorkEventWorkTitle(event: BrainWorkResultEvent): string {
 }
 
 export function brainWorkEventSummary(event: BrainWorkResultEvent): string {
-  return event.summary.replace(
-    CANONICAL_SESSION_ID_GLOBAL,
-    "Delegated Session",
-  );
+  return event.summary
+    .replace(CANONICAL_SESSION_ID_GLOBAL, "the session")
+    .replace(/\bdelegated session\b/gi, "the session")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function brainWorkEventReviewLabel(
@@ -24,13 +25,13 @@ export function brainWorkEventReviewLabel(
 ): string {
   switch (event.review_state) {
     case "queued":
-      return "Queued for Brain review";
+      return "Needs review";
     case "reserved":
-      return "Reserved for next Brain turn";
+      return "Queued";
     case "reviewing":
-      return "Brain is reviewing";
+      return "Reviewing";
     case "resolved":
-      return "Brain resolved";
+      return "Reviewed";
   }
 }
 
@@ -39,13 +40,10 @@ export function brainWorkEventSessionLabel(
 ): string | undefined {
   switch (event.session_state) {
     case "open":
-      return "Session open";
     case "closing":
-      return "Session closing";
     case "finalized":
-      return "Session finalized";
     case "close_failed":
-      return "Session close failed";
+      return undefined;
     case "not_required":
       return undefined;
   }
@@ -56,11 +54,11 @@ export function brainWorkEventSourceLabel(
 ): string | undefined {
   const rawName = event.session_name?.trim() || "";
   if (!rawName) {
-    return event.session_id ? "Delegated Session" : undefined;
+    return undefined;
   }
   const normalized = rawName.replace(CANONICAL_SESSION_SUFFIX, "").trim();
   if (!normalized || CANONICAL_SESSION_ID.test(normalized)) {
-    return event.session_id ? "Delegated Session" : undefined;
+    return undefined;
   }
   if (
     normalized.toLowerCase() ===
@@ -98,5 +96,6 @@ export function brainWorkEventAccessibilityLabel({
   ]
     .filter(Boolean)
     .join(". ")
-    .replace(CANONICAL_SESSION_ID_GLOBAL, "Delegated Session");
+    .replace(CANONICAL_SESSION_ID_GLOBAL, "the session")
+    .replace(/\bdelegated session\b/gi, "the session");
 }

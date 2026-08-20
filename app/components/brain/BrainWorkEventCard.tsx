@@ -7,8 +7,6 @@ import { TypeScale } from "../../constants/tokens";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
-  brainWorkEventReviewLabel,
-  brainWorkEventSessionLabel,
   brainWorkEventSourceLabel,
   brainWorkEventSummary,
   brainWorkEventWorkTitle,
@@ -37,8 +35,6 @@ export function BrainWorkEventCard({
   const workTitle = brainWorkEventWorkTitle(item.event);
   const summary = brainWorkEventSummary(item.event);
   const source = brainWorkEventSourceLabel(item.event);
-  const reviewLabel = brainWorkEventReviewLabel(item.event);
-  const sessionLabel = brainWorkEventSessionLabel(item.event);
   const time = formatChatBubbleTime(item.event.occurred_at);
   const accessibilityTime = new Date(
     item.event.occurred_at,
@@ -87,43 +83,22 @@ export function BrainWorkEventCard({
         {summary}
       </Text>
 
-      <View style={styles.lifecycleRow}>
-        <View style={styles.lifecycleBadge}>
-          <Ionicons
-            name={
-              item.event.review_state === "queued"
-                ? "time-outline"
-                : item.event.review_state === "reserved"
-                  ? "bookmark-outline"
-                : item.event.review_state === "reviewing"
-                  ? "eye-outline"
-                  : "checkmark-done-outline"
-            }
-            size={12}
-            color={chrome.textMuted}
-          />
-          <Text style={styles.lifecycleText}>{reviewLabel}</Text>
+      {item.onPress ? (
+        <View style={styles.nextStep}>
+          <Text style={styles.nextStepText}>
+            {item.event.kind === "session.done"
+              ? "View details"
+              : "Open to inspect"}
+          </Text>
+          <Ionicons name="arrow-forward" size={13} color={presentation.color} />
         </View>
-        {sessionLabel ? (
-          <Text style={styles.sessionLifecycleText}>{sessionLabel}</Text>
-        ) : null}
-        {!item.event.current_result ? (
-          <Text style={styles.supersededText}>Superseded result</Text>
-        ) : null}
-      </View>
+      ) : null}
 
       <View style={styles.footer}>
         {source ? (
-          <>
-            <Ionicons
-              name="git-branch-outline"
-              size={13}
-              color={chrome.textSubtle}
-            />
-            <Text numberOfLines={1} style={styles.source}>
-              {source}
-            </Text>
-          </>
+          <Text numberOfLines={1} style={styles.source}>
+            {source}
+          </Text>
         ) : null}
         <Text style={styles.time}>{time}</Text>
       </View>
@@ -229,41 +204,24 @@ function createStyles(chrome: TerminalThemeChrome) {
       marginTop: 4,
       lineHeight: 20,
     },
-    lifecycleRow: {
-      marginTop: 8,
+    nextStep: {
+      marginTop: 10,
       flexDirection: "row",
       alignItems: "center",
-      flexWrap: "wrap",
-      gap: 6,
+      alignSelf: "flex-start",
+      gap: 5,
     },
-    lifecycleBadge: {
-      minHeight: 22,
-      paddingHorizontal: 8,
-      borderRadius: 11,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 4,
-      backgroundColor: chrome.surfaceActive,
-    },
-    lifecycleText: {
+    nextStepText: {
       ...TypeScale.caption,
-      color: chrome.textMuted,
-      fontWeight: "600",
-    },
-    sessionLifecycleText: {
-      ...TypeScale.caption,
-      color: chrome.textSubtle,
-    },
-    supersededText: {
-      ...TypeScale.caption,
-      color: chrome.textSubtle,
-      fontStyle: "italic",
+      color: chrome.text,
+      fontWeight: "700",
     },
     footer: {
       flexDirection: "row",
       alignItems: "center",
       gap: 5,
-      marginTop: 9,
+      marginTop: 11,
+      minHeight: 18,
     },
     source: {
       ...TypeScale.caption,

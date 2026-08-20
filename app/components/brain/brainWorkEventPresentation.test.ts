@@ -80,14 +80,14 @@ describe("Brain Work event source presentation", () => {
     ).toBeUndefined();
   });
 
-  test("replaces canonical Session identities in the visible summary only", () => {
+  test("removes implementation Session identities from the visible summary", () => {
     expect(
       brainWorkEventSummary(
         resultEvent({
           summary: `Inspect ${canonicalSessionID} before continuing.`,
         }),
       ),
-    ).toBe("Inspect Delegated Session before continuing.");
+    ).toBe("Inspect the session before continuing.");
   });
 
   test("uses a generic fallback instead of exposing a bare canonical identity", () => {
@@ -95,7 +95,7 @@ describe("Brain Work event source presentation", () => {
       brainWorkEventSourceLabel(
         resultEvent({ session_name: `(${canonicalSessionID})` }),
       ),
-    ).toBe("Delegated Session");
+    ).toBeUndefined();
   });
 
   test("accessibility copy never includes the canonical Session identity", () => {
@@ -118,12 +118,12 @@ describe("Brain Work event source presentation", () => {
       session_state: "open",
       current_result: true,
     });
-    expect(brainWorkEventReviewLabel(queued)).toBe("Queued for Brain review");
-    expect(brainWorkEventSessionLabel(queued)).toBe("Session open");
+    expect(brainWorkEventReviewLabel(queued)).toBe("Needs review");
+    expect(brainWorkEventSessionLabel(queued)).toBeUndefined();
 
     const reserved = resultEvent({ review_state: "reserved" });
     expect(brainWorkEventReviewLabel(reserved)).toBe(
-      "Reserved for next Brain turn",
+      "Queued",
     );
 
     const resolved = resultEvent({
@@ -131,16 +131,16 @@ describe("Brain Work event source presentation", () => {
       session_state: "finalized",
       current_result: false,
     });
-    expect(brainWorkEventReviewLabel(resolved)).toBe("Brain resolved");
-    expect(brainWorkEventSessionLabel(resolved)).toBe("Session finalized");
+    expect(brainWorkEventReviewLabel(resolved)).toBe("Reviewed");
+    expect(brainWorkEventSessionLabel(resolved)).toBeUndefined();
     const label = brainWorkEventAccessibilityLabel({
       event: resolved,
       statusLabel: "Completed",
       occurredAtLabel: "August 4, 2026 at 10:00",
     });
     expect(label).toContain("Completed");
-    expect(label).toContain("Brain resolved");
-    expect(label).toContain("Session finalized");
+    expect(label).toContain("Reviewed");
+    expect(label).not.toContain("Session finalized");
     expect(label).toContain("Superseded result");
   });
 });
