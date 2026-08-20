@@ -414,6 +414,16 @@ func TestBoundedSignalProviderDoneCompletesWorkIdempotently(t *testing.T) {
 	if !found || !row.Actionable {
 		t.Fatalf("bounded completion event = %+v found=%v", row, found)
 	}
+	lateStale, staleChanged, err := store.ApplyTurnFact(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "stale", SourceID: "lease:expiry:" + turnID, At: at.Add(10 * time.Minute),
+	})
+	if err != nil || staleChanged || lateStale.Status != watcher.TurnDone {
+		t.Fatalf("late stale after bounded completion = (%+v, %v, %v)", lateStale, staleChanged, err)
+	}
+	if staleRow, staleFound := turnEvent(t, store, pending.WorkID, "session:"+sessionID+":turn:"+turnID+":session.stale"); staleFound && staleRow.Actionable {
+		t.Fatalf("bounded completion created actionable stale card: %+v", staleRow)
+	}
 	before := item.Revision
 	replayed, replayChanged, err := store.ApplyTurnFact(done)
 	if err != nil || replayChanged || replayed.Status != watcher.TurnDone {
