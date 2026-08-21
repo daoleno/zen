@@ -913,7 +913,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	}
 	agent, ownershipErr := a.resolveOwnedAgent(agentID)
 	if ownershipErr != nil {
-		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+		return control.ErrorResponse(agentOwnershipErrorCode(ownershipErr), ownershipErr.Error())
 	}
 	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
@@ -1041,7 +1041,7 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
 	if _, ownershipErr := a.resolveOwnedAgent(agentID); ownershipErr != nil {
-		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+		return control.ErrorResponse(agentOwnershipErrorCode(ownershipErr), ownershipErr.Error())
 	}
 	if agent := a.watcher.GetAgent(agentID); agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
@@ -1076,13 +1076,20 @@ func (a *controlApp) handleAgentStatus(req control.Request) control.Response {
 			out := controlAgent(projected)
 			return control.Response{OK: true, Agent: &out, Confirmation: ownershipErr.Error()}
 		}
-		return control.ErrorResponse("agent_ownership_lost", ownershipErr.Error())
+		return control.ErrorResponse(agentOwnershipErrorCode(ownershipErr), ownershipErr.Error())
 	}
 	if agent == nil {
 		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
 	}
 	out := controlAgent(agent)
 	return control.Response{OK: true, Agent: &out}
+}
+
+func agentOwnershipErrorCode(err error) string {
+	if errors.Is(err, watcher.ErrOwnershipProbeUnavailable) {
+		return "agent_control_unavailable"
+	}
+	return "agent_ownership_lost"
 }
 
 func (a *controlApp) resolveOwnedAgent(agentID string) (*classifier.Agent, error) {

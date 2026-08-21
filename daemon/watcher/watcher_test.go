@@ -66,6 +66,41 @@ func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing
 	}
 }
 
+func TestResolveOwnedGenerationDoesNotDeprojectTransientProbeFailure(t *testing.T) {
+	w := New(time.Second)
+	sessionID := "brain-agent-transient-probe:@1"
+	w.agents[sessionID] = &classifier.Agent{
+		ID: sessionID, Delegated: true, State: classifier.StateRunning,
+		Command: "grok", Attention: "none",
+	}
+	w.agentOrder = append(w.agentOrder, sessionID)
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
+	w.targetProcessResolver = func(string) (targetProcessIdentity, bool) {
+		return targetProcessIdentity{}, false
+	}
+	input := newFakeSessionInputIO()
+	input.paneValue.generation = "pane-current"
+	w.sessionInput = newSessionInputOwner(input)
+
+	ledger := newFakeTurnLedger()
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnRunning,
+		ProcessIdentity: "same-process-generation", PaneGeneration: "pane-current",
+	})
+	w.SetTurnLedger(ledger)
+
+	if _, err := w.ResolveOwnedGeneration(sessionID); !errors.Is(err, ErrOwnershipProbeUnavailable) {
+		t.Fatalf("transient probe error = %v, want ErrOwnershipProbeUnavailable", err)
+	}
+	turn := ledger.snapshot(sessionID)
+	if turn.ControlState == TurnControlOwnershipLost || turn.Status == TurnUnknown {
+		t.Fatalf("transient probe failure was deprojected as ownership loss: %+v", turn)
+	}
+	if len(ledger.applied) != 0 {
+		t.Fatalf("transient probe failure emitted facts: %+v", ledger.applied)
+	}
+}
+
 func TestBuildWindowCommandForShellWrapsCommandInInteractiveLoginShell(t *testing.T) {
 	got := buildWindowCommandForShell("/bin/zsh", "codex --dangerously-bypass-approvals-and-sandbox")
 	want := "exec '/bin/zsh' -i -l -c 'codex --dangerously-bypass-approvals-and-sandbox'"

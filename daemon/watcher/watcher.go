@@ -416,8 +416,13 @@ func targetIdentityResolverFromCommandResolver(
 }
 
 func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, bool) {
+	identity, known, _ := w.targetForSessionProbe(sessionID)
+	return identity, known
+}
+
+func (w *Watcher) targetForSessionProbe(sessionID string) (targetProcessIdentity, bool, error) {
 	if w == nil {
-		return targetProcessIdentity{}, false
+		return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	w.mu.RLock()
@@ -426,19 +431,34 @@ func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, boo
 	resolver := w.targetCommandResolver
 	w.mu.RUnlock()
 	if !owned {
-		return targetProcessIdentity{}, false
+		return targetProcessIdentity{}, false, fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
 	}
 	durablyOwned, err := w.targetIsDurablyOwned(sessionID)
-	if err != nil || !durablyOwned {
-		return targetProcessIdentity{}, false
+	if err != nil {
+		return targetProcessIdentity{}, false, errors.Join(ErrOwnershipProbeUnavailable, err)
+	}
+	if !durablyOwned {
+		return targetProcessIdentity{}, false, fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
 	}
 	if identityResolver != nil {
-		return identityResolver(sessionID)
+		identity, known := identityResolver(sessionID)
+		if !known {
+			return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
+		}
+		return identity, true, nil
 	}
 	if resolver == nil {
-		return w.resolveTargetProcessIdentity(sessionID)
+		identity, known := w.resolveTargetProcessIdentity(sessionID)
+		if !known {
+			return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
+		}
+		return identity, true, nil
 	}
-	return targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+	identity, known := targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+	if !known {
+		return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
+	}
+	return identity, true, nil
 }
 
 // ResolveOwnedGeneration proves one current Zen-owned target generation. It
@@ -483,8 +503,10 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 	if err == nil {
 		return owned, nil
 	}
-	if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
-		err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+	if !errors.Is(err, ErrOwnershipProbeUnavailable) {
+		if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+		}
 	}
 	return OwnedGeneration{}, err
 }
@@ -536,13 +558,16 @@ func (w *Watcher) ResolveDelegatedControl(sessionID string) (OwnedGeneration, er
 }
 
 func (w *Watcher) resolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
-	identity, known := w.targetForSession(sessionID)
+	identity, known, probeErr := w.targetForSessionProbe(sessionID)
 	if !known {
-		return OwnedGeneration{}, fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+		if probeErr != nil {
+			return OwnedGeneration{}, probeErr
+		}
+		return OwnedGeneration{}, ErrOwnershipProbeUnavailable
 	}
 	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
 	if paneGeneration == "" {
-		return OwnedGeneration{}, fmt.Errorf("owned tmux pane generation is unavailable: %s", sessionID)
+		return OwnedGeneration{}, fmt.Errorf("%w: tmux pane generation is temporarily unavailable for %s", ErrOwnershipProbeUnavailable, sessionID)
 	}
 	processIdentity := delegatedTurnIdentity(identity)
 	sum := sha256.Sum256([]byte(processIdentity + "\x00" + paneGeneration))
@@ -993,6 +1018,11 @@ const (
 // ErrDelegatedResourceRelease means the tmux window is gone (or was already
 // missing) but delegated resource cleanup failed and remains retryable.
 var ErrDelegatedResourceRelease = errors.New("delegated resource release failed")
+
+// ErrOwnershipProbeUnavailable means the current tmux/process snapshot was
+// inconclusive. It must not be reduced to ownership_lost: the target may still
+// be alive and a later probe can prove the same generation.
+var ErrOwnershipProbeUnavailable = errors.New("delegated Session ownership probe is temporarily unavailable")
 
 // ErrUnownedTmuxTarget means a target exists on the shared host server but
 // lacks Zen's durable ownership marker. Mutating it would cross the lifecycle
@@ -2765,8 +2795,10 @@ func (w *Watcher) SubmitDelegatedInput(
 	)
 	if err != nil {
 		if errors.Is(err, errDelegatedProviderOwnershipMismatch) {
-			if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
-				err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+			if !errors.Is(err, ErrOwnershipProbeUnavailable) {
+				if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
+					err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
+				}
 			}
 		} else {
 			_, _ = w.ResolveOwnedGeneration(sessionID)
