@@ -30,6 +30,13 @@ type ProviderConversationReader struct {
 	// cached conversation without any sqlite3 spawn.
 	openCodeOwnedCandidate openCodeSessionCandidate
 
+	// openCodeOwnedFromLaunch records that the pinned session id was declared
+	// by an explicit -s/--session ses_* launch token. Declared ownership
+	// outranks temporal origin: a resumed thread legitimately predates the
+	// Zen agent process, so launch-owned pins are never released by the
+	// started-at origin gate that governs discovered bindings.
+	openCodeOwnedFromLaunch bool
+
 	// openCodeLastVersion is the shared cache content version of the last
 	// returned OpenCode conversation. The server skips serialization work when
 	// the version is unchanged. 0 means unknown (no OpenCode load yet).

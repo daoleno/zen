@@ -231,7 +231,11 @@ func TestOpenCodeBindsRootNotChildSession(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 
-	// startedAt aligned with the child: the root parent must still win.
+	// startedAt aligned with the child leaves the root window empty, but the
+	// parent row was created before the agent started: it provably belongs to
+	// a different conversation instance, so the origin gate refuses instead
+	// of projecting a previous thread into this agent. Children still never
+	// bind — the refusal is session_not_found, not a child binding.
 	reader := NewProviderConversationReader()
 	candidate, ok, err := reader.findOpenCodeSession(classifier.Agent{
 		Cwd:       "/repo",
@@ -241,8 +245,8 @@ func TestOpenCodeBindsRootNotChildSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || candidate.ID != "ses_parent" {
-		t.Fatalf("child session must never bind: ok=%v candidate=%+v", ok, candidate)
+	if ok {
+		t.Fatalf("pre-start root must not bind a known-start agent: %+v", candidate)
 	}
 
 	// startedAt zero: freshest root fallback still binds the parent, not the
@@ -296,6 +300,159 @@ func TestOpenCodeBindFreshestRootWhenStartWindowMisses(t *testing.T) {
 	}
 	if !ok || candidate.ID != "ses_new" {
 		t.Fatalf("pinned binding must not cross-bind: ok=%v candidate=%+v", ok, candidate)
+	}
+}
+
+// A newly created Zen OpenCode session races its own provider row: OpenCode
+// writes the session row lazily, so early polls see only the previous
+// session's row. A row created before the agent started provably belongs to
+// another conversation and must never bind — not even as the freshest root —
+// and once the agent's own row appears it must win over the older row even
+// when the older row was updated more recently.
+func TestOpenCodeNewSessionNeverBindsPreStartRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_prev", Directory: "/repo", CreatedMS: started.Add(-time.Hour).UnixMilli(), UpdatedMS: started.Add(time.Second).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"role":"user"}`},
+	}, []openCodePartSeed{
+		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
+	})
+	t.Setenv("ZEN_OPENCODE_DB", dbPath)
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{Cwd: "/repo", Command: "opencode", StartedAt: started}
+
+	conversation, err := reader.Load(agent, AgentProviderOpenCode, started.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Available {
+		t.Fatalf("new session must not project a pre-start row: %+v", conversation)
+	}
+
+	// The agent's own row appears. ses_prev stays more recently updated, so a
+	// freshest-root rule alone would still pick the wrong thread.
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_prev", Directory: "/repo", CreatedMS: started.Add(-time.Hour).UnixMilli(), UpdatedMS: started.Add(time.Minute).UnixMilli()},
+		{ID: "ses_own", Directory: "/repo", CreatedMS: started.Add(2 * time.Second).UnixMilli(), UpdatedMS: started.Add(3 * time.Second).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"role":"user"}`},
+		{ID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(2500 * time.Millisecond).UnixMilli(), Data: `{"role":"user"}`},
+	}, []openCodePartSeed{
+		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
+		{ID: "p_own", MessageID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(2500 * time.Millisecond).UnixMilli(), Data: `{"type":"text","text":"own session history"}`},
+	})
+	conversation, err = reader.Load(agent, AgentProviderOpenCode, started.Add(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conversation.Available || conversation.SessionID != "ses_own" {
+		t.Fatalf("own row must bind once written: available=%v session=%q", conversation.Available, conversation.SessionID)
+	}
+	for _, event := range conversation.Events {
+		if event.Body == "previous session history" {
+			t.Fatalf("previous session history leaked into new session: %#v", conversation.Events)
+		}
+	}
+}
+
+// A discovered pin established while started-at evidence was unavailable must
+// release as soon as a known start contradicts it — including through the
+// unchanged-stamp fast path — so the subscription self-heals to the agent's
+// own row instead of serving another conversation forever.
+func TestOpenCodePinReleasesWhenStartEvidenceArrivesLate(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_prev", Directory: "/repo", CreatedMS: started.Add(-time.Hour).UnixMilli(), UpdatedMS: started.Add(-30 * time.Minute).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"role":"user"}`},
+	}, []openCodePartSeed{
+		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
+	})
+	t.Setenv("ZEN_OPENCODE_DB", dbPath)
+	reader := NewProviderConversationReader()
+
+	// No start evidence yet: legacy fallback binds the freshest root.
+	conversation, err := reader.Load(classifier.Agent{
+		Cwd:     "/repo",
+		Command: "opencode",
+	}, AgentProviderOpenCode, started.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conversation.Available || conversation.SessionID != "ses_prev" {
+		t.Fatalf("zero-start fallback must bind freshest root: %+v", conversation)
+	}
+
+	// Start evidence arrives with the DB stamp unchanged: the fast path must
+	// not keep serving the pre-start pin.
+	conversation, err = reader.Load(classifier.Agent{
+		Cwd:       "/repo",
+		Command:   "opencode",
+		StartedAt: started,
+	}, AgentProviderOpenCode, started.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Available {
+		t.Fatalf("late start evidence must release the pre-start pin: %+v", conversation)
+	}
+
+	// The agent's own row appears: the subscription heals onto it.
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_prev", Directory: "/repo", CreatedMS: started.Add(-time.Hour).UnixMilli(), UpdatedMS: started.Add(-30 * time.Minute).UnixMilli()},
+		{ID: "ses_own", Directory: "/repo", CreatedMS: started.Add(time.Second).UnixMilli(), UpdatedMS: started.Add(2 * time.Second).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"role":"user"}`},
+		{ID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(1500 * time.Millisecond).UnixMilli(), Data: `{"role":"user"}`},
+	}, []openCodePartSeed{
+		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
+		{ID: "p_own", MessageID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(1500 * time.Millisecond).UnixMilli(), Data: `{"type":"text","text":"own session history"}`},
+	})
+	conversation, err = reader.Load(classifier.Agent{
+		Cwd:       "/repo",
+		Command:   "opencode",
+		StartedAt: started,
+	}, AgentProviderOpenCode, started.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conversation.Available || conversation.SessionID != "ses_own" {
+		t.Fatalf("released pin must rebind to the agent's own row: available=%v session=%q", conversation.Available, conversation.SessionID)
+	}
+}
+
+// An explicit -s ses_* launch token declares ownership: a resumed thread
+// legitimately predates the Zen agent process, so the origin gate must never
+// release a launch-owned binding.
+func TestOpenCodeLaunchTokenOwnsPreStartRow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 8, 6, 0, 0, 10, 0, time.UTC)
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_resumed", Directory: "/repo", CreatedMS: started.Add(-time.Hour).UnixMilli(), UpdatedMS: started.Add(-30 * time.Minute).UnixMilli()},
+		{ID: "ses_other", Directory: "/repo", CreatedMS: started.Add(time.Second).UnixMilli(), UpdatedMS: started.Add(2 * time.Second).UnixMilli()},
+	}, []openCodeMessageSeed{
+		{ID: "msg_resumed_user", SessionID: "ses_resumed", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"role":"user"}`},
+	}, []openCodePartSeed{
+		{ID: "p_resumed", MessageID: "msg_resumed_user", SessionID: "ses_resumed", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"resumed history"}`},
+	})
+	t.Setenv("ZEN_OPENCODE_DB", dbPath)
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{
+		Cwd:       "/repo",
+		Command:   "opencode -s ses_resumed",
+		StartedAt: started,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		conversation, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !conversation.Available || conversation.SessionID != "ses_resumed" {
+			t.Fatalf("launch token must own its pre-start row (attempt %d): available=%v session=%q", attempt, conversation.Available, conversation.SessionID)
+		}
 	}
 }
 

@@ -21,6 +21,13 @@ const (
 	opencodeConversationSource = "opencode_db"
 	maxOpenCodeConversationAge = 72 * time.Hour
 
+	// openCodeStartOriginSlack is how far before the Zen agent's start a
+	// provider session may be created and still belong to it. It matches the
+	// lower bound of the StartedAt admission window: the agent's own thread is
+	// created at or after its process start, and a row created earlier than
+	// that (minus clock slack) provably belongs to a different conversation.
+	openCodeStartOriginSlack = 5 * time.Second
+
 	// openCodeCacheMaxSessions bounds the process-wide parsed-conversation
 	// cache so many bindings cannot accumulate unbounded row text.
 	openCodeCacheMaxSessions = 8
@@ -56,8 +63,12 @@ func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent clas
 
 	// Stamp-first fast path: an unchanged DB stamp means no session row moved,
 	// so the pinned session and the cached conversation are both still valid.
-	// This poll performs zero sqlite3 spawns and zero full-history work.
-	if owned := strings.TrimSpace(r.openCodeOwnedSessionID); owned != "" {
+	// This poll performs zero sqlite3 spawns and zero full-history work. The
+	// fast path is origin-gated like every other binding path: a pinned row
+	// that predates a now-known agent start must re-run discovery instead of
+	// serving the previously bound conversation forever.
+	if owned := strings.TrimSpace(r.openCodeOwnedSessionID); owned != "" &&
+		r.openCodePinRespectsAgentStart(agent.StartedAt) {
 		conversation, version, changedIDs, stale, err := openCodeConversationCache.read(dbPath, owned)
 		if err != nil {
 			r.resetSource()
@@ -96,6 +107,17 @@ func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent clas
 	return r.openCodeConversationResult(conversation, candidate, dbPath), nil
 }
 
+// openCodePinRespectsAgentStart reports whether the current pin may keep
+// serving under the agent's started-at evidence. Launch-declared pins are
+// exempt (a resumed thread predates the process by design); discovered pins
+// must never predate the agent they were bound to.
+func (r *ProviderConversationReader) openCodePinRespectsAgentStart(startedAt time.Time) bool {
+	if r.openCodeOwnedFromLaunch || startedAt.IsZero() {
+		return true
+	}
+	return !openCodeCandidatePredatesAgentStart(r.openCodeOwnedCandidate, startedAt)
+}
+
 func (r *ProviderConversationReader) openCodeConversationResult(conversation CodexConversation, candidate openCodeSessionCandidate, dbPath string) CodexConversation {
 	conversation.Available = true
 	conversation.Source = opencodeConversationSource
@@ -111,15 +133,19 @@ func (r *ProviderConversationReader) openCodeConversationResult(conversation Cod
 
 func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent, now time.Time) (openCodeSessionCandidate, bool, error) {
 	if owned := strings.TrimSpace(r.openCodeOwnedSessionID); owned != "" {
-		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, agent.Cwd); ok {
+		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, agent.Cwd); ok &&
+			r.openCodePinRespectsAgentStart(agent.StartedAt) {
 			return candidate, true, nil
 		}
 		r.openCodeOwnedSessionID = ""
 		r.openCodeOwnedCandidate = openCodeSessionCandidate{}
+		r.openCodeOwnedFromLaunch = false
 	}
 	if owned := OpenCodeOwnedSessionID(agent.Command); owned != "" {
 		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, agent.Cwd); ok {
 			r.openCodeOwnedSessionID = candidate.ID
+			r.openCodeOwnedCandidate = candidate
+			r.openCodeOwnedFromLaunch = true
 			return candidate, true, nil
 		}
 		return openCodeSessionCandidate{}, false, nil
@@ -140,19 +166,34 @@ func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent,
 	if len(openCodeWindowCandidates(fresh, agent.StartedAt)) > 0 {
 		// A StartedAt window exists: unique min-delta bind, else refuse.
 		if matched, ok := matchOpenCodeSessionToAgentStart(fresh, agent.StartedAt); ok {
-			r.openCodeOwnedSessionID = matched.ID
+			r.bindDiscoveredOpenCodeSession(matched)
 			return matched, true, nil
 		}
 		return openCodeSessionCandidate{}, false, nil
 	}
-	// No window candidate (startedAt zero or drifted): bind the freshest root
-	// so a live session is never reported as session_not_found and the
-	// Interface does not collapse an active transcript to Working-only.
-	if matched, ok := freshestOpenCodeRoot(fresh); ok {
-		r.openCodeOwnedSessionID = matched.ID
+	// No window candidate: the agent's own row has not appeared yet (OpenCode
+	// writes it lazily), or startedAt is unknown. A row created before the
+	// agent started provably belongs to a different conversation — binding it
+	// would project a previous session's history into this one — so the
+	// freshest-root fallback only considers rows created at or after the
+	// agent's start. With a known start and no eligible row the correct answer
+	// is session_not_found: the Interface shows the new empty conversation and
+	// the next poll binds the agent's own row as soon as OpenCode writes it.
+	eligible := openCodeCandidatesNotBeforeStart(fresh, agent.StartedAt)
+	if matched, ok := freshestOpenCodeRoot(eligible); ok {
+		r.bindDiscoveredOpenCodeSession(matched)
 		return matched, true, nil
 	}
 	return openCodeSessionCandidate{}, false, nil
+}
+
+// bindDiscoveredOpenCodeSession pins a session proven by temporal discovery
+// (started-at window or post-start fallback). The pin never carries launch
+// provenance, so a later known started-at can still release it.
+func (r *ProviderConversationReader) bindDiscoveredOpenCodeSession(candidate openCodeSessionCandidate) {
+	r.openCodeOwnedSessionID = candidate.ID
+	r.openCodeOwnedCandidate = candidate
+	r.openCodeOwnedFromLaunch = false
 }
 
 func (r *ProviderConversationReader) revalidateOpenCodeOwnedSession(sessionID, agentCWD string) (openCodeSessionCandidate, bool) {
@@ -935,6 +976,34 @@ func openCodeWindowCandidates(candidates []openCodeSessionCandidate, startedAt t
 	return out
 }
 
+// openCodeCandidatePredatesAgentStart reports whether a provider session row
+// was created before the Zen agent started (beyond shared slack). The agent's
+// own thread is always created at or after its process start, so a pre-start
+// row can never be this agent's transcript. Unknown evidence on either side
+// (zero startedAt or zero CreatedAt) never claims precedence.
+func openCodeCandidatePredatesAgentStart(candidate openCodeSessionCandidate, startedAt time.Time) bool {
+	if startedAt.IsZero() || candidate.CreatedAt.IsZero() {
+		return false
+	}
+	return candidate.CreatedAt.UTC().Before(startedAt.UTC().Add(-openCodeStartOriginSlack))
+}
+
+// openCodeCandidatesNotBeforeStart filters out rows that provably predate the
+// agent. With an unknown start every fresh root stays eligible, preserving
+// the legacy freshest-root behavior for agents without start evidence.
+func openCodeCandidatesNotBeforeStart(candidates []openCodeSessionCandidate, startedAt time.Time) []openCodeSessionCandidate {
+	if startedAt.IsZero() || len(candidates) == 0 {
+		return candidates
+	}
+	eligible := make([]openCodeSessionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !openCodeCandidatePredatesAgentStart(candidate, startedAt) {
+			eligible = append(eligible, candidate)
+		}
+	}
+	return eligible
+}
+
 func matchOpenCodeSessionToAgentStart(candidates []openCodeSessionCandidate, startedAt time.Time) (openCodeSessionCandidate, bool) {
 	window := openCodeWindowCandidates(candidates, startedAt)
 	if len(window) == 0 {
@@ -968,8 +1037,10 @@ func matchOpenCodeSessionToAgentStart(candidates []openCodeSessionCandidate, sta
 }
 
 // freshestOpenCodeRoot binds the most recently updated fresh root session
-// when the StartedAt window is unavailable (zero or drifted). Equal-updated
-// candidates refuse as ambiguous rather than guessing.
+// when the StartedAt window is unavailable. Callers pre-filter the
+// candidates: every row here must already be eligible under the agent's
+// started-at origin gate. Equal-updated candidates refuse as ambiguous
+// rather than guessing.
 func freshestOpenCodeRoot(candidates []openCodeSessionCandidate) (openCodeSessionCandidate, bool) {
 	if len(candidates) == 0 {
 		return openCodeSessionCandidate{}, false
