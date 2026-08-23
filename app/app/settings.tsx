@@ -477,9 +477,6 @@ export default function SettingsScreen() {
             {servers.length === 0 ? (
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyText}>No paired daemons yet</Text>
-                <Text style={styles.emptyHint}>
-                  Pair your first server below
-                </Text>
               </View>
             ) : (
               servers.map((server) => {
@@ -697,9 +694,6 @@ export default function SettingsScreen() {
               </View>
               <View style={styles.addServerCopy}>
                 <Text style={styles.addServerTitle}>Add Server</Text>
-                <Text style={styles.addServerSubtitle}>
-                  Pair via link or QR code
-                </Text>
               </View>
               <Ionicons
                 name="chevron-forward"
@@ -778,9 +772,6 @@ export default function SettingsScreen() {
               );
             })}
           </View>
-          <Text style={styles.appearanceHint}>
-            System follows this device. Light and Dark stay fixed until changed.
-          </Text>
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
@@ -823,9 +814,6 @@ export default function SettingsScreen() {
             <View style={styles.aboutRow}>
               <View style={styles.aboutCopy}>
                 <Text style={styles.aboutTitle}>Zen</Text>
-                <Text style={styles.aboutDescription}>
-                  Mobile-native agent control plane
-                </Text>
               </View>
               <Text style={styles.version}>Version {appVersion}</Text>
             </View>
@@ -955,10 +943,6 @@ export default function SettingsScreen() {
                     <View style={styles.scannerMaskBottom} />
                   </View>
                 </View>
-
-                <Text style={styles.scannerHelpText}>
-                  Scan the QR, or choose an image from this device.
-                </Text>
               </>
             )}
 
@@ -1333,11 +1317,11 @@ function TelegramConnectionCard({
         </View>
         <View style={styles.telegramHeadingCopy}>
           <Text style={styles.telegramTitle}>Telegram</Text>
-          <Text style={styles.telegramIdentity} numberOfLines={1}>
-            {status?.bot_username
-              ? `@${status.bot_username}`
-              : "Current daemon"}
-          </Text>
+          {status?.bot_username ? (
+            <Text style={styles.telegramIdentity} numberOfLines={1}>
+              @{status.bot_username}
+            </Text>
+          ) : null}
         </View>
         <View
           style={[styles.telegramState, { borderColor: stateColor }]}
@@ -2003,17 +1987,11 @@ function createStyles(theme: ResolvedZenTheme) {
     emptyCard: {
       paddingHorizontal: 16,
       paddingVertical: 22,
-      gap: 2,
     },
     emptyText: {
       ...UiTextMetrics,
       ...TypeScale.compact,
       color: colors.textPrimary,
-    },
-    emptyHint: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
     },
     addServerRow: {
       minHeight: 60,
@@ -2041,12 +2019,6 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.compact,
       color: colors.textPrimary,
     },
-    addServerSubtitle: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-    },
-
     appearanceGroup: {
       overflow: "hidden",
       borderRadius: Radii.sm,
@@ -2080,13 +2052,6 @@ function createStyles(theme: ResolvedZenTheme) {
       color: colors.accentStrong,
       fontFamily: Typography.uiFontMedium,
       fontWeight: "500",
-    },
-    appearanceHint: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      marginTop: 8,
-      paddingHorizontal: 2,
-      color: colors.textTertiary,
     },
     aboutGroup: {
       borderRadius: Radii.sm,
@@ -2362,13 +2327,6 @@ function createStyles(theme: ResolvedZenTheme) {
       borderRightWidth: 4,
       borderColor: SCANNER_COLORS.focusRing,
       borderBottomRightRadius: Radii.md,
-    },
-    scannerHelpText: {
-      ...UiTextMetrics,
-      ...TypeScale.compact,
-      marginTop: 12,
-      color: SCANNER_COLORS.textSecondary,
-      textAlign: "center",
     },
     scannerActions: {
       flexDirection: "row",
