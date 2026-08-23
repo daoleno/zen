@@ -13,7 +13,7 @@ import (
 // Exactly one canonical owner exists for every accepted delegated turn: a
 // durable ledger record in the Brain lifecycle store. Every lifecycle
 // transition is applied by one reducer (brain.Store.ApplyTurnFact) over that
-// record; Work status, outbox events, and the Session projection are derived
+// record; Work status, append-only Events, and the Session projection are derived
 // from canonical status only. The watcher is provider-neutral: brain.Store
 // implements TurnLedger structurally (brain imports watcher, never the
 // reverse).
@@ -218,7 +218,7 @@ type TurnLedger interface {
 	// when the session has no accepted-turn ledger record.
 	Turn(sessionID string) (TurnSnapshot, bool, error)
 	// ApplyTurnFact applies exactly one observation through the single
-	// reducer and persists turn + derived Work + outbox event atomically.
+	// reducer and persists turn + derived Work + audit Event atomically.
 	// A replayed or reordered fact (same deterministic FactID) is a no-op.
 	ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error)
 	// ApplyDelegatedTurnProgress atomically matches one Control fact to the
@@ -285,14 +285,9 @@ type InputAdmission struct {
 	BaselineActivityID string
 	// SignalProtocol is persisted before provider mutation only when this
 	// submission's ProposedTurnID was included in the delegated prompt.
-	SignalProtocol bool
-	Purpose        string
-	PurposeID      string
-	// TerminalEvidenceID authorizes the atomic same-Session recovery when the
-	// exact signal-owned turn is blocked but the currently observed provider
-	// activity is terminal. It is the provider activity identity, never a
-	// synthesized receipt or projection identity.
-	TerminalEvidenceID string
+	SignalProtocol     bool
+	Purpose            string
+	PurposeID          string
 	State              InputAdmissionState
 	ResolvedTurnID     string
 	ResolvedActivityID string

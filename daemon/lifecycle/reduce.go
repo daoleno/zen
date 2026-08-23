@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -74,7 +73,6 @@ func Reduce(prev *State, ev Event) *State {
 		s.Status = StatusCancelled
 		now := ev.At
 		s.TerminalAt = &now
-		s.Outbox = nil
 		s.Review = nil
 
 	case KWorkCompleted:
@@ -87,11 +85,10 @@ func Reduce(prev *State, ev Event) *State {
 		s.Status = StatusDone
 		now := ev.At
 		s.TerminalAt = &now
-		s.Outbox = nil
 		s.Review = nil
 
 	case KAdmissionPrepared:
-		if terminal(s) || ev.TurnToken == "" || s.Admission(ev.TurnToken) != nil || s.ActiveAdmission() != nil {
+		if terminal(s) || ev.TurnToken == "" || s.AdmissionByToken(ev.TurnToken) != nil || s.ActiveAdmission() != nil {
 			return noop(s, ev)
 		}
 		p := payload[AdmissionPreparedPayload](ev)
@@ -106,7 +103,7 @@ func Reduce(prev *State, ev Event) *State {
 			// deterministic.
 			attemptedAt = ev.At
 		}
-		s.Admissions = append(s.Admissions, &AdmissionState{
+		s.Admission = &AdmissionState{
 			TurnToken: ev.TurnToken, SessionID: p.SessionID, Receipt: p.Receipt,
 			ClaimToken: p.ClaimToken, PayloadSHA256: p.PayloadSHA256,
 			ProcessIdentity: p.ProcessIdentity, PaneGeneration: p.PaneGeneration,
@@ -116,10 +113,10 @@ func Reduce(prev *State, ev Event) *State {
 			TranscriptProvider: p.TranscriptProvider, TranscriptFlag: p.TranscriptFlag, TranscriptPath: p.TranscriptPath,
 			Purpose: p.Purpose, PurposeID: p.PurposeID,
 			Status: AdmissionPrepared, PreparedAt: ev.At,
-		})
+		}
 
 	case KAdmissionAmbiguous:
-		a := s.Admission(ev.TurnToken)
+		a := s.AdmissionByToken(ev.TurnToken)
 		if a == nil || a.Status != AdmissionPrepared {
 			return noop(s, ev)
 		}
@@ -128,7 +125,7 @@ func Reduce(prev *State, ev Event) *State {
 		a.Reason = p.Reason
 
 	case KAdmissionRearmed:
-		a := s.Admission(ev.TurnToken)
+		a := s.AdmissionByToken(ev.TurnToken)
 		if a == nil || a.Status != AdmissionAborted {
 			return noop(s, ev)
 		}
@@ -139,7 +136,7 @@ func Reduce(prev *State, ev Event) *State {
 		a.AttemptedAt = p.AttemptedAt
 
 	case KAdmissionAccepted:
-		a := s.Admission(ev.TurnToken)
+		a := s.AdmissionByToken(ev.TurnToken)
 		if a == nil || (a.Status != AdmissionPrepared && a.Status != AdmissionAmbiguous &&
 			!(a.Status == AdmissionAccepted && a.ActivityID == "")) {
 			return noop(s, ev)
@@ -154,7 +151,7 @@ func Reduce(prev *State, ev Event) *State {
 		a.AdmissionCursor, a.AdmissionAt, a.ResultTurnToken = p.AdmissionCursor, p.AdmissionAt, p.ResultTurnToken
 
 	case KAdmissionAborted:
-		a := s.Admission(ev.TurnToken)
+		a := s.AdmissionByToken(ev.TurnToken)
 		if a == nil || (a.Status != AdmissionPrepared && a.Status != AdmissionAmbiguous) {
 			return noop(s, ev)
 		}
@@ -170,9 +167,6 @@ func Reduce(prev *State, ev Event) *State {
 		token := ev.TurnToken
 		if token == "" || p.SessionID == "" {
 			return noop(s, ev)
-		}
-		if s.turnByToken(token) != nil {
-			return noop(s, ev) // I5: token admits once
 		}
 		if s.Attempt != nil {
 			// One active Attempt (I2). Admission is rejected unless it
@@ -190,16 +184,11 @@ func Reduce(prev *State, ev Event) *State {
 			Delegated:     p.Delegated,
 			Generation:    s.Fence,
 			TurnToken:     token,
+			FollowUpOf:    p.FollowUpOf,
+			AdmittedAt:    ev.At,
 			LeaseDeadline: ev.At.Add(LeaseGrace),
 			LeaseEpoch:    0,
 		}
-		s.Attempts = append(s.Attempts, &AttemptRecord{
-			Token:      token,
-			SessionID:  p.SessionID,
-			Generation: ev.Fence,
-			FollowUpOf: p.FollowUpOf,
-			AdmittedAt: ev.At,
-		})
 		s.Status = StatusRunning
 
 	case KTurnHeartbeat:
@@ -221,20 +210,14 @@ func Reduce(prev *State, ev Event) *State {
 		s.Attempt.LeaseDeadline = ev.At.Add(LeaseGrace)
 
 	case KTurnDone:
-		upgrade := false
-		if !eventMatchesAttempt(s, ev) {
-			t := s.turnByToken(ev.TurnToken)
-			latest := len(s.Attempts) > 0 && s.Attempts[len(s.Attempts)-1].Token == ev.TurnToken
-			if t == nil || t.Outcome != "lost" || !latest || s.Attempt != nil || terminal(s) {
-				return noop(s, ev)
-			}
-			// Authoritative terminal upgrades a provisional loss (C.2.4): the
-			// provisional actionable Event remains stable and is strengthened by
-			// the exact evidence below.
-			upgrade = true
+		upgrade := !eventMatchesAttempt(s, ev)
+		if upgrade && (s.Attempt != nil || terminal(s) || s.Review == nil ||
+			s.Review.Ref != string(ev.TurnToken) ||
+			(s.Review.Reason != "turn_lost" && s.Review.Reason != "lease_expired")) {
+			return noop(s, ev)
 		}
 		p := payload[DonePayload](ev)
-		settleTurnUpgrade(s, ev, "done", p.OK, p.Summary, p.CriteriaMet, upgrade)
+		s.LastSummary = p.Summary
 		releaseAttempt(s, ev.At)
 		if upgrade && s.Review != nil {
 			// Keep the first unresolved actionable Event as the stable review/card
@@ -254,7 +237,7 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		p := payload[RelinquishedPayload](ev)
-		settleTurn(s, ev, "reviewed", true, p.Reason, false)
+		s.LastSummary = p.Reason
 		releaseAttempt(s, ev.At)
 		s.Status = StatusQueued
 
@@ -263,18 +246,10 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		p := payload[LostPayload](ev)
-		settleTurn(s, ev, "lost", false, p.Reason, false)
+		s.LastSummary = p.Reason
 		releaseAttempt(s, ev.At)
-		s.ConsecutiveLost++
-		if s.ConsecutiveLost >= MaxConsecutiveLost {
-			s.Status = StatusBlocked
-			openReview(s, ev, "turn_lost", string(ev.TurnToken))
-		} else {
-			// Automatic re-takeover: queued work is immediately eligible for a
-			// fresh admission by the dispatcher/supervisor.
-			s.Status = StatusQueued
-			openReview(s, ev, "turn_lost", string(ev.TurnToken))
-		}
+		s.Status = StatusBlocked
+		openReview(s, ev, "turn_lost", string(ev.TurnToken))
 
 	case KLeaseExpired:
 		if !eventMatchesAttempt(s, ev) {
@@ -312,16 +287,16 @@ func Reduce(prev *State, ev Event) *State {
 		if p.EventID == "" {
 			return noop(s, ev)
 		}
-		outboxID := reviewOutboxID(s.ID, p.EventID)
-		if outboxFind(s, outboxID) == nil {
-			s.Outbox = append(s.Outbox, &OutboxEntry{
-				ID: outboxID, Reason: "review", TargetThreadID: s.SourceThreadID, CreatedAt: ev.At,
-			})
-		}
 		if terminal(s) || s.Review != nil {
-			return noop(s, ev) // terminal notification only; otherwise first actionable Event wins
+			return noop(s, ev)
 		}
-		s.Review = &ReviewState{EventID: p.EventID, OutboxID: outboxID, Reason: p.Reason, Ref: p.Ref, OpenedAt: ev.At}
+		// Opening the exact review consumes any parked Wake in the same
+		// canonical Event and revision.
+		s.Wake = nil
+		if s.Status == StatusWaiting {
+			s.Status = StatusQueued
+		}
+		s.Review = &ReviewState{EventID: p.EventID, Reason: p.Reason, Ref: p.Ref, OpenedAt: ev.At}
 
 	case KReviewClaimed:
 		if s.Review == nil {
@@ -348,13 +323,6 @@ func Reduce(prev *State, ev Event) *State {
 		}
 		now := ev.At
 		s.Review.Handler.DeliveredAt = &now
-		if entry := outboxFind(s, s.Review.OutboxID); entry != nil {
-			entry.DispatchedAt = &now
-			entry.DispatchResult = DispatchSuccess
-			entry.DispatchError = ""
-			entry.LastError = ""
-			entry.NextAttemptAt = nil
-		}
 
 	case KReviewReleased:
 		if s.Review == nil || s.Review.Handler == nil {
@@ -389,27 +357,23 @@ func Reduce(prev *State, ev Event) *State {
 		if p.EventID != s.Review.EventID {
 			return noop(s, ev)
 		}
-		resolvedOutboxID := s.Review.OutboxID
 		s.Review = nil
-		removeOutbox(s, resolvedOutboxID)
 		switch p.Disposition {
 		case DispositionComplete:
 			releaseAttempt(s, ev.At)
 			s.Status = StatusDone
 			now := ev.At
 			s.TerminalAt = &now
-			s.Outbox = nil
 			s.Wake = nil
 		case DispositionCancel:
 			releaseAttempt(s, ev.At)
 			s.Status = StatusCancelled
 			now := ev.At
 			s.TerminalAt = &now
-			s.Outbox = nil
 		case DispositionWait:
 			if s.Attempt == nil {
 				s.Wake = &WakeState{
-					Kind: wakeOr(p.WakeKind, WakeUserInput), Ref: p.WakeRef,
+					Kind: p.WakeKind, Ref: p.WakeRef,
 					Since: ev.At, NextAttemptAt: p.NextAttemptAt,
 				}
 				s.Status = StatusWaiting
@@ -418,24 +382,6 @@ func Reduce(prev *State, ev Event) *State {
 			if s.Attempt == nil && s.Status != StatusWaiting {
 				s.Status = StatusQueued
 			}
-		}
-
-	case KOutboxDispatch:
-		p := payload[OutboxDispatchPayload](ev)
-		entry := outboxFind(s, p.EntryID)
-		if entry == nil {
-			return noop(s, ev)
-		}
-		now := ev.At
-		entry.DispatchedAt = &now
-		entry.DispatchResult = p.Result
-		entry.DispatchError = p.Error
-		entry.LastError = p.Error
-		entry.NextAttemptAt = nil
-		if p.Result == DispatchRetryable {
-			entry.Attempts++
-			next := ev.At.Add(dispatchBackoff(entry.Attempts))
-			entry.NextAttemptAt = &next
 		}
 
 	default:
@@ -477,32 +423,6 @@ func currentAttempt(s *State, identity AttemptIdentity) bool {
 		s.Attempt.TurnToken == identity.TurnToken && s.Attempt.Generation == identity.Fence
 }
 
-func settleTurn(s *State, ev Event, outcome string, ok bool, summary string, criteriaMet bool) {
-	settleTurnUpgrade(s, ev, outcome, ok, summary, criteriaMet, false)
-}
-
-// settleTurnUpgrade applies first-terminal-wins (I5) unless upgrade names an
-// authoritative rewrite of a provisional loss.
-func settleTurnUpgrade(s *State, ev Event, outcome string, ok bool, summary string, criteriaMet bool, upgrade bool) {
-	t := s.turnByToken(ev.TurnToken)
-	if t == nil {
-		return
-	}
-	if t.SettledAt != nil {
-		if !upgrade || t.Outcome != "lost" {
-			return // I5: first terminal wins
-		}
-	}
-	now := ev.At
-	if t.SettledAt == nil {
-		t.SettledAt = &now
-	}
-	t.Outcome = outcome
-	t.OK = ok
-	t.Summary = summary
-	t.CriteriaMet = criteriaMet
-}
-
 func releaseAttempt(s *State, at time.Time) {
 	if s.Attempt == nil {
 		return
@@ -516,27 +436,15 @@ func openReview(s *State, ev Event, reason, ref string) {
 		return
 	}
 	eventID := stableID("actionable-event", string(s.ID), ev.SourceID, reason, ref)
-	outboxID := reviewOutboxID(s.ID, eventID)
 	s.Review = &ReviewState{
 		EventID:  eventID,
-		OutboxID: outboxID,
 		Reason:   reason,
 		Ref:      ref,
 		OpenedAt: ev.At,
 	}
-	if outboxFind(s, outboxID) == nil {
-		s.Outbox = append(s.Outbox, &OutboxEntry{
-			ID: outboxID, Reason: "review", TargetThreadID: s.SourceThreadID, CreatedAt: ev.At,
-		})
-	}
-}
-
-func reviewOutboxID(workID WorkID, ref string) string {
-	return stableID("review-outbox", string(workID), ref)
 }
 
 func applyCompletionRule(s *State, ev Event, p DonePayload) {
-	s.ConsecutiveLost = 0 // a settled done proves the pipeline worked
 	switch {
 	case !p.OK:
 		s.Status = StatusBlocked
@@ -547,7 +455,6 @@ func applyCompletionRule(s *State, ev Event, p DonePayload) {
 		s.Status = StatusDone
 		now := ev.At
 		s.TerminalAt = &now
-		s.Outbox = nil
 		s.Review = nil
 	default:
 		// An unaffirmed result awaits Brain judgment. until_done changes only
@@ -558,39 +465,7 @@ func applyCompletionRule(s *State, ev Event, p DonePayload) {
 	}
 }
 
-func outboxFind(s *State, id string) *OutboxEntry {
-	for _, e := range s.Outbox {
-		if e.ID == id {
-			return e
-		}
-	}
-	return nil
-}
-
-func removeOutbox(s *State, id string) {
-	for i, entry := range s.Outbox {
-		if entry.ID == id {
-			s.Outbox = append(s.Outbox[:i], s.Outbox[i+1:]...)
-			return
-		}
-	}
-}
-
-func wakeOr(k WakeKind, fallback WakeKind) WakeKind {
-	if k == "" {
-		return fallback
-	}
-	return k
-}
-
 func stableID(parts ...string) string {
 	h := sha256.Sum256([]byte(fmt.Sprint(parts)))
 	return hex.EncodeToString(h[:8])
-}
-
-// TurnHistory returns settled turns oldest-first (read model).
-func (s *State) TurnHistory() []*AttemptRecord {
-	out := append([]*AttemptRecord(nil), s.Attempts...)
-	sort.Slice(out, func(i, j int) bool { return out[i].AdmittedAt.Before(out[j].AdmittedAt) })
-	return out
 }

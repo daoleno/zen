@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,20 +64,12 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 	if err != nil || state.Review == nil || state.Review.Ref != eventID {
 		t.Fatalf("review state=%+v err=%v", state, err)
 	}
-	if len(state.Outbox) != 1 || state.Outbox[0].ID != state.Review.OutboxID ||
-		state.Outbox[0].TargetThreadID != sourceThread || state.Outbox[0].Reason != "review" {
-		t.Fatalf("source-thread notification outbox=%+v review=%+v", state.Outbox, state.Review)
-	}
 	if _, duplicate, err := store.AppendWorkEvent(event); err != nil || duplicate {
 		t.Fatalf("duplicate exact event created=%v err=%v", duplicate, err)
 	}
 	delivered, _ := claimAndDeliverTestReview(t, store, "brain-host:@source")
 	if delivered.EventID != eventID || delivered.SourceThreadID != sourceThread {
 		t.Fatalf("delivered action=%+v", delivered)
-	}
-	state, _ = store.FSM().State(lifecycle.WorkID(workID))
-	if len(state.Outbox) != 1 || state.Outbox[0].DispatchResult != lifecycle.DispatchSuccess {
-		t.Fatalf("delivered notification outbox=%+v", state.Outbox)
 	}
 	failed := delegatedSubmissionCandidate(
 		workID, "Data Platform Session @failed", "turn-data-platform-failed", "failed spawn",
@@ -94,7 +85,7 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 		t.Fatal(err)
 	}
 	state, _ = store.FSM().State(lifecycle.WorkID(workID))
-	if admission := state.Admission(lifecycle.TurnToken(failedPending.ProposedTurnID)); admission == nil || admission.Status != lifecycle.AdmissionAborted {
+	if admission := state.AdmissionByToken(lifecycle.TurnToken(failedPending.ProposedTurnID)); admission == nil || admission.Status != lifecycle.AdmissionAborted {
 		t.Fatalf("proved admission failure was not durably aborted: %+v", admission)
 	}
 	pending, created, err := store.PrepareInputAdmission(delegatedSubmissionCandidate(
@@ -108,7 +99,7 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 	_, projected, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
 		WorkID: workID, HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
 		ExpectedWorkRevision: lease.DeliveryWorkRevision, Disposition: WorkDispositionContinue,
-		NextSessionID: nextAttempt, NextAction: "Continue with the named follow-up.",
+		NextSessionID: nextAttempt, NextTurnToken: nextAttemptTurn, NextAction: "Continue with the named follow-up.",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,10 +108,6 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 	if state.Attempt == nil || state.Attempt.SessionID != nextAttempt || state.Attempt.TurnToken != nextAttemptTurn ||
 		state.Review != nil || projected.AttemptSessionID != nextAttempt {
 		t.Fatalf("atomic acceptance state=%+v projected=%+v", state, projected)
-	}
-	old := state.Attempts[0]
-	if old.Token != ownerTurn || old.SettledAt == nil || old.Outcome != "reviewed" {
-		t.Fatalf("reviewed owner did not settle: %+v", old)
 	}
 	if err := store.FSM().Close(); err != nil {
 		t.Fatal(err)
@@ -132,49 +119,6 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 	replayed, _ := reopened.FSM().State(lifecycle.WorkID(workID))
 	if replayed.Attempt == nil || replayed.Attempt.SessionID != nextAttempt || replayed.Review != nil {
 		t.Fatalf("restart replay=%+v", replayed)
-	}
-}
-
-func TestAdapterPreparesTerminalNeedsInputFollowUpBeforeMutation(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, err := store.CreateWork(Work{
-		Title:            "adapter terminal follow-up",
-		Objective:        "continue same Session",
-		CompletionPolicy: CompletionUntilDone,
-		DoneCriteriaRef:  "exact follow-up completes the work",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	acceptedAt := time.Now().UTC().Add(-time.Minute)
-	bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
-		SessionID: "worker:@1", TurnID: "turn-old", AcceptedAt: acceptedAt,
-		ProcessIdentity: "process-1", PaneGeneration: "pane-1", PayloadSHA256: strings.Repeat("a", 64),
-	})
-	if _, changed, err := store.ApplyTurnFact(watcher.TurnFact{
-		SessionID: "worker:@1", TurnID: "turn-old", Class: watcher.EvidenceControl,
-		Kind: "attention", SourceID: "event-exact", Summary: "needs exact follow-up", At: acceptedAt.Add(time.Second),
-	}); err != nil || !changed {
-		t.Fatalf("attention changed=%v err=%v", changed, err)
-	}
-	claimed, ok, err := store.ClaimNextReviewAction("host:@1")
-	if err != nil || !ok {
-		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
-	}
-	candidate := delegatedSubmissionCandidate(item.ID, "worker:@1", "turn-new", "follow-up", time.Now().UTC())
-	candidate.ExistingTurnID = "turn-old"
-	candidate.TerminalEvidenceID = "provider-terminal-exact"
-	prepared, created, err := store.PrepareInputAdmission(candidate)
-	if err != nil || !created {
-		t.Fatalf("prepared=%+v created=%v err=%v", prepared, created, err)
-	}
-	st, _ := store.FSM().State(lifecycle.WorkID(item.ID))
-	if st.Attempt != nil || st.Review != nil || st.ActiveAdmission() == nil || st.ActiveAdmission().TurnToken != "turn-new" ||
-		st.Attempts[0].SettledAt == nil {
-		t.Fatalf("adapter did not atomically prepare terminal review follow-up: %+v", st)
 	}
 }
 
@@ -300,31 +244,19 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 	if err != nil || !found || current.TurnID != initialToken || !current.SignalProtocol || current.Status != watcher.TurnBlocked {
 		t.Fatalf("first reload current prompt=%+v found=%v err=%v", current, found, err)
 	}
-	// Drop the first Brain notification. The exact Event is scheduled by the
-	// daemon clock, cannot be claimed early, and survives a full Store reopen.
+	// A definitely unsent claim releases the same Review, which survives a full
+	// Store reopen without a delivery scheduler state.
 	retryState, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || retryState.Review == nil {
 		t.Fatalf("retry review state=%+v err=%v", retryState, err)
 	}
 	eventID := retryState.Review.EventID
-	retryState, err = store.FSM().RecordNotificationOutcome(
-		lifecycle.WorkID(item.ID), eventID, lifecycle.DispatchRetryable, "injected dropped Brain notification",
-	)
+	claimed, err := store.FSM().ClaimReview(lifecycle.WorkID(item.ID), "host:dropped", "host-turn:dropped")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var retryAt time.Time
-	for _, entry := range retryState.Outbox {
-		if entry.NextAttemptAt != nil {
-			retryAt = *entry.NextAttemptAt
-			break
-		}
-	}
-	if retryAt.IsZero() {
-		t.Fatalf("dropped notification has no next_attempt_at: %+v", retryState.Outbox)
-	}
-	if _, claimed, claimErr := store.ClaimNextReviewAction("host:too-early"); claimErr != nil || claimed {
-		t.Fatalf("notification claimed before next_attempt_at: claimed=%v err=%v", claimed, claimErr)
+	if _, err := store.FSM().ReleaseReview(lifecycle.WorkID(item.ID), claimed.Review.Handler.HandlerToken); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.FSM().Close(); err != nil {
 		t.Fatal(err)
@@ -333,7 +265,6 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = retryAt
 	store.now = func() time.Time { return now }
 	reloadedRetry, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || reloadedRetry.Review == nil || reloadedRetry.Review.EventID != eventID {
@@ -352,7 +283,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 		pending := prepareSignal(token, "reviewed follow-up "+token)
 		resolveDelegatedSubmission(t, store, pending, "activity-"+token, now.Add(time.Millisecond))
 		nextAttemptState, stateErr := store.FSM().State(lifecycle.WorkID(item.ID))
-		admission := nextAttemptState.Admission(lifecycle.TurnToken(token))
+		admission := nextAttemptState.AdmissionByToken(lifecycle.TurnToken(token))
 		if stateErr != nil || admission == nil || admission.Status != lifecycle.AdmissionAccepted ||
 			admission.Purpose != lifecycle.AdmissionPurposeReview {
 			t.Fatalf("aggregate review admission=%+v err=%v", admission, stateErr)
@@ -361,7 +292,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 		resolvedEvent, resolvedWork, resolveErr := store.ResolveWorkReview(WorkReviewDispositionRequest{
 			WorkID: item.ID, HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
 			ExpectedWorkRevision: lease.DeliveryWorkRevision, Disposition: WorkDispositionContinue,
-			NextSessionID: sessionID, NextAction: "run next scoped tracer concern",
+			NextSessionID: sessionID, NextTurnToken: token, NextAction: "run next scoped tracer concern",
 		})
 		if resolveErr != nil {
 			t.Fatalf("resolve reviewed follow-up %s: %v", token, resolveErr)
@@ -411,8 +342,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 	const finalToken = "turn:a-reviewed-final"
 	reviewedFollowUp(finalToken, "host:review-2", true)
 	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
-	if err != nil || state.Status != lifecycle.StatusDone || state.Attempt != nil || state.Review != nil ||
-		len(state.Attempts) != 3 || state.Attempts[2].Token != finalToken {
+	if err != nil || state.Status != lifecycle.StatusDone || state.Attempt != nil || state.Review != nil {
 		t.Fatalf("exact final state=%+v err=%v", state, err)
 	}
 	projected, err := store.Work(item.ID)
@@ -493,8 +423,21 @@ func TestDueRetryWaitIgnoresUnrelatedBrainConversation(t *testing.T) {
 	}
 
 	now = dueAt
-	if err := store.SweepLifecycle(); err != nil {
-		t.Fatal(err)
+	var sweepWG sync.WaitGroup
+	sweepErrors := make(chan error, 32)
+	for range 32 {
+		sweepWG.Add(1)
+		go func() {
+			defer sweepWG.Done()
+			sweepErrors <- store.SweepLifecycle()
+		}()
+	}
+	sweepWG.Wait()
+	close(sweepErrors)
+	for err := range sweepErrors {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	action, found, err := store.ClaimNextReviewAction("brain-host:due-check")
 	if err != nil || !found || action.Kind != "retry_due" || action.PayloadRef != "external-run:one" {
@@ -740,7 +683,7 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 8, 23, 3, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 23, 2, 59, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	const (
 		hostID   = "brain-host:@due-retry"
@@ -765,7 +708,7 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	dueAt := now.Add(time.Minute)
+	dueAt := time.Date(2026, 8, 23, 3, 0, 0, 0, time.UTC)
 	waiting, err := store.FSM().ResolveReview(lifecycle.WorkID(item.ID), opened.Review.EventID, lifecycle.ResolveReviewInput{
 		Disposition: lifecycle.DispositionWait, WakeKind: lifecycle.WakeDueRetry,
 		WakeRef: wakeRef, NextAttemptAt: &dueAt,
@@ -776,13 +719,22 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 	if err := store.SyncWorkProjection(item.ID); err != nil {
 		t.Fatal(err)
 	}
-	now = dueAt.Add(time.Hour) // startup after the durable deadline
+	if err := store.FSM().Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	now = dueAt
+	store.now = func() time.Time { return now }
 	if err := store.SweepLifecycle(); err != nil {
 		t.Fatal(err)
 	}
 	canonical, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || canonical.Review == nil || canonical.Review.Reason != "retry_due" || canonical.Wake != nil ||
-		canonical.Revision != waiting.Revision+2 {
+		canonical.Revision != waiting.Revision+1 {
 		t.Fatalf("overdue canonical state=%+v waiting_revision=%d err=%v", canonical, waiting.Revision, err)
 	}
 	eventID, openedRevision := canonical.Review.EventID, canonical.Revision
@@ -843,6 +795,59 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 	reloaded, _ := reopened.FSM().State(lifecycle.WorkID(item.ID))
 	if reloaded.Revision != deliveredRevision || len(fw.sentCalls) != 1 {
 		t.Fatalf("reload churn revision=%d want=%d sends=%d", reloaded.Revision, deliveredRevision, len(fw.sentCalls))
+	}
+}
+
+func TestIdleHostDeliversOpenReviewsInOldestFirstOrder(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	now := time.Date(2026, 8, 23, 4, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	const hostID = "brain-host:@fair-review"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	createReview := func(title, eventID string) Work {
+		item, createErr := store.CreateWork(Work{
+			Title: title, Objective: "deliver fairly", CompletionPolicy: CompletionBounded,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, openErr := store.FSM().OpenReviewEvent(
+			lifecycle.WorkID(item.ID), "operator_review", title, eventID,
+		); openErr != nil {
+			t.Fatal(openErr)
+		}
+		if syncErr := store.SyncWorkProjection(item.ID); syncErr != nil {
+			t.Fatal(syncErr)
+		}
+		return item
+	}
+	oldest := createReview("oldest", "event-fair-oldest")
+	now = now.Add(time.Second)
+	newest := createReview("newest", "event-fair-newest")
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		},
+		ownedGenerations: map[string]string{hostID: "host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{}, turnStore: store,
+	}
+	service := NewService(store, fw, nil)
+	if delivered, deliverErr := service.ReconcileHostLane(); deliverErr != nil || !delivered {
+		t.Fatalf("oldest delivery=%v err=%v", delivered, deliverErr)
+	}
+	resolveDeliveredReview(t, store, oldest.ID, WorkDispositionComplete)
+	next, claimed, err := store.ClaimNextReviewAction(hostID)
+	if err != nil || !claimed || next.WorkID != newest.ID {
+		t.Fatalf("next fair claim=%+v claimed=%v err=%v", next, claimed, err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("fair delivery order=%+v", fw.sentCalls)
 	}
 }
 
@@ -965,8 +970,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 		t.Fatal(err)
 	}
 	pending, err := store.FSM().State(lifecycle.WorkID(item.ID))
-	if err != nil || pending.Attempt != nil || pending.Review == nil || len(pending.Outbox) != 1 ||
-		pending.Outbox[0].Reason != "review" || pending.Revision != admitted.Revision+1 {
+	if err != nil || pending.Attempt != nil || pending.Review == nil || pending.Revision != admitted.Revision+1 {
 		t.Fatalf("pending=%+v err=%v", pending, err)
 	}
 	eventID, terminalRevision := pending.Review.EventID, pending.Revision
@@ -1007,7 +1011,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 		t.Fatal(err)
 	}
 	if state.Revision != terminalRevision || state.Review == nil || state.Review.EventID != eventID ||
-		len(state.Outbox) != 1 || len(fw.created) != 0 || len(fw.sentCalls) != 0 {
+		len(fw.created) != 0 || len(fw.sentCalls) != 0 {
 		t.Fatalf("sweeps changed terminal obligation: state=%+v created=%+v sent=%+v", state, fw.created, fw.sentCalls)
 	}
 	if unrelated, clearErr := store.FSM().ClearWait(lifecycle.WorkID(item.ID), lifecycle.WakeUserInput, "unrelated", "message:1"); clearErr != nil || unrelated.Revision != terminalRevision {
@@ -1059,7 +1063,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 		t.Fatal(err)
 	}
 	if continued.Review != nil || continued.Attempt == nil || continued.Attempt.SessionID != "worker:@2" ||
-		continued.Attempt.TurnToken != "turn-scoped" || len(continued.Attempts) != 2 ||
+		continued.Attempt.TurnToken != "turn-scoped" ||
 		len(fw.created) != 0 || len(fw.sentCalls) != 0 {
 		t.Fatalf("explicit Brain continuation=%+v created=%+v sent=%+v", continued, fw.created, fw.sentCalls)
 	}
@@ -1154,11 +1158,8 @@ func stripLifecycleAttemptedAt(t *testing.T, lifecycleRoot string) {
 	works, _ := database["works"].(map[string]any)
 	for _, value := range works {
 		work, _ := value.(map[string]any)
-		admissions, _ := work["admissions"].([]any)
-		for _, value := range admissions {
-			admission, _ := value.(map[string]any)
-			delete(admission, "attempted_at")
-		}
+		admission, _ := work["admission"].(map[string]any)
+		delete(admission, "attempted_at")
 	}
 	rebuilt, err := json.Marshal(database)
 	if err != nil {

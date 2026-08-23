@@ -251,145 +251,6 @@ type PrepareAdmissionInput struct {
 	PurposeID          string
 }
 
-// PrepareTerminalFollowUpInput authorizes an ordinary fresh follow-up after
-// exact provider terminal evidence for the current Attempt. It is deliberately
-// one command so no state can expose a settled predecessor without the new
-// mutation admission, or vice versa.
-type PrepareTerminalFollowUpInput struct {
-	AttemptSessionID   string
-	AttemptToken       TurnToken
-	AttemptFence       uint64
-	TerminalEvidenceID string
-	Admission          PrepareAdmissionInput
-}
-
-func (e *Engine) PrepareTerminalFollowUp(id WorkID, in PrepareTerminalFollowUpInput) (*State, error) {
-	a := in.Admission
-	if in.AttemptSessionID == "" || in.AttemptToken == "" || in.AttemptFence == 0 || in.TerminalEvidenceID == "" ||
-		a.SessionID == "" || a.TurnToken == "" || a.Receipt == "" || a.PayloadSHA256 == "" ||
-		a.ProcessIdentity == "" || a.PaneGeneration == "" || a.AttemptedAt.IsZero() || a.Mode != AdmissionFresh ||
-		a.ClaimToken != "" || a.Purpose != "" || a.PurposeID != "" {
-		return nil, fmt.Errorf("%w: complete terminal follow-up identity required", ErrInvalidCommand)
-	}
-	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-		if st == nil {
-			return nil, ErrUnknownWork
-		}
-		if terminal(st) {
-			return nil, ErrTerminal
-		}
-		identity := AttemptIdentity{SessionID: in.AttemptSessionID, TurnToken: in.AttemptToken, Fence: in.AttemptFence}
-		if !currentAttempt(st, identity) || in.AttemptSessionID != a.SessionID {
-			return nil, ErrStaleInput
-		}
-		if st.ActiveAdmission() != nil || st.Admission(a.TurnToken) != nil {
-			return nil, ErrAttemptActive
-		}
-		return []Event{{
-			WorkID: id, Kind: KTurnRelinquished, TurnToken: in.AttemptToken, Fence: in.AttemptFence,
-			SourceID: "terminal-follow-up-settle:" + in.TerminalEvidenceID, At: now,
-			Payload: RelinquishedPayload{Reason: "exact terminal evidence before same-session follow-up"},
-		}, {
-			WorkID: id, Kind: KAdmissionPrepared, TurnToken: a.TurnToken,
-			SourceID: "admission-prepare:" + string(a.TurnToken), At: now,
-			Payload: AdmissionPreparedPayload{
-				SessionID: a.SessionID, Receipt: a.Receipt, PayloadSHA256: a.PayloadSHA256,
-				ProcessIdentity: a.ProcessIdentity, PaneGeneration: a.PaneGeneration, Mode: AdmissionFresh,
-				ExistingTurnToken: in.AttemptToken, SignalProtocol: a.SignalProtocol, AttemptedAt: a.AttemptedAt,
-				TranscriptProvider: a.TranscriptProvider, TranscriptFlag: a.TranscriptFlag, TranscriptPath: a.TranscriptPath,
-			},
-		}}, nil
-	})
-}
-
-// PrepareTerminalReviewFollowUp is the pre-mutation half of a same-Session
-// needs_input follow-up over an observed terminal provider phase. One batch
-// settles the exact Attempt, resolves the exact actionable review capability,
-// and prepares the next Attempt token. Exact acceptance later admits that token;
-// ambiguous transport can never replay it.
-type PrepareTerminalReviewFollowUpInput struct {
-	AttemptSessionID   string
-	AttemptToken       TurnToken
-	AttemptFence       uint64
-	TerminalEvidenceID string
-	EventID            string
-	HandlerID          string
-	HandlerToken       TurnToken
-	Admission          PrepareAdmissionInput
-}
-
-func (e *Engine) PrepareTerminalReviewFollowUp(id WorkID, in PrepareTerminalReviewFollowUpInput) (*State, error) {
-	a := in.Admission
-	if in.AttemptSessionID == "" || in.AttemptToken == "" || in.AttemptFence == 0 || in.TerminalEvidenceID == "" || in.EventID == "" ||
-		in.HandlerID == "" || in.HandlerToken == "" || a.SessionID == "" ||
-		a.TurnToken == "" || a.Receipt == "" || a.PayloadSHA256 == "" || a.ProcessIdentity == "" ||
-		a.PaneGeneration == "" || a.AttemptedAt.IsZero() || a.Mode != AdmissionFresh || a.ClaimToken != "" {
-		return nil, fmt.Errorf("%w: complete terminal review follow-up identity required", ErrInvalidCommand)
-	}
-	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-		if st == nil {
-			return nil, ErrUnknownWork
-		}
-		if existing := st.Admission(a.TurnToken); existing != nil &&
-			st.SeenSources["terminal-review-settle:"+in.TerminalEvidenceID] {
-			if !admissionMatchesPrepare(existing, a, in.AttemptToken) {
-				return nil, fmt.Errorf("%w: admission token belongs to different terminal follow-up", ErrInvalidCommand)
-			}
-			return nil, nil
-		}
-		identity := AttemptIdentity{SessionID: in.AttemptSessionID, TurnToken: in.AttemptToken, Fence: in.AttemptFence}
-		if !currentAttempt(st, identity) || in.AttemptSessionID != a.SessionID {
-			return nil, ErrStaleInput
-		}
-		if st.Review == nil || st.Review.EventID != in.EventID ||
-			st.Review.Handler == nil || st.Review.Handler.HandlerID != in.HandlerID ||
-			st.Review.Handler.HandlerToken != in.HandlerToken {
-			return nil, ErrReviewLease
-		}
-		events := make([]Event, 0, 4)
-		if active := st.ActiveAdmission(); active != nil {
-			if active.TurnToken != in.HandlerToken || active.ClaimToken != in.HandlerID || active.Receipt != in.EventID {
-				return nil, ErrAttemptActive
-			}
-			events = append(events, Event{
-				WorkID: id, Kind: KAdmissionAborted, TurnToken: active.TurnToken,
-				SourceID: "admission-abort:review-consumed:" + in.EventID, At: now,
-				Payload: AdmissionAbortedPayload{Reason: "exact review handler consumed by terminal same-session follow-up"},
-			})
-		}
-		if st.Admission(a.TurnToken) != nil {
-			return nil, ErrAttemptActive
-		}
-		events = append(events, Event{
-			WorkID: id, Kind: KTurnRelinquished, TurnToken: in.AttemptToken, Fence: in.AttemptFence,
-			SourceID: "terminal-review-settle:" + in.TerminalEvidenceID, At: now,
-			Payload: RelinquishedPayload{Reason: "exact terminal evidence before reviewed same-session follow-up"},
-		}, Event{
-			WorkID: id, Kind: KReviewResolved, SourceID: "resolve:" + in.EventID, At: now,
-			Payload: ReviewResolvedPayload{EventID: in.EventID, Disposition: DispositionContinue, Actor: "session_input"},
-		}, Event{
-			WorkID: id, Kind: KAdmissionPrepared, TurnToken: a.TurnToken,
-			SourceID: "admission-prepare:" + string(a.TurnToken), At: now,
-			Payload: AdmissionPreparedPayload{
-				SessionID: a.SessionID, Receipt: a.Receipt, PayloadSHA256: a.PayloadSHA256,
-				ProcessIdentity: a.ProcessIdentity, PaneGeneration: a.PaneGeneration, Mode: AdmissionFresh,
-				ExistingTurnToken: in.AttemptToken, SignalProtocol: a.SignalProtocol, AttemptedAt: a.AttemptedAt,
-				TranscriptProvider: a.TranscriptProvider, TranscriptFlag: a.TranscriptFlag, TranscriptPath: a.TranscriptPath,
-			},
-		})
-		return events, nil
-	})
-}
-
-func admissionMatchesPrepare(existing *AdmissionState, in PrepareAdmissionInput, predecessor TurnToken) bool {
-	return existing != nil && existing.SessionID == in.SessionID && existing.Receipt == in.Receipt &&
-		existing.PayloadSHA256 == in.PayloadSHA256 && existing.ProcessIdentity == in.ProcessIdentity &&
-		existing.PaneGeneration == in.PaneGeneration && existing.Mode == AdmissionFresh &&
-		existing.ExistingTurnToken == predecessor && existing.SignalProtocol == in.SignalProtocol &&
-		existing.TranscriptProvider == in.TranscriptProvider && existing.TranscriptFlag == in.TranscriptFlag &&
-		existing.TranscriptPath == in.TranscriptPath && existing.Purpose == in.Purpose && existing.PurposeID == in.PurposeID
-}
-
 // PrepareAdmission makes the provider mutation transaction durable in the
 // Work aggregate. A Work can have only one active admission. Exact repeats are
 // idempotent; a token or receipt rebound to different bytes fails closed.
@@ -414,7 +275,7 @@ func (e *Engine) PrepareAdmission(id WorkID, in PrepareAdmissionInput) (bool, *S
 		if terminal(st) {
 			return nil, ErrTerminal
 		}
-		if existing := st.Admission(in.TurnToken); existing != nil {
+		if existing := st.AdmissionByToken(in.TurnToken); existing != nil {
 			if existing.SessionID != in.SessionID || existing.Receipt != in.Receipt ||
 				existing.PayloadSHA256 != in.PayloadSHA256 || existing.ProcessIdentity != in.ProcessIdentity ||
 				existing.PaneGeneration != in.PaneGeneration || existing.Mode != in.Mode ||
@@ -452,11 +313,9 @@ func (e *Engine) PrepareAdmission(id WorkID, in PrepareAdmissionInput) (bool, *S
 		if active := st.ActiveAdmission(); active != nil {
 			return nil, fmt.Errorf("%w: admission %s is still %s", ErrAttemptActive, active.TurnToken, active.Status)
 		}
-		for _, admission := range st.Admissions {
-			if in.Purpose != "" && admission.Purpose == in.Purpose && admission.PurposeID == in.PurposeID &&
-				admission.Status != AdmissionAborted {
-				return nil, fmt.Errorf("%w: admission purpose already belongs to %s", ErrAttemptActive, admission.TurnToken)
-			}
+		if previous := st.Admission; previous != nil && in.Purpose != "" &&
+			previous.Purpose == in.Purpose && previous.PurposeID == in.PurposeID && previous.Status != AdmissionAborted {
+			return nil, fmt.Errorf("%w: admission purpose already belongs to %s", ErrAttemptActive, previous.TurnToken)
 		}
 		switch in.Purpose {
 		case AdmissionPurposeReview:
@@ -526,7 +385,7 @@ func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionI
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		a := st.Admission(token)
+		a := st.AdmissionByToken(token)
 		if a == nil {
 			return nil, fmt.Errorf("%w: admission is not prepared", ErrInvalidCommand)
 		}
@@ -621,7 +480,7 @@ func (e *Engine) AcceptAdmissionBySignal(id WorkID, token TurnToken, sessionID s
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		a := st.Admission(token)
+		a := st.AdmissionByToken(token)
 		if a == nil || a.SessionID != sessionID || !a.SignalProtocol || a.ClaimToken != "" {
 			return nil, fmt.Errorf("%w: no exact delegated signal admission", ErrInvalidCommand)
 		}
@@ -670,7 +529,7 @@ func (e *Engine) MarkAdmissionAmbiguous(id WorkID, token TurnToken, reason strin
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		a := st.Admission(token)
+		a := st.AdmissionByToken(token)
 		if a == nil {
 			return nil, fmt.Errorf("%w: admission is not prepared", ErrInvalidCommand)
 		}
@@ -691,7 +550,7 @@ func (e *Engine) AbortAdmission(id WorkID, token TurnToken, receipt, payloadSHA2
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		a := st.Admission(token)
+		a := st.AdmissionByToken(token)
 		if a == nil {
 			return nil, fmt.Errorf("%w: admission is not prepared", ErrInvalidCommand)
 		}
@@ -727,7 +586,7 @@ func (e *Engine) AdmitTurn(id WorkID, in AdmitTurnInput) (applied bool, st *Stat
 		if terminal(st) {
 			return nil, ErrTerminal
 		}
-		if existing := st.turnByToken(in.TurnToken); existing != nil {
+		if existing, found := e.admittedAttemptLocked(id, in.TurnToken); found {
 			if existing.SessionID != in.SessionID {
 				return nil, ErrStaleInput
 			}
@@ -746,6 +605,20 @@ func (e *Engine) AdmitTurn(id WorkID, in AdmitTurnInput) (applied bool, st *Stat
 		return false, st, err
 	}
 	return st.Revision > before.Revision, st, nil
+}
+
+func (e *Engine) admittedAttemptLocked(id WorkID, token TurnToken) (AttemptIdentity, bool) {
+	for _, event := range e.events {
+		if event.WorkID != id || event.Kind != KTurnAdmitted || event.TurnToken != token {
+			continue
+		}
+		payload, ok := event.Payload.(AdmittedPayload)
+		if !ok {
+			return AttemptIdentity{}, false
+		}
+		return AttemptIdentity{SessionID: payload.SessionID, TurnToken: token, Fence: event.Fence}, true
+	}
+	return AttemptIdentity{}, false
 }
 
 // Heartbeat extends the live turn's lease monotonically.
@@ -824,18 +697,17 @@ func (e *Engine) ReportTurnDone(id WorkID, attempt AttemptIdentity, in DoneInput
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		historical := st.turnByToken(attempt.TurnToken)
-		if historical != nil && historical.SettledAt != nil && historical.Outcome != "lost" {
-			if historical.SessionID != attempt.SessionID || historical.Generation != attempt.Fence {
+		if !currentAttempt(st, attempt) {
+			historical, found := e.admittedAttemptLocked(id, attempt.TurnToken)
+			if !found || historical != attempt {
 				return nil, ErrStaleInput
 			}
-			return nil, nil
-		}
-		if !currentAttempt(st, attempt) {
-			t := historical
-			latest := len(st.Attempts) > 0 && st.Attempts[len(st.Attempts)-1].Token == attempt.TurnToken
-			if t == nil || t.Outcome != "lost" || !latest ||
-				t.SessionID != attempt.SessionID || t.Generation != attempt.Fence || st.Attempt != nil || terminal(st) {
+			if st.SeenSources["done:"+string(attempt.TurnToken)] {
+				return nil, nil
+			}
+			if st.Attempt != nil || terminal(st) || st.Review == nil ||
+				st.Review.Ref != string(attempt.TurnToken) ||
+				(st.Review.Reason != "turn_lost" && st.Review.Reason != "lease_expired") {
 				return nil, ErrStaleInput
 			}
 		}
@@ -853,17 +725,10 @@ func (e *Engine) ReportTurnLost(id WorkID, attempt AttemptIdentity, reason strin
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		t := st.turnByToken(attempt.TurnToken)
-		if t == nil {
-			return nil, ErrStaleInput
-		}
-		if t.SessionID != attempt.SessionID || t.Generation != attempt.Fence {
-			return nil, ErrStaleInput
-		}
-		if t.SettledAt != nil {
+		if st.SeenSources["lost:"+string(attempt.TurnToken)] {
 			return nil, nil // already settled: idempotent no-op
 		}
-		if st.Attempt != nil && !currentAttempt(st, attempt) {
+		if !currentAttempt(st, attempt) {
 			return nil, ErrStaleInput
 		}
 		return []Event{{
@@ -995,9 +860,6 @@ func (e *Engine) ClaimReview(id WorkID, handlerID string, handlerToken TurnToken
 		if st.Review.Handler != nil {
 			return nil, ErrReviewLease
 		}
-		if entry := outboxFind(st, st.Review.OutboxID); entry != nil && entry.NextAttemptAt != nil && now.Before(*entry.NextAttemptAt) {
-			return nil, ErrReviewLease
-		}
 		if handlerID == "" {
 			return nil, fmt.Errorf("%w: handler identity required", ErrInvalidCommand)
 		}
@@ -1040,17 +902,10 @@ func (e *Engine) ReleaseReview(id WorkID, handlerToken TurnToken) (*State, error
 		if st.Review == nil || st.Review.Handler == nil || st.Review.Handler.HandlerToken != handlerToken {
 			return nil, ErrReviewLease
 		}
-		events := []Event{{
+		return []Event{{
 			WorkID: id, Kind: KReviewReleased, SourceID: "release:" + e.newID(), At: now,
 			Payload: ReviewReleasedPayload{EventID: st.Review.EventID, HandlerToken: handlerToken},
-		}}
-		if entry := outboxFind(st, st.Review.OutboxID); entry != nil {
-			events = append(events, Event{
-				WorkID: id, Kind: KOutboxDispatch, SourceID: "retry:" + st.Review.EventID + ":" + e.newID(), At: now,
-				Payload: OutboxDispatchPayload{EntryID: entry.ID, Result: DispatchRetryable, Error: "notification delivery not confirmed"},
-			})
-		}
-		return events, nil
+		}}, nil
 	})
 }
 
@@ -1102,81 +957,6 @@ type ResolveReviewInput struct {
 	NextAttemptAt *time.Time
 }
 
-// ResolveTerminalReviewInput is the complete capability for recovering an
-// actionable review whose provider Attempt is already terminal or closed. The
-// exact Event, delivered handler, Attempt identity, and terminal evidence are
-// required together; none is inferred from projection or process inventory.
-type ResolveTerminalReviewInput struct {
-	EventID            string
-	HandlerID          string
-	HandlerToken       TurnToken
-	AttemptSessionID   string
-	AttemptToken       TurnToken
-	AttemptFence       uint64
-	TerminalEvidenceID string
-	Disposition        Disposition
-	Actor              string
-	WakeKind           WakeKind
-	WakeRef            string
-	NextAttemptAt      *time.Time
-	NextSessionID      string
-	NextTurnToken      TurnToken
-}
-
-// ResolveTerminalReview atomically relinquishes the exact old Attempt, resolves
-// the exact actionable Event, and optionally admits the named next Attempt. A
-// restart therefore observes either the entire recovery or none of it.
-func (e *Engine) ResolveTerminalReview(id WorkID, in ResolveTerminalReviewInput) (*State, error) {
-	if in.EventID == "" || in.HandlerID == "" || in.HandlerToken == "" ||
-		in.AttemptSessionID == "" || in.AttemptToken == "" || in.AttemptFence == 0 || in.TerminalEvidenceID == "" {
-		return nil, fmt.Errorf("%w: exact review, Attempt, and terminal evidence required", ErrInvalidCommand)
-	}
-	if in.Disposition == DispositionContinue {
-		if in.NextSessionID == "" || in.NextTurnToken == "" {
-			return nil, fmt.Errorf("%w: continue requires named next Attempt Session and token", ErrInvalidCommand)
-		}
-	} else if in.NextSessionID != "" || in.NextTurnToken != "" {
-		return nil, fmt.Errorf("%w: next Attempt is valid only for continue", ErrInvalidCommand)
-	}
-	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-		if st == nil {
-			return nil, ErrUnknownWork
-		}
-		if st.SeenSources["resolve:"+in.EventID] {
-			return nil, nil
-		}
-		if err := validateWaitDisposition(in.Disposition, in.WakeKind, in.WakeRef, in.NextAttemptAt, now); err != nil {
-			return nil, err
-		}
-		if st.Review == nil || st.Review.EventID != in.EventID ||
-			st.Review.Handler == nil || st.Review.Handler.HandlerID != in.HandlerID ||
-			st.Review.Handler.HandlerToken != in.HandlerToken || st.Review.Handler.DeliveredAt == nil {
-			return nil, ErrReviewLease
-		}
-		identity := AttemptIdentity{SessionID: in.AttemptSessionID, TurnToken: in.AttemptToken, Fence: in.AttemptFence}
-		if !currentAttempt(st, identity) {
-			return nil, ErrStaleInput
-		}
-		events := []Event{{
-			WorkID: id, Kind: KTurnRelinquished, TurnToken: in.AttemptToken, Fence: in.AttemptFence,
-			SourceID: "terminal-evidence:" + in.TerminalEvidenceID, At: now,
-			Payload: RelinquishedPayload{Reason: "exact terminal Attempt evidence"},
-		}, {
-			WorkID: id, Kind: KReviewResolved, SourceID: "resolve:" + in.EventID, At: now,
-			Payload: ReviewResolvedPayload{EventID: in.EventID, Disposition: in.Disposition,
-				Actor: in.Actor, WakeKind: in.WakeKind, WakeRef: in.WakeRef, NextAttemptAt: in.NextAttemptAt},
-		}}
-		if in.Disposition == DispositionContinue {
-			events = append(events, Event{
-				WorkID: id, Kind: KTurnAdmitted, TurnToken: in.NextTurnToken, Fence: in.AttemptFence + 1,
-				SourceID: "terminal-follow-up:" + in.TerminalEvidenceID + ":" + string(in.NextTurnToken), At: now,
-				Payload: AdmittedPayload{SessionID: in.NextSessionID, Delegated: true, FollowUpOf: in.AttemptToken},
-			})
-		}
-		return events, nil
-	})
-}
-
 // AcceptReviewFollowUp atomically settles a still-live reviewed turn, closes
 // the exact actionable Event, and admits the named accepted admission. The append is
 // one log transaction, so restart can observe only the state before or after
@@ -1192,7 +972,7 @@ func (e *Engine) AcceptReviewFollowUp(id WorkID, eventID, nextSession string, ne
 		if st.Review == nil || st.Review.EventID != eventID {
 			return nil, nil
 		}
-		admission := st.Admission(nextToken)
+		admission := st.AdmissionByToken(nextToken)
 		if admission == nil || admission.Status != AdmissionAccepted || admission.SessionID != nextSession ||
 			admission.Mode != AdmissionFresh || admission.ClaimToken != "" || st.Review.Handler == nil ||
 			admission.Purpose != AdmissionPurposeReview || admission.PurposeID != st.Review.Handler.HandlerID {
@@ -1219,7 +999,7 @@ func (e *Engine) AcceptReviewFollowUp(id WorkID, eventID, nextSession string, ne
 	})
 }
 
-// ResolveReview applies the disposition. Resolving a superseded Event is an
+// ResolveReview applies the disposition. Resolving an already-closed Event is an
 // idempotent no-op.
 func (e *Engine) ResolveReview(id WorkID, eventID string, in ResolveReviewInput) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
@@ -1268,7 +1048,7 @@ func (e *Engine) OpenReview(id WorkID, reason, ref string) (*State, error) {
 }
 
 // OpenReviewEvent opens judgment for an already-existing exact actionable
-// Event. The supplied Event ID is preserved through review, outbox, delivery,
+// Event. The supplied Event ID is preserved through review, delivery,
 // card projection, and resolution.
 func (e *Engine) OpenReviewEvent(id WorkID, reason, ref, eventID string) (*State, error) {
 	if eventID == "" {
@@ -1289,70 +1069,6 @@ func (e *Engine) openReview(id WorkID, reason, ref, eventID string) (*State, err
 			WorkID: id, Kind: KReviewOpened,
 			SourceID: "fsmreview:" + reason + ":" + ref, At: now,
 			Payload: ReviewOpenedPayload{EventID: eventID, Reason: reason, Ref: ref},
-		}}, nil
-	})
-}
-
-// AckNotification acknowledges the deterministic source-thread notification
-// owned by one actionable event. Repeating the acknowledgement is idempotent.
-func (e *Engine) AckNotification(id WorkID, eventID string) (*State, error) {
-	if eventID == "" {
-		return nil, fmt.Errorf("%w: event identity required", ErrInvalidCommand)
-	}
-	return e.AckOutbox(id, reviewOutboxID(id, eventID), DispatchSuccess, "")
-}
-
-// RecordNotificationOutcome applies the four-outcome side-effect policy to
-// the exact event_id. In particular, unknown_side_effect is durable and never
-// receives next_attempt_at.
-func (e *Engine) RecordNotificationOutcome(id WorkID, eventID, outcome, errMsg string) (*State, error) {
-	if eventID == "" {
-		return nil, fmt.Errorf("%w: event identity required", ErrInvalidCommand)
-	}
-	return e.AckOutbox(id, reviewOutboxID(id, eventID), outcome, errMsg)
-}
-
-// AckNotificationIfPresent acknowledges only when the exact Event currently
-// owns a canonical outbox entry. Projection-only historical cards return
-// present=false; absence is observed explicitly rather than swallowed as an
-// authority error.
-func (e *Engine) AckNotificationIfPresent(id WorkID, eventID string) (present bool, st *State, err error) {
-	if eventID == "" {
-		return false, nil, fmt.Errorf("%w: event identity required", ErrInvalidCommand)
-	}
-	st, err = e.State(id)
-	if err != nil {
-		return false, nil, err
-	}
-	if outboxFind(st, reviewOutboxID(id, eventID)) == nil {
-		return false, st, nil
-	}
-	st, err = e.AckNotification(id, eventID)
-	return true, st, err
-}
-
-// AckOutbox records a dispatch attempt outcome for a continuation entry.
-func (e *Engine) AckOutbox(id WorkID, entryID, result, errMsg string) (*State, error) {
-	switch result {
-	case DispatchSuccess, DispatchRetryable, DispatchUnknownSideEffect, DispatchTerminal:
-	default:
-		return nil, fmt.Errorf("%w: invalid external outcome %q", ErrInvalidCommand, result)
-	}
-	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-		if st == nil {
-			return nil, ErrUnknownWork
-		}
-		entry := outboxFind(st, entryID)
-		if entry == nil {
-			return nil, ErrUnknownOutbox
-		}
-		switch entry.DispatchResult {
-		case DispatchSuccess, DispatchUnknownSideEffect, DispatchTerminal:
-			return nil, nil // resolved or quarantined outcomes stick
-		}
-		return []Event{{
-			WorkID: id, Kind: KOutboxDispatch, SourceID: "ack:" + entryID + ":" + result + ":" + e.newID(), At: now,
-			Payload: OutboxDispatchPayload{EntryID: entryID, Result: result, Error: errMsg},
 		}}, nil
 	})
 }
@@ -1408,23 +1124,13 @@ func (e *Engine) Sweep() error {
 					at.Before(current.Review.Handler.ClaimExpiresAt) {
 					return nil, nil
 				}
-				events := []Event{{
+				return []Event{{
 					WorkID: id, Kind: KReviewReleased,
 					SourceID: "claim-expired:" + current.Review.EventID, At: at,
 					Payload: ReviewReleasedPayload{
 						EventID: current.Review.EventID, HandlerToken: current.Review.Handler.HandlerToken,
 					},
-				}}
-				if entry := outboxFind(current, current.Review.OutboxID); entry != nil {
-					events = append(events, Event{
-						WorkID: id, Kind: KOutboxDispatch,
-						SourceID: "claim-retry:" + current.Review.EventID + ":" + e.newID(), At: at,
-						Payload: OutboxDispatchPayload{
-							EntryID: entry.ID, Result: DispatchRetryable, Error: "event claim expired",
-						},
-					})
-				}
-				return events, nil
+				}}, nil
 			}); err != nil {
 				return err
 			}
@@ -1440,10 +1146,6 @@ func (e *Engine) Sweep() error {
 				dueKey := fmt.Sprintf("%s:%d", wake.Ref, wake.NextAttemptAt.UTC().UnixNano())
 				eventID := stableID("due-retry-event", string(id), dueKey)
 				return []Event{{
-					WorkID: id, Kind: KWakeCleared,
-					SourceID: "due-retry-clear:" + dueKey, At: at,
-					Payload: WakeClearedPayload{WakeKind: wake.Kind, Ref: wake.Ref, Occurrence: dueKey},
-				}, {
 					WorkID: id, Kind: KReviewOpened,
 					SourceID: "due-retry:" + dueKey, At: at,
 					Payload: ReviewOpenedPayload{EventID: eventID, Reason: "retry_due", Ref: wake.Ref},
@@ -1514,26 +1216,6 @@ func (e *Engine) NextWakeAt() (time.Time, bool) {
 		}
 		if st.Review != nil && st.Review.Handler != nil && st.Review.Handler.DeliveredAt == nil {
 			consider(st.Review.Handler.ClaimExpiresAt)
-		}
-		if st.Status.Terminal() {
-			continue
-		}
-		for _, entry := range st.Outbox {
-			if entry.Attempts >= MaxDispatchAttempts {
-				continue
-			}
-			if entry.Reason == "review" && st.Review != nil && st.Review.OutboxID == entry.ID && st.Review.Handler != nil {
-				continue // claim expiry is the only timer while a handler owns the Event
-			}
-			switch entry.DispatchResult {
-			case DispatchSuccess, DispatchUnknownSideEffect, DispatchTerminal:
-				continue
-			}
-			if entry.NextAttemptAt != nil {
-				consider(*entry.NextAttemptAt)
-			} else {
-				consider(entry.CreatedAt)
-			}
 		}
 	}
 	return next, !next.IsZero()
@@ -1609,12 +1291,7 @@ func ProjectCards(states []*State) []Card {
 			card.Actionable = true
 			card.Reason = "needs_input"
 		}
-		for i := len(st.Attempts) - 1; i >= 0; i-- {
-			if st.Attempts[i].SettledAt != nil && st.Attempts[i].Summary != "" {
-				card.Summary = st.Attempts[i].Summary
-				break
-			}
-		}
+		card.Summary = st.LastSummary
 		if card.Summary == "" {
 			card.Summary = st.Objective
 		}

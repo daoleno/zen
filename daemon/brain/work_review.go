@@ -136,10 +136,6 @@ type WorkReviewDispositionRequest struct {
 	Disposition          WorkDisposition `json:"disposition"`
 	NextSessionID        string          `json:"next_session_id,omitempty"`
 	NextTurnToken        string          `json:"next_turn_token,omitempty"`
-	AttemptSessionID     string          `json:"attempt_session_id,omitempty"`
-	AttemptTurnToken     string          `json:"attempt_turn_token,omitempty"`
-	AttemptFence         uint64          `json:"attempt_fence,omitempty"`
-	TerminalEvidenceID   string          `json:"terminal_evidence_id,omitempty"`
 	Wake                 *WorkWake       `json:"wake,omitempty"`
 	NextAction           string          `json:"next_action,omitempty"`
 	Summary              string          `json:"summary,omitempty"`
@@ -275,7 +271,8 @@ func reviewEligibleFact(database presentationDatabase, item Work, event WorkEven
 		return false
 	}
 	if isSessionLifecycleKind(event.Kind) &&
-		!isTurnScopedSessionDedupeKey(event.DedupeKey) && !isCanonicalSessionWakeDedupeKey(event.DedupeKey) {
+		!isTurnScopedSessionDedupeKey(event.DedupeKey) && !isCanonicalSessionWakeDedupeKey(event.DedupeKey) &&
+		!strings.HasPrefix(event.DedupeKey, "lifecycle:") {
 		return false
 	}
 	if item.Status != WorkDone && item.Status != WorkCancelled {

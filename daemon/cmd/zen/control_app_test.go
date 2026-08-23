@@ -1925,10 +1925,12 @@ func TestControlAppBrainWorkCloseRejectsClaimedAttention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AppendWorkEvent(brain.WorkEvent{
-		WorkID: item.ID, Kind: "brain.reconcile_required", DedupeKey: "control-claimed",
-		Actionable: true,
-	}); err != nil {
+	if _, err := store.FSM().OpenReviewEvent(
+		lifecycle.WorkID(item.ID), "brain.reconcile_required", "control-claimed", "event-control-claimed",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
 		t.Fatal(err)
 	}
 	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")

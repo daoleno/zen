@@ -14,6 +14,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"github.com/gorilla/websocket"
@@ -302,12 +303,13 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, created, err := store.AppendWorkEvent(brain.WorkEvent{
-		WorkID: item.ID, Kind: "review.ready", DedupeKey: "review:projection-reservation",
-		Summary: "A queued result is ready.", Actionable: true,
-	})
-	if err != nil || !created {
-		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
+	if _, err := store.FSM().OpenReviewEvent(
+		lifecycle.WorkID(item.ID), "review.ready", "projection-reservation", "event-projection-reservation",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
 	}
 	// Occupy the deterministic presentation identity with incompatible bytes.
 	// Lifecycle acceptance must remain authoritative and reserve Attention;
@@ -423,12 +425,13 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, created, err := store.AppendWorkEvent(brain.WorkEvent{
-		WorkID: item.ID, Kind: "review.ready", DedupeKey: "review:prepared-generation",
-		Summary: "Review remains queued behind the accepted foreground turn.", Actionable: true,
-	})
-	if err != nil || !created {
-		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
+	if _, err := store.FSM().OpenReviewEvent(
+		lifecycle.WorkID(item.ID), "review.ready", "prepared-generation", "event-prepared-generation",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
 	}
 	watcherFixture := &changingProxyGenerationWatcher{
 		brainServiceTestWatcher: &brainServiceTestWatcher{

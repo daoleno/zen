@@ -122,11 +122,10 @@ const (
 type WorkDisposition string
 
 const (
-	WorkDispositionContinue  WorkDisposition = "continue"
-	WorkDispositionWait      WorkDisposition = "wait"
-	WorkDispositionComplete  WorkDisposition = "complete"
-	WorkDispositionCancel    WorkDisposition = "cancel"
-	WorkDispositionSupersede WorkDisposition = "supersede"
+	WorkDispositionContinue WorkDisposition = "continue"
+	WorkDispositionWait     WorkDisposition = "wait"
+	WorkDispositionComplete WorkDisposition = "complete"
+	WorkDispositionCancel   WorkDisposition = "cancel"
 )
 
 // Work is the only durable Brain commitment. It is intentionally small:
@@ -903,8 +902,7 @@ func workWakeEqual(left, right *WorkWake) bool {
 
 func validWorkDisposition(disposition WorkDisposition) bool {
 	switch disposition {
-	case WorkDispositionContinue, WorkDispositionWait, WorkDispositionComplete,
-		WorkDispositionCancel, WorkDispositionSupersede:
+	case WorkDispositionContinue, WorkDispositionWait, WorkDispositionComplete, WorkDispositionCancel:
 		return true
 	default:
 		return false
@@ -2077,13 +2075,6 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 			event.Actionable = false
 		}
 		event, err = appendWorkEventLocked(&database, itemIndex, event, true)
-		if err == nil && event.Actionable && !terminalWorkStatus(item.Status) {
-			// Mirror the judgment obligation into the canonical engine: claims
-			// and dispositions are decided only against canonical Events.
-			if mirrorErr := s.fsmMirrorActionableEvent(item.ID, event); mirrorErr != nil {
-				err = mirrorErr
-			}
-		}
 		if err == nil {
 			if syncErr := s.fsmSyncWorkLocked(&database, item.ID, event.CreatedAt); syncErr == nil {
 				event.WorkRevision = database.BrainWork[itemIndex].Revision
@@ -2221,16 +2212,6 @@ func (s *Store) ApplyProducerTransition(
 		s.mu.Unlock()
 		return Work{}, WorkEvent{}, false, nil, err
 	}
-	if event.Actionable && !terminalWorkStatus(item.Status) {
-		if err := s.fsmMirrorActionableEvent(item.ID, event); err != nil {
-			s.mu.Unlock()
-			return Work{}, WorkEvent{}, false, nil, err
-		}
-		if err := s.fsmSyncWorkLocked(&database, item.ID, now); err != nil {
-			s.mu.Unlock()
-			return Work{}, WorkEvent{}, false, nil, err
-		}
-	}
 	woken := []WorkEvent{}
 	changedIDs := []string{event.WorkID}
 	if wake != nil {
@@ -2318,9 +2299,6 @@ func (s *Store) wakeWaitingWorkLocked(database *presentationDatabase, wake WorkW
 		var err error
 		event, err = appendWorkEventLocked(database, index, event, true)
 		if err != nil {
-			return nil, nil, err
-		}
-		if err := s.fsmMirrorActionableEvent(item.ID, event); err != nil {
 			return nil, nil, err
 		}
 		if err := s.fsmSyncWorkLocked(database, item.ID, now); err != nil {
@@ -2892,9 +2870,6 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 	request.ProviderTurnID = strings.TrimSpace(request.ProviderTurnID)
 	request.NextSessionID = strings.TrimSpace(request.NextSessionID)
 	request.NextTurnToken = strings.TrimSpace(request.NextTurnToken)
-	request.AttemptSessionID = strings.TrimSpace(request.AttemptSessionID)
-	request.AttemptTurnToken = strings.TrimSpace(request.AttemptTurnToken)
-	request.TerminalEvidenceID = strings.TrimSpace(request.TerminalEvidenceID)
 	request.NextAction = strings.TrimSpace(request.NextAction)
 	request.Summary = strings.TrimSpace(request.Summary)
 	if request.WorkID == "" || request.HandlingID == "" || request.ProviderTurnID == "" || request.ExpectedWorkRevision == 0 ||
@@ -2952,17 +2927,12 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 	// (heartbeats, progress) legitimately advance the aggregate, and a stale
 	// disposition is an idempotent no-op against a superseded event.
 	_ = request.ExpectedWorkRevision
-	terminalRecovery := request.TerminalEvidenceID != "" || request.AttemptSessionID != "" || request.AttemptTurnToken != "" || request.AttemptFence != 0
-	if terminalRecovery && (request.TerminalEvidenceID == "" || request.AttemptSessionID == "" || request.AttemptTurnToken == "" || request.AttemptFence == 0) {
-		s.mu.Unlock()
-		return WorkEvent{}, Work{}, fmt.Errorf("terminal recovery requires exact evidence and Attempt identity")
-	}
 	wasTerminal := item.Status == WorkDone || item.Status == WorkCancelled
-	if wasTerminal && request.Disposition != WorkDispositionComplete && request.Disposition != WorkDispositionCancel && request.Disposition != WorkDispositionSupersede {
+	if wasTerminal && request.Disposition != WorkDispositionComplete && request.Disposition != WorkDispositionCancel {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, fmt.Errorf("terminal Work cannot return to a nonterminal disposition")
 	}
-	if request.Disposition == WorkDispositionWait && !terminalRecovery {
+	if request.Disposition == WorkDispositionWait {
 		if workHasActiveCanonicalAttempt(database, item) {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, fmt.Errorf("%w: wait requires the active canonical Attempt to settle first", ErrWorkAttemptConflict)
@@ -2976,99 +2946,52 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 	// ownership, and wait state. The projected row below is refreshed from
 	// canonical state after the event closes.
 	nextAction := request.NextAction
-	if terminalRecovery {
-		disposition := lifecycle.Disposition(request.Disposition)
-		if request.Disposition == WorkDispositionSupersede {
-			disposition = lifecycle.DispositionCancel
+	switch request.Disposition {
+	case WorkDispositionContinue:
+		if request.NextSessionID == "" || request.NextTurnToken == "" {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, fmt.Errorf("continue disposition requires exact next_session_id and next_turn_token")
 		}
-		if request.Disposition == WorkDispositionContinue {
-			if request.NextSessionID == "" || request.NextTurnToken == "" {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, fmt.Errorf("terminal recovery continue requires exact nextAttempt session and turn")
-			}
-			nextAttempt, found := exactTurnForSession(database, request.NextSessionID, request.NextTurnToken)
-			if !found || nextAttempt.WorkID != item.ID ||
-				isHostHandlingTurn(database, nextAttempt) || !turnHasAdmissionAuthority(nextAttempt) {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, fmt.Errorf("%w: named nextAttempt turn is not canonically authorized", ErrWorkAttemptConflict)
-			}
+		canonical, stateErr := s.fsmState(item.ID)
+		if stateErr != nil {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, stateErr
 		}
-		var wakeKind lifecycle.WakeKind
-		var wakeRef string
-		var nextAttemptAt *time.Time
-		if request.Wake != nil {
-			wakeKind, wakeRef = lifecycle.WakeKind(request.Wake.Kind), request.Wake.Ref
-			nextAttemptAt = request.Wake.NextAttemptAt
+		nextToken := lifecycle.TurnToken(request.NextTurnToken)
+		admission := canonical.AdmissionByToken(nextToken)
+		if admission == nil || admission.Status != lifecycle.AdmissionAccepted ||
+			admission.SessionID != request.NextSessionID || admission.Purpose != lifecycle.AdmissionPurposeReview ||
+			admission.PurposeID != lease.HandlingID {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, fmt.Errorf("%w: named next Attempt Turn has no accepted admission for this review handling", ErrWorkAttemptConflict)
 		}
-		_, err = s.fsm.ResolveTerminalReview(lifecycle.WorkID(item.ID), lifecycle.ResolveTerminalReviewInput{
-			EventID:   review.EventID,
-			HandlerID: request.HandlingID, HandlerToken: lifecycle.TurnToken(request.ProviderTurnID),
-			AttemptSessionID: request.AttemptSessionID,
-			AttemptToken:     lifecycle.TurnToken(request.AttemptTurnToken), AttemptFence: request.AttemptFence,
-			TerminalEvidenceID: request.TerminalEvidenceID, Disposition: disposition, Actor: "brain",
-			WakeKind: wakeKind, WakeRef: wakeRef, NextAttemptAt: nextAttemptAt,
-			NextSessionID: request.NextSessionID, NextTurnToken: lifecycle.TurnToken(request.NextTurnToken),
-		})
-		if err != nil {
+		st, stErr := s.fsm.AcceptReviewFollowUp(
+			lifecycle.WorkID(item.ID), fsmEventID(item), request.NextSessionID,
+			nextToken,
+		)
+		if stErr != nil {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, stErr
+		}
+		if st.Attempt == nil || st.Attempt.SessionID != request.NextSessionID ||
+			st.Attempt.TurnToken != nextToken {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, fmt.Errorf("%w: atomic next Attempt admission failed: attempt=%+v", ErrWorkAttemptConflict, st.Attempt)
+		}
+	case WorkDispositionWait:
+		if err := s.fsmResolveReview(item.ID, lifecycle.DispositionWait, request.Wake); err != nil {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, err
 		}
-	} else {
-		switch request.Disposition {
-		case WorkDispositionContinue:
-			if request.NextSessionID == "" {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, fmt.Errorf("continue disposition requires next_session_id")
-			}
-			canonical, stateErr := s.fsmState(item.ID)
-			if stateErr != nil {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, stateErr
-			}
-			var nextToken lifecycle.TurnToken
-			for _, admission := range canonical.Admissions {
-				if admission.Status != lifecycle.AdmissionAccepted || admission.SessionID != request.NextSessionID ||
-					admission.Purpose != lifecycle.AdmissionPurposeReview || admission.PurposeID != lease.HandlingID {
-					continue
-				}
-				if nextToken != "" && nextToken != admission.TurnToken {
-					s.mu.Unlock()
-					return WorkEvent{}, Work{}, fmt.Errorf("%w: multiple accepted admissions match this review handling", ErrWorkAttemptConflict)
-				}
-				nextToken = admission.TurnToken
-			}
-			if nextToken == "" {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, fmt.Errorf("%w: nextAttempt Session has no accepted admission for this review handling", ErrWorkAttemptConflict)
-			}
-			st, stErr := s.fsm.AcceptReviewFollowUp(
-				lifecycle.WorkID(item.ID), fsmEventID(item), request.NextSessionID,
-				nextToken,
-			)
-			if stErr != nil {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, stErr
-			}
-			if st.Attempt == nil || st.Attempt.SessionID != request.NextSessionID ||
-				st.Attempt.TurnToken != nextToken {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, fmt.Errorf("%w: atomic next Attempt admission failed: attempt=%+v attempts=%+v", ErrWorkAttemptConflict, st.Attempt, st.Attempts)
-			}
-		case WorkDispositionWait:
-			if err := s.fsmResolveReview(item.ID, lifecycle.DispositionWait, request.Wake); err != nil {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, err
-			}
-		case WorkDispositionComplete:
-			if err := s.fsmResolveReview(item.ID, lifecycle.DispositionComplete, nil); err != nil {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, err
-			}
-		case WorkDispositionCancel, WorkDispositionSupersede:
-			if err := s.fsmResolveReview(item.ID, lifecycle.DispositionCancel, nil); err != nil {
-				s.mu.Unlock()
-				return WorkEvent{}, Work{}, err
-			}
+	case WorkDispositionComplete:
+		if err := s.fsmResolveReview(item.ID, lifecycle.DispositionComplete, nil); err != nil {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, err
+		}
+	case WorkDispositionCancel:
+		if err := s.fsmResolveReview(item.ID, lifecycle.DispositionCancel, nil); err != nil {
+			s.mu.Unlock()
+			return WorkEvent{}, Work{}, err
 		}
 	}
 	// Refresh the whole projected row from canonical state; disposition prose

@@ -250,34 +250,14 @@ func (s *Store) PrepareInputAdmission(candidate watcher.InputAdmission) (watcher
 		TranscriptProvider: candidate.TranscriptBinding.Provider, TranscriptFlag: candidate.TranscriptBinding.PiFlag,
 		TranscriptPath: candidate.TranscriptBinding.PiPath, Purpose: purpose, PurposeID: purposeID,
 	}
-	var applied bool
-	var next *lifecycle.State
-	if candidate.TerminalEvidenceID != "" {
-		if st.Attempt == nil || st.Review == nil || st.Review.Handler == nil ||
-			st.Attempt.SessionID != candidate.SessionID || st.Attempt.TurnToken != lifecycle.TurnToken(candidate.ExistingTurnID) {
-			return watcher.InputAdmission{}, false, fmt.Errorf("terminal follow-up lacks exact Attempt and review capability")
-		}
-		input.Mode = lifecycle.AdmissionFresh
-		input.Purpose, input.PurposeID = "", ""
-		next, err = s.fsm.PrepareTerminalReviewFollowUp(st.ID, lifecycle.PrepareTerminalReviewFollowUpInput{
-			AttemptSessionID: st.Attempt.SessionID,
-			AttemptToken:     st.Attempt.TurnToken, AttemptFence: st.Attempt.Generation,
-			TerminalEvidenceID: candidate.TerminalEvidenceID,
-			EventID:            st.Review.EventID,
-			HandlerID:          st.Review.Handler.HandlerID, HandlerToken: st.Review.Handler.HandlerToken,
-			Admission: input,
-		})
-		applied = err == nil
-	} else {
-		applied, next, err = s.fsm.PrepareAdmission(st.ID, input)
-	}
+	applied, next, err := s.fsm.PrepareAdmission(st.ID, input)
 	if err != nil {
 		return watcher.InputAdmission{}, false, err
 	}
 	if err := s.SyncWorkProjection(string(st.ID)); err != nil {
 		return watcher.InputAdmission{}, false, err
 	}
-	return admissionSnapshot(next, next.Admission(lifecycle.TurnToken(candidate.ProposedTurnID))), applied, nil
+	return admissionSnapshot(next, next.AdmissionByToken(lifecycle.TurnToken(candidate.ProposedTurnID))), applied, nil
 }
 
 func normalizeInputAdmission(candidate watcher.InputAdmission) watcher.InputAdmission {
@@ -291,7 +271,6 @@ func normalizeInputAdmission(candidate watcher.InputAdmission) watcher.InputAdmi
 	candidate.PaneGeneration = strings.TrimSpace(candidate.PaneGeneration)
 	candidate.ExistingTurnID = strings.TrimSpace(candidate.ExistingTurnID)
 	candidate.BaselineActivityID = strings.TrimSpace(candidate.BaselineActivityID)
-	candidate.TerminalEvidenceID = strings.TrimSpace(candidate.TerminalEvidenceID)
 	return candidate
 }
 
@@ -343,7 +322,7 @@ func (s *Store) InputAdmission(sessionID, proposedTurnID string) (watcher.InputA
 		return watcher.InputAdmission{}, false, nil
 	}
 	for _, st := range s.fsm.ListStates() {
-		if admission := st.Admission(lifecycle.TurnToken(proposedTurnID)); admission != nil && admission.SessionID == sessionID {
+		if admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID)); admission != nil && admission.SessionID == sessionID {
 			return admissionSnapshot(st, admission), true, nil
 		}
 	}
@@ -363,11 +342,10 @@ func (s *Store) PendingInputAdmissions(sessionID string) ([]watcher.InputAdmissi
 	}
 	out := make([]watcher.InputAdmission, 0)
 	for _, st := range s.fsm.ListStates() {
-		for _, admission := range st.Admissions {
-			if admission.SessionID == sessionID &&
-				(admission.Status == lifecycle.AdmissionPrepared || admission.Status == lifecycle.AdmissionAmbiguous) {
-				out = append(out, admissionSnapshot(st, admission))
-			}
+		admission := st.Admission
+		if admission != nil && admission.SessionID == sessionID &&
+			(admission.Status == lifecycle.AdmissionPrepared || admission.Status == lifecycle.AdmissionAmbiguous) {
+			out = append(out, admissionSnapshot(st, admission))
 		}
 	}
 	sort.SliceStable(out, func(left, right int) bool {
@@ -422,7 +400,7 @@ func (s *Store) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadS
 		return watcher.InputAdmission{}, fmt.Errorf("brain store is not configured")
 	}
 	for _, st := range s.fsm.ListStates() {
-		admission := st.Admission(lifecycle.TurnToken(proposedTurnID))
+		admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))
 		if admission == nil || admission.SessionID != sessionID {
 			continue
 		}
@@ -433,7 +411,7 @@ func (s *Store) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadS
 		if err := s.SyncWorkProjection(string(st.ID)); err != nil {
 			return watcher.InputAdmission{}, err
 		}
-		return admissionSnapshot(next, next.Admission(lifecycle.TurnToken(proposedTurnID))), nil
+		return admissionSnapshot(next, next.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))), nil
 	}
 	return watcher.InputAdmission{}, fmt.Errorf("pending submission not found")
 }
@@ -484,7 +462,7 @@ func (s *Store) ResolveInputAdmission(resolution watcher.InputAdmissionResolutio
 	if err != nil {
 		return watcher.InputAdmission{}, err
 	}
-	accepted := next.Admission(admission.TurnToken)
+	accepted := next.AdmissionByToken(admission.TurnToken)
 	if err := s.SyncWorkProjection(string(st.ID)); err != nil {
 		return watcher.InputAdmission{}, err
 	}
@@ -521,10 +499,8 @@ func (s *Store) rebuildFSMProjections() error {
 		}
 	}
 	for _, st := range states {
-		for _, admission := range st.Admissions {
-			if admission.Status != lifecycle.AdmissionAccepted {
-				continue
-			}
+		admission := st.Admission
+		if admission != nil && admission.Status == lifecycle.AdmissionAccepted {
 			resolvedAt := admission.AttemptedAt
 			if admission.SettledAt != nil && !admission.SettledAt.IsZero() {
 				resolvedAt = *admission.SettledAt
@@ -553,7 +529,7 @@ func (s *Store) rebuildFSMProjections() error {
 
 func (s *Store) fsmAdmission(sessionID, proposedTurnID string) (*lifecycle.State, *lifecycle.AdmissionState, error) {
 	for _, st := range s.fsm.ListStates() {
-		admission := st.Admission(lifecycle.TurnToken(proposedTurnID))
+		admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))
 		if admission != nil && admission.SessionID == sessionID {
 			return st, admission, nil
 		}
@@ -563,7 +539,7 @@ func (s *Store) fsmAdmission(sessionID, proposedTurnID string) (*lifecycle.State
 
 // projectAcceptedAdmission maintains the provider-facing Turn read model.
 // Failure cannot revoke the already-committed Lifecycle fact; restart repair
-// deterministically rebuilds this projection from State.Admissions.
+// deterministically rebuilds this projection from the exact State admission.
 func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecycle.AdmissionState, resolution watcher.InputAdmissionResolution) error {
 	if st == nil || admission == nil {
 		return fmt.Errorf("accepted admission projection is missing canonical state")
@@ -689,7 +665,7 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 			}
 			snapshot := turn.snapshot()
 			snapshot.LeaseDeadline = attemptState.Attempt.LeaseDeadline
-			if admission := attemptState.Admission(attemptState.Attempt.TurnToken); admission != nil &&
+			if admission := attemptState.AdmissionByToken(attemptState.Attempt.TurnToken); admission != nil &&
 				admission.ResultTurnToken == attemptState.Attempt.TurnToken {
 				snapshot.SignalProtocol = admission.SignalProtocol
 			}
@@ -700,7 +676,7 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 		// directly from the exact aggregate token instead of returning an older
 		// row or manufacturing an identity.
 		current := attemptState.CurrentTurn()
-		if current == nil || string(current.Token) != attemptToken {
+		if current == nil || string(current.TurnToken) != attemptToken {
 			return watcher.TurnSnapshot{}, false, fmt.Errorf("canonical Attempt %s has no matching aggregate Turn", attemptToken)
 		}
 		snapshot := watcher.TurnSnapshot{
@@ -708,7 +684,7 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 			AcceptedAt: current.AdmittedAt, LeaseDeadline: attemptState.Attempt.LeaseDeadline,
 			UpdatedAt: attemptState.UpdatedAt,
 		}
-		if admission := attemptState.Admission(attemptState.Attempt.TurnToken); admission != nil &&
+		if admission := attemptState.AdmissionByToken(attemptState.Attempt.TurnToken); admission != nil &&
 			admission.ResultTurnToken == attemptState.Attempt.TurnToken {
 			snapshot.AcceptedAt = admission.AttemptedAt
 			snapshot.ActivityID = admission.ActivityID
@@ -838,7 +814,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		if fact.Class != watcher.EvidenceProvider ||
 			(fact.Kind != "done" && fact.Kind != "failed") ||
 			turn.SignalProtocol ||
-			(!providerFactBinds(turn, fact) && !providerRecoverableAdopts(turn, fact)) {
+			!providerFactBinds(turn, fact) {
 			return mutation, nil
 		}
 	}
@@ -856,7 +832,7 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 	// no recorded tuple adopts the provider's newest observation that started
 	// inside its admission window (C.6 poll-time adoption).
 	binding := providerFactBinds(turn, fact)
-	adopts := !binding && (providerFactAdopts(turn, fact) || providerRecoverableAdopts(turn, fact))
+	adopts := !binding && providerFactAdopts(turn, fact)
 
 	applyEvent := func(kind string, actionable bool, eventSummary string) {
 		mutation.eventKind = kind
@@ -1285,27 +1261,6 @@ func providerFactAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
 	return !fact.Admission.Empty() || strings.TrimSpace(fact.ActivityID) != ""
 }
 
-// providerRecoverableAdopts is the one-way Unknown/ownership-loss recovery
-// gate. Evidence loss
-// may occur before a receipt/admission tuple or ActivityID is recorded. A
-// later Provider terminal can still resolve the turn, but only when it carries
-// a non-empty tuple or ActivityID and its StartedAt is within this turn's
-// admission window. Running, attention, stale, liveness, blind and replay
-// facts cannot adopt Unknown.
-func providerRecoverableAdopts(turn *TurnRecord, fact watcher.TurnFact) bool {
-	if fact.Class != watcher.EvidenceProvider ||
-		(fact.Kind != "done" && fact.Kind != "failed") ||
-		turn.Status != watcher.TurnUnknown ||
-		turn.SignalProtocol ||
-		!turn.Admission.Empty() || strings.TrimSpace(turn.ActivityID) != "" {
-		return false
-	}
-	if fact.StartedAt.IsZero() || fact.StartedAt.Before(turn.AcceptedAt) {
-		return false
-	}
-	return !fact.Admission.Empty() || strings.TrimSpace(fact.ActivityID) != ""
-}
-
 func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) WorkUpdate {
 	running := WorkRunning
 	needsInput := WorkNeedsInput
@@ -1399,7 +1354,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	var state *lifecycle.State
 	var admission *lifecycle.AdmissionState
 	for _, candidate := range s.fsm.ListStates() {
-		if exact := candidate.Admission(lifecycle.TurnToken(fact.TurnID)); exact != nil &&
+		if exact := candidate.AdmissionByToken(lifecycle.TurnToken(fact.TurnID)); exact != nil &&
 			exact.SessionID == fact.SessionID && exact.SignalProtocol && exact.ClaimToken == "" {
 			state, admission = candidate, exact
 			break
@@ -1407,10 +1362,9 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	}
 	if state == nil || admission == nil {
 		for _, candidate := range s.fsm.ListStates() {
-			for _, a := range candidate.Admissions {
-				if a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
-					return errDelegatedTurnMismatch
-				}
+			a := candidate.Admission
+			if a != nil && a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
+				return errDelegatedTurnMismatch
 			}
 		}
 		return errNoDelegatedSignalContract
@@ -1423,7 +1377,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 		if err != nil {
 			return err
 		}
-		state, admission = next, next.Admission(admission.TurnToken)
+		state, admission = next, next.AdmissionByToken(admission.TurnToken)
 	}
 	if admission.ResultTurnToken != lifecycle.TurnToken(fact.TurnID) || state.Attempt == nil ||
 		state.Attempt.SessionID != fact.SessionID || state.Attempt.TurnToken != lifecycle.TurnToken(fact.TurnID) {
@@ -1453,11 +1407,11 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 // ApplyTurnFact is the single canonical reducer. Under one lock and one
 // persist it: dedupes the deterministic FactID, validates the transition,
 // mutates the turn, derives the Work update, and appends or upgrades the
-// outbox event (non-actionable → actionable in-place flip for corrections).
+// presentation event (non-actionable to actionable in-place flip for corrections).
 // A replayed or reordered fact is a no-op; terminal turns are immutable.
 //
 // Terminal Work (done/cancelled) is a terminal scheduler decision: a later
-// fact may advance the turn row and is retained as non-actionable outbox
+// fact may advance the turn row and is retained as non-actionable presentation
 // audit, but it never moves Work status/next_action/wait_for and never
 // creates or flips an actionable wake (C.2.9).
 var (
@@ -1702,7 +1656,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		// transition, and every lifecycle effect routes through the engine.
 	}
 
-	// Outbox event: exactly one row per (work, dedupe key); corrections flip
+	// Presentation event: exactly one row per (work, dedupe key); corrections flip
 	// the existing non-actionable row actionable in place. Terminal Work keeps
 	// the late row as non-actionable audit only: it is never claimed and never
 	// flips, so no second wake is possible (C.2.9).
@@ -1757,17 +1711,6 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			eventID = database.BrainWorkEvents[eventIndex].ID
 			eventCreated = true
 		}
-		if eventCreated && actionable && workIndex >= 0 {
-			// The exact actionable row now exists (or was upgraded in place), so
-			// mirror that durable identity into Lifecycle in the same Store
-			// transaction. Translating the turn before event construction cannot do
-			// this for needs_input: it knows the status but not the unique outbox
-			// identity, which was the source-thread notification loss.
-			canonicalEvent := database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, eventID)]
-			if err := s.fsmMirrorActionableEvent(workID, canonicalEvent); err != nil {
-				return watcher.TurnSnapshot{}, false, err
-			}
-		}
 	}
 	// Canonical producer terminalization and every matching cross-Work wake
 	// share this one lifecycle persist. A crash cannot expose the producer
@@ -1799,7 +1742,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	if eventCreated && isProjectedWorkResultEvent(mutation.eventKind) {
 		// One projected card per Work lineage, replaced in place from
 		// canonical state; its identity follows the projected fact. Card
-		// projection is not notification delivery and never acknowledges outbox
+		// projection is not notification delivery and never acknowledges the Review
 		// success; only confirmed Host delivery does that.
 		projectedEvent := WorkEvent{
 			ID:         eventID,

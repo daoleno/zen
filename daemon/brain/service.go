@@ -15,7 +15,6 @@ import (
 
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
-	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -300,7 +299,7 @@ func (s *Service) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 
 // ApplyTurnFact applies one observation through the single canonical reducer.
 // It implements watcher.TurnLedger; the store persists turn + derived Work +
-// outbox event atomically, so this method never dispatches directly — the
+// presentation event atomically, so this method never dispatches directly; the
 // resulting Session event / reconcile loop re-drives the Host lane.
 func (s *Service) ApplyTurnFact(fact watcher.TurnFact) (watcher.TurnSnapshot, bool, error) {
 	if s == nil || s.store == nil {
@@ -666,10 +665,10 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 // attempting a wake. Provider transcript state is never scheduler authority.
 //
 // Sessions with a canonical ledger turn are already owned by the single
-// reducer: Work status and outbox events were derived atomically at fact-apply
+// reducer: Work status and presentation events were derived at fact-apply
 // time (watcher poll facts, control-plane facts, liveness facts). This route
 // only re-drives delivery for those sessions. Markerless/projection sessions
-// keep the legacy projection path below.
+// remain non-actionable without exact Turn identity.
 func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if s == nil || s.store == nil || event.Agent == nil {
 		return false, nil
@@ -744,7 +743,7 @@ func isTurnScopedSessionDedupeKey(dedupeKey string) bool {
 // isCanonicalSessionWakeDedupeKey is the durable shape produced only by
 // wakeWaitingWorkLocked after the exact Session Turn terminalizes in the same
 // transaction. Generic Event append rejects unscoped lifecycle keys, while
-// legacy occurrence-counted rows never have this typed wake prefix.
+// unscoped rows never have this typed wake prefix.
 func isCanonicalSessionWakeDedupeKey(dedupeKey string) bool {
 	dedupeKey = strings.TrimSpace(dedupeKey)
 	return strings.HasPrefix(dedupeKey, "wake:session_terminal:session:") &&
@@ -1235,12 +1234,6 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 				false,
 			); noteErr != nil {
 				return fmt.Errorf("persist ambiguous delivery quarantine for Work review %s: %w", claimed.WorkID, noteErr)
-			}
-			if _, outcomeErr := s.store.FSM().RecordNotificationOutcome(
-				lifecycle.WorkID(claimed.WorkID), claimed.EventID,
-				lifecycle.DispatchUnknownSideEffect, "provider mutation may have begun",
-			); outcomeErr != nil {
-				return fmt.Errorf("quarantine ambiguous Work review %s: %w", claimed.WorkID, outcomeErr)
 			}
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.

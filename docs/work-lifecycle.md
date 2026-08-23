@@ -1,7 +1,7 @@
 # Zen Work Lifecycle
 
-Zen's durable coordination model has three records: `Work`, `Attempt`, and
-`Event`. They are persisted by one lifecycle authority under
+Zen's durable coordination model has one `Work` aggregate with at most one
+`Attempt`, one `Wake`, one `Review`, and append-only `Event` records. They are persisted by one lifecycle authority under
 `state/lifecycle/`; current rows and append-only scheduler events commit in one
 transaction. Provider, tmux, PID, transcript, and UI state are evidence or
 projections, never lifecycle truth.
@@ -39,10 +39,11 @@ Attempt loss releases execution authority but never completes Work. A later
 Attempt can reuse the viable Session or start anew from the Work's
 durable objective, completion criteria, context, and workspace facts.
 
-Resolving an Event with `continue` and admitting the next Attempt is one
-transaction. A restart therefore sees either the unresolved Event and old
-Attempt, or the resolved Event and exact new Attempt, never an intermediate
-next-Attempt reservation.
+Same-Session continuation is deliberately two steps. Brain first submits one
+scoped follow-up with one random Turn identity and the exact Review capability.
+Provider acceptance leaves that admission non-owning. Brain then resolves the
+same Review with typed `continue`; that transaction closes the Review and
+activates exactly the accepted Turn as the next Attempt.
 
 The exact provider mutation is first recorded as an `AdmissionState`. A
 review-bound follow-up is tagged with the exact handling identity. It remains
@@ -63,11 +64,12 @@ review, claim, notification, delivery, card, and resolution identity. Claimant
 session/turn and expiry are lease metadata on the Event, not another action
 identity.
 
-Events are delivered at least once. A handler atomically claims an unresolved,
-due Event. If it disappears before confirmed delivery, `claim_expires_at`
-releases the claim and schedules the same `event_id` again. Repeated delivery
-and repeated resolution are idempotent. The timeline projection keys the card
-by Work and replaces it, so repeated handling produces exactly one card.
+An open Review is the durable delivery obligation. A handler atomically claims
+it by `Review.EventID`. If it disappears before confirmed delivery,
+`claim_expires_at` releases the claim and the same Review becomes claimable.
+Repeated delivery and repeated resolution are idempotent. The timeline
+projection keys the card by `Review.EventID`, so repeated handling produces
+exactly one card.
 
 The first unresolved actionable Event remains the review/card identity when
 evidence strengthens. In particular, a provisional lease-expired/lost fact may
@@ -76,16 +78,12 @@ existing `event_id`, claim, and notification stay in place while its current
 reason and Attempt result reflect the stronger evidence. Brain dispositions
 therefore target the same Event; no second card or automatic Attempt is made.
 
-External delivery records exactly one outcome:
+Provider uncertainty exists only at the exact input-admission boundary. A
+definite pre-mutation failure may retry the identical payload with the same
+Turn identity. An ambiguous or unknown outcome is durable no-replay evidence;
+it creates no scheduler state, Session, Attempt, Wake, or fallback action.
 
-| Outcome | Meaning | Automatic action |
-| --- | --- | --- |
-| `success` | Effect is confirmed | Resolve delivery |
-| `retryable` | Effect provably did not happen | Increment `attempt_count`, set `last_error` and `next_attempt_at` |
-| `unknown_side_effect` | Effect may have happened | Keep visible; never retry automatically |
-| `terminal` | Delivery cannot succeed without judgment/change | Keep visible; never retry automatically |
-
-The daemon calculates the earliest `next_attempt_at`, claim expiry, or Attempt
+The daemon calculates the earliest due Wake, claim expiry, or Attempt
 liveness deadline and waits on one timer plus lifecycle commit wakeups. On
 restart it reconstructs the next timer from durable rows. Brain never sleeps,
 polls Sessions, or holds an LLM turn open while waiting.
@@ -96,14 +94,14 @@ and repeated timer sweeps create one stable actionable Event.
 
 ## Invariants
 
-- One lifecycle store and transaction boundary owns Work, Attempt, Event,
-  claims, resolutions, retry scheduling, and next-Attempt creation.
+- One lifecycle store and transaction boundary owns Work, Attempt, Wake,
+  Review, Events, claims, and resolutions.
 - At most one active Attempt exists per Work.
 - Exact `session_id + turn_token + fence` gates all Attempt mutation.
 - One `event_id` names an actionable fact from creation through resolution.
 - Internal transitions and repeated resolution are idempotent.
-- Only `retryable` receives `next_attempt_at`.
-- `unknown_side_effect` is never replayed automatically.
+- A definite no-submit may retry only the exact same admission identity.
+- Ambiguous or unknown admission is never replayed automatically.
 - Heartbeats affect Attempt liveness only.
 - Execution evidence cannot imply Work completion.
 - Lifecycle timers never create Sessions or infer delegated prompts.

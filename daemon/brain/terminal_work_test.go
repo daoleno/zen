@@ -14,7 +14,7 @@ import (
 // uncertain after Session removal, a late lease stale, or a late bound
 // Provider terminal — may advance the turn record and be retained as
 // non-actionable audit, but they must never move the Work's
-// status/next_action/wait_for and must never produce an actionable outbox row
+// status/next_action/wait_for and must never produce an actionable Event row
 // that could wake Brain.
 func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Helper()
@@ -84,7 +84,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 		assertTerminalWorkUnchanged(t, store, completed, after)
 		row, found := turnEvent(t, store, completed.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain")
 		if !found {
-			t.Fatal("late uncertain row missing from outbox audit")
+			t.Fatal("late uncertain row missing from Event audit")
 		}
 		if row.Actionable {
 			t.Fatalf("late uncertain row is actionable for terminal Work: %+v", row)
@@ -119,7 +119,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 		assertTerminalWorkUnchanged(t, store, completed, after)
 		row, found := turnEvent(t, store, completed.ID, "session:"+sessionID+":turn:"+turnID+":session.stale")
 		if !found {
-			t.Fatal("late stale row missing from outbox audit")
+			t.Fatal("late stale row missing from Event audit")
 		}
 		if row.Actionable {
 			t.Fatalf("late stale row is actionable for terminal Work: %+v", row)
@@ -161,7 +161,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 		assertTerminalWorkUnchanged(t, store, cancelled, after)
 		row, found := turnEvent(t, store, cancelled.ID, "session:"+sessionID+":turn:"+turnID+":session.done")
 		if !found {
-			t.Fatal("late terminal row missing from outbox audit")
+			t.Fatal("late terminal row missing from Event audit")
 		}
 		if row.Actionable {
 			t.Fatalf("late terminal row is actionable for terminal Work: %+v", row)

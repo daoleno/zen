@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -75,7 +76,6 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 	item, err := store.CreateWork(Work{
 		Title:            "zen-provider-save-test-model-id",
 		Objective:        "Keep the work card after host switch",
-		Status:           WorkDone,
 		CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
@@ -93,8 +93,14 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 	if err != nil || !created {
 		t.Fatalf("work event created=%v err=%v", created, err)
 	}
-	if _, materialized, err := store.SyncWorkCard(item.ID, &event); err != nil || !materialized {
-		t.Fatalf("work card materialized=%v err=%v", materialized, err)
+	if _, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), event.Kind, event.ID, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SyncWorkCard(item.ID, &event); err != nil {
+		t.Fatalf("sync Work card: %v", err)
 	}
 
 	fw := &fakeWatcher{

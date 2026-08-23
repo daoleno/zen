@@ -11,8 +11,8 @@ needs judgment, lifecycle exposes one due `event_id`. Brain claims it for an
 exact Host Session and turn, sends the notification once per delivery attempt,
 and resolves it with a typed disposition.
 
-While an Event is scheduled for retry, Brain has no open polling turn. The
-daemon's lifecycle timer wakes at `next_attempt_at` or `claim_expires_at` and
+While a Work has a due Wake, Brain has no open polling turn. The
+daemon's lifecycle timer wakes at the exact due instant or `claim_expires_at` and
 re-enters normal event delivery. A daemon restart reconstructs that timer from
 durable lifecycle state.
 
@@ -26,11 +26,12 @@ repeated delivery of its stable Event cannot append duplicate cards. Session,
 provider, tmux, transcript, and process observations help decide whether an
 Attempt is viable, but none can mark Work done.
 
-For `continue`, Brain supplies the exact Event capability and next Attempt
-identity. Lifecycle resolves the Event and admits that Attempt atomically. It
-reuses the Session when viable; otherwise the new Session receives durable Work
-context and workspace facts. Old Attempt tokens and fences remain stale after
-the transfer.
+For `continue`, Brain first sends one scoped follow-up to an explicitly chosen
+or created Session using one random Turn identity and the exact Review
+capability. A definite pre-mutation failure may retry that same Turn; ambiguous
+or unknown submission is no-replay. Only after exact provider acceptance does
+Brain resolve the Review with typed `continue`, which activates that exact Turn
+as the Attempt. Old Attempt tokens and fences remain stale after the transfer.
 
 `until_done` never starts this path by itself. After any terminal, failed, or
 lost Attempt, repeated lifecycle sweeps and daemon restarts only preserve and
@@ -46,9 +47,9 @@ result without replacing the unresolved `event_id`. Brain dispositions the
 same stable card from the stronger evidence; no parallel notification or
 automatic Attempt is created.
 
-Ambiguous external mutation is recorded as `unknown_side_effect`. Brain keeps
-the Event visible for explicit judgment and never asks the daemon to replay it
-automatically.
+Provider ambiguity is retained only on the exact input admission. It never
+creates a lifecycle status, fallback Session, automatic continuation, or
+scheduler retry.
 
 Fresh Brain homes receive the provider-neutral lifecycle and delegated
 Agent protocol from the versioned templates under `daemon/brain/templates/`.

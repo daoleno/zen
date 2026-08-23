@@ -70,7 +70,6 @@ const (
 	KReviewReleased         Kind = "review.released"
 	KReviewDeliveryResolved Kind = "review.delivery_resolved"
 	KReviewResolved         Kind = "review.resolved"
-	KOutboxDispatch         Kind = "outbox.dispatched"
 )
 
 // Wake kinds identify the external producer of a true wait.
@@ -274,12 +273,6 @@ func decodePayload(kind Kind, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return p, nil
-	case KOutboxDispatch:
-		var p OutboxDispatchPayload
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return nil, err
-		}
-		return p, nil
 	default:
 		return nil, nil
 	}
@@ -467,12 +460,6 @@ type ReviewDeliveryResolvedPayload struct {
 	Reason       string    `json:"reason"`
 }
 
-type OutboxDispatchPayload struct {
-	EntryID string `json:"entry_id"`
-	Result  string `json:"result"`
-	Error   string `json:"error,omitempty"`
-}
-
 // Reduced state.
 
 // AttemptIdentity is the exact capability required to mutate an Attempt.
@@ -490,22 +477,10 @@ type Attempt struct {
 	Delegated     bool      `json:"delegated"`
 	Generation    uint64    `json:"generation"`
 	TurnToken     TurnToken `json:"turn_token"`
+	FollowUpOf    TurnToken `json:"follow_up_of,omitempty"`
+	AdmittedAt    time.Time `json:"admitted_at"`
 	LeaseDeadline time.Time `json:"lease_deadline"`
 	LeaseEpoch    uint64    `json:"lease_epoch"`
-}
-
-// AttemptRecord is the reduced history of one admitted turn.
-type AttemptRecord struct {
-	Token       TurnToken  `json:"token"`
-	SessionID   string     `json:"session_id"`
-	Generation  uint64     `json:"generation"`
-	FollowUpOf  TurnToken  `json:"follow_up_of,omitempty"`
-	AdmittedAt  time.Time  `json:"admitted_at"`
-	SettledAt   *time.Time `json:"settled_at,omitempty"`
-	Outcome     string     `json:"outcome,omitempty"` // done | failed | lost
-	OK          bool       `json:"ok"`
-	Summary     string     `json:"summary,omitempty"`
-	CriteriaMet bool       `json:"criteria_met,omitempty"`
 }
 
 // WakeState is the typed external producer a waiting Work parks on.
@@ -516,26 +491,9 @@ type WakeState struct {
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 }
 
-// Outbox entries are durable work items drained at-least-once by the
-// dispatcher; effects must be idempotent by EntryID.
-type OutboxEntry struct {
-	ID             string     `json:"id"`
-	Reason         string     `json:"reason,omitempty"`
-	TargetThreadID string     `json:"target_thread_id,omitempty"`
-	AfterToken     TurnToken  `json:"after_token,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	DispatchedAt   *time.Time `json:"dispatched_at,omitempty"`
-	DispatchResult string     `json:"dispatch_result,omitempty"`
-	DispatchError  string     `json:"dispatch_error,omitempty"`
-	Attempts       int        `json:"attempts"`
-	NextAttemptAt  *time.Time `json:"next_attempt_at,omitempty"`
-	LastError      string     `json:"last_error,omitempty"`
-}
-
 // ReviewState is the stable attention obligation Brain must disposition.
 type ReviewState struct {
 	EventID  string         `json:"event_id"`
-	OutboxID string         `json:"outbox_id"`
 	Reason   string         `json:"reason"` // turn_done | turn_failed | lease_expired | turn_lost
 	Ref      string         `json:"ref,omitempty"`
 	OpenedAt time.Time      `json:"opened_at"`
@@ -586,27 +544,25 @@ type AdmissionState struct {
 
 // State is the full reduced aggregate. Never mutated outside Reduce.
 type State struct {
-	ID              WorkID            `json:"id"`
-	Revision        uint64            `json:"revision"`
-	Status          Status            `json:"status"`
-	Title           string            `json:"title"`
-	Objective       string            `json:"objective"`
-	Policy          Policy            `json:"policy"`
-	DoneCriteriaRef string            `json:"done_criteria_ref,omitempty"`
-	SourceThreadID  string            `json:"source_thread_id,omitempty"`
-	NextAction      string            `json:"next_action,omitempty"`
-	Fence           uint64            `json:"fence"`
-	Attempt         *Attempt          `json:"attempt,omitempty"`
-	Attempts        []*AttemptRecord  `json:"attempts,omitempty"`
-	Wake            *WakeState        `json:"wake,omitempty"`
-	Outbox          []*OutboxEntry    `json:"outbox,omitempty"`
-	Review          *ReviewState      `json:"review,omitempty"`
-	Admissions      []*AdmissionState `json:"admissions,omitempty"`
-	ConsecutiveLost int               `json:"consecutive_lost,omitempty"`
-	SeenSources     map[string]bool   `json:"seen_sources,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	TerminalAt      *time.Time        `json:"terminal_at,omitempty"`
+	ID              WorkID          `json:"id"`
+	Revision        uint64          `json:"revision"`
+	Status          Status          `json:"status"`
+	Title           string          `json:"title"`
+	Objective       string          `json:"objective"`
+	Policy          Policy          `json:"policy"`
+	DoneCriteriaRef string          `json:"done_criteria_ref,omitempty"`
+	SourceThreadID  string          `json:"source_thread_id,omitempty"`
+	NextAction      string          `json:"next_action,omitempty"`
+	LastSummary     string          `json:"last_summary,omitempty"`
+	Fence           uint64          `json:"fence"`
+	Attempt         *Attempt        `json:"attempt,omitempty"`
+	Wake            *WakeState      `json:"wake,omitempty"`
+	Review          *ReviewState    `json:"review,omitempty"`
+	Admission       *AdmissionState `json:"admission,omitempty"`
+	SeenSources     map[string]bool `json:"seen_sources,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	TerminalAt      *time.Time      `json:"terminal_at,omitempty"`
 }
 
 // Clone returns a deep copy (used for snapshots and safe read views).
@@ -619,13 +575,6 @@ func (s *State) Clone() *State {
 		o := *s.Attempt
 		out.Attempt = &o
 	}
-	if len(s.Attempts) > 0 {
-		out.Attempts = make([]*AttemptRecord, len(s.Attempts))
-		for i, t := range s.Attempts {
-			tc := *t
-			out.Attempts[i] = &tc
-		}
-	}
 	if s.Wake != nil {
 		w := *s.Wake
 		if s.Wake.NextAttemptAt != nil {
@@ -633,13 +582,6 @@ func (s *State) Clone() *State {
 			w.NextAttemptAt = &next
 		}
 		out.Wake = &w
-	}
-	if len(s.Outbox) > 0 {
-		out.Outbox = make([]*OutboxEntry, len(s.Outbox))
-		for i, e := range s.Outbox {
-			ec := *e
-			out.Outbox[i] = &ec
-		}
 	}
 	if s.Review != nil {
 		r := *s.Review
@@ -649,16 +591,13 @@ func (s *State) Clone() *State {
 		}
 		out.Review = &r
 	}
-	if len(s.Admissions) > 0 {
-		out.Admissions = make([]*AdmissionState, len(s.Admissions))
-		for i, admission := range s.Admissions {
-			copy := *admission
-			if admission.SettledAt != nil {
-				settled := *admission.SettledAt
-				copy.SettledAt = &settled
-			}
-			out.Admissions[i] = &copy
+	if s.Admission != nil {
+		admission := *s.Admission
+		if s.Admission.SettledAt != nil {
+			settled := *s.Admission.SettledAt
+			admission.SettledAt = &settled
 		}
+		out.Admission = &admission
 	}
 	if len(s.SeenSources) > 0 {
 		out.SeenSources = make(map[string]bool, len(s.SeenSources))
@@ -673,40 +612,22 @@ func (s *State) Clone() *State {
 	return &out
 }
 
-// CurrentTurn returns the reduced state of the active Attempt's turn, if any.
-func (s *State) CurrentTurn() *AttemptRecord {
-	if s.Attempt == nil {
-		return nil
-	}
-	return s.turnByToken(s.Attempt.TurnToken)
-}
-
-func (s *State) turnByToken(token TurnToken) *AttemptRecord {
-	for _, t := range s.Attempts {
-		if t.Token == token {
-			return t
-		}
-	}
-	return nil
-}
+// CurrentTurn returns the sole current Attempt, if any.
+func (s *State) CurrentTurn() *Attempt { return s.Attempt }
 
 // Admission returns the immutable transaction identified by its proposed
 // Turn token.
-func (s *State) Admission(token TurnToken) *AdmissionState {
-	for _, admission := range s.Admissions {
-		if admission.TurnToken == token {
-			return admission
-		}
+func (s *State) AdmissionByToken(token TurnToken) *AdmissionState {
+	if s.Admission != nil && s.Admission.TurnToken == token {
+		return s.Admission
 	}
 	return nil
 }
 
 // ActiveAdmission returns the sole unresolved transport transaction.
 func (s *State) ActiveAdmission() *AdmissionState {
-	for _, admission := range s.Admissions {
-		if admission.Status == AdmissionPrepared || admission.Status == AdmissionAmbiguous {
-			return admission
-		}
+	if s.Admission != nil && (s.Admission.Status == AdmissionPrepared || s.Admission.Status == AdmissionAmbiguous) {
+		return s.Admission
 	}
 	return nil
 }
@@ -723,6 +644,5 @@ var (
 	ErrNotWaiting       = errors.New("lifecycle: work is not waiting on that wake")
 	ErrNoOpenReview     = errors.New("lifecycle: no open actionable Event")
 	ErrReviewLease      = errors.New("lifecycle: review lease mismatch")
-	ErrUnknownOutbox    = errors.New("lifecycle: unknown outbox entry")
 	ErrInvalidCommand   = errors.New("lifecycle: invalid command")
 )

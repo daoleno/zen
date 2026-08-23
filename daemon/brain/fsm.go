@@ -147,7 +147,7 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 	// lifecycle field below is a pure projection of engine state. Review and
 	// next Attempt projections always run: Events are canonical regardless of
 	// execution history.
-	engineOwnsExecution := len(st.Attempts) > 0 || st.TerminalAt != nil || st.Wake != nil || st.Review != nil
+	engineOwnsExecution := st.Fence > 0 || st.TerminalAt != nil || st.Wake != nil || st.Review != nil
 	if engineOwnsExecution {
 		item.Revision = st.Revision
 		item.Status, item.NextAction, item.WaitFor = fsmProjectLifecycle(st, database, item)
@@ -322,10 +322,6 @@ func fsmProjectLifecycle(st *lifecycle.State, database *presentationDatabase, it
 			next = hint
 		}
 		return WorkRunning, next, waitFor
-	case len(st.Outbox) > 0:
-		// A continuation entry awaits dispatch; execution is momentarily
-		// between owners but the Work is not idle.
-		return WorkOpen, firstNonEmpty(item.NextAction, "Continuing the delegated Session."), ""
 	default:
 		return workStatusFromLifecycle(st.Status), item.NextAction, ""
 	}
@@ -420,7 +416,15 @@ func (s *Store) fsmTranslateCanonicalTransition(turn *TurnRecord, fact watcher.T
 	case status == watcher.TurnBlocked:
 		if st := attemptState(); st != nil {
 			identity := lifecycle.AttemptIdentity{SessionID: sessionID, TurnToken: token, Fence: st.Attempt.Generation}
-			_, err := s.fsm.Heartbeat(st.ID, identity, fact.LeaseSeconds)
+			if _, err := s.fsm.Heartbeat(st.ID, identity, fact.LeaseSeconds); err != nil {
+				return fsmObservationResult(err)
+			}
+			reason := firstNonEmpty(eventKind, "session.needs_input")
+			eventID := strings.TrimSpace(fact.SourceID)
+			if eventID == "" {
+				return fmt.Errorf("blocked Turn evidence requires an exact Event identity")
+			}
+			_, err := s.fsm.OpenReviewEvent(st.ID, reason, eventID, eventID)
 			return fsmObservationResult(err)
 		}
 	case status == watcher.TurnDone || status == watcher.TurnFailed:
@@ -449,11 +453,8 @@ func (s *Store) fsmTranslateCanonicalTransition(turn *TurnRecord, fact watcher.T
 			return fsmObservationResult(stateErr)
 		}
 		identity := lifecycle.AttemptIdentity{SessionID: sessionID, TurnToken: token}
-		for _, attempt := range aggregate.Attempts {
-			if attempt != nil && attempt.SessionID == sessionID && attempt.Token == token {
-				identity.Fence = attempt.Generation
-				break
-			}
+		if aggregate.Attempt != nil && aggregate.Attempt.SessionID == sessionID && aggregate.Attempt.TurnToken == token {
+			identity.Fence = aggregate.Attempt.Generation
 		}
 		if _, err := s.fsm.ReportTurnLost(lifecycle.WorkID(workID), identity, reason); err != nil {
 			return fsmObservationResult(err)
@@ -671,84 +672,4 @@ func (s *Store) SyncWorkCard(workID string, trigger *WorkEvent) (TimelineItem, b
 	item, created, err := s.syncWorkCardLocked(workID, trigger)
 	s.mu.Unlock()
 	return item, created, err
-}
-
-// parseTurnScopedDedupeKey extracts (sessionID, turnID) from the canonical
-// key shape session:<sessionID>:turn:<turnID>:<kind>.
-func parseTurnScopedDedupeKey(dedupeKey string) (string, string, bool) {
-	dedupeKey = strings.TrimSpace(dedupeKey)
-	if !isTurnScopedSessionDedupeKey(dedupeKey) {
-		return "", "", false
-	}
-	rest := strings.TrimPrefix(dedupeKey, "session:")
-	sessionEnd := strings.Index(rest, ":turn:")
-	if sessionEnd <= 0 {
-		return "", "", false
-	}
-	sessionID := rest[:sessionEnd]
-	remainder := rest[sessionEnd+len(":turn:"):]
-	turnEnd := strings.LastIndex(remainder, ":")
-	if turnEnd < 0 {
-		return sessionID, remainder, true
-	}
-	return sessionID, remainder[:turnEnd], true
-}
-
-// fsmMirrorActionableEvent translates one appended actionable fact into
-// canonical engine commands: session lifecycle kinds settle or lose the named
-// turn when it is still the live owner; anything unbound opens a judgment
-// event so an actionable fact can never vanish without attention.
-func (s *Store) fsmMirrorActionableEvent(workID string, event WorkEvent) error {
-	if isSessionLifecycleKind(event.Kind) {
-		if sessionID, turnID, ok := parseTurnScopedDedupeKey(event.DedupeKey); ok {
-			switch event.Kind {
-			case "session.done":
-				if s.fsmSettleIfCurrent(sessionID, turnID, true, event.Summary) {
-					return nil
-				}
-			case "session.failed":
-				if s.fsmSettleIfCurrent(sessionID, turnID, false, event.Summary) {
-					return nil
-				}
-			case "session.uncertain":
-				if s.fsmLostIfCurrent(sessionID, turnID) {
-					return nil
-				}
-			}
-		}
-	}
-	return s.fsmOpenReviewFor(workID, event)
-}
-
-// fsmSettleIfCurrent settles the active Attempt when the fact names it.
-func (s *Store) fsmSettleIfCurrent(sessionID, turnID string, ok bool, summary string) bool {
-	st, found := s.fsmWorkByAttemptSession(sessionID)
-	if !found || st.Attempt == nil || st.Attempt.TurnToken != lifecycle.TurnToken(turnID) {
-		return false
-	}
-	identity := lifecycle.AttemptIdentity{SessionID: sessionID, TurnToken: lifecycle.TurnToken(turnID), Fence: st.Attempt.Generation}
-	_, err := s.fsm.ReportTurnDone(st.ID, identity, lifecycle.DoneInput{OK: ok, Summary: summary})
-	return err == nil
-}
-
-// fsmLostIfCurrent releases the active Attempt after evidence loss.
-func (s *Store) fsmLostIfCurrent(sessionID, turnID string) bool {
-	st, found := s.fsmWorkByAttemptSession(sessionID)
-	if !found || st.Attempt == nil || st.Attempt.TurnToken != lifecycle.TurnToken(turnID) {
-		return false
-	}
-	identity := lifecycle.AttemptIdentity{SessionID: sessionID, TurnToken: lifecycle.TurnToken(turnID), Fence: st.Attempt.Generation}
-	_, err := s.fsm.ReportTurnLost(st.ID, identity, "evidence_loss")
-	return err == nil
-}
-
-func (s *Store) fsmOpenReviewFor(workID string, event WorkEvent) error {
-	reason := event.Kind
-	ref := event.ID
-	_, err := s.fsm.OpenReviewEvent(lifecycle.WorkID(workID), reason, ref, event.ID)
-	return err
-}
-
-func terminalWorkStatus(status WorkStatus) bool {
-	return status == WorkDone || status == WorkCancelled
 }

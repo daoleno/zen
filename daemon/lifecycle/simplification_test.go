@@ -7,84 +7,6 @@ import (
 	"time"
 )
 
-func makeReviewNotification(t *testing.T, e *Engine, workID WorkID) (*State, *OutboxEntry) {
-	t.Helper()
-	define(t, e, workID, PolicyBounded)
-	st, err := e.OpenReviewEvent(workID, "external_check", "result-1", "event-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range st.Outbox {
-		if entry.Reason == "review" {
-			return st, entry
-		}
-	}
-	t.Fatalf("review notification missing: %+v", st)
-	return nil, nil
-}
-
-func TestRetryUsesDurableNextAttemptAt(t *testing.T) {
-	e, _ := newTestEngine(t)
-	defer e.Close()
-	_, entry := makeReviewNotification(t, e, "w-retry")
-	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
-	setNow(e, now)
-	st, err := e.AckOutbox("w-retry", entry.ID, DispatchRetryable, "host unavailable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	retry := outboxFind(st, entry.ID)
-	if retry.Attempts != 1 || retry.NextAttemptAt == nil || retry.LastError != "host unavailable" {
-		t.Fatalf("retry state=%+v", retry)
-	}
-	if next, ok := e.NextWakeAt(); !ok || !next.Equal(*retry.NextAttemptAt) {
-		t.Fatalf("retry timer=(%v,%v), want %v", next, ok, *retry.NextAttemptAt)
-	}
-	setNow(e, *retry.NextAttemptAt)
-	if err := e.Sweep(); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := e.State("w-retry")
-	if got := outboxFind(after, entry.ID); got == nil || got.DispatchResult != DispatchRetryable {
-		t.Fatalf("scheduler mutated delivery retry: %+v", got)
-	}
-}
-
-func TestScheduledRetrySurvivesDaemonRestart(t *testing.T) {
-	root := t.TempDir()
-	e, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, entry := makeReviewNotification(t, e, "w-restart")
-	now := time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC)
-	setNow(e, now)
-	st, err := e.AckOutbox("w-restart", entry.ID, DispatchRetryable, "dropped notification")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dueAt := *outboxFind(st, entry.ID).NextAttemptAt
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
-	e, err = Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer e.Close()
-	setNow(e, dueAt)
-	if next, ok := e.NextWakeAt(); !ok || !next.Equal(dueAt) {
-		t.Fatalf("restart next wake=(%v,%v), want %v", next, ok, dueAt)
-	}
-	if err := e.Sweep(); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, _ := e.State("w-restart")
-	if got := outboxFind(reloaded, entry.ID); got == nil || got.DispatchResult != DispatchRetryable {
-		t.Fatalf("restart mutated delivery retry: %+v", got)
-	}
-}
-
 func TestDueRetryIgnoresUnrelatedInputAndWakesExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	e, err := Open(root)
@@ -162,12 +84,9 @@ func TestDueRetryIgnoresUnrelatedInputAndWakesExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if due.Revision != revision+2 || due.Status != StatusQueued || due.Wake != nil ||
+	if due.Revision != revision+1 || due.Status != StatusQueued || due.Wake != nil ||
 		due.Review == nil || due.Review.Reason != "retry_due" || due.Review.Ref != "external-run:49dc23f4" {
 		t.Fatalf("due retry state=%+v", due)
-	}
-	if got := countOutboxReason(due, "review"); got != 1 {
-		t.Fatalf("due retry notifications=%d, want 1", got)
 	}
 	if cards := reopened.Cards(); len(cards) != 1 || !cards[0].Actionable || cards[0].Reason != "retry_due" {
 		t.Fatalf("due retry cards=%+v", cards)
@@ -202,8 +121,6 @@ func TestExpiredClaimReusesExactEventID(t *testing.T) {
 	if expired.Review == nil || expired.Review.EventID != opened.Review.EventID || expired.Review.Handler != nil {
 		t.Fatalf("claim expiry replaced event: %+v", expired.Review)
 	}
-	retry := outboxFind(expired, expired.Review.OutboxID)
-	setNow(e, *retry.NextAttemptAt)
 	reclaimed, err := e.ClaimReview("w-claim", "ignored", "host-turn-2")
 	if err != nil || reclaimed.Review.EventID != "event-exact" {
 		t.Fatalf("same event not reclaimable: review=%+v err=%v", reclaimed.Review, err)
@@ -212,30 +129,8 @@ func TestExpiredClaimReusesExactEventID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	confirmed := outboxFind(delivered, delivered.Review.OutboxID)
-	if confirmed.DispatchResult != DispatchSuccess || confirmed.NextAttemptAt != nil || confirmed.LastError != "" {
-		t.Fatalf("confirmed retry did not settle delivery: %+v", confirmed)
-	}
-}
-
-func TestUnknownSideEffectNeverAutoRetries(t *testing.T) {
-	e, _ := newTestEngine(t)
-	defer e.Close()
-	_, entry := makeReviewNotification(t, e, "w-unknown")
-	st, err := e.AckOutbox("w-unknown", entry.ID, DispatchUnknownSideEffect, "provider outcome ambiguous")
-	if err != nil {
-		t.Fatal(err)
-	}
-	held := outboxFind(st, entry.ID)
-	if held.NextAttemptAt != nil || held.DispatchResult != DispatchUnknownSideEffect {
-		t.Fatalf("unknown side effect scheduled: %+v", held)
-	}
-	setNow(e, time.Now().UTC().Add(365*24*time.Hour))
-	if _, ok := e.NextWakeAt(); ok {
-		t.Fatal("unknown side effect scheduled a timer")
-	}
-	if err := e.Sweep(); err != nil {
-		t.Fatal(err)
+	if delivered.Review.Handler.DeliveredAt == nil {
+		t.Fatalf("same Review delivery not recorded: %+v", delivered.Review)
 	}
 }
 
@@ -317,7 +212,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 	if lost.Attempt != nil || lost.Review == nil || lost.Review.Reason != "lease_expired" {
 		t.Fatalf("provisional lease result=%+v", lost)
 	}
-	eventID, outboxID, lostRevision := lost.Review.EventID, lost.Review.OutboxID, lost.Revision
+	eventID, lostRevision := lost.Review.EventID, lost.Revision
 
 	stronger, err := e.ReportTurnDone("w-late-terminal", identity, DoneInput{
 		OK: true, Summary: "provider later confirmed the exact turn completed",
@@ -326,9 +221,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 		t.Fatal(err)
 	}
 	if stronger.Revision != lostRevision+1 || stronger.Review == nil ||
-		stronger.Review.EventID != eventID || stronger.Review.OutboxID != outboxID ||
-		stronger.Review.Reason != "turn_done" || len(stronger.Outbox) != 1 ||
-		stronger.Attempts[0].Outcome != "done" {
+		stronger.Review.EventID != eventID || stronger.Review.Reason != "turn_done" {
 		t.Fatalf("stronger evidence replaced stable Event: %+v", stronger)
 	}
 	if cards := e.Cards(); len(cards) != 1 || !cards[0].Actionable || cards[0].Reason != "turn_done" {
@@ -357,49 +250,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if continued.Review != nil || continued.Attempt == nil || continued.Attempt.TurnToken != "turn-next" ||
-		len(continued.Attempts) != 2 {
+	if continued.Review != nil || continued.Attempt == nil || continued.Attempt.TurnToken != "turn-next" {
 		t.Fatalf("Brain could not disposition stable Event from stronger evidence: %+v", continued)
-	}
-}
-
-func TestResolveContinueAndNextAttemptAreAtomicAndIdempotent(t *testing.T) {
-	e, _ := newTestEngine(t)
-	defer e.Close()
-	define(t, e, "w-atomic", PolicyUntilDone)
-	admit(t, e, "w-atomic", "turn-old", "session-1")
-	if _, err := e.OpenReviewEvent("w-atomic", "needs_input", "question", "event-atomic"); err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := e.ClaimReview("w-atomic", "ignored", "host-turn")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.MarkReviewDelivered("w-atomic", "host-turn"); err != nil {
-		t.Fatal(err)
-	}
-	in := ResolveTerminalReviewInput{
-		EventID: "event-atomic", HandlerID: "ignored", HandlerToken: "host-turn",
-		AttemptSessionID: "session-1",
-		AttemptToken:     "turn-old", AttemptFence: 1, TerminalEvidenceID: "provider-terminal",
-		Disposition: DispositionContinue, Actor: "brain", NextSessionID: "session-1", NextTurnToken: "turn-new",
-	}
-	badSession := in
-	badSession.AttemptSessionID = "session-wrong"
-	if _, err := e.ResolveTerminalReview("w-atomic", badSession); !errors.Is(err, ErrStaleInput) {
-		t.Fatalf("terminal resolve accepted wrong Attempt Session: %v", err)
-	}
-	resolved, err := e.ResolveTerminalReview("w-atomic", in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Review != nil || resolved.Attempt == nil || resolved.Attempt.TurnToken != "turn-new" ||
-		resolved.Attempt.SessionID != "session-1" || len(resolved.Attempts) != 2 {
-		t.Fatalf("non-atomic continue: %+v (claimed=%+v)", resolved, claimed)
-	}
-	revision := resolved.Revision
-	again, err := e.ResolveTerminalReview("w-atomic", in)
-	if err != nil || again.Revision != revision {
-		t.Fatalf("duplicate resolve mutated state: rev=%d -> %d err=%v", revision, again.Revision, err)
 	}
 }

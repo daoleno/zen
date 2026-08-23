@@ -27,7 +27,9 @@ func marshalDirectWorkEventInput(action WorkReviewAction, item Work) (string, er
 		EventSequenceFence: action.DeliverySequenceFence,
 		ResolutionRequired: true,
 		ResolveCommand: fmt.Sprintf(
-			"zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <continue|wait|complete|cancel|supersede> [--next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>] [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]",
+			"For wait, complete, or cancel: zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <wait|complete|cancel> [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]. For continue, first run zen agent send -id <session> -text <scoped-follow-up> --work-id %s --event-id %s --handling-id %s --provider-turn-id %s --revision %d --turn-id <one-random-turn-id>; only after exact acceptance run zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition continue --next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>.",
+			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
+			action.WorkID, action.EventID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
 			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
 		),
 		WorkTitle:  compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),

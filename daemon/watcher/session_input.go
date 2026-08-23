@@ -86,10 +86,9 @@ const (
 )
 
 type delegatedReuseDecision struct {
-	Mode               delegatedReuseMode
-	ExistingTurn       TurnSnapshot
-	BaselineActivity   string
-	TerminalEvidenceID string
+	Mode             delegatedReuseMode
+	ExistingTurn     TurnSnapshot
+	BaselineActivity string
 }
 
 type inputReuseBoundary uint8
@@ -720,7 +719,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 				Mode: mode, ExistingTurnID: existingTurnID,
 				BaselineActivityID: baselineActivityID,
 				SignalProtocol:     turn.SignalProtocol,
-				TerminalEvidenceID: reuse.TerminalEvidenceID,
 			})
 			if prepareErr != nil {
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("persist pending delegated submission: %w", prepareErr))
@@ -1060,18 +1058,6 @@ func (owner *sessionInputOwner) reconcileSubmissionActivityAtBoundary(
 			"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,
 		)
-	}
-	// A signal-owned needs_input turn remains canonically blocked even after
-	// its provider phase terminates. That terminal activity is evidence for
-	// the atomic review-follow-up command; reducing it as ordinary provider
-	// completion would either erase the actionable review or fail because a
-	// blocked signal turn cannot be completed by provider state alone. This
-	// branch deliberately precedes provider binding for both exact-bound and
-	// newly rediscovered terminal activities.
-	if turn.SignalProtocol && turn.Status == TurnBlocked && providerActivityTerminal(currentProvider.Status) &&
-		strings.TrimSpace(currentProvider.ID) != "" {
-		decision.TerminalEvidenceID = strings.TrimSpace(currentProvider.ID)
-		return decision, nil
 	}
 	if !providerObservationCanBindTurn(turn, boundProvider) {
 		// A globally final canonical result and a different exact terminal

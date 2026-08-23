@@ -1,10 +1,8 @@
 package lifecycle
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -216,8 +214,8 @@ func TestLeaseExpiryAndEscalation(t *testing.T) {
 		t.Fatalf("expected single open Event, got %d", n)
 	}
 
-	// Past LostGrace the supervisor escalates to lost; work returns to queued
-	// (automatic takeover) since losses < MaxConsecutiveLost.
+	// Past LostGrace the supervisor escalates to one blocked Review. It never
+	// creates an automatic takeover state.
 	setNow(e, deadline.Add(LostGrace+time.Minute))
 	if err := e.Sweep(); err != nil {
 		t.Fatal(err)
@@ -226,11 +224,8 @@ func TestLeaseExpiryAndEscalation(t *testing.T) {
 	if st.Attempt != nil {
 		t.Fatalf("Attempt not released after escalation: %+v", st.Attempt)
 	}
-	if st.Status != StatusQueued {
-		t.Fatalf("expected queued for automatic takeover, got %s", st.Status)
-	}
-	if st.ConsecutiveLost != 1 {
-		t.Fatalf("consecutive lost = %d", st.ConsecutiveLost)
+	if st.Status != StatusBlocked || st.Review == nil {
+		t.Fatalf("expected blocked Review after loss, got %+v", st)
 	}
 	_ = root
 }
@@ -291,9 +286,6 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 	if cards := e.Cards(); len(cards) != 1 || !cards[0].Actionable || cards[0].Reason != "lease_expired" {
 		t.Fatalf("actionable cards=%+v", cards)
 	}
-	if got := countOutboxReason(state, "review"); got != 1 {
-		t.Fatalf("actionable notification entries=%d, want 1", got)
-	}
 
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
@@ -319,102 +311,6 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 	}
 	if got := countEngineEvents(reopened, "w-expiry-once", KLeaseExpired, sourceID); got != 1 {
 		t.Fatalf("reloaded expiry audit Events=%d, want 1", got)
-	}
-}
-
-func TestOpenCompactsRejectedDuplicateSourcesWithoutStartupWrite(t *testing.T) {
-	root := t.TempDir()
-	e, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	define(t, e, "w-repair", PolicyBounded)
-	admitted := admit(t, e, "w-repair", "turn:repair", "session-repair")
-	deadline := admitted.Attempt.LeaseDeadline
-	setNow(e, deadline.Add(time.Minute))
-	if err := e.Sweep(); err != nil {
-		t.Fatal(err)
-	}
-	want, err := e.State("w-repair")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	path := filepath.Join(root, "state.json")
-	database, err := readLifecycleDatabase(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceID := leaseExpiredSourceID("turn:repair", deadline)
-	var expiry Event
-	for _, event := range database.Events {
-		if event.WorkID == "w-repair" && event.SourceID == sourceID {
-			expiry = event
-			break
-		}
-	}
-	if expiry.SourceID == "" {
-		t.Fatal("canonical expiry Event missing")
-	}
-	for i := 0; i < 128; i++ {
-		expiry.Seq = database.NextSeq
-		database.NextSeq++
-		database.Events = append(database.Events, expiry)
-	}
-	if err := writeLifecycleDatabase(path, database); err != nil {
-		t.Fatal(err)
-	}
-	rawBeforeOpen, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	repaired, err := Open(root)
-	if err != nil {
-		t.Fatalf("duplicate repair blocked startup: %v", err)
-	}
-	defer repaired.Close()
-	rawAfterOpen, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(rawBeforeOpen, rawAfterOpen) {
-		t.Fatal("Open performed a startup-blocking repair write")
-	}
-	got, err := repaired.State("w-repair")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Revision != want.Revision || got.Review == nil || got.Review.EventID != want.Review.EventID {
-		t.Fatalf("repair treated duplicate log records as authority: want=%+v got=%+v", want, got)
-	}
-	if count := countEngineEvents(repaired, "w-repair", KLeaseExpired, sourceID); count != 1 {
-		t.Fatalf("in-memory repaired expiry Events=%d, want 1", count)
-	}
-
-	title := "repair persisted"
-	if _, err := repaired.Amend("w-repair", got.Revision, &title, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var persisted lifecycleDatabase
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, event := range persisted.Events {
-		if event.WorkID == "w-repair" && event.Kind == KLeaseExpired && event.SourceID == sourceID {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("persisted repaired expiry Events=%d, want 1", count)
 	}
 }
 
@@ -447,7 +343,7 @@ func TestObservedLongRunningProviderPhasePreventsLeaseLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, _ := e.State("w-observed-long-phase")
-	if st.Attempt == nil || st.Attempt.TurnToken != tok1 || st.ConsecutiveLost != 0 ||
+	if st.Attempt == nil || st.Attempt.TurnToken != tok1 ||
 		!st.Attempt.LeaseDeadline.After(observedAt) {
 		t.Fatalf("live provider phase was mistaken for Attempt loss: %+v", st)
 	}
@@ -521,7 +417,7 @@ func TestProviderRunningRenewalsAreCoalescedAndSilenceStillExpires(t *testing.T)
 		t.Fatal(err)
 	}
 	lost, _ := e.State("w-silent")
-	if lost.Attempt != nil || lost.CurrentTurn() != nil || lost.Attempts[len(lost.Attempts)-1].Outcome != "lost" {
+	if lost.Attempt != nil || lost.CurrentTurn() != nil || lost.Review == nil {
 		t.Fatalf("silent Attempt did not become lost: %+v", lost)
 	}
 }
@@ -547,12 +443,11 @@ func TestSignalSteerPromotesExactPromptToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if accepted.Attempt == nil || accepted.Attempt.TurnToken != "turn:current-prompt" ||
-		accepted.Attempt.Generation <= old.Attempt.Generation || accepted.Admission("turn:current-prompt").ResultTurnToken != "turn:current-prompt" {
+		accepted.Attempt.Generation <= old.Attempt.Generation || accepted.AdmissionByToken("turn:current-prompt").ResultTurnToken != "turn:current-prompt" {
 		t.Fatalf("signal steer did not promote exact prompt token: %+v", accepted)
 	}
-	if accepted.Attempts[0].Token != "turn:old" || accepted.Attempts[0].Outcome != "reviewed" ||
-		accepted.Attempts[1].Token != "turn:current-prompt" || accepted.Attempts[1].FollowUpOf != "turn:old" {
-		t.Fatalf("signal steer lineage=%+v", accepted.Attempts)
+	if accepted.Attempt.FollowUpOf != "turn:old" {
+		t.Fatalf("signal steer lineage=%+v", accepted.Attempt)
 	}
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
@@ -589,7 +484,7 @@ func TestNextAttemptAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Attempt != nil || st.Review == nil || len(st.Outbox) != 1 || st.Outbox[0].Reason != "review" {
+	if st.Attempt != nil || st.Review == nil {
 		t.Fatalf("terminal result invented continuation state: %+v", st)
 	}
 	applied, st, err := e.AdmitTurn("w1", AdmitTurnInput{
@@ -653,7 +548,7 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 		t.Fatal(err)
 	}
 	acceptedNextAttempt, _ := e.State("w-atomic")
-	if admission := acceptedNextAttempt.Admission("turn-next"); admission == nil || admission.Status != AdmissionAccepted ||
+	if admission := acceptedNextAttempt.AdmissionByToken("turn-next"); admission == nil || admission.Status != AdmissionAccepted ||
 		admission.Purpose != AdmissionPurposeReview || admission.PurposeID != claimed.Review.Handler.HandlerID {
 		t.Fatalf("accepted admission lacks exact review purpose: %+v", admission)
 	}
@@ -676,7 +571,7 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Attempt == nil || st.Attempt.SessionID != "session-next" || st.Review != nil || st.turnByToken("turn-next") == nil {
+	if st.Attempt == nil || st.Attempt.SessionID != "session-next" || st.Review != nil {
 		t.Fatalf("atomic transaction image is incomplete: %+v", st)
 	}
 	database, err := readLifecycleDatabase(filepath.Join(root, "state.json"))
@@ -689,63 +584,6 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 	}
 	if last := database.Events[len(database.Events)-1]; last.Kind != KTurnAdmitted || last.TurnToken != "turn-next" {
 		t.Fatalf("append-only Event missing from same image: %+v", last)
-	}
-}
-
-func TestTerminalDoneOwnsOneSourceThreadNotificationWithoutReview(t *testing.T) {
-	e, _ := newTestEngine(t)
-	defer e.Close()
-	if _, err := e.DefineWork("w-terminal-notify", DefineWorkInput{
-		Title: "done", Objective: "notify", Policy: PolicyBounded, SourceThreadID: "brain-source",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	admit(t, e, "w-terminal-notify", "turn-done", "session-done")
-	if _, err := e.ReportTurnDone("w-terminal-notify", attemptID("session-done", "turn-done", 1), DoneInput{OK: true, Final: true}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.OpenReviewEvent("w-terminal-notify", "session.done", "event-done", "event-done"); err != nil {
-		t.Fatal(err)
-	}
-	st, _ := e.State("w-terminal-notify")
-	if st.Status != StatusDone || st.Review != nil || len(st.Outbox) != 1 ||
-		st.Outbox[0].TargetThreadID != "brain-source" {
-		t.Fatalf("terminal notification state=%+v", st)
-	}
-	if _, err := e.AckNotification("w-terminal-notify", "event-done"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.AckNotification("w-terminal-notify", "event-done"); err != nil {
-		t.Fatalf("idempotent terminal notification ack: %v", err)
-	}
-	st, _ = e.State("w-terminal-notify")
-	if st.Outbox[0].DispatchResult != DispatchSuccess {
-		t.Fatalf("terminal notification not acknowledged: %+v", st.Outbox)
-	}
-}
-
-func TestOutboxRetriesFailureButQuarantinesAmbiguousDelivery(t *testing.T) {
-	e, _ := newTestEngine(t)
-	defer e.Close()
-	define(t, e, "w-outbox", PolicyUntilDone)
-	opened, err := e.OpenReviewEvent("w-outbox", "external_check", "run-1", "event-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entryID := opened.Review.OutboxID
-	if _, err := e.AckOutbox("w-outbox", entryID, DispatchRetryable, "temporary transport error"); err != nil {
-		t.Fatal(err)
-	}
-	st, _ := e.State("w-outbox")
-	setNow(e, *outboxFind(st, entryID).NextAttemptAt)
-	if next, ok := e.NextWakeAt(); !ok || !next.Equal(*outboxFind(st, entryID).NextAttemptAt) {
-		t.Fatalf("failed delivery retry timer=(%v,%v)", next, ok)
-	}
-	if _, err := e.AckOutbox("w-outbox", entryID, DispatchUnknownSideEffect, "provider may have accepted input"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := e.NextWakeAt(); ok {
-		t.Fatal("ambiguous delivery was scheduled for replay")
 	}
 }
 
@@ -766,13 +604,13 @@ func TestProviderTurnMismatch(t *testing.T) {
 		t.Fatalf("wrong fence accepted: %v", err)
 	}
 	st, _ := e.State("w1")
-	if st.Status != StatusRunning || st.CurrentTurn().SettledAt != nil {
+	if st.Status != StatusRunning || st.CurrentTurn() == nil || st.CurrentTurn().TurnToken != tok1 {
 		t.Fatalf("mismatched provider fact mutated state: %+v", st)
 	}
 }
 
-// 8. Restart recovery: reopen from disk reproduces identical state, including
-// pending outbox and actionable Events.
+// 8. Restart recovery: reopen from disk reproduces identical current state and
+// actionable Review.
 func TestRestartRecovery(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	e, err := Open(root)
@@ -834,9 +672,6 @@ func TestUntilDoneCompletionRule(t *testing.T) {
 	}
 	if st.Review == nil || st.Review.Reason != "turn_done" {
 		t.Fatalf("missing turn_done review: %+v", st.Review)
-	}
-	if len(st.Outbox) != 1 || st.Outbox[0].Reason != "review" {
-		t.Fatalf("until_done created continuation state: %+v", st.Outbox)
 	}
 
 	// Follow-up meets criteria → done.
@@ -1016,7 +851,7 @@ func TestCancelReleasesAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != StatusCancelled || st.Attempt != nil || len(st.Outbox) != 0 {
+	if st.Status != StatusCancelled || st.Attempt != nil {
 		t.Fatalf("cancel incomplete: %+v", st)
 	}
 	if _, err := e.Heartbeat("w1", attemptID("s1", tok1, 1), 60); err != ErrStaleInput {
@@ -1027,21 +862,17 @@ func TestCancelReleasesAttempt(t *testing.T) {
 	}
 }
 
-// Repeated losses block automatic takeover after MaxConsecutiveLost.
-func TestConsecutiveLossBlocks(t *testing.T) {
+func TestOneLossOpensOneBlockedReview(t *testing.T) {
 	e, _ := newTestEngine(t)
 	defer e.Close()
 	define(t, e, "w1", PolicyUntilDone)
-	for i := 0; i < MaxConsecutiveLost; i++ {
-		token := TurnToken(string(tok1) + "-" + string(rune('a'+i)))
-		st := admit(t, e, "w1", token, "s1")
-		if _, err := e.ReportTurnLost("w1", attemptID("s1", token, st.Attempt.Generation), "flaky"); err != nil {
-			t.Fatal(err)
-		}
+	st := admit(t, e, "w1", tok1, "s1")
+	if _, err := e.ReportTurnLost("w1", attemptID("s1", tok1, st.Attempt.Generation), "lost"); err != nil {
+		t.Fatal(err)
 	}
-	st, _ := e.State("w1")
-	if st.Status != StatusBlocked {
-		t.Fatalf("expected blocked after %d losses, got %s", MaxConsecutiveLost, st.Status)
+	st, _ = e.State("w1")
+	if st.Status != StatusBlocked || st.Review == nil || st.Review.Reason != "turn_lost" {
+		t.Fatalf("loss did not open one blocked Review: %+v", st)
 	}
 }
 
@@ -1065,16 +896,6 @@ func countEngineEvents(e *Engine, workID WorkID, kind Kind, sourceID string) int
 	n := 0
 	for _, event := range e.events {
 		if event.WorkID == workID && event.Kind == kind && event.SourceID == sourceID {
-			n++
-		}
-	}
-	return n
-}
-
-func countOutboxReason(st *State, reason string) int {
-	n := 0
-	for _, entry := range st.Outbox {
-		if entry.Reason == reason {
 			n++
 		}
 	}

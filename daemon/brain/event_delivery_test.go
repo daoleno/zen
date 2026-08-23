@@ -57,7 +57,7 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 		ProviderTurnID:     event.ProviderTurnID,
 		EventSequenceFence: event.DeliverySequenceFence,
 		ResolutionRequired: true,
-		ResolveCommand:     "zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede> [--next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>] [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]",
+		ResolveCommand:     "For wait, complete, or cancel: zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <wait|complete|cancel> [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]. For continue, first run zen agent send -id <session> -text <scoped-follow-up> --work-id work-direct-1 --event-id event-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --turn-id <one-random-turn-id>; only after exact acceptance run zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition continue --next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>.",
 		WorkTitle:          item.Title,
 		Kind:               event.Kind,
 		Source:             event.SourceName,

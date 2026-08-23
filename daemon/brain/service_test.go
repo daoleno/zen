@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -802,6 +803,12 @@ func TestHostInputAdmissionReplacementBecomesUncertainAndFreesLane(t *testing.T)
 	if err != nil || !created {
 		t.Fatalf("append Event created=%v err=%v", created, err)
 	}
+	if _, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), event.Kind, event.ID, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
 	fw.ownedGenerations[hostID] = "host-generation-replacement"
 	recovered, err := NewStore(store.Root)
 	if err != nil {
@@ -892,6 +899,12 @@ func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T)
 	})
 	if err != nil || !created {
 		t.Fatalf("append ready Event created=%v err=%v", created, err)
+	}
+	if _, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), event.Kind, event.ID, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
 	}
 	delete(fw.sessions, oldHost)
 	fw.sessions[newHost] = &classifier.Agent{ID: newHost, Hidden: true, State: classifier.StateRunning}

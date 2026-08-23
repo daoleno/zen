@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -142,6 +143,12 @@ func appendSignalTestEvent(t *testing.T, store *Store, item Work, suffix string)
 	})
 	if err != nil || !created {
 		t.Fatalf("append event created=%v err=%v", created, err)
+	}
+	if _, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), event.Kind, event.ID, event.ID); err != nil {
+		t.Fatalf("open canonical test Review: %v", err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatalf("project canonical test Review: %v", err)
 	}
 	return event
 }

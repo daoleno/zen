@@ -51,12 +51,6 @@ func readLifecycleDatabase(path string) (lifecycleDatabase, error) {
 	if database.NextSeq == 0 {
 		database.NextSeq = 1
 	}
-	// Current Work rows are canonical. Development builds could append an
-	// already-seen source even though Reduce correctly rejected it, producing a
-	// duplicate audit storm. Compact those rejected records in memory without
-	// replaying Events or making startup depend on a repair write. The next
-	// successful lifecycle transaction persists this canonical image.
-	database.Events = compactDuplicateSourceEvents(database.Events)
 	for id, work := range database.Works {
 		if work == nil || work.ID != WorkID(id) {
 			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work row %q has mismatched identity", id)
@@ -64,38 +58,12 @@ func readLifecycleDatabase(path string) (lifecycleDatabase, error) {
 		if work.Attempt != nil && (work.Attempt.SessionID == "" || work.Attempt.TurnToken == "" || work.Attempt.Generation == 0) {
 			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete active Attempt identity", id)
 		}
-		for _, admission := range work.Admissions {
-			if admission == nil || admission.TurnToken == "" || admission.SessionID == "" || admission.AttemptedAt.IsZero() {
-				return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete Attempt admission", id)
-			}
-		}
-		for _, attempt := range work.Attempts {
-			if attempt == nil || attempt.SessionID == "" || attempt.Token == "" || attempt.Generation == 0 {
-				return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete Attempt history identity", id)
-			}
+		if admission := work.Admission; admission != nil &&
+			(admission.TurnToken == "" || admission.SessionID == "" || admission.AttemptedAt.IsZero()) {
+			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete Attempt admission", id)
 		}
 	}
 	return database, nil
-}
-
-func compactDuplicateSourceEvents(events []Event) []Event {
-	seen := make(map[WorkID]map[string]bool)
-	compacted := make([]Event, 0, len(events))
-	for _, event := range events {
-		if event.SourceID != "" {
-			workSources := seen[event.WorkID]
-			if workSources == nil {
-				workSources = make(map[string]bool)
-				seen[event.WorkID] = workSources
-			}
-			if workSources[event.SourceID] {
-				continue
-			}
-			workSources[event.SourceID] = true
-		}
-		compacted = append(compacted, event)
-	}
-	return compacted
 }
 
 func writeLifecycleDatabase(path string, database lifecycleDatabase) error {
@@ -144,32 +112,7 @@ func syncDir(dir string) error {
 
 // Protocol timing constants. Fixed so lifecycle decisions are deterministic.
 const (
-	LeaseGrace          = 10 * time.Minute
-	LostGrace           = 30 * time.Minute
-	MaxConsecutiveLost  = 3
-	MaxDispatchAttempts = 5
-	EventClaimTTL       = 2 * time.Minute
-	RetryBaseDelay      = 5 * time.Second
-	RetryMaxDelay       = 5 * time.Minute
+	LeaseGrace    = 10 * time.Minute
+	LostGrace     = 30 * time.Minute
+	EventClaimTTL = 2 * time.Minute
 )
-
-const (
-	DispatchSuccess           = "success"
-	DispatchRetryable         = "retryable"
-	DispatchUnknownSideEffect = "unknown_side_effect"
-	DispatchTerminal          = "terminal"
-)
-
-func dispatchBackoff(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	delay := RetryBaseDelay
-	for i := 1; i < attempt && delay < RetryMaxDelay; i++ {
-		delay *= 2
-	}
-	if delay > RetryMaxDelay {
-		return RetryMaxDelay
-	}
-	return delay
-}
