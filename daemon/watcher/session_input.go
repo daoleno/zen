@@ -49,6 +49,8 @@ type delegatedTurnDraft struct {
 	PaneGeneration    string
 	TranscriptBinding TranscriptBinding
 	SignalProtocol    bool
+	Purpose           string
+	PurposeID         string
 }
 
 // delegatedAdmissionEvidence is the provider-native admission tuple observed
@@ -84,12 +86,29 @@ const (
 )
 
 type delegatedReuseDecision struct {
-	Mode             delegatedReuseMode
-	ExistingTurn     TurnSnapshot
-	BaselineActivity string
+	Mode               delegatedReuseMode
+	ExistingTurn       TurnSnapshot
+	BaselineActivity   string
+	TerminalEvidenceID string
 }
 
-var errDelegatedProviderOwnershipMismatch = errors.New("delegated provider activity ownership mismatch")
+type inputReuseBoundary uint8
+
+const (
+	inputReuseDelegated inputReuseBoundary = iota
+	inputReuseBrainHost
+)
+
+// ErrDelegatedInputAdmissionUnavailable means the Zen-owned tmux target was
+// still proven, but the provider currently cannot be safely correlated with
+// the canonical Turn. This is a retryable input-admission conflict, not proof
+// that tmux control ownership was lost.
+var ErrDelegatedInputAdmissionUnavailable = errors.New("delegated input admission unavailable")
+
+var errDelegatedProviderOwnershipMismatch = fmt.Errorf(
+	"%w: delegated provider activity ownership mismatch",
+	ErrDelegatedInputAdmissionUnavailable,
+)
 
 // ErrReceiptBelongsToDifferentInput is the fail-closed mismatch raised when a
 // receipt identity is submitted with a payload different from the immutable
@@ -453,8 +472,8 @@ func (owner *sessionInputOwner) receiptOutcome(
 		if err := validateSameSessionInputPane(baseline, current); err != nil {
 			return err
 		}
-		if submissions, ok := owner.ledger.(TurnSubmissionLedger); ok {
-			pendingList, pendingErr := submissions.PendingTurnSubmissions(sessionID)
+		if submissions, ok := owner.ledger.(InputAdmissionLedger); ok {
+			pendingList, pendingErr := submissions.PendingInputAdmissions(sessionID)
 			if pendingErr != nil {
 				return fmt.Errorf("read canonical pending submissions: %w", pendingErr)
 			}
@@ -486,11 +505,36 @@ func (owner *sessionInputOwner) submitDelegated(
 	turn delegatedTurnDraft,
 	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
+	return owner.submitTurn(sessionID, expected, resolver, command, payload, turn, confirm, inputReuseDelegated)
+}
+
+func (owner *sessionInputOwner) submitHost(
+	sessionID string,
+	expected targetProcessIdentity,
+	resolver func(string) (targetProcessIdentity, bool),
+	command string,
+	payload string,
+	turn delegatedTurnDraft,
+	confirm delegatedInputConfirmer,
+) (InputResult, error) {
+	return owner.submitTurn(sessionID, expected, resolver, command, payload, turn, confirm, inputReuseBrainHost)
+}
+
+func (owner *sessionInputOwner) submitTurn(
+	sessionID string,
+	expected targetProcessIdentity,
+	resolver func(string) (targetProcessIdentity, bool),
+	command string,
+	payload string,
+	turn delegatedTurnDraft,
+	confirm delegatedInputConfirmer,
+	boundary inputReuseBoundary,
+) (InputResult, error) {
 	receipt := strings.TrimSpace(turn.Receipt)
 	if receipt == "" {
 		receipt = strings.TrimSpace(turn.ID)
 	}
-	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, receipt, &turn, confirm)
+	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, receipt, &turn, confirm, boundary)
 }
 
 func (owner *sessionInputOwner) submitWithTurn(
@@ -502,6 +546,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 	receipt string,
 	turn *delegatedTurnDraft,
 	confirm delegatedInputConfirmer,
+	boundary ...inputReuseBoundary,
 ) (InputResult, error) {
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
 	requiresConfirmation := turn != nil
@@ -540,7 +585,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 		// for a delegated duplicate. A pending retry may resolve from exact
 		// provider admission evidence, but it never replays provider input.
 		if turn != nil {
-			submission, found, submissionErr := owner.turnSubmission(sessionID, turn.ID)
+			submission, found, submissionErr := owner.inputAdmission(sessionID, turn.ID)
 			if submissionErr != nil {
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical pending submission: %w", submissionErr))
 			}
@@ -550,15 +595,17 @@ func (owner *sessionInputOwner) submitWithTurn(
 				}
 				result.Duplicate = true
 				switch submission.State {
-				case TurnSubmissionResolved:
+				case InputAdmissionResolved:
 					result.Outcome = InputAccepted
 					result.TurnID = submission.ResolvedTurnID
 					return nil
-				case TurnSubmissionAborted:
-					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("the prior submission was permanently aborted before mutation"))
-				case TurnSubmissionRetired:
+				case InputAdmissionAborted:
+					// Exact definite non-submission is retryable under the same
+					// immutable identity. The canonical ledger rearms it below;
+					// a different payload/target already failed the checks above.
+				case InputAdmissionRetired:
 					return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior submission authority was retired and cannot be replayed or adopted"))
-				case TurnSubmissionPending:
+				case InputAdmissionPending:
 					if submission.ProcessIdentity != delegatedTurnIdentity(expected) ||
 						submission.PaneGeneration != baseline.generation {
 						return ambiguousSubmission(result.Receipt, fmt.Errorf("pending submission target identity no longer matches; input will not be replayed"))
@@ -633,10 +680,15 @@ func (owner *sessionInputOwner) submitWithTurn(
 				// including Done/Failed/Unknown ledger rows. Ledger status alone
 				// cannot authorize either steering or a fresh mutation.
 				var reconcileErr error
-				reuse, reconcileErr = owner.reconcileSubmissionActivity(
+				reuseBoundary := inputReuseDelegated
+				if len(boundary) > 0 {
+					reuseBoundary = boundary[0]
+				}
+				reuse, reconcileErr = owner.reconcileSubmissionActivityAtBoundary(
 					sessionID,
 					existing,
 					providerBaseline,
+					reuseBoundary,
 				)
 				if reconcileErr != nil {
 					return definitelyNotSubmitted(result.Receipt, reconcileErr)
@@ -648,30 +700,32 @@ func (owner *sessionInputOwner) submitWithTurn(
 
 		prepared := false
 		if turn != nil {
-			mode := TurnSubmissionFresh
+			mode := InputAdmissionFresh
 			existingTurnID := ""
 			baselineActivityID := ""
 			if reuse.ExistingTurn.TurnID != "" {
 				existingTurnID = reuse.ExistingTurn.TurnID
 			}
 			if reuse.Mode == delegatedReuseConditionalSteer {
-				mode = TurnSubmissionConditionalSteer
+				mode = InputAdmissionConditionalSteer
 				baselineActivityID = reuse.BaselineActivity
 			}
-			submission, created, prepareErr := owner.prepareTurnSubmission(TurnSubmission{
+			submission, created, prepareErr := owner.prepareInputAdmission(InputAdmission{
 				WorkID: turn.WorkID, SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
 				ClaimToken:    turn.ClaimToken,
 				PayloadSHA256: payloadDigest, ProcessIdentity: turn.ProcessIdentity,
 				PaneGeneration: firstNonEmptyString(turn.PaneGeneration, current.generation),
-				AcceptedAt:     turn.AcceptedAt, TranscriptBinding: turn.TranscriptBinding,
+				Purpose:        turn.Purpose, PurposeID: turn.PurposeID,
+				AcceptedAt: turn.AcceptedAt, TranscriptBinding: turn.TranscriptBinding,
 				Mode: mode, ExistingTurnID: existingTurnID,
 				BaselineActivityID: baselineActivityID,
 				SignalProtocol:     turn.SignalProtocol,
+				TerminalEvidenceID: reuse.TerminalEvidenceID,
 			})
 			if prepareErr != nil {
 				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("persist pending delegated submission: %w", prepareErr))
 			}
-			if !created || submission.State != TurnSubmissionPending {
+			if !created || submission.State != InputAdmissionPending {
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("pending delegated submission was not freshly prepared"))
 			}
 			prepared = true
@@ -729,6 +783,13 @@ func (owner *sessionInputOwner) submitWithTurn(
 		})
 		if queueErr != nil {
 			if started {
+				if turn != nil {
+					if ambiguityLedger, ok := owner.ledger.(InputAdmissionAmbiguityLedger); ok {
+						if markErr := ambiguityLedger.MarkInputAdmissionAmbiguous(sessionID, turn.ID, queueErr.Error()); markErr != nil {
+							queueErr = errors.Join(queueErr, fmt.Errorf("persist ambiguous admission: %w", markErr))
+						}
+					}
+				}
 				result.Outcome = InputAmbiguous
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("run target-bound tmux command queue: %w", queueErr))
 			}
@@ -745,10 +806,13 @@ func (owner *sessionInputOwner) submitWithTurn(
 				payloadDigest,
 			)
 			if confirmErr != nil {
-				submission, found, submissionErr := owner.turnSubmission(sessionID, turn.ID)
+				submission, found, submissionErr := owner.inputAdmission(sessionID, turn.ID)
 				resolvedBySignal = submissionErr == nil && found && submission.SignalProtocol &&
-					submission.State == TurnSubmissionResolved && submission.ResolvedTurnID == turn.ID
+					submission.State == InputAdmissionResolved && submission.ResolvedTurnID == turn.ID
 				if !resolvedBySignal {
+					if ambiguityLedger, ok := owner.ledger.(InputAdmissionAmbiguityLedger); ok {
+						confirmErr = errors.Join(confirmErr, ambiguityLedger.MarkInputAdmissionAmbiguous(sessionID, turn.ID, confirmErr.Error()))
+					}
 					result.Outcome = InputAmbiguous
 					return ambiguousSubmission(result.Receipt, errors.Join(confirmErr, submissionErr))
 				}
@@ -776,7 +840,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 
 		if turn != nil && !resolvedBySignal {
-			resolved, resolveErr := owner.resolveTurnSubmission(TurnSubmissionResolution{
+			resolved, resolveErr := owner.resolveInputAdmission(InputAdmissionResolution{
 				SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
 				PayloadSHA256: payloadDigest,
 				ActivityID:    strings.TrimSpace(confirmation.ProviderActivity),
@@ -836,39 +900,39 @@ func (owner *sessionInputOwner) ledgerTurn(sessionID string) (TurnSnapshot, bool
 	return owner.ledger.Turn(sessionID)
 }
 
-func (owner *sessionInputOwner) submissionLedger() (TurnSubmissionLedger, error) {
+func (owner *sessionInputOwner) admissionLedger() (InputAdmissionLedger, error) {
 	if owner == nil || owner.ledger == nil {
 		return nil, fmt.Errorf("canonical turn ledger is unavailable")
 	}
-	ledger, ok := owner.ledger.(TurnSubmissionLedger)
+	ledger, ok := owner.ledger.(InputAdmissionLedger)
 	if !ok {
 		return nil, fmt.Errorf("canonical turn ledger cannot own pending submissions")
 	}
 	return ledger, nil
 }
 
-func (owner *sessionInputOwner) prepareTurnSubmission(submission TurnSubmission) (TurnSubmission, bool, error) {
-	ledger, err := owner.submissionLedger()
+func (owner *sessionInputOwner) prepareInputAdmission(submission InputAdmission) (InputAdmission, bool, error) {
+	ledger, err := owner.admissionLedger()
 	if err != nil {
-		return TurnSubmission{}, false, err
+		return InputAdmission{}, false, err
 	}
-	return ledger.PrepareTurnSubmission(submission)
+	return ledger.PrepareInputAdmission(submission)
 }
 
-func (owner *sessionInputOwner) turnSubmission(sessionID, proposedTurnID string) (TurnSubmission, bool, error) {
-	ledger, err := owner.submissionLedger()
+func (owner *sessionInputOwner) inputAdmission(sessionID, proposedTurnID string) (InputAdmission, bool, error) {
+	ledger, err := owner.admissionLedger()
 	if err != nil {
-		return TurnSubmission{}, false, err
+		return InputAdmission{}, false, err
 	}
-	return ledger.TurnSubmission(sessionID, proposedTurnID)
+	return ledger.InputAdmission(sessionID, proposedTurnID)
 }
 
-func (owner *sessionInputOwner) resolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error) {
-	ledger, err := owner.submissionLedger()
+func (owner *sessionInputOwner) resolveInputAdmission(resolution InputAdmissionResolution) (InputAdmission, error) {
+	ledger, err := owner.admissionLedger()
 	if err != nil {
-		return TurnSubmission{}, err
+		return InputAdmission{}, err
 	}
-	return ledger.ResolveTurnSubmission(resolution)
+	return ledger.ResolveInputAdmission(resolution)
 }
 
 func (owner *sessionInputOwner) abortBeforeMutation(
@@ -882,11 +946,11 @@ func (owner *sessionInputOwner) abortBeforeMutation(
 	cause error,
 ) error {
 	if prepared && turn != nil {
-		ledger, err := owner.submissionLedger()
+		ledger, err := owner.admissionLedger()
 		if err != nil {
 			return ambiguousSubmission(receipt, fmt.Errorf("%v; abort canonical pending submission: %w", cause, err))
 		}
-		if _, err := ledger.AbortTurnSubmission(sessionID, turn.ID, receipt, payloadDigest); err != nil {
+		if _, err := ledger.AbortInputAdmission(sessionID, turn.ID, receipt, payloadDigest); err != nil {
 			return ambiguousSubmission(receipt, fmt.Errorf("%v; abort canonical pending submission: %w", cause, err))
 		}
 	}
@@ -899,27 +963,27 @@ func (owner *sessionInputOwner) abortBeforeMutation(
 }
 
 func (owner *sessionInputOwner) resolvePendingFromBaseline(
-	submission TurnSubmission,
+	submission InputAdmission,
 	confirm delegatedInputConfirmer,
-) (TurnSubmission, error) {
+) (InputAdmission, error) {
 	if confirm.baseline == nil {
-		return TurnSubmission{}, fmt.Errorf("provider admission observer is unavailable for pending reconciliation")
+		return InputAdmission{}, fmt.Errorf("provider admission observer is unavailable for pending reconciliation")
 	}
 	baseline, err := confirm.baseline()
 	if err != nil {
-		return TurnSubmission{}, fmt.Errorf("observe pending provider admission: %w", err)
+		return InputAdmission{}, fmt.Errorf("observe pending provider admission: %w", err)
 	}
 	provider := baseline.Provider
 	switch strings.TrimSpace(provider.Status) {
 	case "running", "completed", "failed", "interrupted", "cancelled":
 	default:
-		return TurnSubmission{}, fmt.Errorf("pending provider admission has no authoritative lifecycle status")
+		return InputAdmission{}, fmt.Errorf("pending provider admission has no authoritative lifecycle status")
 	}
 	admission := baseline.Admission
 	if strings.TrimSpace(admission.InputSHA256) != submission.PayloadSHA256 {
-		return TurnSubmission{}, fmt.Errorf("provider admission digest does not match the pending payload; ownership was rejected")
+		return InputAdmission{}, fmt.Errorf("provider admission digest does not match the pending payload; ownership was rejected")
 	}
-	return owner.resolveTurnSubmission(TurnSubmissionResolution{
+	return owner.resolveInputAdmission(InputAdmissionResolution{
 		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
 		Receipt: submission.Receipt, PayloadSHA256: submission.PayloadSHA256,
 		ActivityID: strings.TrimSpace(provider.ID),
@@ -946,17 +1010,42 @@ func (owner *sessionInputOwner) resolvePendingFromBaseline(
 //     post-mutation digest-confirmed admission may own the fresh candidate.
 //
 // A different live Activity, missing binding for a mutable Turn, or
-// non-lifecycle evidence fails closed before the tmux mutation boundary.
+// non-lifecycle evidence fails closed before the tmux mutation boundary. These
+// are input-admission conflicts; they do not by themselves revoke tmux control.
 func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	sessionID string,
 	turn TurnSnapshot,
 	provider ProviderActivityObservation,
+) (delegatedReuseDecision, error) {
+	return owner.reconcileSubmissionActivityAtBoundary(sessionID, turn, provider, inputReuseDelegated)
+}
+
+func (owner *sessionInputOwner) reconcileSubmissionActivityAtBoundary(
+	sessionID string,
+	turn TurnSnapshot,
+	provider ProviderActivityObservation,
+	boundary inputReuseBoundary,
 ) (delegatedReuseDecision, error) {
 	decision := delegatedReuseDecision{ExistingTurn: turn}
 	if owner == nil || owner.ledger == nil {
 		return decision, fmt.Errorf("canonical turn ledger is unavailable")
 	}
 	if turn.ControlState == TurnControlOwnershipLost {
+		if boundary == inputReuseBrainHost {
+			// A Host Session is a long-lived container. Losing the exact prior
+			// Turn capability remains immutable no-replay evidence, but it does
+			// not poison a later independent admission once the provider proves
+			// the current generation is idle. A live or unreadable provider still
+			// closes the lane conservatively.
+			if provider.ProbeState.Loss() ||
+				(strings.TrimSpace(provider.ID) != "" && !providerActivityTerminal(provider.Status)) {
+				return decision, fmt.Errorf(
+					"%w: Brain Host provider activity is not idle after canonical turn %s lost ownership",
+					errDelegatedProviderOwnershipMismatch, turn.TurnID,
+				)
+			}
+			return decision, nil
+		}
 		return decision, fmt.Errorf(
 			"%w: canonical turn %s has lost control ownership",
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,
@@ -972,6 +1061,18 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,
 		)
 	}
+	// A signal-owned needs_input turn remains canonically blocked even after
+	// its provider phase terminates. That terminal activity is evidence for
+	// the atomic review-follow-up command; reducing it as ordinary provider
+	// completion would either erase the actionable review or fail because a
+	// blocked signal turn cannot be completed by provider state alone. This
+	// branch deliberately precedes provider binding for both exact-bound and
+	// newly rediscovered terminal activities.
+	if turn.SignalProtocol && turn.Status == TurnBlocked && providerActivityTerminal(currentProvider.Status) &&
+		strings.TrimSpace(currentProvider.ID) != "" {
+		decision.TerminalEvidenceID = strings.TrimSpace(currentProvider.ID)
+		return decision, nil
+	}
 	if !providerObservationCanBindTurn(turn, boundProvider) {
 		// A globally final canonical result and a different exact terminal
 		// provider activity still prove that the same owned provider generation
@@ -983,8 +1084,9 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 			return decision, nil
 		}
 		return decision, fmt.Errorf(
-			"%w: current provider activity is not authoritatively bound to canonical turn %s",
-			errDelegatedProviderOwnershipMismatch, turn.TurnID,
+			"%w: current provider activity %q status %q probe %q is not authoritatively bound to canonical turn %s (status %q signal_protocol=%t)",
+			errDelegatedProviderOwnershipMismatch, strings.TrimSpace(currentProvider.ID),
+			strings.TrimSpace(currentProvider.Status), currentProvider.ProbeState, turn.TurnID, turn.Status, turn.SignalProtocol,
 		)
 	}
 	fact := activityFactFromObservation(sessionID, turn, boundProvider)

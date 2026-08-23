@@ -83,7 +83,7 @@ func ProviderUserEchoSuppressions(items []TimelineItem, providerSessionID string
 }
 
 // claimProviderUserEchoes matches provider user events against accepted
-// orchestration admissions in causal order. Unconsumed admissions receive
+// lifecycle admissions in causal order. Unconsumed admissions receive
 // AdmissionEchoEventID for durable idempotence.
 //
 // Already-durable provider-native user event IDs are excluded from candidates

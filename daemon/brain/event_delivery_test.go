@@ -10,7 +10,7 @@ import (
 
 func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 	event := WorkReviewAction{
-		FactEventID:           "event-direct-1",
+		EventID:               "event-direct-1",
 		WorkID:                "work-direct-1",
 		Kind:                  "session.done",
 		SourceName:            "Worker One",
@@ -57,7 +57,7 @@ func TestDirectWorkEventInputIsDeterministicBoundedAndComplete(t *testing.T) {
 		ProviderTurnID:     event.ProviderTurnID,
 		EventSequenceFence: event.DeliverySequenceFence,
 		ResolutionRequired: true,
-		ResolveCommand:     "zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede>",
+		ResolveCommand:     "zen brain work resolve --work-id work-direct-1 --handling-id handling-direct-1 --provider-turn-id provider-turn-direct-1 --revision 7 --disposition <continue|wait|complete|cancel|supersede> [--next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>] [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]",
 		WorkTitle:          item.Title,
 		Kind:               event.Kind,
 		Source:             event.SourceName,
@@ -82,7 +82,7 @@ func decodeDirectWorkEventInput(t *testing.T, payload string) work.DirectWorkEve
 
 func TestDirectWorkEventInputCompactsDescriptiveFieldsWithoutChangingIdentity(t *testing.T) {
 	event := WorkReviewAction{
-		FactEventID: "event-exact-identity", WorkID: "work-exact-identity",
+		EventID: "event-exact-identity", WorkID: "work-exact-identity",
 		HandlingID: "handling-exact-identity", ProviderTurnID: "provider-turn-exact-identity",
 		DeliveryWorkRevision: 1, Kind: strings.Repeat("kind ", 100),
 		SourceName: strings.Repeat("source ", 100), Summary: strings.Repeat("summary ", 200),
@@ -103,7 +103,7 @@ func TestDirectWorkEventInputCompactsDescriptiveFieldsWithoutChangingIdentity(t 
 	if len(payload) > directWorkEventInputMaxBytes || !utf8.ValidString(payload) {
 		t.Fatalf("direct input bytes=%d valid_utf8=%v", len(payload), utf8.ValidString(payload))
 	}
-	if !strings.Contains(payload, event.FactEventID) || !strings.Contains(payload, event.WorkID) {
+	if !strings.Contains(payload, event.EventID) || !strings.Contains(payload, event.WorkID) {
 		t.Fatalf("identity changed in compact input: %q", payload)
 	}
 	if strings.Contains(payload, item.Objective) {

@@ -310,7 +310,7 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 		t.Fatalf("queued Event=%+v created=%v err=%v", event, created, err)
 	}
 	// Occupy the deterministic presentation identity with incompatible bytes.
-	// Orchestration acceptance must remain authoritative and reserve Attention;
+	// Lifecycle acceptance must remain authoritative and reserve Attention;
 	// the existing startup projection retry continues to own this conflict.
 	if _, err := store.AdmitUserMessage(threadID, hostID, requestID, "conflicting presentation body"); err != nil {
 		t.Fatal(err)
@@ -387,6 +387,10 @@ func (w *changingProxyGenerationWatcher) ResolveOwnedGeneration(sessionID string
 		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
 	}
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: w.generation}, nil
+}
+
+func (w *changingProxyGenerationWatcher) ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	return w.ResolveOwnedGeneration(sessionID)
 }
 
 func (w *changingProxyGenerationWatcher) ProbeProviderEvidence(string) (watcher.ProviderActivityObservation, bool, error) {

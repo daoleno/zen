@@ -40,7 +40,7 @@ type hostLaneState struct {
 	// disposition has not been recorded.
 	DeliveredAwaitingDisposition bool
 	// ForegroundTurn is an accepted foreground Host turn (durable admission
-	// epoch). ForegroundTerminalEvidence is strong exact terminal evidence
+	// event). ForegroundTerminalEvidence is strong exact terminal evidence
 	// for that exact turn (provider activity identity match + terminal
 	// status).
 	ForegroundTurn             bool

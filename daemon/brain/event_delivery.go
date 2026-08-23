@@ -19,7 +19,7 @@ const (
 
 func marshalDirectWorkEventInput(action WorkReviewAction, item Work) (string, error) {
 	input := work.DirectWorkEventInput{
-		EventID:            strings.TrimSpace(action.FactEventID),
+		EventID:            strings.TrimSpace(action.EventID),
 		WorkID:             strings.TrimSpace(action.WorkID),
 		WorkRevision:       action.DeliveryWorkRevision,
 		HandlingID:         strings.TrimSpace(action.HandlingID),
@@ -27,7 +27,7 @@ func marshalDirectWorkEventInput(action WorkReviewAction, item Work) (string, er
 		EventSequenceFence: action.DeliverySequenceFence,
 		ResolutionRequired: true,
 		ResolveCommand: fmt.Sprintf(
-			"zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <continue|wait|complete|cancel|supersede>",
+			"zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <continue|wait|complete|cancel|supersede> [--next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>] [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]",
 			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
 		),
 		WorkTitle:  compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),

@@ -484,6 +484,54 @@ describe("process-local Chat reducer", () => {
     expect(next.pendingUserMessages[1]).toBe(rows[1]);
   });
 
+  test("two failed Continue rows do not capture a fresh Brain request", () => {
+    const failedRows = [
+      pending({
+        id: "continue-first",
+        body: "Continue",
+        sentText: "Continue",
+        lifecycle: "failed",
+        dispatchRequestId: "delegated-request-first",
+        failureCode: "send_input_failed",
+      }),
+      pending({
+        id: "continue-second",
+        body: "Continue",
+        sentText: "Continue",
+        lifecycle: "failed",
+        dispatchRequestId: "delegated-request-second",
+        failureCode: "send_input_failed",
+      }),
+    ];
+    const next = interfaceChatThreadReducer(state(failedRows), {
+      type: "add_pending_user_message",
+      message: {
+        id: "brain-fresh",
+        body: "New Brain message",
+        sentText: "New Brain message",
+        attachments: [],
+        createdAt: "2026-07-17T10:00:03.000Z",
+        lifecycle: "pending",
+        dispatchRequestId: "brain-host-request-fresh",
+      },
+    });
+
+    expect(next.pendingUserMessages).toHaveLength(3);
+    expect(next.pendingUserMessages.slice(0, 2)).toEqual(failedRows);
+    expect(next.pendingUserMessages[2]).toMatchObject({
+      id: "brain-fresh",
+      lifecycle: "pending",
+      dispatchRequestId: "brain-host-request-fresh",
+    });
+    expect(
+      next.pendingUserMessages.map((message) => message.dispatchRequestId),
+    ).toEqual([
+      "delegated-request-first",
+      "delegated-request-second",
+      "brain-host-request-fresh",
+    ]);
+  });
+
   test("a successful new row bounds aliases while Retry preserves the current one", () => {
     const aliased = {
       ...state([pending({ lifecycle: "failed" })]),

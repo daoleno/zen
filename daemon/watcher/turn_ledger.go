@@ -11,7 +11,7 @@ import (
 // vocabulary (worklog 2026-08-07-zen-agent-event-reliability, Research C.2).
 //
 // Exactly one canonical owner exists for every accepted delegated turn: a
-// durable ledger record in the Brain orchestration store. Every lifecycle
+// durable ledger record in the Brain lifecycle store. Every lifecycle
 // transition is applied by one reducer (brain.Store.ApplyTurnFact) over that
 // record; Work status, outbox events, and the Session projection are derived
 // from canonical status only. The watcher is provider-neutral: brain.Store
@@ -171,6 +171,9 @@ type TurnFact struct {
 	SettledAt  time.Time
 	At         time.Time
 	Summary    string
+	// CriteriaMet is accepted only from an exact signal-owned Control done
+	// report. Provider terminal state never sets completion criteria.
+	CriteriaMet bool
 	// Liveness proof fields (EvidenceLiveness only).
 	AbnormalExit    bool // authoritative abnormal exit (nonzero dead status / signal)
 	ProcessDead     bool // positive identity disappearance
@@ -234,36 +237,36 @@ type TurnProgressResult struct {
 	Changed bool
 }
 
-// TurnSubmissionState is the durable state of one delegated input
+// InputAdmissionState is the durable state of one delegated input
 // transaction. Pending submissions are owned exclusively by the Brain Turn
 // Ledger; the tmux receipt is only a transport replay fence.
-type TurnSubmissionState string
+type InputAdmissionState string
 
 const (
-	TurnSubmissionPending  TurnSubmissionState = "pending"
-	TurnSubmissionResolved TurnSubmissionState = "resolved"
-	TurnSubmissionAborted  TurnSubmissionState = "aborted"
-	// TurnSubmissionRetired is a local-control terminal state for a submission
+	InputAdmissionPending  InputAdmissionState = "pending"
+	InputAdmissionResolved InputAdmissionState = "resolved"
+	InputAdmissionAborted  InputAdmissionState = "aborted"
+	// InputAdmissionRetired is a local-control terminal state for a submission
 	// whose provider authority was explicitly ended: either an actor resolved
 	// its Host delivery obligation or a causally newer exact provider generation
 	// replaced it. Unlike Aborted it does not claim that provider mutation was
 	// impossible; unlike Resolved it never authorizes a canonical Turn.
-	TurnSubmissionRetired TurnSubmissionState = "retired"
+	InputAdmissionRetired InputAdmissionState = "retired"
 )
 
-// TurnSubmissionMode records how a provider activity observed before
+// InputAdmissionMode records how a provider activity observed before
 // mutation may own the input after confirmation.
-type TurnSubmissionMode string
+type InputAdmissionMode string
 
 const (
-	TurnSubmissionFresh            TurnSubmissionMode = "fresh"
-	TurnSubmissionConditionalSteer TurnSubmissionMode = "conditional_steer"
+	InputAdmissionFresh            InputAdmissionMode = "fresh"
+	InputAdmissionConditionalSteer InputAdmissionMode = "conditional_steer"
 )
 
-// TurnSubmission is the provider-neutral projection of the ledger-owned
+// InputAdmission is the provider-neutral projection of the ledger-owned
 // pending submission row. It is deliberately separate from TurnSnapshot: a
 // pending candidate is never the current canonical Turn.
-type TurnSubmission struct {
+type InputAdmission struct {
 	WorkID         string
 	SessionID      string
 	ProposedTurnID string
@@ -277,22 +280,29 @@ type TurnSubmission struct {
 	PaneGeneration     string
 	AcceptedAt         time.Time
 	TranscriptBinding  TranscriptBinding
-	Mode               TurnSubmissionMode
+	Mode               InputAdmissionMode
 	ExistingTurnID     string
 	BaselineActivityID string
 	// SignalProtocol is persisted before provider mutation only when this
 	// submission's ProposedTurnID was included in the delegated prompt.
-	SignalProtocol     bool
-	State              TurnSubmissionState
+	SignalProtocol bool
+	Purpose        string
+	PurposeID      string
+	// TerminalEvidenceID authorizes the atomic same-Session recovery when the
+	// exact signal-owned turn is blocked but the currently observed provider
+	// activity is terminal. It is the provider activity identity, never a
+	// synthesized receipt or projection identity.
+	TerminalEvidenceID string
+	State              InputAdmissionState
 	ResolvedTurnID     string
 	ResolvedActivityID string
 	ResolvedAdmission  TurnAdmission
 }
 
-// TurnSubmissionResolution is the exact provider admission that resolves a
+// InputAdmissionResolution is the exact provider admission that resolves a
 // pending submission. Admission.SHA256 must equal the pending payload digest;
 // a provider admission for different bytes can never claim the candidate.
-type TurnSubmissionResolution struct {
+type InputAdmissionResolution struct {
 	SessionID      string
 	ProposedTurnID string
 	Receipt        string
@@ -302,23 +312,30 @@ type TurnSubmissionResolution struct {
 	ResolvedAt     time.Time
 }
 
-// TurnSubmissionLedger is the transactional delegated-input half of the
+// InputAdmissionLedger is the transactional delegated-input half of the
 // canonical Turn Ledger. Prepare persists one exact input transaction before
 // provider mutation without replacing the current Turn; several distinct
 // pending transactions may coexist for one Session, and each resolves,
 // aborts, or retires only from its own exact evidence. Resolve atomically
 // either records steering on the existing exact activity or promotes the
 // proposed Turn; Abort is a permanent, non-adoptable terminal state.
-type TurnSubmissionLedger interface {
-	PrepareTurnSubmission(submission TurnSubmission) (TurnSubmission, bool, error)
-	TurnSubmission(sessionID, proposedTurnID string) (TurnSubmission, bool, error)
-	PendingTurnSubmissions(sessionID string) ([]TurnSubmission, error)
-	ResolveTurnSubmission(resolution TurnSubmissionResolution) (TurnSubmission, error)
-	AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (TurnSubmission, error)
+type InputAdmissionLedger interface {
+	PrepareInputAdmission(submission InputAdmission) (InputAdmission, bool, error)
+	InputAdmission(sessionID, proposedTurnID string) (InputAdmission, bool, error)
+	PendingInputAdmissions(sessionID string) ([]InputAdmission, error)
+	ResolveInputAdmission(resolution InputAdmissionResolution) (InputAdmission, error)
+	AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (InputAdmission, error)
+}
+
+// InputAdmissionAmbiguityLedger is implemented by lifecycle authorities that
+// durably distinguish a started-but-unconfirmed provider mutation from a
+// merely prepared transaction.
+type InputAdmissionAmbiguityLedger interface {
+	MarkInputAdmissionAmbiguous(sessionID, proposedTurnID, reason string) error
 }
 
 // AdmittedTurn is the exact identity of a provider Turn whose owning claim is
-// already canonical. Live delegated input uses TurnSubmissionLedger; it never
+// already canonical. Live delegated input uses InputAdmissionLedger; it never
 // creates an Admitted Turn before mutation.
 type AdmittedTurn struct {
 	SessionID       string

@@ -93,7 +93,7 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 	if err != nil || !created {
 		t.Fatalf("work event created=%v err=%v", created, err)
 	}
-	if _, materialized, err := store.MaterializeWorkCard(item, event); err != nil || !materialized {
+	if _, materialized, err := store.SyncWorkCard(item.ID, &event); err != nil || !materialized {
 		t.Fatalf("work card materialized=%v err=%v", materialized, err)
 	}
 
@@ -288,13 +288,13 @@ func TestBoundHostConversationSubmissionResolutionRecoversGrokUntimestampedWorkE
 			},
 		},
 	}
-	_, _, matched := boundHostConversationSubmissionResolution(conversation, watcher.TurnSubmission{
+	_, _, matched := boundHostConversationSubmissionResolution(conversation, watcher.InputAdmission{
 		SessionID:      "brain-agent-grok:@1",
 		ProposedTurnID: "turn-grok-delivery",
 		Receipt:        "event-grok-delivery",
 		PayloadSHA256:  AdmissionDigest(payload),
 		AcceptedAt:     acceptedAt,
-		State:          watcher.TurnSubmissionPending,
+		State:          watcher.InputAdmissionPending,
 		ClaimToken:     "handling-grok-delivery",
 		WorkID:         "work-grok-delivery",
 	}, startedAt.Add(time.Second))
@@ -384,19 +384,19 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 		t.Fatal(err)
 	}
 	claim, claimed, err := store.ClaimNextReviewAction(hostID)
-	if err != nil || !claimed || claim.FactEventID != event.ID {
+	if err != nil || !claimed || claim.WorkID != event.WorkID || claim.EventID != event.ID {
 		t.Fatalf("claim=%+v claimed=%v err=%v", claim, claimed, err)
 	}
 	payload, err := marshalDirectWorkEventInput(claim, item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
-		Receipt: claim.FactEventID, ClaimToken: claim.HandlingID,
+		Receipt: claim.EventID, ClaimToken: claim.HandlingID,
 		PayloadSHA256:   pendingSubmissionDigest(payload),
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
-		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.InputAdmissionFresh,
 	})
 	if err != nil || !created {
 		t.Fatalf("prepare pending created=%v submission=%+v err=%v", created, pending, err)
@@ -420,7 +420,7 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	}
 
 	sendsBeforeReconcile := len(fw.sentCalls)
-	fw.setReceiptOutcome(claim.FactEventID, watcher.InputAmbiguous)
+	fw.setReceiptOutcome(claim.EventID, watcher.InputAmbiguous)
 	woke, err := service.ReconcileHostLane()
 	if err != nil {
 		t.Fatalf("reconcile after Grok host switch: %v", err)
@@ -433,8 +433,8 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	}
 
 	lease := requireReviewDelivered(t, store, item.ID)
-	if lease.DeliveryWorkRevision != item.Revision {
-		t.Fatalf("recovered lease=%+v revision=%d", lease, item.Revision)
+	if lease.AmbiguousDelivery || lease.DeliveredAt == nil {
+		t.Fatalf("Grok observation did not settle the exact delivery: %+v", lease)
 	}
 	notes, err := store.ListWorkEvents(item.ID)
 	if err != nil {

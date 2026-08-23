@@ -93,16 +93,16 @@ func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
 	turnID := agentID + ":turn:1"
 	acceptedAt := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
 	payloadDigest := "0000000000000000000000000000000000000000000000000000000000000000"
-	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: item.ID, SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: payloadDigest, ProcessIdentity: "push-gate-process",
 		PaneGeneration: "push-gate-pane", AcceptedAt: acceptedAt,
-		Mode: watcher.TurnSubmissionFresh,
+		Mode: watcher.InputAdmissionFresh,
 	})
 	if err != nil || !created {
 		t.Fatalf("prepare canonical notification Turn: pending=%+v created=%v err=%v", pending, created, err)
 	}
-	resolved, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+	resolved, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: payloadDigest, ActivityID: "push-gate-activity",
 		Admission: watcher.TurnAdmission{

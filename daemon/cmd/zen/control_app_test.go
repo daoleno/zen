@@ -13,6 +13,7 @@ import (
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -41,6 +42,7 @@ type fakeControlWatcher struct {
 	ownershipCalls    []string
 	budgetedSubmitErr error
 	budgetedCalls     int
+	delegatedResultID string
 }
 
 type fakeControlSend struct {
@@ -70,6 +72,29 @@ func assertDelegatedLifecyclePayload(t *testing.T, payload, original string) str
 	return identity
 }
 
+func TestDelegatedLifecyclePayloadNeverSubstitutesAnOlderTurn(t *testing.T) {
+	const candidate = "turn:nextAttempt"
+	payload := delegatedLifecyclePayload("follow-up", candidate)
+	if !strings.Contains(payload, "This prompt's turn identity is "+candidate) ||
+		!strings.Contains(payload, "--turn-id "+candidate) {
+		t.Fatalf("follow-up payload lost exact candidate token: %q", payload)
+	}
+
+	fw := newFakeControlWatcher()
+	fw.delegatedResultID = "turn:older"
+	fw.agents["worker:@1"] = &classifier.Agent{ID: "worker:@1", Delegated: true}
+	app := &controlApp{watcher: fw}
+	generated, err := app.submitAgentHandoff("worker:@1", "codex", "follow-up", "", false)
+	if err == nil || generated == fw.delegatedResultID ||
+		!strings.Contains(err.Error(), "accepted non-exact turn identity") {
+		t.Fatalf("older accepted identity generated=%q err=%v", generated, err)
+	}
+	if len(fw.submitted) != 1 || !strings.Contains(fw.submitted[0].text, "--turn-id "+generated) ||
+		strings.Contains(fw.submitted[0].text, "--turn-id "+fw.delegatedResultID) {
+		t.Fatalf("submitted payload substituted older identity: generated=%q calls=%#v", generated, fw.submitted)
+	}
+}
+
 func newFakeControlWatcher() *fakeControlWatcher {
 	return &fakeControlWatcher{
 		agents:   map[string]*classifier.Agent{},
@@ -92,15 +117,15 @@ func admitControlWorkOwner(t *testing.T, store *brain.Store, workID, sessionID s
 	acceptedAt := time.Now().UTC().Add(-time.Second)
 	turnID := sessionID + ":turn:fixture"
 	digest := strings.Repeat("a", 64)
-	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
-		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+		AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh,
 	})
 	if err != nil || !created {
 		t.Fatalf("prepare fixture owner=(%+v, %v, %v)", pending, created, err)
 	}
-	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+	if _, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: digest, ActivityID: "activity-fixture",
 		Admission: watcher.TurnAdmission{
@@ -120,20 +145,20 @@ func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.Wor
 	if claimed.ClaimedAt != nil {
 		acceptedAt = claimed.ClaimedAt.UTC()
 	}
-	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.FactEventID)))
-	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.EventID)))
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
-		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.FactEventID, ClaimToken: claimed.HandlingID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.EventID, ClaimToken: claimed.HandlingID,
 		PayloadSHA256: digest, ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
-		AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh,
+		AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh,
 	})
 	if err != nil || !created {
 		t.Fatalf("prepare Host claim created=%v err=%v", created, err)
 	}
 	resolvedAt := acceptedAt.Add(time.Millisecond)
-	if _, err := store.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+	if _, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.FactEventID, PayloadSHA256: pending.PayloadSHA256,
+		Receipt: claimed.EventID, PayloadSHA256: pending.PayloadSHA256,
 		ActivityID: "host-activity-" + claimed.ProviderTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
@@ -310,9 +335,14 @@ func (w *fakeControlWatcher) SubmitDelegatedInput(
 	_ time.Time,
 ) (watcher.InputResult, error) {
 	err := w.SubmitInput(sessionID, payload)
+	resultTurnID := turnID
+	if w.delegatedResultID != "" {
+		resultTurnID = w.delegatedResultID
+	}
 	return watcher.InputResult{
 		Outcome: watcher.InputOutcomeFromError(err),
 		Receipt: turnID,
+		TurnID:  resultTurnID,
 	}, err
 }
 
@@ -322,10 +352,10 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 ) (watcher.InputResult, error) {
 	if w.turnStore != nil {
 		digest := strings.Repeat("b", 64)
-		pending, created, prepareErr := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+		pending, created, prepareErr := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 			PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
-			AcceptedAt: acceptedAt, Mode: watcher.TurnSubmissionFresh, SignalProtocol: true,
+			AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh, SignalProtocol: true,
 		})
 		if prepareErr != nil {
 			result := watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: turnID, TurnID: turnID}
@@ -338,7 +368,7 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 		if err := w.SubmitInputWhenReady(sessionID, "", payload); err != nil {
 			outcome := watcher.InputOutcomeFromError(err)
 			if outcome == watcher.InputNotSubmitted {
-				if _, abortErr := w.turnStore.AbortTurnSubmission(sessionID, turnID, turnID, pending.PayloadSHA256); abortErr != nil {
+				if _, abortErr := w.turnStore.AbortInputAdmission(sessionID, turnID, turnID, pending.PayloadSHA256); abortErr != nil {
 					outcome = watcher.InputAmbiguous
 					err = errors.Join(err, abortErr)
 				}
@@ -346,7 +376,7 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 			result := watcher.InputResult{Outcome: outcome, Receipt: turnID, TurnID: turnID}
 			return result, &watcher.InputSubmissionError{Result: result, Cause: err}
 		}
-		if _, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		if _, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
 			SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 			PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-accepted",
 			Admission: watcher.TurnAdmission{
@@ -361,9 +391,14 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
 		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: turnID}, nil
 	}
 	err := w.SubmitInputWhenReady(sessionID, "", payload)
+	resultTurnID := turnID
+	if w.delegatedResultID != "" {
+		resultTurnID = w.delegatedResultID
+	}
 	return watcher.InputResult{
 		Outcome: watcher.InputOutcomeFromError(err),
 		Receipt: turnID,
+		TurnID:  resultTurnID,
 	}, err
 }
 
@@ -383,17 +418,65 @@ func (w *fakeControlWatcher) SubmitDelegatedInputWhenReadyBudgeted(
 	return w.SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID, acceptedAt)
 }
 
+func (w *fakeControlWatcher) SubmitDelegatedWorkInput(
+	sessionID, payload, workID, turnID, purpose, purposeID string,
+	acceptedAt time.Time,
+) (watcher.InputResult, error) {
+	if w.turnStore == nil {
+		return w.SubmitDelegatedInput(sessionID, payload, turnID, acceptedAt)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
+		WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: digest, ProcessIdentity: "process-identity", PaneGeneration: "pane-generation",
+		AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh, SignalProtocol: true,
+		Purpose: purpose, PurposeID: purposeID,
+	})
+	if err != nil || !created {
+		if err == nil && pending.State == watcher.InputAdmissionResolved &&
+			pending.WorkID == workID && pending.SessionID == sessionID &&
+			pending.Receipt == turnID && pending.Purpose == purpose && pending.PurposeID == purposeID {
+			return watcher.InputResult{
+				Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: pending.ResolvedTurnID, Duplicate: true,
+			}, nil
+		}
+		result := watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: turnID, TurnID: turnID}
+		if err == nil {
+			err = errors.New("review admission was not freshly prepared")
+		}
+		return result, &watcher.InputSubmissionError{Result: result, Cause: err}
+	}
+	if err := w.SubmitInput(sessionID, payload); err != nil {
+		result := watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: turnID, TurnID: turnID}
+		return result, &watcher.InputSubmissionError{Result: result, Cause: err}
+	}
+	resolvedAt := acceptedAt.Add(time.Millisecond)
+	if _, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
+		SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+		PayloadSHA256: pending.PayloadSHA256, ActivityID: "activity-review-accepted",
+		Admission: watcher.TurnAdmission{
+			Stream: "provider", ID: "admission-review-accepted", Cursor: 1,
+			SHA256: pending.PayloadSHA256, At: resolvedAt,
+		},
+		ResolvedAt: resolvedAt,
+	}); err != nil {
+		result := watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: turnID, TurnID: turnID}
+		return result, &watcher.InputSubmissionError{Result: result, Cause: err}
+	}
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: turnID}, nil
+}
+
 func (w *fakeControlWatcher) SubmitBrainHostInput(
 	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
 	if w.turnStore != nil {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
-		pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+		pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
 			Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
 			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
-			AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh,
+			AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh,
 		})
 		if err != nil {
 			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
@@ -407,7 +490,7 @@ func (w *fakeControlWatcher) SubmitBrainHostInput(
 			return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID}, err
 		}
 		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
-		resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
 			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
 			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 			Admission: watcher.TurnAdmission{
@@ -465,6 +548,10 @@ func (w *fakeControlWatcher) ResolveOwnedGeneration(sessionID string) (watcher.O
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: "owned-generation"}, nil
 }
 
+func (w *fakeControlWatcher) ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	return w.ResolveOwnedGeneration(sessionID)
+}
+
 func (w *fakeControlWatcher) ResolveDelegatedControl(sessionID string) (watcher.OwnedGeneration, error) {
 	return w.ResolveOwnedGeneration(sessionID)
 }
@@ -499,7 +586,7 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 		t.Fatalf("spawn response = %#v", resp)
 	}
 	if resp.BrainWork == nil ||
-		resp.BrainWork.OwnerSessionID != resp.Agent.ID ||
+		resp.BrainWork.AttemptSessionID != resp.Agent.ID ||
 		resp.BrainWork.Status != brain.WorkRunning ||
 		resp.BrainWork.CompletionPolicy != brain.CompletionBounded {
 		t.Fatalf("spawn Work = %#v", resp.BrainWork)
@@ -578,87 +665,10 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	}
 }
 
-func TestControlAppAgentSpawnWorkCASPreservesIncumbentAndKillsOnlyLoser(t *testing.T) {
+func TestPrepareSpawnWorkAllowsNamedNextAttemptOnlyDuringDeliveredHandling(t *testing.T) {
 	store := newControlBrainStore(t)
 	item, err := store.CreateWork(brain.Work{
-		Title:            "Race-owned Work",
-		Objective:        "Preserve the first delegated Session owner.",
-		Status:           brain.WorkOpen,
-		CompletionPolicy: brain.CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fw := newFakeControlWatcher()
-	incumbentID := "brain-agent-incumbent:@9"
-	fw.agents[incumbentID] = &classifier.Agent{
-		ID:        incumbentID,
-		State:     classifier.StateRunning,
-		Delegated: true,
-	}
-	fw.onCreate = func(string) {
-		_ = admitControlWorkOwner(t, store, item.ID, incumbentID)
-	}
-	fw.turnStore = store
-	app := &controlApp{
-		watcher:    fw,
-		brainStore: store,
-		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
-			"codex": {Name: "codex", Command: "codex"},
-		}),
-	}
-
-	resp := app.HandleControlRequest(control.Request{
-		Type:   "agent_spawn",
-		Name:   "Losing worker",
-		Cwd:    "/repo/zen",
-		Prompt: "must lose the owner CAS",
-		WorkID: item.ID,
-	})
-	if resp.OK || resp.Error == nil || resp.Error.Code != "conflict" {
-		t.Fatalf("losing spawn response=%#v", resp)
-	}
-	if len(fw.created) != 1 || len(fw.killed) != 1 {
-		t.Fatalf("created=%#v killed=%#v", fw.created, fw.killed)
-	}
-	loserID := "brain-agent-losing-worker:@1"
-	if fw.killed[0] != loserID {
-		t.Fatalf("killed %q, want only new loser %q", fw.killed[0], loserID)
-	}
-	if fw.GetAgent(incumbentID) == nil {
-		t.Fatal("incumbent Session was terminated")
-	}
-	got, err := store.Work(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.OwnerSessionID != incumbentID || got.Status != brain.WorkRunning ||
-		len(fw.sent) != 0 {
-		t.Fatalf("incumbent Work=%#v sent=%#v", got, fw.sent)
-	}
-
-	alreadyOwned := app.HandleControlRequest(control.Request{
-		Type:   "agent_spawn",
-		Name:   "Rejected before creation",
-		Cwd:    "/repo/zen",
-		Prompt: "must not create another Session",
-		WorkID: item.ID,
-	})
-	if alreadyOwned.OK || alreadyOwned.Error == nil || alreadyOwned.Error.Code != "conflict" ||
-		len(fw.created) != 1 || len(fw.killed) != 1 {
-		t.Fatalf(
-			"pre-owned spawn=%#v created=%#v killed=%#v",
-			alreadyOwned,
-			fw.created,
-			fw.killed,
-		)
-	}
-}
-
-func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *testing.T) {
-	store := newControlBrainStore(t)
-	item, err := store.CreateWork(brain.Work{
-		Title: "Review correction", Objective: "Attach a successor only through disposition.",
+		Title: "Review correction", Objective: "Attach a nextAttempt only through disposition.",
 		Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
 	})
 	if err != nil {
@@ -667,7 +677,7 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 	incumbentTurnID := admitControlWorkOwner(t, store, item.ID, "brain-agent-incumbent:@1")
 	app := &controlApp{brainStore: store}
 	req := control.Request{WorkID: item.ID}
-	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkOwnerConflict) {
+	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); !errors.Is(err, brain.ErrWorkAttemptConflict) {
 		t.Fatalf("spawn outside handling err=%v, want owner conflict", err)
 	}
 	incumbentTurn, found, err := store.Turn("brain-agent-incumbent:@1")
@@ -693,10 +703,10 @@ func TestPrepareSpawnWorkAllowsNamedSuccessorOnlyDuringDeliveredHandling(t *test
 		t.Fatal(err)
 	}
 	if _, err := app.prepareSpawnWork(req, "Correction", "correct it"); err != nil {
-		t.Fatalf("delivered handling rejected successor: %v", err)
+		t.Fatalf("delivered handling rejected nextAttempt: %v", err)
 	}
-	if _, err := app.prepareSpawnWork(req, "Correction", ""); !errors.Is(err, brain.ErrWorkOwnerConflict) {
-		t.Fatalf("promptless successor err=%v, want owner conflict", err)
+	if _, err := app.prepareSpawnWork(req, "Correction", ""); !errors.Is(err, brain.ErrWorkAttemptConflict) {
+		t.Fatalf("promptless nextAttempt err=%v, want owner conflict", err)
 	}
 }
 
@@ -1373,7 +1383,7 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].Status != brain.WorkCancelled ||
-		items[0].OwnerSessionID != "" {
+		items[0].AttemptSessionID != "" {
 		t.Fatalf("Work after failed initial prompt = %#v", items)
 	}
 }
@@ -1406,7 +1416,7 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *t
 	}
 	items, err := store.ListWork()
 	if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled ||
-		items[0].OwnerSessionID != "" {
+		items[0].AttemptSessionID != "" {
 		t.Fatalf("failed spawn Work=%+v err=%v", items, err)
 	}
 	if len(fw.sent) != 1 || len(fw.submitted) != 1 || len(fw.created) != 1 || len(fw.killed) != 1 {
@@ -1421,32 +1431,20 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	notAdmitted := 0
-	var notAdmittedEvent brain.WorkEvent
-	for _, event := range events {
-		if event.Kind == "brain.submission_not_admitted" {
-			notAdmitted++
-			notAdmittedEvent = event
-		}
-		if event.Kind == "brain.reconcile_required" || strings.HasPrefix(event.Kind, "session.") {
-			t.Fatalf("non-submission projected a reconcile or Session result: %+v", events)
-		}
+	if len(events) != 0 {
+		t.Fatalf("non-submission created legacy lifecycle Events=%+v", events)
 	}
-	if len(events) != 1 || notAdmitted != 1 ||
-		notAdmittedEvent.Actionable || notAdmittedEvent.DiscardedAt == nil ||
-		notAdmittedEvent.Resolution != brain.EventResolutionDiscard {
-		t.Fatalf("final Events=%+v not_admitted=%d", events, notAdmitted)
+	turnContract := strings.SplitN(fw.submitted[0].text, "This prompt's turn identity is ", 2)
+	if len(turnContract) != 2 {
+		t.Fatalf("submission payload lacks turn contract: %q", fw.submitted[0].text)
 	}
-	turnID := strings.TrimPrefix(notAdmittedEvent.DedupeKey, "brain:submission-abort:")
-	if turnID == notAdmittedEvent.DedupeKey || !strings.Contains(fw.sent[0].text, "--turn-id "+turnID) {
-		t.Fatalf("submission abort identity is absent from exact provider payload: event=%+v", notAdmittedEvent)
-	}
-	submission, found, err := reopened.TurnSubmission(notAdmittedEvent.SourceName, turnID)
-	if err != nil || !found || submission.State != watcher.TurnSubmissionAborted ||
+	turnID := strings.TrimSpace(strings.SplitN(turnContract[1], ".", 2)[0])
+	submission, found, err := reopened.InputAdmission(fw.submitted[0].id, turnID)
+	if err != nil || !found || submission.State != watcher.InputAdmissionAborted ||
 		submission.Receipt != turnID {
 		t.Fatalf("aborted submission=%+v found=%v err=%v", submission, found, err)
 	}
-	if turn, found, err := reopened.Turn(notAdmittedEvent.SourceName); err != nil || found {
+	if turn, found, err := reopened.Turn(fw.submitted[0].id); err != nil || found {
 		t.Fatalf("definite non-submission created Turn=%+v found=%v err=%v", turn, found, err)
 	}
 
@@ -1466,212 +1464,8 @@ func TestControlAppSpawnSubmissionFailureReconcilesExactlyOnceAcrossRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(finalEvents) != 1 || finalEvents[0].ID != notAdmittedEvent.ID {
-		t.Fatalf("restart duplicated the submission abort: %+v", finalEvents)
-	}
-}
-
-func TestControlAppNeverReadyInitialPromptCleansAutoWorkButKeepsAttachedWorkActionable(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		attached   bool
-		wantStatus brain.WorkStatus
-		actionable bool
-	}{
-		{name: "auto Work", wantStatus: brain.WorkCancelled},
-		{name: "attached Work", attached: true, wantStatus: brain.WorkNeedsInput, actionable: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := newControlBrainStore(t)
-			request := control.Request{
-				Type: "agent_spawn", Name: "Pi readiness timeout", Cwd: "/repo/zen",
-				Command: "pi", Prompt: "execute only after the composer is ready",
-			}
-			var attached brain.Work
-			if test.attached {
-				var err error
-				attached, err = store.CreateWork(brain.Work{
-					Title: "Existing commitment", Objective: "Remain retryable if launch never starts.",
-					Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded,
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				request.WorkID = attached.ID
-			}
-			readinessErr := &watcher.InputSubmissionError{
-				Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
-				Cause:  fmt.Errorf("%w for pi", watcher.ErrAgentInputNotReady),
-			}
-			fw := newFakeControlWatcher()
-			fw.turnStore = store
-			fw.budgetedSubmitErr = readinessErr
-			app := &controlApp{
-				watcher: fw, brainStore: store,
-				execs: work.NewExecutorConfig("pi", map[string]work.Executor{
-					"pi": {Name: "pi", Command: "pi"},
-				}),
-			}
-			response := app.HandleControlRequest(request)
-			if response.OK || response.Error == nil || response.Error.Code != "send_prompt_failed" {
-				t.Fatalf("never-ready spawn response=%#v", response)
-			}
-			if fw.budgetedCalls != 1 || len(fw.created) != 1 || len(fw.killed) != 1 ||
-				len(fw.sent) != 0 || len(fw.submitted) != 0 {
-				t.Fatalf("never-ready effects budgeted=%d created=%d killed=%d sent=%d submitted=%d",
-					fw.budgetedCalls, len(fw.created), len(fw.killed), len(fw.sent), len(fw.submitted))
-			}
-			items, err := store.ListWork()
-			if err != nil || len(items) != 1 || items[0].Status != test.wantStatus ||
-				items[0].OwnerSessionID != "" || items[0].SuccessorReservation != nil {
-				t.Fatalf("never-ready Work=%+v err=%v", items, err)
-			}
-			events, err := store.ListWorkEvents(items[0].ID)
-			if err != nil || len(events) != 1 || events[0].Kind != "brain.submission_not_admitted" ||
-				events[0].Actionable != test.actionable {
-				t.Fatalf("never-ready Events=%+v err=%v", events, err)
-			}
-			turnID := strings.TrimPrefix(events[0].DedupeKey, "brain:submission-abort:")
-			if turnID == events[0].DedupeKey || turnID == "" {
-				t.Fatalf("never-ready Event lacks exact turn identity: %+v", events[0])
-			}
-			if _, found, err := store.TurnSubmission(events[0].SourceName, turnID); err != nil || found {
-				t.Fatalf("never-ready created submission found=%v err=%v", found, err)
-			}
-			if _, found, err := store.Turn(events[0].SourceName); err != nil || found {
-				t.Fatalf("never-ready created Turn found=%v err=%v", found, err)
-			}
-			if test.actionable {
-				if events[0].DiscardedAt != nil || events[0].Resolution != "" {
-					t.Fatalf("attached retry fact was discarded: %+v", events[0])
-				}
-			} else if events[0].DiscardedAt == nil || events[0].Resolution != brain.EventResolutionDiscard {
-				t.Fatalf("auto Work fact was not audit-only: %+v", events[0])
-			}
-		})
-	}
-}
-
-func TestControlAppAmbiguousLiveSpawnReturnsPendingAndExactProgressConvergesAfterRestart(t *testing.T) {
-	fw := newFakeControlWatcher()
-	fw.sendErr = &watcher.InputSubmissionError{
-		Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
-		Cause:  fmt.Errorf("provider Session disappeared"),
-	}
-	fw.dropAgentOnSend = true
-	present := watcher.SessionPresencePresent
-	fw.probePresence = &present
-	store := newControlBrainStore(t)
-	const threadID = "brain_thread_spawn_admission_pending"
-	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
-		t.Fatal(err)
-	}
-	fw.turnStore = store
-	app := &controlApp{
-		watcher:    fw,
-		brainStore: store,
-		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
-			"codex": {Name: "codex", Command: "codex"},
-		}),
-	}
-
-	resp := app.HandleControlRequest(control.Request{
-		Type:   "agent_spawn",
-		Name:   "Ambiguous",
-		Cwd:    "/repo/zen",
-		Prompt: "must not be replayed",
-	})
-
-	if !resp.OK || resp.Error != nil || resp.Agent == nil || resp.Agent.Status != string(classifier.StateRunning) {
-		t.Fatalf("response = %#v", resp)
-	}
-	if !strings.Contains(resp.Confirmation, "awaiting exact turn-scoped admission") {
-		t.Fatalf("pending confirmation = %q", resp.Confirmation)
-	}
-	if resp.BrainWork == nil || resp.BrainWork.Status != brain.WorkRunning ||
-		resp.BrainWork.OwnerSessionID != resp.Agent.ID ||
-		!strings.Contains(resp.BrainWork.NextAction, "Wait for the delegated Session") {
-		t.Fatalf("pending spawn Work = %#v", resp.BrainWork)
-	}
-	if len(fw.sent) != 1 {
-		t.Fatalf("ambiguous spawn submitted the prompt %d times, want exactly once", len(fw.sent))
-	}
-	pendingList, err := store.PendingTurnSubmissions(resp.Agent.ID)
-	if err != nil || len(pendingList) != 1 || pendingList[0].State != watcher.TurnSubmissionPending ||
-		!pendingList[0].SignalProtocol || pendingList[0].ProposedTurnID == "" {
-		t.Fatalf("pending submission = %+v err=%v", pendingList, err)
-	}
-	pending := pendingList[0]
-	if !strings.Contains(fw.sent[0].text, "--turn-id "+pending.ProposedTurnID) {
-		t.Fatalf("submitted prompt lacks pending identity %q", pending.ProposedTurnID)
-	}
-	if turn, found, err := store.Turn(resp.Agent.ID); err != nil || found {
-		t.Fatalf("ambiguous submission created a Turn: %+v found=%v err=%v", turn, found, err)
-	}
-	if events, err := store.ListWorkEvents(resp.BrainWork.ID); err != nil || len(events) != 0 {
-		t.Fatalf("pending spawn events = %+v err=%v", events, err)
-	}
-
-	// The durable pending row is the restart owner. A stale/mismatched signal
-	// cannot claim it; the exact prompt-carried identity admits the existing
-	// transaction without replay, and terminal progress settles it once.
-	restarted, err := brain.NewStore(store.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	factAt := time.Now().UTC().Add(time.Second)
-	mismatched, err := restarted.ApplyDelegatedTurnProgress(watcher.TurnFact{
-		SessionID: resp.Agent.ID, TurnID: "turn:stale", Class: watcher.EvidenceControl,
-		Kind: "running", SourceID: "control\x00stale-progress", At: factAt,
-	})
-	if err != nil || !mismatched.Owned || mismatched.Matched || mismatched.Changed {
-		t.Fatalf("mismatched progress = (%+v, %v)", mismatched, err)
-	}
-	runningFact := watcher.TurnFact{
-		SessionID: resp.Agent.ID, TurnID: pending.ProposedTurnID, Class: watcher.EvidenceControl,
-		Kind: "running", SourceID: "control\x00exact-running", At: factAt,
-		Summary: "Exact signal admitted the existing prompt",
-	}
-	running, err := restarted.ApplyDelegatedTurnProgress(runningFact)
-	if err != nil || !running.Owned || !running.Matched || !running.Changed ||
-		running.Turn.Status != watcher.TurnRunning {
-		t.Fatalf("exact running progress = (%+v, %v)", running, err)
-	}
-	doneFact := watcher.TurnFact{
-		SessionID: resp.Agent.ID, TurnID: pending.ProposedTurnID, Class: watcher.EvidenceControl,
-		Kind: "done", SourceID: "control\x00exact-done", At: factAt.Add(time.Second),
-		Summary: "REVIEW_READY: exact signal completion",
-	}
-	done, err := restarted.ApplyDelegatedTurnProgress(doneFact)
-	if err != nil || !done.Owned || !done.Matched || !done.Changed || done.Turn.Status != watcher.TurnDone {
-		t.Fatalf("exact done progress = (%+v, %v)", done, err)
-	}
-	if replay, err := restarted.ApplyDelegatedTurnProgress(doneFact); err != nil || replay.Changed ||
-		!replay.Owned || !replay.Matched || replay.Turn.Status != watcher.TurnDone {
-		t.Fatalf("replayed done progress = (%+v, %v)", replay, err)
-	}
-	if len(fw.sent) != 1 {
-		t.Fatalf("progress convergence replayed provider input: sent=%#v", fw.sent)
-	}
-	events, err := restarted.ListWorkEvents(resp.BrainWork.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doneEvents := 0
-	for _, event := range events {
-		if event.Kind == "session.done" {
-			doneEvents++
-		}
-		if event.Kind == "session.failed" || event.Kind == "brain.successor_launch_failed" {
-			t.Fatalf("ambiguous admission projected failure Event: %+v", events)
-		}
-	}
-	if doneEvents != 1 {
-		t.Fatalf("session.done Events = %d, want one: %+v", doneEvents, events)
-	}
-	cards, err := restarted.ThreadTimeline(threadID, 0)
-	if err != nil || len(cards) != 1 || cards[0].EventKind != "session.done" || cards[0].ID != events[0].ID {
-		t.Fatalf("completion cards = %+v events=%+v err=%v", cards, events, err)
+	if len(finalEvents) != 0 {
+		t.Fatalf("restart created legacy submission events: %+v", finalEvents)
 	}
 }
 
@@ -1698,7 +1492,8 @@ func TestControlAppAmbiguousSpawnWithVanishedOwnedSessionStillReturnsFailure(t *
 		t.Fatalf("vanished response = %#v", resp)
 	}
 	items, err := store.ListWork()
-	if err != nil || len(items) != 1 || items[0].Status != brain.WorkCancelled {
+	if err != nil || len(items) != 1 || items[0].Status != brain.WorkNeedsInput ||
+		items[0].AttemptSessionID != "" || items[0].AttemptDelegated || items[0].Review == nil {
 		t.Fatalf("vanished Work = %+v err=%v", items, err)
 	}
 	if len(fw.sent) != 1 {
@@ -1766,7 +1561,7 @@ func TestControlAppDefinitelyNotSubmittedSpawnFailureStillProjectsFailure(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Status != brain.WorkCancelled || items[0].OwnerSessionID != "" {
+	if len(items) != 1 || items[0].Status != brain.WorkCancelled || items[0].AttemptSessionID != "" {
 		t.Fatalf("Work after not-submitted spawn = %#v", items)
 	}
 }
@@ -1941,6 +1736,49 @@ func TestControlAppAgentCloseKillsSession(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentCloseReleasesCanonicalWorkOwner(t *testing.T) {
+	fw := newFakeControlWatcher()
+	const sessionID = "brain-agent-worker:@owner"
+	fw.agents[sessionID] = &classifier.Agent{
+		ID: sessionID, Name: "Worker", State: classifier.StateDone, Delegated: true,
+	}
+	store := newControlBrainStore(t)
+	item, err := store.CreateWork(brain.Work{
+		Title: "owned Work", Objective: "release owner after explicit close",
+		CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.FSM().AdmitTurn(lifecycle.WorkID(item.ID), lifecycle.AdmitTurnInput{
+		SessionID: sessionID, Delegated: true, TurnToken: "turn-close-control",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{watcher: fw, brainStore: store}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type: "agent_close", AgentID: sessionID, Force: true,
+	})
+	if !resp.OK {
+		t.Fatalf("close response = %#v", resp)
+	}
+	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Attempt != nil || projected.AttemptSessionID != "" {
+		t.Fatalf("state=%+v projected=%+v", state, projected)
+	}
+}
+
 func TestControlAppAgentCloseRequiresForceForRunningDelegatedAgent(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
@@ -1991,83 +1829,42 @@ func TestControlAppAgentCloseRejectsExternalSessionWithoutForce(t *testing.T) {
 	}
 }
 
-func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
+func TestControlAppMarkDeliveredCanonicalReviewIsIdempotent(t *testing.T) {
 	store := newControlBrainStore(t)
-	service := brain.NewService(store, nil, nil)
-	app := &controlApp{brainStore: store, brainService: service}
-
-	created := app.HandleControlRequest(control.Request{
-		Type: "brain_work_create",
-		BrainWork: &brain.Work{
-			Title:            "API Work",
-			Objective:        "Exercise the narrow Work API.",
-			CompletionPolicy: brain.CompletionBounded,
-		},
+	app := &controlApp{brainStore: store}
+	item, err := store.CreateWork(brain.Work{
+		Title: "ambiguous review delivery", Objective: "exercise canonical mark_delivered",
+		CompletionPolicy: brain.CompletionBounded,
 	})
-	if !created.OK || created.BrainWork == nil {
-		t.Fatalf("create response = %#v", created)
-	}
-	status := brain.WorkWaiting
-	waitFor := "external result"
-	updated := app.HandleControlRequest(control.Request{
-		Type:       "brain_work_update",
-		WorkID:     created.BrainWork.ID,
-		BrainWork:  &brain.Work{Status: status, WaitFor: waitFor},
-		WorkFields: []string{"status", "wait_for"},
-	})
-	if !updated.OK || updated.BrainWork == nil ||
-		updated.BrainWork.Status != brain.WorkWaiting ||
-		updated.BrainWork.WaitFor != waitFor {
-		t.Fatalf("update response = %#v", updated)
-	}
-	recorded := app.HandleControlRequest(control.Request{
-		Type: "brain_work_event",
-		BrainWorkEvent: &brain.WorkEvent{
-			WorkID:     created.BrainWork.ID,
-			Kind:       "external.changed",
-			DedupeKey:  "external:1",
-			Actionable: true,
-		},
-	})
-	if !recorded.OK || recorded.BrainWorkEvent == nil {
-		t.Fatalf("event response = %#v", recorded)
-	}
-	duplicate := app.HandleControlRequest(control.Request{
-		Type:           "brain_work_event",
-		BrainWorkEvent: recorded.BrainWorkEvent,
-	})
-	if !duplicate.OK || duplicate.Confirmation != "Duplicate event already recorded." {
-		t.Fatalf("duplicate response = %#v", duplicate)
-	}
-	claimed, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@1")
-	if err != nil || !ok {
-		t.Fatalf("claim = %+v ok=%v err=%v", claimed, ok, err)
-	}
-	resolveControlHostClaim(t, store, claimed)
-	delivered, _, err := store.ConsumeReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved := app.HandleControlRequest(control.Request{
-		Type: "brain_work_resolve",
-		BrainWorkDisposition: &brain.WorkReviewDispositionRequest{
-			WorkID: delivered.WorkID, HandlingID: delivered.HandlingID,
-			ProviderTurnID:       delivered.ProviderTurnID,
-			ExpectedWorkRevision: delivered.DeliveryWorkRevision,
-			Disposition:          brain.WorkDispositionComplete,
-		},
-	})
-	if !resolved.OK || resolved.BrainWork == nil || resolved.BrainWork.Status != brain.WorkDone ||
-		resolved.BrainWorkEvent == nil || resolved.BrainWorkEvent.HandledAt == nil {
-		t.Fatalf("resolve response = %#v", resolved)
+	if _, err := store.FSM().OpenReview(lifecycle.WorkID(item.ID), "operator_review", "canonical-only"); err != nil {
+		t.Fatal(err)
 	}
-	listed := app.HandleControlRequest(control.Request{
-		Type:   "brain_work_list",
-		WorkID: created.BrainWork.ID,
-	})
-	if !listed.OK || listed.BrainWork == nil ||
-		len(listed.BrainWorkEvents) != 1 {
-		t.Fatalf("list response = %#v", listed)
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextReviewAction("brain-agent-brain-hidden:@mark-delivered"); err != nil || !ok {
+		t.Fatalf("claim ok=%v err=%v", ok, err)
+	}
+
+	request := control.Request{
+		Type: "brain_work_event_resolve", WorkID: item.ID,
+		Operation: "mark_delivered", Actor: "operator", Reason: "visible in Host transcript",
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		response := app.HandleControlRequest(request)
+		if !response.OK {
+			t.Fatalf("attempt %d response = %#v", attempt+1, response)
+		}
+	}
+	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Review == nil || state.Review.Handler != nil {
+		t.Fatalf("canonical review handler remained after mark_delivered: %+v", state.Review)
 	}
 }
 
@@ -2111,7 +1908,7 @@ func TestControlAppBrainWorkCloseUsesAuditedRevisionGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].HandledAt == nil || events[0].Disposition != brain.WorkDispositionCancel ||
+	if len(events) != 2 || closed.BrainWork.Review != nil ||
 		events[1].Kind != "brain.work_closed" || events[1].Summary != "verified obsolete Work" {
 		t.Fatalf("closed event ledger = %#v", events)
 	}

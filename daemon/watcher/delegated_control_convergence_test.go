@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestSubmitDelegatedInputReusesCompletedSessionWithDifferentIdleActivity(t *
 	}
 }
 
-func TestSubmitDelegatedInputActivityMismatchDeprojectsBeforeRejecting(t *testing.T) {
+func TestSubmitDelegatedInputActivityMismatchPreservesControlOwner(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Date(2026, 8, 11, 3, 30, 0, 0, time.UTC)
@@ -93,23 +94,23 @@ func TestSubmitDelegatedInputActivityMismatchDeprojectsBeforeRejecting(t *testin
 	result, err := w.SubmitDelegatedInput(
 		sessionID, "must not mutate the unowned activity", sessionID+":turn:2", now,
 	)
-	if err == nil || result.Outcome != InputNotSubmitted {
+	if err == nil || !errors.Is(err, ErrDelegatedInputAdmissionUnavailable) || result.Outcome != InputNotSubmitted {
 		t.Fatalf("activity mismatch = (%+v, %v), want definite rejection", result, err)
 	}
 	if len(io.queues) != 0 {
 		t.Fatalf("activity mismatch crossed provider mutation boundary: queues=%d", len(io.queues))
 	}
 	turn := ledger.snapshot(sessionID)
-	if turn.Status != TurnUnknown || turn.ControlState != TurnControlOwnershipLost {
-		t.Fatalf("mismatch rejection preceded durable ownership-loss state: %+v", turn)
+	if turn.Status != TurnRunning || turn.ControlState != TurnControlOwned {
+		t.Fatalf("admission conflict changed durable control owner: %+v", turn)
 	}
 	projected := w.GetAgent(sessionID)
-	if projected == nil || projected.State != classifier.StateUnknown ||
-		projected.Attention != "ownership_lost" || !projected.NeedsAttention {
-		t.Fatalf("mismatch rejection preceded synchronous deprojection: %+v", projected)
+	if projected == nil || projected.State != classifier.StateRunning ||
+		projected.Attention == "ownership_lost" || projected.NeedsAttention {
+		t.Fatalf("admission conflict deprojected the live target: %+v", projected)
 	}
-	if len(ledger.applied) != 1 || ledger.applied[0].Kind != "ownership_lost" {
-		t.Fatalf("mismatch facts=%+v, want one ownership_lost", ledger.applied)
+	if len(ledger.applied) != 0 {
+		t.Fatalf("admission conflict emitted lifecycle facts=%+v", ledger.applied)
 	}
 }
 
@@ -151,83 +152,64 @@ func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testin
 		t.Fatalf("completed mismatch = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 	turn := ledger.snapshot(sessionID)
-	if turn.Status != TurnDone || turn.ControlState != TurnControlOwnershipLost {
-		t.Fatalf("control loss rewrote completed provider outcome: %+v", turn)
+	if turn.Status != TurnDone || turn.ControlState != TurnControlOwned {
+		t.Fatalf("admission conflict changed completed control state: %+v", turn)
 	}
 	projected := w.GetAgent(sessionID)
-	if projected == nil || projected.State != classifier.StateUnknown ||
-		projected.Attention != "ownership_lost" || !projected.NeedsAttention {
-		t.Fatalf("completed mismatch was not deprojected: %+v", projected)
+	if projected == nil || projected.State != classifier.StateDone ||
+		projected.Attention == "ownership_lost" || projected.NeedsAttention {
+		t.Fatalf("completed admission conflict deprojected the target: %+v", projected)
 	}
 }
 
-func TestResolveDelegatedControlUsesProviderActivityInvariant(t *testing.T) {
-	for _, test := range []struct {
-		name           string
-		turnStatus     TurnStatus
-		turnActivity   string
-		provider       ProviderActivityObservation
-		wantErr        bool
-		wantControl    TurnControlState
-		wantAgentState classifier.AgentState
-	}{
-		{
-			name:       "different idle terminal is reusable",
-			turnStatus: TurnDone, turnActivity: "activity-canonical",
-			provider: ProviderActivityObservation{
-				ID: "activity-current-idle", Status: "completed",
-			},
-			wantAgentState: classifier.StateDone,
-		},
-		{
-			name:       "different live activity loses control",
-			turnStatus: TurnRunning, turnActivity: "activity-canonical",
-			provider: ProviderActivityObservation{
-				ID: "activity-unowned-live", Status: "running",
-			},
-			wantErr: true, wantControl: TurnControlOwnershipLost,
-			wantAgentState: classifier.StateUnknown,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			io := newFakeSessionInputIO()
-			ledger := newFakeTurnLedger()
-			now := time.Date(2026, 8, 11, 3, 37, 0, 0, time.UTC)
-			sessionID := "brain-agent-control-surface:@1"
-			identity := testSessionInputIdentity("codex")
-			ledger.seed(sessionID, TurnSnapshot{
-				SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: test.turnStatus,
-				AcceptedAt: now.Add(-time.Hour), ActivityID: test.turnActivity,
-				ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: io.paneValue.generation,
-			})
-			probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{test.provider}}
-			w := New(time.Second)
-			w.agents[sessionID] = &classifier.Agent{
-				ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
-				Delegated: true, State: agentStateForTurnStatus(test.turnStatus), Attention: "none",
-			}
-			w.agentOrder = append(w.agentOrder, sessionID)
-			w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
-			w.targetProcessResolver = fixedSessionInputResolver(identity)
-			w.providerActivityProbe = probe
-			owner := newSessionInputOwner(io)
-			owner.ledger = ledger
-			w.sessionInput = owner
-			w.turnLedger = ledger
+func TestResolveDelegatedControlIsReadOnlyAcrossProviderActivityChanges(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Date(2026, 8, 11, 3, 37, 0, 0, time.UTC)
+	sessionID := "brain-agent-control-surface:@1"
+	identity := testSessionInputIdentity("codex")
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnRunning,
+		AcceptedAt: now.Add(-time.Hour), ActivityID: "activity-canonical",
+		// The canonical Turn intentionally retains an older process identity;
+		// read-only inspection must not turn that observation into lifecycle loss.
+		ProcessIdentity: "canonical-old-process", PaneGeneration: io.paneValue.generation,
+	})
+	// A live provider activity with a different ID is deliberately supplied to
+	// prove that the read-only resolver does not consume or reconcile it.
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{{
+		ID: "activity-unowned-live", Status: "running",
+	}}}
+	w := New(time.Second)
+	w.agents[sessionID] = &classifier.Agent{
+		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
+		Delegated: true, State: classifier.StateRunning, Attention: "none",
+	}
+	w.agentOrder = append(w.agentOrder, sessionID)
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
+	w.targetProcessResolver = fixedSessionInputResolver(identity)
+	w.providerActivityProbe = probe
+	owner := newSessionInputOwner(io)
+	owner.ledger = ledger
+	w.sessionInput = owner
+	w.turnLedger = ledger
 
-			_, err := w.ResolveDelegatedControl(sessionID)
-			if (err != nil) != test.wantErr {
-				t.Fatalf("ResolveDelegatedControl err=%v, wantErr=%v", err, test.wantErr)
-			}
-			turn := ledger.snapshot(sessionID)
-			if turn.ControlState != test.wantControl {
-				t.Fatalf("control state=%q, want %q; Turn=%+v", turn.ControlState, test.wantControl, turn)
-			}
-			agent := w.GetAgent(sessionID)
-			if agent == nil || agent.State != test.wantAgentState {
-				t.Fatalf("agent=%+v, want state %q", agent, test.wantAgentState)
-			}
-		})
+	if _, err := w.ResolveDelegatedControl(sessionID); err != nil {
+		t.Fatalf("ResolveDelegatedControl err=%v, want read-only target proof", err)
+	}
+	turn := ledger.snapshot(sessionID)
+	if turn.ControlState != TurnControlOwned || turn.Status != TurnRunning {
+		t.Fatalf("read-only control changed canonical turn: %+v", turn)
+	}
+	agent := w.GetAgent(sessionID)
+	if agent == nil || agent.State != classifier.StateRunning || agent.Attention == "ownership_lost" {
+		t.Fatalf("read-only control changed agent projection: %+v", agent)
+	}
+	probe.mu.Lock()
+	consumed := probe.stepIdx
+	probe.mu.Unlock()
+	if consumed != 0 {
+		t.Fatalf("read-only control consumed provider activity observation: %d", consumed)
 	}
 }
 

@@ -55,7 +55,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Run("done + late liveness uncertain stays done with audit only", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
 		admitAcceptedTurn(t, store, sessionID, turnID)
-		workItem, _, _ := store.WorkByOwnerSession(sessionID)
+		workItem, _, _ := store.WorkByAttemptSession(sessionID)
 		status := WorkDone
 		completed, err := store.UpdateWork(workItem.ID, WorkUpdate{Status: &status})
 		if err != nil {
@@ -95,7 +95,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Run("done + late lease stale stays done with audit only", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
 		admitAcceptedTurn(t, store, sessionID, turnID)
-		workItem, _, _ := store.WorkByOwnerSession(sessionID)
+		workItem, _, _ := store.WorkByAttemptSession(sessionID)
 		status := WorkDone
 		completed, err := store.UpdateWork(workItem.ID, WorkUpdate{Status: &status})
 		if err != nil {
@@ -130,7 +130,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Run("cancelled + late facts stay cancelled with audit only", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
 		admitAcceptedTurn(t, store, sessionID, turnID)
-		workItem, _, _ := store.WorkByOwnerSession(sessionID)
+		workItem, _, _ := store.WorkByAttemptSession(sessionID)
 		status := WorkCancelled
 		cancelled, err := store.UpdateWork(workItem.ID, WorkUpdate{Status: &status})
 		if err != nil {
@@ -172,7 +172,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Run("late provider terminal is recorded as turn-level audit", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
 		admitAcceptedTurn(t, store, sessionID, turnID)
-		workItem, _, _ := store.WorkByOwnerSession(sessionID)
+		workItem, _, _ := store.WorkByAttemptSession(sessionID)
 		status := WorkDone
 		completed, err := store.UpdateWork(workItem.ID, WorkUpdate{Status: &status})
 		if err != nil {
@@ -202,7 +202,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 		if err != nil || !hasTurn || turn.Status != watcher.TurnDone || turn.SettledAt == nil {
 			t.Fatalf("turn audit = (%+v, %v, %v), want settled Done", turn, hasTurn, err)
 		}
-		database, err := store.loadOrchestrationLocked()
+		database, err := store.loadPresentationLocked()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,13 +226,14 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 	t.Run("ordinary active Work keeps actionable wakes", func(t *testing.T) {
 		store, sessionID, turnID := ledgerTestStore(t)
 		admitAcceptedTurn(t, store, sessionID, turnID)
-		workItem, _, _ := store.WorkByOwnerSession(sessionID)
+		workItem, _, _ := store.WorkByAttemptSession(sessionID)
 		if workItem.Status != WorkRunning {
 			t.Fatalf("active Work not running: %+v", workItem)
 		}
 
 		// The same liveness uncertain fact on ACTIVE Work still moves the
-		// Work to needs_input and produces the actionable wake.
+		// Work to needs_input and produces immutable provider evidence plus the
+		// canonical actionable lifecycle review.
 		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
 			SessionID: sessionID, TurnID: turnID,
 			Class:       watcher.EvidenceLiveness,
@@ -253,8 +254,8 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 			t.Fatalf("active Work after uncertain = %+v", after)
 		}
 		row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain")
-		if !found || !row.Actionable {
-			t.Fatalf("active Work uncertain row = %+v found=%v, want actionable", row, found)
+		if !found || row.Actionable {
+			t.Fatalf("active Work uncertain row = %+v found=%v, want non-actionable audit evidence", row, found)
 		}
 		if _, claimed, err := store.ClaimNextReviewAction("brain-agent-host-hidden:@1"); err != nil || !claimed {
 			t.Fatalf("active Work wake not claimable: claimed=%v err=%v", claimed, err)

@@ -519,8 +519,8 @@ function projectOwnedWork(
   work: BrainCurrentWork,
   ownerById: ReadonlyMap<string, WorkGraphOwner>,
 ): MeaningfulWork | null {
-  const sessionId = work.owner_session_id?.trim();
-  if (!sessionId || work.owner_delegated !== true) {
+  const sessionId = work.attempt_session_id?.trim();
+  if (!sessionId || work.attempt_delegated !== true) {
     return null;
   }
   const owner = ownerById.get(sessionId);

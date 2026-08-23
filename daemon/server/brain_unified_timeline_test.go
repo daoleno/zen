@@ -85,7 +85,9 @@ func TestBrainUnifiedTimelineRestoresHistoryAcrossEmptyHost(t *testing.T) {
 	for _, id := range ids {
 		idSet[id] = true
 	}
-	for _, wantID := range []string{"u1", "a1", "645a5a2a-reject", "1a6ddd99-accept", "current-needs"} {
+	// One card per Work lineage: the later accept fact replaces the earlier
+	// reject card in place instead of materializing a parallel historical card.
+	for _, wantID := range []string{"u1", "a1", "1a6ddd99-accept", "current-needs"} {
 		if !idSet[wantID] {
 			t.Fatalf("missing %s in restored timeline %v", wantID, ids)
 		}

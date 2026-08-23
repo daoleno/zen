@@ -288,7 +288,7 @@ func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 		"Avoid AI slop",
 		"Answer first",
 		"Do not be sycophantic",
-		"## Brain Orchestration Rules",
+		"## Brain Lifecycle Rules",
 		"Run independent delegated subtasks in parallel when useful",
 		"## Workspace Isolation",
 		"$ZEN_WORKTREE_ROOT",

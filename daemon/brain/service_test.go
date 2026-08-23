@@ -142,7 +142,7 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 				Title:            "Markerless delegated session",
 				Objective:        "No lifecycle began without a canonical turn.",
 				Status:           WorkRunning,
-				OwnerSessionID:   sessionID,
+				AttemptSessionID: sessionID,
 				CompletionPolicy: CompletionBounded,
 				NextAction:       "Wait for the delegated Session.",
 				WaitFor:          "Session " + sessionID,
@@ -167,7 +167,7 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != WorkRunning || got.OwnerSessionID != sessionID {
+			if got.Status != item.Status || got.AttemptSessionID != "" || got.AttemptDelegated {
 				t.Fatalf("markerless Work mutated: %#v", got)
 			}
 		})
@@ -190,7 +190,7 @@ func TestReconcileDelegatedSessionsWithoutTurnNeverRoutesRawState(t *testing.T) 
 		Title:            "Markerless delegated session",
 		Objective:        "No lifecycle began without a canonical turn.",
 		Status:           WorkRunning,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the delegated Session.",
 		WaitFor:          "Session " + sessionID,
@@ -216,7 +216,7 @@ func TestReconcileDelegatedSessionsWithoutTurnNeverRoutesRawState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != WorkRunning || got.NextAction != "Wait for the delegated Session." {
+	if got.Status != item.Status || got.AttemptSessionID != "" || got.NextAction != item.NextAction {
 		t.Fatalf("markerless Work text mutated by raw state: %#v", got)
 	}
 }
@@ -236,7 +236,7 @@ func TestRouteSessionEventWithCanonicalTurnRedispatchesOnly(t *testing.T) {
 		Title:            "Canonical delegated session",
 		Objective:        "The ledger owns lifecycle.",
 		Status:           WorkRunning,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
@@ -385,6 +385,44 @@ func (w *fakeWatcher) SendInputWithReceiptResult(sessionID, text, receipt string
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
+func (w *fakeWatcher) SubmitDelegatedInput(sessionID, payload, turnID string, _ time.Time) (watcher.InputResult, error) {
+	w.sentCalls = append(w.sentCalls, sentCall{sessionID: sessionID, text: payload})
+	if w.sendErr != nil {
+		return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(w.sendErr), Receipt: turnID, TurnID: turnID}, w.sendErr
+	}
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: turnID}, nil
+}
+
+func (w *fakeWatcher) SubmitDelegatedWorkInput(
+	sessionID, payload, workID, turnID, purpose, purposeID string, acceptedAt time.Time,
+) (watcher.InputResult, error) {
+	w.sentCalls = append(w.sentCalls, sentCall{sessionID: sessionID, text: payload})
+	if w.sendErr != nil {
+		return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(w.sendErr), Receipt: turnID, TurnID: turnID}, w.sendErr
+	}
+	if w.turnStore != nil {
+		pending, _, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
+			WorkID: workID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
+			PayloadSHA256: pendingSubmissionDigest(payload), ProcessIdentity: "delegated-process",
+			PaneGeneration: "delegated-pane", AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh,
+			SignalProtocol: true, Purpose: purpose, PurposeID: purposeID,
+		})
+		if err != nil {
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: turnID, TurnID: turnID}, err
+		}
+		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
+		if _, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
+			SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID, PayloadSHA256: pending.PayloadSHA256,
+			ActivityID: "delegated-activity-" + turnID,
+			Admission:  watcher.TurnAdmission{Stream: "provider", ID: "delegated-admission-" + turnID, Cursor: 1, SHA256: pending.PayloadSHA256, At: resolvedAt},
+			ResolvedAt: resolvedAt,
+		}); err != nil {
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: turnID, TurnID: turnID}, err
+		}
+	}
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: turnID, TurnID: turnID}, nil
+}
+
 func (w *fakeWatcher) SubmitBrainHostInput(
 	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
@@ -400,7 +438,8 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
 		} else if found {
 			existingTurnID = current.TurnID
-			if !watcher.TurnImmutable(current.Status) {
+			if !watcher.TurnImmutable(current.Status) &&
+				!(current.Status == watcher.TurnUnknown && current.ControlState == watcher.TurnControlOwnershipLost) {
 				settledAt := time.Now().UTC()
 				if _, _, err := w.turnStore.ApplyTurnFact(watcher.TurnFact{
 					SessionID: current.SessionID, TurnID: current.TurnID,
@@ -413,12 +452,12 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 				}
 			}
 		}
-		pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+		pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
 			Receipt: eventID, ClaimToken: claimToken,
 			PayloadSHA256:   pendingSubmissionDigest(payload),
 			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
-			AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
+			AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh, ExistingTurnID: existingTurnID,
 		})
 		if err != nil {
 			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
@@ -433,7 +472,7 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 			return result, err
 		}
 		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
-		resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+		resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
 			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
 			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 			Admission: watcher.TurnAdmission{
@@ -507,6 +546,10 @@ func (w *fakeWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGen
 	}
 	generation := AdmissionDigest(fmt.Sprintf("%s\x00%d\x00%d", sessionID, agent.ProcessID, agent.StartedAt.UnixNano()))
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
+}
+
+func (w *fakeWatcher) ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	return w.ResolveOwnedGeneration(sessionID)
 }
 
 func TestHostInputAdmissionLiveCriticalSectionAndRestartSettlement(t *testing.T) {
@@ -2169,7 +2212,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"agent close -id",
 		"Delegated agent lifecycle",
 		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
-		"Keep orchestration principles in Markdown, prompts, and agent instructions",
+		"Keep lifecycle principles in Markdown, prompts, and agent instructions",
 		"Treat a direct Work Event input as one claimed actionable delta",
 		"Research discoverable environment facts with tools or delegated agents",
 		"every currently independent required decision in one small numbered round with a recommended default",
@@ -2783,7 +2826,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative") {
 		t.Fatalf("workspace instructions do not describe current.md:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Use policies/ for stable Brain orchestration rules") {
+	if !strings.Contains(string(instructions), "Use policies/ for stable Brain lifecycle rules") {
 		t.Fatalf("workspace instructions do not describe policies:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "Use playbooks/ for provider-neutral operating playbooks") {
@@ -2804,8 +2847,8 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "For a single larger task, prefer reusing the same delegated agent session") {
 		t.Fatalf("workspace instructions do not describe delegated session reuse:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Keep orchestration principles in Markdown, prompts, and agent instructions") {
-		t.Fatalf("workspace instructions do not describe prompt-first orchestration:\n%s", instructions)
+	if !strings.Contains(string(instructions), "Keep lifecycle principles in Markdown, prompts, and agent instructions") {
+		t.Fatalf("workspace instructions do not describe prompt-first lifecycle:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "Treat a direct Work Event input as one claimed actionable delta") {
 		t.Fatalf("workspace instructions do not describe Work event handling:\n%s", instructions)
@@ -2938,7 +2981,7 @@ Custom local note.
 	}
 	for _, want := range []string{
 		managedStartMarker(brainAgentsManagedID),
-		"## Brain Orchestration Rules",
+		"## Brain Lifecycle Rules",
 		"## Brain Communication Rules",
 		"## Executor Rules",
 		"## Zen CLI",

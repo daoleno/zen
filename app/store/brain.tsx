@@ -53,8 +53,8 @@ export type BrainCurrentWork = {
   title: string;
   status: BrainWorkStatus;
   progress_mode?: BrainWorkProgressMode;
-  owner_session_id?: string;
-  owner_delegated?: boolean;
+  attempt_session_id?: string;
+  attempt_delegated?: boolean;
   wait_for?: string;
   wake?: BrainWorkWake;
   attention_state?: BrainWorkAttentionState;
@@ -232,12 +232,12 @@ function normalizeCurrentWork(raw: unknown[]): BrainCurrentWork[] {
       title,
       status,
       progress_mode: progressMode,
-      owner_session_id:
-        typeof item.owner_session_id === "string" &&
-        item.owner_session_id.trim()
-          ? item.owner_session_id.trim()
+      attempt_session_id:
+        typeof item.attempt_session_id === "string" &&
+        item.attempt_session_id.trim()
+          ? item.attempt_session_id.trim()
           : undefined,
-      owner_delegated: item.owner_delegated === true ? true : undefined,
+      attempt_delegated: item.attempt_delegated === true ? true : undefined,
       wait_for:
         typeof item.wait_for === "string" && item.wait_for.trim()
           ? item.wait_for.trim()

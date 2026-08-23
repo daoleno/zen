@@ -45,6 +45,9 @@ type Request struct {
 	LeaseSeconds         int                                    `json:"lease_seconds,omitempty"`
 	ProgressEventID      string                                 `json:"progress_event_id,omitempty"`
 	TurnID               string                                 `json:"turn_id,omitempty"`
+	EventID              string                                 `json:"event_id,omitempty"`
+	HandlingID           string                                 `json:"handling_id,omitempty"`
+	ProviderTurnID       string                                 `json:"provider_turn_id,omitempty"`
 	Text                 string                                 `json:"text,omitempty"`
 	Submit               bool                                   `json:"submit,omitempty"`
 	Hidden               bool                                   `json:"hidden,omitempty"`
@@ -96,6 +99,7 @@ type Response struct {
 	PersistenceOutcome PersistenceOutcome                       `json:"persistence_outcome,omitempty"`
 	PersistenceDurable *bool                                    `json:"persistence_durable,omitempty"`
 	Confirmation       string                                   `json:"confirmation,omitempty"`
+	TurnID             string                                   `json:"turn_id,omitempty"`
 	BrainWork          *brain.Work                              `json:"brain_work,omitempty"`
 	BrainWorks         []brain.Work                             `json:"brain_work_items,omitempty"`
 	BrainWorkEvent     *brain.WorkEvent                         `json:"brain_work_event,omitempty"`

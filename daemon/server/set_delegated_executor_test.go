@@ -86,11 +86,11 @@ func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, event
 		}
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
-	pending, created, err := w.turnStore.PrepareTurnSubmission(watcher.TurnSubmission{
+	pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
 		Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
-		AcceptedAt: acceptedAt.UTC(), Mode: watcher.TurnSubmissionFresh, ExistingTurnID: existingTurnID,
+		AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh, ExistingTurnID: existingTurnID,
 	})
 	if err != nil {
 		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
@@ -100,7 +100,7 @@ func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, event
 			fmt.Errorf("Host submission was not freshly prepared")
 	}
 	resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
-	resolved, err := w.turnStore.ResolveTurnSubmission(watcher.TurnSubmissionResolution{
+	resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
 		PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 		Admission: watcher.TurnAdmission{
@@ -138,6 +138,10 @@ func (w *brainServiceTestWatcher) ResolveOwnedGeneration(sessionID string) (watc
 		SessionID:  sessionID,
 		Generation: "test-owned-generation",
 	}, nil
+}
+
+func (w *brainServiceTestWatcher) ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error) {
+	return w.ResolveOwnedGeneration(sessionID)
 }
 
 // killTrackingWatcher adds CreateSession and KillSession tracking needed for

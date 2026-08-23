@@ -131,9 +131,9 @@ func TestAdapterConformanceSharedHarness(t *testing.T) {
 			if err != nil || !changed || snapshot.Status != watcher.TurnDone {
 				t.Fatalf("adapter terminal = (%+v, %v, %v)", snapshot, changed, err)
 			}
-			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			workItem, _, _ := store.WorkByAttemptSession(sessionID)
 			row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.done")
-			if !found || !row.Actionable {
+			if !found || row.Actionable {
 				t.Fatalf("adapter done row = %+v found=%v", row, found)
 			}
 
@@ -141,7 +141,7 @@ func TestAdapterConformanceSharedHarness(t *testing.T) {
 			actionable := 0
 			events, _ := store.ListWorkEvents(workItem.ID)
 			for _, event := range events {
-				if event.Actionable && strings.HasPrefix(event.DedupeKey, "session:"+sessionID+":turn:") {
+				if event.Actionable && strings.HasPrefix(event.DedupeKey, "lifecycle:") {
 					actionable++
 				}
 			}
@@ -204,10 +204,13 @@ func TestAdapterConformanceFailedTerminalMapsExactlyOnce(t *testing.T) {
 			if err != nil || !changed || snapshot.Status != watcher.TurnFailed {
 				t.Fatalf("adapter failed = (%+v, %v, %v)", snapshot, changed, err)
 			}
-			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			workItem, _, _ := store.WorkByAttemptSession(sessionID)
 			row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.failed")
-			if !found || !row.Actionable {
+			if !found || row.Actionable {
 				t.Fatalf("adapter failed row = %+v found=%v", row, found)
+			}
+			if workItem.Review == nil || workItem.Review.EventID == row.ID {
+				t.Fatalf("provider evidence replaced canonical review identity: work=%+v row=%+v", workItem, row)
 			}
 		})
 	}
@@ -300,7 +303,7 @@ func TestAdapterConformanceReusedSessionNewTurn(t *testing.T) {
 			if err != nil || snapshot.Status != watcher.TurnAccepted {
 				t.Fatalf("old turn fact moved new turn: %+v err=%v", snapshot, err)
 			}
-			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			workItem, _, _ := store.WorkByAttemptSession(sessionID)
 			row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turn2+":session.done")
 			if found && row.Actionable {
 				t.Fatalf("old turn fact woke the new turn: %+v", row)
@@ -347,9 +350,9 @@ func TestAdapterConformanceEvidenceLossUpgrade(t *testing.T) {
 			if err != nil || !changed || snapshot.Status != watcher.TurnUnknown {
 				t.Fatalf("adapter evidence loss = (%+v, %v, %v), want Unknown", snapshot, changed, err)
 			}
-			workItem, _, _ := store.WorkByOwnerSession(sessionID)
+			workItem, _, _ := store.WorkByAttemptSession(sessionID)
 			uncertainRow, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain")
-			if !found || !uncertainRow.Actionable {
+			if !found || uncertainRow.Actionable {
 				t.Fatalf("adapter uncertain row = %+v found=%v", uncertainRow, found)
 			}
 			// The loss fact is exactly once per turn.
@@ -375,18 +378,22 @@ func TestAdapterConformanceEvidenceLossUpgrade(t *testing.T) {
 				t.Fatalf("adapter late bound terminal = (%+v, %v, %v), want Done", snapshot, changed, err)
 			}
 			events, _ := store.ListWorkEvents(workItem.ID)
-			uncertain := 0
-			doneActionable := 0
+			uncertainAudit := 0
+			doneAudit := 0
+			actionableLifecycle := 0
 			for _, event := range events {
-				if event.Kind == "session.uncertain" && event.Actionable {
-					uncertain++
+				if event.Kind == "session.uncertain" && !event.Actionable {
+					uncertainAudit++
 				}
-				if event.Kind == "session.done" && event.Actionable {
-					doneActionable++
+				if event.Kind == "session.done" && !event.Actionable {
+					doneAudit++
+				}
+				if event.Actionable && strings.HasPrefix(event.DedupeKey, "lifecycle:") {
+					actionableLifecycle++
 				}
 			}
-			if uncertain != 1 || doneActionable != 1 {
-				t.Fatalf("adapter wakes uncertain=%d done=%d, want exactly one each: %#v", uncertain, doneActionable, events)
+			if uncertainAudit != 1 || doneAudit != 1 || actionableLifecycle != 1 {
+				t.Fatalf("adapter evidence uncertain=%d done=%d actionable lifecycle=%d: %#v", uncertainAudit, doneAudit, actionableLifecycle, events)
 			}
 		})
 	}

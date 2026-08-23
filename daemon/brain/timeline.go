@@ -140,7 +140,7 @@ func brainInputAdmissionProjectionState(
 }
 
 // ProjectBrainInputAdmission idempotently materializes the presentation row
-// from accepted orchestration authority. Failure never rolls back acceptance
+// from accepted lifecycle authority. Failure never rolls back acceptance
 // or Attention; the existing bounded startup pass retries this projection.
 func (s *Store) ProjectBrainInputAdmission(admission BrainInputAdmission) error {
 	persisted, found, err := s.BrainInputAdmission(admission.RequestID, admission.ThreadID)
@@ -506,7 +506,7 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 	if err != nil {
 		return err
 	}
-	database, err := s.loadOrchestrationLocked()
+	database, err := s.loadPresentationLocked()
 	if err != nil {
 		return err
 	}
@@ -647,36 +647,9 @@ func (s *Store) timelineIDsLocked(threadID string) (map[string]bool, error) {
 	return out, nil
 }
 
-// MaterializeWorkCard records a presentable Work Event as a typed timeline
-// item exactly once by event ID into the Work's frozen SourceThreadID.
-func (s *Store) MaterializeWorkCard(workItem Work, event WorkEvent) (TimelineItem, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.materializeWorkCardLocked(workItem, event)
-}
-
-func (s *Store) materializeWorkCardLocked(workItem Work, event WorkEvent) (TimelineItem, bool, error) {
-	threadID := strings.TrimSpace(workItem.SourceThreadID)
-	event.ID = strings.TrimSpace(event.ID)
-	if threadID == "" || event.ID == "" || !isProjectedWorkResultEvent(event.Kind) {
-		return TimelineItem{}, false, nil
-	}
-	if existing, ok, err := s.timelineItemByIDLocked(event.ID); err != nil {
-		return TimelineItem{}, false, err
-	} else if ok {
-		return existing, false, nil
-	}
-
-	item, err := s.appendTimelineItemLocked(workCardTimelineItem(workItem, event, true))
-	if err != nil {
-		return TimelineItem{}, false, err
-	}
-	return item, true, nil
-}
-
 func workCardTimelineItem(workItem Work, event WorkEvent, unread bool) TimelineItem {
 	threadID := strings.TrimSpace(workItem.SourceThreadID)
-	sessionID := strings.TrimSpace(workItem.OwnerSessionID)
+	sessionID := strings.TrimSpace(workItem.AttemptSessionID)
 	if payloadSessionID := strings.TrimPrefix(event.PayloadRef, "session:"); payloadSessionID != event.PayloadRef {
 		sessionID = strings.TrimSpace(payloadSessionID)
 	}

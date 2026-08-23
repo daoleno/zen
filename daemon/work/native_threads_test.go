@@ -115,7 +115,7 @@ func TestCodexAppServerThreadProviderMapsListThreads(t *testing.T) {
 }
 
 func TestCodexAppServerThreadProviderSearchesThreads(t *testing.T) {
-	name := "Brain orchestration"
+	name := "Brain lifecycle"
 	fake := &fakeCodexAppServerCaller{
 		result: codexThreadSearchResponse{
 			Data: []codexThreadSearchResult{{
@@ -173,7 +173,7 @@ func TestCodexAppServerThreadProviderSearchesThreads(t *testing.T) {
 		t.Fatalf("threads = %#v", page.Threads)
 	}
 	thread := page.Threads[0]
-	if thread.ID != "codex:thread-1" || thread.Title != "Brain orchestration" {
+	if thread.ID != "codex:thread-1" || thread.Title != "Brain lifecycle" {
 		t.Fatalf("thread = %+v", thread)
 	}
 	if thread.Snippet != "...Brain match snippet..." || thread.Preview != "Original thread preview" {

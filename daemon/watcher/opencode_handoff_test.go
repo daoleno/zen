@@ -195,7 +195,7 @@ func TestSubmitDelegatedInputWhenReadyBudgetedExhaustionCreatesNoTurn(t *testing
 	if _, found, err := ledger.Turn("opencode-handoff:@1"); err != nil || found {
 		t.Fatalf("never-ready delegated created a Turn found=%v err=%v", found, err)
 	}
-	if _, found, err := ledger.TurnSubmission("opencode-handoff:@1", "turn-never-ready"); err != nil || found {
+	if _, found, err := ledger.InputAdmission("opencode-handoff:@1", "turn-never-ready"); err != nil || found {
 		t.Fatalf("never-ready delegated created a submission found=%v err=%v", found, err)
 	}
 	if len(io.submissions) != 0 || len(io.queues) != 0 {

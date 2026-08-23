@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -47,6 +49,7 @@ type Watcher interface {
 	// consume it.
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
+	ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error)
 }
 
 type Service struct {
@@ -131,9 +134,9 @@ func (s *Service) teardownOwnedSession(sessionID string) error {
 	return result.Err
 }
 
-// ResolveWorkReview commits Brain's typed disposition before attempting any
-// terminal Session teardown. A teardown error leaves a durable failed
-// finalization plus one retry attention and is returned to the caller.
+// ResolveWorkReview commits Brain's typed disposition. Lifecycle releases the
+// canonical owner in the same transition; transport teardown is owned by the
+// explicit Session close path, not a parallel finalization lifecycle.
 func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEvent, Work, error) {
 	if s == nil || s.store == nil {
 		return WorkEvent{}, Work{}, fmt.Errorf("brain store is not configured")
@@ -141,12 +144,6 @@ func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkE
 	event, item, err := s.store.ResolveWorkReview(request)
 	if err != nil {
 		return event, item, err
-	}
-	for hasPendingSessionFinalization(item) {
-		item, err = s.RetryTerminalFinalization(item.ID)
-		if err != nil {
-			return event, item, err
-		}
 	}
 	return event, item, nil
 }
@@ -163,117 +160,7 @@ func (s *Service) CloseWork(request WorkCloseRequest) (Work, error) {
 	if err != nil {
 		return item, err
 	}
-	for hasPendingSessionFinalization(item) {
-		item, err = s.RetryTerminalFinalization(item.ID)
-		if err != nil {
-			return item, err
-		}
-	}
 	return item, nil
-}
-
-// RetryTerminalFinalization retries only the exact persisted terminal owner.
-// Runtime Delegated=false evidence always wins and is recorded as skipped
-// without calling KillSession.
-func (s *Service) RetryTerminalFinalization(workID string) (Work, error) {
-	if s == nil || s.store == nil {
-		return Work{}, fmt.Errorf("brain store is not configured")
-	}
-	item, err := s.store.Work(workID)
-	if err != nil {
-		return Work{}, err
-	}
-	finalization, ok := nextSessionFinalization(item)
-	if !ok {
-		return item, nil
-	}
-	updated, finalizeErr := s.retryTerminalFinalization(item, finalization)
-	// RecordSessionFinalization may append an actionable retry obligation even
-	// when teardown itself fails. Re-enter the same serialized Host lane after
-	// the durable write so the obligation cannot remain stranded until a later
-	// unrelated heartbeat. This is intentionally event-driven; no polling is
-	// introduced, and ClaimNextReviewAction remains the idempotence boundary.
-	_, dispatchErr := s.ReconcileHostLane()
-	return updated, errors.Join(finalizeErr, dispatchErr)
-}
-
-func (s *Service) retryTerminalFinalization(item Work, finalization SessionFinalization) (Work, error) {
-	if item.Status != WorkDone && item.Status != WorkCancelled {
-		return Work{}, fmt.Errorf("Session finalization requires terminal Work")
-	}
-	sessionID := strings.TrimSpace(finalization.SessionID)
-	if sessionID == "" {
-		return Work{}, fmt.Errorf("Session finalization is missing session_id")
-	}
-	if s.watcher == nil {
-		failed := fmt.Errorf("watcher unavailable for delegated Session finalization")
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, failed)
-		return updated, errors.Join(failed, recordErr)
-	}
-	agent := s.watcher.GetAgent(sessionID)
-	if agent != nil && !agent.Delegated {
-		return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationSkipped,
-			fmt.Errorf("Session is not delegated; teardown intentionally skipped"))
-	}
-	if agent == nil && !s.watcher.HasSession(sessionID) {
-		if finalization.Delegated {
-			if err := s.teardownOwnedSession(sessionID); err != nil {
-				return s.recordTerminalTeardownOutcome(item, sessionID, err)
-			}
-		}
-		return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
-	}
-	if agent == nil {
-		failure := fmt.Errorf("delegated ownership could not be proven; teardown was not attempted")
-		updated, recordErr := s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationFailed, failure)
-		return updated, errors.Join(failure, recordErr)
-	}
-	if err := s.teardownOwnedSession(sessionID); err != nil {
-		return s.recordTerminalTeardownOutcome(item, sessionID, err)
-	}
-	return s.store.RecordSessionFinalization(item.ID, sessionID, SessionFinalizationComplete, nil)
-}
-
-func (s *Service) recordTerminalTeardownOutcome(item Work, sessionID string, teardownErr error) (Work, error) {
-	if errors.Is(teardownErr, watcher.ErrUnownedTmuxTarget) {
-		// A stable historical Session string may now resolve to an ambient or
-		// reused tmux window after restart. The watcher has proved that Zen does
-		// not own that runtime, so safety requires leaving it untouched. It also
-		// cannot remain the finalization owner of an already-terminal Work:
-		// retries would deterministically fail forever and manufacture permanent
-		// Attention. Record the explicit skip as the terminal audit outcome.
-		return s.store.RecordSessionFinalization(
-			item.ID, sessionID, SessionFinalizationSkipped,
-			fmt.Errorf("runtime identity is not Zen-owned; teardown intentionally skipped: %w", teardownErr),
-		)
-	}
-	updated, recordErr := s.store.RecordSessionFinalization(
-		item.ID, sessionID, SessionFinalizationFailed, teardownErr,
-	)
-	return updated, errors.Join(teardownErr, recordErr)
-}
-
-func hasPendingSessionFinalization(item Work) bool {
-	for _, finalization := range item.SessionFinalizations {
-		if finalization.State == SessionFinalizationPending {
-			return true
-		}
-	}
-	return false
-}
-
-func nextSessionFinalization(item Work) (SessionFinalization, bool) {
-	for _, finalization := range item.SessionFinalizations {
-		if finalization.State == SessionFinalizationPending {
-			return finalization, true
-		}
-	}
-	for _, finalization := range item.SessionFinalizations {
-		if finalization.State == SessionFinalizationFailed {
-			return finalization, true
-		}
-	}
-	return SessionFinalization{}, false
 }
 
 // ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
@@ -325,22 +212,8 @@ func (s *Service) ReconcileSignalSystemStartup(agents []*classifier.Agent, limit
 			}
 		}
 	}
-	pending, more, err := s.store.PendingSessionFinalizations(limit)
-	if err != nil {
-		return false, err
-	}
-	for _, item := range pending {
-		workItem, workErr := s.store.Work(item.WorkID)
-		if workErr != nil {
-			return false, workErr
-		}
-		if _, finalizeErr := s.retryTerminalFinalization(workItem, item.Finalization); finalizeErr != nil {
-			// The failed transition and retry attention are already durable.
-			log.Printf("Brain terminal Session finalization failed for Work %s: %v", item.WorkID, finalizeErr)
-		}
-	}
 	_, dispatchErr := s.ReconcileHostLane()
-	return !admissionMore && !handlingMore && !more, dispatchErr
+	return !admissionMore && !handlingMore, dispatchErr
 }
 
 func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
@@ -371,6 +244,51 @@ func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Serv
 	}
 }
 
+// RunLifecycleScheduler owns durable retry and claim-expiry timing for the
+// daemon. It waits on the exact next_attempt_at/deadline or a lifecycle commit;
+// no Brain turn is kept alive and no Session is polled while waiting.
+func (s *Service) RunLifecycleScheduler(ctx context.Context) {
+	if s == nil || s.store == nil || s.store.FSM() == nil {
+		return
+	}
+	engine := s.store.FSM()
+	for {
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if next, ok := engine.NextWakeAt(); ok {
+			delay := time.Until(next)
+			if delay < 0 {
+				delay = 0
+			}
+			timer = time.NewTimer(delay)
+			timerC = timer.C
+		}
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		case <-engine.Wakeups():
+			if timer != nil {
+				timer.Stop()
+			}
+			continue
+		case <-timerC:
+		}
+
+		s.reconcileMu.Lock()
+		err := s.store.SweepLifecycle()
+		s.reconcileMu.Unlock()
+		if err != nil {
+			log.Printf("brain lifecycle timer: %v", err)
+		}
+		if _, err := s.ReconcileHostLane(); err != nil {
+			log.Printf("brain lifecycle event delivery: %v", err)
+		}
+	}
+}
+
 // Turn returns the canonical ledger snapshot for the session. It implements
 // watcher.TurnLedger so the watcher reads the same canonical owner.
 func (s *Service) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
@@ -398,43 +316,48 @@ func (s *Service) ApplyDelegatedTurnProgress(fact watcher.TurnFact) (watcher.Tur
 	return s.store.ApplyDelegatedTurnProgress(fact)
 }
 
-func (s *Service) PrepareTurnSubmission(submission watcher.TurnSubmission) (watcher.TurnSubmission, bool, error) {
+func (s *Service) PrepareInputAdmission(submission watcher.InputAdmission) (watcher.InputAdmission, bool, error) {
 	if s == nil || s.store == nil {
-		return watcher.TurnSubmission{}, false, fmt.Errorf("brain store is not configured")
+		return watcher.InputAdmission{}, false, fmt.Errorf("brain store is not configured")
 	}
-	return s.store.PrepareTurnSubmission(submission)
+	return s.store.PrepareInputAdmission(submission)
 }
 
-func (s *Service) TurnSubmission(sessionID, proposedTurnID string) (watcher.TurnSubmission, bool, error) {
+func (s *Service) InputAdmission(sessionID, proposedTurnID string) (watcher.InputAdmission, bool, error) {
 	if s == nil || s.store == nil {
-		return watcher.TurnSubmission{}, false, nil
+		return watcher.InputAdmission{}, false, nil
 	}
-	return s.store.TurnSubmission(sessionID, proposedTurnID)
+	return s.store.InputAdmission(sessionID, proposedTurnID)
 }
 
-func (s *Service) PendingTurnSubmissions(sessionID string) ([]watcher.TurnSubmission, error) {
+func (s *Service) PendingInputAdmissions(sessionID string) ([]watcher.InputAdmission, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
 	}
-	return s.store.PendingTurnSubmissions(sessionID)
+	return s.store.PendingInputAdmissions(sessionID)
 }
 
-func (s *Service) ResolveTurnSubmission(resolution watcher.TurnSubmissionResolution) (watcher.TurnSubmission, error) {
+func (s *Service) ResolveInputAdmission(resolution watcher.InputAdmissionResolution) (watcher.InputAdmission, error) {
 	if s == nil || s.store == nil {
-		return watcher.TurnSubmission{}, fmt.Errorf("brain store is not configured")
+		return watcher.InputAdmission{}, fmt.Errorf("brain store is not configured")
 	}
-	return s.store.ResolveTurnSubmission(resolution)
+	return s.store.ResolveInputAdmission(resolution)
 }
 
-func (s *Service) AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (watcher.TurnSubmission, error) {
+func (s *Service) MarkInputAdmissionAmbiguous(sessionID, proposedTurnID, reason string) error {
 	if s == nil || s.store == nil {
-		return watcher.TurnSubmission{}, fmt.Errorf("brain store is not configured")
+		return fmt.Errorf("brain service is not configured")
 	}
-	submission, abortErr := s.store.AbortTurnSubmission(sessionID, proposedTurnID, receipt, payloadSHA256)
-	// A proved non-submission may atomically create the actionable
-	// brain.submission_not_admitted review obligation. Re-drive the canonical
-	// lane after that durable write so a failed provider attempt cannot leave
-	// Brain attention queued until an unrelated trigger arrives.
+	return s.store.MarkInputAdmissionAmbiguous(sessionID, proposedTurnID, reason)
+}
+
+func (s *Service) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadSHA256 string) (watcher.InputAdmission, error) {
+	if s == nil || s.store == nil {
+		return watcher.InputAdmission{}, fmt.Errorf("brain store is not configured")
+	}
+	submission, abortErr := s.store.AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadSHA256)
+	// The transport abort is evidence only. Re-drive the canonical lane in case
+	// another aggregate already has review work ready for the Host.
 	_, dispatchErr := s.ReconcileHostLane()
 	return submission, errors.Join(abortErr, dispatchErr)
 }
@@ -832,7 +755,7 @@ func workUpdateChanges(item Work, update WorkUpdate) bool {
 	return update.Title != nil && strings.TrimSpace(*update.Title) != item.Title ||
 		update.Objective != nil && strings.TrimSpace(*update.Objective) != item.Objective ||
 		update.Status != nil && *update.Status != item.Status ||
-		update.OwnerSessionID != nil && strings.TrimSpace(*update.OwnerSessionID) != item.OwnerSessionID ||
+		update.AttemptSessionID != nil && strings.TrimSpace(*update.AttemptSessionID) != item.AttemptSessionID ||
 		update.CompletionPolicy != nil && *update.CompletionPolicy != item.CompletionPolicy ||
 		update.DoneCriteriaRef != nil && strings.TrimSpace(*update.DoneCriteriaRef) != item.DoneCriteriaRef ||
 		update.NextAction != nil && strings.TrimSpace(*update.NextAction) != item.NextAction ||
@@ -887,7 +810,7 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 // one mutex; trigger identity never changes semantics. It derives the next
 // action entirely from persisted state and current strong evidence:
 //
-//  1. reconcile every existing delivery receipt (exact-once submission ledger)
+//  1. reconcile every existing delivery receipt (exact-once Lifecycle admission state)
 //     and every prepared Brain input against its exact request receipt
 //  2. one delivered Event awaiting its typed disposition: stop
 //  3. pending Brain user admission: stop (durable user-steering gate)
@@ -916,7 +839,7 @@ func (s *Service) ReconcileHostLane() (bool, error) {
 // receipt consumes it (delivered); an ambiguous receipt or an inaccessible
 // host quarantines the lease in Work state and surfaces a deduped delivery
 // diagnostic while unrelated events keep dispatching. A lease whose Host is
-// gone is recovered from the durable submission ledger: no exact submission
+// gone is recovered from the durable Lifecycle admission state: no exact submission
 // (or an Aborted one) proves the action was never sent, so the same
 // unresolved action is re-claimable; a Pending/Resolved exact submission
 // stays the quarantine boundary. Held leases close only via explicit
@@ -987,28 +910,6 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 				}
 				active = nil
 			}
-		}
-	}
-	if active != nil {
-		previousBoundary := active.StartedAt
-		converged, repaired, convergeErr := s.store.ConvergeHostForegroundAdmissionBoundary(*active)
-		if convergeErr != nil {
-			return false, convergeErr
-		}
-		active = &converged
-		if repaired {
-			s.recordHostReplacement(HostReplacementEvent{
-				Reason: "foreground_admission_boundary_repaired",
-				FromID: active.HostSessionID,
-				ToID:   active.HostSessionID,
-				Detail: fmt.Sprintf(
-					"foreground_turn=%q generation=%q old_boundary=%s prepared_boundary=%s",
-					active.HostTurnID,
-					active.HostGeneration,
-					previousBoundary.UTC().Format(time.RFC3339Nano),
-					active.StartedAt.UTC().Format(time.RFC3339Nano),
-				),
-			})
 		}
 	}
 	// Step 2: one delivered review awaits its typed disposition. The Host is
@@ -1095,7 +996,8 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	// multiple Work Events to one provider Activity.
 	if current, found, err := s.store.Turn(hostID); err != nil {
 		return false, err
-	} else if found && !watcher.TurnImmutable(current.Status) {
+	} else if found && !watcher.TurnImmutable(current.Status) &&
+		!(current.Status == watcher.TurnUnknown && current.ControlState == watcher.TurnControlOwnershipLost) {
 		return false, nil
 	}
 	// Step 6: the daemon can restart while a provider-native user turn is
@@ -1161,7 +1063,7 @@ func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) erro
 		createForeground := false
 		admissionHostID := strings.TrimSpace(admission.HostSessionID)
 		if admissionHostID != "" && s.watcher.HasSession(admissionHostID) {
-			owned, ownershipErr := s.watcher.ResolveOwnedGeneration(admissionHostID)
+			owned, ownershipErr := s.watcher.ResolveBrainHostGeneration(admissionHostID)
 			identityPreserved := ownershipErr == nil &&
 				strings.TrimSpace(owned.Generation) != "" &&
 				strings.TrimSpace(owned.Generation) == strings.TrimSpace(admission.HostGeneration)
@@ -1210,7 +1112,7 @@ func (s *Service) reconcileBrainInputAdmissionsLocked(currentHostID string) erro
 // ambiguous exact transaction remains a durable lease quarantine with an
 // audited delivery.ambiguous note; that quarantine is replay-proof but is not
 // a lane-wide stop condition for unrelated Work. A lease whose Host Session is
-// gone is recovered from the durable submission ledger: absent/Aborted exact
+// gone is recovered from the durable Lifecycle admission state: absent/Aborted exact
 // submission proves the action was never delivered, so the lease is dropped
 // and the same unresolved action is re-claimable by the current Host (I8); a
 // Pending/Resolved exact submission quarantines the lease in Work state (I7).
@@ -1228,7 +1130,7 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 		hostID := claimed.DeliveryHostSessionID
 		if !s.watcher.HasSession(hostID) {
 			// The claiming Host Session is gone. Recover from the durable
-			// submission ledger: no exact submission (or an Aborted one)
+			// Lifecycle admission state: no exact submission (or an Aborted one)
 			// proves the Event was never sent, so the lease is dropped and the
 			// same unresolved action is re-claimable; Pending/Resolved exact
 			// submission means mutation may have begun and the lease is
@@ -1240,7 +1142,7 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 			}
 			continue
 		}
-		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.FactEventID)
+		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.EventID)
 		if receiptErr != nil || !found {
 			if receiptErr != nil {
 				// Transient receipt-ledger read failure: retry on the next
@@ -1304,13 +1206,19 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 			}
 			if _, _, noteErr := s.store.AppendDeliveryNote(
 				claimed.WorkID,
-				claimed.FactEventID,
+				claimed.EventID,
 				"delivery.ambiguous",
-				"delivery:"+claimed.FactEventID+":ambiguous",
-				"Delivery of Work review "+claimed.FactEventID+" is quarantined because its exact provider outcome remains ambiguous. It will not be replayed automatically; wait for exact provider evidence or resolve the held lease explicitly (mark_delivered, discard, or replay).",
+				"delivery:"+claimed.EventID+":ambiguous",
+				"Delivery of Work review "+claimed.EventID+" is quarantined because its exact provider outcome remains ambiguous. It will not be replayed automatically; wait for exact provider evidence or resolve the held lease explicitly (mark_delivered, discard, or replay).",
 				false,
 			); noteErr != nil {
 				return fmt.Errorf("persist ambiguous delivery quarantine for Work review %s: %w", claimed.WorkID, noteErr)
+			}
+			if _, outcomeErr := s.store.FSM().RecordNotificationOutcome(
+				lifecycle.WorkID(claimed.WorkID), claimed.EventID,
+				lifecycle.DispatchUnknownSideEffect, "provider mutation may have begun",
+			); outcomeErr != nil {
+				return fmt.Errorf("quarantine ambiguous Work review %s: %w", claimed.WorkID, outcomeErr)
 			}
 		default:
 			// InputNotSubmitted: the receipt exists and proves non-submission.
@@ -1331,11 +1239,11 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 // retry never releases the original ambiguous authority.
 func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, bool, error) {
 	hostID := strings.TrimSpace(claimed.DeliveryHostSessionID)
-	submission, found, err := s.store.TurnSubmission(hostID, claimed.ProviderTurnID)
-	if err != nil || !found || submission.State != watcher.TurnSubmissionPending {
+	submission, found, err := s.store.InputAdmission(hostID, claimed.ProviderTurnID)
+	if err != nil || !found || submission.State != watcher.InputAdmissionPending {
 		return false, false, err
 	}
-	if submission.Receipt != claimed.FactEventID || submission.ClaimToken != claimed.HandlingID ||
+	if submission.Receipt != claimed.EventID || submission.ClaimToken != claimed.HandlingID ||
 		submission.WorkID != claimed.WorkID || submission.SessionID != hostID ||
 		submission.ProposedTurnID != claimed.ProviderTurnID {
 		return false, false, fmt.Errorf("ambiguous Work review %s lacks its exact pending submission", claimed.WorkID)
@@ -1366,7 +1274,7 @@ func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, 
 	}
 	acceptedAt := claimed.ClaimedAt.UTC()
 	result, submitErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, claimed.FactEventID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
+		hostID, payload, claimed.EventID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
 	)
 	if submitErr != nil {
 		return false, true, submitErr
@@ -1387,23 +1295,7 @@ func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, 
 }
 
 func (s *Service) consumeRecoveredReview(claimed WorkReviewAction) error {
-	_, item, err := s.store.ConsumeReviewDelivery(
-		claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
-	)
-	if err != nil {
-		return err
-	}
-	if item.Revision == claimed.DeliveryWorkRevision {
-		return nil
-	}
-	// Older daemons incorrectly advanced Work revision when appending a
-	// delivery diagnostic. Provider execution is now canonical, but the
-	// original disposition fence is stale. End that delivery and let the same
-	// unresolved action be re-claimed at the current revision instead of
-	// accepting stale intent.
-	// A crash between the two writes is restart-recoverable from the delivered
-	// lease plus its exact terminal Turn.
-	_, _, err = s.store.EndReviewDelivery(
+	_, _, err := s.store.ConsumeReviewDelivery(
 		claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID,
 	)
 	return err
@@ -1419,7 +1311,7 @@ func (s *Service) consumeRecoveredReview(claimed WorkReviewAction) error {
 // Turn. matched=true means exact evidence was found and any resolution error is
 // a consistency failure rather than a reason to fall back to ambient probing.
 func (s *Service) recoverPendingFromBoundHostConversation(
-	submission watcher.TurnSubmission,
+	submission watcher.InputAdmission,
 ) (recovered bool, matched bool, err error) {
 	host, err := s.store.HostSession()
 	if err != nil || strings.TrimSpace(host.ID) != strings.TrimSpace(submission.SessionID) ||
@@ -1434,7 +1326,7 @@ func (s *Service) recoverPendingFromBoundHostConversation(
 	if !matched {
 		return false, false, nil
 	}
-	if _, err := s.store.ResolveTurnSubmission(resolution); err != nil {
+	if _, err := s.store.ResolveInputAdmission(resolution); err != nil {
 		return false, true, err
 	}
 	switch observation.Status {
@@ -1456,13 +1348,13 @@ func (s *Service) recoverPendingFromBoundHostConversation(
 
 func boundHostConversationSubmissionResolution(
 	conversation work.CodexConversation,
-	submission watcher.TurnSubmission,
+	submission watcher.InputAdmission,
 	resolvedAt time.Time,
-) (watcher.TurnSubmissionResolution, watcher.ProviderActivityObservation, bool) {
+) (watcher.InputAdmissionResolution, watcher.ProviderActivityObservation, bool) {
 	if !conversation.Available || conversation.Activity == nil ||
 		strings.TrimSpace(conversation.Source) == "" || strings.TrimSpace(conversation.SessionID) == "" ||
 		strings.TrimSpace(conversation.Path) == "" {
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	wantDigest := strings.TrimSpace(submission.PayloadSHA256)
 	var userEvent *work.CodexConversationEvent
@@ -1479,13 +1371,13 @@ func boundHostConversationSubmissionResolution(
 	}
 	if userEvent == nil || strings.TrimSpace(userEvent.ID) == "" || userEvent.Seq <= 0 ||
 		!eventMatchesPendingPayloadDigest(*userEvent, wantDigest) {
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	activity := conversation.Activity
 	activityID := strings.TrimSpace(activity.ID)
 	activityStartedAt, activityOK := parseBoundHostAdmissionTime(activity.StartedAt)
 	if activityID == "" || !activityOK || activityStartedAt.IsZero() {
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	userAt, userOK := parseBoundHostAdmissionTime(userEvent.Timestamp)
 	if !userOK {
@@ -1494,20 +1386,20 @@ func boundHostConversationSubmissionResolution(
 		userAt = activityStartedAt
 	}
 	if userAt.Before(submission.AcceptedAt.UTC()) {
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	switch activity.Status {
 	case work.ProviderActivityRunning, work.ProviderActivityCompleted, work.ProviderActivityFailed,
 		work.ProviderActivityInterrupted, work.ProviderActivityCancelled:
 	default:
-		return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+		return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 	}
 	settledAt := time.Time{}
 	if strings.TrimSpace(activity.SettledAt) != "" {
 		var settledOK bool
 		settledAt, settledOK = parseBoundHostAdmissionTime(activity.SettledAt)
 		if !settledOK || settledAt.Before(userAt) {
-			return watcher.TurnSubmissionResolution{}, watcher.ProviderActivityObservation{}, false
+			return watcher.InputAdmissionResolution{}, watcher.ProviderActivityObservation{}, false
 		}
 	}
 	if resolvedAt.Before(userAt) {
@@ -1526,7 +1418,7 @@ func boundHostConversationSubmissionResolution(
 		AdmissionCursor: uint64(userEvent.Seq), AdmissionAt: userAt,
 		InputSHA256: wantDigest,
 	}
-	return watcher.TurnSubmissionResolution{
+	return watcher.InputAdmissionResolution{
 		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
 		Receipt: submission.Receipt, PayloadSHA256: submission.PayloadSHA256,
 		ActivityID: activityID,
@@ -1630,7 +1522,7 @@ func (s *Service) deliverClaimedReviewLocked(action WorkReviewAction) (bool, err
 		acceptedAt = action.ClaimedAt.UTC()
 	}
 	result, sendErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, action.FactEventID, action.HandlingID, action.WorkID, action.ProviderTurnID, acceptedAt,
+		hostID, payload, action.EventID, action.HandlingID, action.WorkID, action.ProviderTurnID, acceptedAt,
 	)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {
@@ -1798,17 +1690,17 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 	}
 	now := s.nowUTC()
 	for _, item := range items {
-		if item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.OwnerSessionID) == "" {
+		if item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.AttemptSessionID) == "" {
 			continue
 		}
-		agent := byID[item.OwnerSessionID]
-		turn, hasTurn, turnErr := s.store.Turn(item.OwnerSessionID)
+		agent := byID[item.AttemptSessionID]
+		turn, hasTurn, turnErr := s.store.Turn(item.AttemptSessionID)
 		if turnErr != nil {
-			log.Printf("brain Session canonical turn read failed for %s: %v", item.OwnerSessionID, turnErr)
+			log.Printf("brain Session canonical turn read failed for %s: %v", item.AttemptSessionID, turnErr)
 			continue
 		}
 		if agent == nil {
-			if !item.OwnerDelegated && !hasTurn {
+			if !item.AttemptDelegated && !hasTurn {
 				// A bare non-delegated relationship is not a Zen-managed Session
 				// authority. It is excluded from CurrentWork projection, but this
 				// inventory pass does not mutate foreign lifecycle state.
@@ -1819,7 +1711,7 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 				// retiring the stale Work relationship. Absence never fabricates
 				// done/failed and never replays pending Session input.
 				_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-					SessionID:   item.OwnerSessionID,
+					SessionID:   item.AttemptSessionID,
 					TurnID:      turn.TurnID,
 					Class:       watcher.EvidenceLiveness,
 					Kind:        "uncertain",
@@ -1829,7 +1721,7 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 					Summary:     "Delegated Session is absent after restart; outcome is unknown",
 				})
 			}
-			_, changed, reconcileErr := s.store.ReconcileAbsentWorkOwner(item.ID, item.OwnerSessionID)
+			_, changed, reconcileErr := s.store.ReconcileAbsentWorkAttempt(item.ID, item.AttemptSessionID)
 			if reconcileErr != nil {
 				log.Printf("brain absent Work owner reconciliation failed for %s: %v", item.ID, reconcileErr)
 			} else if changed {
@@ -1870,31 +1762,31 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		// when the Agent missed its expected progress check; stale Attention must
 		// not make a demonstrably live Session uncontrollable.
 		if s.watcher != nil {
-			observation, found, probeErr := s.watcher.ProbeProviderEvidence(item.OwnerSessionID)
+			observation, found, probeErr := s.watcher.ProbeProviderEvidence(item.AttemptSessionID)
 			if probeErr == nil && found {
 				switch strings.TrimSpace(observation.Status) {
 				case "running":
 					snapshot, _, applyErr := s.store.ApplyTurnFact(watcher.TurnFact{
-						SessionID: item.OwnerSessionID, TurnID: turn.TurnID,
+						SessionID: item.AttemptSessionID, TurnID: turn.TurnID,
 						Class: watcher.EvidenceProvider, Kind: "running",
-						SourceID: providerFactSourceID(item.OwnerSessionID, observation),
+						SourceID: providerFactSourceID(item.AttemptSessionID, observation),
 						Cursor:   observation.AdmissionCursor, Admission: admissionFromObservation(observation),
 						ActivityID: strings.TrimSpace(observation.ID), StartedAt: observation.StartedAt,
 						At: now, Summary: "Delegated turn running",
 					})
 					if applyErr == nil && providerObservationOwnsTurn(snapshot, observation) {
-						if _, _, ownerErr := s.store.ReassertLiveTurnOwnership(item.ID, item.OwnerSessionID, turn.TurnID); ownerErr != nil {
+						if _, _, ownerErr := s.store.ReassertLiveTurnOwnership(item.ID, item.AttemptSessionID, turn.TurnID); ownerErr != nil {
 							log.Printf("brain live Work ownership repair failed for %s: %v", item.ID, ownerErr)
 						}
 						continue
 					}
 				case "completed":
-					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.OwnerSessionID, turn.TurnID, observation, "done"))
+					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.AttemptSessionID, turn.TurnID, observation, "done"))
 					if applyErr == nil && watcher.TurnTerminal(snapshot.Status) {
 						continue
 					}
 				case "failed", "interrupted", "cancelled":
-					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.OwnerSessionID, turn.TurnID, observation, "failed"))
+					snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(item.AttemptSessionID, turn.TurnID, observation, "failed"))
 					if applyErr == nil && watcher.TurnTerminal(snapshot.Status) {
 						continue
 					}
@@ -1904,19 +1796,12 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 			continue
 		}
-		// Lease expired with a live nonterminal turn: one actionable
-		// session.stale per turn (dedupe session:<sid>:turn:<tid>:stale)
-		// wakes Brain; the reducer never terminalizes from a clock and
-		// ignores stale facts for non-current turns.
-		_, _, _ = s.store.ApplyTurnFact(watcher.TurnFact{
-			SessionID: item.OwnerSessionID,
-			TurnID:    turn.TurnID,
-			Class:     watcher.EvidenceControl,
-			Kind:      "stale",
-			SourceID:  "lease:expiry:" + turn.TurnID,
-			At:        now,
-			Summary:   "Delegated Session progress lease expired",
-		})
+	}
+	// Lease expiry, claim expiry, and durable due retries run once for the
+	// entire Work inventory. Sweeps only record lifecycle facts; they never
+	// create Sessions or infer a next delegated task.
+	if sweepErr := s.store.SweepLifecycle(); sweepErr != nil {
+		log.Printf("brain Work supervisor sweep failed: %v", sweepErr)
 	}
 	_, _ = s.ReconcileHostLane()
 }
@@ -1970,8 +1855,10 @@ func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 		return recorded, created, err
 	}
 	if created && isProjectedWorkResultEvent(recorded.Kind) {
-		if workItem, getErr := s.store.Work(recorded.WorkID); getErr == nil {
-			_, _, _ = s.store.MaterializeWorkCard(workItem, recorded)
+		// One projected card per Work lineage, replaced in place from
+		// canonical state: historical facts never materialize parallel cards.
+		if _, _, cardErr := s.store.SyncWorkCard(recorded.WorkID, &recorded); cardErr != nil {
+			log.Printf("brain work card projection failed for %s: %v", recorded.WorkID, cardErr)
 		}
 	}
 	if !created || !recorded.Actionable {
@@ -2071,7 +1958,7 @@ func (s *Service) hostOwnedGeneration(hostSessionID string) (string, error) {
 	if s == nil || s.watcher == nil {
 		return "", fmt.Errorf("Brain Host watcher is unavailable")
 	}
-	owned, err := s.watcher.ResolveOwnedGeneration(hostSessionID)
+	owned, err := s.watcher.ResolveBrainHostGeneration(hostSessionID)
 	if err != nil {
 		return "", err
 	}
@@ -2359,8 +2246,8 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		Title:            firstNonEmpty(run.Title, event.Item.Title),
 		Objective:        strings.TrimSpace(event.Item.ActionInstruction),
 		Status:           WorkRunning,
-		OwnerSessionID:   strings.TrimSpace(run.AgentSession),
-		OwnerDelegated:   strings.TrimSpace(run.AgentSession) != "",
+		AttemptSessionID: strings.TrimSpace(run.AgentSession),
+		AttemptDelegated: strings.TrimSpace(run.AgentSession) != "",
 		SourceThreadID:   sourceThreadID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the scheduled action.",
@@ -2382,11 +2269,11 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 		owner := strings.TrimSpace(run.AgentSession)
 		wake := calendarRunWake(run, contextRef)
 		update = WorkUpdate{
-			Status:         &status,
-			OwnerSessionID: &owner,
-			NextAction:     &next,
-			WaitFor:        &wait,
-			Wake:           &wake,
+			Status:           &status,
+			AttemptSessionID: &owner,
+			NextAction:       &next,
+			WaitFor:          &wait,
+			Wake:             &wake,
 		}
 		if owner != "" {
 			kind = "calendar.launched"
@@ -2462,12 +2349,8 @@ func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
 	if !created && !producerWoke {
 		return false, nil
 	}
-	var finalizeErr error
-	if hasPendingSessionFinalization(item) {
-		_, finalizeErr = s.RetryTerminalFinalization(item.ID)
-	}
 	woke, dispatchErr := s.ReconcileHostLane()
-	return woke || producerWoke || recorded.Actionable, errors.Join(finalizeErr, dispatchErr)
+	return woke || producerWoke || recorded.Actionable, dispatchErr
 }
 
 func calendarRunWake(run calendar.Run, contextRef string) *WorkWake {
@@ -3475,19 +3358,21 @@ Durable state rules:
 - Keep long-term memory in memory.md; read it only when durable memory is relevant to the user's current request.
 - Keep personality, preferences, and profile notes in profile.md; read it when preferences or user background matter.
 - Keep a human-readable handoff projection in current.md. Work/Event database state is authoritative.
-- Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable orchestration rules.
+- Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable lifecycle rules.
 - Use playbooks/ for provider-neutral operating playbooks. Discover them with zen brain playbooks --json; read playbook files on demand (progressive disclosure — do not assume full bodies are in bootstrap).
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
 - Do not use arbitrary project repositories as Brain's default workspace.
 - Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration; read memory.md/profile.md on demand instead of assuming they are in the prompt.
 
-Agent orchestration rules:
+Agent lifecycle rules:
 - You are running in a real tmux agent session.
 - This Brain host is launched with the most permissive available non-interactive authorization mode for its executor.
 - The zen app sends user messages directly into this session.
 - Treat the executor as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that executor specifically.
 - Host Executor runs Brain chat, planning, delegation, review, and final synthesis. Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
-- Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Brain is the sole master orchestrator and scheduler above delegated Sessions. Given the user's goal and boundaries, independently decompose, order, choose or reuse scoped Sessions, review results, and advance the next runnable Work without asking the user to babysit the queue or type continue.
+- Brain is the user's scheduler: reduce decision load.
+- For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - Create Work only for a commitment that must survive the current turn. Ordinary questions and discussion create no Work.
 - Work and append-only Events are the sole durable Brain scheduler state. current.md and provider state are projections or execution details, not alternate owners.
 - Only an atomically claimed actionable Work Event may start an automatic Brain turn. Active or waiting Work without an Event stays idle.
@@ -3520,11 +3405,13 @@ Agent orchestration rules:
   - Calendar create uses a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the local time occurs twice at DST fall-back, ask the user to choose -occurrence first or second; never guess. After create, update, or run, repeat the resolved local date, time, timezone, recurrence/effect, and result destination from the command confirmation. Do not infer Calendar items from unrelated messages.
 - Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
-- Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
+- Keep lifecycle principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat a direct Work Event input as one claimed actionable delta; use its compact facts and inspect only its referenced change, then act, summarize, or wait.
 - Every direct Work Event has resolution_required=true and an exact resolve_command. Before the provider Turn ends, run that command with one typed disposition; keep event_id, handling_id, provider_turn_id, and revision unchanged.
-- After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
-- Continue low-risk next steps autonomously. Research discoverable environment facts with tools or delegated agents. Ask the user only for decisions that materially change outcome, risk, permissions, credentials, or user values; put every currently independent required decision in one small numbered round with a recommended default. Let unresolved research block only dependent decisions, and proceed when remaining unknowns have safe defaults and completion is checkable; when blocked, consolidate options and a recommendation.
+- Every completed, failed, blocked, or needs-input delegated Attempt must end with one typed disposition and a durable next action. Admit the next useful Attempt, establish a specific wait, complete/cancel the Work, or consolidate the one decision that genuinely requires the user; never leave an ordinary terminal Event as an unattended card.
+- Use a source-specific producer wake or due_retry with next_attempt_at for discoverable external conditions. Never use generic user_input as a polling clock, infer Calendar work, sleep in Brain, or hold a Turn open.
+- After handling an Event, re-anchor to the foreground Work, verify its current status and durable next action, and take the next useful lifecycle step before waiting.
+- Continue low-risk next steps autonomously. Research discoverable environment facts with tools or delegated agents. Interrupt the user only for a material values choice, a new permission or credential, irreversible or high-impact action outside existing approval, or a blocker with no safe default. Put every currently independent required decision in one small numbered round with a recommended default. Let unresolved research block only dependent decisions, and proceed when remaining unknowns have safe defaults and completion is checkable; when blocked, consolidate options and a recommendation.
 
 Current personality:
 %s
@@ -3598,7 +3485,7 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 		"- Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
 		"- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.",
 		"",
-		"Orchestration policy:",
+		"Lifecycle policy:",
 		"- Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
 		"- Delegated agents are scoped execution sessions: give each one concern, enough context, acceptance criteria, verification, safety constraints, and a short expected report.",
 		"- Run independent subtasks in parallel when useful; keep coupled design decisions and gnarly single-thread debugging in Brain.",

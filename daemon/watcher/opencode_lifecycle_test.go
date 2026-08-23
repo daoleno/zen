@@ -93,8 +93,8 @@ func TestBrainHostInputCarriesExactClaimCapabilityThroughCanonicalSubmission(t *
 	if err != nil || result.Outcome != InputAccepted || result.TurnID != providerTurnID {
 		t.Fatalf("Host admission result=%+v err=%v", result, err)
 	}
-	submission, found, err := ledger.TurnSubmission(hostID, providerTurnID)
-	if err != nil || !found || submission.State != TurnSubmissionResolved ||
+	submission, found, err := ledger.InputAdmission(hostID, providerTurnID)
+	if err != nil || !found || submission.State != InputAdmissionResolved ||
 		submission.Receipt != eventID || submission.ClaimToken != claimToken ||
 		submission.WorkID != workID || submission.SessionID != hostID ||
 		submission.ProposedTurnID != providerTurnID {
@@ -169,13 +169,13 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	if hasTurn {
 		t.Fatalf("ambiguous admission created a phantom current Turn: %+v", turn)
 	}
-	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+	if pendingList, _ := ledger.PendingInputAdmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != InputAdmissionPending {
 		t.Fatalf("canonical pending submission = %+v", pendingList)
 	}
 
 	// The poll resolves the exact pending admission first, then the normal
 	// reducer advances Accepted → Running; input is never replayed.
-	pendingList, pendingErr := w.pendingTurnSubmissions(sessionID)
+	pendingList, pendingErr := w.pendingInputAdmissions(sessionID)
 	if pendingErr != nil {
 		t.Fatal(pendingErr)
 	}
@@ -346,7 +346,7 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) 
 	if turn, found, _ := ledger.Turn(sessionID); found {
 		t.Fatalf("ambiguous admission without evidence created a Turn: %+v", turn)
 	}
-	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != TurnSubmissionPending {
+	if pendingList, _ := ledger.PendingInputAdmissions(sessionID); len(pendingList) != 1 || pendingList[0].State != InputAdmissionPending {
 		t.Fatalf("pending submission = %+v", pendingList)
 	}
 	if _, err := w.RebindDelegatedTurnProjection(sessionID); err != nil {
@@ -524,13 +524,13 @@ func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 	if !hasTurn || turn.TurnID != firstTurn || turn.Status != TurnDone {
 		t.Fatalf("ambiguous send replaced prior terminal Turn: %+v", turn)
 	}
-	if pendingList, _ := ledger.PendingTurnSubmissions(sessionID); len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn {
+	if pendingList, _ := ledger.PendingInputAdmissions(sessionID); len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn {
 		t.Fatalf("fresh pending candidate = %+v", pendingList)
 	}
 
 	// Provider evidence for normalized/different bytes cannot claim the
 	// pending payload, whether running or terminal.
-	pendingList, pendingErr := w.pendingTurnSubmissions(sessionID)
+	pendingList, pendingErr := w.pendingInputAdmissions(sessionID)
 	if pendingErr != nil {
 		t.Fatal(pendingErr)
 	}

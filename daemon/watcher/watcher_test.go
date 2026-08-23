@@ -836,6 +836,21 @@ func TestPreContractTurnProjectionIgnoresUnscopedControlDoneMetadata(t *testing.
 	}
 }
 
+func TestControlDoneCarriesExplicitCompletionCriteria(t *testing.T) {
+	fact := controlFactFromProgress("agent:@1", "turn-exact", classifier.AgentProgress{
+		Status: "done", Attention: "done", DetailsJSON: `{"criteria_met":true}`,
+	}, time.Now().UTC())
+	if fact == nil || fact.Kind != "done" || !fact.CriteriaMet {
+		t.Fatalf("exact Control done fact=%+v", fact)
+	}
+	fact = controlFactFromProgress("agent:@1", "turn-exact", classifier.AgentProgress{
+		Status: "done", Attention: "done", DetailsJSON: `{"criteria_met":false}`,
+	}, time.Now().UTC())
+	if fact == nil || fact.CriteriaMet {
+		t.Fatalf("criteria-unmet Control done fact=%+v", fact)
+	}
+}
+
 func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
@@ -1313,7 +1328,7 @@ func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
 		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)
 	}
-	if got := tmuxSubmitDelay("codex"); got != 120*time.Millisecond {
+	if got := tmuxSubmitDelay("codex"); got != 2*time.Second {
 		t.Fatalf("Codex submit delay = %s", got)
 	}
 	if got := tmuxSubmitDelay("grok"); got < 250*time.Millisecond {

@@ -38,10 +38,10 @@ type byteSpan struct {
 
 func (s *Store) managedMarkdownSpecs() []managedMarkdownSpec {
 	return []managedMarkdownSpec{
-		{path: s.workspaceInstructionsPath(), relativePath: "AGENTS.md", managedID: brainAgentsManagedID, canonical: defaultWorkspaceInstructions},
-		{path: s.policyPath("delegation.md"), relativePath: "policies/delegation.md", managedID: delegationManagedID, canonical: defaultDelegationPolicy},
-		{path: s.policyPath("engine.md"), relativePath: "policies/engine.md", managedID: executorManagedID, canonical: defaultEnginePolicy},
-		{path: s.policyPath("handoff.md"), relativePath: "policies/handoff.md", managedID: handoffManagedID, canonical: defaultHandoffPolicy},
+		{path: s.workspaceInstructionsPath(), relativePath: "AGENTS.md", managedID: brainAgentsManagedID, canonical: productWorkspaceInstructions},
+		{path: s.policyPath("delegation.md"), relativePath: "policies/delegation.md", managedID: delegationManagedID, canonical: productDelegationPolicy},
+		{path: s.policyPath("engine.md"), relativePath: "policies/engine.md", managedID: executorManagedID, canonical: productEnginePolicy},
+		{path: s.policyPath("handoff.md"), relativePath: "policies/handoff.md", managedID: handoffManagedID, canonical: productHandoffPolicy},
 	}
 }
 

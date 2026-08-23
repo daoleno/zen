@@ -55,8 +55,8 @@ describe("Work relationship graph projection", () => {
       title: "Finish the active provider turn",
       status: "running",
       progress_mode: "owned",
-      owner_session_id: GRAPH_OWNER_RUNNING.sessionId,
-      owner_delegated: true,
+      attempt_session_id: GRAPH_OWNER_RUNNING.sessionId,
+      attempt_delegated: true,
       attention_state: "reserved",
     });
     const model = buildWorkRelationshipGraphModel(
@@ -146,8 +146,8 @@ describe("Work relationship graph projection", () => {
       work_id: "absent-owner-review",
       title: "Review an absent owner result",
       progress_mode: "owned",
-      owner_session_id: "brain-agent-absent:@99",
-      owner_delegated: true,
+      attempt_session_id: "brain-agent-absent:@99",
+      attempt_delegated: true,
       attention_state: "reviewing",
     });
     const ids = new Set([

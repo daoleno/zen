@@ -2,6 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { resolveComposerSendAction } from "./composerSendAction";
 
 describe("composer send action", () => {
+  test("historical failed rows cannot disable a fresh composer send", () => {
+    const result = resolveComposerSendAction({
+      canSend: true,
+      connected: true,
+      hasComposerContent: true,
+      interrupting: false,
+      activityRunning: false,
+    });
+    expect(result.showStopButton).toBe(false);
+    expect(result.sendEnabled).toBe(true);
+  });
+
   test("running Activity with a draft morphs the single slot to Send", () => {
     const result = resolveComposerSendAction({
       canSend: true,

@@ -76,7 +76,7 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 		Title:            "OpenCode completion",
 		Objective:        "Emit one completion Event after an ambiguous admission.",
 		Status:           WorkOpen,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Start the delegated Session.",
 		WaitFor:          "Session " + sessionID,
@@ -152,9 +152,10 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 	if failed != 0 {
 		t.Fatalf("ambiguous admission emitted %d session.failed Events: %#v", failed, events)
 	}
-	if done != 1 || actionableDone != 1 {
-		t.Fatalf("completion Events = done:%d actionable:%d, want exactly one actionable", done, actionableDone)
+	if done != 1 || actionableDone != 0 {
+		t.Fatalf("completion provider evidence = done:%d actionable:%d, want one non-actionable audit row", done, actionableDone)
 	}
+	assertSingleCanonicalReviewEvent(t, store, item.ID)
 
 	work, err := store.Work(item.ID)
 	if err != nil {
@@ -174,12 +175,12 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-zen-opencode-epoch:@2"
+	sessionID := "brain-agent-zen-opencode-event:@2"
 	item, err := store.CreateWork(Work{
-		Title:            "Follow-up epoch",
+		Title:            "Follow-up event",
 		Objective:        "A later authoritative turn must still complete.",
 		Status:           WorkRunning,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the delegated Session.",
 		WaitFor:          "Session " + sessionID,
@@ -195,7 +196,7 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 		SettledAt: base.Add(time.Minute),
 		Summary:   "Delegated provider failed the turn",
 	})
-	// The confirmed follow-up establishes a new activity epoch and completes.
+	// The confirmed follow-up establishes a new activity event and completes.
 	openCodeLedgerFlow(t, store, item.ID, sessionID, sessionID+":turn:new", base.Add(2*time.Minute), watcher.TurnFact{
 		Class: watcher.EvidenceProvider, Kind: "done",
 		SettledAt: base.Add(3 * time.Minute),
@@ -205,24 +206,28 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := 0
-	failed := 0
+	doneAudit := 0
+	failedAudit := 0
+	actionable := 0
 	for _, recorded := range events {
-		if recorded.Kind == "session.done" && recorded.Actionable {
-			done++
+		if recorded.Kind == "session.done" && !recorded.Actionable {
+			doneAudit++
 		}
-		if recorded.Kind == "session.failed" && recorded.Actionable {
-			failed++
+		if recorded.Kind == "session.failed" && !recorded.Actionable {
+			failedAudit++
+		}
+		if recorded.Actionable {
+			actionable++
 		}
 	}
-	if done != 1 || failed != 1 {
-		t.Fatalf("epoch Events done=%d failed=%d, want exactly one each: %#v", done, failed, events)
+	if doneAudit != 1 || failedAudit != 1 || actionable != 1 {
+		t.Fatalf("event evidence done=%d failed=%d actionable=%d: %#v", doneAudit, failedAudit, actionable, events)
 	}
 }
 
 // TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce verifies the
 // reusable-Session contract: a follow-up submitted after the previous turn
-// settled done establishes a new turn epoch, its authoritative completion
+// settled done establishes a new turn event, its authoritative completion
 // emits exactly one new actionable session.done, and replayed terminal facts
 // never add a duplicate or lose the notification.
 func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
@@ -235,7 +240,7 @@ func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
 		Title:            "Follow-up reopen",
 		Objective:        "A follow-up turn after done must notify exactly once.",
 		Status:           WorkRunning,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the delegated Session.",
 		WaitFor:          "Session " + sessionID,
@@ -269,7 +274,32 @@ func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
 			}
 		}
 	}
-	if done != 2 || actionableDone != 2 {
-		t.Fatalf("session.done Events = %d (actionable %d), want exactly two actionable (one per turn): %#v", done, actionableDone, events)
+	if done != 2 || actionableDone != 0 {
+		t.Fatalf("session.done evidence = %d (actionable %d), want two non-actionable audit rows: %#v", done, actionableDone, events)
+	}
+	assertSingleCanonicalReviewEvent(t, store, item.ID)
+}
+
+func assertSingleCanonicalReviewEvent(t *testing.T, store *Store, workID string) {
+	t.Helper()
+	item, err := store.Work(workID)
+	if err != nil || item.Review == nil {
+		t.Fatalf("canonical review work=%+v err=%v", item, err)
+	}
+	events, err := store.ListWorkEvents(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionable := 0
+	for _, event := range events {
+		if event.Actionable {
+			actionable++
+			if event.ID != item.Review.EventID {
+				t.Fatalf("actionable event %q != canonical review %q: %#v", event.ID, item.Review.EventID, events)
+			}
+		}
+	}
+	if actionable != 1 {
+		t.Fatalf("actionable events=%d, want one canonical review: %#v", actionable, events)
 	}
 }

@@ -32,6 +32,87 @@ func TestNewStoreCreatesExactlyOneCanonicalManagedBlock(t *testing.T) {
 	}
 }
 
+func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	worklog := filepath.Join(workspace, "worklog")
+	if err := os.MkdirAll(worklog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	private := map[string]string{
+		filepath.Join(workspace, "profile.md"):    "# Private Profile\n\nuser-profile-sentinel\n",
+		filepath.Join(workspace, "memory.md"):     "# Private Memory\n\nuser-memory-sentinel\n",
+		filepath.Join(workspace, "current.md"):    "# Private Current\n\nuser-current-sentinel\n",
+		filepath.Join(worklog, "private-task.md"): "# Private Work\n\nuser-worklog-sentinel\n",
+		filepath.Join(workspace, "AGENTS.md"):     "# User Brain Rules\n\nuser-agents-sentinel\n",
+	}
+	for path, body := range private {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range private {
+		got := string(mustReadFile(t, path))
+		if path == filepath.Join(workspace, "AGENTS.md") {
+			if !strings.Contains(got, body) || !strings.Contains(got, productWorkspaceInstructions) {
+				t.Fatalf("managed repair did not preserve user AGENTS.md and append shipped policy:\n%s", got)
+			}
+			continue
+		}
+		if got != body {
+			t.Fatalf("private overlay %s changed:\n%s", path, got)
+		}
+	}
+
+	for _, contract := range []string{
+		"sole master orchestrator and scheduler",
+		"independently decompose",
+		"typed disposition",
+		"durable next action",
+		"due_retry",
+		"Delegated agents execute scoped concerns",
+		"Inspect every delegated result",
+		"zen agent send -id <session> -text <follow-up> --work-id <work> --event-id <event> --handling-id <handling> --provider-turn-id <provider-turn> --revision <revision> --turn-id <random-turn-id>",
+		"zen brain work resolve --work-id <work> --handling-id <handling> --provider-turn-id <provider-turn> --revision <revision> --disposition continue --next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>",
+		"Ambiguous or unknown delivery is no-replay",
+	} {
+		if !strings.Contains(productWorkspaceInstructions, contract) && !strings.Contains(productDelegationPolicy, contract) {
+			t.Fatalf("shipped templates missing autonomous contract %q", contract)
+		}
+	}
+	for _, privateFact := range []string{
+		"user-profile-sentinel", "user-memory-sentinel", "user-current-sentinel", "user-worklog-sentinel",
+		"52466569-0fbc-4623-8fba-d754591a2f83", "49dc23f4-8f89-44b7-aa5b-e740173aad68", "OpenList",
+	} {
+		for name, template := range map[string]string{
+			"AGENTS.md": productWorkspaceInstructions, "delegation.md": productDelegationPolicy,
+			"engine.md": productEnginePolicy, "handoff.md": productHandoffPolicy,
+		} {
+			if strings.Contains(template, privateFact) {
+				t.Fatalf("shipped %s contains private fact %q", name, privateFact)
+			}
+		}
+	}
+
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range private {
+		if path == filepath.Join(workspace, "AGENTS.md") {
+			continue
+		}
+		if got := string(mustReadFile(t, path)); got != body {
+			t.Fatalf("second repair changed private overlay %s:\n%s", path, got)
+		}
+	}
+	_ = store
+}
+
 func TestNewStorePreservesUnmarkedDocumentAndAppendsCanonicalBlock(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")

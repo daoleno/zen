@@ -523,7 +523,7 @@ func TestBrainResolveCLI(t *testing.T) {
 		"work", "resolve", "--state-dir", stateDir, "--json=false",
 		"--work-id", "work-1", "--handling-id", "handling-1",
 		"--provider-turn-id", "provider-turn-1", "--revision", "7",
-		"--disposition", "continue", "--successor-session-id", "worker-2",
+		"--disposition", "continue", "--next-attempt-session-id", "worker-2",
 	}, &stderr); err != nil {
 		t.Fatalf("runBrainCommand returned error: %v stderr=%s", err, stderr.String())
 	}
@@ -534,11 +534,44 @@ func TestBrainResolveCLI(t *testing.T) {
 		if req.Type != "brain_work_resolve" || got == nil || got.WorkID != "work-1" ||
 			got.HandlingID != "handling-1" || got.ProviderTurnID != "provider-turn-1" ||
 			got.ExpectedWorkRevision != 7 || got.Disposition != brain.WorkDispositionContinue ||
-			got.SuccessorSessionID != "worker-2" {
+			got.NextSessionID != "worker-2" {
 			t.Fatalf("resolve request = %#v", req)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Brain resolve control request")
+	}
+
+	cancel()
+	waitForCLIControlServerShutdown(t, done)
+}
+
+func TestBrainResolveCLIDueRetry(t *testing.T) {
+	stateDir := t.TempDir()
+	handler, done, cancel := startCLIControlServer(t, stateDir)
+	defer cancel()
+	const due = "2026-08-23T03:04:05Z"
+	var stderr bytes.Buffer
+	if err := runBrainCommand([]string{
+		"work", "resolve", "--state-dir", stateDir, "--json=false",
+		"--work-id", "work-due", "--handling-id", "handling-due",
+		"--provider-turn-id", "provider-turn-due", "--revision", "9",
+		"--disposition", "wait", "--wake-kind", "due_retry",
+		"--wake-ref", "external-run:49dc23f4", "--next-attempt-at", due,
+	}, &stderr); err != nil {
+		t.Fatalf("runBrainCommand returned error: %v stderr=%s", err, stderr.String())
+	}
+
+	select {
+	case req := <-handler.requests:
+		got := req.BrainWorkDisposition
+		wantDue, _ := time.Parse(time.RFC3339, due)
+		if req.Type != "brain_work_resolve" || got == nil || got.Wake == nil ||
+			got.Wake.Kind != brain.WorkWakeDueRetry || got.Wake.Ref != "external-run:49dc23f4" ||
+			got.Wake.NextAttemptAt == nil || !got.Wake.NextAttemptAt.Equal(wantDue) {
+			t.Fatalf("due retry request = %#v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for due retry resolve request")
 	}
 
 	cancel()

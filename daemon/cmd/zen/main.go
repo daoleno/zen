@@ -211,6 +211,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 	brainService := brain.NewService(brainStore, w, execs)
 	w.SetTurnLedger(brainService)
+	go brainService.RunLifecycleScheduler(ctx)
 	calendarRoot, err := calendar.DefaultRoot()
 	if err != nil {
 		return fmt.Errorf("resolve calendar root: %w", err)
@@ -269,9 +270,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 		// Machine-level Codex gateway + config takeover: a stable loopback
 		// endpoint baked into the CLI's native config; Provider switching
 		// retargets the gateway without touching running Codex processes.
-		GatewayAddr:      modelprofiles.DefaultGatewayListenAddr,
-		GatewayStateDir:  filepath.Join(authManager.StorageDir(), "codex-gateway"),
-		CodexConfigPath:  modelprofiles.DefaultCodexConfigPath(),
+		GatewayAddr:     modelprofiles.DefaultGatewayListenAddr,
+		GatewayStateDir: filepath.Join(authManager.StorageDir(), "codex-gateway"),
+		CodexConfigPath: modelprofiles.DefaultCodexConfigPath(),
 	})
 	if err != nil {
 		return fmt.Errorf("start model profiles owner: %w", err)
@@ -1024,6 +1025,12 @@ func runAgentSend(args []string, stderr io.Writer) error {
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.StringVar(&req.AgentID, "id", "", "agent session id")
 	fs.StringVar(&req.Text, "text", "", "text to send")
+	fs.StringVar(&req.WorkID, "work-id", "", "delivered Work id authorizing a review follow-up")
+	fs.StringVar(&req.EventID, "event-id", "", "canonical delivered Event identity")
+	fs.StringVar(&req.HandlingID, "handling-id", "", "exact Host review handling identity")
+	fs.StringVar(&req.ProviderTurnID, "provider-turn-id", "", "exact Host provider Turn identity")
+	fs.Int64Var(&req.Revision, "revision", 0, "frozen Work revision from the delivered review")
+	fs.StringVar(&req.TurnID, "turn-id", "", "caller-supplied random delegated turn identity for review-authorized reuse")
 	fs.BoolVar(&stdin, "stdin", false, "read text from stdin")
 	fs.BoolVar(&req.Submit, "submit", true, "submit after sending text")
 	fs.BoolVar(&req.Force, "force", false, "force send to a non-delegated external session")
@@ -1296,6 +1303,7 @@ func runBrainWorkResolve(args []string, stderr io.Writer) error {
 	var disposition string
 	var wakeKind string
 	var wakeRef string
+	var nextAttemptAt string
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.StringVar(&request.WorkID, "work-id", "", "delivered Work id")
@@ -1303,9 +1311,15 @@ func runBrainWorkResolve(args []string, stderr io.Writer) error {
 	fs.StringVar(&request.ProviderTurnID, "provider-turn-id", "", "exact admitted provider Turn identity")
 	fs.Uint64Var(&request.ExpectedWorkRevision, "revision", 0, "expected Work revision from the delivered input")
 	fs.StringVar(&disposition, "disposition", "", "continue, wait, complete, cancel, or supersede")
-	fs.StringVar(&request.SuccessorSessionID, "successor-session-id", "", "reserved successor Session id for continue")
-	fs.StringVar(&wakeKind, "wake-kind", "", "session_terminal, calendar_result, or user_input for wait")
+	fs.StringVar(&request.NextSessionID, "next-attempt-session-id", "", "prepared next Attempt Session id for continue")
+	fs.StringVar(&request.NextTurnToken, "next-attempt-turn-token", "", "exact next Attempt turn token")
+	fs.StringVar(&request.AttemptSessionID, "attempt-session-id", "", "exact terminal Attempt Session id")
+	fs.StringVar(&request.AttemptTurnToken, "attempt-turn-token", "", "exact terminal Attempt turn token")
+	fs.Uint64Var(&request.AttemptFence, "attempt-fence", 0, "exact terminal Attempt fence")
+	fs.StringVar(&request.TerminalEvidenceID, "terminal-evidence-id", "", "exact provider terminal evidence identity")
+	fs.StringVar(&wakeKind, "wake-kind", "", "session_terminal, calendar_result, user_input, or due_retry for wait")
 	fs.StringVar(&wakeRef, "wake-ref", "", "exact producer reference for wait")
+	fs.StringVar(&nextAttemptAt, "next-attempt-at", "", "RFC3339 due time for a due_retry wait")
 	fs.StringVar(&request.NextAction, "next-action", "", "descriptive next action")
 	fs.StringVar(&request.Summary, "summary", "", "audited disposition summary")
 	if err := fs.Parse(args); err != nil {
@@ -1315,8 +1329,15 @@ func runBrainWorkResolve(args []string, stderr io.Writer) error {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	request.Disposition = brain.WorkDisposition(strings.TrimSpace(disposition))
-	if strings.TrimSpace(wakeKind) != "" || strings.TrimSpace(wakeRef) != "" {
+	if strings.TrimSpace(wakeKind) != "" || strings.TrimSpace(wakeRef) != "" || strings.TrimSpace(nextAttemptAt) != "" {
 		request.Wake = &brain.WorkWake{Kind: brain.WorkWakeKind(strings.TrimSpace(wakeKind)), Ref: strings.TrimSpace(wakeRef)}
+		if strings.TrimSpace(nextAttemptAt) != "" {
+			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(nextAttemptAt))
+			if err != nil {
+				return fmt.Errorf("invalid next-attempt-at: %w", err)
+			}
+			request.Wake.NextAttemptAt = &parsed
+		}
 	}
 	resp, err := callControl(cfg, control.Request{Type: "brain_work_resolve", BrainWorkDisposition: &request})
 	if err != nil {
@@ -1387,7 +1408,7 @@ func runBrainWorkUpdate(args []string, stderr io.Writer) error {
 	fs.StringVar(&item.Title, "title", "", "short Active work title")
 	fs.StringVar(&item.Objective, "objective", "", "durable requested outcome")
 	fs.Var(workStatusFlag{value: &item.Status}, "status", "Work status")
-	fs.StringVar(&item.OwnerSessionID, "owner", "", "owning delegated Session id")
+	fs.StringVar(&item.AttemptSessionID, "attempt-session-id", "", "active Attempt Session id")
 	fs.Var(completionPolicyFlag{value: &item.CompletionPolicy}, "completion", "bounded or until_done")
 	fs.StringVar(&item.DoneCriteriaRef, "done-criteria", "", "done-criteria reference")
 	fs.StringVar(&item.NextAction, "next-action", "", "next useful action")
@@ -1404,7 +1425,7 @@ func runBrainWorkUpdate(args []string, stderr io.Writer) error {
 	}
 	fields := []string{}
 	fieldNames := map[string]string{
-		"title": "title", "objective": "objective", "status": "status", "owner": "owner_session_id",
+		"title": "title", "objective": "objective", "status": "status", "attempt-session-id": "attempt_session_id",
 		"completion": "completion_policy", "done-criteria": "done_criteria_ref",
 		"next-action": "next_action", "wait-for": "wait_for", "context": "context_ref",
 	}

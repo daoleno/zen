@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -24,8 +25,8 @@ import (
 //	    for actor lease closures).
 //	I2  At most one Work.Review exists per Work and at most one delivered
 //	    review lease exists globally (the Host lane stop gate).
-//	I3  Review.RequiredAt is the immutable epoch birth used for queue
-//	    ordering. Review.FactEventID names the current action fact; a newer
+//	I3  Review.RequiredAt is the immutable event birth used for queue
+//	    ordering. Review.EventID names the current action fact; a newer
 //	    eligible fact replaces it while no lease is in flight (content
 //	    refresh, never a second queue item).
 //	I4  A disposition CASes the exact lease capability (WorkID, HandlingID,
@@ -33,15 +34,15 @@ import (
 //	    can never mutate newer state.
 //	I5  Work.Review is cleared only by: a typed Brain disposition, an actor
 //	    lease resolution (mark_delivered/discard/replay), owner admission
-//	    settling an undelivered epoch, or operator CloseWork. Clearing is
+//	    settling an undelivered event, or operator CloseWork. Clearing is
 //	    atomic with the Work transition and the fact audit.
 //	I6  queued_attention counts review-required Work. Every counted item is
 //	    recoverable: re-claimable after lease expiry, or quarantined with an
 //	    explicit actor-resolution path (Lease.AmbiguousDelivery). A claim
 //	    conflict can therefore never leave queued_attention > 0 with no
 //	    recoverable action.
-//	I7  A card is active iff its fact ID equals Work.Review.FactEventID.
-//	    Older epoch cards are history (resolved). Duplicate facts (dedupe
+//	I7  A card is active iff its Event ID equals Work.Review.EventID.
+//	    Older event cards are history (resolved). Duplicate facts (dedupe
 //	    key) never create a second card or a second review.
 //	I8  A lease never survives Host death unless the durable submission
 //	    ledger proves mutation may have begun (Pending/Resolved exact
@@ -60,15 +61,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // WorkReview is the canonical Brain review obligation of one Work. It is
-// durable Work state, not Event state: the append-only fact named by
-// FactEventID is the identity of the current required action, and the lease
-// is disposable delivery state.
+// durable Work state. EventID is the sole identity from actionable fact
+// through claim, notification, card, and resolution.
 type WorkReview struct {
-	// RequiredAt is the immutable epoch birth. Queue order is oldest first.
+	EventID string `json:"event_id"`
+	// RequiredAt is the immutable Event birth. Queue order is oldest first.
 	RequiredAt time.Time `json:"required_at"`
-	// FactEventID names the append-only fact that is the current action.
-	// A newer eligible fact replaces it while no lease is in flight.
-	FactEventID string `json:"fact_event_id"`
 	// Lease is nil while the review is pending/claimable.
 	Lease *WorkReviewLease `json:"lease,omitempty"`
 	// Resolution audit for actor-closed reviews (discard / settled by owner
@@ -79,9 +77,9 @@ type WorkReview struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
-// WorkReviewLease is the disposable delivery lease of one review epoch. It
+// WorkReviewLease is the disposable delivery lease of one review event. It
 // exists only while a Host is (or was) delivering the current action and is
-// re-derived from Work + the submission ledger at startup; it is never
+// re-derived from Work + the Lifecycle admission state at startup; it is never
 // append-only truth.
 type WorkReviewLease struct {
 	HostSessionID string `json:"host_session_id"`
@@ -96,23 +94,24 @@ type WorkReviewLease struct {
 	ClaimedAt             time.Time  `json:"claimed_at"`
 	DeliveredAt           *time.Time `json:"delivered_at,omitempty"`
 	HandlingEndedAt       *time.Time `json:"handling_ended_at,omitempty"`
-	// AmbiguousDelivery quarantines the lease: the exact submission ledger
+	// AmbiguousDelivery quarantines the lease: the exact Lifecycle admission state
 	// proves mutation may have begun while the lease Host is gone. Only an
 	// explicit actor resolution (mark_delivered/discard/replay) may close it.
 	AmbiguousDelivery bool `json:"ambiguous_delivery,omitempty"`
 }
 
-// WorkReviewAction is the delivery value of one review epoch: the current
+// WorkReviewAction is the delivery value of one review event: the current
 // action content (from the fact) plus the exact lease capability. It is the
 // value the Host lane claims, consumes, and resolves.
 type WorkReviewAction struct {
-	WorkID      string `json:"work_id"`
-	FactEventID string `json:"fact_event_id"`
-	Kind        string `json:"kind"`
-	PayloadRef  string `json:"payload_ref,omitempty"`
-	SourceName  string `json:"source_name,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	WorkTitle   string `json:"work_title,omitempty"`
+	WorkID         string `json:"work_id"`
+	EventID        string `json:"event_id"`
+	Kind           string `json:"kind"`
+	PayloadRef     string `json:"payload_ref,omitempty"`
+	SourceName     string `json:"source_name,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	WorkTitle      string `json:"work_title,omitempty"`
+	SourceThreadID string `json:"source_thread_id"`
 
 	ClaimedAt             *time.Time `json:"claimed_at,omitempty"`
 	DeliveryHostSessionID string     `json:"delivery_host_session_id,omitempty"`
@@ -126,7 +125,7 @@ type WorkReviewAction struct {
 }
 
 // WorkReviewDispositionRequest is Brain's exact handling transaction for a
-// review epoch. The lease capability and expected Work revision came from the
+// review event. The lease capability and expected Work revision came from the
 // delivered compact input, preventing an old Host turn from overwriting newer
 // durable state.
 type WorkReviewDispositionRequest struct {
@@ -135,7 +134,12 @@ type WorkReviewDispositionRequest struct {
 	ProviderTurnID       string          `json:"provider_turn_id"`
 	ExpectedWorkRevision uint64          `json:"expected_work_revision"`
 	Disposition          WorkDisposition `json:"disposition"`
-	SuccessorSessionID   string          `json:"successor_session_id,omitempty"`
+	NextSessionID        string          `json:"next_session_id,omitempty"`
+	NextTurnToken        string          `json:"next_turn_token,omitempty"`
+	AttemptSessionID     string          `json:"attempt_session_id,omitempty"`
+	AttemptTurnToken     string          `json:"attempt_turn_token,omitempty"`
+	AttemptFence         uint64          `json:"attempt_fence,omitempty"`
+	TerminalEvidenceID   string          `json:"terminal_evidence_id,omitempty"`
 	Wake                 *WorkWake       `json:"wake,omitempty"`
 	NextAction           string          `json:"next_action,omitempty"`
 	Summary              string          `json:"summary,omitempty"`
@@ -154,7 +158,7 @@ const (
 // ---------------------------------------------------------------------------
 // Transition table
 //
-// Review epoch state is (Review, Lease): absent, pending, leased, delivered,
+// Review event state is (Review, Lease): absent, pending, leased, delivered,
 // ended, quarantined.
 //
 //	absent       Review == nil
@@ -165,8 +169,8 @@ const (
 //	quarantined  Lease.AmbiguousDelivery
 //
 //	#    From        Event                                            To            Guard / effect
-//	1    absent      eligible actionable fact appended                 pending       RequiredAt=now; FactEventID=fact.ID; card materialized
-//	2    pending     newer eligible fact while no lease in flight      pending       FactEventID := fact.ID (content refresh, same epoch)
+//	1    absent      eligible actionable fact appended                 pending       RequiredAt=now; EventID=fact.ID; card materialized
+//	2    pending     newer eligible fact while no lease in flight      pending       EventID := fact.ID (content refresh, same event)
 //	3    pending     lane claims at the idle boundary                  leased        lease minted (capability + revision fence)
 //	4    leased      receipt proves non-submission                     pending       lease cleared (I8)
 //	5    leased      receipt accepted; provider Turn canonical         delivered      DeliveredAt set
@@ -178,44 +182,30 @@ const (
 //	11   quarantined actor mark_delivered                              pending       delivery proven; same action re-claimable
 //	12   quarantined actor replay                                     pending       lease cleared; same action re-claimable
 //	13   quarantined actor discard                                    absent        audit; if Work non-terminal a fresh reconcile fact re-requires (1)
-//	14   pending     initial delegated owner admission                absent        epoch settled (owner executes instead; I9)
-//	15   any         operator CloseWork                               absent        audit; epoch discarded
+//	14   pending     initial delegated owner admission                absent        event settled (owner executes instead; I9)
+//	15   any         operator CloseWork                               absent        audit; event discarded
 //	16   delivered   Host turn ends (startup recompute)               ended         requeue; lane resumes
 //	17   leased      startup recompute, Host gone, no evidence        pending       re-derivation of I8
 //	18   leased      startup recompute, Host gone, evidence           quarantined   re-derivation of I7
-//	19   any         disposition clears; eligible fact appended       pending       during the lease (sequence > fence) re-requires a fresh epoch
+//	19   any         disposition clears; eligible fact appended       pending       during the lease (sequence > fence) re-requires a fresh event
 //
 // Exactly-once: rows 3-5 happen at most once per lease; a disposition (8)
-// clears the review, so a second disposition of the same epoch is refused by
+// clears the review, so a second disposition of the same event is refused by
 // the capability CAS (I4). Host death re-delivers the same unresolved action
 // (6, 9, 10, 17) but can never create or preserve a second queue item.
 // ---------------------------------------------------------------------------
-
-// reviewLeaseInFlight reports whether the review epoch currently owns the Host
-// lane (claimed-undelivered or delivered-awaiting-disposition).
-func reviewLeaseInFlight(review *WorkReview) bool {
-	if review == nil || review.Lease == nil {
-		return false
-	}
-	return review.Lease.HandlingEndedAt == nil
-}
 
 func reviewDeliveredAwaitingDisposition(review *WorkReview) bool {
 	return review != nil && review.Lease != nil &&
 		review.Lease.DeliveredAt != nil && review.Lease.HandlingEndedAt == nil
 }
 
-func reviewEndedAwaitingReclaim(review *WorkReview) bool {
-	return review != nil && review.Lease != nil &&
-		review.Lease.HandlingEndedAt != nil && !review.Lease.AmbiguousDelivery
-}
-
-// reviewActionFromReview projects the delivery value of a review epoch.
-func reviewActionFromReview(database orchestrationDatabase, review *WorkReview) (WorkReviewAction, bool) {
+// reviewActionFromReview projects the delivery value of a review event.
+func reviewActionFromReview(database presentationDatabase, review *WorkReview) (WorkReviewAction, bool) {
 	if review == nil {
 		return WorkReviewAction{}, false
 	}
-	fact, found := workEventByID(database.BrainWorkEvents, review.FactEventID)
+	fact, found := workEventByID(database.BrainWorkEvents, review.EventID)
 	if !found {
 		return WorkReviewAction{}, false
 	}
@@ -224,13 +214,14 @@ func reviewActionFromReview(database orchestrationDatabase, review *WorkReview) 
 		return WorkReviewAction{}, false
 	}
 	action := WorkReviewAction{
-		WorkID:      fact.WorkID,
-		FactEventID: fact.ID,
-		Kind:        fact.Kind,
-		PayloadRef:  fact.PayloadRef,
-		SourceName:  fact.SourceName,
-		Summary:     fact.Summary,
-		WorkTitle:   database.BrainWork[itemIndex].Title,
+		WorkID:         fact.WorkID,
+		EventID:        fact.ID,
+		Kind:           fact.Kind,
+		PayloadRef:     fact.PayloadRef,
+		SourceName:     fact.SourceName,
+		Summary:        fact.Summary,
+		WorkTitle:      database.BrainWork[itemIndex].Title,
+		SourceThreadID: database.BrainWork[itemIndex].SourceThreadID,
 	}
 	if lease := review.Lease; lease != nil {
 		action.ClaimedAt = &lease.ClaimedAt
@@ -260,7 +251,7 @@ func cloneWorkReview(review *WorkReview) *WorkReview {
 		return nil
 	}
 	copy := *review
-	copy.FactEventID = strings.TrimSpace(copy.FactEventID)
+	copy.EventID = strings.TrimSpace(copy.EventID)
 	copy.Resolution = strings.TrimSpace(copy.Resolution)
 	copy.ResolvedBy = strings.TrimSpace(copy.ResolvedBy)
 	if review.Lease != nil {
@@ -275,48 +266,11 @@ func cloneWorkReview(review *WorkReview) *WorkReview {
 	return &copy
 }
 
-// setWorkReviewLocked creates or refreshes the canonical review obligation of
-// one Work from an eligible actionable fact. The epoch birth (RequiredAt) is
-// immutable; only the current-action identity may move to a newer fact, and
-// only while no lease is in flight (an in-flight action is authoritative; the
-// newer fact re-requires at disposition, row 19). The caller persists the
-// replacement.
-func setWorkReviewLocked(database *orchestrationDatabase, itemIndex int, event WorkEvent, now time.Time) error {
-	if database == nil || itemIndex < 0 || itemIndex >= len(database.BrainWork) {
-		return ErrWorkNotFound
-	}
-	if !event.Actionable || event.ID == "" || event.WorkID == "" {
-		return nil
-	}
-	item := &database.BrainWork[itemIndex]
-	if !reviewEligibleFact(*database, *item, event) {
-		return nil
-	}
-	if item.Review == nil {
-		item.Review = &WorkReview{
-			RequiredAt:  event.CreatedAt.UTC(),
-			FactEventID: event.ID,
-		}
-		return nil
-	}
-	if item.Review.Lease != nil && item.Review.Lease.HandlingEndedAt == nil {
-		// A lease is in flight: the current action is authoritative and the
-		// revision fence is frozen. The new fact becomes the next epoch at
-		// disposition (rebaseReviewAfterDispositionLocked).
-		return nil
-	}
-	if item.Review.FactEventID != event.ID {
-		item.Review.FactEventID = event.ID
-	}
-	return nil
-}
-
 // reviewEligibleFact gates which actionable facts may create or refresh a
 // review obligation. Delegated lifecycle rows without the canonical
 // turn-scoped identity stay append-only evidence and can never become a
-// current action. Terminal Work keeps only its finalization-failure
-// obligations.
-func reviewEligibleFact(database orchestrationDatabase, item Work, event WorkEvent) bool {
+// current action.
+func reviewEligibleFact(database presentationDatabase, item Work, event WorkEvent) bool {
 	if !event.Actionable {
 		return false
 	}
@@ -327,12 +281,6 @@ func reviewEligibleFact(database orchestrationDatabase, item Work, event WorkEve
 	if item.Status != WorkDone && item.Status != WorkCancelled {
 		return true
 	}
-	// A finalization retry is born only after the Work is terminal. Its
-	// immutable Session/attempt identity, not the Work's mutable metadata
-	// timestamp, is the causality fence.
-	if terminalFinalizationFailureOwnsAttention(item, event) {
-		return true
-	}
 	// TerminalRevision is the immutable causal boundary written by the
 	// transition that first terminalized the Work. Late producer results
 	// (for example a Calendar result arriving after terminalization) are born
@@ -341,97 +289,21 @@ func reviewEligibleFact(database orchestrationDatabase, item Work, event WorkEve
 	return item.TerminalRevision != 0 && event.WorkRevision >= item.TerminalRevision
 }
 
-// rebaseReviewAfterDispositionLocked re-requires a fresh review epoch from the
-// newest eligible fact appended during the ended lease (sequence > fence).
-// Facts appended before the claim are part of the resolved epoch's history.
-func rebaseReviewAfterDispositionLocked(database *orchestrationDatabase, itemIndex int, fence uint64) {
-	if database == nil || itemIndex < 0 || itemIndex >= len(database.BrainWork) {
-		return
-	}
-	item := &database.BrainWork[itemIndex]
-	latest := WorkEvent{}
-	for _, event := range database.BrainWorkEvents {
-		if event.WorkID != item.ID || event.Sequence <= fence || event.HandledAt != nil ||
-			event.DiscardedAt != nil || event.Resolution != "" || !reviewEligibleFact(*database, *item, event) {
-			continue
-		}
-		if latest.ID == "" || event.Sequence > latest.Sequence {
-			latest = event
-		}
-	}
-	if latest.ID == "" {
-		return
-	}
-	item.Review = &WorkReview{
-		RequiredAt:  latest.CreatedAt.UTC(),
-		FactEventID: latest.ID,
-	}
-}
-
-// clearWorkReviewLocked removes the canonical review obligation, retaining the
-// actor trail when the closer is an actor decision. Brain dispositions audit
-// the fact row instead and pass actor="".
-func clearWorkReviewLocked(database *orchestrationDatabase, itemIndex int, actor, resolution string, now time.Time) {
-	if database == nil || itemIndex < 0 || itemIndex >= len(database.BrainWork) {
-		return
-	}
-	item := &database.BrainWork[itemIndex]
-	if item.Review == nil {
-		return
-	}
-	if actor != "" {
-		resolvedAt := now.UTC()
-		item.Review.Resolution = resolution
-		item.Review.ResolvedBy = actor
-		item.Review.ResolvedAt = &resolvedAt
-	}
-	item.Review = nil
-}
-
-// settleReviewForOwnerAdmissionLocked clears an undelivered review epoch when
-// an initial delegated owner is admitted: the owner executes instead and a
-// queued card would be a ghost. A delivered lease is authoritative and stays.
-func settleReviewForOwnerAdmissionLocked(database *orchestrationDatabase, itemIndex int, now time.Time) {
-	if database == nil || itemIndex < 0 || itemIndex >= len(database.BrainWork) {
-		return
-	}
-	item := &database.BrainWork[itemIndex]
-	review := item.Review
-	if review == nil {
-		return
-	}
-	if review.Lease != nil && review.Lease.HandlingEndedAt == nil {
-		return
-	}
-	fact, found := workEventByID(database.BrainWorkEvents, review.FactEventID)
-	if !found {
-		item.Review = nil
-		return
-	}
-	resolvedAt := now.UTC()
-	fact.DiscardedAt = &resolvedAt
-	fact.Resolution = EventResolutionDiscard
-	fact.ResolvedBy = "owner_admission"
-	fact.ResolvedAt = &resolvedAt
-	database.BrainWorkEvents[workEventIndex(database.BrainWorkEvents, fact.ID)] = fact
-	item.Review = nil
-}
-
 // validateWorkReview enforces I1-I4 on the canonical review record.
-func validateWorkReview(database orchestrationDatabase, item Work) error {
+func validateWorkReview(database presentationDatabase, item Work) error {
 	review := item.Review
 	if review == nil {
 		return nil
 	}
-	if review.RequiredAt.IsZero() || strings.TrimSpace(review.FactEventID) == "" {
-		return fmt.Errorf("review requires required_at and fact_event_id")
+	if review.RequiredAt.IsZero() || strings.TrimSpace(review.EventID) == "" {
+		return fmt.Errorf("review requires required_at and event_id")
 	}
-	fact, found := workEventByID(database.BrainWorkEvents, review.FactEventID)
+	fact, found := workEventByID(database.BrainWorkEvents, review.EventID)
 	if !found || fact.WorkID != item.ID {
-		return fmt.Errorf("review fact_event_id %q does not name a fact of Work %s", review.FactEventID, item.ID)
+		return fmt.Errorf("review event_id %q does not name a fact of Work %s", review.EventID, item.ID)
 	}
 	if !reviewEligibleFact(database, item, fact) {
-		return fmt.Errorf("review fact %q is not eligible to obligate Work %s", fact.ID, item.ID)
+		return fmt.Errorf("review Event %q is not eligible to obligate Work %s", fact.ID, item.ID)
 	}
 	lease := review.Lease
 	if lease == nil {
@@ -460,7 +332,7 @@ func validateWorkReview(database orchestrationDatabase, item Work) error {
 // databaseHasExactReviewLease matches a Host submission transaction against
 // the canonical review lease: the five-part capability (fact receipt, claim
 // token, Work, Host Session, provider Turn) is the admission authority.
-func databaseHasExactReviewLease(database orchestrationDatabase, submission watcher.TurnSubmission) bool {
+func databaseHasExactReviewLease(database presentationDatabase, submission watcher.InputAdmission) bool {
 	itemIndex := workIndex(database.BrainWork, submission.WorkID)
 	if itemIndex < 0 {
 		return false
@@ -473,13 +345,13 @@ func databaseHasExactReviewLease(database orchestrationDatabase, submission watc
 	return lease.HandlingID == submission.ClaimToken &&
 		lease.ProviderTurnID == submission.ProposedTurnID &&
 		lease.HostSessionID == submission.SessionID &&
-		review.FactEventID == submission.Receipt &&
+		review.EventID == submission.Receipt &&
 		lease.DeliveredAt == nil && lease.HandlingEndedAt == nil
 }
 
 // reviewDeliveredInFlightIndex returns the Work index whose review lease is
 // delivered and awaiting disposition, or -1.
-func reviewDeliveredInFlightIndex(database orchestrationDatabase) int {
+func reviewDeliveredInFlightIndex(database presentationDatabase) int {
 	for index := range database.BrainWork {
 		if reviewDeliveredAwaitingDisposition(database.BrainWork[index].Review) {
 			return index
@@ -490,7 +362,7 @@ func reviewDeliveredInFlightIndex(database orchestrationDatabase) int {
 
 // reviewLeaseByCapability finds the Work index whose review lease matches the
 // exact delivery capability, or -1.
-func reviewLeaseByCapability(database orchestrationDatabase, workID, handlingID, providerTurnID string) int {
+func reviewLeaseByCapability(database presentationDatabase, workID, handlingID, providerTurnID string) int {
 	itemIndex := workIndex(database.BrainWork, workID)
 	if itemIndex < 0 {
 		return -1
@@ -512,7 +384,7 @@ func leaseCapabilityMatches(lease *WorkReviewLease, workID, handlingID, provider
 }
 
 // RecoverReviewLease recovers one review lease whose DeliveryHost Session the
-// caller proved is gone, using the durable submission ledger as mutation
+// caller proved is gone, using the durable Lifecycle admission state as mutation
 // evidence (I8). An absent exact submission (or one Aborted before mutation)
 // proves the action was never delivered to the old Host: the lease is dropped
 // and the same unresolved action becomes re-claimable by the current Host. A
@@ -529,7 +401,7 @@ func (s *Store) RecoverReviewLease(workID, handlingID, providerTurnID string) (b
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	database, err := s.loadOrchestrationLocked()
+	database, err := s.loadPresentationLocked()
 	if err != nil {
 		return false, err
 	}
@@ -544,37 +416,13 @@ func (s *Store) RecoverReviewLease(workID, handlingID, providerTurnID string) (b
 		// (EndReviewDelivery), never by this evidence check.
 		return false, nil
 	}
-	exactSubmission := -1
-	for candidate := range database.BrainTurnSubmissions {
-		submission := database.BrainTurnSubmissions[candidate]
-		if submission.Receipt != review.FactEventID || submission.ClaimToken != lease.HandlingID ||
-			submission.WorkID != workID || submission.SessionID != lease.HostSessionID ||
-			submission.ProposedTurnID != lease.ProviderTurnID {
-			continue
-		}
-		exactSubmission = candidate
-		break
+	if _, err := s.fsm.ReleaseReview(lifecycle.WorkID(workID), lifecycle.TurnToken(providerTurnID)); err != nil {
+		return false, err
 	}
-	if exactSubmission >= 0 {
-		switch database.BrainTurnSubmissions[exactSubmission].State {
-		case watcher.TurnSubmissionPending, watcher.TurnSubmissionResolved:
-			// Mutation may have begun; quarantine in Work state (row 7/18).
-			if !lease.AmbiguousDelivery {
-				lease.AmbiguousDelivery = true
-				if err := s.persistOrchestrationLocked(database); err != nil {
-					return false, err
-				}
-			}
-			return false, nil
-		case watcher.TurnSubmissionAborted:
-			// Aborted is persisted only before provider mutation; the action
-			// was provably never sent. Fall through to release.
-		default:
-			return false, nil
-		}
+	if err := s.fsmSyncWorkLocked(&database, workID, s.nowUTC()); err != nil {
+		return false, err
 	}
-	review.Lease = nil
-	if err := s.persistOrchestrationLocked(database); err != nil {
+	if err := s.persistPresentationLocked(database); err != nil {
 		return false, err
 	}
 	s.broadcastWorkChange(workID)

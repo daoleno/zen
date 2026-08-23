@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -60,7 +60,7 @@ func TestThreadTimelineSurvivesEmptyProviderHost(t *testing.T) {
 	}
 }
 
-func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
+func TestWorkCardProjectionReplacesInPlace(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -93,11 +93,11 @@ func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first event = %#v created=%v err=%v", first, created, err)
 	}
-	card1, materialized, err := store.MaterializeWorkCard(item, first)
+	card1, materialized, err := store.SyncWorkCard(item.ID, &first)
 	if err != nil || !materialized {
 		t.Fatalf("card1 = %#v materialized=%v err=%v", card1, materialized, err)
 	}
-	card1Again, materialized, err := store.MaterializeWorkCard(item, first)
+	card1Again, materialized, err := store.SyncWorkCard(item.ID, &first)
 	if err != nil || materialized || card1Again.ID != card1.ID {
 		t.Fatalf("exact-once failed: again=%#v materialized=%v err=%v", card1Again, materialized, err)
 	}
@@ -114,8 +114,8 @@ func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("second event = %#v created=%v err=%v", second, created, err)
 	}
-	card2, materialized, err := store.MaterializeWorkCard(item, second)
-	if err != nil || !materialized {
+	card2, materialized, err := store.SyncWorkCard(item.ID, &second)
+	if err != nil || materialized || card2.ID != second.ID {
 		t.Fatalf("card2 = %#v materialized=%v err=%v", card2, materialized, err)
 	}
 	items, err := store.ThreadTimeline(threadID, 0)
@@ -123,8 +123,8 @@ func TestWorkCardMaterializesOnceChronologically(t *testing.T) {
 		t.Fatal(err)
 	}
 	visible := TimelineItemsToConversationEvents(items)
-	if len(visible) != 2 || visible[0].ID != card1.ID || visible[1].ID != card2.ID {
-		t.Fatalf("immutable chronological cards = %#v", visible)
+	if len(visible) != 1 || visible[0].ID != second.ID || visible[0].Status != "session.done" {
+		t.Fatalf("single Work card projection = %#v", visible)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestMarkWorkReadClearsTimelineUnread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.MaterializeWorkCard(item, event); err != nil {
+	if _, _, err := store.SyncWorkCard(item.ID, &event); err != nil {
 		t.Fatal(err)
 	}
 	service := NewService(store, nil, nil)
@@ -292,21 +292,12 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 		if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 			t.Fatal(err)
 		}
-		hostID := "brain-agent-brain-hidden:@1"
 		sessionID := "brain-agent-stale-card:@2"
-		if err := store.SetHostSession(hostID, "codex"); err != nil {
-			t.Fatal(err)
-		}
-		fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
-			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-		}}
-		service := NewService(store, fw, nil)
-		service.now = func() time.Time { return now }
 		item, err := store.CreateWork(Work{
 			Title:            "zen-telegram-performance-publish",
 			Objective:        "Prove stale materializes a card",
 			Status:           WorkRunning,
-			OwnerSessionID:   sessionID,
+			AttemptSessionID: sessionID,
 			CompletionPolicy: CompletionBounded,
 		})
 		if err != nil {
@@ -316,44 +307,28 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 		bootstrapAdmittedTurnFixture(t, store, item.ID, watcher.AdmittedTurn{
 			SessionID: sessionID, TurnID: sessionID + ":turn:1", AcceptedAt: acceptedAt,
 		})
-		// Expire the current turn's own lease, then reconcile with a live
-		// pane: exactly one actionable session.stale materializes a card.
-		if _, _, err := store.ApplyTurnFact(watcher.TurnFact{
-			SessionID: sessionID, TurnID: sessionID + ":turn:1",
-			Class: watcher.EvidenceControl, Kind: "running",
-			SourceID: "control\x00heartbeat-1", LeaseSeconds: 1,
-			At: now.Add(-time.Minute),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		service.ReconcileDelegatedSessions([]*classifier.Agent{{
-			ID: sessionID, State: classifier.StateRunning, Delegated: true,
-			PaneAlive: true, ProcessID: 4242,
-		}})
-		service.ReconcileDelegatedSessions([]*classifier.Agent{{
-			ID: sessionID, State: classifier.StateRunning, Delegated: true,
-			PaneAlive: true, ProcessID: 4242,
-		}})
-		events, err := store.ListWorkEvents(item.ID)
+		// Expire the canonical owner's own deadline. The supervisor command
+		// enters Lifecycle directly; it does not create a parallel
+		// session.stale event/card materialization.
+		before, err := store.FSM().State(lifecycle.WorkID(item.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
-		var recorded WorkEvent
-		for _, event := range events {
-			if event.Kind == "session.stale" {
-				recorded = event
-				break
-			}
+		store.now = func() time.Time { return before.Attempt.LeaseDeadline.Add(time.Minute) }
+		if err := store.FSM().Sweep(); err != nil {
+			t.Fatal(err)
 		}
-		if recorded.ID == "" {
-			t.Fatalf("missing session.stale in %#v", events)
-		}
-		items, err := store.ThreadTimeline(threadID, 0)
+		state, err := store.FSM().State(lifecycle.WorkID(item.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(items) != 1 || items[0].ID != recorded.ID || items[0].Kind != timelineKindWorkCard || items[0].EventKind != "session.stale" {
-			t.Fatalf("stale materialize = %#v recorded=%#v", items, recorded)
+		if state.Review == nil || state.Review.Reason != "lease_expired" {
+			t.Fatalf("canonical lease-expiry review = %+v", state.Review)
+		}
+		cards := store.FSM().Cards()
+		if len(cards) != 1 || cards[0].WorkID != lifecycle.WorkID(item.ID) ||
+			!cards[0].Actionable || cards[0].Reason != "lease_expired" {
+			t.Fatalf("canonical one-card projection = %+v", cards)
 		}
 	})
 }
@@ -372,16 +347,16 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	sessionID := "brain-agent-signal-card:@1"
 	item, err := store.CreateWork(Work{
 		Title: "Signal card", Objective: "Project the canonical control result",
-		Status: WorkRunning, OwnerSessionID: sessionID, CompletionPolicy: CompletionBounded,
+		Status: WorkRunning, AttemptSessionID: sessionID, CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	turnID := "turn:signal-card"
-	pending, created, err := store.PrepareTurnSubmission(watcher.TurnSubmission{
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: item.ID, SessionID: sessionID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: pendingSubmissionDigest("card prompt"), ProcessIdentity: "process",
-		PaneGeneration: "pane", AcceptedAt: now, Mode: watcher.TurnSubmissionFresh,
+		PaneGeneration: "pane", AcceptedAt: now, Mode: watcher.InputAdmissionFresh,
 		SignalProtocol: true,
 	})
 	if err != nil || !created {
@@ -398,22 +373,23 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var done WorkEvent
+	var providerDone WorkEvent
 	for _, event := range events {
 		if event.Kind == "session.done" {
-			done = event
+			providerDone = event
 		}
 	}
-	if done.ID == "" || !done.Actionable {
+	projected, err := store.Work(item.ID)
+	if err != nil || projected.Review == nil || providerDone.ID == "" || providerDone.Actionable {
 		t.Fatalf("canonical done event = %+v", events)
 	}
 	items, err := store.ThreadTimeline(threadID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != done.ID || items[0].Kind != timelineKindWorkCard ||
+	if len(items) != 1 || items[0].ID != projected.Review.EventID || items[0].Kind != timelineKindWorkCard ||
 		items[0].EventKind != "session.done" || items[0].Summary != fact.Summary {
-		t.Fatalf("control result card = %+v event=%+v", items, done)
+		t.Fatalf("control result card = %+v event=%+v", items, providerDone)
 	}
 	restarted, err := NewStore(store.Root)
 	if err != nil {
@@ -423,7 +399,7 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 		t.Fatalf("card replay = (%+v, %v)", replay, err)
 	}
 	items, err = restarted.ThreadTimeline(threadID, 0)
-	if err != nil || len(items) != 1 || items[0].ID != done.ID {
+	if err != nil || len(items) != 1 || items[0].ID != projected.Review.EventID {
 		t.Fatalf("replayed control cards = %+v err=%v", items, err)
 	}
 }
@@ -445,7 +421,7 @@ func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.Evid
 		Title:            "zen-telegram-performance-publish",
 		Objective:        "Prove session lifecycle materializes cards",
 		Status:           WorkRunning,
-		OwnerSessionID:   sessionID,
+		AttemptSessionID: sessionID,
 		CompletionPolicy: CompletionBounded,
 		NextAction:       "Wait for the delegated Session.",
 		WaitFor:          "Session " + sessionID,
@@ -500,7 +476,15 @@ func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.Evid
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != recorded.ID || items[0].Kind != timelineKindWorkCard || items[0].EventKind != kind {
+	projected, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedID := recorded.ID
+	if projected.Review != nil {
+		expectedID = projected.Review.EventID
+	}
+	if len(items) != 1 || items[0].ID != expectedID || items[0].Kind != timelineKindWorkCard || items[0].EventKind != kind {
 		t.Fatalf("route materialize %s = %#v recorded=%#v", kind, items, recorded)
 	}
 	conversation := TimelineItemsToConversationEvents(items)

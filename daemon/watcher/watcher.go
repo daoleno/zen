@@ -99,8 +99,8 @@ type targetProcessIdentity struct {
 }
 
 // OwnedGeneration is the exact durable-marker, pane, and provider-process
-// generation shared by list/status/capture/follow-up authorization and Brain
-// foreground Attention reservations.
+// generation for a Zen-owned target. Read-only control uses the target proof;
+// mutation paths additionally compare it with the canonical Turn generation.
 type OwnedGeneration struct {
 	SessionID       string
 	Generation      string
@@ -461,24 +461,25 @@ func (w *Watcher) targetForSessionProbe(sessionID string) (targetProcessIdentity
 	return identity, true, nil
 }
 
-// ResolveOwnedGeneration proves one current Zen-owned target generation. It
-// fails closed when the durable marker, pane generation, or provider process
-// identity cannot be read; callers must never substitute cached Agent fields.
+// ResolveOwnedGeneration proves one current Zen-owned target generation and
+// checks it against the canonical Turn or pending submission. This is the
+// mutation/foreground boundary: a mismatch can invalidate the current Turn
+// because sending input to a different lifecycle would be unsafe.
 func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return OwnedGeneration{}, fmt.Errorf("missing session id")
 	}
-	owned, err := w.resolveOwnedGeneration(sessionID)
+	owned, err := w.resolveOwnedTarget(sessionID)
 	if err == nil {
 		turn, hasTurn, turnErr := w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
 		if turnErr != nil {
 			err = turnErr
 		}
-		var pendingList []TurnSubmission
+		var pendingList []InputAdmission
 		if err == nil {
 			var pendingErr error
-			pendingList, pendingErr = w.pendingTurnSubmissions(sessionID)
+			pendingList, pendingErr = w.pendingInputAdmissions(sessionID)
 			if pendingErr != nil {
 				err = pendingErr
 			}
@@ -497,13 +498,16 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 			expectedProcess, expectedPane = turn.ProcessIdentity, turn.PaneGeneration
 		}
 		if err == nil && expectedProcess != "" && (owned.ProcessIdentity != expectedProcess || owned.PaneGeneration != expectedPane) {
-			err = fmt.Errorf("owned Session generation no longer matches its canonical turn")
+			err = fmt.Errorf(
+				"%w: owned Session generation no longer matches its canonical turn",
+				ErrOwnedGenerationMismatch,
+			)
 		}
 	}
 	if err == nil {
 		return owned, nil
 	}
-	if !errors.Is(err, ErrOwnershipProbeUnavailable) {
+	if errors.Is(err, ErrUnownedTmuxTarget) || errors.Is(err, ErrOwnedGenerationMismatch) {
 		if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
 			err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
 		}
@@ -511,53 +515,28 @@ func (w *Watcher) ResolveOwnedGeneration(sessionID string) (OwnedGeneration, err
 	return OwnedGeneration{}, err
 }
 
-// ResolveDelegatedControl proves the exact owned pane/process generation and
-// reconciles its current provider Activity with the canonical delegated Turn.
-// It is the control-surface boundary for list/status/capture/follow-up. A
-// different idle terminal activity is safe for a fresh, digest-confirmed
-// submission; a different live activity is durably deprojected before the
-// command is rejected. Missing provider evidence is left to the bounded
-// evidence-loss reducer and never guessed from pane text.
+// ResolveDelegatedControl proves that a read/control target is still a
+// currently reachable Zen-created pane. It is intentionally read-only: status,
+// list, and capture must not reconcile provider Activity or mutate the canonical
+// Turn/Work projection. Provider Activity and Turn admission are write-path
+// concerns owned by sessionInputOwner.submitDelegated, which has the exact
+// receipt and mutation-boundary ledger needed for that decision.
 func (w *Watcher) ResolveDelegatedControl(sessionID string) (OwnedGeneration, error) {
-	owned, err := w.ResolveOwnedGeneration(sessionID)
-	if err != nil {
-		return OwnedGeneration{}, err
-	}
-	turn, found, err := w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
-	if err != nil || !found {
-		return owned, err
-	}
-	if pendingList, pendingErr := w.pendingTurnSubmissions(sessionID); pendingErr != nil {
-		return OwnedGeneration{}, pendingErr
-	} else if len(pendingList) > 0 {
-		return owned, nil
-	}
-	w.mu.RLock()
-	probe := w.providerActivityProbe
-	agent := w.agents[sessionID]
-	w.mu.RUnlock()
-	if probe == nil || agent == nil {
-		return owned, nil
-	}
-	observation := probe.ObserveProviderActivity(*agent, time.Now().UTC())
-	if strings.TrimSpace(observation.ID) == "" && strings.TrimSpace(observation.Status) == "" {
-		return owned, nil
-	}
-	_, reconcileErr := w.sessionInputOwner().reconcileSubmissionActivity(sessionID, turn, observation)
-	if reconcileErr == nil {
-		_, _ = w.RebindDelegatedTurnProjection(sessionID)
-		return owned, nil
-	}
-	if !errors.Is(reconcileErr, errDelegatedProviderOwnershipMismatch) {
-		return OwnedGeneration{}, reconcileErr
-	}
-	if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
-		reconcileErr = errors.Join(reconcileErr, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
-	}
-	return OwnedGeneration{}, reconcileErr
+	return w.resolveOwnedTarget(sessionID)
 }
 
-func (w *Watcher) resolveOwnedGeneration(sessionID string) (OwnedGeneration, error) {
+// ResolveBrainHostGeneration proves the current Zen-owned Host pane/process
+// generation without treating a historical Turn capability as Session-wide
+// authority. Provider activity and Host-lane serialization are proved at the
+// subsequent Host admission boundary.
+func (w *Watcher) ResolveBrainHostGeneration(sessionID string) (OwnedGeneration, error) {
+	return w.resolveOwnedTarget(sessionID)
+}
+
+// resolveOwnedTarget proves only the current tmux/pane/process target. It does
+// not compare the observation with a canonical Turn, so read-only control
+// calls remain observational and cannot deproject a live Work owner.
+func (w *Watcher) resolveOwnedTarget(sessionID string) (OwnedGeneration, error) {
 	identity, known, probeErr := w.targetForSessionProbe(sessionID)
 	if !known {
 		if probeErr != nil {
@@ -783,7 +762,7 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	var turn TurnSnapshot
 	hasCurrentTurn := false
 	hasPendingSubmission := false
-	var pendingList []TurnSubmission
+	var pendingList []InputAdmission
 	signalOwned := false
 	appliedFact := false
 	if w.turnLedger != nil {
@@ -819,7 +798,7 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 			return nil, turnErr
 		}
 		var pendingErr error
-		pendingList, pendingErr = w.pendingTurnSubmissions(id)
+		pendingList, pendingErr = w.pendingInputAdmissions(id)
 		if pendingErr != nil {
 			return nil, pendingErr
 		}
@@ -924,6 +903,7 @@ func controlFactFromProgress(id, turnID string, progress classifier.AgentProgres
 	case classifier.StateDone:
 		base.Kind = "done"
 		base.SourceID = "control\x00" + progressEventID
+		base.CriteriaMet = progressCriteriaMet(progress.DetailsJSON)
 		return &base
 	case classifier.StateFailed:
 		base.Kind = "failed"
@@ -932,6 +912,16 @@ func controlFactFromProgress(id, turnID string, progress classifier.AgentProgres
 	default:
 		return nil
 	}
+}
+
+func progressCriteriaMet(detailsJSON string) bool {
+	if strings.TrimSpace(detailsJSON) == "" {
+		return false
+	}
+	var details struct {
+		CriteriaMet bool `json:"criteria_met"`
+	}
+	return json.Unmarshal([]byte(detailsJSON), &details) == nil && details.CriteriaMet
 }
 
 // RebindDelegatedTurnProjection re-reads the canonical ledger turn and rebinds
@@ -952,7 +942,7 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 	if err != nil {
 		return nil, err
 	}
-	pendingList, pendingErr := w.pendingTurnSubmissions(id)
+	pendingList, pendingErr := w.pendingInputAdmissions(id)
 	if pendingErr != nil {
 		return nil, pendingErr
 	}
@@ -1028,6 +1018,12 @@ var ErrOwnershipProbeUnavailable = errors.New("delegated Session ownership probe
 // lacks Zen's durable ownership marker. Mutating it would cross the lifecycle
 // boundary into an ambient user session.
 var ErrUnownedTmuxTarget = errors.New("tmux target is not owned by Zen")
+
+// ErrOwnedGenerationMismatch means the current Zen-owned target is reachable,
+// but its pane/process generation no longer matches the canonical mutation
+// target. Unlike a transient probe or ledger read failure, this is proof that
+// sending the pending input would address a different lifecycle.
+var ErrOwnedGenerationMismatch = errors.New("owned Session generation mismatch")
 
 // HasSession reports whether tmux still has a session matching the target.
 // Probe failures collapse to false for backward-compatible callers; prefer
@@ -1275,7 +1271,7 @@ func (w *Watcher) poll() {
 		// a nil Provider probe: only the Provider observation is gated, so
 		// liveness facts (abnormal exit, end-of-identity) always apply.
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
-		pendingList, pendingErr := w.pendingTurnSubmissions(item.id)
+		pendingList, pendingErr := w.pendingInputAdmissions(item.id)
 		hasPending := len(pendingList) > 0
 		if pendingErr != nil {
 			turnErr = pendingErr
@@ -1623,15 +1619,15 @@ func (w *Watcher) ledgerTurnAuthoritative(
 	return turn, hasTurn, nil
 }
 
-func (w *Watcher) pendingTurnSubmissions(sessionID string) ([]TurnSubmission, error) {
+func (w *Watcher) pendingInputAdmissions(sessionID string) ([]InputAdmission, error) {
 	if w == nil || w.turnLedger == nil {
 		return nil, nil
 	}
-	ledger, ok := w.turnLedger.(TurnSubmissionLedger)
+	ledger, ok := w.turnLedger.(InputAdmissionLedger)
 	if !ok {
 		return nil, nil
 	}
-	return ledger.PendingTurnSubmissions(sessionID)
+	return ledger.PendingInputAdmissions(sessionID)
 }
 
 // resolvePendingProviderAdmission is the restart/crash recovery path for the
@@ -1639,33 +1635,33 @@ func (w *Watcher) pendingTurnSubmissions(sessionID string) ([]TurnSubmission, er
 // admission tuple whose digest equals the pending payload; tmux receipt state
 // is irrelevant to canonical ownership and input is never replayed here.
 func (w *Watcher) resolvePendingProviderAdmission(
-	submission TurnSubmission,
+	submission InputAdmission,
 	provider ProviderActivityObservation,
 	now time.Time,
-) (TurnSubmission, bool) {
+) (InputAdmission, bool) {
 	if w == nil || w.turnLedger == nil {
-		return TurnSubmission{}, false
+		return InputAdmission{}, false
 	}
-	ledger, ok := w.turnLedger.(TurnSubmissionLedger)
+	ledger, ok := w.turnLedger.(InputAdmissionLedger)
 	if !ok {
-		return TurnSubmission{}, false
+		return InputAdmission{}, false
 	}
 	identity, known := w.targetForSession(submission.SessionID)
 	if !known || delegatedTurnIdentity(identity) != submission.ProcessIdentity ||
 		w.currentPaneGeneration(submission.SessionID) != submission.PaneGeneration {
-		return TurnSubmission{}, false
+		return InputAdmission{}, false
 	}
 	switch strings.TrimSpace(provider.Status) {
 	case "running", "completed", "failed", "interrupted", "cancelled":
 	default:
-		return TurnSubmission{}, false
+		return InputAdmission{}, false
 	}
 	admission := admissionFromObservation(provider)
 	if strings.TrimSpace(provider.ID) == "" || admission.Empty() ||
 		strings.TrimSpace(admission.SHA256) != submission.PayloadSHA256 {
-		return TurnSubmission{}, false
+		return InputAdmission{}, false
 	}
-	resolved, err := ledger.ResolveTurnSubmission(TurnSubmissionResolution{
+	resolved, err := ledger.ResolveInputAdmission(InputAdmissionResolution{
 		SessionID: submission.SessionID, ProposedTurnID: submission.ProposedTurnID,
 		Receipt: submission.Receipt, PayloadSHA256: submission.PayloadSHA256,
 		ActivityID: strings.TrimSpace(provider.ID), Admission: admission,
@@ -2340,7 +2336,7 @@ func (w *Watcher) CapturePaneContent(sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("missing session id")
 	}
-	if _, ownershipErr := w.ResolveOwnedGeneration(sessionID); ownershipErr != nil {
+	if _, ownershipErr := w.ResolveDelegatedControl(sessionID); ownershipErr != nil {
 		return "", ownershipErr
 	}
 	out, err := tmuxCommand(w.socketPathFor(sessionID), "capture-pane", "-t", sessionID, "-p", "-S", "-200").Output()
@@ -2795,15 +2791,41 @@ func (w *Watcher) SubmitDelegatedInput(
 	)
 	if err != nil {
 		if errors.Is(err, errDelegatedProviderOwnershipMismatch) {
-			if !errors.Is(err, ErrOwnershipProbeUnavailable) {
-				if deprojectionErr := w.deprojectOwnershipLoss(sessionID); deprojectionErr != nil {
-					err = errors.Join(err, fmt.Errorf("persist ownership-loss deprojection: %w", deprojectionErr))
-				}
-			}
+			// Provider Activity is admission evidence, not tmux control
+			// authority. A live unrelated Activity blocks this input, but the
+			// target may still be perfectly safe to inspect or retry later.
 		} else {
 			_, _ = w.ResolveOwnedGeneration(sessionID)
 		}
 	}
+	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
+	return result, err
+}
+
+// SubmitDelegatedWorkInput submits an automatic Work continuation with its
+// exact lifecycle purpose attached before provider mutation.
+func (w *Watcher) SubmitDelegatedWorkInput(
+	sessionID, payload, workID, turnID, purpose, purposeID string,
+	acceptedAt time.Time,
+) (InputResult, error) {
+	if _, ownershipErr := w.ResolveOwnedGeneration(sessionID); ownershipErr != nil {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, ownershipErr)
+	}
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
+	}
+	result, err := w.sessionInputOwner().submitDelegated(
+		sessionID, identity, w.targetForSession, identity.Command, payload,
+		delegatedTurnDraft{
+			WorkID: strings.TrimSpace(workID), ID: strings.TrimSpace(turnID), AcceptedAt: acceptedAt.UTC(),
+			ProcessIdentity: delegatedTurnIdentity(identity), TranscriptBinding: transcriptBindingForCommand(identity.Command),
+			SignalProtocol: true, Purpose: strings.TrimSpace(purpose), PurposeID: strings.TrimSpace(purposeID),
+		},
+		w.delegatedInputConfirmer(sessionID, identity.Command),
+	)
 	_, _, _ = w.ledgerTurnAuthoritative(sessionID, time.Now().UTC())
 	return result, err
 }
@@ -2816,12 +2838,16 @@ func (w *Watcher) SubmitBrainHostInput(
 	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
+	if _, ownershipErr := w.ResolveBrainHostGeneration(sessionID); ownershipErr != nil {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+			definitelyNotSubmitted(eventID, ownershipErr)
+	}
 	identity, known := w.targetForSession(sessionID)
 	if !known {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
 			definitelyNotSubmitted(eventID, fmt.Errorf("target provider could not be proven"))
 	}
-	result, err := w.sessionInputOwner().submitDelegated(
+	result, err := w.sessionInputOwner().submitHost(
 		sessionID,
 		identity,
 		w.targetForSession,
@@ -3577,6 +3603,12 @@ func latestCursorPaneContent(content string) string {
 }
 
 func tmuxSubmitDelay(command string) time.Duration {
+	if isCodexCommand(command) {
+		// Codex turns large bracketed pastes into an asynchronous composer
+		// attachment. Enter before the attachment is committed is ignored and
+		// leaves a visible "[Pasted Content ...]" draft without a provider turn.
+		return 2 * time.Second
+	}
 	if isCursorAgentCommand(command) {
 		// Large pastes become a composer attachment asynchronously. Enter sent
 		// before that attachment is ready is ignored and leaves bytes sitting

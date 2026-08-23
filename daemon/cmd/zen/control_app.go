@@ -15,6 +15,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -38,11 +39,13 @@ type controlWatcher interface {
 	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReadyBudgeted(sessionID, command, payload, workID, turnID string, acceptedAt time.Time, budget time.Duration) (watcher.InputResult, error)
+	SubmitDelegatedWorkInput(sessionID, payload, workID, turnID, purpose, purposeID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
+	ResolveBrainHostGeneration(sessionID string) (watcher.OwnedGeneration, error)
 	ResolveDelegatedControl(sessionID string) (watcher.OwnedGeneration, error)
 }
 
@@ -486,62 +489,11 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			return control.ErrorResponse("spawn_failed", err.Error())
 		}
 	}
-	if ownedWork.ID != "" {
-		var inFlight bool
-		inFlight, err = a.brainStore.WorkHasDeliveredReview(ownedWork.ID)
-		if err == nil && inFlight {
-			ownedWork, err = a.brainStore.ReserveWorkSuccessor(ownedWork.ID, agentID)
-		}
-		if err != nil {
-			var cleanup modelprofiles.LaunchCleanupResult
-			if a.profiles != nil && routeSnap != nil {
-				// Commit already rebound the provisional to agentID — release the
-				// committed binding (not a provisional Abort) and kill tmux.
-				cleanup = modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
-			} else {
-				_ = a.watcher.KillSession(agentID)
-			}
-			a.recordSpawnWorkFailure(ownedWork, err, autoCreatedWork)
-			joined := errors.Join(err, cleanup.Err)
-			if cleanup.Err != nil || (routeSnap != nil && !cleanup.Persist.Applied) {
-				code := modelprofiles.ControlErrorCode(joined)
-				if code == "" || code == modelprofiles.CodeProfilesUnavailable {
-					code = "spawn_failed"
-				}
-				return control.ErrorResponse(code, joined.Error())
-			}
-			return brainWorkControlError(err)
-		}
-	}
-
 	admissionPending := false
 	if prompt != "" {
-		turnID, sendErr := a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
+		_, sendErr := a.submitAgentHandoff(agentID, createOpts.Command, prompt, ownedWork.ID, true)
 		if sendErr != nil && !a.keepSpawnAdmissionPending(agentID, sendErr) {
-			if reservation := ownedWork.SuccessorReservation; reservation != nil && reservation.SessionID == agentID {
-				provedNonAdmission := watcher.InputOutcomeFromError(sendErr) == watcher.InputNotSubmitted
-				var cleanupErr error
-				if provedNonAdmission {
-					if a.profiles != nil && routeSnap != nil {
-						cleanup := modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
-						cleanupErr = cleanup.Err
-						if cleanupErr == nil && !cleanup.Persist.Applied {
-							cleanupErr = modelprofiles.ErrLaunchCleanupIncomplete
-						}
-					} else {
-						cleanupErr = a.watcher.KillSession(agentID)
-					}
-				}
-				failure := errors.Join(sendErr, cleanupErr)
-				if failure == nil {
-					failure = sendErr
-				}
-				_, lifecycleErr := a.brainStore.RecordSuccessorLaunchFailure(
-					ownedWork.ID, agentID, failure.Error(), provedNonAdmission && cleanupErr == nil,
-				)
-				return control.ErrorResponse("send_prompt_failed", errors.Join(failure, lifecycleErr).Error())
-			}
-			if errors.Is(sendErr, brain.ErrWorkOwnerConflict) {
+			if errors.Is(sendErr, brain.ErrWorkAttemptConflict) {
 				var cleanup modelprofiles.LaunchCleanupResult
 				if a.profiles != nil && routeSnap != nil {
 					cleanup = modelprofiles.CleanupFailedLaunch(a.profiles, "", agentID, a.watcher.KillSession, a.sessionLivenessProbe)
@@ -565,13 +517,10 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				} else {
 					cleanupErr = a.watcher.KillSession(agentID)
 				}
-				cancelAutoWork := strings.TrimSpace(req.WorkID) == "" && cleanupErr == nil
-				_, lifecycleErr := a.brainStore.RecordInitialSubmissionNotAdmitted(
-					ownedWork.ID, agentID, turnID, sendErr.Error(), cancelAutoWork,
-				)
+				a.recordSpawnWorkFailure(ownedWork, sendErr, strings.TrimSpace(req.WorkID) == "" && cleanupErr == nil)
 				return control.ErrorResponse(
 					"send_prompt_failed",
-					errors.Join(sendErr, cleanupErr, lifecycleErr).Error(),
+					errors.Join(sendErr, cleanupErr).Error(),
 				)
 			}
 			a.recordSpawnWorkFailure(ownedWork, sendErr, autoCreatedWork)
@@ -673,17 +622,18 @@ func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) 
 		if item.Status == brain.WorkDone || item.Status == brain.WorkCancelled {
 			return brain.Work{}, fmt.Errorf("Brain Work %s is already %s", item.ID, item.Status)
 		}
-		if strings.TrimSpace(item.OwnerSessionID) != "" {
-			inFlight, inFlightErr := a.brainStore.WorkHasDeliveredReview(item.ID)
-			if inFlightErr != nil {
-				return brain.Work{}, inFlightErr
-			}
+		inFlight, inFlightErr := a.brainStore.WorkHasDeliveredReview(item.ID)
+		if inFlightErr != nil {
+			return brain.Work{}, inFlightErr
+		}
+		owned := strings.TrimSpace(item.AttemptSessionID) != ""
+		if owned || inFlight {
 			if !inFlight || strings.TrimSpace(prompt) == "" {
 				return brain.Work{}, fmt.Errorf(
 					"%w: Work %s is owned by %s",
-					brain.ErrWorkOwnerConflict,
+					brain.ErrWorkAttemptConflict,
 					item.ID,
-					item.OwnerSessionID,
+					item.AttemptSessionID,
 				)
 			}
 		}
@@ -718,22 +668,41 @@ func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error, aut
 	if a == nil || a.brainStore == nil || item.ID == "" {
 		return
 	}
-	status := brain.WorkNeedsInput
 	next := "Resolve the delegated Session launch failure."
-	wait := strings.TrimSpace(spawnErr.Error())
-	if autoCreated {
-		status = brain.WorkCancelled
-		next = "Delegated launch ended before a usable Session was created."
-		wait = ""
-	}
 	if watcher.InputOutcomeFromError(spawnErr) == watcher.InputAmbiguous {
 		next = "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
+		if _, err := a.brainStore.FSM().OpenReview(lifecycle.WorkID(item.ID), "submission_ambiguous", spawnErr.Error()); err != nil {
+			log.Printf("spawn work failure review: %v", err)
+			return
+		}
+		if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, nil, nil, nil, &next); err != nil {
+			log.Printf("spawn work failure amendment: %v", err)
+			return
+		}
+		if err := a.brainStore.SyncWorkProjection(item.ID); err != nil {
+			log.Printf("spawn work failure projection: %v", err)
+		}
+		return
 	}
-	_, _ = a.brainStore.UpdateWork(item.ID, brain.WorkUpdate{
-		Status:     &status,
-		NextAction: &next,
-		WaitFor:    &wait,
-	})
+	if autoCreated {
+		status := brain.WorkCancelled
+		next = "Delegated launch ended before a usable Session was created."
+		if _, err := a.brainStore.UpdateWork(item.ID, brain.WorkUpdate{Status: &status, NextAction: &next}); err != nil {
+			log.Printf("spawn work failure update: %v", err)
+		}
+		return
+	}
+	if _, err := a.brainStore.FSM().OpenReview(lifecycle.WorkID(item.ID), "submission_failed", spawnErr.Error()); err != nil {
+		log.Printf("spawn work failure review: %v", err)
+		return
+	}
+	if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, nil, nil, nil, &next); err != nil {
+		log.Printf("spawn work failure amendment: %v", err)
+		return
+	}
+	if err := a.brainStore.SyncWorkProjection(item.ID); err != nil {
+		log.Printf("spawn work failure projection: %v", err)
+	}
 }
 
 func (a *controlApp) handleBrainWorkList(req control.Request) control.Response {
@@ -786,8 +755,8 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 				return control.ErrorResponse("invalid_brain_work", "Terminal handling requires zen brain work resolve with the delivered Event identity and Work revision.")
 			}
 			update.Status = &source.Status
-		case "owner_session_id":
-			update.OwnerSessionID = &source.OwnerSessionID
+		case "attempt_session_id":
+			update.AttemptSessionID = &source.AttemptSessionID
 		case "completion_policy":
 			update.CompletionPolicy = &source.CompletionPolicy
 		case "done_criteria_ref":
@@ -889,7 +858,7 @@ func brainWorkControlError(err error) control.Response {
 		code = "brain_work_not_found"
 	case errors.Is(err, brain.ErrWorkConflict):
 		code = "conflict"
-	case errors.Is(err, brain.ErrWorkOwnerConflict):
+	case errors.Is(err, brain.ErrWorkAttemptConflict):
 		code = "conflict"
 	case errors.Is(err, brain.ErrWorkRevisionConflict):
 		code = "brain_work_revision_conflict"
@@ -925,6 +894,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
+	if reviewCapabilityRequested(req) {
+		return a.handleReviewAuthorizedAgentSend(req, agent)
+	}
 	var sendErr error
 	if req.Submit && agent != nil && payload != "" {
 		_, sendErr = a.submitAgentHandoff(agentID, agent.Command, payload, "", false)
@@ -945,6 +917,64 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	return control.Response{OK: true, Agent: &out}
 }
 
+func reviewCapabilityRequested(req control.Request) bool {
+	return strings.TrimSpace(req.WorkID) != "" || strings.TrimSpace(req.EventID) != "" ||
+		strings.TrimSpace(req.HandlingID) != "" || strings.TrimSpace(req.ProviderTurnID) != "" || req.Revision != 0
+}
+
+func (a *controlApp) handleReviewAuthorizedAgentSend(req control.Request, agent *classifier.Agent) control.Response {
+	if a == nil || a.brainStore == nil || agent == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work review authorization is not configured.")
+	}
+	workID := strings.TrimSpace(req.WorkID)
+	eventID := strings.TrimSpace(req.EventID)
+	handlingID := strings.TrimSpace(req.HandlingID)
+	providerTurnID := strings.TrimSpace(req.ProviderTurnID)
+	turnID := strings.TrimSpace(req.TurnID)
+	if workID == "" || eventID == "" || handlingID == "" || providerTurnID == "" || req.Revision <= 0 || turnID == "" {
+		return control.ErrorResponse("invalid_review_capability", "work_id, event_id, handling_id, provider_turn_id, revision, and caller-supplied turn_id are required together.")
+	}
+	if !agent.Delegated || agent.Hidden {
+		return control.ErrorResponse("agent_not_delegated", "Review-authorized reuse requires an existing delegated Session.")
+	}
+	if !req.Submit || strings.TrimSpace(req.Text) == "" {
+		return control.ErrorResponse("missing_text", "Review-authorized reuse requires submitted prompt text.")
+	}
+	if !strings.HasPrefix(turnID, "turn:") {
+		return control.ErrorResponse("invalid_turn_id", "Review-authorized reuse requires a random turn: identity.")
+	}
+	item, err := a.brainStore.Work(workID)
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	lease := (*brain.WorkReviewLease)(nil)
+	if item.Review != nil && item.Review.EventID == eventID {
+		lease = item.Review.Lease
+	}
+	if lease == nil || lease.DeliveredAt == nil || lease.HandlingID != handlingID ||
+		lease.ProviderTurnID != providerTurnID || lease.DeliveryWorkRevision != uint64(req.Revision) {
+		return control.ErrorResponse("invalid_review_capability", "The exact delivered Review capability is not current.")
+	}
+	payload := delegatedLifecyclePayload(req.Text, turnID)
+	result, err := a.watcher.SubmitDelegatedWorkInput(
+		req.AgentID, payload, workID, turnID, string(lifecycle.AdmissionPurposeReview), handlingID, time.Now().UTC(),
+	)
+	if err != nil {
+		return control.ErrorResponse("send_failed", err.Error())
+	}
+	if result.Outcome != watcher.InputAccepted || strings.TrimSpace(result.TurnID) != turnID {
+		return control.ErrorResponse("send_failed", "Review-authorized delegated input was not accepted under the exact turn identity.")
+	}
+	if _, rebindErr := a.watcher.RebindDelegatedTurnProjection(req.AgentID); rebindErr != nil {
+		log.Printf("delegated Session %s projection rebind failed after accepted review follow-up: %v", req.AgentID, rebindErr)
+	}
+	out := controlAgent(a.watcher.GetAgent(req.AgentID))
+	return control.Response{
+		OK: true, Agent: &out, TurnID: turnID,
+		Confirmation: "Review-authorized input accepted; use this exact turn identity in the typed continue disposition.",
+	}
+}
+
 // submitAgentHandoff is the single control-plane owner for initial delegated
 // prompts and confirmed follow-ups for every interactive provider. The watcher owns the
 // paste-once/Enter-once provider transaction and the canonical Admitted
@@ -954,6 +984,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string, initial bool) (string, error) {
 	handoffStartedAt := time.Now().UTC()
 	turnID := delegatedTurnID(agentID, handoffStartedAt)
+	// One prompt, one aggregate identity. Provider adapters may implement a
+	// follow-up as in-place steering, but that transport detail cannot replace
+	// the newly prepared Turn token with a previous prompt's identity.
 	payload = delegatedLifecyclePayload(payload, turnID)
 	var result watcher.InputResult
 	var err error
@@ -975,23 +1008,22 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload, workID string
 	if result.Outcome != watcher.InputAccepted {
 		return turnID, fmt.Errorf("delegated input was not authoritatively accepted")
 	}
+	if strings.TrimSpace(result.TurnID) != turnID {
+		return turnID, fmt.Errorf(
+			"delegated input accepted non-exact turn identity %q (want %q)",
+			strings.TrimSpace(result.TurnID), turnID,
+		)
+	}
 	if result.Duplicate {
 		return turnID, nil
 	}
 	// Rebind the Session projection to the canonical turn: a reused Session
 	// never inherits the previous turn's done state while its new provider
-	// turn is live or admitted (the live OpenCode incident), and steering
-	// keeps the existing nonterminal turn's identity. A rebind failure is
+	// turn is live or admitted (the live OpenCode incident). A rebind failure is
 	// non-fatal for the send (the watcher poll re-projects within one poll
 	// interval) but must not be swallowed silently.
 	if _, rebindErr := a.watcher.RebindDelegatedTurnProjection(agentID); rebindErr != nil {
 		log.Printf("delegated Session %s projection rebind failed after accepted input: %v", agentID, rebindErr)
-	}
-	if !initial && strings.TrimSpace(result.TurnID) != "" &&
-		strings.TrimSpace(result.TurnID) != turnID {
-		// Steering was delivered to the existing nonterminal turn. It does not
-		// reset lifecycle metadata or manufacture a new running Event.
-		return turnID, nil
 	}
 	return turnID, nil
 }
@@ -1178,6 +1210,11 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 			resp.PersistenceDurable = durable
 		}
 		return resp
+	}
+	if a.brainStore != nil {
+		if _, err := a.brainStore.ReleaseSessionAttempt(agentID, "session_closed"); err != nil {
+			return control.ErrorResponse("close_failed", fmt.Sprintf("Session closed but Work owner release failed: %v", err))
+		}
 	}
 	if agent == nil {
 		return control.Response{OK: true}

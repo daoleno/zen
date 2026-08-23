@@ -181,7 +181,7 @@ var seedPlaybooks = []struct {
 
 const defaultPlaybooksReadme = `# Brain Playbooks
 
-Provider-neutral operating playbooks for Brain orchestration. Read on demand — bootstrap and policies mention the catalog, not full bodies.
+Provider-neutral operating playbooks for Brain lifecycle. Read on demand — bootstrap and policies mention the catalog, not full bodies.
 
 Use ` + "`zen brain playbooks --json`" + ` for metadata: name, description, path.
 

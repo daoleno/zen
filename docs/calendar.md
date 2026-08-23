@@ -1,6 +1,6 @@
 # Calendar
 
-Calendar is Zen's time view. Brain owns intent and orchestration, Calendar owns when a commitment happens, Work owns execution, and Stats owns history.
+Calendar is Zen's time view. Brain owns intent and lifecycle, Calendar owns when a commitment happens, Work owns execution, and Stats owns history.
 
 ## Model
 
