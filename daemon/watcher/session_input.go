@@ -670,30 +670,42 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 		reuse := delegatedReuseDecision{}
 		if turn != nil {
-			existing, exists, turnErr := owner.ledgerTurn(sessionID)
-			if turnErr != nil {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
+			reuseBoundary := inputReuseDelegated
+			if len(boundary) > 0 {
+				reuseBoundary = boundary[0]
 			}
-			if exists && existing.TurnID != turn.ID {
-				// Every Session reuse validates the exact provider baseline,
-				// including Done/Failed/Unknown ledger rows. Ledger status alone
-				// cannot authorize either steering or a fresh mutation.
-				var reconcileErr error
-				reuseBoundary := inputReuseDelegated
-				if len(boundary) > 0 {
-					reuseBoundary = boundary[0]
+			if reuseBoundary == inputReuseBrainHost {
+				// Historical Host Turns are immutable audit only. Recheck the
+				// current provider baseline at the mutation boundary so a race
+				// with new live activity still fails closed.
+				if providerBaseline.ProbeState.Loss() ||
+					(strings.TrimSpace(providerBaseline.ID) != "" && !providerActivityTerminal(providerBaseline.Status)) {
+					return definitelyNotSubmitted(result.Receipt, fmt.Errorf(
+						"%w: Brain Host provider activity is not idle",
+						errDelegatedProviderOwnershipMismatch,
+					))
 				}
-				reuse, reconcileErr = owner.reconcileSubmissionActivityAtBoundary(
-					sessionID,
-					existing,
-					providerBaseline,
-					reuseBoundary,
-				)
-				if reconcileErr != nil {
-					return definitelyNotSubmitted(result.Receipt, reconcileErr)
+			} else {
+				existing, exists, turnErr := owner.ledgerTurn(sessionID)
+				if turnErr != nil {
+					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read canonical delegated turn: %w", turnErr))
 				}
-			} else if exists {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn exists without its submission transaction"))
+				if exists && existing.TurnID != turn.ID {
+					// Every Session reuse validates the exact provider baseline,
+					// including Done/Failed/Unknown ledger rows. Ledger status alone
+					// cannot authorize either steering or a fresh mutation.
+					var reconcileErr error
+					reuse, reconcileErr = owner.reconcileSubmissionActivity(
+						sessionID,
+						existing,
+						providerBaseline,
+					)
+					if reconcileErr != nil {
+						return definitelyNotSubmitted(result.Receipt, reconcileErr)
+					}
+				} else if exists {
+					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("canonical turn exists without its submission transaction"))
+				}
 			}
 		}
 
@@ -1015,35 +1027,11 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	turn TurnSnapshot,
 	provider ProviderActivityObservation,
 ) (delegatedReuseDecision, error) {
-	return owner.reconcileSubmissionActivityAtBoundary(sessionID, turn, provider, inputReuseDelegated)
-}
-
-func (owner *sessionInputOwner) reconcileSubmissionActivityAtBoundary(
-	sessionID string,
-	turn TurnSnapshot,
-	provider ProviderActivityObservation,
-	boundary inputReuseBoundary,
-) (delegatedReuseDecision, error) {
 	decision := delegatedReuseDecision{ExistingTurn: turn}
 	if owner == nil || owner.ledger == nil {
 		return decision, fmt.Errorf("canonical turn ledger is unavailable")
 	}
 	if turn.ControlState == TurnControlOwnershipLost {
-		if boundary == inputReuseBrainHost {
-			// A Host Session is a long-lived container. Losing the exact prior
-			// Turn capability remains immutable no-replay evidence, but it does
-			// not poison a later independent admission once the provider proves
-			// the current generation is idle. A live or unreadable provider still
-			// closes the lane conservatively.
-			if provider.ProbeState.Loss() ||
-				(strings.TrimSpace(provider.ID) != "" && !providerActivityTerminal(provider.Status)) {
-				return decision, fmt.Errorf(
-					"%w: Brain Host provider activity is not idle after canonical turn %s lost ownership",
-					errDelegatedProviderOwnershipMismatch, turn.TurnID,
-				)
-			}
-			return decision, nil
-		}
 		return decision, fmt.Errorf(
 			"%w: canonical turn %s has lost control ownership",
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,

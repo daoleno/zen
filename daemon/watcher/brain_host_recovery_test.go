@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestBrainHostIdleAdmissionDoesNotRewriteHistoricalOwnershipLoss(t *testing.T) {
+func TestBrainHostIdleAdmissionDoesNotConsultHistoricalTurn(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	identity := testSessionInputIdentity("codex")
@@ -14,8 +14,8 @@ func TestBrainHostIdleAdmissionDoesNotRewriteHistoricalOwnershipLoss(t *testing.
 	acceptedAt := time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC)
 	ledger.seed("brain-host:@1", TurnSnapshot{
 		SessionID: "brain-host:@1", TurnID: "turn-lost", Status: TurnUnknown,
-		ControlState: TurnControlOwnershipLost, AcceptedAt: acceptedAt,
-		ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: io.paneValue.generation,
+		AcceptedAt: acceptedAt, ProcessIdentity: delegatedTurnIdentity(identity),
+		PaneGeneration: io.paneValue.generation,
 	})
 	draft := delegatedTurnDraft{
 		WorkID: "work-complete", ID: "turn-fresh", Receipt: "event-canonical",
@@ -50,6 +50,40 @@ func TestBrainHostIdleAdmissionDoesNotRewriteHistoricalOwnershipLoss(t *testing.
 	)
 	if delegatedErr == nil || len(delegatedIO.queues) != 0 {
 		t.Fatalf("delegated ownership loss did not remain fail-closed: err=%v queues=%d", delegatedErr, len(delegatedIO.queues))
+	}
+}
+
+func TestBrainHostAdmissionFailsClosedOnCurrentLiveProviderActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	identity := testSessionInputIdentity("codex")
+	owner := newLedgerSessionInputOwner(io, ledger)
+	acceptedAt := time.Date(2026, 8, 23, 1, 30, 0, 0, time.UTC)
+	ledger.seed("brain-host:@live", TurnSnapshot{
+		SessionID: "brain-host:@live", TurnID: "turn-historical", Status: TurnUnknown,
+		AcceptedAt: acceptedAt, ProcessIdentity: delegatedTurnIdentity(identity),
+		PaneGeneration: io.paneValue.generation,
+	})
+	draft := delegatedTurnDraft{
+		WorkID: "work-pending", ID: "turn-fresh", Receipt: "event-pending",
+		AcceptedAt: acceptedAt.Add(time.Minute), ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	result, err := owner.submitHost(
+		"brain-host:@live", identity, fixedSessionInputResolver(identity), identity.Command,
+		"must remain queued", draft,
+		scriptedActivityTransitionAdmission(
+			"must remain queued",
+			ProviderActivityObservation{ID: "activity-current", Status: "running", StartedAt: acceptedAt},
+			"activity-fresh",
+		),
+	)
+	if err == nil || result.Outcome != InputNotSubmitted || len(io.queues) != 0 || len(io.submissions) != 0 {
+		t.Fatalf("live current Activity result=%+v err=%v queues=%d submissions=%d",
+			result, err, len(io.queues), len(io.submissions))
+	}
+	turn, found, readErr := ledger.Turn("brain-host:@live")
+	if readErr != nil || !found || turn.TurnID != "turn-historical" || turn.Status != TurnUnknown {
+		t.Fatalf("live Activity rewrote historical Turn: found=%v turn=%+v err=%v", found, turn, readErr)
 	}
 }
 
