@@ -4,6 +4,7 @@ import type {
   ProviderActivity,
 } from "../../services/codexConversation";
 import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
+import { brainWorkEventFromConversationEvent } from "../brain/brainWorkActivityModel";
 import {
   buildExpandedToolDetails,
   isWaitSessionPoll,
@@ -110,6 +111,7 @@ export function buildZenTimelineFromSortedEvents(
   turnFocusAnchorAliases?: ReadonlyMap<string, string>,
 ): ZenTimelineItem[] {
   const items: ZenTimelineItem[] = [];
+  const workItemIndexById = new Map<string, number>();
   let explorationEntries: ExplorationEntry[] = [];
 
   const flushExploration = () => {
@@ -170,7 +172,25 @@ export function buildZenTimelineFromSortedEvents(
       flushExploration();
       const workCard = brainWorkEventTimelineItemFromConversationEvent(event);
       if (workCard) {
-        items.push(workCard);
+        const existingIndex = workItemIndexById.get(workCard.event.work_id);
+        if (existingIndex == null) {
+          workItemIndexById.set(workCard.event.work_id, items.length);
+          items.push(workCard);
+        } else {
+          const existing = items[existingIndex];
+          if (existing.type === "brain-work-event") {
+            const events = existing.events.concat(workCard.event);
+            items[existingIndex] = {
+              ...existing,
+              event:
+                workCard.event.current_result || !existing.event.current_result
+                  ? workCard.event
+                  : existing.event,
+              events,
+              sourceCount: countBrainWorkSources(events),
+            };
+          }
+        }
         continue;
       }
       if (event.source === "work_result") {
@@ -401,81 +421,29 @@ function shouldRenderStatusAsMessage(event: CodexConversationEvent) {
 
 function brainWorkEventTimelineItemFromConversationEvent(
   event: CodexConversationEvent,
-): ZenTimelineItem | null {
-  if (event.source !== "work_result" || event.kind !== "status") {
-    return null;
-  }
-  const kind = normalizeBrainWorkResultKind(event.status);
-  const reviewState = normalizeBrainWorkReviewState(event.work_review_state);
-  const sessionState = normalizeBrainWorkSessionState(event.work_session_state);
-  if (!kind || !reviewState || !sessionState) {
-    return null;
-  }
-  const workEvent: BrainWorkResultEvent = {
-    event_id: event.id,
-    kind,
-    work_id: (event.work_id || "").trim(),
-    work_title: (event.title || "").trim(),
-    summary: (event.body || "").trim(),
-    session_id: event.work_session_id?.trim() || undefined,
-    session_name: event.session_name?.trim() || undefined,
-    occurred_at: event.timestamp || new Date(0).toISOString(),
-    unread: Boolean(event.unread),
-    review_state: reviewState,
-    session_state: sessionState,
-    current_result: event.work_result_current === true,
-  };
-  if (!workEvent.work_id || !workEvent.occurred_at) {
+): import("../brain/BrainWorkEventCard").BrainWorkEventTimelineItem | null {
+  const workEvent = brainWorkEventFromConversationEvent(event);
+  if (!workEvent) {
     return null;
   }
   return {
     type: "brain-work-event",
-    id: event.id,
+    id: `brain-work:${workEvent.work_id}`,
     timestamp: workEvent.occurred_at,
     event: workEvent,
+    events: [workEvent],
+    sourceCount: workEvent.session_id ? 1 : undefined,
   };
 }
 
-function normalizeBrainWorkReviewState(
-  value: string | undefined,
-): BrainWorkResultEvent["review_state"] | null {
-  return value === "queued" ||
-    value === "reserved" ||
-    value === "reviewing" ||
-    value === "resolved"
-    ? value
-    : null;
-}
-
-function normalizeBrainWorkSessionState(
-  value: string | undefined,
-): BrainWorkResultEvent["session_state"] | null {
-  switch (value) {
-    case "open":
-    case "closing":
-    case "finalized":
-    case "close_failed":
-    case "not_required":
-      return value;
-    default:
-      return null;
-  }
-}
-
-function normalizeBrainWorkResultKind(
-  value: string | undefined,
-): BrainWorkResultEvent["kind"] | null {
-  switch (value) {
-    case "session.done":
-    case "session.failed":
-    case "session.needs_input":
-    case "session.stale":
-    case "session.uncertain":
-    case "session.ownership_lost":
-      return value;
-    default:
-      return null;
-  }
+function countBrainWorkSources(events: BrainWorkResultEvent[]) {
+  const sourceIds = new Set<string>();
+  events.forEach((event) => {
+    if (event.session_id) {
+      sourceIds.add(event.session_id);
+    }
+  });
+  return sourceIds.size > 0 ? sourceIds.size : undefined;
 }
 
 export function attachBrainWorkEventActions(

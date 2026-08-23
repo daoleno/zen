@@ -7,7 +7,7 @@ import { TypeScale } from "../../constants/tokens";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
-  brainWorkEventSourceLabel,
+  brainWorkEventLifecycle,
   brainWorkEventSummary,
   brainWorkEventWorkTitle,
 } from "./brainWorkEventPresentation";
@@ -17,33 +17,82 @@ export type BrainWorkEventTimelineItem = {
   id: string;
   timestamp: string;
   event: BrainWorkResultEvent;
+  events: BrainWorkResultEvent[];
+  sourceCount?: number;
   onPress?: () => void;
 };
 
 export function BrainWorkEventCard({
   item,
   chrome,
+  attentionColor,
+  attentionBackground,
 }: {
   item: BrainWorkEventTimelineItem;
   chrome: TerminalThemeChrome;
+  attentionColor: string;
+  attentionBackground: string;
 }) {
   const styles = useMemo(() => createStyles(chrome), [chrome]);
   const presentation = resolvePresentationColors(
-    resultPresentation(item.event.kind),
+    brainWorkEventLifecycle(item.event),
     chrome,
+    attentionColor,
+    attentionBackground,
   );
   const workTitle = brainWorkEventWorkTitle(item.event);
   const summary = brainWorkEventSummary(item.event);
-  const source = brainWorkEventSourceLabel(item.event);
   const time = formatChatBubbleTime(item.event.occurred_at);
-  const accessibilityTime = new Date(
-    item.event.occurred_at,
-  ).toLocaleString();
+  const accessibilityTime = new Date(item.event.occurred_at).toLocaleString();
   const accessibilityLabel = brainWorkEventAccessibilityLabel({
     event: item.event,
     statusLabel: presentation.label,
     occurredAtLabel: accessibilityTime,
   });
+
+  if (presentation.terminal) {
+    return (
+      <Pressable
+        accessibilityRole={item.onPress ? "button" : undefined}
+        accessibilityLabel={accessibilityLabel}
+        disabled={!item.onPress}
+        onPress={item.onPress}
+        style={({ pressed }) => [
+          styles.wrap,
+          styles.wrapCompact,
+          item.event.unread ? styles.wrapUnread : null,
+          pressed ? styles.wrapPressed : null,
+        ]}
+      >
+        <Ionicons
+          name={presentation.icon}
+          size={17}
+          color={presentation.color}
+        />
+        <Text numberOfLines={1} style={styles.compactTitle}>
+          {workTitle}
+        </Text>
+        {presentation.lifecycle === "failed" ? (
+          <Text style={[styles.compactStatus, { color: presentation.color }]}>
+            Failed
+          </Text>
+        ) : null}
+        {item.sourceCount ? (
+          <Text style={styles.compactMeta}>
+            {item.sourceCount} {item.sourceCount === 1 ? "source" : "sources"}
+          </Text>
+        ) : null}
+        <Text style={styles.compactMeta}>{time}</Text>
+        {item.onPress ? (
+          <Ionicons
+            name="chevron-forward"
+            size={14}
+            color={chrome.textSubtle}
+          />
+        ) : null}
+      </Pressable>
+    );
+  }
 
   return (
     <Pressable
@@ -57,7 +106,7 @@ export function BrainWorkEventCard({
         pressed ? styles.wrapPressed : null,
       ]}
     >
-      <View style={styles.header}>
+      <View style={[styles.header, styles.headerActive]}>
         <View
           style={[
             styles.iconWrap,
@@ -78,73 +127,34 @@ export function BrainWorkEventCard({
         ) : null}
       </View>
 
-      <Text style={styles.title}>{workTitle}</Text>
-      <Text numberOfLines={5} style={styles.summary}>
-        {summary}
-      </Text>
-
-      {item.onPress ? (
-        <View style={styles.nextStep}>
-          <Text style={styles.nextStepText}>
-            {item.event.kind === "session.done"
-              ? "View details"
-              : "Open to inspect"}
-          </Text>
-          <Ionicons name="arrow-forward" size={13} color={presentation.color} />
-        </View>
+      <View style={styles.titleRow}>
+        <Text numberOfLines={2} style={styles.title}>
+          {workTitle}
+        </Text>
+      </View>
+      {summary ? (
+        <Text numberOfLines={3} style={styles.summary}>
+          {summary}
+        </Text>
       ) : null}
 
       <View style={styles.footer}>
-        {source ? (
+        {item.sourceCount ? (
           <Text numberOfLines={1} style={styles.source}>
-            {source}
+            {item.sourceCount} {item.sourceCount === 1 ? "source" : "sources"}
           </Text>
         ) : null}
         <Text style={styles.time}>{time}</Text>
+        {item.onPress ? (
+          <Ionicons
+            name="chevron-forward"
+            size={14}
+            color={chrome.textSubtle}
+          />
+        ) : null}
       </View>
     </Pressable>
   );
-}
-
-function resultPresentation(kind: BrainWorkResultEvent["kind"]) {
-  switch (kind) {
-    case "session.done":
-      return {
-        label: "Completed",
-        icon: "checkmark-circle-outline" as const,
-        colorKey: "accent" as const,
-      };
-    case "session.failed":
-      return {
-        label: "Failed",
-        icon: "alert-circle-outline" as const,
-        colorKey: "danger" as const,
-      };
-    case "session.needs_input":
-      return {
-        label: "Needs input",
-        icon: "help-circle-outline" as const,
-        colorKey: "danger" as const,
-      };
-    case "session.stale":
-      return {
-        label: "Session unavailable",
-        icon: "cloud-offline-outline" as const,
-        colorKey: "textMuted" as const,
-      };
-    case "session.uncertain":
-      return {
-        label: "Outcome uncertain",
-        icon: "help-circle-outline" as const,
-        colorKey: "textMuted" as const,
-      };
-    case "session.ownership_lost":
-      return {
-        label: "Ownership lost",
-        icon: "unlink-outline" as const,
-        colorKey: "danger" as const,
-      };
-  }
 }
 
 function createStyles(chrome: TerminalThemeChrome) {
@@ -154,7 +164,7 @@ function createStyles(chrome: TerminalThemeChrome) {
       marginBottom: 8,
       paddingHorizontal: 14,
       paddingVertical: 12,
-      borderRadius: 14,
+      borderRadius: 8,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: chrome.border,
       backgroundColor: chrome.surfaceMuted,
@@ -166,9 +176,34 @@ function createStyles(chrome: TerminalThemeChrome) {
     wrapPressed: {
       opacity: 0.72,
     },
+    wrapCompact: {
+      minHeight: 44,
+      paddingVertical: 9,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+    },
+    compactTitle: {
+      ...TypeScale.compact,
+      color: chrome.text,
+      flex: 1,
+      minWidth: 0,
+      fontWeight: "600",
+    },
+    compactStatus: {
+      ...TypeScale.caption,
+      fontWeight: "700",
+    },
+    compactMeta: {
+      ...TypeScale.caption,
+      color: chrome.textSubtle,
+    },
     header: {
       flexDirection: "row",
       alignItems: "center",
+      marginBottom: 5,
+    },
+    headerActive: {
       marginBottom: 8,
     },
     iconWrap: {
@@ -197,24 +232,19 @@ function createStyles(chrome: TerminalThemeChrome) {
       ...TypeScale.body,
       color: chrome.text,
       fontWeight: "700",
+      flex: 1,
+      minWidth: 0,
+    },
+    titleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
     },
     summary: {
       ...TypeScale.compact,
       color: chrome.text,
       marginTop: 4,
       lineHeight: 20,
-    },
-    nextStep: {
-      marginTop: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      alignSelf: "flex-start",
-      gap: 5,
-    },
-    nextStepText: {
-      ...TypeScale.caption,
-      color: chrome.text,
-      fontWeight: "700",
     },
     footer: {
       flexDirection: "row",
@@ -236,21 +266,30 @@ function createStyles(chrome: TerminalThemeChrome) {
   });
 }
 
-type ResultPresentationBase = ReturnType<typeof resultPresentation>;
-
 function resolvePresentationColors(
-  presentation: ResultPresentationBase,
+  presentation: ReturnType<typeof brainWorkEventLifecycle>,
   chrome: TerminalThemeChrome,
+  attentionColor: string,
+  attentionBackground: string,
 ) {
-  const color = chrome[presentation.colorKey];
+  const color =
+    presentation.tone === "danger"
+      ? chrome.danger
+      : presentation.tone === "attention"
+        ? attentionColor
+        : presentation.tone === "accent"
+          ? chrome.accent
+          : chrome.textMuted;
   return {
     ...presentation,
     color,
     background:
-      presentation.colorKey === "danger"
+      presentation.tone === "danger"
         ? chrome.dangerSoft
-        : presentation.colorKey === "accent"
-          ? chrome.accentSoft
-          : chrome.surfaceActive,
+        : presentation.tone === "attention"
+          ? attentionBackground
+          : presentation.tone === "accent"
+            ? chrome.accentSoft
+            : chrome.surfaceActive,
   };
 }

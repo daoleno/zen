@@ -90,11 +90,13 @@ function makeBrainEvent(
 function makeBrainItem(
   overrides: Partial<Extract<ZenTimelineItem, { type: "brain-work-event" }>> = {},
 ): Extract<ZenTimelineItem, { type: "brain-work-event" }> {
+  const event = makeBrainEvent();
   return {
     type: "brain-work-event",
     id: "brain-1",
     timestamp: "2026-08-06T12:00:00.000Z",
-    event: makeBrainEvent(),
+    event,
+    events: [event],
     onPress: () => {},
     ...overrides,
   };
@@ -386,31 +388,33 @@ function buildEqualityBenchmarkItems(count: number): ZenTimelineItem[] {
   for (let index = 0; index < count; index += 1) {
     if (index % 5 === 0) {
       const onPress = () => {};
+      const event: BrainWorkResultEvent = {
+        event_id: `evt-${index}`,
+        kind:
+          index % 4 === 0
+            ? "session.done"
+            : index % 4 === 1
+              ? "session.failed"
+              : index % 4 === 2
+                ? "session.needs_input"
+                : "session.stale",
+        work_id: `work-${index}`,
+        work_title: `Work ${index}`,
+        summary: `Summary for work ${index} with enough text to exercise field compares.`,
+        session_id: `sess-${index}`,
+        session_name: `session-${index}`,
+        occurred_at: `2026-08-06T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        unread: index % 3 === 0,
+        review_state: index % 2 === 0 ? "queued" : "resolved",
+        session_state: index % 2 === 0 ? "open" : "not_required",
+        current_result: true,
+      };
       items.push({
         type: "brain-work-event",
         id: `brain-${index}`,
         timestamp: `2026-08-06T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
-        event: {
-          event_id: `evt-${index}`,
-          kind:
-            index % 4 === 0
-              ? "session.done"
-              : index % 4 === 1
-                ? "session.failed"
-                : index % 4 === 2
-                  ? "session.needs_input"
-                  : "session.stale",
-          work_id: `work-${index}`,
-          work_title: `Work ${index}`,
-          summary: `Summary for work ${index} with enough text to exercise field compares.`,
-          session_id: `sess-${index}`,
-          session_name: `session-${index}`,
-          occurred_at: `2026-08-06T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
-          unread: index % 3 === 0,
-          review_state: index % 2 === 0 ? "queued" : "resolved",
-          session_state: index % 2 === 0 ? "open" : "not_required",
-          current_result: true,
-        },
+        event,
+        events: [event],
         onPress,
       });
       continue;
@@ -626,6 +630,33 @@ describe("timelineItemsSemanticEqual", () => {
       timelineItemsSemanticEqual(
         makeBrainItem({ event, onPress: undefined }),
         makeBrainItem({ event, onPress: onPressA }),
+      ),
+    ).toBe(false);
+  });
+
+  test("Brain Work grouped revisions and source counts invalidate only that stable row", () => {
+    const event = makeBrainEvent();
+    const onPress = () => {};
+    const base = makeBrainItem({ event, events: [event], onPress });
+    const reviewing = makeBrainEvent({
+      event_id: "evt-reviewing",
+      review_state: "reviewing",
+    });
+
+    expect(
+      timelineItemsSemanticEqual(
+        base,
+        makeBrainItem({
+          event,
+          events: [event, reviewing],
+          onPress,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      timelineItemsSemanticEqual(
+        base,
+        makeBrainItem({ event, events: [event], sourceCount: 2, onPress }),
       ),
     ).toBe(false);
   });

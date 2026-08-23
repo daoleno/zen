@@ -15,6 +15,7 @@ import type {
 import { ZenPlanUpdate } from "./InterfaceTimelinePlan";
 import type { ZenPlanTimelineItem } from "./InterfaceTimelinePlanTypes";
 import type { MessagePresentation } from "./InterfaceTimelineGrouping";
+import { withAlpha } from "./colorWithAlpha";
 import {
   ZenAssistantMessage,
   ZenUserMessage,
@@ -71,7 +72,14 @@ function ZenTimelineItemViewImpl({
     return <ZenPlanUpdate item={item} chrome={chrome} theme={theme} />;
   }
   if (item.type === "brain-work-event") {
-    return <BrainWorkEventCard item={item} chrome={chrome} />;
+    return (
+      <BrainWorkEventCard
+        item={item}
+        chrome={chrome}
+        attentionColor={theme.yellow}
+        attentionBackground={withAlpha(theme.yellow, 0.14)}
+      />
+    );
   }
   return (
     <ZenActivityEvent

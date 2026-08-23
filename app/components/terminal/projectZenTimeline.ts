@@ -231,6 +231,9 @@ function tryProvenEventPrepend(
     }
   }
   const prefixEvents = sortedEvents.slice(0, addedCount);
+  if (prefixEvents.some((event) => event.source === "work_result")) {
+    return null;
+  }
   const prefixTail = prefixEvents[prefixEvents.length - 1];
   const retainedHead = previous.sortedEvents[0];
   if (
@@ -427,6 +430,9 @@ function tryProvenSingleEventAppend(
   }
   const newEvent = sortedEvents[sortedEvents.length - 1];
   if (!newEvent || previous.itemIndexById.has(newEvent.id)) {
+    return null;
+  }
+  if (newEvent.source === "work_result") {
     return null;
   }
   // Exploration commands contiguous with an open explore:* row merge into that

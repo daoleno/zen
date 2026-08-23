@@ -53,7 +53,8 @@ function assertBrainWorkEventCard(
   if (card.type !== "brain-work-event") {
     throw new Error("expected brain-work-event");
   }
-  expect(card.id).toBe(id);
+  expect(card.id).toBe("brain-work:ae621005-929b-49b5-9d42-fa476d42d3f3");
+  expect(card.event.event_id).toBe(id);
   expect(card.event.kind).toBe(kind);
   expect(card.event.work_id).toBe("ae621005-929b-49b5-9d42-fa476d42d3f3");
   expect(JSON.stringify(card)).not.toContain("zen_work_event");
@@ -67,17 +68,12 @@ describe("Brain Work Event dedicated card projection", () => {
     }
   });
 
-  test("history replay and incremental projection preserve BrainWorkEventCard items", () => {
+  test("history replay groups one Work under a stable timeline identity", () => {
     const history = PROJECTED_KINDS.map((kind, index) =>
       workResultEvent(kind, `history-${kind}-${index}`),
     );
     const initial = projectZenTimeline(history, null);
     expect(initial.items.map((item) => item.type)).toEqual([
-      "brain-work-event",
-      "brain-work-event",
-      "brain-work-event",
-      "brain-work-event",
-      "brain-work-event",
       "brain-work-event",
     ]);
     for (const item of initial.items) {
@@ -87,6 +83,8 @@ describe("Brain Work Event dedicated card projection", () => {
       expect(item.event.kind).toMatch(
         /^session\.(done|failed|needs_input|stale|uncertain|ownership_lost)$/,
       );
+      expect(item.events).toHaveLength(PROJECTED_KINDS.length);
+      expect(item.id).toBe("brain-work:ae621005-929b-49b5-9d42-fa476d42d3f3");
     }
 
     const withAssistant: CodexConversationEvent[] = [
@@ -106,6 +104,33 @@ describe("Brain Work Event dedicated card projection", () => {
       expect(next.items[index]).toBe(initial.items[index]);
     }
     expect(next.items[next.items.length - 1]?.type).toBe("message");
+  });
+
+  test("historical Work-result prepend reprojects into the existing stable group", () => {
+    const latest = {
+      ...workResultEvent("session.done", "latest-result"),
+      seq: 2,
+      timestamp: "2026-08-06T10:20:00.000Z",
+      work_review_state: "reviewing" as const,
+    };
+    const initial = projectZenTimeline([latest], null);
+    const older = {
+      ...workResultEvent("session.done", "older-result"),
+      seq: 1,
+      timestamp: "2026-08-06T10:19:00.000Z",
+      work_review_state: "queued" as const,
+    };
+
+    const projected = projectZenTimeline([older, latest], initial.cache);
+    expect(projected.mode).toBe("full");
+    expect(projected.items).toHaveLength(1);
+    const item = projected.items[0];
+    if (item?.type !== "brain-work-event") {
+      throw new Error("expected grouped Work row");
+    }
+    expect(item.id).toBe(initial.items[0]?.id);
+    expect(item.event.event_id).toBe("latest-result");
+    expect(item.events).toHaveLength(2);
   });
 
   test("attachBrainWorkEventActions never downgrades semantic card kind", () => {
@@ -135,7 +160,7 @@ describe("Brain Work Event dedicated card projection", () => {
       "utf8",
     );
     expect(source).toContain('item.type === "brain-work-event"');
-    expect(source).toContain("<BrainWorkEventCard item={item} chrome={chrome} />");
+    expect(source).toContain("<BrainWorkEventCard");
     expect(source).not.toContain("zen_work_event");
   });
 

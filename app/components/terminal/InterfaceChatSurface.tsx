@@ -37,6 +37,10 @@ interface InterfaceChatSurfaceProps {
     event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
+  onBrainWorkEventsChange?: (
+    serverId: string,
+    events: import("../brain/brainWorkEvent").BrainWorkResultEvent[],
+  ) => void;
   openSessionIds?: ReadonlySet<string>;
   composerAccessory?: React.ReactNode;
   onDraftChange?: (value: string) => void;
@@ -72,6 +76,7 @@ function InterfaceChatSurfaceImpl({
   emptyTitle,
   emptyBody,
   onBrainWorkEventActivate,
+  onBrainWorkEventsChange,
   openSessionIds,
   composerAccessory,
   onDraftChange,
@@ -102,6 +107,7 @@ function InterfaceChatSurfaceImpl({
     emptyTitle,
     emptyBody,
     onBrainWorkEventActivate,
+    onBrainWorkEventsChange,
     openSessionIds,
     composerAccessory,
     onDraftChange,

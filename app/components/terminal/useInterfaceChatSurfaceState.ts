@@ -38,6 +38,7 @@ import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
 import { liveActionPromptScopeKey } from "../../services/agentSessionListTransport";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useInterfaceChatBodyProps } from "./useInterfaceChatBodyProps";
+import { brainWorkEventsFromConversationEvents } from "../brain/brainWorkActivityModel";
 import {
   useInterfaceComposerInput,
   useInterfaceComposerPresentation,
@@ -76,6 +77,10 @@ interface UseInterfaceChatSurfaceStateInput {
     event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
+  onBrainWorkEventsChange?: (
+    serverId: string,
+    events: import("../brain/brainWorkEvent").BrainWorkResultEvent[],
+  ) => void;
   openSessionIds?: ReadonlySet<string>;
   composerAccessory?: ReactNode;
   onDraftChange?: (value: string) => void;
@@ -100,6 +105,7 @@ type CodexStatusRequest = {
 
 const CODEX_STATUS_OUTPUT_TIMEOUT_MS = 9000;
 const CODEX_STATUS_TERMINAL_POLL_INTERVAL_MS = 750;
+const EMPTY_CONVERSATION_EVENTS: CodexConversationEvent[] = [];
 const CODEX_STATUS_KEYS = new Set([
   "account",
   "agentsmd",
@@ -139,6 +145,7 @@ export function useInterfaceChatSurfaceState({
   emptyTitle,
   emptyBody,
   onBrainWorkEventActivate,
+  onBrainWorkEventsChange,
   openSessionIds,
   composerAccessory,
   onDraftChange,
@@ -285,7 +292,14 @@ export function useInterfaceChatSurfaceState({
   const closeSkillsSheet = useCallback(() => {
     setSkillsSheetVisible(false);
   }, []);
-  const events = conversation?.events ?? [];
+  const events = conversation?.events ?? EMPTY_CONVERSATION_EVENTS;
+  const brainWorkEvents = useMemo(
+    () => brainWorkEventsFromConversationEvents(events),
+    [events],
+  );
+  useEffect(() => {
+    onBrainWorkEventsChange?.(serverId, brainWorkEvents);
+  }, [brainWorkEvents, onBrainWorkEventsChange, serverId]);
   const openStatusSheet = useCallback(() => {
     setActionMenuPinned(false);
     setStatusTimedOut(false);

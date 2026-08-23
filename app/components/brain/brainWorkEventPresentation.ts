@@ -1,13 +1,41 @@
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 
+export type BrainWorkLifecycle =
+  | "working"
+  | "ready"
+  | "reviewing"
+  | "done"
+  | "needs_you"
+  | "failed";
+
+export type BrainWorkLifecyclePresentation = {
+  lifecycle: BrainWorkLifecycle;
+  label: "Working" | "Ready" | "Reviewing" | "Done" | "Needs you" | "Failed";
+  icon:
+    | "ellipsis-horizontal-circle-outline"
+    | "checkmark-circle-outline"
+    | "eye-outline"
+    | "help-circle-outline"
+    | "alert-circle-outline";
+  tone: "neutral" | "accent" | "attention" | "danger";
+  terminal: boolean;
+};
+
 const CANONICAL_SESSION_SUFFIX =
   /\s*\(brain-agent-[^()\s]+:@\d+\)\s*$/i;
 const CANONICAL_SESSION_ID = /brain-agent-[^()\s]+:@\d+/i;
 const CANONICAL_SESSION_ID_GLOBAL = /brain-agent-[^()\s]+:@\d+/gi;
+const PROVIDER_TURN_ID_GLOBAL = /\bturn:[a-z0-9-]+\b/gi;
 
 export function brainWorkEventWorkTitle(event: BrainWorkResultEvent): string {
-  const normalized = event.work_title
+  return brainWorkTitle(event.work_title);
+}
+
+export function brainWorkTitle(value: string): string {
+  const normalized = value
     .replace(CANONICAL_SESSION_SUFFIX, "")
+    .replace(PROVIDER_TURN_ID_GLOBAL, "")
+    .replace(/\s+/g, " ")
     .trim();
   return normalized || "Delegated Work";
 }
@@ -15,9 +43,70 @@ export function brainWorkEventWorkTitle(event: BrainWorkResultEvent): string {
 export function brainWorkEventSummary(event: BrainWorkResultEvent): string {
   return event.summary
     .replace(CANONICAL_SESSION_ID_GLOBAL, "the session")
+    .replace(PROVIDER_TURN_ID_GLOBAL, "the provider turn")
     .replace(/\bdelegated session\b/gi, "the session")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function brainWorkEventLifecycle(
+  event: BrainWorkResultEvent,
+): BrainWorkLifecyclePresentation {
+  if (
+    event.kind === "session.failed" ||
+    event.kind === "session.ownership_lost"
+  ) {
+    return {
+      lifecycle: "failed",
+      label: "Failed",
+      icon: "alert-circle-outline",
+      tone: "danger",
+      terminal: true,
+    };
+  }
+  if (event.review_state === "reviewing") {
+    return {
+      lifecycle: "reviewing",
+      label: "Reviewing",
+      icon: "eye-outline",
+      tone: "accent",
+      terminal: false,
+    };
+  }
+  if (event.review_state === "resolved") {
+    return {
+      lifecycle: "done",
+      label: "Done",
+      icon: "checkmark-circle-outline",
+      tone: "neutral",
+      terminal: true,
+    };
+  }
+  if (event.kind === "session.needs_input") {
+    return {
+      lifecycle: "needs_you",
+      label: "Needs you",
+      icon: "help-circle-outline",
+      tone: "attention",
+      terminal: false,
+    };
+  }
+  if (event.kind === "session.done") {
+    return {
+      lifecycle: "ready",
+      label: "Ready",
+      icon: "checkmark-circle-outline",
+      tone: "accent",
+      terminal: false,
+    };
+  }
+  return {
+    lifecycle: "working",
+    label: "Working",
+    icon: "ellipsis-horizontal-circle-outline",
+    tone: "neutral",
+    terminal: false,
+  };
 }
 
 export function brainWorkEventReviewLabel(
@@ -81,15 +170,10 @@ export function brainWorkEventAccessibilityLabel({
   const source = brainWorkEventSourceLabel(event);
   const workTitle = brainWorkEventWorkTitle(event);
   const summary = brainWorkEventSummary(event);
-  const review = brainWorkEventReviewLabel(event);
-  const sessionState = brainWorkEventSessionLabel(event);
   return [
     statusLabel,
     `Work ${workTitle}`,
     summary,
-    review,
-    sessionState ?? "",
-    event.current_result ? "Current result" : "Superseded result",
     source ? `Source: ${source}` : "",
     occurredAtLabel,
     event.unread ? "Unread result" : "Read result",
@@ -97,5 +181,6 @@ export function brainWorkEventAccessibilityLabel({
     .filter(Boolean)
     .join(". ")
     .replace(CANONICAL_SESSION_ID_GLOBAL, "the session")
+    .replace(PROVIDER_TURN_ID_GLOBAL, "the provider turn")
     .replace(/\bdelegated session\b/gi, "the session");
 }

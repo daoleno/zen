@@ -63,10 +63,30 @@ export function timelineItemsSemanticEqual(
   ) {
     return (
       brainWorkResultEventsEqual(left.event, right.event) &&
+      left.sourceCount === right.sourceCount &&
+      brainWorkResultEventArraysEqual(left.events, right.events) &&
       left.onPress === right.onPress
     );
   }
   return false;
+}
+
+function brainWorkResultEventArraysEqual(
+  left: BrainWorkResultEvent[],
+  right: BrainWorkResultEvent[],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!brainWorkResultEventsEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function planItemsEqual(
