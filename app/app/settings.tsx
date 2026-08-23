@@ -86,6 +86,7 @@ import {
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 const SCANNER_COLORS = ZEN_DARK_APP_COLORS;
+const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather";
 const THEME_CHOICES = [
   { label: "System", value: "system", icon: "phone-portrait-outline" },
   { label: "Light", value: "classic-light", icon: "sunny-outline" },
@@ -1179,12 +1180,6 @@ export default function SettingsScreen() {
                   multiline
                   textAlignVertical="top"
                 />
-                <Text style={styles.fieldHint}>
-                  Advanced / Self-managed: run zen pair &lt;endpoint&gt; and
-                  import the same Pairing V1 QR. Existing LAN, Tailscale,
-                  Cloudflare Tunnel, and reverse proxy paths remain supported.
-                </Text>
-
                 <View style={styles.modalActions}>
                   <AnimatedPressable
                     style={styles.modalBtn}
@@ -1274,6 +1269,8 @@ function TelegramConnectionRow({
         setLoading(false);
         return () => {
           cancelled = true;
+          setToken("");
+          setShowToken(false);
         };
       }
       setLoading(true);
@@ -1315,9 +1312,11 @@ function TelegramConnectionRow({
   const configure = async () => {
     const credential = token.trim();
     if (!serverId || !credential) {
+      setToken("");
       Alert.alert("Bot token required", "Enter the token issued by BotFather.");
       return;
     }
+    setToken("");
     setBusy(true);
     try {
       const next = await wsClient.configureTelegramConnection(
@@ -1327,6 +1326,7 @@ function TelegramConnectionRow({
       setStatus(next);
       setShowToken(false);
     } catch (error: any) {
+      setToken("");
       Alert.alert(
         "Telegram setup failed",
         error?.message || "The bot token could not be verified.",
@@ -1338,6 +1338,30 @@ function TelegramConnectionRow({
     }
   };
 
+  const openBotFather = async () => {
+    try {
+      await Linking.openURL(TELEGRAM_BOTFATHER_URL);
+    } catch (error: any) {
+      setToken("");
+      Alert.alert(
+        "BotFather unavailable",
+        error?.message || "The official BotFather chat could not be opened.",
+      );
+    }
+  };
+
+  const pasteToken = async () => {
+    try {
+      setToken((await Clipboard.getStringAsync()).trim());
+    } catch (error: any) {
+      setToken("");
+      Alert.alert(
+        "Clipboard unavailable",
+        error?.message || "The bot token could not be pasted.",
+      );
+    }
+  };
+
   const beginBinding = async () => {
     if (!serverId) return;
     setBusy(true);
@@ -1346,6 +1370,7 @@ function TelegramConnectionRow({
       await Linking.openURL(challenge.url);
       setStatus(await wsClient.getTelegramConnectionStatus(serverId));
     } catch (error: any) {
+      setToken("");
       Alert.alert(
         "Telegram owner binding",
         error?.message || "The private Telegram chat could not be opened.",
@@ -1380,6 +1405,7 @@ function TelegramConnectionRow({
     ? telegramConnectionStateColor(status.state, colors)
     : colors.textTertiary;
   const hasConfiguredBot = Boolean(status?.bot_username);
+  const hasBoundOwner = Boolean(status?.owner_hint);
   const visible = shouldShowTelegramConnection(
     status?.bot_username,
     openRequest > 0,
@@ -1407,6 +1433,10 @@ function TelegramConnectionRow({
           void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setExpanded((value) => {
             const next = !value;
+            if (!next) {
+              setToken("");
+              setShowToken(false);
+            }
             if (!next && !hasConfiguredBot) onSetupDismiss();
             return next;
           });
@@ -1456,19 +1486,6 @@ function TelegramConnectionRow({
             </Text>
           ) : (
             <>
-              {status?.bot_name ? (
-                <Text style={styles.telegramDetail}>
-                  {status.bot_name}
-                  {status.owner_hint
-                    ? ` / ${status.owner_hint}`
-                    : " / owner not bound"}
-                </Text>
-              ) : (
-                <Text style={styles.telegramDetail}>
-                  Create a bot with BotFather, then enter its token once.
-                </Text>
-              )}
-
               {status?.last_error ? (
                 <View style={styles.telegramError}>
                   <Ionicons
@@ -1482,7 +1499,15 @@ function TelegramConnectionRow({
                 </View>
               ) : null}
 
-              {status && (status.last_receive_at || status.last_send_at) ? (
+              {hasBoundOwner && status?.bot_name ? (
+                <Text style={styles.telegramDetail}>
+                  {status.bot_name} / {status.owner_hint}
+                </Text>
+              ) : null}
+
+              {hasBoundOwner &&
+              status &&
+              (status.last_receive_at || status.last_send_at) ? (
                 <Text style={styles.telegramMetadata}>
                   {status.last_receive_at
                     ? `Received ${formatConnectionTime(status.last_receive_at)}`
@@ -1493,22 +1518,216 @@ function TelegramConnectionRow({
                 </Text>
               ) : null}
 
-              {showToken ? (
+              {!hasBoundOwner && !showToken ? (
+                <View style={styles.telegramSetup}>
+                  <View style={styles.telegramSetupRow}>
+                    <View
+                      style={[
+                        styles.telegramStepMarker,
+                        hasConfiguredBot && styles.telegramStepMarkerComplete,
+                      ]}
+                    >
+                      {hasConfiguredBot ? (
+                        <Ionicons
+                          name="checkmark"
+                          size={14}
+                          color={colors.textOnAccent}
+                        />
+                      ) : (
+                        <Text style={styles.telegramStepNumber}>1</Text>
+                      )}
+                    </View>
+                    <View style={styles.telegramStepContent}>
+                      <Text style={styles.telegramStepTitle}>
+                        Create or select a bot
+                      </Text>
+                      {!hasConfiguredBot ? (
+                        <View style={styles.telegramActions}>
+                          <ConnectionAction
+                            icon="open-outline"
+                            label="Open BotFather"
+                            accessibilityLabel="Open official BotFather chat in Telegram"
+                            disabled={busy}
+                            onPress={() => void openBotFather()}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  <View style={styles.telegramSetupRow}>
+                    <View
+                      style={[
+                        styles.telegramStepMarker,
+                        hasConfiguredBot && styles.telegramStepMarkerComplete,
+                      ]}
+                    >
+                      {hasConfiguredBot ? (
+                        <Ionicons
+                          name="checkmark"
+                          size={14}
+                          color={colors.textOnAccent}
+                        />
+                      ) : (
+                        <Text style={styles.telegramStepNumber}>2</Text>
+                      )}
+                    </View>
+                    <View style={styles.telegramStepContent}>
+                      <Text style={styles.telegramStepTitle}>
+                        {hasConfiguredBot
+                          ? `Bot verified @${status?.bot_username}`
+                          : "Verify the bot token"}
+                      </Text>
+                      {!hasConfiguredBot ? (
+                        <>
+                          <View style={styles.telegramTokenInputRow}>
+                            <TextInput
+                              style={[styles.input, styles.telegramTokenInput]}
+                              value={token}
+                              onChangeText={setToken}
+                              placeholder="BotFather token"
+                              placeholderTextColor={colors.textSecondary}
+                              selectionColor={colors.selectionBackground}
+                              cursorColor={colors.accentStrong}
+                              accessibilityLabel="Telegram bot token"
+                              secureTextEntry
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              editable={!busy}
+                            />
+                            <AnimatedPressable
+                              style={[
+                                styles.telegramPasteButton,
+                                busy && styles.connectionActionDisabled,
+                              ]}
+                              preset="press"
+                              scale={0.95}
+                              accessibilityRole="button"
+                              accessibilityLabel="Paste Telegram bot token from clipboard"
+                              accessibilityState={{ disabled: busy }}
+                              disabled={busy}
+                              onPress={() => void pasteToken()}
+                            >
+                              <Ionicons
+                                name="clipboard-outline"
+                                size={16}
+                                color={colors.textPrimary}
+                              />
+                              <Text style={styles.telegramPasteButtonText}>
+                                Paste
+                              </Text>
+                            </AnimatedPressable>
+                          </View>
+                          <View style={styles.telegramActions}>
+                            <ConnectionAction
+                              icon="close"
+                              label="Cancel"
+                              disabled={busy}
+                              onPress={() => {
+                                setToken("");
+                                setExpanded(false);
+                                onSetupDismiss();
+                              }}
+                            />
+                            <ConnectionAction
+                              icon="checkmark"
+                              label="Continue"
+                              primary
+                              disabled={busy || token.trim() === ""}
+                              onPress={() => void configure()}
+                            />
+                          </View>
+                        </>
+                      ) : null}
+                    </View>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.telegramSetupRow,
+                      styles.telegramSetupRowLast,
+                    ]}
+                  >
+                    <View style={styles.telegramStepMarker}>
+                      <Text style={styles.telegramStepNumber}>3</Text>
+                    </View>
+                    <View style={styles.telegramStepContent}>
+                      <Text style={styles.telegramStepTitle}>
+                        Connect your bot
+                      </Text>
+                      {hasConfiguredBot ? (
+                        <View style={styles.telegramActions}>
+                          <ConnectionAction
+                            icon="open-outline"
+                            label="Connect Telegram"
+                            accessibilityLabel="Connect Telegram using the one-time binding link"
+                            primary
+                            disabled={busy}
+                            onPress={() => void beginBinding()}
+                          />
+                          <ConnectionAction
+                            icon="key-outline"
+                            label="Rotate"
+                            disabled={busy}
+                            onPress={() => setShowToken(true)}
+                          />
+                          <ConnectionAction
+                            icon="trash-outline"
+                            label="Remove"
+                            danger
+                            disabled={busy}
+                            onPress={() =>
+                              confirmMutation(
+                                "Remove Telegram bot",
+                                "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
+                                "Remove",
+                                () => wsClient.removeTelegramConnection(serverId),
+                              )
+                            }
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                </View>
+              ) : showToken ? (
                 <View style={styles.telegramTokenForm}>
-                  <TextInput
-                    style={styles.input}
-                    value={token}
-                    onChangeText={setToken}
-                    placeholder="BotFather token"
-                    placeholderTextColor={colors.textSecondary}
-                    selectionColor={colors.selectionBackground}
-                    cursorColor={colors.accentStrong}
-                    accessibilityLabel="Telegram bot token"
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    editable={!busy}
-                  />
+                  <View style={styles.telegramTokenInputRow}>
+                    <TextInput
+                      style={[styles.input, styles.telegramTokenInput]}
+                      value={token}
+                      onChangeText={setToken}
+                      placeholder="BotFather token"
+                      placeholderTextColor={colors.textSecondary}
+                      selectionColor={colors.selectionBackground}
+                      cursorColor={colors.accentStrong}
+                      accessibilityLabel="Telegram bot token"
+                      secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!busy}
+                    />
+                    <AnimatedPressable
+                      style={[
+                        styles.telegramPasteButton,
+                        busy && styles.connectionActionDisabled,
+                      ]}
+                      preset="press"
+                      scale={0.95}
+                      accessibilityRole="button"
+                      accessibilityLabel="Paste Telegram bot token from clipboard"
+                      accessibilityState={{ disabled: busy }}
+                      disabled={busy}
+                      onPress={() => void pasteToken()}
+                    >
+                      <Ionicons
+                        name="clipboard-outline"
+                        size={16}
+                        color={colors.textPrimary}
+                      />
+                      <Text style={styles.telegramPasteButtonText}>Paste</Text>
+                    </AnimatedPressable>
+                  </View>
                   <View style={styles.telegramActions}>
                     <ConnectionAction
                       icon="close"
@@ -1525,24 +1744,15 @@ function TelegramConnectionRow({
                     />
                     <ConnectionAction
                       icon="checkmark"
-                      label={hasConfiguredBot ? "Rotate" : "Configure"}
+                      label="Rotate"
                       primary
                       disabled={busy || token.trim() === ""}
                       onPress={() => void configure()}
                     />
                   </View>
                 </View>
-              ) : (
+              ) : hasBoundOwner ? (
                 <View style={styles.telegramActions}>
-                  {!status || (!hasConfiguredBot && status.state === "disabled") ? (
-                    <ConnectionAction
-                      icon="add"
-                      label="Set Up"
-                      primary
-                      disabled={busy || loading}
-                      onPress={() => setShowToken(true)}
-                    />
-                  ) : null}
                   {status?.state === "disabled" && hasConfiguredBot ? (
                     <ConnectionAction
                       icon="power"
@@ -1554,17 +1764,6 @@ function TelegramConnectionRow({
                           wsClient.enableTelegramConnection(serverId),
                         )
                       }
-                    />
-                  ) : null}
-                  {status?.state === "setup_pending" ? (
-                    <ConnectionAction
-                      icon="open-outline"
-                      label={
-                        status.binding_pending ? "Open Telegram" : "Bind Owner"
-                      }
-                      primary
-                      disabled={busy}
-                      onPress={() => void beginBinding()}
                     />
                   ) : null}
                   {status?.enabled ? (
@@ -1623,12 +1822,6 @@ function TelegramConnectionRow({
                     />
                   ) : null}
                 </View>
-              )}
-
-              {status ? (
-                <Text style={styles.telegramPrivacy}>
-                  Bot chats are Telegram cloud chats. The token remains on this daemon.
-                </Text>
               ) : null}
             </>
           )}
@@ -1641,6 +1834,7 @@ function TelegramConnectionRow({
 function ConnectionAction({
   icon,
   label,
+  accessibilityLabel = label,
   primary = false,
   danger = false,
   disabled = false,
@@ -1648,6 +1842,7 @@ function ConnectionAction({
 }: {
   icon: React.ComponentProps<typeof Ionicons>["name"];
   label: string;
+  accessibilityLabel?: string;
   primary?: boolean;
   danger?: boolean;
   disabled?: boolean;
@@ -1672,7 +1867,7 @@ function ConnectionAction({
       preset="press"
       scale={0.95}
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled, busy: disabled }}
       disabled={disabled}
       onPress={onPress}
@@ -1911,6 +2106,49 @@ function createStyles(theme: ResolvedZenTheme) {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.borderSubtle,
     },
+    telegramSetup: {
+      marginTop: 4,
+    },
+    telegramSetupRow: {
+      flexDirection: "row",
+      gap: 10,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    telegramSetupRowLast: {
+      borderBottomWidth: 0,
+      paddingBottom: 0,
+    },
+    telegramStepMarker: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surfacePressed,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderStrong,
+    },
+    telegramStepMarkerComplete: {
+      backgroundColor: colors.accentStrong,
+      borderColor: colors.accentStrong,
+    },
+    telegramStepNumber: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textSecondary,
+    },
+    telegramStepContent: {
+      flex: 1,
+      minWidth: 0,
+    },
+    telegramStepTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      minHeight: 24,
+      color: colors.textPrimary,
+    },
     telegramDetail: {
       ...UiTextMetrics,
       ...TypeScale.compact,
@@ -1946,6 +2184,33 @@ function createStyles(theme: ResolvedZenTheme) {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.borderSubtle,
     },
+    telegramTokenInputRow: {
+      flexDirection: "row",
+      alignItems: "stretch",
+      gap: 8,
+      marginTop: 10,
+    },
+    telegramTokenInput: {
+      flex: 1,
+      minWidth: 0,
+    },
+    telegramPasteButton: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      paddingHorizontal: 12,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfacePressed,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    telegramPasteButtonText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textPrimary,
+    },
     telegramActions: {
       marginTop: 12,
       flexDirection: "row",
@@ -1980,12 +2245,6 @@ function createStyles(theme: ResolvedZenTheme) {
     connectionActionText: {
       ...UiTextMetrics,
       ...TypeScale.label,
-    },
-    telegramPrivacy: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      marginTop: 12,
-      color: colors.textTertiary,
     },
     serverHeaderButton: {
       minHeight: 72,

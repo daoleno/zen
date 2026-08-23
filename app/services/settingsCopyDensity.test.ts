@@ -16,6 +16,9 @@ describe("Settings copy density", () => {
       "Mobile-native agent control plane",
       '"Current daemon"',
       "Scan the QR, or choose an image from this device.",
+      "Advanced / Self-managed: run zen pair",
+      "Bot chats are Telegram cloud chats. The token remains on this daemon.",
+      "Create a bot with BotFather, then enter its token once.",
     ]) {
       expect(source).not.toContain(redundantCopy);
     }
@@ -27,7 +30,6 @@ describe("Settings copy density", () => {
       "Allow camera access to scan a zen pairing QR code.",
       "Scan the one-time QR from zen pair, or paste its pairing link.",
       "Full-origin endpoint from LAN, Tailscale, Cloudflare",
-      "Bot chats are Telegram cloud chats. The token remains on this daemon.",
       "Telegram cloud messages are not deleted.",
       'accessibilityRole="radiogroup"',
       'accessibilityRole="radio"',

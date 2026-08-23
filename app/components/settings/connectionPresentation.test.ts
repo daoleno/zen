@@ -63,6 +63,9 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain("openPairScanner(current)");
     expect(settingsSource).toContain("await importServer(data || \"\")");
     expect(settingsSource).toContain("await handleImportDraft()");
+    expect(settingsSource).not.toContain(
+      "Advanced / Self-managed: run zen pair",
+    );
   });
 
   test("Telegram never participates in current-server selection", () => {
@@ -89,22 +92,70 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain("setStatus(null)");
   });
 
-  test("token handling and external privacy boundaries remain explicit", () => {
+  test("Telegram setup is ordered, action-led, and uses official links", () => {
+    const telegram = sourceBlock(
+      "function TelegramConnectionRow",
+      "function ConnectionAction",
+    );
+    expect(settingsSource).toContain(
+      'const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather"',
+    );
+    expect(telegram).toContain("Linking.openURL(TELEGRAM_BOTFATHER_URL)");
+    expect(telegram).toContain('label="Open BotFather"');
+    expect(telegram).toContain(
+      'accessibilityLabel="Open official BotFather chat in Telegram"',
+    );
+    expect(telegram).toContain("Create or select a bot");
+    expect(telegram).toContain("Verify the bot token");
+    expect(telegram).toContain("Connect your bot");
+    expect(telegram).toContain('label="Connect Telegram"');
+    expect(telegram).toContain('icon="open-outline"');
+    expect(telegram).not.toContain("Bind Owner");
+    expect(telegram).not.toContain("Open Telegram");
+  });
+
+  test("token input is secure, explicitly pasted, and cleared on every exit", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
       "function ConnectionAction",
     );
     expect(telegram).toContain("secureTextEntry");
-    expect(telegram).toContain('setToken("")');
+    expect(telegram).toContain("await Clipboard.getStringAsync()");
     expect(telegram).toContain(
-      "Bot chats are Telegram cloud chats. The token remains on this daemon.",
+      'accessibilityLabel="Paste Telegram bot token from clipboard"',
     );
+    expect(telegram).toContain('setToken("")');
+    expect(telegram.match(/setToken\(""\)/g)?.length).toBeGreaterThanOrEqual(5);
     expect(telegram).toContain(
       "Telegram cloud messages are not deleted.",
     );
     expect(telegram).toContain(
       "Remove the verified Telegram owner and require a new binding?",
     );
+  });
+
+  test("owner binding stays automatic and contains no manual identity fields", () => {
+    const telegram = sourceBlock(
+      "function TelegramConnectionRow",
+      "function ConnectionAction",
+    );
+    expect(telegram).toContain("wsClient.beginTelegramBinding(serverId)");
+    expect(telegram).toContain("Linking.openURL(challenge.url)");
+    expect(telegram).toContain(
+      "wsClient.getTelegramConnectionStatus(serverId)",
+    );
+    expect(telegram).not.toMatch(/user id|chat id/i);
+    expect(telegram).not.toMatch(/manual.*(owner|telegram)/i);
+  });
+
+  test("happy-path setup omits internal architecture and retention prose", () => {
+    for (const internalCopy of [
+      "Bot chats are Telegram cloud chats",
+      "The token remains on this daemon",
+      "owner not bound",
+    ]) {
+      expect(settingsSource).not.toContain(internalCopy);
+    }
   });
 
   test("connection controls expose roles, state, and disabled state accessibly", () => {
@@ -115,6 +166,9 @@ describe("Settings connection information architecture", () => {
       "accessibilityState={{ disabled, busy: disabled }}",
     );
     expect(settingsSource).toContain('accessibilityLabel="Telegram bot token"');
+    expect(settingsSource).toContain(
+      'accessibilityLabel="Connect Telegram using the one-time binding link"',
+    );
   });
 
   test("the rejected taxonomy is absent from Settings presentation", () => {
