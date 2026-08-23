@@ -11,6 +11,10 @@ const pluginsPresentation = readFileSync(
   join(import.meta.dir, "../components/plugins/PluginsPresentation.tsx"),
   "utf8",
 );
+const skillFileBrowser = readFileSync(
+  join(import.meta.dir, "../components/skills/SkillFileBrowser.tsx"),
+  "utf8",
+);
 const agentLogoSet = readFileSync(
   join(import.meta.dir, "../components/agents/AgentLogoSet.tsx"),
   "utf8",
@@ -78,8 +82,9 @@ describe("local-only Skills surface contract", () => {
     expect(screen).toContain("rootPath: skill.rootPath");
     expect(screen).toContain("canonicalPath: skill.canonicalPath");
     expect(screen).toContain("allowedRoot: skill.allowedRoot");
-    expect(presentation).toContain("buildSkillFileTree");
-    expect(presentation).toContain("Invalid JSON");
+    expect(skillFileBrowser).toContain("buildSkillFileTree");
+    expect(presentation).toContain("<SkillFileBrowser");
+    expect(skillFileBrowser).toContain("Invalid JSON");
     expect(presentation).toContain('title="Available to"');
     expect(presentation).toContain("DeleteCopySheet");
     expect(presentation).toContain(
@@ -100,7 +105,7 @@ describe("local-only Skills surface contract", () => {
 
     const copyRowSource = presentation.slice(
       presentation.indexOf("function CopyRow"),
-      presentation.indexOf("function FilePreview"),
+      presentation.indexOf("function Action"),
     );
     expect(copyRowSource).toContain("styles.copyContent");
     expect(copyRowSource).toContain("styles.copyLabel");
@@ -197,6 +202,20 @@ describe("local-only Skills surface contract", () => {
       "Binary file",
       "preview.notice",
     ])
-      expect(screen + presentation).toContain(copy);
+      expect(screen + presentation + skillFileBrowser).toContain(copy);
+  });
+  test("Plugin-provided Skills are presented once, inside their Plugin", () => {
+    // The Skills list excludes copies whose owning Plugin is installed; the
+    // Plugin inspector renders them as one expandable directory.
+    expect(screen).toContain("skillsOutsidePlugins");
+    expect(pluginsPresentation).toContain("pluginSkillEntries");
+    expect(pluginsPresentation).toContain("<PluginSkillsDirectory");
+    expect(presentation).toContain("onViewSkillPlugin");
+  });
+  test("protected Plugins never fake an uninstall", () => {
+    expect(pluginsPresentation).toContain("uninstallable.length === 0");
+    expect(pluginsPresentation).toContain("can never report success");
+    expect(screen).toContain("evaluatePluginUninstall(copy)");
+    expect(screen).toContain("copies remain");
   });
 });

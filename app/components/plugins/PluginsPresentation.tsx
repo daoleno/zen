@@ -17,6 +17,8 @@ import type {
   PluginInventory,
 } from "../../services/pluginsManagement";
 import type {
+  InstalledSkill,
+  PackageDetail,
   ManagedSkillAgent,
   SkillsRequestState,
 } from "../../services/skillsManagement";
@@ -30,20 +32,34 @@ import {
   type PluginCapabilityFilter,
   type PluginFilters,
 } from "../../services/pluginsScreenModel";
+import {
+  pluginSkillEntries,
+} from "../../services/pluginSkillsDirectory";
 import { MANAGED_SKILL_AGENTS } from "../../services/skillsScreenModel";
 import { AgentLogoSet } from "../agents/AgentLogoSet";
 import { ExtensionListRow } from "../extensions/ExtensionListRow";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
+import { PluginSkillsDirectory } from "./PluginSkillsDirectory";
 
 interface PluginsPresentationProps {
   state: SkillsRequestState<PluginInventory>;
   plugins: LogicalPlugin[];
+  /** Raw Skills inventory copies used to resolve Plugin-provided Skills. */
+  skills: InstalledSkill[];
   preparingMutation: string;
   currentServerAvailable: boolean;
   wide: boolean;
+  /** Requested inspector focus coming from the Skill inspector's jump action. */
+  focusedPluginKey: string | null;
+  onFocusPluginConsumed(): void;
   onOpenSettings(): void;
   onRefresh(): void;
   onUninstall(copy: InstalledPluginCopy): void;
+  /** Fetches read-only detail for one exact Skill copy. */
+  onInspectSkillCopy(
+    copy: InstalledSkill,
+    path?: string,
+  ): Promise<PackageDetail>;
 }
 
 const DEFAULT_FILTERS: PluginFilters = { agents: [], capability: "all" };
@@ -90,15 +106,31 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
     setSelectedKey(null);
     setSelectedCopyId(null);
   };
+  // One-shot handoff from the Skill inspector: open the owning Plugin, then
+  // consume the request so a later server switch cannot reopen it.
+  useEffect(() => {
+    if (!props.focusedPluginKey) return;
+    const focused = props.plugins.find(
+      (plugin) => plugin.key === props.focusedPluginKey,
+    );
+    props.onFocusPluginConsumed();
+    if (focused) openPlugin(focused);
+  }, [props.focusedPluginKey, props.plugins, props.onFocusPluginConsumed]);
   const chooseUninstall = (plugin: LogicalPlugin) => {
     const uninstallable = plugin.copies.filter(
       (copy) => copy.capability.canUninstall,
     );
-    if (plugin.copies.length > 1) {
+    // Protected Plugin (for example Codex-managed copies): no uninstall is
+    // attempted; the inspector explains why instead of faking success.
+    if (uninstallable.length === 0) {
+      openPlugin(plugin);
+      return;
+    }
+    if (uninstallable.length > 1) {
       setDeletePickerKey(plugin.key);
       return;
     }
-    if (uninstallable[0]) props.onUninstall(uninstallable[0]);
+    props.onUninstall(uninstallable[0]!);
   };
 
   const list = (
@@ -186,11 +218,13 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
           {selected ? (
             <PluginInspector
               plugin={selected}
+              skills={props.skills}
               selectedCopyId={selectedCopyId}
               preparingMutation={props.preparingMutation}
               onSelectCopy={setSelectedCopyId}
               onClose={closeInspector}
               onUninstall={props.onUninstall}
+              onInspectSkillCopy={props.onInspectSkillCopy}
             />
           ) : (
             <PluginState
@@ -212,11 +246,13 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
           {selected ? (
             <PluginInspector
               plugin={selected}
+              skills={props.skills}
               selectedCopyId={selectedCopyId}
               preparingMutation={props.preparingMutation}
               onSelectCopy={setSelectedCopyId}
               onClose={closeInspector}
               onUninstall={props.onUninstall}
+              onInspectSkillCopy={props.onInspectSkillCopy}
             />
           ) : null}
         </BottomSheetFrame>
@@ -364,24 +400,38 @@ function PluginRow({
 
 function PluginInspector({
   plugin,
+  skills,
   selectedCopyId,
   preparingMutation,
   onSelectCopy,
   onClose,
   onUninstall,
+  onInspectSkillCopy,
 }: {
   plugin: LogicalPlugin;
+  skills: InstalledSkill[];
   selectedCopyId: string | null;
   preparingMutation: string;
   onSelectCopy(copyId: string): void;
   onClose(): void;
   onUninstall(copy: InstalledPluginCopy): void;
+  onInspectSkillCopy(
+    copy: InstalledSkill,
+    path?: string,
+  ): Promise<PackageDetail>;
 }) {
   const colors = useAppColors();
   const copy =
     plugin.copies.find((candidate) => candidate.copyId === selectedCopyId) ??
     plugin.copies[0]!;
   const uninstalling = preparingMutation === `uninstall:${copy.copyId}`;
+  const skillEntries = useMemo(
+    () => pluginSkillEntries(plugin, skills),
+    [plugin, skills],
+  );
+  const otherComponents = copy.components.filter(
+    (component) => component.kind !== "skill",
+  );
   return (
     <View style={styles.inspector}>
       <View
@@ -416,9 +466,21 @@ function PluginInspector({
               `${plugin.displayName} is provided by ${pluginCopyLabel(copy)}.`}
           </Text>
         </PluginDetailSection>
-        <PluginDetailSection title="Components">
-          {copy.components.length ? (
-            copy.components.map((component) => (
+        {skillEntries.length ? (
+          <PluginDetailSection title={`Skills (${skillEntries.length})`}>
+            <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+              Provided and managed by this Plugin. Expand a Skill to read its
+              files.
+            </Text>
+            <PluginSkillsDirectory
+              entries={skillEntries}
+              onInspectCopy={onInspectSkillCopy}
+            />
+          </PluginDetailSection>
+        ) : null}
+        {otherComponents.length ? (
+          <PluginDetailSection title="Components">
+            {otherComponents.map((component) => (
               <View
                 key={`${component.kind}:${component.path || component.name}`}
                 style={styles.componentRow}
@@ -442,13 +504,9 @@ function PluginInspector({
                   ) : null}
                 </View>
               </View>
-            ))
-          ) : (
-            <Text style={{ color: colors.textTertiary }}>
-              This Plugin exposes no safely inspectable components.
-            </Text>
-          )}
-        </PluginDetailSection>
+            ))}
+          </PluginDetailSection>
+        ) : null}
         <PluginDetailSection title="Available to">
           <AgentLogoSet agents={copy.agents} showLabels size={20} />
         </PluginDetailSection>
@@ -506,9 +564,27 @@ function PluginInspector({
               </Pressable>
             </>
           ) : (
-            <Text style={{ color: colors.textTertiary }}>
-              {pluginReadonlyReason(copy)}
-            </Text>
+            <>
+              <View style={styles.protectedRow}>
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={15}
+                  color={colors.textTertiary}
+                />
+                <Text
+                  style={[styles.metadata, { color: colors.textSecondary }]}
+                >
+                  Protected
+                </Text>
+              </View>
+              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+                {pluginReadonlyReason(copy)}
+              </Text>
+              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+                Zen does not attempt to remove this copy, so an uninstall here
+                can never report success for it.
+              </Text>
+            </>
           )}
         </View>
       </ScrollView>
@@ -1023,6 +1099,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     gap: 10,
   },
+  protectedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   uninstallButton: {
     minHeight: 44,
     borderWidth: 1,

@@ -1,8 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,9 +13,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
-import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import type {
   InstalledPluginCopy,
@@ -37,24 +34,25 @@ import {
   skillsRequestData,
 } from "../../services/skillsManagement";
 import {
-  buildSkillFileTree,
-  defaultSkillFile,
   filterLogicalSkills,
   MANAGED_SKILL_AGENTS,
   skillCopyLocation,
-  skillRenderer,
   type LogicalSkill,
   type SkillFilters,
   type SkillScopeFilter,
   type SkillStatusFilter,
-  type SkillTreeNode,
 } from "../../services/skillsScreenModel";
 import type { SkillsSurfaceSection } from "../../services/skillsSurfaceModel";
 import { skillRowSupportsDelete } from "../../services/skillsSurfaceModel";
+import {
+  resolveSkillCopyPluginOwner,
+  skillPluginStatusReason,
+} from "../../services/skillsPluginOwnership";
 import { PLUGINS_SKILLS_SCREEN_PADDING } from "../../services/pluginsSkillsSurfaceModel";
 import { AgentLogoSet } from "../agents/AgentLogoSet";
 import { ExtensionListRow } from "../extensions/ExtensionListRow";
 import { PluginsPresentation } from "../plugins/PluginsPresentation";
+import { SkillFileBrowser } from "./SkillFileBrowser";
 
 export interface SurfaceMutationNotice {
   kind: "success" | "error";
@@ -67,10 +65,14 @@ export interface SkillsPresentationProps {
   logicalSkills: LogicalSkill[];
   pluginsState: SkillsRequestState<PluginInventory>;
   logicalPlugins: LogicalPlugin[];
+  /** Raw inventory copies used to resolve Plugin-provided Skills. */
+  skills: InstalledSkill[];
   mutationOperations: readonly SkillMutationOperation[];
   preparingMutation: string;
   mutationNotice: SurfaceMutationNotice | null;
   currentServerAvailable: boolean;
+  /** Copies hidden from the Skills list because their Plugin owns them. */
+  pluginOwnedSkillCount: number;
   inspectedName: string | null;
   inspectedCopyId: string | null;
   inspectState: SkillsRequestState<PackageDetail>;
@@ -79,10 +81,17 @@ export interface SkillsPresentationProps {
   onRefreshSkills(): void;
   onRetryPlugins(): void;
   onInspectSkill(skill: InstalledSkill, path?: string): void;
+  /** Inspects one exact Skill copy for inline Plugin detail rendering. */
+  onInspectSkillCopy(copy: InstalledSkill, path?: string): Promise<PackageDetail>;
   onDismissInspector(): void;
   onDeleteSkill(skill: InstalledSkill): void;
   onUninstallPlugin(copy: InstalledPluginCopy): void;
   onDismissNotice(): void;
+  /** Jumps to the Plugins section with the owning Plugin focused. */
+  onViewSkillPlugin(pluginKey: string): void;
+  /** Plugin key requested from the Skill inspector; consumed once opened. */
+  focusedPluginKey: string | null;
+  onFocusPluginConsumed(): void;
 }
 
 const WIDE_INSPECTOR = 920;
@@ -227,6 +236,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             {...props}
             rows={visible}
             inventory={inventory}
+            filtersActive={Boolean(query.trim()) || activeFilterCount > 0}
             onChooseCopy={(skill) => setDeletePickerKey(skill.key)}
           />
           <FilterSheet
@@ -240,12 +250,16 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
         <PluginsPresentation
           state={props.pluginsState}
           plugins={props.logicalPlugins}
+          skills={props.skills}
           preparingMutation={props.preparingMutation}
           currentServerAvailable={props.currentServerAvailable}
           wide={wide}
+          focusedPluginKey={props.focusedPluginKey}
+          onFocusPluginConsumed={props.onFocusPluginConsumed}
           onOpenSettings={props.onOpenSettings}
           onRefresh={props.onRetryPlugins}
           onUninstall={props.onUninstallPlugin}
+          onInspectSkillCopy={props.onInspectSkillCopy}
         />
       )}
     </SafeAreaView>
@@ -576,6 +590,7 @@ function LocalSkillsList(
   props: SkillsPresentationProps & {
     rows: LogicalSkill[];
     inventory?: SkillsInventory;
+    filtersActive: boolean;
     onChooseCopy(skill: LogicalSkill): void;
   },
 ) {
@@ -620,6 +635,18 @@ function LocalSkillsList(
         icon="folder-open-outline"
         title="No local Skills"
         detail="No Skill packages were found in supported Agent locations."
+      />
+    );
+  if (
+    !props.filtersActive &&
+    props.rows.length === 0 &&
+    props.pluginOwnedSkillCount > 0
+  )
+    return (
+      <State
+        icon="extension-puzzle-outline"
+        title="No independently managed Skills"
+        detail={`Every local Skill is provided by an installed Plugin. Open the Plugins tab to inspect ${props.pluginOwnedSkillCount === 1 ? "it" : "them"}.`}
       />
     );
   return (
@@ -817,33 +844,6 @@ function Inspector(
   const copy = props.logical?.copies.find(
     (item) => item.id === props.inspectedCopyId,
   );
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedPath, setSelectedPath] = useState<string>();
-  const previousCopy = useRef<string | null>(null);
-  const tree = useMemo(
-    () => buildSkillFileTree(detail?.files ?? []),
-    [detail?.files],
-  );
-  useEffect(() => {
-    if (!detail || !copy) return;
-    const selected =
-      detail.preview?.path ?? defaultSkillFile(detail.files ?? []);
-    setSelectedPath(selected);
-    const changed = previousCopy.current !== copy.id;
-    previousCopy.current = copy.id;
-    if (changed)
-      setExpanded(
-        new Set(
-          selected
-            ?.split("/")
-            .slice(0, -1)
-            .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
-        ),
-      );
-  }, [copy?.id, detail?.skillName]);
-  useEffect(() => {
-    if (detail?.preview?.path) setSelectedPath(detail.preview.path);
-  }, [detail?.preview?.path]);
   if (!detail && props.inspectState.status === "loading")
     return (
       <State
@@ -862,15 +862,15 @@ function Inspector(
     );
   if (!detail || !copy || !props.logical) return null;
   const location = skillCopyLocation(copy);
-  const preview = detail.preview;
-  const renderer = preview
-    ? skillRenderer(preview.kind, preview.content)
-    : null;
   const canDelete =
     props.mutationOperations.includes("delete") &&
     copy.capability.canDelete &&
     detail.capability.canDelete;
   const deleting = props.preparingMutation === `delete:${copy.id}`;
+  const pluginOwner = resolveSkillCopyPluginOwner(
+    { ...copy, plugin: detail.plugin ?? copy.plugin },
+    props.logicalPlugins,
+  );
   return (
     <View style={styles.inspector}>
       <View
@@ -918,42 +918,15 @@ function Inspector(
           ))}
         </DetailSection>
         <DetailSection title="Files">
-          {tree.length ? (
-            tree.map((node) => (
-              <TreeNode
-                key={node.path}
-                node={node}
-                depth={0}
-                expanded={expanded}
-                selected={selectedPath}
-                onToggle={(path) =>
-                  setExpanded((current) => {
-                    const next = new Set(current);
-                    next.has(path) ? next.delete(path) : next.add(path);
-                    return next;
-                  })
-                }
-                onSelect={(path) => {
-                  setSelectedPath(path);
-                  props.onInspectSkill(copy, path);
-                }}
-              />
-            ))
-          ) : (
-            <Text style={{ color: colors.textTertiary }}>
-              This copy contains no readable files.
-            </Text>
-          )}
-          <FilePreview
+          <SkillFileBrowser
             detail={detail}
-            selectedPath={selectedPath}
-            renderer={renderer}
             loading={props.inspectState.status === "loading"}
             error={
               props.inspectState.status === "error"
                 ? props.inspectState.error
                 : undefined
             }
+            onSelectFile={(path) => props.onInspectSkill(copy, path)}
           />
         </DetailSection>
         <DetailSection title="Available to">
@@ -986,13 +959,33 @@ function Inspector(
               onPress={() => props.onDeleteSkill(copy)}
             />
           </View>
-        ) : detail.capability.reason || copy.capability.reason ? (
+        ) : (
           <View style={styles.lifecycleSection}>
-            <Text style={{ color: colors.textTertiary }}>
-              {detail.capability.reason || copy.capability.reason}
+            <View style={styles.summaryRow}>
+              <Ionicons
+                name="lock-closed-outline"
+                size={15}
+                color={colors.textTertiary}
+              />
+              <Text style={[styles.metadata, { color: colors.textSecondary }]}>
+                Protected
+              </Text>
+            </View>
+            <Text style={[styles.metadata, { color: colors.textTertiary }]}>
+              {skillPluginStatusReason(
+                { ...copy, plugin: detail.plugin ?? copy.plugin },
+                pluginOwner,
+              )}
             </Text>
+            {pluginOwner ? (
+              <Action
+                label={`Open ${pluginOwner.displayName}`}
+                accessibilityLabel={`Open the ${pluginOwner.displayName} Plugin that provides this Skill`}
+                onPress={() => props.onViewSkillPlugin(pluginOwner.key)}
+              />
+            ) : null}
           </View>
-        ) : null}
+        )}
       </ScrollView>
     </View>
   );
@@ -1085,239 +1078,25 @@ function CopyRow({
   );
 }
 
-function FilePreview({
-  detail,
-  selectedPath,
-  renderer,
-  loading,
-  error,
-}: {
-  detail: PackageDetail;
-  selectedPath?: string;
-  renderer: ReturnType<typeof skillRenderer> | null;
-  loading: boolean;
-  error?: string;
-}) {
-  const colors = useAppColors();
-  const preview = detail.preview;
-  const markdownStyle = useMemo(
-    () => ({
-      paragraph: {
-        color: colors.textSecondary,
-        fontFamily: Typography.uiFont,
-        fontSize: 15,
-        lineHeight: 23,
-      },
-      h1: {
-        color: colors.textPrimary,
-        fontFamily: Typography.uiFontMedium,
-        fontSize: 22,
-        lineHeight: 30,
-      },
-      h2: {
-        color: colors.textPrimary,
-        fontFamily: Typography.uiFontMedium,
-        fontSize: 19,
-        lineHeight: 27,
-      },
-      h3: {
-        color: colors.textPrimary,
-        fontFamily: Typography.uiFontMedium,
-        fontSize: 17,
-        lineHeight: 25,
-      },
-      h4: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
-      h5: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
-      h6: { color: colors.textPrimary, fontFamily: Typography.uiFontMedium },
-      list: {
-        color: colors.textSecondary,
-        bulletColor: colors.accent,
-        markerColor: colors.accent,
-      },
-      link: { color: colors.accent },
-      strong: {
-        color: colors.textPrimary,
-        fontFamily: Typography.uiFontMedium,
-        fontWeight: "normal" as const,
-      },
-      code: {
-        color: colors.textPrimary,
-        backgroundColor: colors.surfaceSubtle,
-        fontFamily: Typography.terminalFont,
-      },
-      codeBlock: {
-        color: colors.textSecondary,
-        backgroundColor: colors.surfaceSubtle,
-        borderColor: colors.borderSubtle,
-        fontFamily: Typography.terminalFont,
-      },
-    }),
-    [colors],
-  );
-  return (
-    <View style={[styles.preview, { borderTopColor: colors.borderSubtle }]}>
-      <Text style={[styles.fileTitle, { color: colors.textPrimary }]}>
-        {selectedPath || "No file selected"}
-      </Text>
-      {loading ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color={colors.accent} />
-          <Text style={{ color: colors.textSecondary }}>Loading file</Text>
-        </View>
-      ) : null}
-      {error ? (
-        <State icon="warning-outline" title="File unavailable" detail={error} />
-      ) : null}
-      {preview?.notice ? (
-        <Text style={[styles.previewNotice, { color: colors.warning }]}>
-          {preview.notice}
-        </Text>
-      ) : null}
-      {preview?.status === "binary" ? (
-        <State
-          icon="document-attach-outline"
-          title="Binary file"
-          detail={`${preview.mediaType} · ${preview.size} bytes. Content preview is unavailable.`}
-        />
-      ) : null}
-      {renderer === "markdown" ? (
-        <EnrichedMarkdownText
-          markdown={preview?.content ?? ""}
-          markdownStyle={markdownStyle}
-          selectable
-          onLinkPress={(event) =>
-            void openSafeMarkdownUrl(event.url, (url) => Linking.openURL(url))
-          }
-        />
-      ) : null}
-      {renderer === "json" ? (
-        <Code
-          content={JSON.stringify(
-            JSON.parse(preview?.content ?? "null"),
-            null,
-            2,
-          )}
-        />
-      ) : null}
-      {renderer === "invalid-json" ? (
-        <>
-          <Text style={[styles.previewNotice, { color: colors.warning }]}>
-            Invalid JSON; showing original text.
-          </Text>
-          <Code content={preview?.content ?? ""} />
-        </>
-      ) : null}
-      {renderer === "text" ? <Code content={preview?.content ?? ""} /> : null}
-    </View>
-  );
-}
-
-function TreeNode({
-  node,
-  depth,
-  expanded,
-  selected,
-  onToggle,
-  onSelect,
-}: {
-  node: SkillTreeNode;
-  depth: number;
-  expanded: Set<string>;
-  selected?: string;
-  onToggle(path: string): void;
-  onSelect(path: string): void;
-}) {
-  const colors = useAppColors();
-  const open = expanded.has(node.path);
-  return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={
-          node.kind === "directory"
-            ? { expanded: open }
-            : { selected: selected === node.path }
-        }
-        onPress={() =>
-          node.kind === "directory" ? onToggle(node.path) : onSelect(node.path)
-        }
-        style={[
-          styles.treeRow,
-          {
-            paddingLeft: 8 + depth * 16,
-            backgroundColor:
-              selected === node.path ? colors.accentSoft : "transparent",
-          },
-        ]}
-      >
-        <Ionicons
-          name={
-            node.kind === "directory"
-              ? open
-                ? "folder-open-outline"
-                : "folder-outline"
-              : node.file?.kind === "binary"
-                ? "document-attach-outline"
-                : "document-text-outline"
-          }
-          size={17}
-          color={
-            node.kind === "directory" ? colors.warning : colors.textTertiary
-          }
-        />
-        <Text
-          numberOfLines={1}
-          style={{
-            color:
-              selected === node.path ? colors.accent : colors.textSecondary,
-            flex: 1,
-          }}
-        >
-          {node.name}
-        </Text>
-      </Pressable>
-      {node.kind === "directory" && open
-        ? node.children.map((child) => (
-            <TreeNode
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              expanded={expanded}
-              selected={selected}
-              onToggle={onToggle}
-              onSelect={onSelect}
-            />
-          ))
-        : null}
-    </>
-  );
-}
-
-function Code({ content }: { content: string }) {
-  const colors = useAppColors();
-  return (
-    <ScrollView horizontal>
-      <Text selectable style={[styles.code, { color: colors.textSecondary }]}>
-        {content || "This file is empty."}
-      </Text>
-    </ScrollView>
-  );
-}
 function Action({
   label,
   destructive,
   disabled,
+  accessibilityLabel,
   onPress,
 }: {
   label: string;
   destructive?: boolean;
   disabled?: boolean;
+  accessibilityLabel?: string;
   onPress(): void;
 }) {
   const colors = useAppColors();
   return (
     <Pressable
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       style={[
         styles.action,
@@ -1532,38 +1311,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   statusLabel: { flexDirection: "row", alignItems: "center", gap: 6 },
-  treeRow: {
-    minHeight: 38,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingRight: 8,
-    borderRadius: 4,
-  },
-  preview: {
-    marginTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 12,
-    minHeight: 160,
-  },
-  fileTitle: {
-    ...TypeScale.compact,
-    fontFamily: Typography.uiFontMedium,
-    marginBottom: 7,
-  },
-  previewNotice: { ...TypeScale.compact, marginBottom: 8 },
-  loadingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 8,
-  },
-  code: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 13,
-    lineHeight: 20,
-    paddingVertical: 8,
-  },
   copyRow: {
     minHeight: 58,
     borderWidth: 1,

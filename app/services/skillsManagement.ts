@@ -126,6 +126,7 @@ export interface PackageDetail {
   allowedRoot: string;
   location: string;
   contentHash?: string;
+  plugin?: string;
   scope: SkillScope;
   agents: SkillAgent[];
   files?: PackageFile[];
@@ -369,6 +370,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     scope: raw.scope,
     agents: raw.agents,
     content_hash: raw.content_hash,
+    plugin: raw.plugin,
     risk: raw.risk,
     warnings: raw.warnings,
     capability: raw.capability,
@@ -403,6 +405,7 @@ export function normalizeSkillsInspectDetail(value: unknown): PackageDetail {
     allowedRoot: base.allowedRoot,
     location: base.location,
     contentHash: base.contentHash,
+    plugin: base.plugin,
     scope: base.scope,
     agents: base.agents,
     files: files.length ? files : undefined,

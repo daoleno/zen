@@ -37,6 +37,7 @@ import {
   SkillsAutomaticInventoryOwner,
   groupLogicalSkills,
 } from "../services/skillsScreenModel";
+import { skillsOutsidePlugins } from "../services/skillsPluginOwnership";
 import {
   createSkillsSurfaceState,
   reduceSkillsSurface,
@@ -69,6 +70,7 @@ export default function SkillsScreen() {
   const [preparingMutation, setPreparingMutation] = useState("");
   const [notice, setNotice] = useState<SurfaceMutationNotice | null>(null);
   const [focusGeneration, setFocusGeneration] = useState(0);
+  const [focusedPluginKey, setFocusedPluginKey] = useState<string | null>(null);
   const inventoryGeneration = useRef(0);
   const pluginsGeneration = useRef(0);
   const inspectGeneration = useRef(0);
@@ -109,6 +111,7 @@ export default function SkillsScreen() {
     setInspectedCopyId(null);
     setPreparingMutation("");
     setNotice(null);
+    setFocusedPluginKey(null);
   }, [serverId]);
   useEffect(() => {
     inventoryGeneration.current += 1;
@@ -187,9 +190,11 @@ export default function SkillsScreen() {
     }
   }, [connected, currentServer, projectCwd, serverId, skillsContextKey]);
 
-  const refreshPlugins = useCallback(async () => {
+  const refreshPlugins = useCallback(async (): Promise<
+    PluginInventory | undefined
+  > => {
     const requestServerId = serverId;
-    if (currentServerId.current !== requestServerId) return;
+    if (currentServerId.current !== requestServerId) return undefined;
     const generation = ++pluginsGeneration.current;
     setPluginsState((current) => beginSkillsRequest(current, generation));
     if (!serverId || !connected) {
@@ -201,7 +206,7 @@ export default function SkillsScreen() {
           false,
         ),
       );
-      return;
+      return undefined;
     }
     try {
       const response = await wsClient.getPluginsInventory(serverId, {
@@ -211,7 +216,7 @@ export default function SkillsScreen() {
         pluginsGeneration.current !== generation ||
         currentServerId.current !== requestServerId
       )
-        return;
+        return undefined;
       setPluginsState((current) =>
         completeSkillsRequest(
           current,
@@ -220,6 +225,7 @@ export default function SkillsScreen() {
           response.inventory.installed.length === 0,
         ),
       );
+      return response.inventory;
     } catch (error) {
       if (
         pluginsGeneration.current === generation &&
@@ -232,6 +238,7 @@ export default function SkillsScreen() {
             error instanceof Error ? error.message : "Failed to load Plugins.",
           ),
         );
+      return undefined;
     }
   }, [connected, serverId]);
 
@@ -244,13 +251,13 @@ export default function SkillsScreen() {
     )
       void refreshInventory();
   }, [focusGeneration, refreshInventory, skillsContextKey]);
+  // Plugin ownership must be known on the Skills tab too, so the Plugins
+  // inventory loads with the same focus/server cadence as Skills instead of
+  // waiting for the Plugins tab to be opened.
   useEffect(() => {
-    if (
-      surface.section === "plugins" &&
-      automaticPlugins.current.shouldRefresh(focusGeneration, serverId)
-    )
+    if (automaticPlugins.current.shouldRefresh(focusGeneration, serverId))
       void refreshPlugins();
-  }, [focusGeneration, refreshPlugins, serverId, surface.section]);
+  }, [focusGeneration, refreshPlugins, serverId]);
 
   const inspectSkill = useCallback(
     async (skill: InstalledSkill, path?: string) => {
@@ -320,6 +327,35 @@ export default function SkillsScreen() {
     setInspectedCopyId(null);
     setInspectState(createSkillsRequestState());
   }, []);
+
+  /**
+   * Read-only detail fetch for the Plugin inspector's Skills directory. It
+   * never touches the Skills tab inspector state; Plugin-owned copies are
+   * inspected in place inside their owning Plugin.
+   */
+  const pluginInspectGeneration = useRef(0);
+  const inspectSkillCopyDetail = useCallback(
+    async (copy: InstalledSkill, path?: string) => {
+      if (!serverId || !connected)
+        throw new Error(
+          "Connect the current server to inspect this Skill.",
+        );
+      const response = await wsClient.getSkillsInspect(serverId, {
+        skillName: copy.name,
+        skillId: copy.id,
+        path,
+        generation: ++pluginInspectGeneration.current,
+        cwd: projectCwd || undefined,
+      });
+      if (
+        response.detail.copyId !== copy.id ||
+        response.detail.skillName !== copy.name
+      )
+        throw new Error("The selected Skill copy changed while it was loading.");
+      return response.detail;
+    },
+    [connected, projectCwd, serverId],
+  );
 
   const runSkillDelete = useCallback(
     async (skill: InstalledSkill) => {
@@ -393,7 +429,12 @@ export default function SkillsScreen() {
   const runPluginUninstall = useCallback(
     async (copy: InstalledPluginCopy) => {
       if (!serverId || !connected || preparingMutation) return;
-      if (!evaluatePluginUninstall(copy).supported) return;
+      const evaluation = evaluatePluginUninstall(copy);
+      if (!evaluation.supported) {
+        // The daemon reports this copy as protected; never pretend to remove it.
+        setNotice({ kind: "error", message: evaluation.reason });
+        return;
+      }
       const requestServerId = serverId;
       if (currentServerId.current !== requestServerId) return;
       const owner = ++mutationOwner.current;
@@ -411,13 +452,28 @@ export default function SkillsScreen() {
           return;
         const result = await wsClient.executePluginMutation(serverId, input);
         if (currentServerId.current !== requestServerId) return;
+        if (!result.execution.success) {
+          setNotice({
+            kind: "error",
+            message:
+              result.execution.output ||
+              "The Plugin could not be uninstalled.",
+          });
+          return;
+        }
+        // Report what actually remains instead of implying the whole Plugin
+        // vanished: other copies (including protected ones) may still exist.
+        const refreshed = await refreshPlugins();
+        if (currentServerId.current !== requestServerId) return;
+        const remaining = (refreshed?.installed ?? []).filter(
+          (candidate) => candidate.name === copy.name,
+        ).length;
         setNotice({
-          kind: result.execution.success ? "success" : "error",
-          message: result.execution.success
-            ? `Uninstalled ${command.displayName || command.name}.`
-            : result.execution.output || "The Plugin could not be uninstalled.",
+          kind: "success",
+          message: remaining
+            ? `Uninstalled the ${command.displayName || command.name} copy from ${copy.location}. ${remaining} ${remaining === 1 ? "copy remains" : "copies remain"}.`
+            : `Uninstalled ${command.displayName || command.name}.`,
         });
-        if (result.execution.success) await refreshPlugins();
       } catch (error) {
         if (currentServerId.current === requestServerId)
           setNotice({
@@ -435,9 +491,23 @@ export default function SkillsScreen() {
   );
 
   const inventory = skillsRequestData(inventoryState);
-  const logicalSkills = groupLogicalSkills(inventory?.skills ?? []);
   const plugins = skillsRequestData(pluginsState);
   const logicalPlugins = groupLogicalPlugins(plugins?.installed ?? []);
+  // Plugin-owned copies are presented once, inside their owning Plugin's
+  // expandable Skills directory. Exclusion waits for a completed Plugins read
+  // so ownership is never guessed from a partially loaded inventory.
+  const pluginsResolved =
+    pluginsState.status === "ready" || pluginsState.status === "empty";
+  const listableSkills = useMemo(
+    () =>
+      pluginsResolved
+        ? skillsOutsidePlugins(inventory?.skills ?? [], logicalPlugins)
+        : inventory?.skills ?? [],
+    [inventory?.skills, logicalPlugins, pluginsResolved],
+  );
+  const pluginOwnedSkillCount =
+    (inventory?.skills.length ?? 0) - listableSkills.length;
+  const logicalSkills = groupLogicalSkills(listableSkills);
   return (
     <SkillsPresentation
       section={surface.section}
@@ -445,6 +515,7 @@ export default function SkillsScreen() {
       logicalSkills={logicalSkills}
       pluginsState={pluginsState}
       logicalPlugins={logicalPlugins}
+      skills={inventory?.skills ?? []}
       mutationOperations={inventory?.mutationOperations ?? []}
       preparingMutation={preparingMutation}
       mutationNotice={notice}
@@ -452,6 +523,7 @@ export default function SkillsScreen() {
       inspectedName={inspectedName}
       inspectedCopyId={inspectedCopyId}
       inspectState={inspectState}
+      pluginOwnedSkillCount={pluginOwnedSkillCount}
       onSelectSection={(section: SkillsSurfaceSection) =>
         setSurface((current) =>
           reduceSkillsSurface(current, { type: "select_section", section }),
@@ -461,12 +533,24 @@ export default function SkillsScreen() {
       onRefreshSkills={() => void refreshInventory()}
       onRetryPlugins={() => void refreshPlugins()}
       onInspectSkill={(skill, path) => void inspectSkill(skill, path)}
+      onInspectSkillCopy={inspectSkillCopyDetail}
       onDismissInspector={dismissInspector}
       onDeleteSkill={(skill) => void runSkillDelete(skill)}
       onUninstallPlugin={(copy: InstalledPluginCopy) =>
         void runPluginUninstall(copy)
       }
       onDismissNotice={() => setNotice(null)}
+      onViewSkillPlugin={(pluginKey) => {
+        setFocusedPluginKey(pluginKey);
+        setSurface((current) =>
+          reduceSkillsSurface(current, {
+            type: "select_section",
+            section: "plugins",
+          }),
+        );
+      }}
+      focusedPluginKey={focusedPluginKey}
+      onFocusPluginConsumed={() => setFocusedPluginKey(null)}
     />
   );
 }

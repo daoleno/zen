@@ -10,6 +10,10 @@ const skillsSource = readFileSync(
   join(import.meta.dir, "../skills/SkillsPresentation.tsx"),
   "utf8",
 );
+const skillFileBrowserSource = readFileSync(
+  join(import.meta.dir, "../skills/SkillFileBrowser.tsx"),
+  "utf8",
+);
 const settingsSource = readFileSync(
   join(import.meta.dir, "../../app/settings.tsx"),
   "utf8",
@@ -60,8 +64,12 @@ describe("navigation and Skills copy density", () => {
   test("inspector uses one content model for wide panel and mobile sheet", () => {
     expect(skillsSource).toContain("const WIDE_INSPECTOR = 920");
     expect(skillsSource).toContain("<BottomSheetFrame");
-    expect(skillsSource).toContain("function TreeNode");
-    expect(skillsSource).toContain("function Code");
+    // The file tree and preview live in one shared browser so the Skills
+    // inspector and Plugin inspector can never drift apart.
+    expect(skillsSource).toContain("<SkillFileBrowser");
+    expect(skillFileBrowserSource).toContain("function TreeNode");
+    expect(skillFileBrowserSource).toContain("function Code");
+    expect(skillFileBrowserSource).toContain("buildSkillFileTree");
   });
   test("controls remain stable touch targets and text wraps", () => {
     expect(skillsSource).toContain('flexWrap: "wrap"');

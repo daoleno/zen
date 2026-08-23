@@ -45,6 +45,20 @@ describe("Skill inspection normalization", () => {
     expect(detail.files?.[0]?.path).toBe("config/data.json");
     expect(detail.preview?.content).toBe('{"ok":true}');
   });
+  test("carries daemon Plugin attribution into the detail", () => {
+    const detail = normalizeSkillsInspectDetail({
+      ...base,
+      scope: "plugin",
+      plugin: "design@zen-plugins",
+      capability: { can_delete: false, reason: "Owned by plugin" },
+    });
+    expect(detail.plugin).toBe("design@zen-plugins");
+    expect(detail.scope).toBe("plugin");
+    expect(detail.capability).toEqual({
+      canDelete: false,
+      reason: "Owned by plugin",
+    });
+  });
   test("preserves explicit binary and truncated states", () => {
     expect(
       normalizeSkillsInspectDetail({
