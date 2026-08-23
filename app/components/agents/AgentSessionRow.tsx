@@ -12,7 +12,8 @@ import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import type { SessionPreviewTone } from '../../services/sessionPreview';
 import {
-  agentStatusLabel,
+  agentStatusIndicatorIcon,
+  buildAgentSessionAccessibilityLabel,
   isAgentActivelyRunning,
 } from '../../services/agentStatusPresentation';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
@@ -27,7 +28,7 @@ interface AgentSessionRowProps {
   previewPrefix?: string;
   timeLabel: string;
   status: AgentStatus;
-  showBrainBadge?: boolean;
+  brainDelegated?: boolean;
   onPress: () => void;
   onLongPress: () => void;
   /** Selection mode: taps toggle selection instead of opening the Session. */
@@ -47,7 +48,7 @@ export function AgentSessionRow({
   previewPrefix,
   timeLabel,
   status,
-  showBrainBadge = false,
+  brainDelegated = false,
   onPress,
   onLongPress,
   selectionMode = false,
@@ -59,8 +60,8 @@ export function AgentSessionRow({
   const styles = useMemo(() => createStyles(colors), [colors]);
   const previewColor = previewToneColor(previewTone, colors);
   const statusColor = agentStatusColor(status, colors);
-  const statusLabel = agentStatusLabel(status);
   const activelyRunning = isAgentActivelyRunning(status);
+  const statusIcon = agentStatusIndicatorIcon(status);
   const inSelectionMode = selectionMode;
   const rowDisabled = inSelectionMode && selectionDisabled;
 
@@ -76,7 +77,13 @@ export function AgentSessionRow({
       delayLongPress={400}
       disabled={rowDisabled}
       accessibilityRole={inSelectionMode ? 'checkbox' : 'button'}
-      accessibilityLabel={`${title}, ${statusLabel}, ${preview}${activelyRunning ? '' : `, ${timeLabel}`}`}
+      accessibilityLabel={buildAgentSessionAccessibilityLabel({
+        title,
+        status,
+        preview,
+        timeLabel,
+        brainDelegated,
+      })}
       accessibilityHint={
         inSelectionMode
           ? 'Double tap to toggle selection'
@@ -103,18 +110,21 @@ export function AgentSessionRow({
           </View>
         ) : null}
         <AgentKindIcon kind={kind} flavor={terminalFlavor} size={36} />
+        {brainDelegated ? (
+          <View
+            pointerEvents="none"
+            style={styles.brainOriginMarker}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            <Ionicons name="sparkles" size={9} color={colors.accentStrong} />
+          </View>
+        ) : null}
       </View>
       <View style={styles.body}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          {showBrainBadge ? (
-            <View style={styles.brainBadge}>
-              <Text style={styles.brainBadgeText}>Brain</Text>
-            </View>
-          ) : null}
-        </View>
+        <Text style={styles.title} numberOfLines={1}>
+          {title}
+        </Text>
         <Text style={styles.preview} numberOfLines={1} ellipsizeMode="middle">
           {previewPrefix ? (
             <Text style={[styles.previewPrefix, { color: previewColor }]}>
@@ -132,15 +142,21 @@ export function AgentSessionRow({
             {timeLabel}
           </Text>
         ) : null}
-        <View style={styles.statusMeta}>
+        <View
+          pointerEvents="none"
+          style={styles.statusIndicator}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
           {activelyRunning ? (
-            <ActivityIndicator size="small" color={statusColor} style={styles.spinner} />
-          ) : (
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-          )}
-          <Text style={[styles.statusText, { color: statusColor }]} numberOfLines={1}>
-            {statusLabel}
-          </Text>
+            <ActivityIndicator
+              size="small"
+              color={statusColor}
+              style={styles.spinner}
+            />
+          ) : statusIcon ? (
+            <Ionicons name={statusIcon} size={15} color={statusColor} />
+          ) : null}
         </View>
       </View>
       <View pointerEvents="none" style={styles.separator} />
@@ -200,6 +216,20 @@ function createStyles(colors: typeof Colors) {
       borderColor: colors.borderSubtle,
       zIndex: 2,
     },
+    brainOriginMarker: {
+      position: 'absolute',
+      right: 0,
+      bottom: 0,
+      width: 16,
+      height: 16,
+      borderRadius: 8,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.bgPrimary,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderStrong,
+      zIndex: 2,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -225,17 +255,9 @@ function createStyles(colors: typeof Colors) {
       minWidth: 0,
       justifyContent: 'center',
     },
-    titleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 7,
-      minWidth: 0,
-    },
     title: {
       ...UiTextMetrics,
       ...TypeScale.body,
-      flexShrink: 1,
-      minWidth: 0,
       color: colors.textPrimary,
     },
     preview: {
@@ -250,8 +272,6 @@ function createStyles(colors: typeof Colors) {
       fontFamily: TypeScale.compact.fontFamily,
     },
     meta: {
-      minWidth: 60,
-      maxWidth: 84,
       alignItems: 'flex-end',
       gap: 4,
     },
@@ -260,41 +280,16 @@ function createStyles(colors: typeof Colors) {
       ...TypeScale.caption,
       color: colors.textTertiary,
     },
-    statusMeta: {
-      flexDirection: 'row',
+    statusIndicator: {
+      width: 16,
+      height: 16,
       alignItems: 'center',
-      justifyContent: 'flex-end',
-      gap: 4,
-      minHeight: 16,
-    },
-    statusDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-    },
-    statusText: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
+      justifyContent: 'center',
     },
     spinner: {
       transform: [{ scale: 0.45 }],
       width: 12,
       height: 12,
-    },
-    brainBadge: {
-      minHeight: 22,
-      paddingHorizontal: 6,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderStrong,
-      borderRadius: 5,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: colors.surfaceSubtle,
-    },
-    brainBadgeText: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.textSecondary,
     },
   });
 }

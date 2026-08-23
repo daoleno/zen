@@ -238,6 +238,7 @@ export function useTerminalScreenLayoutProps({
   });
   const overlayProps = useTerminalScreenOverlayProps({
     resourceSheetVisible,
+    resourceSheetTitle: headerTitle,
     resourceSheetLoading,
     resourceSheetError,
     resourceSheetSnapshot,

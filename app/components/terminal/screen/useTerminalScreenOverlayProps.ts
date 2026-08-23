@@ -16,6 +16,7 @@ import type { useTerminalNavigationActions } from "./useTerminalNavigationAction
 
 interface UseTerminalScreenOverlayPropsInput {
   resourceSheetVisible: boolean;
+  resourceSheetTitle: string;
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
@@ -61,6 +62,7 @@ interface UseTerminalScreenOverlayPropsInput {
 
 export function useTerminalScreenOverlayProps({
   resourceSheetVisible,
+  resourceSheetTitle,
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
@@ -125,6 +127,7 @@ export function useTerminalScreenOverlayProps({
   return useMemo(
     () => ({
       resourceSheetVisible,
+      resourceSheetTitle,
       resourceSheetLoading,
       resourceSheetError,
       resourceSheetSnapshot,
@@ -199,6 +202,7 @@ export function useTerminalScreenOverlayProps({
       resourceSheetError,
       resourceSheetLoading,
       resourceSheetSnapshot,
+      resourceSheetTitle,
       resourceSheetVisible,
       routeSheetActivating,
       routeSheetError,

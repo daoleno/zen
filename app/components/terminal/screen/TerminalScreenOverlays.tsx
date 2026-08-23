@@ -25,6 +25,7 @@ type NewTerminalSubmitInput = Parameters<
 
 export interface TerminalScreenOverlaysProps {
   resourceSheetVisible: boolean;
+  resourceSheetTitle: string;
   resourceSheetLoading: boolean;
   resourceSheetError?: string | null;
   resourceSheetSnapshot?: SessionResourceSnapshot | null;
@@ -72,6 +73,7 @@ export interface TerminalScreenOverlaysProps {
 
 export function TerminalScreenOverlays({
   resourceSheetVisible,
+  resourceSheetTitle,
   resourceSheetLoading,
   resourceSheetError,
   resourceSheetSnapshot,
@@ -145,6 +147,7 @@ export function TerminalScreenOverlays({
 
       <SessionResourceSheet
         visible={resourceSheetVisible}
+        sessionTitle={resourceSheetTitle}
         loading={resourceSheetLoading}
         error={resourceSheetError}
         snapshot={resourceSheetSnapshot}

@@ -1,5 +1,5 @@
 import type { Agent } from '../store/agents';
-import { stripAnsiText } from './ansi';
+import { stripAnsiText } from './ansiText';
 
 export type SessionPreviewTone = 'default' | 'muted' | 'accent' | 'danger' | 'success';
 
@@ -31,7 +31,7 @@ export function formatAgentSessionPreview(
   if (agent.status === 'running') {
     if (agent.delegated) {
       return {
-        text: lastLine || summary || 'Brain is working',
+        text: lastLine || summary || 'No recent output',
         tone: 'accent',
         prefix: serverPrefix,
       };
@@ -51,7 +51,7 @@ export function formatAgentSessionPreview(
       };
     }
     return {
-      text: 'Working…',
+      text: 'No recent output',
       tone: 'accent',
       prefix: serverPrefix,
     };
@@ -60,7 +60,7 @@ export function formatAgentSessionPreview(
   if (agent.status === 'blocked' || agent.status === 'failed') {
     const detail = agent.attention?.trim() || agent.phase?.trim();
     return {
-      text: detail || (agent.status === 'failed' ? 'Session failed' : 'Needs attention'),
+      text: lastLine || summary || detail || 'No recent output',
       tone: 'danger',
       prefix: serverPrefix,
     };
@@ -68,7 +68,7 @@ export function formatAgentSessionPreview(
 
   if (agent.status === 'done') {
     return {
-      text: lastLine || summary || 'Session finished',
+      text: lastLine || summary || 'No recent output',
       tone: 'muted',
       prefix: serverPrefix,
     };
@@ -83,7 +83,7 @@ export function formatAgentSessionPreview(
   }
 
   return {
-    text: lastLine || summary || agent.status,
+    text: lastLine || summary || 'No recent output',
     tone: 'muted',
     prefix: serverPrefix,
   };

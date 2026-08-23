@@ -19,6 +19,7 @@ import {
 
 interface Props {
   visible: boolean;
+  sessionTitle: string;
   loading: boolean;
   error?: string | null;
   snapshot?: SessionResourceSnapshot | null;
@@ -29,6 +30,7 @@ interface Props {
 
 export function SessionResourceSheet({
   visible,
+  sessionTitle,
   loading,
   error,
   snapshot,
@@ -77,310 +79,329 @@ export function SessionResourceSheet({
         </TouchableOpacity>
       </View>
 
-      {m ? (
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.body}
-          showsVerticalScrollIndicator={false}
-          accessibilityLabel={m.accessibilityLabel}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.body}
+        showsVerticalScrollIndicator={false}
+        accessibilityLabel={m?.accessibilityLabel}
+      >
+        <Text
+          accessibilityRole="header"
+          style={[styles.sessionTitle, { color: chrome.text }]}
+          selectable
         >
-          {m.showSessionHero ? (
-            <View
-              style={[
-                styles.card,
-                {
-                  backgroundColor: chrome.surfaceMuted,
-                  borderColor: chrome.border,
-                },
-              ]}
-            >
-              <Text style={[styles.micro, { color: chrome.textSubtle }]}>
-                This Session
-              </Text>
-              <Text style={[styles.hero, { color: chrome.text }]} selectable>
-                {m.memoryLabel ?? "—"}
-              </Text>
-              {secondary ? (
-                <Text style={[styles.label, { color: chrome.textMuted }]}>
-                  {secondary}
-                </Text>
-              ) : null}
-              {m.qualifier ? (
-                <Text
-                  style={[
-                    styles.micro,
-                    { color: chrome.textSubtle, marginTop: 4 },
-                  ]}
-                >
-                  {m.qualifier}
-                </Text>
-              ) : null}
-            </View>
-          ) : m.unmanagedNote ? (
-            <View
-              style={[
-                styles.card,
-                {
-                  backgroundColor: chrome.surfaceMuted,
-                  borderColor: chrome.border,
-                },
-              ]}
-            >
-              <Text style={[styles.label, { color: chrome.text }]}>
-                {m.unmanagedNote}
-              </Text>
-            </View>
-          ) : null}
+          {sessionTitle}
+        </Text>
 
-          {m.showPoolCard ? (
-            <View
-              style={[
-                styles.card,
-                {
-                  backgroundColor: chrome.surfaceMuted,
-                  borderColor: chrome.border,
-                },
-              ]}
-            >
-              <Text style={[styles.label, { color: chrome.text }]}>
-                Shared Agent pool
-              </Text>
-              {m.poolSummary ? (
-                <Text style={[styles.label, { color: chrome.textMuted }]}>
-                  {m.poolSummary}
-                </Text>
-              ) : null}
-              {bar ? (
-                <View style={styles.barWrap}>
-                  <View
-                    style={[
-                      styles.track,
-                      {
-                        backgroundColor: chrome.surface,
-                        borderColor: chrome.border,
-                      },
-                    ]}
-                    accessibilityLabel={
-                      bar.split
-                        ? "Shared pool composition"
-                        : "Shared pool usage"
-                    }
-                  >
-                    {bar.session > 0 ? (
-                      <View
-                        style={[
-                          styles.seg,
-                          {
-                            flexGrow: bar.session,
-                            backgroundColor: chrome.accent,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                    {bar.split && bar.other > 0 ? (
-                      <View
-                        style={[
-                          styles.seg,
-                          {
-                            flexGrow: bar.other,
-                            backgroundColor: chrome.accentSoft,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                    {bar.remaining > 0 ? (
-                      <View
-                        style={[
-                          styles.seg,
-                          {
-                            flexGrow: bar.remaining,
-                            backgroundColor: chrome.surface,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                  </View>
-                  {typeof bar.protectionAt === "number" ? (
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        styles.marker,
-                        { left: `${bar.protectionAt * 100}%` },
-                      ]}
-                      accessibilityLabel="Protection starts"
-                    >
-                      <View
-                        style={[
-                          styles.markerLine,
-                          { backgroundColor: chrome.text },
-                        ]}
-                      />
-                      <Text
-                        style={[
-                          styles.markerText,
-                          { color: chrome.textSubtle },
-                        ]}
-                      >
-                        Protection starts
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-              {m.skewNote ? (
+        {m ? (
+          <View style={styles.details}>
+            {m.showSessionHero ? (
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: chrome.surfaceMuted,
+                    borderColor: chrome.border,
+                  },
+                ]}
+              >
                 <Text style={[styles.micro, { color: chrome.textSubtle }]}>
-                  {m.skewNote}
+                  This Session
                 </Text>
-              ) : null}
-              {bar?.split ? (
-                <View style={styles.legend}>
-                  <View
-                    style={[styles.swatch, { backgroundColor: chrome.accent }]}
-                  />
-                  <Text style={[styles.micro, { color: chrome.textSubtle }]}>
-                    This Session
-                  </Text>
-                  <View
-                    style={[
-                      styles.swatch,
-                      { backgroundColor: chrome.accentSoft },
-                    ]}
-                  />
-                  <Text style={[styles.micro, { color: chrome.textSubtle }]}>
-                    {m.otherLabel ?? "Other Agents"}
-                  </Text>
-                </View>
-              ) : null}
-              {hostSections.poolSupport ? (
-                <Text
-                  style={[styles.micro, { color: chrome.textSubtle }]}
-                  accessibilityLabel={
-                    hostSections.poolSupport.accessibilityLabel
-                  }
-                  selectable
-                >
-                  {hostSections.poolSupport.label}
+                <Text style={[styles.hero, { color: chrome.text }]} selectable>
+                  {m.memoryLabel ?? "—"}
                 </Text>
-              ) : null}
-            </View>
-          ) : null}
-
-          {hostSections.warning ? (
-            <View
-              style={[
-                styles.card,
-                {
-                  backgroundColor: chrome.dangerSoft,
-                  borderColor: chrome.danger,
-                },
-              ]}
-              accessibilityLabel={hostSections.warning.accessibilityLabel}
-            >
-              <View style={styles.hostRow}>
-                <View
-                  style={[styles.chip, { backgroundColor: chrome.surface }]}
-                >
-                  <Ionicons
-                    name="warning-outline"
-                    size={16}
-                    color={chrome.danger}
-                  />
-                  <Text style={[styles.microMed, { color: chrome.text }]}>
-                    {hostSections.warning.title}
+                {secondary ? (
+                  <Text style={[styles.label, { color: chrome.textMuted }]}>
+                    {secondary}
                   </Text>
-                </View>
-                {hostSections.warning.available ? (
+                ) : null}
+                {m.qualifier ? (
                   <Text
-                    style={[styles.label, { color: chrome.text }]}
-                    selectable
+                    style={[
+                      styles.micro,
+                      { color: chrome.textSubtle, marginTop: 4 },
+                    ]}
                   >
-                    {hostSections.warning.available} available
+                    {m.qualifier}
                   </Text>
                 ) : null}
               </View>
-              <Text style={[styles.micro, { color: chrome.textSubtle }]}>
-                {hostSections.warning.note}
-              </Text>
-            </View>
-          ) : null}
+            ) : m.unmanagedNote ? (
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: chrome.surfaceMuted,
+                    borderColor: chrome.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.label, { color: chrome.text }]}>
+                  {m.unmanagedNote}
+                </Text>
+              </View>
+            ) : null}
 
-          {hostSections.footerSupport || m.metaLine || m.workspace ? (
-            <View style={styles.footer}>
-              {hostSections.footerSupport ? (
-                <Text
-                  style={[styles.micro, { color: chrome.textSubtle }]}
-                  accessibilityLabel={
-                    hostSections.footerSupport.accessibilityLabel
-                  }
-                  selectable
-                >
-                  {hostSections.footerSupport.label}
+            {m.showPoolCard ? (
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: chrome.surfaceMuted,
+                    borderColor: chrome.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.label, { color: chrome.text }]}>
+                  Shared Agent pool
                 </Text>
-              ) : null}
-              {m.metaLine ? (
-                <Text
-                  style={[styles.microMed, { color: chrome.textMuted }]}
-                  numberOfLines={1}
-                >
-                  {m.metaLine}
+                {m.poolSummary ? (
+                  <Text style={[styles.label, { color: chrome.textMuted }]}>
+                    {m.poolSummary}
+                  </Text>
+                ) : null}
+                {bar ? (
+                  <View style={styles.barWrap}>
+                    <View
+                      style={[
+                        styles.track,
+                        {
+                          backgroundColor: chrome.surface,
+                          borderColor: chrome.border,
+                        },
+                      ]}
+                      accessibilityLabel={
+                        bar.split
+                          ? "Shared pool composition"
+                          : "Shared pool usage"
+                      }
+                    >
+                      {bar.session > 0 ? (
+                        <View
+                          style={[
+                            styles.seg,
+                            {
+                              flexGrow: bar.session,
+                              backgroundColor: chrome.accent,
+                            },
+                          ]}
+                        />
+                      ) : null}
+                      {bar.split && bar.other > 0 ? (
+                        <View
+                          style={[
+                            styles.seg,
+                            {
+                              flexGrow: bar.other,
+                              backgroundColor: chrome.accentSoft,
+                            },
+                          ]}
+                        />
+                      ) : null}
+                      {bar.remaining > 0 ? (
+                        <View
+                          style={[
+                            styles.seg,
+                            {
+                              flexGrow: bar.remaining,
+                              backgroundColor: chrome.surface,
+                            },
+                          ]}
+                        />
+                      ) : null}
+                    </View>
+                    {typeof bar.protectionAt === "number" ? (
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.marker,
+                          { left: `${bar.protectionAt * 100}%` },
+                        ]}
+                        accessibilityLabel="Protection starts"
+                      >
+                        <View
+                          style={[
+                            styles.markerLine,
+                            { backgroundColor: chrome.text },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.markerText,
+                            { color: chrome.textSubtle },
+                          ]}
+                        >
+                          Protection starts
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+                {m.skewNote ? (
+                  <Text style={[styles.micro, { color: chrome.textSubtle }]}>
+                    {m.skewNote}
+                  </Text>
+                ) : null}
+                {bar?.split ? (
+                  <View style={styles.legend}>
+                    <View
+                      style={[
+                        styles.swatch,
+                        { backgroundColor: chrome.accent },
+                      ]}
+                    />
+                    <Text style={[styles.micro, { color: chrome.textSubtle }]}>
+                      This Session
+                    </Text>
+                    <View
+                      style={[
+                        styles.swatch,
+                        { backgroundColor: chrome.accentSoft },
+                      ]}
+                    />
+                    <Text style={[styles.micro, { color: chrome.textSubtle }]}>
+                      {m.otherLabel ?? "Other Agents"}
+                    </Text>
+                  </View>
+                ) : null}
+                {hostSections.poolSupport ? (
+                  <Text
+                    style={[styles.micro, { color: chrome.textSubtle }]}
+                    accessibilityLabel={
+                      hostSections.poolSupport.accessibilityLabel
+                    }
+                    selectable
+                  >
+                    {hostSections.poolSupport.label}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {hostSections.warning ? (
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: chrome.dangerSoft,
+                    borderColor: chrome.danger,
+                  },
+                ]}
+                accessibilityLabel={hostSections.warning.accessibilityLabel}
+              >
+                <View style={styles.hostRow}>
+                  <View
+                    style={[styles.chip, { backgroundColor: chrome.surface }]}
+                  >
+                    <Ionicons
+                      name="warning-outline"
+                      size={16}
+                      color={chrome.danger}
+                    />
+                    <Text style={[styles.microMed, { color: chrome.text }]}>
+                      {hostSections.warning.title}
+                    </Text>
+                  </View>
+                  {hostSections.warning.available ? (
+                    <Text
+                      style={[styles.label, { color: chrome.text }]}
+                      selectable
+                    >
+                      {hostSections.warning.available} available
+                    </Text>
+                  ) : null}
+                </View>
+                <Text style={[styles.micro, { color: chrome.textSubtle }]}>
+                  {hostSections.warning.note}
                 </Text>
-              ) : null}
-              {m.workspace ? (
-                <Text
-                  style={[styles.micro, { color: chrome.textSubtle }]}
-                  numberOfLines={1}
-                >
-                  {m.workspace}
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
-        </ScrollView>
-      ) : loading ? (
-        <View style={styles.state}>
-          <ComposerLoadingDots color={chrome.accent} size={10} />
-          <Text
-            style={[styles.title, { color: chrome.text, textAlign: "center" }]}
-          >
-            Loading resource usage
-          </Text>
-          <Text
-            style={[
-              styles.micro,
-              { color: chrome.textSubtle, textAlign: "center" },
-            ]}
-          >
-            One on-demand snapshot from the daemon
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.state}>
-          <Text
-            style={[styles.title, { color: chrome.text, textAlign: "center" }]}
-          >
-            {error ? "Could not load details" : "Unavailable"}
-          </Text>
-          <Text
-            style={[
-              styles.micro,
-              { color: chrome.textSubtle, textAlign: "center" },
-            ]}
-          >
-            {error ||
-              "Resource measurements are not available for this Session."}
-          </Text>
-          <TouchableOpacity
-            accessibilityLabel="Retry resource usage"
-            accessibilityRole="button"
-            style={[styles.retry, { backgroundColor: chrome.accent }]}
-            onPress={onRetry}
-            activeOpacity={0.82}
-          >
-            <Ionicons name="refresh-outline" size={15} color={chrome.text} />
-            <Text style={[styles.label, { color: chrome.text }]}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+              </View>
+            ) : null}
+
+            {hostSections.footerSupport || m.metaLine || m.workspace ? (
+              <View style={styles.footer}>
+                {hostSections.footerSupport ? (
+                  <Text
+                    style={[styles.micro, { color: chrome.textSubtle }]}
+                    accessibilityLabel={
+                      hostSections.footerSupport.accessibilityLabel
+                    }
+                    selectable
+                  >
+                    {hostSections.footerSupport.label}
+                  </Text>
+                ) : null}
+                {m.metaLine ? (
+                  <Text
+                    style={[styles.microMed, { color: chrome.textMuted }]}
+                    numberOfLines={1}
+                  >
+                    {m.metaLine}
+                  </Text>
+                ) : null}
+                {m.workspace ? (
+                  <Text
+                    style={[styles.micro, { color: chrome.textSubtle }]}
+                    numberOfLines={1}
+                  >
+                    {m.workspace}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        ) : loading ? (
+          <View style={styles.state}>
+            <ComposerLoadingDots color={chrome.accent} size={10} />
+            <Text
+              style={[
+                styles.title,
+                { color: chrome.text, textAlign: "center" },
+              ]}
+            >
+              Loading resource usage
+            </Text>
+            <Text
+              style={[
+                styles.micro,
+                { color: chrome.textSubtle, textAlign: "center" },
+              ]}
+            >
+              One on-demand snapshot from the daemon
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.state}>
+            <Text
+              style={[
+                styles.title,
+                { color: chrome.text, textAlign: "center" },
+              ]}
+            >
+              {error ? "Could not load details" : "Unavailable"}
+            </Text>
+            <Text
+              style={[
+                styles.micro,
+                { color: chrome.textSubtle, textAlign: "center" },
+              ]}
+            >
+              {error ||
+                "Resource measurements are not available for this Session."}
+            </Text>
+            <TouchableOpacity
+              accessibilityLabel="Retry resource usage"
+              accessibilityRole="button"
+              style={[styles.retry, { backgroundColor: chrome.accent }]}
+              onPress={onRetry}
+              activeOpacity={0.82}
+            >
+              <Ionicons name="refresh-outline" size={15} color={chrome.text} />
+              <Text style={[styles.label, { color: chrome.text }]}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </ScrollView>
     </BottomSheetFrame>
   );
 }
@@ -414,6 +435,13 @@ const styles = StyleSheet.create({
   },
   scroll: { maxHeight: 420 },
   body: { paddingBottom: 8, gap: 12 },
+  details: { gap: 12 },
+  sessionTitle: {
+    ...TypeScale.body,
+    fontFamily: Typography.uiFontMedium,
+    alignSelf: "stretch",
+    flexShrink: 1,
+  },
   card: {
     borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,

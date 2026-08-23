@@ -83,7 +83,7 @@ function AgentListRowContainerComponent({
           : formatTelegramListTime(agent.updated_at)
       }
       status={agent.status}
-      showBrainBadge={Boolean(agent.delegated)}
+      brainDelegated={Boolean(agent.delegated)}
       onPress={handlePress}
       onLongPress={handleLongPress}
       selectionMode={selectionMode}
