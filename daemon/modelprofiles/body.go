@@ -17,6 +17,9 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// MaxRouteRequestBodyBytes is the rewriting-router parse budget. The router
+// must buffer and rewrite JSON, so this also bounds daemon memory. The
+// machine-level gateway does not rewrite and uses MaxGatewayRequestBodyBytes.
 const MaxRouteRequestBodyBytes = 8 << 20
 
 var hopByHopHeaderNames = []string{

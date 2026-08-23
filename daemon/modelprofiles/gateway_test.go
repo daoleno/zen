@@ -2,6 +2,7 @@ package modelprofiles
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -446,5 +447,119 @@ func TestGatewayUpstreamFlapDoesNotChangeListener(t *testing.T) {
 	}
 	if !g.Listening() {
 		t.Fatal("gateway stopped listening")
+	}
+}
+
+// TestGatewayForwardsBodiesLargerThanRouterRewriteLimit is the Brain Codex
+// 413 regression: a long session with screenshot tool results routinely
+// exceeds the rewriting-router 8MiB parse budget. The machine-level gateway
+// does not rewrite, so that payload must reach upstream instead of 413.
+func TestGatewayForwardsBodiesLargerThanRouterRewriteLimit(t *testing.T) {
+	up := newFakeGatewayUpstream(t, `{"ok":true}`)
+	g := gatewayTest(t)
+	g.SetUpstream(gatewayUpstreamFor(up.server.URL))
+
+	payload := bytes.Repeat([]byte("x"), MaxRouteRequestBodyBytes+1)
+	req, err := http.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway status = %d body=%s", resp.StatusCode, raw)
+	}
+	got := <-up.requests
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("upstream received %d bytes, want exact %d-byte payload", len(got), len(payload))
+	}
+}
+
+// TestGatewayPreservesCompressedRequestBytes: unlike the rewriting router,
+// the gateway must forward Content-Encoding and the compressed bytes as-is.
+func TestGatewayPreservesCompressedRequestBytes(t *testing.T) {
+	var gotBody []byte
+	var gotEncoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Content-Encoding")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	g := gatewayTest(t)
+	g.SetUpstream(gatewayUpstreamFor(upstream.URL))
+
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write([]byte(`{"model":"gpt-5","input":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", bytes.NewReader(compressed.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway status = %d body=%s", resp.StatusCode, raw)
+	}
+	if gotEncoding != "gzip" {
+		t.Fatalf("upstream Content-Encoding = %q, want gzip", gotEncoding)
+	}
+	if !bytes.Equal(gotBody, compressed.Bytes()) {
+		t.Fatalf("upstream received %d decoded-or-mutated bytes, want %d gzip bytes", len(gotBody), compressed.Len())
+	}
+}
+
+// TestGatewayRejectsDeclaredBodyOverSafetyCap keeps a loopback DoS ceiling
+// without using the rewriting-router 8MiB parse budget.
+func TestGatewayRejectsDeclaredBodyOverSafetyCap(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayMaxBody(64))
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	g.SetUpstream(gatewayUpstreamFor(upstream.URL))
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", bytes.NewReader(bytes.Repeat([]byte("y"), 65)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	if hits != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits)
 	}
 }

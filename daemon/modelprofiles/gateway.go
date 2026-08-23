@@ -21,6 +21,12 @@ import (
 // projection) before takeover can claim active.
 const DefaultGatewayListenAddr = "127.0.0.1:38777"
 
+// MaxGatewayRequestBodyBytes is the loopback DoS ceiling for Codex request
+// bodies. The gateway streams bytes through and does not parse JSON, so this
+// is not a rewrite-buffer budget. Brain sessions with screenshot tool results
+// routinely exceed the router's 8MiB cap.
+const MaxGatewayRequestBodyBytes = 128 << 20
+
 // GatewayProviderName is the Codex model_provider identity projected into the
 // CLI's native config by takeover. It is also the provider table key.
 const GatewayProviderName = "zen-gateway"
@@ -77,7 +83,7 @@ func WithGatewayClient(client *http.Client) GatewayOption {
 	}
 }
 
-// WithGatewayMaxBody overrides the bounded request body size (tests).
+// WithGatewayMaxBody overrides the streamed request-body safety ceiling (tests).
 func WithGatewayMaxBody(n int64) GatewayOption {
 	return func(g *Gateway) {
 		if n > 0 {
@@ -92,7 +98,7 @@ func NewGateway(addr string, creds CredentialStore, opts ...GatewayOption) *Gate
 	g := &Gateway{
 		creds:     creds,
 		client:    NewSafeHTTPClient(5 * time.Minute),
-		maxBody:   MaxRouteRequestBodyBytes,
+		maxBody:   MaxGatewayRequestBodyBytes,
 		addr:      strings.TrimSpace(addr),
 		statePath: "",
 		ws:        newWSConnRegistry(),
@@ -323,13 +329,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeRouteError(w, http.StatusMethodNotAllowed, ErrRouteMethodMismatch)
 		return
 	}
-	body, _, err := readBoundedBody(req, g.maxBody)
-	if err != nil {
-		if errors.Is(err, ErrRequestBodyTooLarge) {
-			writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
-			return
-		}
-		writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+	maxBody := g.maxBody
+	if maxBody <= 0 {
+		maxBody = MaxGatewayRequestBodyBytes
+	}
+	// Reject a declared oversize body before opening the upstream request.
+	// Unknown-length (chunked) bodies are still capped while streaming.
+	if req.ContentLength > maxBody {
+		writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
 		return
 	}
 
@@ -339,7 +346,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	upReq, err := http.NewRequestWithContext(req.Context(), req.Method, target, bytes.NewReader(body))
+	body := req.Body
+	if body == nil {
+		body = http.NoBody
+	} else {
+		body = http.MaxBytesReader(w, body, maxBody)
+	}
+	upReq, err := http.NewRequestWithContext(req.Context(), req.Method, target, body)
 	if err != nil {
 		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
 		return
@@ -349,16 +362,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeRouteError(w, http.StatusBadGateway, ErrCredentialNotReady)
 		return
 	}
-	if len(body) > 0 {
-		upReq.Header.Set("Content-Type", firstNonEmpty(req.Header.Get("Content-Type"), "application/json"))
-		upReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		upReq.ContentLength = int64(len(body))
+	if req.ContentLength >= 0 {
+		upReq.ContentLength = req.ContentLength
+		if req.ContentLength > 0 {
+			upReq.Header.Set("Content-Length", fmt.Sprintf("%d", req.ContentLength))
+		}
 	}
-	// The body bytes are preserved exactly, so the original Content-Encoding is
-	// forwarded as-is (unlike the rewriting router, which decodes at the edge).
+	// Body bytes and Content-Encoding are forwarded as-is. The rewriting
+	// router decodes at the edge; the gateway must not.
 
 	resp, err := g.client.Do(upReq)
 	if err != nil {
+		if isRequestBodyTooLarge(err) {
+			writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
+			return
+		}
 		status, typed := classifyUpstreamDoError(err)
 		writeRouteError(w, status, typed)
 		return
@@ -369,6 +387,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
+}
+
+func isRequestBodyTooLarge(err error) bool {
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge)
 }
 
 // applyGatewayAuth injects the upstream credential per AuthMode. It mirrors the
