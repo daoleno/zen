@@ -54,6 +54,11 @@ export function BrainWorkEventCard({
     statusLabel: presentation.label,
     occurredAtLabel: accessibilityTime,
   });
+  const compactStatus =
+    presentation.lifecycle === "failed" ||
+    presentation.lifecycle === "cancelled"
+      ? presentation.label
+      : undefined;
 
   if (presentation.terminal) {
     return (
@@ -77,9 +82,11 @@ export function BrainWorkEventCard({
         <Text numberOfLines={1} style={styles.compactTitle}>
           {workTitle}
         </Text>
-        {presentation.lifecycle === "failed" ? (
-          <Text style={[styles.compactStatus, { color: presentation.color }]}>
-            Failed
+        {compactStatus ? (
+          <Text
+            style={[styles.compactStatus, { color: presentation.color }]}
+          >
+            {compactStatus}
           </Text>
         ) : null}
         {item.sourceCount ? (

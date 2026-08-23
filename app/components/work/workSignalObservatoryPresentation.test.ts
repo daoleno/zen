@@ -37,7 +37,7 @@ describe("Work pull surface presentation", () => {
     expect(surfaceSource).toContain("onClose();\n        onOpenBrain();");
   });
 
-  test("respects reduced-motion settings without restoring graph animation", () => {
+  test("respects reduced-motion settings for the modal", () => {
     expect(surfaceSource).toContain("useReducedMotion()");
     expect(surfaceSource).toContain("motion.modalAnimationType");
   });

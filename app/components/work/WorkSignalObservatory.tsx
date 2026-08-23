@@ -370,8 +370,6 @@ function workToneColor(row: WorkActivityRow, theme: ResolvedZenTheme): string {
       return theme.colors.warning;
     case "accent":
       return theme.colors.accent;
-    case "danger":
-      return theme.colors.statusFailed;
     case "neutral":
       return row.terminal
         ? theme.colors.statusDone

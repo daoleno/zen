@@ -214,4 +214,32 @@ describe("Brain Work event source presentation", () => {
       brainCurrentWorkLifecycle({ ...current, status: "done" }, resultEvent()),
     ).toMatchObject({ label: "Done", terminal: true });
   });
+
+  test("presents canonical Waiting and neutral Cancelled distinctly", () => {
+    const current: BrainCurrentWork = {
+      work_id: "work-current",
+      revision: 4,
+      title: "Canonical lifecycle",
+      status: "waiting",
+      progress_mode: "waiting",
+      unread_result: false,
+    };
+
+    expect(
+      brainCurrentWorkLifecycle(current, resultEvent({ kind: "session.done" })),
+    ).toMatchObject({
+      lifecycle: "waiting",
+      label: "Waiting",
+      tone: "neutral",
+      terminal: false,
+    });
+    expect(
+      brainCurrentWorkLifecycle({ ...current, status: "cancelled" }),
+    ).toMatchObject({
+      lifecycle: "cancelled",
+      label: "Cancelled",
+      tone: "neutral",
+      terminal: true,
+    });
+  });
 });

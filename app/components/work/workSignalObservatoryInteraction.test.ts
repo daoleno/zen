@@ -5,7 +5,6 @@ import {
   resolveWorkObservatoryMotion,
   shouldRevealWorkObservatory,
   WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS,
-  WORK_GRAPH_CONTROL_TOUCH_REGIONS,
 } from "./workSignalObservatoryInteraction";
 
 const pull = (overrides: Partial<Parameters<typeof resolveWorkObservatoryPullIntent>[0]> = {}) =>
@@ -60,29 +59,12 @@ describe("Work observatory accessible interaction", () => {
     expect(opens).toBe(1);
   });
 
-  test("removes modal and graph transitions under reduced motion", () => {
+  test("removes the modal transition under reduced motion", () => {
     expect(resolveWorkObservatoryMotion(false)).toEqual({
       modalAnimationType: "fade",
-      animateGraph: true,
     });
     expect(resolveWorkObservatoryMotion(true)).toEqual({
       modalAnimationType: "none",
-      animateGraph: false,
     });
-  });
-
-  test("keeps aggregate and Open Session controls within mobile touch bounds", () => {
-    expect(
-      WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight,
-    ).toBeGreaterThanOrEqual(44);
-    expect(
-      WORK_GRAPH_CONTROL_TOUCH_REGIONS.aggregateHeight,
-    ).toBeLessThanOrEqual(48);
-    expect(
-      WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
-    ).toBeGreaterThanOrEqual(44);
-    expect(
-      WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
-    ).toBeLessThanOrEqual(48);
   });
 });

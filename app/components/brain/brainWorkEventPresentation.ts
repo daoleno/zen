@@ -5,17 +5,29 @@ export type BrainWorkLifecycle =
   | "working"
   | "ready"
   | "reviewing"
+  | "waiting"
   | "done"
+  | "cancelled"
   | "needs_you"
   | "failed";
 
 export type BrainWorkLifecyclePresentation = {
   lifecycle: BrainWorkLifecycle;
-  label: "Working" | "Ready" | "Reviewing" | "Done" | "Needs you" | "Failed";
+  label:
+    | "Working"
+    | "Ready"
+    | "Reviewing"
+    | "Waiting"
+    | "Done"
+    | "Cancelled"
+    | "Needs you"
+    | "Failed";
   icon:
     | "ellipsis-horizontal-circle-outline"
     | "checkmark-circle-outline"
     | "eye-outline"
+    | "time-outline"
+    | "close-circle-outline"
     | "help-circle-outline"
     | "alert-circle-outline";
   tone: "neutral" | "accent" | "attention" | "danger";
@@ -118,7 +130,7 @@ export function brainCurrentWorkLifecycle(
     return lifecyclePresentation("needs_you");
   }
   if (work.status === "cancelled") {
-    return lifecyclePresentation("failed");
+    return lifecyclePresentation("cancelled");
   }
   if (work.status === "done") {
     return lifecyclePresentation("done");
@@ -132,6 +144,9 @@ export function brainCurrentWorkLifecycle(
     work.progress_mode === "ready"
   ) {
     return lifecyclePresentation("ready");
+  }
+  if (work.status === "waiting" || work.progress_mode === "waiting") {
+    return lifecyclePresentation("waiting");
   }
   const eventPresentation = event ? brainWorkEventLifecycle(event) : undefined;
   if (eventPresentation?.lifecycle === "needs_you") {
@@ -178,6 +193,14 @@ function lifecyclePresentation(
         tone: "neutral",
         terminal: true,
       };
+    case "cancelled":
+      return {
+        lifecycle,
+        label: "Cancelled",
+        icon: "close-circle-outline",
+        tone: "neutral",
+        terminal: true,
+      };
     case "reviewing":
       return {
         lifecycle,
@@ -192,6 +215,14 @@ function lifecyclePresentation(
         label: "Ready",
         icon: "checkmark-circle-outline",
         tone: "accent",
+        terminal: false,
+      };
+    case "waiting":
+      return {
+        lifecycle,
+        label: "Waiting",
+        icon: "time-outline",
+        tone: "neutral",
         terminal: false,
       };
     case "working":

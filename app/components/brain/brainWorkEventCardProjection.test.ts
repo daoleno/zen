@@ -178,6 +178,15 @@ describe("Brain Work Event dedicated card projection", () => {
     });
   });
 
+  test("grouped card renders canonical cancellation without failure copy", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "BrainWorkEventCard.tsx"),
+      "utf8",
+    );
+    expect(source).toContain('presentation.lifecycle === "cancelled"');
+    expect(source).toContain("{compactStatus}");
+  });
+
   test("InterfaceTimelineItemView owns BrainWorkEventCard for work events", () => {
     const source = readFileSync(
       join(import.meta.dir, "../terminal/InterfaceTimelineItemView.tsx"),

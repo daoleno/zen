@@ -11,11 +11,7 @@ export type WorkActivityLifecycle =
   | "done"
   | "cancelled";
 
-export type WorkActivityTone =
-  | "attention"
-  | "accent"
-  | "neutral"
-  | "danger";
+export type WorkActivityTone = "attention" | "accent" | "neutral";
 
 export type WorkActivityOwner = {
   sessionId: string;
@@ -65,7 +61,7 @@ export function buildWorkActivityListModel({
     .sort(compareRows);
   const active = rows
     .filter((row) => !row.terminal && row.lifecycle !== "needs_you")
-    .sort(compareRows);
+    .sort(compareActiveRows);
   const recent = rows.filter((row) => row.terminal).sort(compareRows);
   const normalizedHistoryCount = Math.max(0, Math.floor(historicalResultCount));
   const parts = ["Work activity"];
@@ -120,7 +116,7 @@ function workPresentation(work: BrainCurrentWork): Pick<
     return {
       lifecycle: "cancelled",
       statusLabel: "Cancelled",
-      tone: "danger",
+      tone: "neutral",
       terminal: true,
     };
   }
@@ -200,4 +196,31 @@ function compareRows(left: WorkActivityRow, right: WorkActivityRow): number {
     left.title.localeCompare(right.title) ||
     left.id.localeCompare(right.id)
   );
+}
+
+function compareActiveRows(
+  left: WorkActivityRow,
+  right: WorkActivityRow,
+): number {
+  return (
+    activeLifecyclePriority(left.lifecycle) -
+      activeLifecyclePriority(right.lifecycle) || compareRows(left, right)
+  );
+}
+
+function activeLifecyclePriority(lifecycle: WorkActivityLifecycle): number {
+  switch (lifecycle) {
+    case "reviewing":
+      return 0;
+    case "ready":
+      return 1;
+    case "working":
+      return 2;
+    case "waiting":
+      return 3;
+    case "needs_you":
+    case "done":
+    case "cancelled":
+      return 4;
+  }
 }

@@ -15,11 +15,6 @@ export const WORK_OBSERVATORY_ACCESSIBILITY_ACTIONS = [
   WORK_OBSERVATORY_ACCESSIBILITY_ACTION,
 ] as const;
 
-export const WORK_GRAPH_CONTROL_TOUCH_REGIONS = {
-  aggregateHeight: 44,
-  openSessionMinHeight: 44,
-} as const;
-
 export type WorkObservatoryPullIntent = "pending" | "activate" | "fail";
 
 export function dispatchWorkObservatoryAccessibilityAction(
@@ -52,11 +47,10 @@ export function createWorkObservatoryAccessibilityProps(open: () => void): {
 
 export function resolveWorkObservatoryMotion(reducedMotion: boolean): {
   modalAnimationType: "none" | "fade";
-  animateGraph: boolean;
 } {
-  return reducedMotion
-    ? { modalAnimationType: "none", animateGraph: false }
-    : { modalAnimationType: "fade", animateGraph: true };
+  return {
+    modalAnimationType: reducedMotion ? "none" : "fade",
+  };
 }
 
 export function resolveWorkObservatoryPullIntent({

@@ -123,6 +123,56 @@ describe("Work activity list model", () => {
     expect(model.active.every((row) => row.owner === undefined)).toBe(true);
   });
 
+  test("sorts Active Work by lifecycle before unread and title", () => {
+    const model = buildWorkActivityListModel({
+      work: [
+        currentWork({
+          work_id: "wait",
+          title: "A wait",
+          status: "waiting",
+          progress_mode: "waiting",
+          unread_result: true,
+        }),
+        currentWork({ work_id: "work", title: "A work" }),
+        currentWork({
+          work_id: "ready",
+          title: "Z ready",
+          progress_mode: "ready",
+        }),
+        currentWork({
+          work_id: "review",
+          title: "Z review",
+          attention_state: "reviewing",
+        }),
+      ],
+      owners: [owner],
+      historicalResultCount: 0,
+    });
+
+    expect(model.active.map((row) => row.statusLabel)).toEqual([
+      "Reviewing",
+      "Ready",
+      "Working",
+      "Waiting",
+    ]);
+  });
+
+  test("presents canonical cancellation as neutral terminal history", () => {
+    const model = buildWorkActivityListModel({
+      work: [currentWork({ status: "cancelled" })],
+      owners: [owner],
+      historicalResultCount: 0,
+    });
+
+    expect(model.active).toHaveLength(0);
+    expect(model.recent[0]).toMatchObject({
+      lifecycle: "cancelled",
+      statusLabel: "Cancelled",
+      tone: "neutral",
+      terminal: true,
+    });
+  });
+
   test("redacts canonical identities from visible Work titles", () => {
     const model = buildWorkActivityListModel({
       work: [
