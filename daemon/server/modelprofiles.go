@@ -250,7 +250,6 @@ func (s *Server) handleDiscoverProviderModels(conn *websocket.Conn, raw clientMe
 	s.sendJSON(conn, payload)
 }
 
-
 // handleCodexGatewayStatus reports the machine-level Codex gateway takeover
 // state (active | inactive | drifted | broken) plus backup/restore info.
 func (s *Server) handleCodexGatewayStatus(conn *websocket.Conn, raw clientMessage) {
@@ -261,9 +260,9 @@ func (s *Server) handleCodexGatewayStatus(conn *websocket.Conn, raw clientMessag
 	}
 	status := owner.GatewayStatus()
 	s.sendJSON(conn, map[string]any{
-		"type":         "codex_gateway_status",
-		"request_id":   raw.RequestID,
-		"ok":           true,
+		"type":          "codex_gateway_status",
+		"request_id":    raw.RequestID,
+		"ok":            true,
 		"codex_gateway": status,
 	})
 }
@@ -305,9 +304,9 @@ func (s *Server) handleCodexGatewayMutation(conn *websocket.Conn, raw clientMess
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":         responseType,
-		"request_id":   raw.RequestID,
-		"ok":           true,
+		"type":          responseType,
+		"request_id":    raw.RequestID,
+		"ok":            true,
 		"codex_gateway": status,
 	})
 }
