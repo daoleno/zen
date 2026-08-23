@@ -73,10 +73,9 @@ type hostLaneResult struct {
 //  1. reconcile the existing delivery receipt
 //  2. one delivered Event awaiting disposition: stop
 //  3. pending user admission: stop
-//  4. foreground turn: stop unless strong exact terminal evidence closes it
-//  5. non-terminal ambient provider Activity: stop
-//  6. claim one fair pending Work key at the boundary
-//  7. submit once; mark delivered only from the accepted receipt
+//  4. reconcile exact foreground terminal evidence without gating admission
+//  5. claim one fair pending Work key at the serialization boundary
+//  6. submit once; mark delivered only from the accepted receipt
 func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 	out := hostLaneResult{}
 	switch s.Receipt {
@@ -87,22 +86,14 @@ func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 	case receiptAmbiguous, receiptProviderLive:
 		out.HeldReceipt = true
 	}
+	if s.ForegroundTurn {
+		out.ClosedForegroundTurn = s.ForegroundTerminalEvidence
+	}
 	if s.DeliveredAwaitingDisposition {
 		out.Stop = true
 		return out
 	}
 	if s.PendingUserAdmission {
-		out.Stop = true
-		return out
-	}
-	if s.ForegroundTurn {
-		if !s.ForegroundTerminalEvidence {
-			out.Stop = true
-			return out
-		}
-		out.ClosedForegroundTurn = true
-	}
-	if s.AmbientProviderActivityLive {
 		out.Stop = true
 		return out
 	}
@@ -128,7 +119,7 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{},
 		},
 		{
-			name:  "idle boundary claims and submits one pending Event",
+			name:  "serialization boundary claims and submits one pending Event",
 			state: hostLaneState{PendingWork: true},
 			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
 		},
@@ -165,7 +156,7 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 		{
 			name:  "delivered handling stops even at a terminal foreground boundary",
 			state: hostLaneState{DeliveredAwaitingDisposition: true, ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{Stop: true, ClosedForegroundTurn: true},
 		},
 		{
 			name:  "pending user admission stops the lane",
@@ -173,14 +164,14 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{Stop: true},
 		},
 		{
-			name:  "live foreground turn without exact terminal evidence stops",
+			name:  "live foreground turn admits without closing the foreground",
 			state: hostLaneState{ForegroundTurn: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
 		},
 		{
-			name:  "ambient provider Activity stops an untracked steer",
+			name:  "ambient provider Activity does not gate provider-native queuing",
 			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
 		},
 		{
 			name:  "foreground turn with terminal evidence closes it even with no pending Work",
@@ -195,7 +186,7 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 		{
 			name:  "terminal boundary with pending admission still stops",
 			state: hostLaneState{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingUserAdmission: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{Stop: true, ClosedForegroundTurn: true},
 		},
 		{
 			name:  "reopen after delivered-but-unhandled Event never replays",
@@ -225,20 +216,16 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 
 // TestHostLaneReducerFrozenOrder verifies the gate precedence that makes user
 // steering unable to overtake an admitted internal Event: the delivered
-// handling, pending user admission, live foreground turn, and ambient
-// provider Activity gates all stop the lane before
-// any claim, in that order.
+// handling and pending user admission gates stop the lane before any claim.
 func TestHostLaneReducerFrozenOrder(t *testing.T) {
 	for _, row := range []struct {
 		state hostLaneState
 	}{
 		{hostLaneState{DeliveredAwaitingDisposition: true, PendingUserAdmission: true, ForegroundTurn: true, PendingWork: true}},
 		{hostLaneState{PendingUserAdmission: true, ForegroundTurn: true, PendingWork: true}},
-		{hostLaneState{ForegroundTurn: true, PendingWork: true}},
-		{hostLaneState{AmbientProviderActivityLive: true, PendingWork: true}},
 	} {
 		result := reconcileHostLaneModel(row.state)
-		if !result.Stop || result.ClaimedEvent || result.SubmittedEvent || result.ClosedForegroundTurn {
+		if !result.Stop || result.ClaimedEvent || result.SubmittedEvent {
 			t.Fatalf("gate order violated: state=%+v result=%+v", row.state, result)
 		}
 	}
@@ -276,7 +263,7 @@ func TestHostLaneReducerIdempotentOneShot(t *testing.T) {
 				t.Fatalf("post-submit state=%+v second pass=%+v replayed", state, second)
 			}
 		}
-		if first.Stop && (first.ClaimedEvent || first.SubmittedEvent || first.ClosedForegroundTurn) {
+		if first.Stop && (first.ClaimedEvent || first.SubmittedEvent) {
 			t.Fatalf("state=%+v result=%+v stopped while acting", state, first)
 		}
 	}
@@ -300,7 +287,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {},
 		},
 		{
-			name:  "idle boundary claims and submits one pending Event",
+			name:  "serialization boundary claims and submits one pending Event",
 			state: hostLaneState{PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				item := createSignalTestWork(t, store, "model idle delivery", "brain-agent-model:@1")
@@ -319,7 +306,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
-			name:  "live foreground turn without exact terminal evidence stops",
+			name:  "live foreground turn admits while preserving foreground",
 			state: hostLaneState{ForegroundTurn: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
@@ -331,7 +318,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
-			name:  "ambient provider Activity stops before claim",
+			name:  "ambient provider Activity admits through native queue",
 			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
@@ -366,7 +353,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				item := createSignalTestWork(t, store, "model delivered", "brain-agent-model:@5")
 				appendSignalTestEvent(t, store, item, "model-delivered")
-				// First pass delivers at the idle boundary; the assertion pass
+				// First pass delivers at the serialized boundary; the assertion pass
 				// then observes the delivered handling gate.
 				if woke, err := service.ReconcileHostLane(); err != nil || !woke {
 					t.Fatalf("model delivery pass woke=%v err=%v", woke, err)

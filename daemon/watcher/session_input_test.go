@@ -483,9 +483,12 @@ func (l *fakeTurnLedger) ResolveInputAdmission(resolution InputAdmissionResoluti
 	if !ok || submission.State != InputAdmissionPending {
 		return InputAdmission{}, fmt.Errorf("pending submission unavailable")
 	}
-	if resolution.ActivityID == "" || resolution.Admission.Empty() ||
+	if resolution.Admission.Empty() ||
 		resolution.Admission.SHA256 != submission.PayloadSHA256 {
 		return InputAdmission{}, fmt.Errorf("provider admission digest mismatch")
+	}
+	if resolution.ActivityID == "" && (submission.ClaimToken == "" || submission.BaselineActivityID == "") {
+		return InputAdmission{}, fmt.Errorf("provider admission has no Activity outside a queued Brain Review")
 	}
 	if !submission.SignalProtocol && submission.Mode == InputAdmissionConditionalSteer && resolution.ActivityID == submission.BaselineActivityID {
 		submission.ResolvedTurnID = submission.ExistingTurnID
@@ -495,7 +498,8 @@ func (l *fakeTurnLedger) ResolveInputAdmission(resolution InputAdmissionResoluti
 			SessionID: submission.SessionID, TurnID: submission.ProposedTurnID,
 			Status: TurnAccepted, AcceptedAt: submission.AcceptedAt,
 			ActivityID: resolution.ActivityID, Admission: resolution.Admission,
-			HasAdmission: true, PaneGeneration: submission.PaneGeneration,
+			QueuedBehindActivityID: submission.BaselineActivityID,
+			HasAdmission:           true, PaneGeneration: submission.PaneGeneration,
 			SignalProtocol: submission.SignalProtocol,
 		}
 	}

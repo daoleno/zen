@@ -340,7 +340,7 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
 		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
 	}
-	// The queued internal Event is admitted at the idle boundary BEFORE the
+	// The queued internal Event is admitted at the serialized input boundary BEFORE the
 	// user's message is prepared: steering can never overtake it. The
 	// projection failure then keeps every retry pending without replay.
 	for attempt := 0; attempt < 2; attempt++ {
@@ -367,15 +367,15 @@ func TestBrainAcceptedInputReservesQueuedAttentionDespiteProjectionFailure(t *te
 	}
 	for _, claim := range claims {
 		if claim.DeliveredAt == nil {
-			t.Fatalf("idle-boundary Event left an undelivered claim: %+v", claim)
+			t.Fatalf("serialized Event left an undelivered claim: %+v", claim)
 		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil || len(events) != 1 {
-		t.Fatalf("idle-boundary Event history: %+v err=%v", events, err)
+		t.Fatalf("serialized Event history: %+v err=%v", events, err)
 	}
 	if item2, err := store.Work(item.ID); err != nil || item2.Review == nil || item2.Review.Lease == nil || item2.Review.Lease.DeliveredAt == nil {
-		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", item2, err)
+		t.Fatalf("serialized Event was not delivered exactly once: %+v err=%v", item2, err)
 	}
 }
 
@@ -462,7 +462,7 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 		Type: "send_input", RequestID: requestID, AgentID: hostID, Text: "continue",
 		DisplayBody: "continue", ConversationScopeKey: "brain-thread:" + threadID,
 	}
-	// The queued internal Event is delivered at the idle boundary before the
+	// The queued internal Event is delivered at the serialized input boundary before the
 	// user message. The accepted G1 admission remains exact history, while the
 	// reducer retires its foreground gate once G2 is observed. Both attempts
 	// acknowledge without ever adopting an ambient G2 Activity for G1.
@@ -492,15 +492,15 @@ func TestBrainAcceptedInputUsesPreparedGenerationWhenProviderChangesBeforeAdmit(
 	}
 	for _, claim := range claims {
 		if claim.DeliveredAt == nil {
-			t.Fatalf("idle-boundary Event left an undelivered claim: %+v", claim)
+			t.Fatalf("serialized Event left an undelivered claim: %+v", claim)
 		}
 	}
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil || len(events) != 1 {
-		t.Fatalf("idle-boundary Event history: %+v err=%v", events, err)
+		t.Fatalf("serialized Event history: %+v err=%v", events, err)
 	}
 	if item2, err := store.Work(item.ID); err != nil || item2.Review == nil || item2.Review.Lease == nil || item2.Review.Lease.DeliveredAt == nil {
-		t.Fatalf("idle-boundary Event was not delivered exactly once: %+v err=%v", item2, err)
+		t.Fatalf("serialized Event was not delivered exactly once: %+v err=%v", item2, err)
 	}
 }
 

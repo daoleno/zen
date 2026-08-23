@@ -811,16 +811,14 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 //
 //  1. reconcile every existing delivery receipt (exact-once Lifecycle admission state)
 //     and every prepared Brain input against its exact request receipt
-//  2. one delivered Event awaiting its typed disposition: stop
-//  3. pending Brain user admission: stop (durable user-steering gate)
-//  4. a Host foreground turn: stop unless strong exact terminal evidence
-//     closes that exact turn
-//  5. current provider Activity: stop conservatively while it remains
-//     non-terminal or cannot be read
-//  6. select one fair pending Work key at the boundary
-//  7. atomically claim its current Event head
-//  8. submit once with the existing receipt ledger
-//  9. mark delivered only from the accepted receipt
+//  2. reconcile a Host foreground turn from strong exact terminal evidence,
+//     without making that turn or ambient provider Activity an admission gate
+//  3. one delivered Event awaiting its typed disposition: stop
+//  4. pending Brain user admission: stop (durable user-steering gate)
+//  5. select one fair pending Work key
+//  6. atomically claim its current Event head
+//  7. submit once with the existing receipt ledger
+//  8. mark delivered only from the accepted receipt
 func (s *Service) ReconcileHostLane() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -843,7 +841,7 @@ func (s *Service) ReconcileHostLane() (bool, error) {
 // ResolveReviewLease (mark_delivered/discard/replay), a receipt-state change,
 // or that evidence-based recovery — never by elapsed time. The exact held
 // lease is the quarantine boundary: it is never replayed, while unrelated
-// Work continues through the ordinary foreground/provider gates instead of
+// Work continues through the ordinary serialized admission gates instead of
 // inheriting a Session-wide fence.
 func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
@@ -909,26 +907,11 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			}
 		}
 	}
-	// Step 2: one delivered review awaits its typed disposition. The Host is
-	// mid-review; no new admission may overtake it.
-	if delivered, err := s.store.HasLiveDeliveredReview(); err != nil {
-		return false, err
-	} else if delivered {
-		return false, nil
-	}
-	// Step 3: a pending Brain user admission is the durable user-steering
-	// gate. Pending is persisted before provider mutation, so while it exists
-	// the lane must not admit an internal Event ahead of the user's message.
-	if pending, err := s.store.PendingHostInputAdmission(hostID); err != nil {
-		return false, err
-	} else if pending {
-		return false, nil
-	}
-	// Step 4: the accepted foreground Host turn owns the checkpoint until
-	// strong exact terminal evidence closes it. Ambient Agent state is never
-	// authority; only the exact bound provider activity's terminal status (or
-	// the current observation's terminal status for an unbound turn) closes
-	// it. A running observation binds the durable activity identity once.
+	// Step 2: reconcile the accepted foreground Host turn without using it as
+	// an admission boundary. Only the exact bound provider activity's terminal
+	// status (or the current observation's terminal status for an unbound turn)
+	// closes it. A running observation binds the durable activity identity once.
+	// A queued Review admission never adopts, replaces, or closes this row.
 	if active != nil && active.HostSessionID == hostID {
 		generation := active.HostGeneration
 		activityID := ""
@@ -970,34 +953,33 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 				exactTerminal = true
 			}
 		}
-		if probeErr != nil {
-			return false, probeErr
-		}
 		if bindActivity != "" {
 			if bindErr := s.store.BindHostForegroundActivity(hostID, generation, active.HostTurnID, bindActivity); bindErr != nil {
 				return false, bindErr
 			}
 		}
-		if !exactTerminal {
-			return false, nil
-		}
-		if closeErr := s.store.CloseHostForegroundTurn(hostID, generation, active.HostTurnID, activityID); closeErr != nil {
-			return false, closeErr
+		if exactTerminal {
+			if closeErr := s.store.CloseHostForegroundTurn(hostID, generation, active.HostTurnID, activityID); closeErr != nil {
+				return false, closeErr
+			}
 		}
 	}
-	// Step 5: the daemon can restart while a provider-native user turn is
-	// already running and therefore has no Brain admission/foreground row. A
-	// current non-terminal provider Activity is only a conservative stop fence:
-	// it never authorizes lifecycle mutation or closes any Turn, but it prevents
-	// an internal Event from being classified as interactive steering. Unknown
-	// observed status also fails closed; only absence or an explicit terminal
-	// provider observation reaches admission.
-	if observation, found, err := s.watcher.ProbeProviderEvidence(hostID); err != nil {
+	// Step 3: one delivered review awaits its typed disposition. The Host is
+	// mid-review; no new admission may overtake it.
+	if delivered, err := s.store.HasLiveDeliveredReview(); err != nil {
 		return false, err
-	} else if found && !providerStatusTerminal(observation.Status) {
+	} else if delivered {
 		return false, nil
 	}
-	// Steps 6-9: at the boundary, select one fair review-required Work, claim
+	// Step 4: a pending Brain user admission is the durable user-steering
+	// gate. Pending is persisted before provider mutation, so while it exists
+	// the lane must not admit an internal Event ahead of the user's message.
+	if pending, err := s.store.PendingHostInputAdmission(hostID); err != nil {
+		return false, err
+	} else if pending {
+		return false, nil
+	}
+	// Steps 5-8: select one fair review-required Work, claim
 	// its current action atomically, submit once through the receipt ledger,
 	// and mark delivered only from the accepted receipt. Claims are leases:
 	// Host replacement/death re-delivers the same unresolved action and never
@@ -1546,7 +1528,7 @@ func (s *Service) deliverClaimedReviewLocked(action WorkReviewAction) (bool, err
 // reconciliation. It never sets process-local scheduling state: the durable
 // user-steering gate is the pending Brain input admission persisted by
 // PrepareHostUserInput before provider mutation. Reconciling here first means
-// an internal Event admitted at an idle boundary is delivered before this
+// an internal Event admitted at the serialized input boundary is delivered before this
 // message can overtake it.
 //
 // A background lane error (review delivery failure, liveness probe error) is
@@ -2080,8 +2062,9 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 		return fmt.Errorf("Brain input admission identity changed after provider acceptance")
 	}
 	// Provider acceptance is durable before the lane runs; the accepted
-	// admission creates the foreground Host turn, which stops the reducer
-	// until strong exact terminal evidence closes it.
+	// admission creates the foreground lifecycle owner. Review admission may
+	// queue behind it, while the pre-mutation pending admission remains the
+	// ordering gate that prevents an internal Review from overtaking user input.
 	accepted, _, _, err := s.store.AcceptBrainInputAdmission(persisted)
 	if err != nil {
 		s.dispatchMu.Unlock()

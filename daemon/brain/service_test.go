@@ -1121,7 +1121,7 @@ func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.
 	}
 }
 
-func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
+func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1164,10 +1164,15 @@ func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
 
 	item := createSignalTestWork(t, store, "Ready behind persistent Host", "brain-agent-worker:@1")
 	event := appendSignalTestEvent(t, store, item, "persistent-host-output")
-	if woke, err := service.ReconcileHostLane(); err != nil || woke {
-		t.Fatalf("busy Host admitted pending review: woke=%v err=%v", woke, err)
+	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
+		t.Fatalf("busy Host did not admit pending review: woke=%v err=%v", woke, err)
 	}
-	requireReviewPending(t, store, item.ID)
+	lease := requireReviewDelivered(t, store, item.ID)
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active == nil ||
+		active.ProviderActivityID != activityID {
+		t.Fatalf("queued admission replaced foreground Activity A: active=%+v err=%v", active, err)
+	}
+	deliveredRevision := lease.DeliveryWorkRevision
 
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type: "agent_output", AgentID: "other-hidden-host:@1",
@@ -1178,7 +1183,11 @@ func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type: "agent_output", AgentID: hostID, Agent: host,
 	}); err != nil || woke {
-		t.Fatalf("running provider output drove pending review: woke=%v err=%v", woke, err)
+		t.Fatalf("running provider output replayed delivered review: woke=%v err=%v", woke, err)
+	}
+	stable := requireReviewDelivered(t, store, item.ID)
+	if len(fw.sentCalls) != 1 || stable.DeliveryWorkRevision != deliveredRevision {
+		t.Fatalf("reducer replay churned queued admission: sends=%d revision=%d want=%d", len(fw.sentCalls), stable.DeliveryWorkRevision, deliveredRevision)
 	}
 
 	settledAt := now.Add(time.Second)
@@ -1189,13 +1198,12 @@ func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
 		Type: "provider_activity_change", AgentID: hostID,
 		Agent: &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
 	})
-	if err != nil || !woke {
-		t.Fatalf("terminal provider output woke=%v err=%v", woke, err)
+	if err != nil || woke {
+		t.Fatalf("terminal provider output replayed review: woke=%v err=%v", woke, err)
 	}
 	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
 		t.Fatalf("terminal provider boundary left foreground active=%+v err=%v", active, err)
 	}
-	lease := requireReviewDelivered(t, store, item.ID)
 	if lease.HostSessionID != hostID {
 		t.Fatalf("pending review delivered through wrong Host: %+v", lease)
 	}

@@ -116,6 +116,50 @@ func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
 	}
 }
 
+func TestClaimedReviewAdmissionMayQueueWithoutAdoptingLiveActivity(t *testing.T) {
+	e, _ := newTestEngine(t)
+	defer e.Close()
+	define(t, e, "w-queued-review", PolicyBounded)
+	if _, err := e.OpenReviewEvent("w-queued-review", "session.done", "worker-turn", "event-queued"); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := e.ClaimReview("w-queued-review", "brain-host", "handling-queued", "turn-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.PrepareAdmission("w-queued-review", PrepareAdmissionInput{
+		SessionID: "brain-host", TurnToken: "turn-queued", Receipt: "turn-queued",
+		ClaimToken: claimed.Review.Handler.HandlerID, PayloadSHA256: "digest-queued",
+		ProcessIdentity: "process-1", PaneGeneration: "pane-1", Mode: AdmissionFresh,
+		BaselineActivityID: "activity-a", AttemptedAt: time.Now().UTC(),
+		Purpose: AdmissionPurposeReview, PurposeID: claimed.Review.Handler.HandlerID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := e.AcceptAdmission("w-queued-review", "turn-queued", AcceptAdmissionInput{
+		SessionID: "brain-host", Receipt: "turn-queued", PayloadSHA256: "digest-queued",
+		AdmissionStream: "provider", AdmissionID: "input-queued", AdmissionCursor: 2,
+		AdmissionSHA256: "digest-queued", AdmissionAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := accepted.AdmissionByToken("turn-queued")
+	if admission == nil || admission.Status != AdmissionAccepted || admission.ActivityID != "" ||
+		admission.BaselineActivityID != "activity-a" || accepted.Attempt != nil {
+		t.Fatalf("queued Review admission=%+v state=%+v", admission, accepted)
+	}
+	revision := accepted.Revision
+	again, err := e.AcceptAdmission("w-queued-review", "turn-queued", AcceptAdmissionInput{
+		SessionID: "brain-host", Receipt: "turn-queued", PayloadSHA256: "digest-queued",
+		AdmissionStream: "provider", AdmissionID: "input-queued", AdmissionCursor: 2,
+		AdmissionSHA256: "digest-queued", AdmissionAt: time.Now().UTC(),
+	})
+	if err != nil || again.Revision != revision {
+		t.Fatalf("duplicate queued acceptance revision=%d want=%d err=%v", again.Revision, revision, err)
+	}
+}
+
 func TestAmbiguousAdmissionIsDurableAndNeverReprepared(t *testing.T) {
 	e, _ := newTestEngine(t)
 	defer e.Close()

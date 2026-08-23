@@ -393,8 +393,11 @@ func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionI
 			if a.ActivityID != "" {
 				return nil, nil
 			}
+			if in.ActivityID == "" {
+				return nil, nil
+			}
 			if a.SessionID != in.SessionID || a.Receipt != in.Receipt || a.PayloadSHA256 != in.PayloadSHA256 ||
-				in.ActivityID == "" || in.AdmissionID == "" || in.AdmissionSHA256 != a.PayloadSHA256 {
+				in.AdmissionID == "" || in.AdmissionSHA256 != a.PayloadSHA256 {
 				return nil, fmt.Errorf("%w: provider evidence does not match signal-accepted admission", ErrInvalidCommand)
 			}
 			return []Event{{
@@ -410,7 +413,8 @@ func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionI
 			return nil, fmt.Errorf("%w: aborted admission cannot be accepted", ErrInvalidCommand)
 		}
 		if a.SessionID != in.SessionID || a.Receipt != in.Receipt || a.PayloadSHA256 != in.PayloadSHA256 ||
-			in.ActivityID == "" || in.AdmissionID == "" || in.AdmissionSHA256 != a.PayloadSHA256 ||
+			in.AdmissionID == "" || in.AdmissionSHA256 != a.PayloadSHA256 ||
+			(in.ActivityID == "" && (a.ClaimToken == "" || a.BaselineActivityID == "")) ||
 			(!in.AdmissionAt.IsZero() && in.AdmissionAt.Before(a.AttemptedAt)) {
 			return nil, fmt.Errorf("%w: provider evidence does not match prepared admission", ErrInvalidCommand)
 		}

@@ -20,23 +20,24 @@ import (
 // authority; these rows support transcript and Session presentation only and
 // are rebuilt from accepted admissions after restart.
 type TurnRecord struct {
-	SessionID       string                   `json:"session_id"`
-	TurnID          string                   `json:"turn_id"`
-	WorkID          string                   `json:"work_id"`
-	Status          watcher.TurnStatus       `json:"status"`
-	Receipt         string                   `json:"receipt,omitempty"`
-	PaneGeneration  string                   `json:"pane_generation,omitempty"`
-	ProcessIdentity string                   `json:"process_identity,omitempty"`
-	PayloadSHA256   string                   `json:"payload_sha256,omitempty"`
-	Admission       watcher.TurnAdmission    `json:"admission,omitempty"`
-	ActivityID      string                   `json:"activity_id,omitempty"`
-	Attention       string                   `json:"attention,omitempty"`
-	ControlState    watcher.TurnControlState `json:"control_state,omitempty"`
-	AcceptedAt      time.Time                `json:"accepted_at,omitempty"`
-	SettledAt       *time.Time               `json:"settled_at,omitempty"`
-	Summary         string                   `json:"summary,omitempty"`
-	Facts           []TurnFactRecord         `json:"facts"`
-	Hints           []watcher.TurnHint       `json:"hints,omitempty"`
+	SessionID              string                   `json:"session_id"`
+	TurnID                 string                   `json:"turn_id"`
+	WorkID                 string                   `json:"work_id"`
+	Status                 watcher.TurnStatus       `json:"status"`
+	Receipt                string                   `json:"receipt,omitempty"`
+	PaneGeneration         string                   `json:"pane_generation,omitempty"`
+	ProcessIdentity        string                   `json:"process_identity,omitempty"`
+	PayloadSHA256          string                   `json:"payload_sha256,omitempty"`
+	Admission              watcher.TurnAdmission    `json:"admission,omitempty"`
+	ActivityID             string                   `json:"activity_id,omitempty"`
+	QueuedBehindActivityID string                   `json:"queued_behind_activity_id,omitempty"`
+	Attention              string                   `json:"attention,omitempty"`
+	ControlState           watcher.TurnControlState `json:"control_state,omitempty"`
+	AcceptedAt             time.Time                `json:"accepted_at,omitempty"`
+	SettledAt              *time.Time               `json:"settled_at,omitempty"`
+	Summary                string                   `json:"summary,omitempty"`
+	Facts                  []TurnFactRecord         `json:"facts"`
+	Hints                  []watcher.TurnHint       `json:"hints,omitempty"`
 	// TranscriptBinding is the provider-native transcript identity recorded
 	// at admission (Pi owned session flag/path), restored on rediscovery;
 	// the equivalent tmux option is only an advisory cache.
@@ -178,24 +179,25 @@ func validateTurnRecord(turn TurnRecord) error {
 
 func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 	snapshot := watcher.TurnSnapshot{
-		SessionID:         t.SessionID,
-		TurnID:            t.TurnID,
-		Status:            t.Status,
-		AcceptedAt:        t.AcceptedAt,
-		SettledAt:         t.SettledAt,
-		Summary:           t.Summary,
-		Attention:         t.Attention,
-		ControlState:      t.ControlState,
-		ActivityID:        t.ActivityID,
-		Admission:         t.Admission,
-		HasAdmission:      !t.Admission.Empty(),
-		Hints:             append([]watcher.TurnHint(nil), t.Hints...),
-		PaneGeneration:    t.PaneGeneration,
-		ProcessIdentity:   t.ProcessIdentity,
-		TranscriptBinding: t.TranscriptBinding,
-		LeaseDeadline:     t.LeaseDeadline,
-		SignalProtocol:    t.SignalProtocol,
-		UpdatedAt:         t.UpdatedAt,
+		SessionID:              t.SessionID,
+		TurnID:                 t.TurnID,
+		Status:                 t.Status,
+		AcceptedAt:             t.AcceptedAt,
+		SettledAt:              t.SettledAt,
+		Summary:                t.Summary,
+		Attention:              t.Attention,
+		ControlState:           t.ControlState,
+		ActivityID:             t.ActivityID,
+		QueuedBehindActivityID: t.QueuedBehindActivityID,
+		Admission:              t.Admission,
+		HasAdmission:           !t.Admission.Empty(),
+		Hints:                  append([]watcher.TurnHint(nil), t.Hints...),
+		PaneGeneration:         t.PaneGeneration,
+		ProcessIdentity:        t.ProcessIdentity,
+		TranscriptBinding:      t.TranscriptBinding,
+		LeaseDeadline:          t.LeaseDeadline,
+		SignalProtocol:         t.SignalProtocol,
+		UpdatedAt:              t.UpdatedAt,
 	}
 	return snapshot
 }
@@ -445,13 +447,16 @@ func (s *Store) ResolveInputAdmission(resolution watcher.InputAdmissionResolutio
 	if s == nil || s.fsm == nil {
 		return watcher.InputAdmission{}, fmt.Errorf("brain store is not configured")
 	}
-	if resolution.ActivityID == "" || resolution.Admission.Empty() ||
+	if resolution.Admission.Empty() ||
 		resolution.Admission.SHA256 == "" || resolution.Admission.SHA256 != resolution.PayloadSHA256 {
 		return watcher.InputAdmission{}, fmt.Errorf("provider admission does not match the pending payload digest")
 	}
 	st, admission, err := s.fsmAdmission(resolution.SessionID, resolution.ProposedTurnID)
 	if err != nil {
 		return watcher.InputAdmission{}, err
+	}
+	if resolution.ActivityID == "" && (admission.ClaimToken == "" || admission.BaselineActivityID == "") {
+		return watcher.InputAdmission{}, fmt.Errorf("provider admission has no Activity outside a queued Brain Review")
 	}
 	next, err := s.fsm.AcceptAdmission(st.ID, lifecycle.TurnToken(resolution.ProposedTurnID), lifecycle.AcceptAdmissionInput{
 		SessionID: resolution.SessionID, Receipt: resolution.Receipt, PayloadSHA256: resolution.PayloadSHA256,
@@ -565,6 +570,7 @@ func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecyc
 			continue
 		}
 		turn.ActivityID, turn.Admission, turn.UpdatedAt = resolution.ActivityID, resolution.Admission, now
+		turn.QueuedBehindActivityID = admission.BaselineActivityID
 		if admission.ResultTurnToken == admission.TurnToken {
 			turn.WorkID = string(st.ID)
 			turn.Receipt = admission.Receipt
@@ -595,7 +601,8 @@ func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecyc
 		Status: watcher.TurnAccepted, Receipt: admission.Receipt, PaneGeneration: admission.PaneGeneration,
 		ProcessIdentity: admission.ProcessIdentity, PayloadSHA256: admission.PayloadSHA256,
 		Admission: resolution.Admission, ActivityID: resolution.ActivityID, AcceptedAt: acceptedAt,
-		Summary: "Delegated input accepted", Facts: []TurnFactRecord{{FactID: fact.TurnFactIDFor(),
+		QueuedBehindActivityID: admission.BaselineActivityID,
+		Summary:                "Delegated input accepted", Facts: []TurnFactRecord{{FactID: fact.TurnFactIDFor(),
 			Kind: fact.Kind, Class: fact.Class, At: leaseFrom.UTC(), Summary: "Delegated input accepted"}},
 		TranscriptBinding: watcher.TranscriptBinding{Provider: admission.TranscriptProvider, PiFlag: admission.TranscriptFlag, PiPath: admission.TranscriptPath},
 		SignalProtocol:    admission.SignalProtocol, HostHandling: admission.ClaimToken != "",
@@ -670,6 +677,7 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 			admission.ResultTurnToken == attemptState.Attempt.TurnToken {
 			snapshot.AcceptedAt = admission.AttemptedAt
 			snapshot.ActivityID = admission.ActivityID
+			snapshot.QueuedBehindActivityID = admission.BaselineActivityID
 			snapshot.Admission = watcher.TurnAdmission{
 				Stream: admission.AdmissionStream, ID: admission.AdmissionID, Cursor: admission.AdmissionCursor,
 				SHA256: admission.PayloadSHA256, At: admission.AdmissionAt,
@@ -1549,6 +1557,21 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	effectiveStatus := mutation.status
 	if finalDone {
 		effectiveStatus = watcher.TurnDone
+	}
+	if fact.Class == watcher.EvidenceProvider && turn.ActivityID == "" &&
+		turn.QueuedBehindActivityID != "" && mutation.activityID != "" &&
+		providerFactBinds(&turn, fact) {
+		// Provider promotion is canonical admission enrichment, not merely a
+		// presentation update. Persist the Activity on Lifecycle first so startup
+		// projection repair cannot erase the queued Turn's exact correlation.
+		if _, err := s.fsm.AcceptAdmission(lifecycle.WorkID(turn.WorkID), lifecycle.TurnToken(turn.TurnID), lifecycle.AcceptAdmissionInput{
+			SessionID: fact.SessionID, Receipt: turn.Receipt, PayloadSHA256: turn.PayloadSHA256,
+			ActivityID: mutation.activityID, AdmissionStream: fact.Admission.Stream,
+			AdmissionID: fact.Admission.ID, AdmissionCursor: fact.Admission.Cursor,
+			AdmissionSHA256: fact.Admission.SHA256, AdmissionAt: fact.Admission.At,
+		}); err != nil {
+			return watcher.TurnSnapshot{}, false, fmt.Errorf("persist queued provider promotion: %w", err)
+		}
 	}
 	if !lateTerminalAudit {
 		if err := s.fsmTranslateCanonicalTransition(&turn, fact, effectiveStatus, mutation.eventKind, finalDone); err != nil {

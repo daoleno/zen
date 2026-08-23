@@ -10,14 +10,14 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func TestHostOwnershipLossIdleAutomaticallyDeliversCanonicalEventOnce(t *testing.T) {
+func TestHostOwnershipLossHistoryDoesNotBlockCanonicalEventDelivery(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const (
-		hostID     = "brain-host:@ownership-lost-idle"
+		hostID     = "brain-host:@ownership-lost-history"
 		oldTurnID  = "turn-host-history"
 		workerID   = "worker:@completed"
 		workerTurn = "turn-worker-completed"
@@ -96,7 +96,7 @@ func TestHostOwnershipLossIdleAutomaticallyDeliversCanonicalEventOnce(t *testing
 	}
 	service := NewService(store, fw, nil)
 	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
-		t.Fatalf("idle Host automatic delivery woke=%v err=%v", woke, err)
+		t.Fatalf("automatic delivery woke=%v err=%v", woke, err)
 	}
 	after, err := store.FSM().State(lifecycle.WorkID(completed.ID))
 	if err != nil || after.Review == nil || after.Review.EventID != eventID ||
@@ -144,7 +144,7 @@ func TestHostOwnershipLossIdleAutomaticallyDeliversCanonicalEventOnce(t *testing
 	}
 }
 
-func TestHistoricalRunningHostTurnIsAuditOnlyAtIdleAdmission(t *testing.T) {
+func TestHistoricalRunningHostTurnIsAuditOnlyAtSerializedAdmission(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -163,13 +163,13 @@ func TestHistoricalRunningHostTurnIsAuditOnlyAtIdleAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, err := store.CreateWork(Work{
-		Title: "pending canonical review", Objective: "deliver after exact Host idle proof",
+		Title: "pending canonical review", Objective: "deliver through the serialized Host input owner",
 		SourceThreadID: threadID, CompletionPolicy: CompletionBounded,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), "turn_done", "worker-turn", "event:host-idle")
+	opened, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), "turn_done", "worker-turn", "event:host-serialized")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestHistoricalHostTurnDoesNotLockOutOrdinaryUserInput(t *testing.T) {
 	}
 }
 
-func TestCurrentUnreadableProviderActivityBlocksReviewDelivery(t *testing.T) {
+func TestCurrentUnreadableProviderActivityDoesNotCreateSchedulerGate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +297,6 @@ func TestCurrentUnreadableProviderActivityBlocksReviewDelivery(t *testing.T) {
 	}
 	item := createSignalTestWork(t, store, "provider unreadable", "worker:@provider-unreadable")
 	appendSignalTestEvent(t, store, item, "provider-unreadable")
-	before, _ := store.FSM().State(lifecycle.WorkID(item.ID))
 	fw := &fakeWatcher{
 		sessions: map[string]*classifier.Agent{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateUnknown, PaneAlive: true},
@@ -306,11 +305,11 @@ func TestCurrentUnreadableProviderActivityBlocksReviewDelivery(t *testing.T) {
 		providerProbeErr: map[string]error{hostID: errors.New("provider transcript unreadable")},
 		turnStore:        store,
 	}
-	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err == nil || delivered {
+	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err != nil || !delivered {
 		t.Fatalf("unreadable current Activity delivery=%v err=%v", delivered, err)
 	}
 	after, _ := store.FSM().State(lifecycle.WorkID(item.ID))
-	if after.Revision != before.Revision || after.Review == nil || after.Review.Handler != nil || len(fw.sentCalls) != 0 {
-		t.Fatalf("unreadable Activity mutated delivery: before=%+v after=%+v sends=%d", before, after, len(fw.sentCalls))
+	if after.Review == nil || after.Review.Handler == nil || after.Review.Handler.DeliveredAt == nil || len(fw.sentCalls) != 1 {
+		t.Fatalf("unreadable Activity did not delegate admission safety: after=%+v sends=%d", after, len(fw.sentCalls))
 	}
 }

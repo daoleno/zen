@@ -108,19 +108,24 @@ type TurnHint struct {
 // TurnSnapshot is the canonical per-turn projection the watcher consumes. It
 // is a pure read of the durable ledger record; it is never written directly.
 type TurnSnapshot struct {
-	SessionID      string
-	TurnID         string
-	Status         TurnStatus
-	AcceptedAt     time.Time
-	SettledAt      *time.Time
-	Summary        string
-	Attention      string
-	ControlState   TurnControlState
-	ActivityID     string
-	Admission      TurnAdmission
-	HasAdmission   bool
-	Hints          []TurnHint
-	PaneGeneration string
+	SessionID    string
+	TurnID       string
+	Status       TurnStatus
+	AcceptedAt   time.Time
+	SettledAt    *time.Time
+	Summary      string
+	Attention    string
+	ControlState TurnControlState
+	ActivityID   string
+	// QueuedBehindActivityID is the provider Activity that was current when a
+	// fresh Brain Review input was accepted into the provider-native queue. The
+	// proposed Turn remains unbound until the provider promotes that admission
+	// to a different Activity.
+	QueuedBehindActivityID string
+	Admission              TurnAdmission
+	HasAdmission           bool
+	Hints                  []TurnHint
+	PaneGeneration         string
 	// ProcessIdentity is the recorded provider process identity at admission;
 	// it anchors deterministic liveness FactIDs (never observation time).
 	ProcessIdentity string

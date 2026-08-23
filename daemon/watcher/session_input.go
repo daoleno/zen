@@ -669,21 +669,25 @@ func (owner *sessionInputOwner) submitWithTurn(
 			providerBaseline = captured.Provider
 		}
 		reuse := delegatedReuseDecision{}
+		queuedBehindActivityID := ""
 		if turn != nil {
 			reuseBoundary := inputReuseDelegated
 			if len(boundary) > 0 {
 				reuseBoundary = boundary[0]
 			}
 			if reuseBoundary == inputReuseBrainHost {
-				// Historical Host Turns are immutable audit only. Recheck the
-				// current provider baseline at the mutation boundary so a race
-				// with new live activity still fails closed.
-				if providerBaseline.ProbeState.Loss() ||
-					(strings.TrimSpace(providerBaseline.ID) != "" && !providerActivityTerminal(providerBaseline.Status)) {
+				// Historical Host Turns are immutable audit only. Provider-native
+				// queues accept new input while an Activity is live; retain that
+				// Activity as the explicit non-adoption boundary for the proposed
+				// Turn. Unreadable provider state still fails before mutation.
+				if providerBaseline.ProbeState.Loss() {
 					return definitelyNotSubmitted(result.Receipt, fmt.Errorf(
-						"%w: Brain Host provider activity is not idle",
+						"%w: Brain Host provider activity is unreadable",
 						errDelegatedProviderOwnershipMismatch,
 					))
+				}
+				if strings.TrimSpace(providerBaseline.ID) != "" && !providerActivityTerminal(providerBaseline.Status) {
+					queuedBehindActivityID = strings.TrimSpace(providerBaseline.ID)
 				}
 			} else {
 				existing, exists, turnErr := owner.ledgerTurn(sessionID)
@@ -720,6 +724,9 @@ func (owner *sessionInputOwner) submitWithTurn(
 			if reuse.Mode == delegatedReuseConditionalSteer {
 				mode = InputAdmissionConditionalSteer
 				baselineActivityID = reuse.BaselineActivity
+			}
+			if queuedBehindActivityID != "" {
+				baselineActivityID = queuedBehindActivityID
 			}
 			submission, created, prepareErr := owner.prepareInputAdmission(InputAdmission{
 				WorkID: turn.WorkID, SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
@@ -850,10 +857,14 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 
 		if turn != nil && !resolvedBySignal {
+			resolvedActivityID := strings.TrimSpace(confirmation.ProviderActivity)
+			if queuedBehindActivityID != "" && resolvedActivityID == queuedBehindActivityID {
+				resolvedActivityID = ""
+			}
 			resolved, resolveErr := owner.resolveInputAdmission(InputAdmissionResolution{
 				SessionID: sessionID, ProposedTurnID: turn.ID, Receipt: result.Receipt,
 				PayloadSHA256: payloadDigest,
-				ActivityID:    strings.TrimSpace(confirmation.ProviderActivity),
+				ActivityID:    resolvedActivityID,
 				Admission: TurnAdmission{
 					Stream: strings.TrimSpace(confirmation.Admission.Stream),
 					ID:     strings.TrimSpace(confirmation.Admission.ID),

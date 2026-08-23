@@ -167,14 +167,14 @@ const (
 //	#    From        Event                                            To            Guard / effect
 //	1    absent      eligible actionable fact appended                 pending       RequiredAt=now; EventID=fact.ID; card materialized
 //	2    pending     newer eligible fact while no lease in flight      pending       EventID := fact.ID (content refresh, same event)
-//	3    pending     lane claims at the idle boundary                  leased        lease minted (capability + revision fence)
+//	3    pending     lane claims at the serialization boundary         leased        lease minted (capability + revision fence)
 //	4    leased      receipt proves non-submission                     pending       lease cleared (I8)
 //	5    leased      receipt accepted; provider Turn canonical         delivered      DeliveredAt set
 //	6    leased      Host gone; no/Aborted exact submission            pending       lease cleared (I8); same action re-claimable
 //	7    leased      Host gone; Pending/Resolved exact submission      quarantined   AmbiguousDelivery set; delivery.uncertain note
 //	8    delivered   typed disposition resolves                        absent        Work transitioned; fact audited; owner detached if terminal
 //	9    delivered   Host turn ended without disposition               ended         HandlingEndedAt set; audit note appended
-//	10   ended       lane claims at the idle boundary                  leased        same action re-claimed (no new queue item)
+//	10   ended       lane claims at the serialization boundary         leased        same action re-claimed (no new queue item)
 //	11   quarantined actor mark_delivered                              pending       delivery proven; same action re-claimable
 //	12   quarantined actor replay                                     pending       lease cleared; same action re-claimable
 //	13   quarantined actor discard                                    absent        audit; if Work non-terminal a fresh reconcile fact re-requires (1)

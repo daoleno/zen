@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestBrainHostIdleAdmissionDoesNotConsultHistoricalTurn(t *testing.T) {
+func TestBrainHostAvailableAdmissionDoesNotConsultHistoricalTurn(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	identity := testSessionInputIdentity("codex")
@@ -53,7 +53,7 @@ func TestBrainHostIdleAdmissionDoesNotConsultHistoricalTurn(t *testing.T) {
 	}
 }
 
-func TestBrainHostAdmissionFailsClosedOnCurrentLiveProviderActivity(t *testing.T) {
+func TestBrainHostAdmissionQueuesBehindCurrentLiveProviderActivity(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	identity := testSessionInputIdentity("codex")
@@ -65,7 +65,7 @@ func TestBrainHostAdmissionFailsClosedOnCurrentLiveProviderActivity(t *testing.T
 		PaneGeneration: io.paneValue.generation,
 	})
 	draft := delegatedTurnDraft{
-		WorkID: "work-pending", ID: "turn-fresh", Receipt: "event-pending",
+		WorkID: "work-pending", ID: "turn-fresh", Receipt: "event-pending", ClaimToken: "handling-pending",
 		AcceptedAt: acceptedAt.Add(time.Minute), ProcessIdentity: delegatedTurnIdentity(identity),
 	}
 	result, err := owner.submitHost(
@@ -74,16 +74,73 @@ func TestBrainHostAdmissionFailsClosedOnCurrentLiveProviderActivity(t *testing.T
 		scriptedActivityTransitionAdmission(
 			"must remain queued",
 			ProviderActivityObservation{ID: "activity-current", Status: "running", StartedAt: acceptedAt},
-			"activity-fresh",
+			"activity-current",
 		),
 	)
-	if err == nil || result.Outcome != InputNotSubmitted || len(io.queues) != 0 || len(io.submissions) != 0 {
+	if err != nil || result.Outcome != InputAccepted || len(io.queues) != 1 || len(io.submissions) != 1 {
 		t.Fatalf("live current Activity result=%+v err=%v queues=%d submissions=%d",
 			result, err, len(io.queues), len(io.submissions))
 	}
 	turn, found, readErr := ledger.Turn("brain-host:@live")
-	if readErr != nil || !found || turn.TurnID != "turn-historical" || turn.Status != TurnUnknown {
-		t.Fatalf("live Activity rewrote historical Turn: found=%v turn=%+v err=%v", found, turn, readErr)
+	if readErr != nil || !found || turn.TurnID != draft.ID || turn.Status != TurnAccepted ||
+		turn.ActivityID != "" || turn.QueuedBehindActivityID != "activity-current" {
+		t.Fatalf("queued admission adopted current Activity: found=%v turn=%+v err=%v", found, turn, readErr)
+	}
+
+	// Restart/reconnect reconstructs the owner around the same durable ledgers.
+	// The exact accepted transaction returns as a duplicate without enqueueing.
+	reopened := newLedgerSessionInputOwner(io, ledger)
+	duplicate, duplicateErr := reopened.submitHost(
+		"brain-host:@live", identity, fixedSessionInputResolver(identity), identity.Command,
+		"must remain queued", draft,
+		scriptedActivityTransitionAdmission(
+			"must remain queued",
+			ProviderActivityObservation{ID: "activity-current", Status: "running", StartedAt: acceptedAt},
+			"activity-current",
+		),
+	)
+	if duplicateErr != nil || !duplicate.Duplicate || duplicate.Outcome != InputAccepted || len(io.queues) != 1 {
+		t.Fatalf("restart duplicate=(%+v,%v) queues=%d", duplicate, duplicateErr, len(io.queues))
+	}
+
+	queuedAdmission := turn.Admission
+	stillA := providerObservationForTurn(ProviderActivityObservation{
+		ID: "activity-current", Status: "running", StartedAt: acceptedAt,
+		AdmissionStream: queuedAdmission.Stream, AdmissionID: queuedAdmission.ID,
+		AdmissionCursor: queuedAdmission.Cursor, AdmissionAt: queuedAdmission.At,
+		InputSHA256: queuedAdmission.SHA256,
+	}, turn)
+	if fact := activityFactFromObservation("brain-host:@live", turn, stillA); fact != nil {
+		t.Fatalf("queued Turn adopted foreground Activity A: %+v", fact)
+	}
+
+	// Native promotion changes the Activity while retaining the exact admission
+	// tuple. That fact binds the already accepted proposed Turn without replay.
+	promoted := ProviderActivityObservation{
+		ID: "activity-review", Status: "running", StartedAt: acceptedAt.Add(2 * time.Minute),
+		AdmissionStream: queuedAdmission.Stream, AdmissionID: queuedAdmission.ID,
+		AdmissionCursor: queuedAdmission.Cursor, AdmissionAt: queuedAdmission.At,
+		InputSHA256: queuedAdmission.SHA256,
+	}
+	fact := activityFactFromObservation("brain-host:@live", turn, providerObservationForTurn(promoted, turn))
+	if fact == nil {
+		t.Fatal("provider promotion produced no lifecycle fact")
+	}
+	if _, changed, applyErr := ledger.ApplyTurnFact(*fact); applyErr != nil || !changed {
+		t.Fatalf("provider promotion changed=%v err=%v fact=%+v", changed, applyErr, fact)
+	}
+	promotedTurn, _, _ := ledger.Turn("brain-host:@live")
+	if promotedTurn.Status != TurnRunning || promotedTurn.ActivityID != "activity-review" {
+		t.Fatalf("promoted queued Turn=%+v", promotedTurn)
+	}
+
+	user, userErr := reopened.submit(
+		"brain-host:@live", identity, fixedSessionInputResolver(identity), identity.Command,
+		"later user input", "user-after-review",
+	)
+	if userErr != nil || user.Outcome != InputAccepted || len(io.submissions) != 2 ||
+		io.submissions[0] != "must remain queued" || io.submissions[1] != "later user input" {
+		t.Fatalf("serialized order result=(%+v,%v) submissions=%q", user, userErr, io.submissions)
 	}
 }
 

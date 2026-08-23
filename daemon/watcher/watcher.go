@@ -1906,6 +1906,17 @@ func providerObservationForTurn(
 	turn TurnSnapshot,
 ) ProviderActivityObservation {
 	activityID := strings.TrimSpace(turn.ActivityID)
+	if activityID == "" && strings.TrimSpace(turn.QueuedBehindActivityID) != "" &&
+		strings.TrimSpace(provider.ID) == strings.TrimSpace(turn.QueuedBehindActivityID) {
+		// The provider has accepted this Turn's admission but is still running the
+		// Activity that preceded it. Preserve the admission tuple for audit while
+		// withholding Activity lifecycle facts until native promotion occurs.
+		provider.ID = ""
+		provider.Status = ""
+		provider.StartedAt = time.Time{}
+		provider.SettledAt = time.Time{}
+		return provider
+	}
 	if activityID == "" || strings.TrimSpace(provider.ID) == activityID {
 		return provider
 	}
