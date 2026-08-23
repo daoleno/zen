@@ -1088,7 +1088,7 @@ func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
 		ID: activityID, Status: "completed", StartedAt: now, SettledAt: settledAt,
 	}
 	woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
-		Type: "agent_output", AgentID: hostID,
+		Type: "provider_activity_change", AgentID: hostID,
 		Agent: &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
 	})
 	if err != nil || !woke {

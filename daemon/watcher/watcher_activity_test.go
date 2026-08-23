@@ -370,6 +370,33 @@ func TestPollNoopPreservesUpdatedAtAndOrder(t *testing.T) {
 	}
 }
 
+func TestHiddenHostProviderTerminalEmitsActivityChangeWithoutPaneOutput(t *testing.T) {
+	w := New(time.Second)
+	started := time.Date(2026, 8, 23, 8, 0, 0, 0, time.UTC)
+	settled := started.Add(time.Second)
+	w.providerActivityProbe = &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{ID: "host-activity", Status: "running", StartedAt: started, Structured: true},
+		{ID: "host-activity", Status: "completed", StartedAt: started, SettledAt: settled, Structured: true},
+	}}
+	windows := []tmuxWindow{{
+		target: "brain-agent-brain-provider-boundary:@1", name: "Brain", cwd: "/brain",
+		command: "codex", panePID: 111, hidden: true,
+	}}
+	restore := installFakePollSeams(windows, map[string]string{
+		windows[0].target: contentA,
+	}, map[int]processInfo{111: fakeProcess(111, sessionAStarted)})
+	defer restore()
+
+	w.poll()
+	drainWatcherEvents(w)
+	w.poll()
+
+	events := collectWatcherEvents(w)
+	if len(events) != 1 || events[0].Type != "provider_activity_change" || events[0].AgentID != windows[0].target {
+		t.Fatalf("terminal provider boundary events = %#v", events)
+	}
+}
+
 func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 	w := New(time.Second)
 	w.pollNow = fakePollClock([]time.Time{

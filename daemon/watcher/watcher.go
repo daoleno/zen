@@ -220,6 +220,24 @@ type SessionEvent struct {
 	TurnID   string              `json:"-"`
 }
 
+type providerActivitySignal struct {
+	ID        string
+	Status    string
+	StartedAt int64
+	SettledAt int64
+	Probe     ProviderProbeState
+}
+
+func providerActivitySignalFor(observation ProviderActivityObservation) providerActivitySignal {
+	return providerActivitySignal{
+		ID:        strings.TrimSpace(observation.ID),
+		Status:    strings.TrimSpace(observation.Status),
+		StartedAt: observation.StartedAt.UTC().UnixNano(),
+		SettledAt: observation.SettledAt.UTC().UnixNano(),
+		Probe:     observation.ProbeState,
+	}
+}
+
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
 	pollInterval          time.Duration
@@ -238,6 +256,7 @@ type Watcher struct {
 	appliedFactIDs        map[string]string         // session -> last applied provider FactID (skip identical applies)
 	ledgerTurnReadAt      map[string]time.Time      // TTL for authoritative ledger re-reads
 	probeLossSince        map[string]probeLossState // session -> current turn loss streak
+	providerSignals       map[string]providerActivitySignal
 	// tmuxSocketPath is the one caller-visible tmux server selected when the
 	// daemon starts ("" = the Unix user's ordinary default server).
 	// tmuxScratchDir is the private TMUX_TMPDIR for provider panes without a
@@ -273,6 +292,7 @@ func New(pollInterval time.Duration) *Watcher {
 		appliedFactIDs:   make(map[string]string),
 		ledgerTurnReadAt: make(map[string]time.Time),
 		probeLossSince:   make(map[string]probeLossState),
+		providerSignals:  make(map[string]providerActivitySignal),
 		events:           make(chan SessionEvent, 100),
 		resources:        noopDelegatedResourceManager{},
 	}
@@ -1277,7 +1297,7 @@ func (w *Watcher) poll() {
 			turnErr = pendingErr
 		}
 		provider := ProviderActivityObservation{}
-		if providerProbe != nil && pendingErr == nil && (hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
+		if providerProbe != nil && pendingErr == nil && (item.agentSnap.Hidden || hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
 			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
 		}
 		if hasPending && providerFactRelevant(provider) {
@@ -1293,7 +1313,7 @@ func (w *Watcher) poll() {
 		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
 			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
-		if providerProbe != nil && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
+		if providerProbe != nil && !item.agentSnap.Hidden && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
 		}
 		results = append(results, probedAgent{
@@ -1341,6 +1361,15 @@ func (w *Watcher) poll() {
 		}
 		agent.State = newState
 		agent.Summary = summary
+		providerChanged := false
+		if agent.Hidden {
+			nextProvider := providerActivitySignalFor(r.provider)
+			previousProvider, observedProvider := w.providerSignals[r.id]
+			w.providerSignals[r.id] = nextProvider
+			providerChanged = r.existed && observedProvider && previousProvider != nextProvider
+		} else {
+			delete(w.providerSignals, r.id)
+		}
 		if !r.exists {
 			// First observation (fresh watcher, daemon restart, or a brand-new
 			// pane): seed the activity time from provable evidence, never the
@@ -1397,6 +1426,14 @@ func (w *Watcher) poll() {
 				Agent:   cloneAgent(agent),
 			}
 		}
+
+		if providerChanged {
+			w.events <- SessionEvent{
+				Type:    "provider_activity_change",
+				AgentID: r.id,
+				Agent:   cloneAgent(agent),
+			}
+		}
 	}
 
 	for id := range w.agents {
@@ -1424,6 +1461,7 @@ func (w *Watcher) poll() {
 			delete(w.appliedFactIDs, id)
 			delete(w.ledgerTurnReadAt, id)
 			delete(w.probeLossSince, id)
+			delete(w.providerSignals, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
