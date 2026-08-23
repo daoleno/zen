@@ -42,6 +42,7 @@ interface UseInterfaceChatBodyPropsInput {
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
+  brainCurrentWork?: readonly import("../../store/brain").BrainCurrentWork[];
   loading: boolean;
   error?: string | null;
   draft: string;
@@ -86,6 +87,7 @@ export function useInterfaceChatBodyProps({
   runningActivity,
   onBrainWorkEventActivate,
   openSessionIds,
+  brainCurrentWork,
   loading,
   error,
   draft,
@@ -140,6 +142,7 @@ export function useInterfaceChatBodyProps({
       runningActivity,
       onBrainWorkEventActivate,
       openSessionIds,
+      brainCurrentWork,
       loading,
       error,
       scrollRef: timeline.scrollRef,
@@ -240,6 +243,7 @@ export function useInterfaceChatBodyProps({
       runningActivity,
       onBrainWorkEventActivate,
       openSessionIds,
+      brainCurrentWork,
       handleSendPress,
       handleStopPress,
       handleUploadPress,

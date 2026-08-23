@@ -18,11 +18,6 @@ import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
-import {
-  BrainWorkActivityButton,
-  BrainWorkActivityPanel,
-} from "../../components/brain/BrainWorkActivity";
-import { buildBrainWorkActivityModel } from "../../components/brain/brainWorkActivityModel";
 import { SessionModelSheet } from "../../components/providers/SessionModelSheet";
 import { useSessionProviderSheet } from "../../components/terminal/screen/useSessionProviderSheet";
 import {
@@ -58,7 +53,6 @@ import { useCurrentServer } from "../../store/currentServer";
 const BRAIN_EMPTY_TITLE = "Ready when you are";
 const BRAIN_EMPTY_BODY =
   "Ask Brain to plan, delegate, or inspect the workspace.";
-const EMPTY_BRAIN_WORK_RESULTS: BrainWorkResultEvent[] = [];
 
 export default function BrainScreen() {
   const router = useRouter();
@@ -98,11 +92,6 @@ export default function BrainScreen() {
   const [newChatLoading, setNewChatLoading] = useState(false);
   const [brainActionError, setBrainActionError] = useState<string | null>(null);
   const [workspaceViewerVisible, setWorkspaceViewerVisible] = useState(false);
-  const [workActivityVisible, setWorkActivityVisible] = useState(false);
-  const [workEventProjection, setWorkEventProjection] = useState<{
-    serverId: string;
-    events: BrainWorkResultEvent[];
-  }>({ serverId: "", events: [] });
 
   const routeServerId = params.serverId?.trim() || "";
   const routeServerMatches =
@@ -203,25 +192,6 @@ export default function BrainScreen() {
     setWorkspaceViewerVisible(false);
   }, []);
 
-  const openWorkActivity = useCallback(() => {
-    setWorkActivityVisible(true);
-  }, []);
-
-  const closeWorkActivity = useCallback(() => {
-    setWorkActivityVisible(false);
-  }, []);
-
-  const handleWorkEventsChange = useCallback(
-    (serverId: string, events: BrainWorkResultEvent[]) => {
-      setWorkEventProjection((current) =>
-        current.serverId === serverId && current.events === events
-          ? current
-          : { serverId, events },
-      );
-    },
-    [],
-  );
-
   const openBrainTerminal = useCallback(() => {
     if (!activeServer || !hostAgent?.id) {
       return;
@@ -301,50 +271,14 @@ export default function BrainScreen() {
   );
   const overflowDisabled =
     !canNewChat && !canOpenTerminal && !canOpenWorkspace && !canSwitchAdapter;
-  const projectedWorkEvents =
-    workEventProjection.serverId === activeServer?.id
-      ? workEventProjection.events
-      : EMPTY_BRAIN_WORK_RESULTS;
-  const openSessionIds = useMemo(
-    () => new Set((activeBrain?.agents ?? []).map((agent) => agent.id)),
-    [activeBrain?.agents],
-  );
-  const workActivityModel = useMemo(
-    () =>
-      buildBrainWorkActivityModel({
-        currentWork: activeBrain?.current_work ?? [],
-        resultEvents: projectedWorkEvents,
-        openSessionIds,
-        snapshotUpdatedAt: activeBrain?.generated_at,
-      }),
-    [
-      activeBrain?.current_work,
-      activeBrain?.generated_at,
-      openSessionIds,
-      projectedWorkEvents,
-    ],
-  );
-  const hasWorkActivity =
-    workActivityModel.active.length > 0 || workActivityModel.history.length > 0;
+
   const brainPageAction = useMemo(
-    () =>
-      hasWorkActivity ? (
-        <BrainWorkActivityButton
-          model={workActivityModel}
-          onPress={openWorkActivity}
-        />
-      ) : {
-        accessibilityLabel: "Brain actions",
-        disabled: overflowDisabled,
-        onPress: openMenu,
-      },
-    [
-      hasWorkActivity,
-      openMenu,
-      openWorkActivity,
-      overflowDisabled,
-      workActivityModel,
-    ],
+    () => ({
+      accessibilityLabel: "Brain actions",
+      disabled: overflowDisabled,
+      onPress: openMenu,
+    }),
+    [openMenu, overflowDisabled],
   );
   usePrimaryPageAction(brainPageAction);
 
@@ -471,6 +405,11 @@ export default function BrainScreen() {
     },
     [activeServer, router],
   );
+  const openSessionIds = useMemo(
+    () => new Set((activeBrain?.agents ?? []).map((agent) => agent.id)),
+    [activeBrain?.agents],
+  );
+
   return (
     <SafeAreaView
       style={[styles.screen, { backgroundColor: chrome.appBackground }]}
@@ -525,7 +464,7 @@ export default function BrainScreen() {
               onBrainWorkEventActivate={
                 targetedThreadReadOnly ? undefined : activateWorkResult
               }
-              onBrainWorkEventsChange={handleWorkEventsChange}
+              brainCurrentWork={activeBrain?.current_work}
               openSessionIds={openSessionIds}
               readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
@@ -564,14 +503,6 @@ export default function BrainScreen() {
         error={adapterSwitchError}
         onClose={closeAdapterSheet}
         onSelect={(adapter, target) => void switchExecutor(adapter, target)}
-      />
-
-      <BrainWorkActivityPanel
-        visible={workActivityVisible}
-        model={workActivityModel}
-        onActivate={targetedThreadReadOnly ? undefined : activateWorkResult}
-        onClose={closeWorkActivity}
-        onOpenActions={openMenu}
       />
 
       <BrainOverflowMenu

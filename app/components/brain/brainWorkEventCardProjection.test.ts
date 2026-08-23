@@ -154,6 +154,30 @@ describe("Brain Work Event dedicated card projection", () => {
     }
   });
 
+  test("attaches canonical current Work to the grouped chat card", () => {
+    const items = buildZenTimeline([
+      workResultEvent("session.failed", "current-work-event"),
+    ]);
+    const currentWork = {
+      work_id: "ae621005-929b-49b5-9d42-fa476d42d3f3",
+      revision: 7,
+      title: "Continue after failure",
+      status: "waiting" as const,
+      unread_result: true,
+    };
+    const enriched = attachBrainWorkEventActions(
+      items,
+      undefined,
+      undefined,
+      [currentWork],
+    );
+
+    expect(enriched[0]).toMatchObject({
+      type: "brain-work-event",
+      currentWork,
+    });
+  });
+
   test("InterfaceTimelineItemView owns BrainWorkEventCard for work events", () => {
     const source = readFileSync(
       join(import.meta.dir, "../terminal/InterfaceTimelineItemView.tsx"),

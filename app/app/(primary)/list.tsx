@@ -830,6 +830,10 @@ export default function InboxScreen() {
     });
   };
 
+  const openBrain = useCallback(() => {
+    router.navigate("/");
+  }, [router]);
+
   const openServiceURL = async (url: string) => {
     try {
       await Linking.openURL(url);
@@ -1266,6 +1270,7 @@ export default function InboxScreen() {
             aliases={agentAliases}
             onClose={closeWorkObservatory}
             onOpenSession={openAgent}
+            onOpenBrain={openBrain}
           />
         ) : null}
 

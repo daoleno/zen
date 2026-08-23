@@ -11,6 +11,7 @@ import {
 } from "./InterfaceTimelineModel";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
+import type { BrainCurrentWork } from "../../store/brain";
 import {
   projectZenTimeline,
   type ZenTimelineProjectionCache,
@@ -42,6 +43,7 @@ export function useInterfaceTimelineItems({
   onRetryPendingUserMessage,
   onBrainWorkEventActivate,
   openSessionIds,
+  brainCurrentWork,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
@@ -53,6 +55,7 @@ export function useInterfaceTimelineItems({
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
+  brainCurrentWork?: readonly BrainCurrentWork[];
 }) {
   const previousRef = useRef<{
     byId: Map<string, StableTimelineEntry>;
@@ -88,8 +91,14 @@ export function useInterfaceTimelineItems({
         projectedTimelineItems,
         onBrainWorkEventActivate,
         openSessionIds,
+        brainCurrentWork,
       ),
-    [projectedTimelineItems, onBrainWorkEventActivate, openSessionIds],
+    [
+      projectedTimelineItems,
+      onBrainWorkEventActivate,
+      openSessionIds,
+      brainCurrentWork,
+    ],
   );
   const providerTimelineItemsWithTurnFocus = useMemo(() => {
     if (!turnFocusAnchorAliases?.size) {

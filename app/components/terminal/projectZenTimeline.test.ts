@@ -822,7 +822,7 @@ describe("final architecture ownership contracts", () => {
       "attachBrainWorkEventActions(\n        projectedTimelineItems,",
     );
     expect(hookSource).toContain(
-      "[projectedTimelineItems, onBrainWorkEventActivate, openSessionIds]",
+      "projectedTimelineItems,\n      onBrainWorkEventActivate,\n      openSessionIds,\n      brainCurrentWork,",
     );
     // Callback identity must not be a dependency of the event projector memo.
     const projectionMemo = sourceBetween(
@@ -833,6 +833,7 @@ describe("final architecture ownership contracts", () => {
     expect(projectionMemo).toContain("}, [events]);");
     expect(projectionMemo).not.toContain("onBrainWorkEventActivate");
     expect(projectionMemo).not.toContain("openSessionIds");
+    expect(projectionMemo).not.toContain("brainCurrentWork");
   });
 
   test("cached-order proof uses exact raw timestamp+seq+id without Date.parse or O(n) churn scan", async () => {

@@ -54,6 +54,7 @@ export interface InterfaceChatBodyProps {
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
+  brainCurrentWork?: readonly import("../../store/brain").BrainCurrentWork[];
   loading: boolean;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -145,6 +146,7 @@ export function InterfaceChatBody({
   runningActivity,
   onBrainWorkEventActivate,
   openSessionIds,
+  brainCurrentWork,
   loading,
   error,
   scrollRef,
@@ -289,6 +291,7 @@ export function InterfaceChatBody({
           runningActivity={runningActivity}
           onBrainWorkEventActivate={onBrainWorkEventActivate}
           openSessionIds={openSessionIds}
+          brainCurrentWork={brainCurrentWork}
           loading={loading}
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}

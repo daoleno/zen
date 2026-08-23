@@ -4,7 +4,8 @@ import type {
   ProviderActivity,
 } from "../../services/codexConversation";
 import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
-import { brainWorkEventFromConversationEvent } from "../brain/brainWorkActivityModel";
+import type { BrainCurrentWork } from "../../store/brain";
+import { brainWorkEventFromConversationEvent } from "../brain/brainWorkEventProjection";
 import {
   buildExpandedToolDetails,
   isWaitSessionPoll,
@@ -450,10 +451,14 @@ export function attachBrainWorkEventActions(
   items: ZenTimelineItem[],
   onActivate?: (event: BrainWorkResultEvent, canOpenSession: boolean) => void,
   openSessionIds?: ReadonlySet<string>,
+  currentWork?: readonly BrainCurrentWork[],
 ): ZenTimelineItem[] {
-  if (!onActivate) {
+  if (!onActivate && !currentWork?.length) {
     return items;
   }
+  const currentWorkById = new Map(
+    currentWork?.map((work) => [work.work_id, work] as const),
+  );
   return items.map((item) => {
     if (item.type !== "brain-work-event") {
       return item;
@@ -461,12 +466,15 @@ export function attachBrainWorkEventActions(
     const canOpenSession = Boolean(
       item.event.session_id && openSessionIds?.has(item.event.session_id),
     );
-    if (!item.event.unread && !canOpenSession) {
-      return item;
-    }
+    const work = currentWorkById.get(item.event.work_id);
+    const onPress =
+      onActivate && (item.event.unread || canOpenSession)
+        ? () => onActivate(item.event, canOpenSession)
+        : undefined;
     return {
       ...item,
-      onPress: () => onActivate(item.event, canOpenSession),
+      currentWork: work,
+      onPress,
     };
   });
 }

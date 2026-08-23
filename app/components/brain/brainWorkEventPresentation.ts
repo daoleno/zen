@@ -1,4 +1,5 @@
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
+import type { BrainCurrentWork } from "../../store/brain";
 
 export type BrainWorkLifecycle =
   | "working"
@@ -107,6 +108,101 @@ export function brainWorkEventLifecycle(
     tone: "neutral",
     terminal: false,
   };
+}
+
+export function brainCurrentWorkLifecycle(
+  work: BrainCurrentWork,
+  event?: BrainWorkResultEvent,
+): BrainWorkLifecyclePresentation {
+  if (work.status === "needs_input") {
+    return lifecyclePresentation("needs_you");
+  }
+  if (work.status === "cancelled") {
+    return lifecyclePresentation("failed");
+  }
+  if (work.status === "done") {
+    return lifecyclePresentation("done");
+  }
+  if (work.attention_state === "reviewing") {
+    return lifecyclePresentation("reviewing");
+  }
+  if (
+    work.attention_state === "queued" ||
+    work.attention_state === "reserved" ||
+    work.progress_mode === "ready"
+  ) {
+    return lifecyclePresentation("ready");
+  }
+  const eventPresentation = event ? brainWorkEventLifecycle(event) : undefined;
+  if (eventPresentation?.lifecycle === "needs_you") {
+    return eventPresentation;
+  }
+  if (
+    eventPresentation?.lifecycle === "ready" ||
+    eventPresentation?.lifecycle === "reviewing"
+  ) {
+    return eventPresentation;
+  }
+  return lifecyclePresentation("working");
+}
+
+export function brainWorkAgentCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "agent" : "agents"}`;
+}
+
+function lifecyclePresentation(
+  lifecycle: BrainWorkLifecycle,
+): BrainWorkLifecyclePresentation {
+  switch (lifecycle) {
+    case "needs_you":
+      return {
+        lifecycle,
+        label: "Needs you",
+        icon: "help-circle-outline",
+        tone: "attention",
+        terminal: false,
+      };
+    case "failed":
+      return {
+        lifecycle,
+        label: "Failed",
+        icon: "alert-circle-outline",
+        tone: "danger",
+        terminal: true,
+      };
+    case "done":
+      return {
+        lifecycle,
+        label: "Done",
+        icon: "checkmark-circle-outline",
+        tone: "neutral",
+        terminal: true,
+      };
+    case "reviewing":
+      return {
+        lifecycle,
+        label: "Reviewing",
+        icon: "eye-outline",
+        tone: "accent",
+        terminal: false,
+      };
+    case "ready":
+      return {
+        lifecycle,
+        label: "Ready",
+        icon: "checkmark-circle-outline",
+        tone: "accent",
+        terminal: false,
+      };
+    case "working":
+      return {
+        lifecycle,
+        label: "Working",
+        icon: "ellipsis-horizontal-circle-outline",
+        tone: "neutral",
+        terminal: false,
+      };
+  }
 }
 
 export function brainWorkEventReviewLabel(

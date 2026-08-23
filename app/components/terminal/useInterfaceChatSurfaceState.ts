@@ -38,7 +38,6 @@ import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
 import { liveActionPromptScopeKey } from "../../services/agentSessionListTransport";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useInterfaceChatBodyProps } from "./useInterfaceChatBodyProps";
-import { brainWorkEventsFromConversationEvents } from "../brain/brainWorkActivityModel";
 import {
   useInterfaceComposerInput,
   useInterfaceComposerPresentation,
@@ -77,10 +76,7 @@ interface UseInterfaceChatSurfaceStateInput {
     event: import("../brain/brainWorkEvent").BrainWorkResultEvent,
     canOpenSession: boolean,
   ) => void;
-  onBrainWorkEventsChange?: (
-    serverId: string,
-    events: import("../brain/brainWorkEvent").BrainWorkResultEvent[],
-  ) => void;
+  brainCurrentWork?: readonly import("../../store/brain").BrainCurrentWork[];
   openSessionIds?: ReadonlySet<string>;
   composerAccessory?: ReactNode;
   onDraftChange?: (value: string) => void;
@@ -145,7 +141,7 @@ export function useInterfaceChatSurfaceState({
   emptyTitle,
   emptyBody,
   onBrainWorkEventActivate,
-  onBrainWorkEventsChange,
+  brainCurrentWork,
   openSessionIds,
   composerAccessory,
   onDraftChange,
@@ -293,13 +289,6 @@ export function useInterfaceChatSurfaceState({
     setSkillsSheetVisible(false);
   }, []);
   const events = conversation?.events ?? EMPTY_CONVERSATION_EVENTS;
-  const brainWorkEvents = useMemo(
-    () => brainWorkEventsFromConversationEvents(events),
-    [events],
-  );
-  useEffect(() => {
-    onBrainWorkEventsChange?.(serverId, brainWorkEvents);
-  }, [brainWorkEvents, onBrainWorkEventsChange, serverId]);
   const openStatusSheet = useCallback(() => {
     setActionMenuPinned(false);
     setStatusTimedOut(false);
@@ -621,6 +610,7 @@ export function useInterfaceChatSurfaceState({
     runningActivity,
     onBrainWorkEventActivate,
     openSessionIds,
+    brainCurrentWork,
     loading,
     error,
     draft,

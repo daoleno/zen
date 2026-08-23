@@ -5,6 +5,7 @@
  */
 
 import type { BrainWorkResultEvent } from "../brain/brainWorkEvent";
+import type { BrainCurrentWork } from "../../store/brain";
 import type { ToolDeveloperDetails } from "../../services/toolCallDetails";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import type {
@@ -63,12 +64,64 @@ export function timelineItemsSemanticEqual(
   ) {
     return (
       brainWorkResultEventsEqual(left.event, right.event) &&
+      brainCurrentWorkEqual(left.currentWork, right.currentWork) &&
       left.sourceCount === right.sourceCount &&
       brainWorkResultEventArraysEqual(left.events, right.events) &&
       left.onPress === right.onPress
     );
   }
   return false;
+}
+
+function brainCurrentWorkEqual(
+  left: BrainCurrentWork | undefined,
+  right: BrainCurrentWork | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.work_id === right.work_id &&
+    left.revision === right.revision &&
+    left.title === right.title &&
+    left.status === right.status &&
+    left.progress_mode === right.progress_mode &&
+    left.attempt_session_id === right.attempt_session_id &&
+    left.attempt_delegated === right.attempt_delegated &&
+    left.wait_for === right.wait_for &&
+    left.wake?.kind === right.wake?.kind &&
+    left.wake?.ref === right.wake?.ref &&
+    left.attention_state === right.attention_state &&
+    left.unread_result === right.unread_result &&
+    brainSessionFinalizationsEqual(
+      left.session_finalizations,
+      right.session_finalizations,
+    )
+  );
+}
+
+function brainSessionFinalizationsEqual(
+  left: BrainCurrentWork["session_finalizations"],
+  right: BrainCurrentWork["session_finalizations"],
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const leftItem = left[index];
+    const rightItem = right[index];
+    if (
+      !leftItem ||
+      !rightItem ||
+      leftItem.session_id !== rightItem.session_id ||
+      leftItem.delegated !== rightItem.delegated ||
+      leftItem.state !== rightItem.state ||
+      leftItem.attempts !== rightItem.attempts ||
+      leftItem.last_error !== rightItem.last_error ||
+      leftItem.updated_at !== rightItem.updated_at
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function brainWorkResultEventArraysEqual(

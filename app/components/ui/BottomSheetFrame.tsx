@@ -32,7 +32,6 @@ interface BottomSheetFrameProps {
   contentStyle?: StyleProp<ViewStyle>;
   keyboardAvoiding?: boolean;
   dragToDismiss?: boolean;
-  showHandle?: boolean;
   onClose(): void;
 }
 
@@ -51,7 +50,6 @@ export function BottomSheetFrame({
   contentStyle,
   keyboardAvoiding = false,
   dragToDismiss = false,
-  showHandle = true,
   onClose,
 }: BottomSheetFrameProps) {
   const colors = useAppColors();
@@ -103,7 +101,7 @@ export function BottomSheetFrame({
         }),
     [dragToDismiss, dragY, finishDragClose],
   );
-  const handle = !showHandle ? null : dragToDismiss ? (
+  const handle = dragToDismiss ? (
     <GestureDetector gesture={dragGesture}>
       <View style={styles.dragHandleTarget}>
         <View

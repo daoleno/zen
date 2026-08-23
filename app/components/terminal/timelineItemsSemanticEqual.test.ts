@@ -661,6 +661,36 @@ describe("timelineItemsSemanticEqual", () => {
     ).toBe(false);
   });
 
+  test("Brain Work current projection status invalidates its stable row", () => {
+    const event = makeBrainEvent();
+    const onPress = () => {};
+    const currentWork = {
+      work_id: event.work_id,
+      revision: 1,
+      title: "Current Work",
+      status: "waiting" as const,
+      unread_result: false,
+    };
+    const base = makeBrainItem({
+      event,
+      events: [event],
+      currentWork,
+      onPress,
+    });
+
+    expect(
+      timelineItemsSemanticEqual(
+        base,
+        makeBrainItem({
+          event,
+          events: [event],
+          currentWork: { ...currentWork, status: "done" },
+          onPress,
+        }),
+      ),
+    ).toBe(false);
+  });
+
   test("each DisplayAttachment field mutation independently prevents reuse", () => {
     const base = makeAttachment();
     expect(attachmentsEqual([base], [makeAttachment()])).toBe(true);

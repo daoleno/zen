@@ -48,6 +48,7 @@ interface InterfaceChatTimelineSectionProps {
     canOpenSession: boolean,
   ) => void;
   openSessionIds?: ReadonlySet<string>;
+  brainCurrentWork?: readonly import("../../store/brain").BrainCurrentWork[];
   loading: boolean;
   error?: string | null;
   commandMenuOpen: boolean;
@@ -107,6 +108,7 @@ export function InterfaceChatTimelineSection({
   runningActivity,
   onBrainWorkEventActivate,
   openSessionIds,
+  brainCurrentWork,
   loading,
   error,
   commandMenuOpen,
@@ -170,6 +172,7 @@ export function InterfaceChatTimelineSection({
     runningActivity,
     onBrainWorkEventActivate,
     openSessionIds,
+    brainCurrentWork,
     onRetryPendingUserMessage,
   });
   const loadAssetPreview = useCallback(

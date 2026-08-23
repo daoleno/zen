@@ -134,7 +134,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0.5,
+    letterSpacing: 0,
   },
   track: {
     width: 116,

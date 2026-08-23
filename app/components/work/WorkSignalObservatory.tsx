@@ -1,20 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
-  type LayoutChangeEvent,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Animated, {
-  FadeIn,
-  FadeOut,
-  LinearTransition,
-  useReducedMotion,
-} from "react-native-reanimated";
-import Svg, { Circle, Path } from "react-native-svg";
+import { useReducedMotion } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   isAgentSessionListFreshForConnection,
@@ -25,51 +19,30 @@ import { useBrain } from "../../store/brain";
 import { useCurrentServer } from "../../store/currentServer";
 import type { StoredAgentAliases } from "../../services/storage";
 import { presentAgent } from "../../services/agentPresentation";
-import {
-  Radii,
-  TypeScale,
-  UiTextMetrics,
-  useAppTheme,
-} from "../../constants/tokens";
+import { agentStatusLabel } from "../../services/agentStatusPresentation";
+import { TypeScale, UiTextMetrics, useAppTheme } from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
-import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
-  buildWorkRelationshipGraphProjection,
-  layoutWorkRelationshipGraph,
-  resolveWorkGraphSelection,
-  workGraphOpenSessionAccessibilityLabel,
-  type WorkGraphEdgeKind,
-  type WorkGraphNode,
-  type WorkGraphNodeLayout,
-  type WorkGraphOwner,
-  type WorkGraphSelection,
-  type WorkGraphSessionTarget,
-  type WorkGraphState,
-  type WorkRelationshipGraphLayout,
-  type WorkRelationshipGraphModel,
-} from "./workRelationshipGraphModel";
-import {
-  resolveWorkObservatoryMotion,
-  WORK_GRAPH_CONTROL_TOUCH_REGIONS,
-} from "./workSignalObservatoryInteraction";
+  buildWorkActivityListModel,
+  type WorkActivityRow,
+} from "./workActivityListModel";
+import { resolveWorkObservatoryMotion } from "./workSignalObservatoryInteraction";
 
 type WorkSignalObservatoryProps = {
   visible: boolean;
   aliases: StoredAgentAliases;
   onClose(): void;
   onOpenSession(agent: Agent): void;
+  onOpenBrain(): void;
 };
-
-type GraphFrame = { width: number; height: number };
-
-const EMPTY_FRAME: GraphFrame = { width: 0, height: 0 };
 
 export function WorkSignalObservatory({
   visible,
   aliases,
   onClose,
   onOpenSession,
+  onOpenBrain,
 }: WorkSignalObservatoryProps) {
   const { theme } = useAppTheme();
   const reducedMotion = useReducedMotion();
@@ -77,29 +50,9 @@ export function WorkSignalObservatory({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
-  const {
-    currentServer,
-    currentServerId,
-    hydrated: currentServerHydrated,
-  } = useCurrentServer();
-  const [page, setPage] = useState(0);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [graphFrame, setGraphFrame] = useState<GraphFrame>(EMPTY_FRAME);
+  const { currentServer, currentServerId, hydrated } = useCurrentServer();
   const serverId = currentServerId;
   const brain = serverId ? brainState.byServer[serverId] : undefined;
-  const connectionState = serverId
-    ? agentState.serverConnections[serverId] ?? "offline"
-    : "offline";
-  const connected = connectionState === "connected";
-  const connectionGeneration = serverId
-    ? agentState.connectionGenerationByServer[serverId] ?? 0
-    : 0;
-  const agentListFresh = serverId
-    ? isAgentSessionListFreshForConnection(agentState, serverId)
-    : false;
-  const brainHydrated = Boolean(brain?.hydrated);
-  const graphScopeKey = `${serverId ?? ""}\u0000${connectionGeneration}`;
-
   const currentAgents = useMemo(
     () => agentState.agents.filter((agent) => agent.serverId === serverId),
     [agentState.agents, serverId],
@@ -108,108 +61,52 @@ export function WorkSignalObservatory({
     () => new Map(currentAgents.map((agent) => [agent.id, agent] as const)),
     [currentAgents],
   );
-  const owners = useMemo<WorkGraphOwner[]>(
+  const owners = useMemo(
     () =>
       currentAgents.map((agent) => ({
         sessionId: agent.id,
-        label: presentAgent(agent, aliases[agent.key]).title,
+        title: presentAgent(agent, aliases[agent.key]).title,
         status: agent.status,
         delegated: agent.delegated === true,
-        needsAttention: agent.needs_attention === true,
-        updatedAt: agent.updated_at,
       })),
     [aliases, currentAgents],
   );
-  const projection = useMemo(
+  const model = useMemo(
     () =>
-      buildWorkRelationshipGraphProjection({
-        currentServerHydrated,
-        hasCurrentServer: Boolean(currentServer),
-        brainHydrated,
-        agentListFresh,
+      buildWorkActivityListModel({
         work: brain?.current_work ?? [],
         owners,
-        page,
+        historicalResultCount: brain?.work_backlog?.historical_results ?? 0,
       }),
-    [
-      agentListFresh,
-      brain?.current_work,
-      brainHydrated,
-      currentServer,
-      currentServerHydrated,
-      owners,
-      page,
-    ],
+    [brain?.current_work, brain?.work_backlog?.historical_results, owners],
   );
-  const model = projection.state === "ready" ? projection.model : null;
-  const layout = useMemo(
-    () =>
-      model
-        ? layoutWorkRelationshipGraph(model, graphFrame)
-        : emptyGraphLayout(graphFrame),
-    [graphFrame, model],
+  const connectionState = serverId
+    ? agentState.serverConnections[serverId] ?? "offline"
+    : "offline";
+  const ready = Boolean(
+    hydrated &&
+      currentServer &&
+      brain?.hydrated &&
+      serverId &&
+      isAgentSessionListFreshForConnection(agentState, serverId),
   );
-  const selection = useMemo(
-    () => (model ? resolveWorkGraphSelection(model, selectedNodeId) : null),
-    [model, selectedNodeId],
-  );
-
-  useEffect(() => {
-    if (!visible) return;
-    setPage(0);
-    setSelectedNodeId(null);
-  }, [graphScopeKey, visible]);
-
-  useEffect(() => {
-    if (selectedNodeId && !selection) setSelectedNodeId(null);
-  }, [selectedNodeId, selection]);
-
-  const handleGraphLayout = useCallback((event: LayoutChangeEvent) => {
-    const width = Math.round(event.nativeEvent.layout.width);
-    const height = Math.round(event.nativeEvent.layout.height);
-    setGraphFrame((current) =>
-      current.width === width && current.height === height
-        ? current
-        : { width, height },
-    );
-  }, []);
-  const handleNodePress = useCallback(
-    (node: WorkGraphNode) => {
-      if (node.kind === "aggregate") {
-        setSelectedNodeId(null);
-        setPage((current) =>
-          node.pageCount > 1 ? (current + 1) % node.pageCount : 0,
-        );
+  const activateRow = useCallback(
+    (row: WorkActivityRow) => {
+      if (row.action === "open_session" && row.owner) {
+        const agent = agentById.get(row.owner.sessionId);
+        if (agent) {
+          onClose();
+          onOpenSession(agent);
+        }
         return;
       }
-      if (node.kind === "brain") return;
-      setSelectedNodeId((current) => (current === node.id ? null : node.id));
+      if (row.action === "open_brain") {
+        onClose();
+        onOpenBrain();
+      }
     },
-    [],
+    [agentById, onClose, onOpenBrain, onOpenSession],
   );
-  const openSelectedSession = useCallback(() => {
-    const sessionId = selection?.detail.sessionTarget?.sessionId;
-    const agent = sessionId ? agentById.get(sessionId) : undefined;
-    if (!agent) return;
-    onClose();
-    onOpenSession(agent);
-  }, [
-    agentById,
-    onClose,
-    onOpenSession,
-    selection?.detail.sessionTarget?.sessionId,
-  ]);
-  const emptyState = resolveEmptyState({
-    currentServerHydrated,
-    hasServer: Boolean(currentServer),
-    projectionState: projection.state,
-    connected,
-  });
-  const openSessionTarget =
-    selection?.detail.sessionTarget &&
-    agentById.has(selection.detail.sessionTarget.sessionId)
-      ? selection.detail.sessionTarget
-      : null;
 
   return (
     <Modal
@@ -220,12 +117,11 @@ export function WorkSignalObservatory({
     >
       <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
         <View style={styles.topBar}>
-          <View style={styles.titleCopy}>
-            <Text style={styles.eyebrow} numberOfLines={1}>
-              {currentServer?.name || "CURRENT SERVER"}
-              {connected ? " · LIVE" : ""}
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>Work</Text>
+            <Text style={styles.subtitle} numberOfLines={1}>
+              {currentServer?.name || "Current server"}
             </Text>
-            <Text style={styles.title} maxFontSizeMultiplier={1.4}>Work</Text>
           </View>
           <AnimatedPressable
             style={styles.closeButton}
@@ -236,949 +132,423 @@ export function WorkSignalObservatory({
             accessibilityLabel="Close Work"
             hitSlop={8}
           >
-            <Ionicons name="close" size={20} color={theme.colors.textPrimary} />
+            <Ionicons name="close" size={21} color={theme.colors.textPrimary} />
           </AnimatedPressable>
         </View>
 
-        <GraphLegend styles={styles} />
-
-        <WorkBacklogSummary
-          total={brain?.work_backlog?.total ?? 0}
-          queued={brain?.work_backlog?.queued_attention ?? 0}
-          styles={styles}
-        />
-
-        <View
-          style={styles.graphFrame}
-          onLayout={handleGraphLayout}
-          accessible={Boolean(model && model.totalWorkCount === 0)}
-          accessibilityRole="summary"
-          accessibilityLabel={model?.accessibilityLabel}
-        >
-          {model && model.totalWorkCount > 0 && layout.nodes.length > 0 ? (
-            <RelationshipGraph
-              model={model}
-              layout={layout}
-              selection={selection}
-              animateGraph={motion.animateGraph}
+        {!ready ? (
+          <View style={styles.state}>
+            {connectionState === "connected" ? (
+              <ActivityIndicator color={theme.colors.accent} />
+            ) : (
+              <Ionicons
+                name="cloud-offline-outline"
+                size={22}
+                color={theme.colors.textTertiary}
+              />
+            )}
+            <Text style={styles.stateText}>
+              {connectionState === "connected"
+                ? "Updating Work"
+                : "Work unavailable"}
+            </Text>
+          </View>
+        ) : (
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.content}
+            showsVerticalScrollIndicator={false}
+          >
+            <WorkSummary model={model} styles={styles} />
+            <WorkSection
+              title="Needs you"
+              rows={model.attention}
               styles={styles}
-              onNodePress={handleNodePress}
+              theme={theme}
+              onActivate={activateRow}
             />
-          ) : (
-            <ObservatoryState
-              title={emptyState.title}
-              detail={emptyState.detail}
-              loading={emptyState.loading}
+            <WorkSection
+              title="Active"
+              rows={model.active}
               styles={styles}
+              theme={theme}
+              onActivate={activateRow}
             />
-          )}
-        </View>
-
-        <GraphDetailDock
-          selection={selection}
-          openSessionTarget={openSessionTarget}
-          animateGraph={motion.animateGraph}
-          onOpenSession={openSelectedSession}
-          styles={styles}
-        />
+            <WorkSection
+              title="Recent"
+              rows={model.recent}
+              styles={styles}
+              theme={theme}
+              onActivate={activateRow}
+            />
+            {model.historicalResultCount > 0 ? (
+              <View
+                accessible
+                accessibilityRole="summary"
+                accessibilityLabel={`${model.historicalResultCount} historical Work results`}
+                style={styles.historyRow}
+              >
+                <Ionicons
+                  name="archive-outline"
+                  size={18}
+                  color={theme.colors.textTertiary}
+                />
+                <Text style={styles.historyText}>History</Text>
+                <Text style={styles.historyCount}>
+                  {model.historicalResultCount}
+                </Text>
+              </View>
+            ) : null}
+            {model.totalVisible === 0 && model.historicalResultCount === 0 ? (
+              <View style={styles.state}>
+                <Ionicons
+                  name="checkmark-circle-outline"
+                  size={22}
+                  color={theme.colors.statusDone}
+                />
+                <Text style={styles.stateText}>No Work in progress</Text>
+              </View>
+            ) : null}
+          </ScrollView>
+        )}
       </SafeAreaView>
     </Modal>
   );
 }
 
-function RelationshipGraph({
+function WorkSummary({
   model,
-  layout,
-  selection,
-  animateGraph,
   styles,
-  onNodePress,
 }: {
-  model: WorkRelationshipGraphModel;
-  layout: WorkRelationshipGraphLayout;
-  selection: WorkGraphSelection | null;
-  animateGraph: boolean;
+  model: ReturnType<typeof buildWorkActivityListModel>;
   styles: ReturnType<typeof createStyles>;
-  onNodePress(node: WorkGraphNode): void;
 }) {
-  const selectedNodeIds = useMemo(
-    () => new Set(selection?.selectedNodeIds ?? []),
-    [selection?.selectedNodeIds],
-  );
-  const selectedEdgeIds = useMemo(
-    () => new Set(selection?.selectedEdgeIds ?? []),
-    [selection?.selectedEdgeIds],
-  );
-
   return (
-    <View style={styles.graphCanvas}>
-      <Svg
-        width={layout.viewport.width}
-        height={layout.viewport.height}
-        style={StyleSheet.absoluteFill}
-        accessible={false}
-        importantForAccessibility="no-hide-descendants"
-      >
-        {layout.edges.map((edge) => (
-          <RelationshipEdge
-            key={edge.id}
-            edge={edge}
-            highlighted={!selection || selectedEdgeIds.has(edge.id)}
-            styles={styles}
-          />
-        ))}
-      </Svg>
-      {layout.nodes.map((nodeLayout) => (
-        <GraphNodeView
-          key={nodeLayout.node.id}
-          layout={nodeLayout}
-          selected={selectedNodeIds.has(nodeLayout.node.id)}
-          dimmed={Boolean(selection && !selectedNodeIds.has(nodeLayout.node.id))}
-          animateGraph={animateGraph}
-          styles={styles}
-          onPress={() => onNodePress(nodeLayout.node)}
-        />
-      ))}
-      {model.pageCount > 1 ? (
-        <View style={styles.pageBadge} pointerEvents="none">
-          <Text style={styles.pageBadgeText} maxFontSizeMultiplier={1.2}>
-            {model.page + 1}/{model.pageCount}
-          </Text>
-        </View>
-      ) : null}
+    <View
+      accessible
+      accessibilityRole="summary"
+      accessibilityLabel={model.accessibilityLabel}
+      style={styles.summary}
+    >
+      <Text style={styles.summaryCount}>{model.attention.length}</Text>
+      <Text style={styles.summaryLabel}>Needs you</Text>
+      <View style={styles.summaryDivider} />
+      <Text style={styles.summaryCount}>{model.active.length}</Text>
+      <Text style={styles.summaryLabel}>Active</Text>
+      <View style={styles.summaryDivider} />
+      <Text style={styles.summaryCount}>
+        {model.recent.length + model.historicalResultCount}
+      </Text>
+      <Text style={styles.summaryLabel}>History</Text>
     </View>
   );
 }
 
-function RelationshipEdge({
-  edge,
-  highlighted,
+function WorkSection({
+  title,
+  rows,
   styles,
+  theme,
+  onActivate,
 }: {
-  edge: WorkRelationshipGraphLayout["edges"][number];
-  highlighted: boolean;
+  title: string;
+  rows: WorkActivityRow[];
   styles: ReturnType<typeof createStyles>;
+  theme: ResolvedZenTheme;
+  onActivate(row: WorkActivityRow): void;
 }) {
-  const presentation = edgePresentation(edge.kind, styles.colors);
-  const opacity = highlighted ? presentation.opacity : 0.13;
+  if (rows.length === 0) return null;
   return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {rows.map((row, index) => (
+        <WorkActivityRowView
+          key={row.id}
+          row={row}
+          first={index === 0}
+          styles={styles}
+          theme={theme}
+          onPress={row.action === "none" ? undefined : () => onActivate(row)}
+        />
+      ))}
+    </View>
+  );
+}
+
+function WorkActivityRowView({
+  row,
+  first,
+  styles,
+  theme,
+  onPress,
+}: {
+  row: WorkActivityRow;
+  first: boolean;
+  styles: ReturnType<typeof createStyles>;
+  theme: ResolvedZenTheme;
+  onPress?: () => void;
+}) {
+  const statusColor = workToneColor(row, theme);
+  const label = [
+    row.statusLabel,
+    `Work ${row.title}`,
+    row.owner
+      ? `Delegated agent ${row.owner.title}, ${agentStatusLabel(row.owner.status)}`
+      : undefined,
+    row.unread ? "Unread result" : undefined,
+  ]
+    .filter(Boolean)
+    .join(". ");
+  const rowStyle = [
+    styles.row,
+    !first ? styles.rowBorder : null,
+    row.lifecycle === "needs_you" ? styles.rowAttention : null,
+  ];
+  const content = (
     <>
-      <Path
-        d={edge.path}
-        fill="none"
-        stroke={presentation.stroke}
-        strokeWidth={presentation.strokeWidth}
-        strokeDasharray={presentation.dash}
-        strokeLinecap="round"
-        opacity={opacity}
+      <Ionicons
+        name={workIcon(row)}
+        size={19}
+        color={statusColor}
+        style={styles.rowIcon}
       />
-      {edge.kind === "review" ? (
-        <Circle
-          cx={(edge.startX + edge.endX) / 2}
-          cy={(edge.startY + edge.endY) / 2}
-          r={3.5}
-          fill={styles.colors.bgPrimary}
-          stroke={presentation.stroke}
-          strokeWidth={1.8}
-          opacity={opacity}
+      <View style={styles.rowBody}>
+        <View style={styles.rowTitleLine}>
+          <Text style={styles.rowTitle} numberOfLines={2}>
+            {row.title}
+          </Text>
+          <Text style={[styles.rowStatus, { color: statusColor }]}>
+            {row.statusLabel}
+          </Text>
+        </View>
+        {row.owner ? (
+          <View style={styles.ownerLine}>
+            <Ionicons
+              name="terminal-outline"
+              size={13}
+              color={theme.colors.textTertiary}
+            />
+            <Text style={styles.ownerText} numberOfLines={1}>
+              {row.owner.title} · {agentStatusLabel(row.owner.status)}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+      {onPress ? (
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={theme.colors.textTertiary}
         />
       ) : null}
     </>
   );
-}
-
-function GraphNodeView({
-  layout,
-  selected,
-  dimmed,
-  animateGraph,
-  styles,
-  onPress,
-}: {
-  layout: WorkGraphNodeLayout;
-  selected: boolean;
-  dimmed: boolean;
-  animateGraph: boolean;
-  styles: ReturnType<typeof createStyles>;
-  onPress(): void;
-}) {
-  const { node } = layout;
-  const animation = animateGraph ? LinearTransition.duration(180) : undefined;
-  const frameStyle = {
-    left: layout.x,
-    top: layout.y,
-    width: layout.width,
-    height: layout.height,
-    opacity: dimmed ? 0.24 : 1,
-  };
-  const content = <GraphNodeContent node={node} selected={selected} styles={styles} />;
-
-  return (
-    <Animated.View
-      entering={animateGraph ? FadeIn.duration(160) : undefined}
-      exiting={animateGraph ? FadeOut.duration(120) : undefined}
-      layout={animation}
-      style={[styles.nodeFrame, frameStyle]}
-    >
-      {node.kind === "brain" ? (
-        <View
-          style={[styles.nodeFill, styles.brainNode, selected && styles.nodeSelected]}
-          accessible
-          accessibilityRole="text"
-          accessibilityLabel={node.accessibilityLabel}
-        >
-          {content}
-        </View>
-      ) : (
-        <AnimatedPressable
-          style={[
-            styles.nodeFill,
-            node.kind === "aggregate"
-              ? styles.aggregateNode
-              : styles.relationshipNode,
-            selected && styles.nodeSelected,
-          ]}
-          preset="press"
-          scale={animateGraph ? 0.96 : 1}
-          onPress={onPress}
-          accessibilityRole="button"
-          accessibilityLabel={node.accessibilityLabel}
-          accessibilityState={{ selected }}
-          accessibilityHint={
-            node.kind === "aggregate"
-              ? "Shows the next graph view"
-              : "Shows this relationship"
-          }
-        >
-          {content}
-        </AnimatedPressable>
-      )}
-    </Animated.View>
-  );
-}
-
-function GraphNodeContent({
-  node,
-  selected,
-  styles,
-}: {
-  node: WorkGraphNode;
-  selected: boolean;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  if (node.kind === "brain") {
+  if (!onPress) {
     return (
-      <>
-        <View style={styles.brainMark}>
-          <Ionicons name="git-network-outline" size={17} color={styles.colors.accentStrong} />
-        </View>
-        <Text style={styles.brainLabel} maxFontSizeMultiplier={1.25}>
-          Brain
-        </Text>
-      </>
-    );
-  }
-  if (node.kind === "aggregate") {
-    return (
-      <View style={styles.aggregateContent}>
-        <Ionicons name="sync-outline" size={13} color={styles.colors.accentStrong} />
-        <View style={styles.aggregateCopy}>
-          <Text style={styles.aggregateTitle} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-            {node.title}
-          </Text>
-          <Text style={styles.aggregateHint} numberOfLines={1} maxFontSizeMultiplier={1.2}>
-            Next view
-          </Text>
-        </View>
-      </View>
-    );
-  }
-  const stateColors = graphStateColors(node.state, styles.colors);
-  if (node.kind === "endpoint") {
-    return (
-      <View style={styles.endpointContent}>
-        <View style={[styles.endpointIcon, { backgroundColor: stateColors.soft }]}>
-          <Ionicons
-            name={endpointIcon(node.endpointKind)}
-            size={12}
-            color={stateColors.strong}
-          />
-        </View>
-        <View style={styles.endpointCopy}>
-          <Text
-            style={styles.endpointTitle}
-            numberOfLines={2}
-            maxFontSizeMultiplier={1.35}
-          >
-            {node.title}
-          </Text>
-          <StateLabel
-            state={node.state}
-            label={node.stateLabel}
-            compact
-            styles={styles}
-          />
-        </View>
+      <View accessible accessibilityLabel={label} style={rowStyle}>
+        {content}
       </View>
     );
   }
   return (
-    <View style={styles.workNodeContent}>
-      <View style={styles.workStateRow}>
-        <StateLabel
-          state={node.state}
-          label={node.stateLabel}
-          compact
-          styles={styles}
-        />
-        {selected ? (
-          <Ionicons name="locate" size={10} color={stateColors.strong} />
-        ) : null}
-      </View>
-      <Text
-        style={styles.workNodeTitle}
-        numberOfLines={2}
-        ellipsizeMode="tail"
-        maxFontSizeMultiplier={1.35}
-      >
-        {node.title}
-      </Text>
-    </View>
-  );
-}
-
-function StateLabel({
-  state,
-  label,
-  compact,
-  styles,
-}: {
-  state: WorkGraphState;
-  label: string;
-  compact?: boolean;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const colors = graphStateColors(state, styles.colors);
-  return (
-    <View style={[styles.stateLabel, compact && styles.stateLabelCompact]}>
-      <View style={[styles.stateDot, { backgroundColor: colors.strong }]} />
-      <Text
-        style={[
-          styles.stateLabelText,
-          compact && styles.stateLabelTextCompact,
-          { color: colors.strong },
-        ]}
-        numberOfLines={1}
-        maxFontSizeMultiplier={1.3}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-function GraphDetailDock({
-  selection,
-  openSessionTarget,
-  animateGraph,
-  onOpenSession,
-  styles,
-}: {
-  selection: WorkGraphSelection | null;
-  openSessionTarget: WorkGraphSessionTarget | null;
-  animateGraph: boolean;
-  onOpenSession(): void;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  return (
-    <View style={styles.detailDock}>
-      {selection ? (
-        <Animated.View
-          key={selection.detail.nodeId}
-          entering={animateGraph ? FadeIn.duration(140) : undefined}
-          style={styles.detailContent}
-        >
-          <View style={styles.detailHeading}>
-            <Text
-              style={styles.detailTitle}
-              numberOfLines={2}
-              maxFontSizeMultiplier={1.35}
-            >
-              {selection.detail.title}
-            </Text>
-            <StateLabel
-              state={selection.detail.state}
-              label={selection.detail.stateLabel}
-              styles={styles}
-            />
-          </View>
-          <View style={styles.detailBottomRow}>
-            <Text
-              style={styles.detailRelationship}
-              numberOfLines={2}
-              maxFontSizeMultiplier={1.35}
-            >
-              {selection.detail.relationshipLabel}
-            </Text>
-            {openSessionTarget ? (
-              <AnimatedPressable
-                style={styles.openSessionButton}
-                preset="press"
-                scale={0.95}
-                onPress={onOpenSession}
-                accessibilityRole="button"
-                accessibilityLabel={workGraphOpenSessionAccessibilityLabel(
-                  openSessionTarget,
-                )}
-              >
-                <Ionicons
-                  name="arrow-forward"
-                  size={13}
-                  color={styles.colors.textOnAccent}
-                />
-                <Text style={styles.openSessionText} maxFontSizeMultiplier={1.25}>
-                  Open Session
-                </Text>
-              </AnimatedPressable>
-            ) : null}
-          </View>
-        </Animated.View>
-      ) : (
-        <View
-          style={styles.detailPrompt}
-          accessible
-          accessibilityRole="summary"
-          accessibilityLabel="Tap a Work or Session node to inspect its relationship"
-        >
-          <Ionicons name="finger-print-outline" size={18} color={styles.colors.textTertiary} />
-          <View style={styles.detailPromptCopy}>
-            <Text style={styles.detailPromptTitle} maxFontSizeMultiplier={1.35}>
-              Tap a node
-            </Text>
-            <Text style={styles.detailPromptHint} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-              See its owner or wait
-            </Text>
-          </View>
-        </View>
-      )}
-    </View>
-  );
-}
-
-function GraphLegend({ styles }: { styles: ReturnType<typeof createStyles> }) {
-  return (
-    <View style={styles.legend} accessible accessibilityRole="text">
-      <LegendItem label="Owns" kind="ownership" styles={styles} />
-      <LegendItem label="Waits" kind="wait" styles={styles} />
-      <LegendItem label="Review" kind="review" styles={styles} />
-    </View>
-  );
-}
-
-function WorkBacklogSummary({
-  total,
-  queued,
-  styles,
-}: {
-  total: number;
-  queued: number;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  if (total === 0 && queued === 0) return null;
-  const parts = [
-    total > 0 ? `${total} in durable history` : "",
-    queued > 0 ? `${queued} queued` : "",
-  ].filter(Boolean);
-  return (
-    <View
-      style={styles.backlogSummary}
-      accessible
-      accessibilityRole="summary"
-      accessibilityLabel={`Work backlog. ${parts.join(". ")}.`}
+    <AnimatedPressable
+      style={rowStyle}
+      preset="press"
+      scale={0.99}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
     >
-      <Ionicons
-        name="archive-outline"
-        size={12}
-        color={styles.colors.textTertiary}
-      />
-      <Text
-        style={styles.backlogSummaryText}
-        numberOfLines={1}
-        maxFontSizeMultiplier={1.3}
-      >
-        {parts.join(" · ")}
-      </Text>
-    </View>
+      {content}
+    </AnimatedPressable>
   );
 }
 
-function LegendItem({
-  label,
-  kind,
-  styles,
-}: {
-  label: string;
-  kind: WorkGraphEdgeKind;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const presentation = edgePresentation(kind, styles.colors);
-  return (
-    <View style={styles.legendItem}>
-      <View style={styles.legendLineWrap}>
-        <View
-          style={[
-            styles.legendLine,
-            {
-              borderTopColor: presentation.stroke,
-              borderTopWidth: presentation.strokeWidth,
-              borderStyle: presentation.dash ? "dashed" : "solid",
-            },
-          ]}
-        />
-        {kind === "review" ? (
-          <View style={[styles.legendReviewDot, { borderColor: presentation.stroke }]} />
-        ) : null}
-      </View>
-      <Text style={styles.legendLabel} maxFontSizeMultiplier={1.25}>
-        {label}
-      </Text>
-    </View>
-  );
+function workToneColor(row: WorkActivityRow, theme: ResolvedZenTheme): string {
+  switch (row.tone) {
+    case "attention":
+      return theme.colors.warning;
+    case "accent":
+      return theme.colors.accent;
+    case "danger":
+      return theme.colors.statusFailed;
+    case "neutral":
+      return row.terminal
+        ? theme.colors.statusDone
+        : theme.colors.textSecondary;
+  }
 }
 
-function ObservatoryState({
-  title,
-  detail,
-  loading,
-  styles,
-}: {
-  title: string;
-  detail: string;
-  loading: boolean;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  return (
-    <View
-      style={styles.emptyState}
-      accessible
-      accessibilityRole="summary"
-      accessibilityLabel={`${title}, ${detail}`}
-    >
-      {loading ? (
-        <ActivityIndicator color={styles.colors.accentStrong} />
-      ) : (
-        <View style={styles.emptyMark}>
-          <Ionicons name="git-network-outline" size={20} color={styles.colors.success} />
-        </View>
-      )}
-      <Text style={styles.emptyTitle} maxFontSizeMultiplier={1.4}>
-        {title}
-      </Text>
-      <Text style={styles.emptyDetail} maxFontSizeMultiplier={1.4}>
-        {detail}
-      </Text>
-    </View>
-  );
-}
-
-function emptyGraphLayout(frame: GraphFrame): WorkRelationshipGraphLayout {
-  return { viewport: frame, nodes: [], edges: [] };
-}
-
-function resolveEmptyState({
-  currentServerHydrated,
-  hasServer,
-  projectionState,
-  connected,
-}: {
-  currentServerHydrated: boolean;
-  hasServer: boolean;
-  projectionState: "updating" | "unavailable" | "ready";
-  connected: boolean;
-}) {
-  if (!currentServerHydrated) {
-    return { title: "Finding current server", detail: "Just a moment", loading: true };
+function workIcon(row: WorkActivityRow) {
+  switch (row.lifecycle) {
+    case "needs_you":
+      return "help-circle-outline" as const;
+    case "reviewing":
+      return "eye-outline" as const;
+    case "ready":
+      return "checkmark-circle-outline" as const;
+    case "working":
+      return "ellipsis-horizontal-circle-outline" as const;
+    case "waiting":
+      return "time-outline" as const;
+    case "done":
+      return "checkmark-circle-outline" as const;
+    case "cancelled":
+      return "close-circle-outline" as const;
   }
-  if (!hasServer || projectionState === "unavailable") {
-    return { title: "Work unavailable", detail: "Connect a current server", loading: false };
-  }
-  if (projectionState === "updating") {
-    return connected
-      ? { title: "Updating", detail: "Reading the latest relationships", loading: true }
-      : { title: "Work unavailable", detail: "Reconnect to update", loading: false };
-  }
-  return {
-    title: "All clear",
-    detail: connected ? "Nothing in progress" : "Reconnect to update",
-    loading: false,
-  };
-}
-
-function endpointIcon(
-  kind: "agent" | "wake" | "placeholder",
-): React.ComponentProps<typeof Ionicons>["name"] {
-  if (kind === "agent") return "person-outline";
-  if (kind === "wake") return "notifications-outline";
-  return "alert-outline";
-}
-
-function graphStateColors(
-  state: WorkGraphState,
-  colors: ResolvedZenTheme["colors"],
-) {
-  if (state === "running") {
-    return { strong: colors.statusRunning, soft: colors.successSoft };
-  }
-  if (state === "waiting") {
-    return { strong: colors.statusBlocked, soft: colors.warningSoft };
-  }
-  if (state === "review") {
-    return { strong: colors.accentStrong, soft: colors.accentSoft };
-  }
-  return { strong: colors.dangerText, soft: colors.dangerSoft };
-}
-
-function edgePresentation(
-  kind: WorkGraphEdgeKind,
-  colors: ResolvedZenTheme["colors"],
-): {
-  stroke: string;
-  strokeWidth: number;
-  dash?: string;
-  opacity: number;
-} {
-  if (kind === "ownership") {
-    return { stroke: colors.textSecondary, strokeWidth: 1.8, opacity: 0.7 };
-  }
-  if (kind === "wait") {
-    return {
-      stroke: colors.statusBlocked,
-      strokeWidth: 2.1,
-      dash: "5 5",
-      opacity: 0.9,
-    };
-  }
-  if (kind === "review") {
-    return { stroke: colors.accentStrong, strokeWidth: 2.6, opacity: 0.92 };
-  }
-  if (kind === "blocked") {
-    return {
-      stroke: colors.dangerText,
-      strokeWidth: 2,
-      dash: "2 4",
-      opacity: 0.82,
-    };
-  }
-  return { stroke: colors.borderStrong, strokeWidth: 1.25, opacity: 0.62 };
 }
 
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
-  const surfaces = surfacesFromTheme(theme);
-  return Object.assign(
-    StyleSheet.create({
-      root: { flex: 1, backgroundColor: colors.bgPrimary },
-      topBar: {
-        minHeight: 60,
-        paddingHorizontal: 16,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-      },
-      titleCopy: { flex: 1, minWidth: 0 },
-      eyebrow: {
-        ...UiTextMetrics,
-        ...TypeScale.micro,
-        color: colors.textTertiary,
-        letterSpacing: 0.7,
-        textTransform: "uppercase",
-      },
-      title: {
-        ...UiTextMetrics,
-        ...TypeScale.title,
-        color: colors.textPrimary,
-        marginTop: 1,
-      },
-      closeButton: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: surfaces.subtle,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: surfaces.border,
-      },
-      legend: {
-        minHeight: 28,
-        paddingHorizontal: 18,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 18,
-      },
-      legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
-      legendLineWrap: {
-        width: 22,
-        height: 10,
-        alignItems: "center",
-        justifyContent: "center",
-      },
-      legendLine: { width: 22, height: 1 },
-      legendReviewDot: {
-        position: "absolute",
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-        borderWidth: 1.3,
-        backgroundColor: colors.bgPrimary,
-      },
-      legendLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textTertiary },
-      backlogSummary: {
-        minHeight: 24,
-        marginHorizontal: 18,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 5,
-      },
-      backlogSummaryText: {
-        ...UiTextMetrics,
-        ...TypeScale.micro,
-        color: colors.textTertiary,
-      },
-      graphFrame: {
-        flex: 1,
-        minHeight: 260,
-        marginHorizontal: 8,
-        marginTop: 4,
-        borderRadius: Radii.lg,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: colors.borderSubtle,
-        backgroundColor: surfaces.subtle,
-        overflow: "hidden",
-      },
-      graphCanvas: { flex: 1 },
-      nodeFrame: { position: "absolute" },
-      nodeFill: {
-        flex: 1,
-        borderRadius: Radii.sm,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: surfaces.border,
-        backgroundColor: surfaces.surface,
-        overflow: "hidden",
-      },
-      relationshipNode: { justifyContent: "center" },
-      nodeSelected: { borderWidth: 1.5, borderColor: colors.focusRing },
-      brainNode: { alignItems: "center", justifyContent: "center", gap: 1 },
-      brainMark: {
-        width: 25,
-        height: 24,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: colors.accentSoft,
-      },
-      brainLabel: { ...UiTextMetrics, ...TypeScale.micro, color: colors.textPrimary },
-      workNodeContent: { flex: 1, paddingHorizontal: 8, paddingVertical: 5 },
-      workStateRow: {
-        minHeight: 13,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-      },
-      workNodeTitle: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 11,
-        lineHeight: 14,
-        color: colors.textPrimary,
-        marginTop: 1,
-      },
-      endpointContent: {
-        flex: 1,
-        paddingHorizontal: 7,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-      },
-      endpointIcon: {
-        width: 23,
-        height: 23,
-        borderRadius: 12,
-        alignItems: "center",
-        justifyContent: "center",
-      },
-      endpointCopy: { flex: 1, minWidth: 0 },
-      endpointTitle: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 10.5,
-        lineHeight: 14,
-        color: colors.textPrimary,
-      },
-      stateLabel: {
-        minHeight: 17,
-        paddingHorizontal: 7,
-        borderRadius: 9,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 4,
-        backgroundColor: colors.surfaceSubtle,
-      },
-      stateLabelCompact: {
-        minHeight: 12,
-        paddingHorizontal: 0,
-        backgroundColor: "transparent",
-      },
-      stateDot: { width: 5, height: 5, borderRadius: 3 },
-      stateLabelText: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 10,
-        lineHeight: 13,
-      },
-      stateLabelTextCompact: { fontSize: 8.5, lineHeight: 11 },
-      aggregateNode: {
-        justifyContent: "center",
-        borderColor: colors.accentStrong,
-        backgroundColor: colors.accentSoft,
-      },
-      aggregateContent: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 6,
-      },
-      aggregateCopy: { minWidth: 0 },
-      aggregateTitle: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.label.fontFamily,
-        fontSize: 11,
-        lineHeight: 14,
-        color: colors.accentStrong,
-      },
-      aggregateHint: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 8.5,
-        lineHeight: 11,
-        color: colors.textTertiary,
-      },
-      pageBadge: {
-        position: "absolute",
-        top: 7,
-        right: 8,
-        minWidth: 30,
-        height: 18,
-        paddingHorizontal: 6,
-        borderRadius: 9,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: colors.modalSurfaceAlt,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: colors.borderSubtle,
-      },
-      pageBadgeText: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 8.5,
-        lineHeight: 11,
-        color: colors.textTertiary,
-      },
-      detailDock: {
-        height: 124,
-        marginHorizontal: 10,
-        marginTop: 8,
-        marginBottom: 8,
-        paddingHorizontal: 12,
-        borderRadius: Radii.lg,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: surfaces.border,
-        backgroundColor: surfaces.surface,
-        justifyContent: "center",
-        overflow: "hidden",
-      },
-      detailContent: { flex: 1, paddingVertical: 10, justifyContent: "space-between" },
-      detailHeading: {
-        flexDirection: "row",
-        alignItems: "flex-start",
-        gap: 10,
-      },
-      detailTitle: {
-        ...UiTextMetrics,
-        ...TypeScale.label,
-        color: colors.textPrimary,
-        flex: 1,
-        minWidth: 0,
-      },
-      detailBottomRow: {
-        minHeight: 34,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-      },
-      detailRelationship: {
-        ...UiTextMetrics,
-        ...TypeScale.caption,
-        color: colors.textSecondary,
-        flex: 1,
-        minWidth: 0,
-      },
-      openSessionButton: {
-        minHeight: WORK_GRAPH_CONTROL_TOUCH_REGIONS.openSessionMinHeight,
-        paddingHorizontal: 10,
-        borderRadius: 16,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 5,
-        backgroundColor: colors.accentStrong,
-      },
-      openSessionText: {
-        ...UiTextMetrics,
-        fontFamily: TypeScale.micro.fontFamily,
-        fontSize: 10,
-        lineHeight: 13,
-        color: colors.textOnAccent,
-      },
-      detailPrompt: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 10,
-      },
-      detailPromptCopy: { minWidth: 0 },
-      detailPromptTitle: { ...UiTextMetrics, ...TypeScale.label, color: colors.textSecondary },
-      detailPromptHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary },
-      emptyState: {
-        flex: 1,
-        alignItems: "center",
-        justifyContent: "center",
-        paddingHorizontal: 28,
-      },
-      emptyMark: {
-        width: 42,
-        height: 42,
-        borderRadius: 21,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: colors.successSoft,
-      },
-      emptyTitle: {
-        ...UiTextMetrics,
-        ...TypeScale.heading,
-        color: colors.textPrimary,
-        marginTop: 12,
-      },
-      emptyDetail: {
-        ...UiTextMetrics,
-        ...TypeScale.caption,
-        color: colors.textTertiary,
-        marginTop: 3,
-        textAlign: "center",
-      },
-    }),
-    { colors },
-  );
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bgPrimary },
+    topBar: {
+      minHeight: 64,
+      paddingHorizontal: 16,
+      flexDirection: "row",
+      alignItems: "center",
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    titleBlock: { flex: 1, minWidth: 0 },
+    title: {
+      ...UiTextMetrics,
+      ...TypeScale.title,
+      color: colors.textPrimary,
+    },
+    subtitle: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+    },
+    closeButton: {
+      width: 44,
+      height: 44,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    scroll: { flex: 1 },
+    content: {
+      width: "100%",
+      maxWidth: 720,
+      alignSelf: "center",
+      paddingHorizontal: 16,
+      paddingTop: 14,
+      paddingBottom: 32,
+    },
+    summary: {
+      minHeight: 42,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+      paddingBottom: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    summaryCount: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textPrimary,
+    },
+    summaryLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textSecondary,
+    },
+    summaryDivider: {
+      width: 1,
+      height: 14,
+      marginHorizontal: 3,
+      backgroundColor: colors.borderSubtle,
+    },
+    section: { paddingTop: 18 },
+    sectionTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textSecondary,
+      marginBottom: 5,
+    },
+    row: {
+      minHeight: 68,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 10,
+      paddingHorizontal: 4,
+    },
+    rowBorder: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
+    rowAttention: {
+      backgroundColor: colors.warningSoft,
+      paddingHorizontal: 8,
+      borderRadius: 8,
+    },
+    rowIcon: { alignSelf: "flex-start", marginTop: 2 },
+    rowBody: { flex: 1, minWidth: 0 },
+    rowTitleLine: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+    },
+    rowTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      flex: 1,
+      minWidth: 0,
+      color: colors.textPrimary,
+    },
+    rowStatus: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      flexShrink: 0,
+      letterSpacing: 0,
+    },
+    ownerLine: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      marginTop: 3,
+    },
+    ownerText: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      flex: 1,
+      minWidth: 0,
+      color: colors.textTertiary,
+    },
+    historyRow: {
+      minHeight: 52,
+      marginTop: 18,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
+    historyText: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      flex: 1,
+      color: colors.textSecondary,
+    },
+    historyCount: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textTertiary,
+    },
+    state: {
+      flex: 1,
+      minHeight: 220,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+    },
+    stateText: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      color: colors.textTertiary,
+    },
+  });
 }

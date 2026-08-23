@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
+import type { BrainCurrentWork } from "../../store/brain";
 import {
+  brainCurrentWorkLifecycle,
   brainWorkEventAccessibilityLabel,
   brainWorkEventLifecycle,
   brainWorkEventReviewLabel,
@@ -188,5 +190,28 @@ describe("Brain Work event source presentation", () => {
         }),
       ).label,
     ).toBe("Done");
+  });
+
+  test("uses current Work status as the only terminality source", () => {
+    const current: BrainCurrentWork = {
+      work_id: "work-current",
+      revision: 3,
+      title: "Continue after result",
+      status: "waiting",
+      progress_mode: "waiting",
+      unread_result: true,
+    };
+    const terminalLookingEvents = [
+      resultEvent({ review_state: "resolved" }),
+      resultEvent({ kind: "session.failed" }),
+      resultEvent({ kind: "session.ownership_lost" }),
+    ];
+
+    for (const event of terminalLookingEvents) {
+      expect(brainCurrentWorkLifecycle(current, event).terminal).toBe(false);
+    }
+    expect(
+      brainCurrentWorkLifecycle({ ...current, status: "done" }, resultEvent()),
+    ).toMatchObject({ label: "Done", terminal: true });
   });
 });

@@ -7,6 +7,8 @@ import { TypeScale } from "../../constants/tokens";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import {
   brainWorkEventAccessibilityLabel,
+  brainCurrentWorkLifecycle,
+  brainWorkAgentCountLabel,
   brainWorkEventLifecycle,
   brainWorkEventSummary,
   brainWorkEventWorkTitle,
@@ -19,6 +21,7 @@ export type BrainWorkEventTimelineItem = {
   event: BrainWorkResultEvent;
   events: BrainWorkResultEvent[];
   sourceCount?: number;
+  currentWork?: import("../../store/brain").BrainCurrentWork;
   onPress?: () => void;
 };
 
@@ -35,7 +38,9 @@ export function BrainWorkEventCard({
 }) {
   const styles = useMemo(() => createStyles(chrome), [chrome]);
   const presentation = resolvePresentationColors(
-    brainWorkEventLifecycle(item.event),
+    item.currentWork
+      ? brainCurrentWorkLifecycle(item.currentWork, item.event)
+      : brainWorkEventLifecycle(item.event),
     chrome,
     attentionColor,
     attentionBackground,
@@ -79,7 +84,7 @@ export function BrainWorkEventCard({
         ) : null}
         {item.sourceCount ? (
           <Text style={styles.compactMeta}>
-            {item.sourceCount} {item.sourceCount === 1 ? "source" : "sources"}
+            {brainWorkAgentCountLabel(item.sourceCount)}
           </Text>
         ) : null}
         <Text style={styles.compactMeta}>{time}</Text>
@@ -141,7 +146,7 @@ export function BrainWorkEventCard({
       <View style={styles.footer}>
         {item.sourceCount ? (
           <Text numberOfLines={1} style={styles.source}>
-            {item.sourceCount} {item.sourceCount === 1 ? "source" : "sources"}
+            {brainWorkAgentCountLabel(item.sourceCount)}
           </Text>
         ) : null}
         <Text style={styles.time}>{time}</Text>
@@ -217,8 +222,7 @@ function createStyles(chrome: TerminalThemeChrome) {
     kind: {
       ...TypeScale.caption,
       fontWeight: "700",
-      textTransform: "uppercase",
-      letterSpacing: 0.45,
+      letterSpacing: 0,
       flexShrink: 1,
     },
     unreadDot: {
