@@ -78,6 +78,11 @@ import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { RisingSheet } from "../components/ui/RisingSheet";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
 import { useCurrentServer } from "../store/currentServer";
+import {
+  CONNECTION_KIND_OPTIONS,
+  shouldShowTelegramConnection,
+  type ConnectionKind,
+} from "../components/settings/connectionPresentation";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 const SCANNER_COLORS = ZEN_DARK_APP_COLORS;
@@ -122,6 +127,11 @@ export default function SettingsScreen() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [addConnectionVisible, setAddConnectionVisible] = useState(false);
+  const [telegramOpenRequest, setTelegramOpenRequest] = useState<{
+    serverId: string | null;
+    nonce: number;
+  } | null>(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -212,6 +222,18 @@ export default function SettingsScreen() {
     setDraftImportValue("");
     setCameraMountError(null);
     setPairPresentation(openPairEditor());
+  };
+
+  const chooseConnectionKind = (kind: ConnectionKind) => {
+    setAddConnectionVisible(false);
+    if (kind === "server") {
+      openCreateServer();
+      return;
+    }
+    setTelegramOpenRequest((request) => ({
+      serverId: currentServerId,
+      nonce: (request?.nonce || 0) + 1,
+    }));
   };
 
   const openEditServer = (server: Storage.StoredServer) => {
@@ -677,23 +699,37 @@ export default function SettingsScreen() {
                 );
               })
             )}
+            <TelegramConnectionRow
+              key={currentServerId || "no-current-server"}
+              serverId={currentServerId}
+              connected={
+                Boolean(currentServerId) &&
+                serverConnections[currentServerId || ""] === "connected"
+              }
+              openRequest={
+                telegramOpenRequest?.serverId === currentServerId
+                  ? telegramOpenRequest?.nonce || 0
+                  : 0
+              }
+              onSetupDismiss={() => setTelegramOpenRequest(null)}
+            />
             <AnimatedPressable
-              style={styles.addServerRow}
+              style={styles.addConnectionRow}
               preset="press"
               scale={0.99}
               accessibilityRole="button"
-              accessibilityLabel="Add server"
-              accessibilityHint="Pair a server using a link or QR code"
+              accessibilityLabel="Add connection"
+              accessibilityHint="Choose a Zen Server or Telegram connection"
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                openCreateServer();
+                setAddConnectionVisible(true);
               }}
             >
-              <View style={styles.addServerIcon}>
+              <View style={styles.addConnectionIcon}>
                 <Ionicons name="add" size={20} color={colors.textOnAccent} />
               </View>
-              <View style={styles.addServerCopy}>
-                <Text style={styles.addServerTitle}>Add Server</Text>
+              <View style={styles.addConnectionCopy}>
+                <Text style={styles.addConnectionTitle}>Add Connection</Text>
               </View>
               <Ionicons
                 name="chevron-forward"
@@ -702,20 +738,6 @@ export default function SettingsScreen() {
               />
             </AnimatedPressable>
           </View>
-
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Channels
-            </Text>
-          </View>
-          <TelegramConnectionCard
-            key={currentServerId || "no-current-server"}
-            serverId={currentServerId}
-            connected={
-              Boolean(currentServerId) &&
-              serverConnections[currentServerId || ""] === "connected"
-            }
-          />
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
@@ -820,6 +842,46 @@ export default function SettingsScreen() {
           </View>
         </View>
       </ScrollView>
+
+      <RisingSheet
+        visible={addConnectionVisible}
+        onClose={() => setAddConnectionVisible(false)}
+        cardStyle={styles.modalCard}
+      >
+        <Text style={styles.modalTitle} accessibilityRole="header">
+          Add Connection
+        </Text>
+        <View style={styles.connectionKindList}>
+          {CONNECTION_KIND_OPTIONS.map((option) => (
+            <AnimatedPressable
+              key={option.kind}
+              style={styles.connectionKindRow}
+              preset="press"
+              scale={0.98}
+              accessibilityRole="button"
+              accessibilityLabel={option.label}
+              onPress={() => {
+                void Haptics.selectionAsync();
+                chooseConnectionKind(option.kind);
+              }}
+            >
+              <View style={styles.connectionKindIcon}>
+                <Ionicons
+                  name={option.icon}
+                  size={20}
+                  color={colors.accentStrong}
+                />
+              </View>
+              <Text style={styles.connectionKindLabel}>{option.label}</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color={colors.textTertiary}
+              />
+            </AnimatedPressable>
+          ))}
+        </View>
+      </RisingSheet>
 
       {/* Unified Pair/Edit presentation: one RisingSheet Modal, editor|scanner modes */}
       <RisingSheet
@@ -1179,12 +1241,16 @@ export default function SettingsScreen() {
   );
 }
 
-function TelegramConnectionCard({
+function TelegramConnectionRow({
   serverId,
   connected,
+  openRequest,
+  onSetupDismiss,
 }: {
   serverId: string | null;
   connected: boolean;
+  openRequest: number;
+  onSetupDismiss(): void;
 }) {
   const { theme } = useAppTheme();
   const colors = useAppColors();
@@ -1194,12 +1260,18 @@ function TelegramConnectionCard({
   const [busy, setBusy] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState("");
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (openRequest > 0) setExpanded(true);
+  }, [openRequest]);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       if (!serverId || !connected) {
         setStatus(null);
+        setLoading(false);
         return () => {
           cancelled = true;
         };
@@ -1308,213 +1380,265 @@ function TelegramConnectionCard({
     ? telegramConnectionStateColor(status.state, colors)
     : colors.textTertiary;
   const hasConfiguredBot = Boolean(status?.bot_username);
+  const visible = shouldShowTelegramConnection(
+    status?.bot_username,
+    openRequest > 0,
+  );
+
+  if (!visible) return null;
 
   return (
-    <View style={styles.telegramCard}>
-      <View style={styles.telegramHeader}>
-        <View style={styles.telegramIcon}>
-          <Ionicons name="paper-plane" size={18} color={colors.textOnAccent} />
-        </View>
-        <View style={styles.telegramHeadingCopy}>
-          <Text style={styles.telegramTitle}>Telegram</Text>
-          {status?.bot_username ? (
-            <Text style={styles.telegramIdentity} numberOfLines={1}>
-              @{status.bot_username}
-            </Text>
-          ) : null}
-        </View>
-        <View
-          style={[styles.telegramState, { borderColor: stateColor }]}
-          accessibilityLabel={`Telegram ${stateLabel}`}
-        >
+    <View style={styles.serverCard}>
+      <AnimatedPressable
+        style={styles.telegramHeaderButton}
+        preset="card"
+        scale={0.99}
+        accessibilityRole="button"
+        accessibilityLabel={`Telegram${
+          status?.bot_username ? `, @${status.bot_username}` : ""
+        }, ${stateLabel}`}
+        accessibilityHint={
+          expanded
+            ? "Hide Telegram details and actions"
+            : "Show Telegram details and actions"
+        }
+        accessibilityState={{ expanded }}
+        onPress={() => {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setExpanded((value) => {
+            const next = !value;
+            if (!next && !hasConfiguredBot) onSetupDismiss();
+            return next;
+          });
+        }}
+      >
+        <View style={styles.telegramHeader}>
+          <View style={styles.telegramIcon}>
+            <Ionicons name="paper-plane" size={18} color={colors.textOnAccent} />
+          </View>
+          <View style={styles.telegramHeadingCopy}>
+            <Text style={styles.telegramTitle}>Telegram</Text>
+            {status?.bot_username ? (
+              <Text style={styles.telegramIdentity} numberOfLines={1}>
+                @{status.bot_username}
+              </Text>
+            ) : null}
+          </View>
           <View
-            style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
+            style={styles.telegramState}
+            accessibilityLabel={`Telegram ${stateLabel}`}
+          >
+            <View
+              style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
+            />
+            <Text
+              style={[styles.telegramStateText, { color: stateColor }]}
+              numberOfLines={1}
+            >
+              {stateLabel}
+            </Text>
+          </View>
+          <Ionicons
+            name={expanded ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={colors.textTertiary}
           />
-          <Text style={[styles.telegramStateText, { color: stateColor }]}>
-            {stateLabel}
-          </Text>
         </View>
-      </View>
+      </AnimatedPressable>
 
-      {!serverId ? (
-        <Text style={styles.telegramDetail}>Pair a daemon first.</Text>
-      ) : !connected ? (
-        <Text style={styles.telegramDetail}>
-          Connect the current daemon to manage this channel.
-        </Text>
-      ) : (
-        <>
-          {status?.bot_name ? (
+      {expanded ? (
+        <View style={styles.telegramExpandedContent}>
+          {!serverId ? (
+            <Text style={styles.telegramDetail}>Pair a Zen Server first.</Text>
+          ) : !connected ? (
             <Text style={styles.telegramDetail}>
-              {status.bot_name}
-              {status.owner_hint ? ` / ${status.owner_hint}` : " / owner not bound"}
+              Connect the current Zen Server to manage Telegram.
             </Text>
           ) : (
-            <Text style={styles.telegramDetail}>
-              Create a bot with BotFather, then enter its token once.
-            </Text>
+            <>
+              {status?.bot_name ? (
+                <Text style={styles.telegramDetail}>
+                  {status.bot_name}
+                  {status.owner_hint
+                    ? ` / ${status.owner_hint}`
+                    : " / owner not bound"}
+                </Text>
+              ) : (
+                <Text style={styles.telegramDetail}>
+                  Create a bot with BotFather, then enter its token once.
+                </Text>
+              )}
+
+              {status?.last_error ? (
+                <View style={styles.telegramError}>
+                  <Ionicons
+                    name="alert-circle-outline"
+                    size={16}
+                    color={colors.dangerText}
+                  />
+                  <Text style={styles.telegramErrorText}>
+                    {status.last_error}
+                  </Text>
+                </View>
+              ) : null}
+
+              {status && (status.last_receive_at || status.last_send_at) ? (
+                <Text style={styles.telegramMetadata}>
+                  {status.last_receive_at
+                    ? `Received ${formatConnectionTime(status.last_receive_at)}`
+                    : "No messages received"}
+                  {status.last_send_at
+                    ? ` / Sent ${formatConnectionTime(status.last_send_at)}`
+                    : ""}
+                </Text>
+              ) : null}
+
+              {showToken ? (
+                <View style={styles.telegramTokenForm}>
+                  <TextInput
+                    style={styles.input}
+                    value={token}
+                    onChangeText={setToken}
+                    placeholder="BotFather token"
+                    placeholderTextColor={colors.textSecondary}
+                    selectionColor={colors.selectionBackground}
+                    cursorColor={colors.accentStrong}
+                    accessibilityLabel="Telegram bot token"
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!busy}
+                  />
+                  <View style={styles.telegramActions}>
+                    <ConnectionAction
+                      icon="close"
+                      label="Cancel"
+                      disabled={busy}
+                      onPress={() => {
+                        setToken("");
+                        setShowToken(false);
+                        if (!hasConfiguredBot) {
+                          setExpanded(false);
+                          onSetupDismiss();
+                        }
+                      }}
+                    />
+                    <ConnectionAction
+                      icon="checkmark"
+                      label={hasConfiguredBot ? "Rotate" : "Configure"}
+                      primary
+                      disabled={busy || token.trim() === ""}
+                      onPress={() => void configure()}
+                    />
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.telegramActions}>
+                  {!status || (!hasConfiguredBot && status.state === "disabled") ? (
+                    <ConnectionAction
+                      icon="add"
+                      label="Set Up"
+                      primary
+                      disabled={busy || loading}
+                      onPress={() => setShowToken(true)}
+                    />
+                  ) : null}
+                  {status?.state === "disabled" && hasConfiguredBot ? (
+                    <ConnectionAction
+                      icon="power"
+                      label="Enable"
+                      primary
+                      disabled={busy}
+                      onPress={() =>
+                        void runStatusMutation(() =>
+                          wsClient.enableTelegramConnection(serverId),
+                        )
+                      }
+                    />
+                  ) : null}
+                  {status?.state === "setup_pending" ? (
+                    <ConnectionAction
+                      icon="open-outline"
+                      label={
+                        status.binding_pending ? "Open Telegram" : "Bind Owner"
+                      }
+                      primary
+                      disabled={busy}
+                      onPress={() => void beginBinding()}
+                    />
+                  ) : null}
+                  {status?.enabled ? (
+                    <ConnectionAction
+                      icon="pause"
+                      label="Disable"
+                      disabled={busy}
+                      onPress={() =>
+                        confirmMutation(
+                          "Disable Telegram",
+                          "Stop receiving and sending Telegram messages for this daemon?",
+                          "Disable",
+                          () => wsClient.disableTelegramConnection(serverId),
+                        )
+                      }
+                    />
+                  ) : null}
+                  {hasConfiguredBot ? (
+                    <ConnectionAction
+                      icon="key-outline"
+                      label="Rotate"
+                      disabled={busy}
+                      onPress={() => setShowToken(true)}
+                    />
+                  ) : null}
+                  {status?.owner_hint ? (
+                    <ConnectionAction
+                      icon="person-remove-outline"
+                      label="Revoke"
+                      danger
+                      disabled={busy}
+                      onPress={() =>
+                        confirmMutation(
+                          "Revoke Telegram owner",
+                          "Remove the verified Telegram owner and require a new binding?",
+                          "Revoke",
+                          () => wsClient.revokeTelegramOwner(serverId),
+                        )
+                      }
+                    />
+                  ) : null}
+                  {hasConfiguredBot ? (
+                    <ConnectionAction
+                      icon="trash-outline"
+                      label="Remove"
+                      danger
+                      disabled={busy}
+                      onPress={() =>
+                        confirmMutation(
+                          "Remove Telegram bot",
+                          "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
+                          "Remove",
+                          () => wsClient.removeTelegramConnection(serverId),
+                        )
+                      }
+                    />
+                  ) : null}
+                </View>
+              )}
+
+              {status ? (
+                <Text style={styles.telegramPrivacy}>
+                  Bot chats are Telegram cloud chats. The token remains on this daemon.
+                </Text>
+              ) : null}
+            </>
           )}
-
-          {status?.last_error ? (
-            <View style={styles.telegramError}>
-              <Ionicons
-                name="alert-circle-outline"
-                size={16}
-                color={colors.dangerText}
-              />
-              <Text style={styles.telegramErrorText}>{status.last_error}</Text>
-            </View>
-          ) : null}
-
-          {status && (status.last_receive_at || status.last_send_at) ? (
-            <Text style={styles.telegramMetadata}>
-              {status.last_receive_at
-                ? `Received ${formatConnectionTime(status.last_receive_at)}`
-                : "No messages received"}
-              {status.last_send_at
-                ? ` / Sent ${formatConnectionTime(status.last_send_at)}`
-                : ""}
-            </Text>
-          ) : null}
-
-          {showToken ? (
-            <View style={styles.telegramTokenForm}>
-              <TextInput
-                style={styles.input}
-                value={token}
-                onChangeText={setToken}
-                placeholder="BotFather token"
-                placeholderTextColor={colors.textSecondary}
-                selectionColor={colors.selectionBackground}
-                cursorColor={colors.accentStrong}
-                accessibilityLabel="Telegram bot token"
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!busy}
-              />
-              <View style={styles.telegramActions}>
-                <ChannelAction
-                  icon="close"
-                  label="Cancel"
-                  disabled={busy}
-                  onPress={() => {
-                    setToken("");
-                    setShowToken(false);
-                  }}
-                />
-                <ChannelAction
-                  icon="checkmark"
-                  label={hasConfiguredBot ? "Rotate" : "Configure"}
-                  primary
-                  disabled={busy || token.trim() === ""}
-                  onPress={() => void configure()}
-                />
-              </View>
-            </View>
-          ) : (
-            <View style={styles.telegramActions}>
-              {!status || (!hasConfiguredBot && status.state === "disabled") ? (
-                <ChannelAction
-                  icon="add"
-                  label="Set Up"
-                  primary
-                  disabled={busy || loading}
-                  onPress={() => setShowToken(true)}
-                />
-              ) : null}
-              {status?.state === "disabled" && hasConfiguredBot ? (
-                <ChannelAction
-                  icon="power"
-                  label="Enable"
-                  primary
-                  disabled={busy}
-                  onPress={() =>
-                    void runStatusMutation(() =>
-                      wsClient.enableTelegramConnection(serverId),
-                    )
-                  }
-                />
-              ) : null}
-              {status?.state === "setup_pending" ? (
-                <ChannelAction
-                  icon="open-outline"
-                  label={status.binding_pending ? "Open Telegram" : "Bind Owner"}
-                  primary
-                  disabled={busy}
-                  onPress={() => void beginBinding()}
-                />
-              ) : null}
-              {status?.enabled ? (
-                <ChannelAction
-                  icon="pause"
-                  label="Disable"
-                  disabled={busy}
-                  onPress={() =>
-                    confirmMutation(
-                      "Disable Telegram",
-                      "Stop receiving and sending Telegram messages for this daemon?",
-                      "Disable",
-                      () => wsClient.disableTelegramConnection(serverId),
-                    )
-                  }
-                />
-              ) : null}
-              {hasConfiguredBot ? (
-                <ChannelAction
-                  icon="key-outline"
-                  label="Rotate"
-                  disabled={busy}
-                  onPress={() => setShowToken(true)}
-                />
-              ) : null}
-              {status?.owner_hint ? (
-                <ChannelAction
-                  icon="person-remove-outline"
-                  label="Revoke"
-                  danger
-                  disabled={busy}
-                  onPress={() =>
-                    confirmMutation(
-                      "Revoke Telegram owner",
-                      "Remove the verified Telegram owner and require a new binding?",
-                      "Revoke",
-                      () => wsClient.revokeTelegramOwner(serverId),
-                    )
-                  }
-                />
-              ) : null}
-              {hasConfiguredBot ? (
-                <ChannelAction
-                  icon="trash-outline"
-                  label="Remove"
-                  danger
-                  disabled={busy}
-                  onPress={() =>
-                    confirmMutation(
-                      "Remove Telegram bot",
-                      "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
-                      "Remove",
-                      () => wsClient.removeTelegramConnection(serverId),
-                    )
-                  }
-                />
-              ) : null}
-            </View>
-          )}
-
-          {status ? (
-            <Text style={styles.telegramPrivacy}>
-              Bot chats are Telegram cloud chats. The token remains on this daemon.
-            </Text>
-          ) : null}
-        </>
-      )}
+        </View>
+      ) : null}
     </View>
   );
 }
 
-function ChannelAction({
+function ConnectionAction({
   icon,
   label,
   primary = false,
@@ -1540,10 +1664,10 @@ function ChannelAction({
   return (
     <AnimatedPressable
       style={[
-        styles.channelAction,
-        primary && styles.channelActionPrimary,
-        danger && styles.channelActionDanger,
-        disabled && styles.channelActionDisabled,
+        styles.connectionAction,
+        primary && styles.connectionActionPrimary,
+        danger && styles.connectionActionDanger,
+        disabled && styles.connectionActionDisabled,
       ]}
       preset="press"
       scale={0.95}
@@ -1554,7 +1678,7 @@ function ChannelAction({
       onPress={onPress}
     >
       <Ionicons name={icon} size={16} color={foreground} />
-      <Text style={[styles.channelActionText, { color: foreground }]}>
+      <Text style={[styles.connectionActionText, { color: foreground }]}>
         {label}
       </Text>
     </AnimatedPressable>
@@ -1728,12 +1852,11 @@ function createStyles(theme: ResolvedZenTheme) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
-    telegramCard: {
-      padding: 14,
-      borderRadius: Radii.sm,
+    telegramHeaderButton: {
+      minHeight: 72,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
       backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
     },
     telegramHeader: {
       minHeight: 44,
@@ -1764,14 +1887,11 @@ function createStyles(theme: ResolvedZenTheme) {
       color: colors.textSecondary,
     },
     telegramState: {
-      minHeight: 28,
-      maxWidth: "42%",
-      paddingHorizontal: 9,
+      maxWidth: 104,
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "center",
-      borderRadius: Radii.xs,
-      borderWidth: StyleSheet.hairlineWidth,
+      justifyContent: "flex-end",
+      gap: 5,
     },
     telegramStateDot: {
       width: 6,
@@ -1783,6 +1903,13 @@ function createStyles(theme: ResolvedZenTheme) {
       ...UiTextMetrics,
       ...TypeScale.caption,
       flexShrink: 1,
+    },
+    telegramExpandedContent: {
+      paddingHorizontal: 14,
+      paddingBottom: 14,
+      backgroundColor: colors.surfaceSubtle,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
     },
     telegramDetail: {
       ...UiTextMetrics,
@@ -1825,7 +1952,7 @@ function createStyles(theme: ResolvedZenTheme) {
       flexWrap: "wrap",
       gap: 8,
     },
-    channelAction: {
+    connectionAction: {
       minHeight: 44,
       minWidth: 104,
       paddingHorizontal: 12,
@@ -1840,17 +1967,17 @@ function createStyles(theme: ResolvedZenTheme) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
     },
-    channelActionPrimary: {
+    connectionActionPrimary: {
       backgroundColor: colors.accentStrong,
       borderColor: colors.accentStrong,
     },
-    channelActionDanger: {
+    connectionActionDanger: {
       borderColor: colors.dangerText,
     },
-    channelActionDisabled: {
+    connectionActionDisabled: {
       opacity: 0.5,
     },
-    channelActionText: {
+    connectionActionText: {
       ...UiTextMetrics,
       ...TypeScale.label,
     },
@@ -1993,7 +2120,7 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.compact,
       color: colors.textPrimary,
     },
-    addServerRow: {
+    addConnectionRow: {
       minHeight: 60,
       flexDirection: "row",
       alignItems: "center",
@@ -2002,7 +2129,7 @@ function createStyles(theme: ResolvedZenTheme) {
       paddingVertical: 8,
       backgroundColor: colors.bgSurface,
     },
-    addServerIcon: {
+    addConnectionIcon: {
       width: 32,
       height: 32,
       borderRadius: 16,
@@ -2010,11 +2137,11 @@ function createStyles(theme: ResolvedZenTheme) {
       justifyContent: "center",
       backgroundColor: colors.accent,
     },
-    addServerCopy: {
+    addConnectionCopy: {
       flex: 1,
       minWidth: 0,
     },
-    addServerTitle: {
+    addConnectionTitle: {
       ...UiTextMetrics,
       ...TypeScale.compact,
       color: colors.textPrimary,
@@ -2117,6 +2244,36 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.heading,
       color: colors.textPrimary,
       marginBottom: 18,
+    },
+    connectionKindList: {
+      overflow: "hidden",
+      borderRadius: Radii.sm,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    connectionKindRow: {
+      minHeight: 58,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingHorizontal: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+      backgroundColor: colors.bgSurface,
+    },
+    connectionKindIcon: {
+      width: 34,
+      height: 34,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceActive,
+    },
+    connectionKindLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      flex: 1,
+      color: colors.textPrimary,
     },
     importLead: {
       ...UiTextMetrics,
