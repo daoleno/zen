@@ -262,11 +262,17 @@ type TimelineItem struct {
 	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
 
 	// Work-card presentation fields. Identity is ID == Work Event ID.
-	WorkID      string `json:"work_id,omitempty"`
-	EventKind   string `json:"event_kind,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	SessionName string `json:"session_name,omitempty"`
-	Unread      bool   `json:"unread,omitempty"`
+	WorkID         string `json:"work_id,omitempty"`
+	EventKind      string `json:"event_kind,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	SessionName    string `json:"session_name,omitempty"`
+	Unread         bool   `json:"unread,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	Attention      string `json:"attention,omitempty"`
+	AgentEventKind string `json:"agent_event_kind,omitempty"`
+	DetailsJSON    string `json:"details_json,omitempty"`
+	NextAction     string `json:"next_action,omitempty"`
+	WaitFor        string `json:"wait_for,omitempty"`
 }
 
 func (s *Store) messagesPath() string {
@@ -668,19 +674,25 @@ func workCardTimelineItem(workItem Work, event WorkEvent, unread bool) TimelineI
 	body := firstNonEmpty(summary, title, event.Kind)
 
 	return TimelineItem{
-		ID:          event.ID,
-		ThreadID:    threadID,
-		SessionID:   sessionID,
-		Role:        "assistant",
-		Body:        body,
-		CreatedAt:   event.CreatedAt.UTC(),
-		Kind:        timelineKindWorkCard,
-		Status:      event.Kind,
-		Title:       title,
-		WorkID:      workItem.ID,
-		EventKind:   event.Kind,
-		Summary:     summary,
-		SessionName: strings.TrimSpace(event.SourceName),
+		ID:             event.ID,
+		ThreadID:       threadID,
+		SessionID:      sessionID,
+		Role:           "assistant",
+		Body:           body,
+		CreatedAt:      event.CreatedAt.UTC(),
+		Kind:           timelineKindWorkCard,
+		Status:         event.Kind,
+		Title:          title,
+		WorkID:         workItem.ID,
+		EventKind:      event.Kind,
+		Summary:        summary,
+		SessionName:    strings.TrimSpace(event.SourceName),
+		Phase:          strings.TrimSpace(event.Phase),
+		Attention:      strings.TrimSpace(event.Attention),
+		AgentEventKind: strings.TrimSpace(event.EventKind),
+		DetailsJSON:    strings.TrimSpace(event.DetailsJSON),
+		NextAction:     strings.TrimSpace(workItem.NextAction),
+		WaitFor:        strings.TrimSpace(workItem.WaitFor),
 		// Read state lives in the timeline projection. A freshly materialized
 		// card is unread; MarkWorkRead clears it without touching the Event.
 		Unread: unread,
@@ -837,19 +849,25 @@ func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConv
 		}, true
 	case timelineKindWorkCard:
 		return work.CodexConversationEvent{
-			ID:          item.ID,
-			Seq:         seq,
-			Timestamp:   item.CreatedAt.Format(time.RFC3339Nano),
-			Kind:        "status",
-			Role:        "assistant",
-			Title:       item.Title,
-			Body:        firstNonEmpty(item.Summary, item.Body),
-			Status:      firstNonEmpty(item.EventKind, item.Status),
-			Source:      workResultConversationSource,
-			WorkID:      item.WorkID,
-			WorkSession: item.SessionID,
-			SessionName: item.SessionName,
-			Unread:      item.Unread,
+			ID:              item.ID,
+			Seq:             seq,
+			Timestamp:       item.CreatedAt.Format(time.RFC3339Nano),
+			Kind:            "status",
+			Role:            "assistant",
+			Title:           item.Title,
+			Body:            firstNonEmpty(item.Summary, item.Body),
+			Status:          firstNonEmpty(item.EventKind, item.Status),
+			Source:          workResultConversationSource,
+			WorkID:          item.WorkID,
+			WorkSession:     item.SessionID,
+			SessionName:     item.SessionName,
+			Unread:          item.Unread,
+			WorkPhase:       item.Phase,
+			WorkAttention:   item.Attention,
+			WorkEventKind:   item.AgentEventKind,
+			WorkDetailsJSON: item.DetailsJSON,
+			WorkNextAction:  item.NextAction,
+			WorkWaitFor:     item.WaitFor,
 		}, true
 	case timelineKindCalendarResult:
 		return work.CodexConversationEvent{

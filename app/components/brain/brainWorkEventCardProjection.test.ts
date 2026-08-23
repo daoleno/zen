@@ -106,6 +106,42 @@ describe("Brain Work Event dedicated card projection", () => {
     expect(next.items[next.items.length - 1]?.type).toBe("message");
   });
 
+  test("redelivery keeps one stable card and selects current semantic context", () => {
+    const providerHint = workResultEvent("session.done", "provider-hint");
+    const exactControl = {
+      ...workResultEvent("session.done", "exact-control"),
+      seq: 2,
+      body: "Publishing image",
+      work_phase: "working",
+      work_attention: "none",
+      work_event_kind: "artifact",
+      work_details_json: '{"ci_run":32645890201}',
+      work_next_action: "Promote verified build",
+      work_wait_for: "Preview iOS archive",
+      work_result_current: true,
+    };
+    const items = buildZenTimeline([providerHint, exactControl]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "brain-work:ae621005-929b-49b5-9d42-fa476d42d3f3",
+      type: "brain-work-event",
+      event: {
+        event_id: "exact-control",
+        summary: "Publishing image",
+        phase: "working",
+        event_kind: "artifact",
+        details_json: '{"ci_run":32645890201}',
+        next_action: "Promote verified build",
+        wait_for: "Preview iOS archive",
+      },
+    });
+    if (items[0]?.type !== "brain-work-event") {
+      throw new Error("expected Work card");
+    }
+    expect(items[0].events).toHaveLength(2);
+  });
+
   test("historical Work-result prepend reprojects into the existing stable group", () => {
     const latest = {
       ...workResultEvent("session.done", "latest-result"),
@@ -178,13 +214,26 @@ describe("Brain Work Event dedicated card projection", () => {
     });
   });
 
-  test("grouped card renders canonical cancellation without failure copy", () => {
+  test("minimal card renders the canonical lifecycle label", () => {
     const source = readFileSync(
       join(import.meta.dir, "BrainWorkEventCard.tsx"),
       "utf8",
     );
-    expect(source).toContain('presentation.lifecycle === "cancelled"');
-    expect(source).toContain("{compactStatus}");
+    expect(source).toContain('card.density === "minimal"');
+    expect(source).toContain("{presentation.label}");
+  });
+
+  test("card source uses word-safe wrapping and has no break-all behavior", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "BrainWorkEventCard.tsx"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "numberOfLines={BRAIN_WORK_CARD_TITLE_LINES}",
+    );
+    expect(source).toContain("style={styles.compactTitle}");
+    expect(source).not.toContain("break-all");
+    expect(source).not.toContain("wordBreak");
   });
 
   test("InterfaceTimelineItemView owns BrainWorkEventCard for work events", () => {

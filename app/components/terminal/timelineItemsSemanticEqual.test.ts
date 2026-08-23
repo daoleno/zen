@@ -594,6 +594,12 @@ describe("timelineItemsSemanticEqual", () => {
       { review_state: "reviewing" },
       { session_state: "closing" },
       { current_result: false },
+      { phase: "verifying" },
+      { attention: "user_input" },
+      { event_kind: "verification" },
+      { details_json: '{"ci_run":3}' },
+      { next_action: "Promote build" },
+      { wait_for: "Preview archive" },
     ];
     for (const override of fields) {
       expect(

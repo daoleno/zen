@@ -82,6 +82,12 @@ export interface CodexConversationEvent {
   work_review_state?: WorkReviewState;
   work_session_state?: WorkSessionState;
   work_result_current?: boolean;
+  work_phase?: string;
+  work_attention?: string;
+  work_event_kind?: string;
+  work_details_json?: string;
+  work_next_action?: string;
+  work_wait_for?: string;
 }
 
 export interface CodexConversation {
@@ -269,6 +275,28 @@ function normalizeCodexConversationEvent(
     work_result_current:
       typeof event.work_result_current === "boolean"
         ? event.work_result_current
+        : undefined,
+    work_phase:
+      typeof event.work_phase === "string" ? event.work_phase : undefined,
+    work_attention:
+      typeof event.work_attention === "string"
+        ? event.work_attention
+        : undefined,
+    work_event_kind:
+      typeof event.work_event_kind === "string"
+        ? event.work_event_kind
+        : undefined,
+    work_details_json:
+      typeof event.work_details_json === "string"
+        ? event.work_details_json
+        : undefined,
+    work_next_action:
+      typeof event.work_next_action === "string"
+        ? event.work_next_action
+        : undefined,
+    work_wait_for:
+      typeof event.work_wait_for === "string"
+        ? event.work_wait_for
         : undefined,
   };
   if (

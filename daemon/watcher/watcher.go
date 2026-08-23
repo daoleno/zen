@@ -905,6 +905,10 @@ func controlFactFromProgress(id, turnID string, progress classifier.AgentProgres
 		Class:        EvidenceControl,
 		At:           now,
 		Summary:      strings.TrimSpace(progress.Summary),
+		Phase:        strings.TrimSpace(progress.Phase),
+		Attention:    strings.TrimSpace(progress.Attention),
+		EventKind:    strings.TrimSpace(progress.EventKind),
+		DetailsJSON:  strings.TrimSpace(progress.DetailsJSON),
 		LeaseSeconds: progress.LeaseSeconds,
 	}
 	progressState := classifier.ProgressState(progress)

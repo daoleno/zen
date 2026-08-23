@@ -175,6 +175,10 @@ type WorkEvent struct {
 	PayloadRef         string          `json:"payload_ref,omitempty"`
 	SourceName         string          `json:"source_name,omitempty"`
 	Summary            string          `json:"summary,omitempty"`
+	Phase              string          `json:"phase,omitempty"`
+	Attention          string          `json:"attention,omitempty"`
+	EventKind          string          `json:"event_kind,omitempty"`
+	DetailsJSON        string          `json:"details_json,omitempty"`
 	Actionable         bool            `json:"actionable"`
 	CreatedAt          time.Time       `json:"created_at"`
 	Sequence           uint64          `json:"sequence"`

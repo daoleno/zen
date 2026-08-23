@@ -49,14 +49,14 @@ describe("Brain Work event source presentation", () => {
     });
 
     expect(brainWorkEventWorkTitle(event)).toBe(
-      "zen-device-revocation-acceptance",
+      "zen device revocation acceptance",
     );
     const label = brainWorkEventAccessibilityLabel({
       event,
       statusLabel: "Done",
       occurredAtLabel: "August 4, 2026 at 10:00",
     });
-    expect(label).toContain("Work zen-device-revocation-acceptance");
+    expect(label).toContain("Work zen device revocation acceptance");
     expect(label).not.toContain(canonicalSessionID);
     expect(label).not.toContain("brain-agent-");
   });
@@ -175,10 +175,20 @@ describe("Brain Work event source presentation", () => {
     ).toBe("Done");
   });
 
-  test("keeps needs-user attention distinct from terminal failure", () => {
+  test("reserves Needs you for canonical user-input attention", () => {
+    expect(
+      brainWorkEventLifecycle(
+        resultEvent({ kind: "session.needs_input", attention: "user_input" }),
+      ),
+    ).toMatchObject({ label: "Needs you", tone: "attention", terminal: false });
     expect(
       brainWorkEventLifecycle(resultEvent({ kind: "session.needs_input" })),
-    ).toMatchObject({ label: "Needs you", tone: "attention", terminal: false });
+    ).not.toMatchObject({ label: "Needs you" });
+    expect(
+      brainWorkEventLifecycle(
+        resultEvent({ kind: "session.needs_input", attention: "blocked" }),
+      ),
+    ).toMatchObject({ label: "Blocked", tone: "danger", terminal: false });
     expect(
       brainWorkEventLifecycle(resultEvent({ kind: "session.failed" })),
     ).toMatchObject({ label: "Failed", tone: "danger", terminal: true });
@@ -190,6 +200,16 @@ describe("Brain Work event source presentation", () => {
         }),
       ).label,
     ).toBe("Done");
+  });
+
+  test("humanizes slug titles so narrow cards wrap only between words", () => {
+    expect(
+      brainWorkEventWorkTitle(
+        resultEvent({
+          work_title: "data-platform-dashboard-production-release",
+        }),
+      ),
+    ).toBe("data platform dashboard production release");
   });
 
   test("uses current Work status as the only terminality source", () => {
@@ -211,7 +231,10 @@ describe("Brain Work event source presentation", () => {
       expect(brainCurrentWorkLifecycle(current, event).terminal).toBe(false);
     }
     expect(
-      brainCurrentWorkLifecycle({ ...current, status: "done" }, resultEvent()),
+      brainCurrentWorkLifecycle(
+        { ...current, status: "done" },
+        resultEvent({ attention: "user_input" }),
+      ),
     ).toMatchObject({ label: "Done", terminal: true });
   });
 

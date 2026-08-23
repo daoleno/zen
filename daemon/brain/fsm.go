@@ -664,6 +664,10 @@ func cardEventForCanonicalReview(database presentationDatabase, canonical WorkEv
 		canonical.PayloadRef = evidence.PayloadRef
 		canonical.SourceName = evidence.SourceName
 		canonical.Summary = firstNonEmpty(evidence.Summary, canonical.Summary)
+		canonical.Phase = evidence.Phase
+		canonical.Attention = evidence.Attention
+		canonical.EventKind = evidence.EventKind
+		canonical.DetailsJSON = evidence.DetailsJSON
 		if !evidence.CreatedAt.IsZero() {
 			canonical.CreatedAt = evidence.CreatedAt
 		}

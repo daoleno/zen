@@ -171,6 +171,12 @@ type TurnFact struct {
 	SettledAt  time.Time
 	At         time.Time
 	Summary    string
+	// Structured Control progress context is presentation metadata attached to
+	// the exact fact. It never participates in lifecycle or FactID authority.
+	Phase       string
+	Attention   string
+	EventKind   string
+	DetailsJSON string
 	// CriteriaMet is accepted only from an exact signal-owned Control done
 	// report. Provider terminal state never sets completion criteria.
 	CriteriaMet bool

@@ -25,4 +25,10 @@ export type BrainWorkResultEvent = {
     | "close_failed"
     | "not_required";
   current_result: boolean;
+  phase?: string;
+  attention?: string;
+  event_kind?: string;
+  details_json?: string;
+  next_action?: string;
+  wait_for?: string;
 };

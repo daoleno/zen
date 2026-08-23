@@ -5,12 +5,19 @@ import { formatChatBubbleTime } from "../../constants/telegramPresentation";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { TypeScale } from "../../constants/tokens";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
+import { brainWorkEventCardModel } from "./brainWorkEventCardModel";
+import {
+  BRAIN_WORK_CARD_FACT_LINES,
+  BRAIN_WORK_CARD_GAP,
+  BRAIN_WORK_CARD_HORIZONTAL_PADDING,
+  BRAIN_WORK_CARD_MIN_TITLE_WIDTH,
+  BRAIN_WORK_CARD_SUMMARY_LINES,
+  BRAIN_WORK_CARD_TITLE_LINES,
+} from "./brainWorkEventCardLayout";
 import {
   brainWorkEventAccessibilityLabel,
   brainCurrentWorkLifecycle,
-  brainWorkAgentCountLabel,
   brainWorkEventLifecycle,
-  brainWorkEventSummary,
   brainWorkEventWorkTitle,
 } from "./brainWorkEventPresentation";
 
@@ -46,21 +53,19 @@ export function BrainWorkEventCard({
     attentionBackground,
   );
   const workTitle = brainWorkEventWorkTitle(item.event);
-  const summary = brainWorkEventSummary(item.event);
+  const card = brainWorkEventCardModel(item.event);
   const time = formatChatBubbleTime(item.event.occurred_at);
   const accessibilityTime = new Date(item.event.occurred_at).toLocaleString();
   const accessibilityLabel = brainWorkEventAccessibilityLabel({
     event: item.event,
     statusLabel: presentation.label,
     occurredAtLabel: accessibilityTime,
+    description: [card.summary, ...card.facts].filter(
+      (value): value is string => Boolean(value),
+    ),
   });
-  const compactStatus =
-    presentation.lifecycle === "failed" ||
-    presentation.lifecycle === "cancelled"
-      ? presentation.label
-      : undefined;
 
-  if (presentation.terminal) {
+  if (card.density === "minimal") {
     return (
       <Pressable
         accessibilityRole={item.onPress ? "button" : undefined}
@@ -79,21 +84,18 @@ export function BrainWorkEventCard({
           size={17}
           color={presentation.color}
         />
-        <Text numberOfLines={1} style={styles.compactTitle}>
+        <Text
+          numberOfLines={1}
+          style={[styles.compactStatus, { color: presentation.color }]}
+        >
+          {presentation.label}
+        </Text>
+        <Text
+          numberOfLines={BRAIN_WORK_CARD_TITLE_LINES}
+          style={styles.compactTitle}
+        >
           {workTitle}
         </Text>
-        {compactStatus ? (
-          <Text
-            style={[styles.compactStatus, { color: presentation.color }]}
-          >
-            {compactStatus}
-          </Text>
-        ) : null}
-        {item.sourceCount ? (
-          <Text style={styles.compactMeta}>
-            {brainWorkAgentCountLabel(item.sourceCount)}
-          </Text>
-        ) : null}
         <Text style={styles.compactMeta}>{time}</Text>
         {item.onPress ? (
           <Ionicons
@@ -140,22 +142,35 @@ export function BrainWorkEventCard({
       </View>
 
       <View style={styles.titleRow}>
-        <Text numberOfLines={2} style={styles.title}>
+        <Text numberOfLines={BRAIN_WORK_CARD_TITLE_LINES} style={styles.title}>
           {workTitle}
         </Text>
       </View>
-      {summary ? (
-        <Text numberOfLines={3} style={styles.summary}>
-          {summary}
+      {card.summary ? (
+        <Text
+          numberOfLines={BRAIN_WORK_CARD_SUMMARY_LINES}
+          style={styles.summary}
+        >
+          {card.summary}
         </Text>
+      ) : null}
+      {card.facts.length > 0 ? (
+        <View style={styles.facts}>
+          {card.facts.map((fact) => (
+            <View key={fact} style={styles.factRow}>
+              <View accessibilityElementsHidden style={styles.factDot} />
+              <Text
+                numberOfLines={BRAIN_WORK_CARD_FACT_LINES}
+                style={styles.fact}
+              >
+                {fact}
+              </Text>
+            </View>
+          ))}
+        </View>
       ) : null}
 
       <View style={styles.footer}>
-        {item.sourceCount ? (
-          <Text numberOfLines={1} style={styles.source}>
-            {brainWorkAgentCountLabel(item.sourceCount)}
-          </Text>
-        ) : null}
         <Text style={styles.time}>{time}</Text>
         {item.onPress ? (
           <Ionicons
@@ -174,7 +189,7 @@ function createStyles(chrome: TerminalThemeChrome) {
     wrap: {
       marginHorizontal: 1,
       marginBottom: 8,
-      paddingHorizontal: 14,
+      paddingHorizontal: BRAIN_WORK_CARD_HORIZONTAL_PADDING,
       paddingVertical: 12,
       borderRadius: 8,
       borderWidth: StyleSheet.hairlineWidth,
@@ -193,18 +208,19 @@ function createStyles(chrome: TerminalThemeChrome) {
       paddingVertical: 9,
       flexDirection: "row",
       alignItems: "center",
-      gap: 7,
+      gap: BRAIN_WORK_CARD_GAP,
     },
     compactTitle: {
       ...TypeScale.compact,
       color: chrome.text,
       flex: 1,
-      minWidth: 0,
+      minWidth: BRAIN_WORK_CARD_MIN_TITLE_WIDTH,
       fontWeight: "600",
     },
     compactStatus: {
       ...TypeScale.caption,
       fontWeight: "700",
+      flexShrink: 0,
     },
     compactMeta: {
       ...TypeScale.caption,
@@ -249,7 +265,7 @@ function createStyles(chrome: TerminalThemeChrome) {
     titleRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 7,
+      gap: BRAIN_WORK_CARD_GAP,
     },
     summary: {
       ...TypeScale.compact,
@@ -257,17 +273,34 @@ function createStyles(chrome: TerminalThemeChrome) {
       marginTop: 4,
       lineHeight: 20,
     },
+    facts: {
+      gap: 4,
+      marginTop: 8,
+    },
+    factRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: BRAIN_WORK_CARD_GAP,
+    },
+    factDot: {
+      width: 4,
+      height: 4,
+      borderRadius: 2,
+      marginTop: 7,
+      backgroundColor: chrome.textSubtle,
+    },
+    fact: {
+      ...TypeScale.caption,
+      color: chrome.textMuted,
+      flex: 1,
+      minWidth: 0,
+    },
     footer: {
       flexDirection: "row",
       alignItems: "center",
       gap: 5,
       marginTop: 11,
       minHeight: 18,
-    },
-    source: {
-      ...TypeScale.caption,
-      color: chrome.textSubtle,
-      flexShrink: 1,
     },
     time: {
       ...TypeScale.caption,

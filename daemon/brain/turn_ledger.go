@@ -1686,15 +1686,19 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		}
 		if eventIndex < 0 {
 			event := WorkEvent{
-				ID:         uuid.NewString(),
-				WorkID:     workID,
-				Kind:       mutation.eventKind,
-				DedupeKey:  dedupeKey,
-				PayloadRef: "session:" + turn.SessionID,
-				SourceName: turn.SessionID,
-				Summary:    mutation.eventSummary,
-				Actionable: actionable,
-				CreatedAt:  now,
+				ID:          uuid.NewString(),
+				WorkID:      workID,
+				Kind:        mutation.eventKind,
+				DedupeKey:   dedupeKey,
+				PayloadRef:  "session:" + turn.SessionID,
+				SourceName:  turn.SessionID,
+				Summary:     mutation.eventSummary,
+				Phase:       fact.Phase,
+				Attention:   fact.Attention,
+				EventKind:   fact.EventKind,
+				DetailsJSON: fact.DetailsJSON,
+				Actionable:  actionable,
+				CreatedAt:   now,
 			}
 			if workIndex >= 0 {
 				event, err = appendWorkEventLocked(&database, workIndex, event, !dispositionRevisionFrozen)
@@ -1714,6 +1718,10 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			database.BrainWorkEvents[eventIndex].Actionable = true
 			database.BrainWorkEvents[eventIndex].Summary = mutation.eventSummary
 			database.BrainWorkEvents[eventIndex].SourceName = turn.SessionID
+			database.BrainWorkEvents[eventIndex].Phase = fact.Phase
+			database.BrainWorkEvents[eventIndex].Attention = fact.Attention
+			database.BrainWorkEvents[eventIndex].EventKind = fact.EventKind
+			database.BrainWorkEvents[eventIndex].DetailsJSON = fact.DetailsJSON
 			database.BrainWorkEvents[eventIndex].WorkRevision = workItem.Revision
 			if dispositionRevisionFrozen {
 				database.BrainWorkEvents[eventIndex].WorkRevision++
@@ -1755,14 +1763,18 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		// projection is not notification delivery and never acknowledges the Review
 		// success; only confirmed Host delivery does that.
 		projectedEvent := WorkEvent{
-			ID:         eventID,
-			WorkID:     workID,
-			Kind:       mutation.eventKind,
-			Summary:    mutation.eventSummary,
-			SourceName: turn.SessionID,
-			PayloadRef: "session:" + turn.SessionID,
-			CreatedAt:  now,
-			Actionable: mutation.eventActionable,
+			ID:          eventID,
+			WorkID:      workID,
+			Kind:        mutation.eventKind,
+			Summary:     mutation.eventSummary,
+			SourceName:  turn.SessionID,
+			PayloadRef:  "session:" + turn.SessionID,
+			Phase:       fact.Phase,
+			Attention:   fact.Attention,
+			EventKind:   fact.EventKind,
+			DetailsJSON: fact.DetailsJSON,
+			CreatedAt:   now,
+			Actionable:  mutation.eventActionable,
 		}
 		if workIndex >= 0 && database.BrainWork[workIndex].Review != nil {
 			projectedEvent.ID = database.BrainWork[workIndex].Review.EventID

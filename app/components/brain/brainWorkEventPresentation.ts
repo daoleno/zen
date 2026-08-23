@@ -3,6 +3,7 @@ import type { BrainCurrentWork } from "../../store/brain";
 
 export type BrainWorkLifecycle =
   | "working"
+  | "blocked"
   | "ready"
   | "reviewing"
   | "waiting"
@@ -15,6 +16,7 @@ export type BrainWorkLifecyclePresentation = {
   lifecycle: BrainWorkLifecycle;
   label:
     | "Working"
+    | "Blocked"
     | "Ready"
     | "Reviewing"
     | "Waiting"
@@ -50,7 +52,12 @@ export function brainWorkTitle(value: string): string {
     .replace(PROVIDER_TURN_ID_GLOBAL, "")
     .replace(/\s+/g, " ")
     .trim();
-  return normalized || "Delegated Work";
+  if (!normalized) {
+    return "Delegated Work";
+  }
+  return !normalized.includes(" ") && normalized.includes("-")
+    ? normalized.replace(/-+/g, " ")
+    : normalized;
 }
 
 export function brainWorkEventSummary(event: BrainWorkResultEvent): string {
@@ -95,7 +102,7 @@ export function brainWorkEventLifecycle(
       terminal: true,
     };
   }
-  if (event.kind === "session.needs_input") {
+  if (event.attention === "user_input") {
     return {
       lifecycle: "needs_you",
       label: "Needs you",
@@ -103,6 +110,9 @@ export function brainWorkEventLifecycle(
       tone: "attention",
       terminal: false,
     };
+  }
+  if (event.attention === "blocked") {
+    return lifecyclePresentation("blocked");
   }
   if (event.kind === "session.done") {
     return {
@@ -126,14 +136,17 @@ export function brainCurrentWorkLifecycle(
   work: BrainCurrentWork,
   event?: BrainWorkResultEvent,
 ): BrainWorkLifecyclePresentation {
-  if (work.status === "needs_input") {
-    return lifecyclePresentation("needs_you");
-  }
   if (work.status === "cancelled") {
     return lifecyclePresentation("cancelled");
   }
   if (work.status === "done") {
     return lifecyclePresentation("done");
+  }
+  if (event?.attention === "user_input") {
+    return lifecyclePresentation("needs_you");
+  }
+  if (event?.attention === "blocked") {
+    return lifecyclePresentation("blocked");
   }
   if (work.attention_state === "reviewing") {
     return lifecyclePresentation("reviewing");
@@ -146,6 +159,9 @@ export function brainCurrentWorkLifecycle(
     return lifecyclePresentation("ready");
   }
   if (work.status === "waiting" || work.progress_mode === "waiting") {
+    return lifecyclePresentation("waiting");
+  }
+  if (work.status === "needs_input") {
     return lifecyclePresentation("waiting");
   }
   const eventPresentation = event ? brainWorkEventLifecycle(event) : undefined;
@@ -184,6 +200,14 @@ function lifecyclePresentation(
         icon: "alert-circle-outline",
         tone: "danger",
         terminal: true,
+      };
+    case "blocked":
+      return {
+        lifecycle,
+        label: "Blocked",
+        icon: "alert-circle-outline",
+        tone: "danger",
+        terminal: false,
       };
     case "done":
       return {
@@ -277,22 +301,27 @@ export function brainWorkEventSourceLabel(
     return undefined;
   }
   if (
-    normalized.toLowerCase() ===
-    brainWorkEventWorkTitle(event).toLowerCase()
+    comparableTitle(normalized) === comparableTitle(brainWorkEventWorkTitle(event))
   ) {
     return undefined;
   }
   return normalized;
 }
 
+function comparableTitle(value: string): string {
+  return value.toLowerCase().replace(/[-_\s]+/g, " ").trim();
+}
+
 export function brainWorkEventAccessibilityLabel({
   event,
   statusLabel,
   occurredAtLabel,
+  description,
 }: {
   event: BrainWorkResultEvent;
   statusLabel: string;
   occurredAtLabel: string;
+  description?: readonly string[];
 }) {
   const source = brainWorkEventSourceLabel(event);
   const workTitle = brainWorkEventWorkTitle(event);
@@ -300,7 +329,7 @@ export function brainWorkEventAccessibilityLabel({
   return [
     statusLabel,
     `Work ${workTitle}`,
-    summary,
+    ...(description ?? [summary]),
     source ? `Source: ${source}` : "",
     occurredAtLabel,
     event.unread ? "Unread result" : "Read result",

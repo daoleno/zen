@@ -212,6 +212,12 @@ type CodexConversationEvent struct {
 	WorkReviewState   string `json:"work_review_state,omitempty"`
 	WorkSessionState  string `json:"work_session_state,omitempty"`
 	WorkResultCurrent bool   `json:"work_result_current"`
+	WorkPhase         string `json:"work_phase,omitempty"`
+	WorkAttention     string `json:"work_attention,omitempty"`
+	WorkEventKind     string `json:"work_event_kind,omitempty"`
+	WorkDetailsJSON   string `json:"work_details_json,omitempty"`
+	WorkNextAction    string `json:"work_next_action,omitempty"`
+	WorkWaitFor       string `json:"work_wait_for,omitempty"`
 	// AdmissionSHA256 is the exact provider-native user input digest when the
 	// source preserves those bytes separately from its display projection.
 	AdmissionSHA256 string `json:"-"`

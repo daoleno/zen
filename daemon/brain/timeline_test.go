@@ -348,6 +348,7 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	item, err := store.CreateWork(Work{
 		Title: "Signal card", Objective: "Project the canonical control result",
 		Status: WorkRunning, AttemptSessionID: sessionID, CompletionPolicy: CompletionBounded,
+		NextAction: "Promote the verified build", WaitFor: "Preview iOS archive",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +366,8 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	fact := watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl, Kind: "done",
 		SourceID: "control\x00card-done", At: now.Add(time.Second), Summary: "REVIEW_READY: card",
+		Phase: "reporting", Attention: "done", EventKind: "artifact",
+		DetailsJSON: `{"ci_run":32645890201}`,
 	}
 	if result, err := store.ApplyDelegatedTurnProgress(fact); err != nil || !result.Changed || result.Turn.Status != watcher.TurnDone {
 		t.Fatalf("control card result = (%+v, %v)", result, err)
@@ -388,8 +391,17 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].ID != projected.Review.EventID || items[0].Kind != timelineKindWorkCard ||
-		items[0].EventKind != "session.done" || items[0].Summary != fact.Summary {
+		items[0].EventKind != "session.done" || items[0].Summary != fact.Summary ||
+		items[0].Phase != fact.Phase || items[0].Attention != fact.Attention ||
+		items[0].AgentEventKind != fact.EventKind || items[0].DetailsJSON != fact.DetailsJSON ||
+		items[0].NextAction != "Review the delegated Session result." || items[0].WaitFor != "" {
 		t.Fatalf("control result card = %+v event=%+v", items, providerDone)
+	}
+	wire := TimelineItemsToConversationEvents(items)
+	if len(wire) != 1 || wire[0].WorkPhase != fact.Phase || wire[0].WorkAttention != fact.Attention ||
+		wire[0].WorkEventKind != fact.EventKind || wire[0].WorkDetailsJSON != fact.DetailsJSON ||
+		wire[0].WorkNextAction != "Review the delegated Session result." || wire[0].WorkWaitFor != "" {
+		t.Fatalf("semantic Work card wire projection = %+v", wire)
 	}
 	restarted, err := NewStore(store.Root)
 	if err != nil {
@@ -399,7 +411,8 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 		t.Fatalf("card replay = (%+v, %v)", replay, err)
 	}
 	items, err = restarted.ThreadTimeline(threadID, 0)
-	if err != nil || len(items) != 1 || items[0].ID != projected.Review.EventID {
+	if err != nil || len(items) != 1 || items[0].ID != projected.Review.EventID ||
+		items[0].DetailsJSON != fact.DetailsJSON {
 		t.Fatalf("replayed control cards = %+v err=%v", items, err)
 	}
 }

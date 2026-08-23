@@ -294,7 +294,13 @@ export function brainWorkResultEventsEqual(
     left.unread === right.unread &&
     left.review_state === right.review_state &&
     left.session_state === right.session_state &&
-    left.current_result === right.current_result
+    left.current_result === right.current_result &&
+    left.phase === right.phase &&
+    left.attention === right.attention &&
+    left.event_kind === right.event_kind &&
+    left.details_json === right.details_json &&
+    left.next_action === right.next_action &&
+    left.wait_for === right.wait_for
   );
 }
 

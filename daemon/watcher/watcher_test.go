@@ -511,6 +511,28 @@ func TestAgentMetadataChangedDetectsProgressAttentionChange(t *testing.T) {
 	}
 }
 
+func TestControlFactPreservesStructuredProgressContext(t *testing.T) {
+	progress := classifier.AgentProgress{
+		Status: "blocked", Phase: "verifying", Attention: "blocked",
+		Summary: "Registry is unavailable", EventKind: "risk",
+		DetailsJSON: `{"registry":"external"}`, LeaseSeconds: 300,
+		ProgressEventID: "progress-1",
+	}
+	fact := controlFactFromProgress("agent-1", "turn:one", progress, time.Now())
+	if fact == nil || fact.Kind != "attention" || fact.Attention != "blocked" ||
+		fact.Phase != "verifying" || fact.EventKind != "risk" ||
+		fact.DetailsJSON != progress.DetailsJSON {
+		t.Fatalf("structured control fact = %#v", fact)
+	}
+
+	progress.Attention = "user_input"
+	progress.ProgressEventID = "progress-2"
+	fact = controlFactFromProgress("agent-1", "turn:one", progress, time.Now())
+	if fact == nil || fact.Attention != "user_input" {
+		t.Fatalf("user-input control fact = %#v", fact)
+	}
+}
+
 func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
