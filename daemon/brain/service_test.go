@@ -34,6 +34,7 @@ type fakeWatcher struct {
 	outcomes         map[string]watcher.InputOutcome
 	turnStore        *Store
 	providerEvidence map[string]watcher.ProviderActivityObservation
+	providerProbeErr map[string]error
 	ownedGenerations map[string]string
 }
 
@@ -439,19 +440,6 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
 		} else if found {
 			existingTurnID = current.TurnID
-			if !watcher.TurnImmutable(current.Status) &&
-				!(current.Status == watcher.TurnUnknown && current.ControlState == watcher.TurnControlOwnershipLost) {
-				settledAt := time.Now().UTC()
-				if _, _, err := w.turnStore.ApplyTurnFact(watcher.TurnFact{
-					SessionID: current.SessionID, TurnID: current.TurnID,
-					Class: watcher.EvidenceProvider, Kind: "done", Bound: true,
-					SourceID:  "provider\x00fake-host\x00" + current.TurnID + "\x00done",
-					Admission: current.Admission, ActivityID: current.ActivityID,
-					StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
-				}); err != nil {
-					return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
-				}
-			}
 		}
 		pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
@@ -533,6 +521,9 @@ func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
 }
 
 func (w *fakeWatcher) ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error) {
+	if err := w.providerProbeErr[sessionID]; err != nil {
+		return watcher.ProviderActivityObservation{}, false, err
+	}
 	observation, found := w.providerEvidence[sessionID]
 	return observation, found, nil
 }

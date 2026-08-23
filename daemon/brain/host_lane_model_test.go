@@ -50,10 +50,6 @@ type hostLaneState struct {
 	PendingUserAdmission bool
 	// PendingWork is at least one fair pending Work Event head.
 	PendingWork bool
-	// CanonicalTurnLive is the current canonical Host provider Turn before an
-	// immutable done/failed boundary. It is independent of the scheduler
-	// handling and foreground-user checkpoint.
-	CanonicalTurnLive bool
 	// AmbientProviderActivityLive is a provider-native Activity (for example a
 	// user turn that crossed daemon restart) without a current non-immutable
 	// canonical Turn. It is a conservative stop fence only.
@@ -78,10 +74,9 @@ type hostLaneResult struct {
 //  2. one delivered Event awaiting disposition: stop
 //  3. pending user admission: stop
 //  4. foreground turn: stop unless strong exact terminal evidence closes it
-//  5. non-immutable canonical Host Turn: stop
-//  6. non-terminal ambient provider Activity: stop
-//  7. claim one fair pending Work key at the boundary
-//  8. submit once; mark delivered only from the accepted receipt
+//  5. non-terminal ambient provider Activity: stop
+//  6. claim one fair pending Work key at the boundary
+//  7. submit once; mark delivered only from the accepted receipt
 func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 	out := hostLaneResult{}
 	switch s.Receipt {
@@ -106,10 +101,6 @@ func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 			return out
 		}
 		out.ClosedForegroundTurn = true
-	}
-	if s.CanonicalTurnLive {
-		out.Stop = true
-		return out
 	}
 	if s.AmbientProviderActivityLive {
 		out.Stop = true
@@ -187,11 +178,6 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{Stop: true},
 		},
 		{
-			name:  "live canonical Host Turn stops after handling ends",
-			state: hostLaneState{CanonicalTurnLive: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
-		},
-		{
 			name:  "ambient provider Activity stops an untracked steer",
 			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
 			want:  hostLaneResult{Stop: true},
@@ -239,8 +225,8 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 
 // TestHostLaneReducerFrozenOrder verifies the gate precedence that makes user
 // steering unable to overtake an admitted internal Event: the delivered
-// handling, pending user admission, live foreground turn, live canonical
-// provider Turn, and ambient provider Activity gates all stop the lane before
+// handling, pending user admission, live foreground turn, and ambient
+// provider Activity gates all stop the lane before
 // any claim, in that order.
 func TestHostLaneReducerFrozenOrder(t *testing.T) {
 	for _, row := range []struct {
@@ -249,7 +235,6 @@ func TestHostLaneReducerFrozenOrder(t *testing.T) {
 		{hostLaneState{DeliveredAwaitingDisposition: true, PendingUserAdmission: true, ForegroundTurn: true, PendingWork: true}},
 		{hostLaneState{PendingUserAdmission: true, ForegroundTurn: true, PendingWork: true}},
 		{hostLaneState{ForegroundTurn: true, PendingWork: true}},
-		{hostLaneState{CanonicalTurnLive: true, PendingWork: true}},
 		{hostLaneState{AmbientProviderActivityLive: true, PendingWork: true}},
 	} {
 		result := reconcileHostLaneModel(row.state)
@@ -274,7 +259,6 @@ func TestHostLaneReducerIdempotentOneShot(t *testing.T) {
 		{DeliveredAwaitingDisposition: true, PendingWork: true},
 		{PendingUserAdmission: true, PendingWork: true},
 		{ForegroundTurn: true, PendingWork: true},
-		{CanonicalTurnLive: true, PendingWork: true},
 		{AmbientProviderActivityLive: true, PendingWork: true},
 		{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingWork: true},
 		{ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingUserAdmission: true, PendingWork: true},
@@ -344,28 +328,6 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 				acceptModelForeground(t, service, store, hostID, "model-live", "model-activity-live")
 				item := createSignalTestWork(t, store, "model live turn", "brain-agent-model:@3")
 				appendSignalTestEvent(t, store, item, "model-live-turn")
-			},
-		},
-		{
-			name:  "live canonical Host Turn stops after handling resolution",
-			state: hostLaneState{CanonicalTurnLive: true, PendingWork: true},
-			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
-				first := createSignalTestWork(t, store, "model live canonical turn", "brain-agent-model:@canonical-1")
-				appendSignalTestEvent(t, store, first, "model-live-canonical-first")
-				if woke, err := service.ReconcileHostLane(); err != nil || !woke {
-					t.Fatalf("deliver first canonical Turn woke=%v err=%v", woke, err)
-				}
-				lease := requireReviewDelivered(t, store, first.ID)
-				if _, _, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
-					WorkID: first.ID, HandlingID: lease.HandlingID,
-					ProviderTurnID:       lease.ProviderTurnID,
-					ExpectedWorkRevision: lease.DeliveryWorkRevision,
-					Disposition:          WorkDispositionComplete,
-				}); err != nil {
-					t.Fatal(err)
-				}
-				second := createSignalTestWork(t, store, "model canonical follower", "brain-agent-model:@canonical-2")
-				appendSignalTestEvent(t, store, second, "model-live-canonical-second")
 			},
 		},
 		{

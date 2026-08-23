@@ -154,6 +154,124 @@ func TestExactControlDoneCompletesUntilDoneWhenCriteriaMet(t *testing.T) {
 	}
 }
 
+func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	const (
+		sessionID = "worker:@late-after-expiry"
+		turnID    = "turn:late-after-expiry"
+	)
+	item, err := store.CreateWork(Work{
+		Title: "late delegated terminal", Objective: "retain exact terminal audit after review opens",
+		CompletionPolicy: CompletionUntilDone, DoneCriteriaRef: "Brain must disposition the existing Review",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Now().UTC().Add(-time.Minute)
+	candidate := delegatedSubmissionCandidate(item.ID, sessionID, turnID, "bounded delegated task", acceptedAt)
+	candidate.SignalProtocol = true
+	if _, created, err := store.PrepareInputAdmission(candidate); err != nil || !created {
+		t.Fatalf("prepare exact signal created=%v err=%v", created, err)
+	}
+	if result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00late-running", Summary: "still working", At: acceptedAt.Add(time.Second),
+	}); err != nil || !result.Owned || !result.Matched || !result.Changed {
+		t.Fatalf("accept exact running result=%+v err=%v", result, err)
+	}
+	if _, err := store.FSM().ReportLeaseExpired(lifecycle.WorkID(item.ID), lifecycle.TurnToken(turnID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil || before.Attempt == nil || before.Review == nil || before.Review.Reason != "lease_expired" {
+		t.Fatalf("lease-expiry fixture=%+v err=%v", before, err)
+	}
+	beforeEvents, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewID := before.Review.EventID
+	result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "done", SourceID: "control\x00late-done", Summary: "late exact result is complete",
+		At: time.Now().UTC(), CriteriaMet: true,
+	})
+	if err != nil || !result.Owned || !result.Matched || !result.Changed || result.Turn.Status != watcher.TurnDone {
+		t.Fatalf("late exact done result=%+v err=%v", result, err)
+	}
+	after, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision || after.Status != before.Status || after.Status == lifecycle.StatusDone ||
+		after.Attempt == nil || after.Attempt.TurnToken != before.Attempt.TurnToken || after.Wake != nil ||
+		after.Review == nil || after.Review.EventID != reviewID || after.Review.Reason != "lease_expired" ||
+		len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("late terminal mutated lifecycle: before=%+v after=%+v events=%d->%d", before, after, len(beforeEvents), len(afterEvents))
+	}
+	if replay, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "done", SourceID: "control\x00late-done", Summary: "late exact result is complete",
+		At: time.Now().UTC(), CriteriaMet: true,
+	}); err != nil || !replay.Owned || !replay.Matched || replay.Changed {
+		t.Fatalf("late terminal replay=%+v err=%v", replay, err)
+	}
+	newerAcceptedAt := before.Attempt.LeaseDeadline.Add(lifecycle.LostGrace + time.Second)
+	store.now = func() time.Time { return newerAcceptedAt }
+	if err := store.FSM().Sweep(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	newer, err := store.CreateWork(Work{
+		Title: "newer same-Session turn", Objective: "supersede old signal authority",
+		CompletionPolicy: CompletionUntilDone, DoneCriteriaRef: "newer delegated task remains active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const newerTurnID = "turn:newer-same-session"
+	newerCandidate := delegatedSubmissionCandidate(newer.ID, sessionID, newerTurnID, "newer delegated task", newerAcceptedAt)
+	newerCandidate.SignalProtocol = true
+	if _, created, err := store.PrepareInputAdmission(newerCandidate); err != nil || !created {
+		t.Fatalf("prepare newer signal created=%v err=%v", created, err)
+	}
+	if newerResult, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: newerTurnID, Class: watcher.EvidenceControl,
+		Kind: "running", SourceID: "control\x00newer-running", Summary: "newer accepted turn", At: newerAcceptedAt.Add(time.Second),
+	}); err != nil || !newerResult.Owned || !newerResult.Matched || newerResult.Turn.TurnID != newerTurnID {
+		t.Fatalf("accept newer exact turn result=%+v err=%v", newerResult, err)
+	}
+	current, found, err := store.Turn(sessionID)
+	if err != nil || !found || current.TurnID != newerTurnID {
+		t.Fatalf("newer accepted turn is not current: found=%v turn=%+v err=%v", found, current, err)
+	}
+	stale, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
+		Kind: "failed", SourceID: "control\x00stale-late-failed", Summary: "must be rejected", At: newerAcceptedAt.Add(2 * time.Second),
+	})
+	if err != nil || !stale.Owned || stale.Matched || stale.Changed {
+		t.Fatalf("stale exact terminal after newer turn result=%+v err=%v", stale, err)
+	}
+	oldTurn, found, err := store.TurnByID(sessionID, turnID)
+	if err != nil || !found || oldTurn.Status != watcher.TurnDone || oldTurn.Summary == "must be rejected" {
+		t.Fatalf("stale exact terminal mutated old audit: found=%v turn=%+v err=%v", found, oldTurn, err)
+	}
+}
+
 func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

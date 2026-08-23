@@ -815,14 +815,12 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 //  3. pending Brain user admission: stop (durable user-steering gate)
 //  4. a Host foreground turn: stop unless strong exact terminal evidence
 //     closes that exact turn
-//  5. a non-immutable canonical Host Turn: stop until its exact provider
-//     lifecycle reaches an immutable boundary
-//  6. a provider-native Activity not represented by a canonical Turn: stop
-//     conservatively while it remains non-terminal
-//  7. select one fair pending Work key at the boundary
-//  8. atomically claim its current Event head
-//  9. submit once with the existing receipt ledger
-//  10. mark delivered only from the accepted receipt
+//  5. current provider Activity: stop conservatively while it remains
+//     non-terminal or cannot be read
+//  6. select one fair pending Work key at the boundary
+//  7. atomically claim its current Event head
+//  8. submit once with the existing receipt ledger
+//  9. mark delivered only from the accepted receipt
 func (s *Service) ReconcileHostLane() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -987,41 +985,7 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			return false, closeErr
 		}
 	}
-	// Step 5: a stable Host Session is only a UI/container identity. Its
-	// canonical Turn remains the exclusive provider mutation domain until an
-	// immutable done/failed fact closes it. A typed Work disposition ends the
-	// scheduler handling, not the provider response; admitting another internal
-	// Event in that interval would make tmux classify it as steering and bind
-	// multiple Work Events to one provider Activity.
-	if current, found, err := s.store.Turn(hostID); err != nil {
-		return false, err
-	} else if found && !watcher.TurnImmutable(current.Status) &&
-		!(current.Status == watcher.TurnUnknown && current.ControlState == watcher.TurnControlOwnershipLost) {
-		// Older accepted Host inputs may predate the foreground checkpoint row.
-		// Reconcile their exact bound Activity here before treating the Turn as
-		// a busy fence. A reusable provider session may already have advanced,
-		// so bounded terminal history is authoritative for this exact Activity.
-		observation, observed, probeErr := s.watcher.ProbeProviderEvidence(hostID)
-		if probeErr != nil {
-			return false, probeErr
-		}
-		terminal, exact := exactHostTurnTerminal(current, observation, observed)
-		if !exact {
-			return false, nil
-		}
-		kind := "done"
-		if strings.TrimSpace(terminal.Status) != "completed" {
-			kind = "failed"
-		}
-		snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(hostID, current.TurnID, terminal, kind))
-		if applyErr != nil {
-			return false, applyErr
-		}
-		if !watcher.TurnImmutable(snapshot.Status) {
-			return false, nil
-		}
-	}
-	// Step 6: the daemon can restart while a provider-native user turn is
+	// Step 5: the daemon can restart while a provider-native user turn is
 	// already running and therefore has no Brain admission/foreground row. A
 	// current non-terminal provider Activity is only a conservative stop fence:
 	// it never authorizes lifecycle mutation or closes any Turn, but it prevents
@@ -1033,7 +997,7 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 	} else if found && !providerStatusTerminal(observation.Status) {
 		return false, nil
 	}
-	// Steps 7-10: at the boundary, select one fair review-required Work, claim
+	// Steps 6-9: at the boundary, select one fair review-required Work, claim
 	// its current action atomically, submit once through the receipt ledger,
 	// and mark delivered only from the accepted receipt. Claims are leases:
 	// Host replacement/death re-delivers the same unresolved action and never
@@ -1497,38 +1461,6 @@ func hostForegroundTerminalEvidence(observation watcher.ProviderActivityObservat
 		}
 	}
 	return "", false
-}
-
-func exactHostTurnTerminal(
-	turn watcher.TurnSnapshot,
-	observation watcher.ProviderActivityObservation,
-	found bool,
-) (watcher.ProviderActivityObservation, bool) {
-	if !found {
-		return watcher.ProviderActivityObservation{}, false
-	}
-	bound := strings.TrimSpace(turn.ActivityID)
-	if bound == "" {
-		if providerStatusTerminal(observation.Status) && providerObservationOwnsTurn(turn, observation) {
-			return observation, true
-		}
-		return watcher.ProviderActivityObservation{}, false
-	}
-	if strings.TrimSpace(observation.ID) == bound && providerStatusTerminal(observation.Status) {
-		return observation, true
-	}
-	for index := len(observation.TerminalActivities) - 1; index >= 0; index-- {
-		terminal := observation.TerminalActivities[index]
-		if strings.TrimSpace(terminal.ID) != bound || !providerStatusTerminal(terminal.Status) {
-			continue
-		}
-		return watcher.ProviderActivityObservation{
-			ID: terminal.ID, Status: terminal.Status,
-			StartedAt: terminal.StartedAt, SettledAt: terminal.SettledAt,
-			ProbeState: watcher.ProbeStateOK,
-		}, true
-	}
-	return watcher.ProviderActivityObservation{}, false
 }
 
 func providerStatusRunning(status string) bool {

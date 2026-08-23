@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestHostOwnershipLossIdleAutomaticallyDeliversCanonicalEventOnce(t *testing
 	}
 }
 
-func TestHostLaneReconcilesExactTerminalHistoryWithoutForegroundRow(t *testing.T) {
+func TestHistoricalRunningHostTurnIsAuditOnlyAtIdleAdmission(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -213,13 +214,103 @@ func TestHostLaneReconcilesExactTerminalHistoryWithoutForegroundRow(t *testing.T
 	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
 		t.Fatalf("exact terminal reconciliation delivery=%v err=%v", delivered, err)
 	}
-	stale, found, err := store.TurnByID(hostID, hostTurnID)
-	if err != nil || !found || stale.Status != watcher.TurnDone || stale.ActivityID != activityID {
-		t.Fatalf("stale Host turn not closed exactly: found=%v turn=%+v err=%v", found, stale, err)
+	historical, found, err := store.TurnByID(hostID, hostTurnID)
+	if err != nil || !found || historical.Status != watcher.TurnRunning ||
+		historical.ControlState != watcher.TurnControlOwned || historical.ActivityID != activityID || len(historical.Hints) != 0 {
+		t.Fatalf("historical Host turn was rewritten or replayed: found=%v turn=%+v err=%v", found, historical, err)
 	}
 	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || state.Review == nil || state.Review.EventID != opened.Review.EventID ||
 		state.Review.Handler == nil || state.Review.Handler.DeliveredAt == nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("canonical review delivery state=%+v sends=%d err=%v", state, len(fw.sentCalls), err)
+	}
+}
+
+func TestHistoricalHostTurnDoesNotLockOutOrdinaryUserInput(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	const (
+		hostID   = "brain-host:@historical-user-input"
+		threadID = "thread-historical-user-input"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "historical Host audit", Objective: "must not own future input",
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Date(2026, 8, 23, 3, 0, 0, 0, time.UTC)
+	settledAt := acceptedAt.Add(time.Minute)
+	store.mu.Lock()
+	database, err := store.loadPresentationLocked()
+	if err == nil {
+		database.BrainTurns = append(database.BrainTurns, TurnRecord{
+			SessionID: hostID, TurnID: "turn-historical-user-input", WorkID: item.ID,
+			Status: watcher.TurnUnknown, ControlState: watcher.TurnControlOwned,
+			AcceptedAt: acceptedAt, SettledAt: &settledAt,
+			UpdatedAt: acceptedAt.Add(time.Minute),
+		})
+		err = store.persistPresentationLocked(database)
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone, PaneAlive: true},
+		},
+		ownedGenerations: map[string]string{hostID: "current-host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{}, turnStore: store,
+	}
+	admission, created, err := NewService(store, fw, nil).PrepareHostUserInput(
+		hostID, "ordinary-user-input", "continue", "",
+	)
+	if err != nil || !created || admission.State != BrainInputAdmissionPending {
+		t.Fatalf("ordinary user input admission created=%v admission=%+v err=%v", created, admission, err)
+	}
+	historical, found, err := store.TurnByID(hostID, "turn-historical-user-input")
+	if err != nil || !found || historical.Status != watcher.TurnUnknown || historical.ControlState != watcher.TurnControlOwned {
+		t.Fatalf("ordinary input rewrote historical audit: found=%v turn=%+v err=%v", found, historical, err)
+	}
+}
+
+func TestCurrentUnreadableProviderActivityBlocksReviewDelivery(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	const hostID = "brain-host:@provider-unreadable"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item := createSignalTestWork(t, store, "provider unreadable", "worker:@provider-unreadable")
+	appendSignalTestEvent(t, store, item, "provider-unreadable")
+	before, _ := store.FSM().State(lifecycle.WorkID(item.ID))
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateUnknown, PaneAlive: true},
+		},
+		ownedGenerations: map[string]string{hostID: "current-host-generation"},
+		providerProbeErr: map[string]error{hostID: errors.New("provider transcript unreadable")},
+		turnStore:        store,
+	}
+	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err == nil || delivered {
+		t.Fatalf("unreadable current Activity delivery=%v err=%v", delivered, err)
+	}
+	after, _ := store.FSM().State(lifecycle.WorkID(item.ID))
+	if after.Revision != before.Revision || after.Review == nil || after.Review.Handler != nil || len(fw.sentCalls) != 0 {
+		t.Fatalf("unreadable Activity mutated delivery: before=%+v after=%+v sends=%d", before, after, len(fw.sentCalls))
 	}
 }
