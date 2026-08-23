@@ -2,6 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { brainWorkEventCardModel } from "../components/brain/brainWorkEventCardModel";
+import { brainWorkEventFromConversationEvent } from "../components/brain/brainWorkEventProjection";
 import { buildZenTimeline } from "../components/terminal/InterfaceTimelineModel";
 import {
   resolveScreenshotChatPendingFixture,
@@ -197,6 +199,22 @@ describe("screenshot demo isolation", () => {
       .map((item) => (item.type === "activity" ? item.title : null));
     expect(brainTitles.some((title) => title?.startsWith("Run "))).toBe(true);
     expect(brainTitles).toContain("Search daemonSocketPath");
+  });
+
+  test("Brain Work fixtures preserve real minimal and rich density inputs", () => {
+    const cards = SCREENSHOT_BRAIN_EVENTS.map(
+      brainWorkEventFromConversationEvent,
+    )
+      .filter((event) => event !== null)
+      .map(brainWorkEventCardModel);
+
+    expect(cards.map((card) => card.density)).toEqual(["minimal", "rich"]);
+    expect(cards[0]).toEqual({ density: "minimal", facts: [] });
+    expect(cards[1]).toMatchObject({
+      density: "rich",
+      summary: "Publishing image",
+    });
+    expect(cards[1]?.facts).toContain("Waiting for Preview iOS archive");
   });
 
   test("bypasses the live connection lifecycle and imports no live data clients", () => {

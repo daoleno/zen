@@ -27,12 +27,7 @@ export function brainWorkEventCardModel(
   const attention = meaningfulAttention(event.attention);
   const eventKind = meaningfulEventKind(event.event_kind);
   const hasContext = Boolean(
-    phase ||
-      attention ||
-      eventKind ||
-      details.length > 0 ||
-      clean(event.next_action) ||
-      clean(event.wait_for),
+    phase || attention || eventKind || details.length > 0,
   );
   if (!hasContext) {
     return { density: "minimal", facts: [] };

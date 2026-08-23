@@ -29,10 +29,16 @@ describe("Brain Work card density", () => {
     });
   });
 
-  test("keeps exact completion lifecycle metadata compact without execution facts", () => {
+  test("keeps real completion lifecycle and Work control fields compact", () => {
     expect(
       brainWorkEventCardModel(
-        event({ phase: "reporting", attention: "done", event_kind: "done" }),
+        event({
+          phase: "reporting",
+          attention: "done",
+          event_kind: "done",
+          next_action: "Review the delegated Session result.",
+          wait_for: "Session control completion",
+        }),
       ),
     ).toEqual({ density: "minimal", facts: [] });
   });
@@ -46,7 +52,6 @@ describe("Brain Work card density", () => {
           event_kind: "artifact",
           details_json: JSON.stringify({
             ci_run: 32645890201,
-            digest: "sha256:91aa",
           }),
           wait_for: "Preview iOS archive",
           next_action: "Promote the verified build",
@@ -58,8 +63,34 @@ describe("Brain Work card density", () => {
       facts: [
         "Waiting for Preview iOS archive",
         "CI run: 32645890201",
-        "Digest: sha256:91aa",
+        "Next: Promote the verified build",
       ],
+    });
+  });
+
+  test("uses Work next and wait facts only to enrich meaningful context", () => {
+    const contexts: Partial<BrainWorkResultEvent>[] = [
+      { event_kind: "artifact", summary: "Produced an execution artifact" },
+      { event_kind: "risk", summary: "External capacity is constrained" },
+      { attention: "user_input", summary: "Choose the execution target" },
+    ];
+
+    contexts.forEach((context) => {
+      expect(
+        brainWorkEventCardModel(
+          event({
+            ...context,
+            wait_for: "External verification",
+            next_action: "Continue after verification",
+          }),
+        ),
+      ).toMatchObject({
+        density: "rich",
+        facts: [
+          "Waiting for External verification",
+          "Next: Continue after verification",
+        ],
+      });
     });
   });
 

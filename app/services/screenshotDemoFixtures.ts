@@ -220,6 +220,11 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
     work_review_state: "resolved",
     work_session_state: "finalized",
     work_result_current: true,
+    work_phase: "reporting",
+    work_attention: "done",
+    work_event_kind: "done",
+    work_next_action: "Review the delegated Session result.",
+    work_wait_for: "Session control completion",
   },
   {
     id: "brain-work-context-rich",
