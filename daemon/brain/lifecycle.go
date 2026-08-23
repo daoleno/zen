@@ -295,10 +295,8 @@ const (
 )
 
 type WorkResultLifecycle struct {
-	EventID       string
-	ReviewState   WorkReviewState
-	SessionState  WorkResultSessionState
-	CurrentResult bool
+	ReviewState  WorkReviewState
+	SessionState WorkResultSessionState
 }
 
 type WorkChange struct {
@@ -2747,15 +2745,14 @@ func (s *Store) WorkEvent(eventID string) (WorkEvent, bool, error) {
 	return database.BrainWorkEvents[index], true, nil
 }
 
-// WorkResultLifecycles derives presentation labels from canonical Work state;
-// cards themselves stay immutable timeline messages. A card is active (queued
-// or reviewing) iff its fact is the current review action (I7); older event
-// cards are history. "Session open" requires a live delegated owner (I9).
-func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLifecycle, error) {
+// WorkResultLifecycles derives the single visible card for each Work from
+// canonical Work state. Card IDs identify timeline facts; lifecycle identity
+// is Work-scoped and must never be recovered from an Event kind or ID.
+func (s *Store) WorkResultLifecycles(workIDs []string) (map[string]WorkResultLifecycle, error) {
 	wanted := map[string]bool{}
-	for _, eventID := range eventIDs {
-		if eventID = strings.TrimSpace(eventID); eventID != "" {
-			wanted[eventID] = true
+	for _, workID := range workIDs {
+		if workID = strings.TrimSpace(workID); workID != "" {
+			wanted[workID] = true
 		}
 	}
 	s.mu.Lock()
@@ -2774,20 +2771,8 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 		}
 	}
 	out := map[string]WorkResultLifecycle{}
-	for requestedID := range wanted {
-		event := WorkEvent{}
-		workID := strings.TrimPrefix(requestedID, "work:")
-		if workID != requestedID {
-			event = latestResult[workID]
-		} else {
-			for _, candidate := range database.BrainWorkEvents {
-				if candidate.ID == requestedID && isProjectedWorkResultEvent(candidate.Kind) {
-					event = candidate
-					break
-				}
-			}
-			workID = event.WorkID
-		}
+	for workID := range wanted {
+		event := latestResult[workID]
 		if event.ID == "" || workID == "" {
 			continue
 		}
@@ -2798,7 +2783,7 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 		}
 		reviewState := WorkReviewResolved
 		review := item.Review
-		if review != nil && (requestedID == "work:"+workID || review.EventID == event.ID) {
+		if review != nil {
 			reviewState = WorkReviewQueued
 			if reviewDeliveredAwaitingDisposition(review) {
 				reviewState = WorkReviewReviewing
@@ -2821,11 +2806,9 @@ func (s *Store) WorkResultLifecycles(eventIDs []string) (map[string]WorkResultLi
 				sessionState = WorkResultSessionClosing
 			}
 		}
-		out[requestedID] = WorkResultLifecycle{
-			EventID:       requestedID,
-			ReviewState:   reviewState,
-			SessionState:  sessionState,
-			CurrentResult: requestedID == "work:"+workID || latestResult[workID].ID == event.ID,
+		out[workID] = WorkResultLifecycle{
+			ReviewState:  reviewState,
+			SessionState: sessionState,
 		}
 	}
 	return out, nil

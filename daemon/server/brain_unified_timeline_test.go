@@ -157,6 +157,61 @@ func TestBrainCardOnlyNewThreadIsValid(t *testing.T) {
 	}
 }
 
+func TestBrainWorkCardLifecycleUsesWorkIdentity(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-work-identity"}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	srv := &Server{brain: service}
+
+	item, err := store.CreateWork(brain.Work{
+		Title: "identity split", Objective: "render the canonical review card",
+		Status: brain.WorkRunning, CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, created, err := service.AppendWorkEvent(brain.WorkEvent{
+		ID: "session-result", WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "session:worker:turn:one:session.done", PayloadRef: "session:worker",
+		SourceName: "worker", Summary: "done",
+	})
+	if err != nil || !created {
+		t.Fatalf("append result = %#v created=%v err=%v", result, created, err)
+	}
+	// Real reducer cards use the canonical review Event identity (turn_done),
+	// while their visible fact is session.done. Lifecycle must follow WorkID,
+	// not attempt to reinterpret this card ID as a session result Event.
+	if _, _, err := store.SyncWorkCard(item.ID, &brain.WorkEvent{
+		ID: "canonical-review", WorkID: item.ID, Kind: "session.done",
+		PayloadRef: "session:worker", SourceName: "worker", Summary: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := srv.brainScopedConversation(
+		"brain-thread:thread-work-identity",
+		work.CodexConversation{Available: true, SessionID: "host"},
+		time.Now(),
+	)
+	for _, event := range got.Events {
+		if event.ID != "canonical-review" {
+			continue
+		}
+		if event.Source != "work_result" || event.WorkID != item.ID ||
+			event.WorkReviewState == "" || event.WorkSessionState == "" ||
+			!event.WorkResultCurrent {
+			t.Fatalf("work card lifecycle = %#v", event)
+		}
+		return
+	}
+	t.Fatalf("canonical review card missing: %#v", got.Events)
+}
+
 func TestBrainWorkEventStaysOnFrozenThreadAcrossScopedReads(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {

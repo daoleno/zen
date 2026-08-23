@@ -1876,24 +1876,24 @@ func (s *Service) AnnotateWorkResultEvents(events []work.CodexConversationEvent)
 	if s == nil || s.store == nil || len(events) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(events))
+	workIDs := make([]string, 0, len(events))
 	for _, event := range events {
-		if event.Source == workResultConversationSource && strings.TrimSpace(event.ID) != "" {
-			ids = append(ids, event.ID)
+		if event.Source == workResultConversationSource && strings.TrimSpace(event.WorkID) != "" {
+			workIDs = append(workIDs, event.WorkID)
 		}
 	}
-	lifecycles, err := s.store.WorkResultLifecycles(ids)
+	lifecycles, err := s.store.WorkResultLifecycles(workIDs)
 	if err != nil {
 		return err
 	}
 	for index := range events {
-		lifecycle, found := lifecycles[events[index].ID]
+		lifecycle, found := lifecycles[events[index].WorkID]
 		if !found {
 			continue
 		}
 		events[index].WorkReviewState = string(lifecycle.ReviewState)
 		events[index].WorkSessionState = string(lifecycle.SessionState)
-		events[index].WorkResultCurrent = lifecycle.CurrentResult
+		events[index].WorkResultCurrent = true
 	}
 	return nil
 }
