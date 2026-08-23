@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -200,6 +201,91 @@ func TestBrainThreadScopeFlowsWorkCardDeltas(t *testing.T) {
 	if !found {
 		t.Fatalf("Brain work-card change missing from delta: %#v", delta.Upserts)
 	}
+}
+
+func TestBrainThreadScopeFlowsDelegatedWorkCardDelta(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-work-card"}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	baseTime := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC)
+	srv := &Server{
+		watcher: watcher.New(time.Second),
+		brain:   service,
+		providerConversationLoader: func(_ *work.ProviderConversationReader, _ string) (work.CodexConversation, error) {
+			return work.CodexConversation{
+				Available: true,
+				Source:    "codex_rollout",
+				SessionID: "provider-session",
+				Events: []work.CodexConversationEvent{{
+					ID: "provider-event", Seq: 1, Timestamp: baseTime.Format(time.RFC3339Nano),
+					Kind: "assistant_message", Role: "assistant", Body: "Stable history.",
+				}},
+			}, nil
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+	request := clientMessage{
+		Type:                 "codex_conversation_subscribe",
+		RequestID:            "subscription-work-card",
+		TargetID:             "provider-agent",
+		Cwd:                  "/provider/workspace",
+		Command:              "codex",
+		StartedAt:            json.RawMessage(`"2026-07-16T07:00:00Z"`),
+		ConversationScopeKey: "brain-thread:thread-work-card",
+	}
+	if err := conn.WriteJSON(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Type string `json:"type"`
+	}
+	if err := conn.ReadJSON(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Type != "codex_conversation_snapshot" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+
+	item, err := store.CreateWork(brain.Work{
+		Title: "Delegated smoke", Objective: "verify live card delivery", Status: brain.WorkRunning,
+		SourceThreadID: "thread-work-card", CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const eventID = "delegated-work-card-event"
+	if _, created, err := service.AppendWorkEvent(brain.WorkEvent{
+		ID: eventID, WorkID: item.ID, Kind: "session.done",
+		DedupeKey: "session:worker:turn:one:session.done", PayloadRef: "session:worker",
+		SourceName: "worker", Summary: "Delegated provider completed", Actionable: false,
+	}); err != nil || !created {
+		t.Fatalf("append work event created=%v err=%v", created, err)
+	}
+
+	var delta struct {
+		Type    string                        `json:"type"`
+		Upserts []work.CodexConversationEvent `json:"upserts"`
+	}
+	if err := conn.ReadJSON(&delta); err != nil {
+		t.Fatal(err)
+	}
+	if delta.Type != "codex_conversation_delta" {
+		t.Fatalf("second message = %#v", delta)
+	}
+	for _, event := range delta.Upserts {
+		if event.ID == eventID && event.Source == "work_result" && event.WorkID == item.ID && event.Unread {
+			return
+		}
+	}
+	t.Fatalf("delegated Work card missing from delta: %#v", delta.Upserts)
 }
 
 func recentOpenCodeServerDeltaFixtureStart(now time.Time) time.Time {

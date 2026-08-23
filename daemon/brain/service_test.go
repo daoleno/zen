@@ -1023,6 +1023,89 @@ func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.
 	}
 }
 
+func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID     = "brain-host:@persistent-output"
+		threadID   = "thread-persistent-output"
+		activityID = "provider-activity-user-turn"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning}
+	fw := &fakeWatcher{
+		sessions:         map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "persistent-host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+		providerEvidence: map[string]watcher.ProviderActivityObservation{
+			hostID: {ID: activityID, Status: "running", StartedAt: now},
+		},
+	}
+	service := NewService(store, fw, nil)
+	admission, created, err := service.PrepareHostUserInput(
+		hostID, "foreground-user-input", "foreground user turn", "brain-thread:"+threadID,
+	)
+	if err != nil || !created {
+		t.Fatalf("prepare foreground created=%v err=%v", created, err)
+	}
+	if err := service.AdmitHostUserInput(admission); err != nil {
+		t.Fatal(err)
+	}
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("running foreground reconcile woke=%v err=%v", woke, err)
+	}
+
+	item := createSignalTestWork(t, store, "Ready behind persistent Host", "brain-agent-worker:@1")
+	event := appendSignalTestEvent(t, store, item, "persistent-host-output")
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("busy Host admitted pending review: woke=%v err=%v", woke, err)
+	}
+	requireReviewPending(t, store, item.ID)
+
+	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
+		Type: "agent_output", AgentID: "other-hidden-host:@1",
+		Agent: &classifier.Agent{ID: "other-hidden-host:@1", Hidden: true, State: classifier.StateDone},
+	}); err != nil || woke {
+		t.Fatalf("non-current Hidden Session drove Host lane: woke=%v err=%v", woke, err)
+	}
+	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
+		Type: "agent_output", AgentID: hostID, Agent: host,
+	}); err != nil || woke {
+		t.Fatalf("running provider output drove pending review: woke=%v err=%v", woke, err)
+	}
+
+	settledAt := now.Add(time.Second)
+	fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
+		ID: activityID, Status: "completed", StartedAt: now, SettledAt: settledAt,
+	}
+	woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
+		Type: "agent_output", AgentID: hostID,
+		Agent: &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
+	})
+	if err != nil || !woke {
+		t.Fatalf("terminal provider output woke=%v err=%v", woke, err)
+	}
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("terminal provider boundary left foreground active=%+v err=%v", active, err)
+	}
+	lease := requireReviewDelivered(t, store, item.ID)
+	if lease.HostSessionID != hostID {
+		t.Fatalf("pending review delivered through wrong Host: %+v", lease)
+	}
+	if len(fw.sentCalls) != 1 || !strings.Contains(fw.sentCalls[0].text, event.ID) {
+		t.Fatalf("Host delivery calls=%+v, want one payload containing %s", fw.sentCalls, event.ID)
+	}
+}
+
 func TestServiceSnapshotHasNoResultEventsChannel(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

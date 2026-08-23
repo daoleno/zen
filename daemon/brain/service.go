@@ -1601,41 +1601,50 @@ func (s *Service) CurrentHostSessionID() string {
 	return strings.TrimSpace(host.ID)
 }
 
-// ObserveHostSessionEvent closes the exact in-flight handling attempt when the
-// Host turn ends. Missing disposition never replays the delivered input: the
-// Work key is durably reconciled once at the FIFO tail before dispatch resumes.
+// ObserveHostSessionEvent treats every current Hidden Host watcher change as
+// a lane trigger. Persistent provider Sessions do not necessarily change
+// process-level Agent state between turns, but their ordinary output/metadata
+// changes still provide the boundary at which the reducer can probe exact
+// provider evidence. The watcher Event is never completion authority itself.
+//
+// Exact terminal state changes additionally close a matching in-flight review
+// handling. Missing disposition never replays the delivered input: the Work
+// key is durably reconciled once at the FIFO tail before dispatch resumes.
 func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, error) {
-	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden ||
-		event.Type != "agent_state_change" || strings.TrimSpace(event.TurnID) == "" ||
-		strings.TrimSpace(event.OldState) == strings.TrimSpace(event.NewState) {
+	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden {
 		return false, nil
 	}
-	state := classifier.AgentState(strings.TrimSpace(event.NewState))
-	if state != classifier.StateDone && state != classifier.StateUnknown && state != classifier.StateFailed {
-		return false, nil
-	}
-	handlings, _, err := s.store.LiveReviewHandlings(2)
-	if err != nil {
-		return false, err
-	}
+	agentID := firstNonEmpty(strings.TrimSpace(event.Agent.ID), strings.TrimSpace(event.AgentID))
 	requeued := false
-	for _, handling := range handlings {
-		if handling.DeliveryHostSessionID == strings.TrimSpace(event.Agent.ID) &&
-			handling.ProviderTurnID == strings.TrimSpace(event.TurnID) {
-			_, requeued, err = s.store.EndReviewDelivery(
-				handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
-			)
+	stateChanged := event.Type == "agent_state_change" && strings.TrimSpace(event.TurnID) != "" &&
+		strings.TrimSpace(event.OldState) != strings.TrimSpace(event.NewState)
+	if stateChanged {
+		state := classifier.AgentState(strings.TrimSpace(event.NewState))
+		terminal := state == classifier.StateDone || state == classifier.StateUnknown || state == classifier.StateFailed
+		if terminal {
+			handlings, _, err := s.store.LiveReviewHandlings(2)
 			if err != nil {
 				return false, err
 			}
-			break
+			for _, handling := range handlings {
+				if handling.DeliveryHostSessionID == agentID &&
+					handling.ProviderTurnID == strings.TrimSpace(event.TurnID) {
+					_, requeued, err = s.store.EndReviewDelivery(
+						handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
+					)
+					if err != nil {
+						return false, err
+					}
+					break
+				}
+			}
 		}
 	}
 	// Host terminal boundary: this event is a trigger only. The reducer
 	// probes the exact foreground turn and closes it exclusively on strong
 	// exact terminal evidence; ambient Agent state can never clear the
 	// durable turn or fabricate a boundary.
-	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == strings.TrimSpace(event.Agent.ID) {
+	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == agentID {
 		s.dispatchMu.Lock()
 		defer s.dispatchMu.Unlock()
 		woke, reconcileErr := s.reconcileHostLaneLocked()
