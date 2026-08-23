@@ -2037,6 +2037,80 @@ func TestProviderConversationReaderCodexTailRetainsActivityIdentityAcrossIncreme
 	}
 }
 
+func TestParseCodexConversationTailRecoversRunningActivityFromNativeItem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout-tail-running.jsonl")
+	sessionID := "session-tail-running"
+	nativeTurnID := "native-turn-running"
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-08-23T09:00:00Z",
+			"payload": map[string]any{
+				"id":  sessionID,
+				"cwd": "/repo/zen",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-23T09:00:01Z",
+			"payload": map[string]any{
+				"type":    "task_started",
+				"turn_id": nativeTurnID,
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-08-23T09:00:02Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": strings.Repeat("x", maxCodexConversationRead+1024),
+				}},
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-23T09:00:03Z",
+			"payload": map[string]any{
+				"type":    "item_completed",
+				"turn_id": nativeTurnID,
+			},
+		},
+	)
+
+	running, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantActivityID := sessionID + ":activity:" + nativeTurnID
+	if running.Activity == nil || running.Activity.ID != wantActivityID ||
+		running.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("tail Activity = %#v, want %q running", running.Activity, wantActivityID)
+	}
+
+	appendJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-08-23T09:00:04Z",
+			"payload": map[string]any{
+				"type":    "task_complete",
+				"turn_id": nativeTurnID,
+			},
+		},
+	)
+	completed, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Activity == nil || completed.Activity.ID != wantActivityID ||
+		completed.Activity.Status != ProviderActivityCompleted ||
+		completed.Activity.SettledAt != "2026-08-23T09:00:04Z" {
+		t.Fatalf("completed Activity = %#v, want stable completed %q", completed.Activity, wantActivityID)
+	}
+}
+
 func TestCodexProviderTerminalHistoryHasDeterministicFailClosedBound(t *testing.T) {
 	builder := newCodexConversationBuilder("bounded-rollout.jsonl")
 	builder.sessionID = "bounded-session"

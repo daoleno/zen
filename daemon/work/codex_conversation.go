@@ -624,9 +624,15 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 	}
 
 	switch payload.Type {
-	case "task_started", "turn_started":
+	case "task_started", "turn_started", "item_started", "item_completed":
+		// Codex can emit enough tool/item traffic for task_started to fall
+		// outside the bounded tail while the turn is still active. Native item
+		// rows carry the same turn_id and therefore recover the exact running
+		// Activity identity; only a later turn terminal settles it.
 		b.startActivity(payload.TurnID, timestamp, lineNumber)
-		b.addStatus(lineNumber, timestamp, "Task started", "")
+		if payload.Type == "task_started" || payload.Type == "turn_started" {
+			b.addStatus(lineNumber, timestamp, "Task started", "")
+		}
 	case "task_complete", "turn_complete":
 		b.settleActivity(payload.TurnID, ProviderActivityCompleted, timestamp, lineNumber)
 	case "turn_aborted":
@@ -818,6 +824,8 @@ func shouldFinishPendingReasoningForEvent(eventType string) bool {
 	switch eventType {
 	case "task_started",
 		"turn_started",
+		"item_started",
+		"item_completed",
 		"task_complete",
 		"turn_complete",
 		"turn_aborted",

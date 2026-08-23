@@ -399,7 +399,7 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	}
 	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: claim.WorkID, SessionID: hostID, ProposedTurnID: claim.ProviderTurnID,
-		Receipt: claim.EventID, ClaimToken: claim.HandlingID,
+		Receipt: claim.ProviderTurnID, ClaimToken: claim.HandlingID,
 		PayloadSHA256:   pendingSubmissionDigest(payload),
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: claim.ClaimedAt.UTC(), Mode: watcher.InputAdmissionFresh,
@@ -426,7 +426,7 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	}
 
 	sendsBeforeReconcile := len(fw.sentCalls)
-	fw.setReceiptOutcome(claim.EventID, watcher.InputAmbiguous)
+	fw.setReceiptOutcome(claim.ProviderTurnID, watcher.InputAmbiguous)
 	woke, err := service.ReconcileHostLane()
 	if err != nil {
 		t.Fatalf("reconcile after Grok host switch: %v", err)

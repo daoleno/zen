@@ -433,10 +433,11 @@ type ReviewResolvedPayload struct {
 }
 
 type ReviewClaimedPayload struct {
-	EventID      string    `json:"event_id"`
-	HandlerID    string    `json:"handler_id"`
-	HandlerToken TurnToken `json:"handler_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	EventID       string    `json:"event_id"`
+	HostSessionID string    `json:"host_session_id"`
+	HandlerID     string    `json:"handler_id"`
+	HandlerToken  TurnToken `json:"handler_token"`
+	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 type ReviewDeliveredPayload struct {
@@ -502,6 +503,7 @@ type ReviewState struct {
 
 // ReviewHandler is the single Brain handling lease for the open Event.
 type ReviewHandler struct {
+	HostSessionID  string     `json:"host_session_id"`
 	HandlerID      string     `json:"handler_id"`
 	HandlerToken   TurnToken  `json:"handler_token"`
 	ClaimedAt      time.Time  `json:"claimed_at"`

@@ -621,7 +621,7 @@ func validatePresentationDatabaseWithSourceThread(database presentationDatabase,
 func validateActiveAttempts(database presentationDatabase) error {
 	activeByWork := map[string]map[string]struct{}{}
 	for _, turn := range database.BrainTurns {
-		if watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(database, turn) {
+		if watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(turn) {
 			continue
 		}
 		index := workIndex(database.BrainWork, turn.WorkID)
@@ -689,30 +689,8 @@ func workTurnHasRelinquishmentEvidence(database presentationDatabase, workID str
 	return false
 }
 
-func isHostHandlingTurn(database presentationDatabase, turn TurnRecord) bool {
-	if turn.HostHandling {
-		return true
-	}
-	// A Host handling Turn's Receipt names the review-event fact it delivered.
-	// The receipt identity is durable even after the lease ends or is
-	// replaced, so a Host Turn is never misread as delegated execution.
-	fact, found := workEventByID(database.BrainWorkEvents, turn.Receipt)
-	if !found || fact.WorkID != turn.WorkID {
-		return false
-	}
-	itemIndex := workIndex(database.BrainWork, turn.WorkID)
-	if itemIndex < 0 {
-		return false
-	}
-	review := database.BrainWork[itemIndex].Review
-	if review != nil && review.Lease != nil && review.EventID == turn.Receipt &&
-		review.Lease.HostSessionID == turn.SessionID && review.Lease.ProviderTurnID == turn.TurnID {
-		return true
-	}
-	// The fact row carries no claim state (I1); a Turn whose Receipt names a
-	// fact and whose session ever acted as the delivery host is Host-side
-	// lifecycle. ClaimToken-bearing submissions are Host submissions.
-	return false
+func isHostHandlingTurn(turn TurnRecord) bool {
+	return turn.HostHandling
 }
 
 func validateWork(item Work) error {
@@ -855,7 +833,7 @@ func validateWorkWakeProducer(database presentationDatabase, item Work, wake *Wo
 		}
 	case WorkWakeSessionTerminal:
 		for _, turn := range database.BrainTurns {
-			if watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(database, turn) ||
+			if watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(turn) ||
 				ref != SessionTerminalWakeRef(turn.SessionID, turn.TurnID) {
 				continue
 			}
@@ -978,7 +956,7 @@ func workHasActiveCanonicalAttempt(database presentationDatabase, item Work) boo
 		return false
 	}
 	turn, found := currentTurnForSession(database, attemptSessionID)
-	if !found || turn.WorkID != item.ID || watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(database, turn) {
+	if !found || turn.WorkID != item.ID || watcher.TurnTerminal(turn.Status) || isHostHandlingTurn(turn) {
 		return false
 	}
 	return true
@@ -2346,6 +2324,7 @@ func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, b
 	}
 	// Canonical claim: the engine owns handler leases. Oldest open event
 	// without a handler wins; fairness is a property of Work.
+	handlingID := "handling:" + uuid.NewString()
 	handlerToken := hostSessionID + ":turn:" + uuid.NewString()
 	type candidate struct {
 		id       string
@@ -2369,7 +2348,9 @@ func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, b
 	})
 	var claimed *lifecycle.State
 	for _, c := range candidates {
-		st, err := s.fsm.ClaimReview(lifecycle.WorkID(c.id), hostSessionID, lifecycle.TurnToken(handlerToken))
+		st, err := s.fsm.ClaimReview(
+			lifecycle.WorkID(c.id), hostSessionID, handlingID, lifecycle.TurnToken(handlerToken),
+		)
 		if err != nil {
 			continue // lost a race or event closed; try next
 		}

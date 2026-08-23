@@ -307,6 +307,7 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		s.Review.Handler = &ReviewHandler{
+			HostSessionID:  p.HostSessionID,
 			HandlerID:      p.HandlerID,
 			HandlerToken:   p.HandlerToken,
 			ClaimedAt:      ev.At,

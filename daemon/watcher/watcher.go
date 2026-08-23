@@ -2869,21 +2869,22 @@ func (w *Watcher) SubmitDelegatedWorkInput(
 }
 
 // SubmitBrainHostInput admits a direct Brain Event as a real canonical
-// provider Turn while keeping the Event receipt, random handling token, and
-// provider Turn identity distinct. It reuses the sole Session Input owner and
+// provider Turn. The provider Turn ID is also the unique transport receipt;
+// the canonical Event identity remains in Work state and the random handling
+// token proves this exact claim. It reuses the sole Session Input owner and
 // provider-neutral admission confirmer; there is no second scheduler.
 func (w *Watcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	sessionID, payload, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (InputResult, error) {
 	if _, ownershipErr := w.ResolveBrainHostGeneration(sessionID); ownershipErr != nil {
-		return InputResult{Outcome: InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
-			definitelyNotSubmitted(eventID, ownershipErr)
+		return InputResult{Outcome: InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID},
+			definitelyNotSubmitted(providerTurnID, ownershipErr)
 	}
 	identity, known := w.targetForSession(sessionID)
 	if !known {
-		return InputResult{Outcome: InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
-			definitelyNotSubmitted(eventID, fmt.Errorf("target provider could not be proven"))
+		return InputResult{Outcome: InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID},
+			definitelyNotSubmitted(providerTurnID, fmt.Errorf("target provider could not be proven"))
 	}
 	result, err := w.sessionInputOwner().submitHost(
 		sessionID,
@@ -2894,7 +2895,7 @@ func (w *Watcher) SubmitBrainHostInput(
 		delegatedTurnDraft{
 			WorkID:            strings.TrimSpace(workID),
 			ID:                strings.TrimSpace(providerTurnID),
-			Receipt:           strings.TrimSpace(eventID),
+			Receipt:           strings.TrimSpace(providerTurnID),
 			ClaimToken:        strings.TrimSpace(claimToken),
 			AcceptedAt:        acceptedAt.UTC(),
 			ProcessIdentity:   delegatedTurnIdentity(identity),

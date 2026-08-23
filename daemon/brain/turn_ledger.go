@@ -298,7 +298,7 @@ func (s *Store) fsmStateForAdmission(candidate watcher.InputAdmission) (*lifecyc
 			return nil, err
 		}
 		if candidate.ClaimToken != "" {
-			if st.Review == nil || st.Review.Handler == nil || st.Review.EventID != candidate.Receipt ||
+			if candidate.Receipt != candidate.ProposedTurnID || st.Review == nil || st.Review.Handler == nil ||
 				st.Review.Handler.HandlerID != candidate.ClaimToken ||
 				st.Review.Handler.HandlerToken != lifecycle.TurnToken(candidate.ProposedTurnID) {
 				return nil, ErrEventClaim
@@ -622,24 +622,6 @@ func databaseWorkIDForTurnAdmission(database presentationDatabase, sessionID str
 		}
 	}
 	return ""
-}
-
-func databaseHasExactHostEventClaim(database presentationDatabase, submission watcher.InputAdmission) bool {
-	return databaseHasExactReviewLease(database, submission)
-}
-
-func databaseHasResolvedHostEventAdmission(
-	database presentationDatabase,
-	eventID, claimToken, workID, hostSessionID, providerTurnID string,
-) bool {
-	_ = claimToken
-	for _, turn := range database.BrainTurns {
-		if turn.SessionID == hostSessionID && turn.TurnID == providerTurnID &&
-			turn.WorkID == workID && turn.Receipt == eventID && !turn.Admission.Empty() {
-			return true
-		}
-	}
-	return false
 }
 
 // Turn returns the canonical snapshot for the current turn of the session.
@@ -1631,7 +1613,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		}
 		return turn.snapshot(), true, nil
 	}
-	if isHostHandlingTurn(database, turn) {
+	if isHostHandlingTurn(turn) {
 		// Host provider Turns own only the delivery handling. Their lifecycle
 		// may close/recover that exact handling, but must never be reinterpreted
 		// as delegated Work progress or emit a second scheduler signal.

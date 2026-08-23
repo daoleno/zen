@@ -204,8 +204,14 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 		}
 		if st.Review.Handler != nil {
 			if item.Review.Lease == nil || item.Review.Lease.HandlingID != st.Review.Handler.HandlerID {
+				hostSessionID := strings.TrimSpace(st.Review.Handler.HostSessionID)
+				if hostSessionID == "" {
+					// Pre-split claims used HandlerID for both identities. Replay them
+					// once so an upgrade can start, but every new claim writes both.
+					hostSessionID = st.Review.Handler.HandlerID
+				}
 				item.Review.Lease = &WorkReviewLease{
-					HostSessionID:  st.Review.Handler.HandlerID,
+					HostSessionID:  hostSessionID,
 					HandlingID:     st.Review.Handler.HandlerID,
 					ProviderTurnID: string(st.Review.Handler.HandlerToken),
 					// The capability freezes the projected revision it was

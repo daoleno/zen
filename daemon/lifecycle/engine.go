@@ -846,7 +846,7 @@ func (e *Engine) ClearWait(id WorkID, kind WakeKind, ref, occurrence string) (*S
 }
 
 // ClaimReview leases the open actionable Event to one Brain handling.
-func (e *Engine) ClaimReview(id WorkID, handlerID string, handlerToken TurnToken) (*State, error) {
+func (e *Engine) ClaimReview(id WorkID, hostSessionID, handlerID string, handlerToken TurnToken) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
 		if st == nil {
 			return nil, ErrUnknownWork
@@ -863,10 +863,13 @@ func (e *Engine) ClaimReview(id WorkID, handlerID string, handlerToken TurnToken
 		if handlerID == "" {
 			return nil, fmt.Errorf("%w: handler identity required", ErrInvalidCommand)
 		}
+		if hostSessionID == "" {
+			return nil, fmt.Errorf("%w: Host Session identity required", ErrInvalidCommand)
+		}
 		events := []Event{{
 			WorkID: id, Kind: KReviewClaimed, SourceID: "claim:" + e.newID(), At: now,
 			Payload: ReviewClaimedPayload{
-				EventID: st.Review.EventID, HandlerID: handlerID,
+				EventID: st.Review.EventID, HostSessionID: hostSessionID, HandlerID: handlerID,
 				HandlerToken: handlerToken, ExpiresAt: now.Add(EventClaimTTL),
 			},
 		}}

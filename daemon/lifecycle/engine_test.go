@@ -527,7 +527,7 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 	if _, err := e.OpenReview("w-atomic", "session.needs_input", "event-exact"); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := e.ClaimReview("w-atomic", "handling-exact", "brain-turn")
+	claimed, err := e.ClaimReview("w-atomic", "brain-host", "handling-exact", "brain-turn")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,10 +744,10 @@ func TestReviewLifecycle(t *testing.T) {
 	st, _ := e.State("w1")
 	eventID := st.Review.EventID
 
-	if _, err := e.ClaimReview("w1", "host-1", "hturn-1"); err != nil {
+	if _, err := e.ClaimReview("w1", "host-1", "handling-1", "hturn-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.ClaimReview("w1", "host-2", "hturn-2"); err != ErrReviewLease {
+	if _, err := e.ClaimReview("w1", "host-2", "handling-2", "hturn-2"); err != ErrReviewLease {
 		t.Fatalf("double claim: %v", err)
 	}
 	if _, err := e.MarkReviewDelivered("w1", "hturn-1"); err != nil {
@@ -776,7 +776,7 @@ func TestAmbiguousReviewDeliveryResolutionIsAtomicIdempotentAndReplayable(t *tes
 	if _, err := e.OpenReview("w1", "operator_review", "canonical-only"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.ClaimReview("w1", "host-1", "host-turn-1"); err != nil {
+	if _, err := e.ClaimReview("w1", "host-1", "handling-1", "host-turn-1"); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := e.State("w1")
@@ -826,7 +826,7 @@ func TestAmbiguousReviewDiscardClosesExactEvent(t *testing.T) {
 	if _, err := e.OpenReview("w1", "operator_review", "canonical-only"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.ClaimReview("w1", "host-1", "host-turn-1"); err != nil {
+	if _, err := e.ClaimReview("w1", "host-1", "handling-1", "host-turn-1"); err != nil {
 		t.Fatal(err)
 	}
 	st, err := e.ResolveReviewDelivery("w1", ReviewDeliveryDiscard, "operator", "obsolete")

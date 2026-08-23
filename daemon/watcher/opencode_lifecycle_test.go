@@ -82,20 +82,19 @@ func TestBrainHostInputCarriesExactClaimCapabilityThroughCanonicalSubmission(t *
 		ID: hostID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, State: classifier.StateDone,
 	}
-	eventID := "event-exact"
 	claimToken := "claim-exact"
 	workID := "work-exact"
 	providerTurnID := "provider-turn-exact"
 
 	result, err := w.SubmitBrainHostInput(
-		hostID, payload, eventID, claimToken, workID, providerTurnID, now,
+		hostID, payload, claimToken, workID, providerTurnID, now,
 	)
 	if err != nil || result.Outcome != InputAccepted || result.TurnID != providerTurnID {
 		t.Fatalf("Host admission result=%+v err=%v", result, err)
 	}
 	submission, found, err := ledger.InputAdmission(hostID, providerTurnID)
 	if err != nil || !found || submission.State != InputAdmissionResolved ||
-		submission.Receipt != eventID || submission.ClaimToken != claimToken ||
+		submission.Receipt != providerTurnID || submission.ClaimToken != claimToken ||
 		submission.WorkID != workID || submission.SessionID != hostID ||
 		submission.ProposedTurnID != providerTurnID {
 		t.Fatalf("canonical Host submission=%+v found=%v err=%v", submission, found, err)

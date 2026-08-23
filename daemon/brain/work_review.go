@@ -327,8 +327,9 @@ func validateWorkReview(database presentationDatabase, item Work) error {
 }
 
 // databaseHasExactReviewLease matches a Host submission transaction against
-// the canonical review lease: the five-part capability (fact receipt, claim
-// token, Work, Host Session, provider Turn) is the admission authority.
+// the canonical review lease. The provider Turn ID is the transport receipt;
+// the claim token, Work, Host Session, and provider Turn together are the
+// admission authority. The Event identity stays solely on the review fact.
 func databaseHasExactReviewLease(database presentationDatabase, submission watcher.InputAdmission) bool {
 	itemIndex := workIndex(database.BrainWork, submission.WorkID)
 	if itemIndex < 0 {
@@ -342,7 +343,7 @@ func databaseHasExactReviewLease(database presentationDatabase, submission watch
 	return lease.HandlingID == submission.ClaimToken &&
 		lease.ProviderTurnID == submission.ProposedTurnID &&
 		lease.HostSessionID == submission.SessionID &&
-		review.EventID == submission.Receipt &&
+		submission.Receipt == submission.ProposedTurnID &&
 		lease.DeliveredAt == nil && lease.HandlingEndedAt == nil
 }
 

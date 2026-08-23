@@ -63,13 +63,13 @@ func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) err
 func (w *brainServiceTestWatcher) SendInputWithReceiptResult(_, _, receipt string) (watcher.InputResult, error) {
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
-func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error) {
+func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error) {
 	if w.turnStore == nil {
-		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: providerTurnID}, nil
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: providerTurnID, TurnID: providerTurnID}, nil
 	}
 	existingTurnID := ""
 	if current, found, err := w.turnStore.Turn(sessionID); err != nil {
-		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID}, err
 	} else if found {
 		existingTurnID = current.TurnID
 		if !watcher.TurnImmutable(current.Status) {
@@ -81,27 +81,27 @@ func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, event
 				Admission: current.Admission, ActivityID: current.ActivityID,
 				StartedAt: current.AcceptedAt, SettledAt: settledAt, At: settledAt,
 			}); err != nil {
-				return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+				return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID}, err
 			}
 		}
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 	pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
-		Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
+		Receipt: providerTurnID, ClaimToken: claimToken, PayloadSHA256: digest,
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh, ExistingTurnID: existingTurnID,
 	})
 	if err != nil {
-		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID}, err
 	}
 	if !created {
-		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID},
+		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: providerTurnID, TurnID: providerTurnID},
 			fmt.Errorf("Host submission was not freshly prepared")
 	}
 	resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
 	resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
-		SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+		SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: providerTurnID,
 		PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
@@ -110,9 +110,9 @@ func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, event
 		ResolvedAt: resolvedAt,
 	})
 	if err != nil {
-		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+		return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: providerTurnID, TurnID: providerTurnID}, err
 	}
-	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID}, nil
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: providerTurnID, TurnID: resolved.ResolvedTurnID}, nil
 }
 func (w *brainServiceTestWatcher) InputReceiptResult(_, receipt string) (watcher.InputResult, bool, error) {
 	return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt}, false, nil

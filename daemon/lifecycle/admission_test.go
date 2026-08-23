@@ -68,7 +68,7 @@ func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
 			if _, err := e.ReportTurnLost("w-review-without-attempt", attemptID("session-1", "turn-lost", 1), "true silence"); err != nil {
 				t.Fatal(err)
 			}
-			claimed, err := e.ClaimReview("w-review-without-attempt", "handler-1", "host-turn")
+			claimed, err := e.ClaimReview("w-review-without-attempt", "brain-host", "handler-1", "host-turn")
 			if err != nil {
 				t.Fatal(err)
 			}

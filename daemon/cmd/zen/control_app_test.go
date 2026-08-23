@@ -148,7 +148,7 @@ func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.Wor
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("Host claim "+claimed.EventID)))
 	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
-		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.EventID, ClaimToken: claimed.HandlingID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ProviderTurnID, ClaimToken: claimed.HandlingID,
 		PayloadSHA256: digest, ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh,
 	})
@@ -158,7 +158,7 @@ func resolveControlHostClaim(t *testing.T, store *brain.Store, claimed brain.Wor
 	resolvedAt := acceptedAt.Add(time.Millisecond)
 	if _, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.EventID, PayloadSHA256: pending.PayloadSHA256,
+		Receipt: claimed.ProviderTurnID, PayloadSHA256: pending.PayloadSHA256,
 		ActivityID: "host-activity-" + claimed.ProviderTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID, Cursor: 1,
@@ -467,31 +467,31 @@ func (w *fakeControlWatcher) SubmitDelegatedWorkInput(
 }
 
 func (w *fakeControlWatcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	sessionID, payload, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
 	if w.turnStore != nil {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 		pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
-			Receipt: eventID, ClaimToken: claimToken, PayloadSHA256: digest,
+			Receipt: providerTurnID, ClaimToken: claimToken, PayloadSHA256: digest,
 			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 			AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh,
 		})
 		if err != nil {
-			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID},
 				err
 		}
 		if !created {
-			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID},
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID},
 				errors.New("Host submission was not freshly prepared")
 		}
 		if err := w.SubmitInput(sessionID, payload); err != nil {
-			return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID}, err
+			return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: providerTurnID, TurnID: providerTurnID}, err
 		}
 		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
 		resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
-			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: providerTurnID,
 			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 			Admission: watcher.TurnAdmission{
 				Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
@@ -500,13 +500,13 @@ func (w *fakeControlWatcher) SubmitBrainHostInput(
 			ResolvedAt: resolvedAt,
 		})
 		if err != nil {
-			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID}, err
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: providerTurnID, TurnID: providerTurnID}, err
 		}
-		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: eventID, TurnID: resolved.ResolvedTurnID}, nil
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: providerTurnID, TurnID: resolved.ResolvedTurnID}, nil
 	}
 	err := w.SubmitInput(sessionID, payload)
 	return watcher.InputResult{
-		Outcome: watcher.InputOutcomeFromError(err), Receipt: eventID, TurnID: providerTurnID,
+		Outcome: watcher.InputOutcomeFromError(err), Receipt: providerTurnID, TurnID: providerTurnID,
 	}, err
 }
 

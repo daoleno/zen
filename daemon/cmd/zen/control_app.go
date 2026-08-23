@@ -40,7 +40,7 @@ type controlWatcher interface {
 	SubmitDelegatedInputWhenReady(sessionID, command, payload, workID, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitDelegatedInputWhenReadyBudgeted(sessionID, command, payload, workID, turnID string, acceptedAt time.Time, budget time.Duration) (watcher.InputResult, error)
 	SubmitDelegatedWorkInput(sessionID, payload, workID, turnID, purpose, purposeID string, acceptedAt time.Time) (watcher.InputResult, error)
-	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)

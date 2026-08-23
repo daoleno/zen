@@ -40,7 +40,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
-	SubmitBrainHostInput(sessionID, payload, eventID, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
 	// ProbeProviderEvidence returns the current provider-native observation
@@ -1127,7 +1127,7 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 			}
 			continue
 		}
-		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.EventID)
+		result, found, receiptErr := s.watcher.InputReceiptResult(hostID, claimed.ProviderTurnID)
 		if receiptErr != nil || !found {
 			if receiptErr != nil {
 				// Transient receipt-ledger read failure: retry on the next
@@ -1222,7 +1222,7 @@ func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, 
 	if err != nil || !found || submission.State != watcher.InputAdmissionPending {
 		return false, false, err
 	}
-	if submission.Receipt != claimed.EventID || submission.ClaimToken != claimed.HandlingID ||
+	if submission.Receipt != claimed.ProviderTurnID || submission.ClaimToken != claimed.HandlingID ||
 		submission.WorkID != claimed.WorkID || submission.SessionID != hostID ||
 		submission.ProposedTurnID != claimed.ProviderTurnID {
 		return false, false, fmt.Errorf("ambiguous Work review %s lacks its exact pending submission", claimed.WorkID)
@@ -1253,7 +1253,7 @@ func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, 
 	}
 	acceptedAt := claimed.ClaimedAt.UTC()
 	result, submitErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, claimed.EventID, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
+		hostID, payload, claimed.HandlingID, claimed.WorkID, claimed.ProviderTurnID, acceptedAt,
 	)
 	if submitErr != nil {
 		return false, true, submitErr
@@ -1501,7 +1501,7 @@ func (s *Service) deliverClaimedReviewLocked(action WorkReviewAction) (bool, err
 		acceptedAt = action.ClaimedAt.UTC()
 	}
 	result, sendErr := s.watcher.SubmitBrainHostInput(
-		hostID, payload, action.EventID, action.HandlingID, action.WorkID, action.ProviderTurnID, acceptedAt,
+		hostID, payload, action.HandlingID, action.WorkID, action.ProviderTurnID, acceptedAt,
 	)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {

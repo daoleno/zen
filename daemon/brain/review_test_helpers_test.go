@@ -182,7 +182,7 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkRevie
 	payloadDigest := pendingSubmissionDigest("claimed Host review " + claimed.EventID)
 	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
 		WorkID: claimed.WorkID, SessionID: claimed.DeliveryHostSessionID,
-		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.EventID,
+		ProposedTurnID: claimed.ProviderTurnID, Receipt: claimed.ProviderTurnID,
 		ClaimToken: claimed.HandlingID, PayloadSHA256: payloadDigest,
 		ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 		AcceptedAt: acceptedAt, Mode: watcher.InputAdmissionFresh, ExistingTurnID: existingTurnID,
@@ -193,7 +193,7 @@ func resolveClaimedHostTurnForTest(t *testing.T, store *Store, claimed WorkRevie
 	resolvedAt := acceptedAt.Add(time.Millisecond)
 	if _, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
 		SessionID: claimed.DeliveryHostSessionID, ProposedTurnID: claimed.ProviderTurnID,
-		Receipt: claimed.EventID, PayloadSHA256: pending.PayloadSHA256,
+		Receipt: claimed.ProviderTurnID, PayloadSHA256: pending.PayloadSHA256,
 		ActivityID: "host-activity-" + claimed.ProviderTurnID,
 		Admission: watcher.TurnAdmission{
 			Stream: "provider", ID: "host-admission-" + claimed.ProviderTurnID,

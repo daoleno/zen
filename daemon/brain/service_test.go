@@ -426,43 +426,38 @@ func (w *fakeWatcher) SubmitDelegatedWorkInput(
 }
 
 func (w *fakeWatcher) SubmitBrainHostInput(
-	sessionID, payload, eventID, claimToken, workID, providerTurnID string,
+	sessionID, payload, claimToken, workID, providerTurnID string,
 	acceptedAt time.Time,
 ) (watcher.InputResult, error) {
 	if w.turnStore != nil && w.sendErr == nil {
-		// A re-delivery of the same action identity is a fresh delivery attempt:
-		// the transport receipt ledger is re-written per attempt, never reused.
-		if w.outcomes != nil {
-			delete(w.outcomes, eventID)
-		}
 		existingTurnID := ""
 		if current, found, err := w.turnStore.Turn(sessionID); err != nil {
-			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID}, err
 		} else if found {
 			existingTurnID = current.TurnID
 		}
 		pending, created, err := w.turnStore.PrepareInputAdmission(watcher.InputAdmission{
 			WorkID: workID, SessionID: sessionID, ProposedTurnID: providerTurnID,
-			Receipt: eventID, ClaimToken: claimToken,
+			Receipt: providerTurnID, ClaimToken: claimToken,
 			PayloadSHA256:   pendingSubmissionDigest(payload),
 			ProcessIdentity: "host-process-identity", PaneGeneration: "host-pane-generation",
 			AcceptedAt: acceptedAt.UTC(), Mode: watcher.InputAdmissionFresh, ExistingTurnID: existingTurnID,
 		})
 		if err != nil {
-			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: eventID, TurnID: providerTurnID}, err
+			return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: providerTurnID, TurnID: providerTurnID}, err
 		}
 		if !created {
-			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: eventID, TurnID: providerTurnID},
+			return watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: providerTurnID, TurnID: providerTurnID},
 				fmt.Errorf("Host submission was not freshly prepared")
 		}
-		result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
+		result, err := w.SendInputWithReceiptResult(sessionID, payload, providerTurnID)
 		result.TurnID = providerTurnID
 		if err != nil {
 			return result, err
 		}
 		resolvedAt := acceptedAt.Add(time.Millisecond).UTC()
 		resolved, err := w.turnStore.ResolveInputAdmission(watcher.InputAdmissionResolution{
-			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: eventID,
+			SessionID: sessionID, ProposedTurnID: providerTurnID, Receipt: providerTurnID,
 			PayloadSHA256: pending.PayloadSHA256, ActivityID: "host-activity-" + providerTurnID,
 			Admission: watcher.TurnAdmission{
 				Stream: "provider", ID: "host-admission-" + providerTurnID, Cursor: 1,
@@ -478,7 +473,7 @@ func (w *fakeWatcher) SubmitBrainHostInput(
 		result.TurnID = resolved.ResolvedTurnID
 		return result, nil
 	}
-	result, err := w.SendInputWithReceiptResult(sessionID, payload, eventID)
+	result, err := w.SendInputWithReceiptResult(sessionID, payload, providerTurnID)
 	result.TurnID = providerTurnID
 	return result, err
 }
@@ -1103,6 +1098,74 @@ func TestHostOutputReconcilesPendingReviewAtProviderTurnBoundary(t *testing.T) {
 	}
 	if len(fw.sentCalls) != 1 || !strings.Contains(fw.sentCalls[0].text, event.ID) {
 		t.Fatalf("Host delivery calls=%+v, want one payload containing %s", fw.sentCalls, event.ID)
+	}
+}
+
+func TestSameReviewEventRedeliveryUsesFreshProviderTurnReceipt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	const hostID = "brain-host:@review-redelivery"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
+	fw := &fakeWatcher{
+		sessions:         map[string]*classifier.Agent{hostID: host},
+		ownedGenerations: map[string]string{hostID: "host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	item := createSignalTestWork(t, store, "Redeliver one canonical review", "brain-agent-worker:@1")
+	event := appendSignalTestEvent(t, store, item, "review-redelivery")
+
+	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
+		t.Fatalf("first delivery=%v err=%v", delivered, err)
+	}
+	first := requireReviewDelivered(t, store, item.ID)
+	firstSubmission, found, err := store.InputAdmission(hostID, first.ProviderTurnID)
+	if err != nil || !found || firstSubmission.Receipt != first.ProviderTurnID || firstSubmission.ClaimToken != first.HandlingID {
+		t.Fatalf("first Host submission=%+v found=%v err=%v", firstSubmission, found, err)
+	}
+	if firstSubmission.Receipt == event.ID {
+		t.Fatalf("canonical Event %s leaked into transport receipt", event.ID)
+	}
+	settleCanonicalHostTurnForTest(t, store, hostID, first.ProviderTurnID)
+	if _, requeued, err := store.EndReviewDelivery(item.ID, first.HandlingID, first.ProviderTurnID); err != nil || !requeued {
+		t.Fatalf("end first handling requeued=%v err=%v", requeued, err)
+	}
+
+	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
+		t.Fatalf("second delivery=%v err=%v", delivered, err)
+	}
+	second := requireReviewDelivered(t, store, item.ID)
+	secondWork, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondWork.Review == nil || secondWork.Review.EventID != event.ID || second.HandlingID == first.HandlingID ||
+		second.ProviderTurnID == first.ProviderTurnID {
+		t.Fatalf("second handling did not preserve Event and refresh claim identities: first=%+v second=%+v", first, second)
+	}
+	secondSubmission, found, err := store.InputAdmission(hostID, second.ProviderTurnID)
+	if err != nil || !found || secondSubmission.Receipt != second.ProviderTurnID || secondSubmission.ClaimToken != second.HandlingID {
+		t.Fatalf("second Host submission=%+v found=%v err=%v", secondSubmission, found, err)
+	}
+	if len(fw.sentCalls) != 2 {
+		t.Fatalf("Host submission count=%d, want exactly two distinct handling turns", len(fw.sentCalls))
+	}
+	revision := second.DeliveryWorkRevision
+	for attempt := 0; attempt < 8; attempt++ {
+		if delivered, err := service.ReconcileHostLane(); err != nil || delivered {
+			t.Fatalf("repeat %d delivery=%v err=%v", attempt, delivered, err)
+		}
+	}
+	stable := requireReviewDelivered(t, store, item.ID)
+	if stable.DeliveryWorkRevision != revision || len(fw.sentCalls) != 2 {
+		t.Fatalf("redelivery churned: revision=%d want=%d sends=%d", stable.DeliveryWorkRevision, revision, len(fw.sentCalls))
 	}
 }
 

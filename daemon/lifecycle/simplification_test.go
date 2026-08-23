@@ -105,7 +105,7 @@ func TestExpiredClaimReusesExactEventID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := e.ClaimReview("w-claim", "parallel-handler-id", "host-turn-1")
+	claimed, err := e.ClaimReview("w-claim", "brain-host", "parallel-handler-id", "host-turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestExpiredClaimReusesExactEventID(t *testing.T) {
 	if expired.Review == nil || expired.Review.EventID != opened.Review.EventID || expired.Review.Handler != nil {
 		t.Fatalf("claim expiry replaced event: %+v", expired.Review)
 	}
-	reclaimed, err := e.ClaimReview("w-claim", "ignored", "host-turn-2")
+	reclaimed, err := e.ClaimReview("w-claim", "brain-host", "ignored", "host-turn-2")
 	if err != nil || reclaimed.Review.EventID != "event-exact" {
 		t.Fatalf("same event not reclaimable: review=%+v err=%v", reclaimed.Review, err)
 	}
@@ -228,7 +228,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 		t.Fatalf("stronger evidence cards=%+v", cards)
 	}
 
-	claimed, err := e.ClaimReview("w-late-terminal", "brain-handler", "brain-turn")
+	claimed, err := e.ClaimReview("w-late-terminal", "brain-host", "brain-handler", "brain-turn")
 	if err != nil {
 		t.Fatal(err)
 	}

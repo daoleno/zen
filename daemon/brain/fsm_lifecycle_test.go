@@ -369,7 +369,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 		t.Fatalf("retry review state=%+v err=%v", retryState, err)
 	}
 	eventID := retryState.Review.EventID
-	claimed, err := store.FSM().ClaimReview(lifecycle.WorkID(item.ID), "host:dropped", "host-turn:dropped")
+	claimed, err := store.FSM().ClaimReview(lifecycle.WorkID(item.ID), "host:dropped", "handling:dropped", "host-turn:dropped")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1157,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 		t.Fatalf("reload changed terminal obligation: state=%+v created=%+v sent=%+v err=%v", reloaded, fw.created, fw.sentCalls, err)
 	}
 
-	claimed, err := store.FSM().ClaimReview(lifecycle.WorkID(item.ID), "brain-handler", "brain-turn")
+	claimed, err := store.FSM().ClaimReview(lifecycle.WorkID(item.ID), "brain-host", "brain-handler", "brain-turn")
 	if err != nil {
 		t.Fatal(err)
 	}
