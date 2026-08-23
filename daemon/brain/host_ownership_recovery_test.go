@@ -142,3 +142,84 @@ func TestHostOwnershipLossIdleAutomaticallyDeliversCanonicalEventOnce(t *testing
 		t.Fatalf("reload churned: revision=%d want=%d sends=%d", reloaded.Revision, deliveredRevision, len(fw.sentCalls))
 	}
 }
+
+func TestHostLaneReconcilesExactTerminalHistoryWithoutForegroundRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.FSM().Close()
+	const (
+		hostID     = "brain-host:@legacy-foreground"
+		threadID   = "thread-legacy-foreground"
+		hostTurnID = "turn-host-stale-running"
+		activityID = "host-activity-stale-running"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "pending canonical review", Objective: "deliver after exact Host idle proof",
+		SourceThreadID: threadID, CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.FSM().OpenReviewEvent(lifecycle.WorkID(item.ID), "turn_done", "worker-turn", "event:host-idle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Date(2026, 8, 23, 2, 32, 42, 0, time.UTC)
+	store.mu.Lock()
+	database, err := store.loadPresentationLocked()
+	if err == nil {
+		database.BrainTurns = append(database.BrainTurns, TurnRecord{
+			SessionID: hostID, TurnID: hostTurnID, WorkID: item.ID,
+			Status: watcher.TurnRunning, ControlState: watcher.TurnControlOwned,
+			ActivityID: activityID, AcceptedAt: acceptedAt, UpdatedAt: acceptedAt,
+			LeaseDeadline: acceptedAt.Add(10 * time.Minute),
+		})
+		err = store.persistPresentationLocked(database)
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
+		t.Fatalf("fixture unexpectedly has foreground row: active=%+v err=%v", active, err)
+	}
+	settledAt := acceptedAt.Add(time.Minute)
+	fw := &fakeWatcher{
+		sessions:         map[string]*classifier.Agent{hostID: {ID: hostID, Hidden: true, State: classifier.StateDone}},
+		ownedGenerations: map[string]string{hostID: "stable-host-generation"},
+		providerEvidence: map[string]watcher.ProviderActivityObservation{
+			hostID: {
+				ID: "newer-host-activity", Status: "completed",
+				StartedAt: settledAt.Add(time.Minute), SettledAt: settledAt.Add(2 * time.Minute),
+				TerminalActivities: []watcher.ProviderTerminalActivity{{
+					ID: activityID, Status: "completed", StartedAt: acceptedAt, SettledAt: settledAt,
+				}},
+			},
+		},
+		outcomes: map[string]watcher.InputOutcome{}, turnStore: store,
+	}
+	service := NewService(store, fw, nil)
+	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
+		t.Fatalf("exact terminal reconciliation delivery=%v err=%v", delivered, err)
+	}
+	stale, found, err := store.TurnByID(hostID, hostTurnID)
+	if err != nil || !found || stale.Status != watcher.TurnDone || stale.ActivityID != activityID {
+		t.Fatalf("stale Host turn not closed exactly: found=%v turn=%+v err=%v", found, stale, err)
+	}
+	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil || state.Review == nil || state.Review.EventID != opened.Review.EventID ||
+		state.Review.Handler == nil || state.Review.Handler.DeliveredAt == nil || len(fw.sentCalls) != 1 {
+		t.Fatalf("canonical review delivery state=%+v sends=%d err=%v", state, len(fw.sentCalls), err)
+	}
+}

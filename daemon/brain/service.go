@@ -998,7 +998,29 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 		return false, err
 	} else if found && !watcher.TurnImmutable(current.Status) &&
 		!(current.Status == watcher.TurnUnknown && current.ControlState == watcher.TurnControlOwnershipLost) {
-		return false, nil
+		// Older accepted Host inputs may predate the foreground checkpoint row.
+		// Reconcile their exact bound Activity here before treating the Turn as
+		// a busy fence. A reusable provider session may already have advanced,
+		// so bounded terminal history is authoritative for this exact Activity.
+		observation, observed, probeErr := s.watcher.ProbeProviderEvidence(hostID)
+		if probeErr != nil {
+			return false, probeErr
+		}
+		terminal, exact := exactHostTurnTerminal(current, observation, observed)
+		if !exact {
+			return false, nil
+		}
+		kind := "done"
+		if strings.TrimSpace(terminal.Status) != "completed" {
+			kind = "failed"
+		}
+		snapshot, _, applyErr := s.store.ApplyTurnFact(s.providerTerminalFact(hostID, current.TurnID, terminal, kind))
+		if applyErr != nil {
+			return false, applyErr
+		}
+		if !watcher.TurnImmutable(snapshot.Status) {
+			return false, nil
+		}
 	}
 	// Step 6: the daemon can restart while a provider-native user turn is
 	// already running and therefore has no Brain admission/foreground row. A
@@ -1482,6 +1504,38 @@ func hostForegroundTerminalEvidence(observation watcher.ProviderActivityObservat
 		}
 	}
 	return "", false
+}
+
+func exactHostTurnTerminal(
+	turn watcher.TurnSnapshot,
+	observation watcher.ProviderActivityObservation,
+	found bool,
+) (watcher.ProviderActivityObservation, bool) {
+	if !found {
+		return watcher.ProviderActivityObservation{}, false
+	}
+	bound := strings.TrimSpace(turn.ActivityID)
+	if bound == "" {
+		if providerStatusTerminal(observation.Status) && providerObservationOwnsTurn(turn, observation) {
+			return observation, true
+		}
+		return watcher.ProviderActivityObservation{}, false
+	}
+	if strings.TrimSpace(observation.ID) == bound && providerStatusTerminal(observation.Status) {
+		return observation, true
+	}
+	for index := len(observation.TerminalActivities) - 1; index >= 0; index-- {
+		terminal := observation.TerminalActivities[index]
+		if strings.TrimSpace(terminal.ID) != bound || !providerStatusTerminal(terminal.Status) {
+			continue
+		}
+		return watcher.ProviderActivityObservation{
+			ID: terminal.ID, Status: terminal.Status,
+			StartedAt: terminal.StartedAt, SettledAt: terminal.SettledAt,
+			ProbeState: watcher.ProbeStateOK,
+		}, true
+	}
+	return watcher.ProviderActivityObservation{}, false
 }
 
 func providerStatusRunning(status string) bool {
