@@ -2097,6 +2097,83 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 	return projectionErr
 }
 
+// SubmitExternalUserInput submits one channel-owned receipt through the same
+// Prepare -> provider mutation -> Admit/Abort/Uncertain transaction used by
+// the mobile Brain surface. The current Brain host and thread are resolved by
+// their canonical owners; callers cannot select a provider transcript or
+// manufacture a Session.
+func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDisposition, error) {
+	receipt = strings.TrimSpace(receipt)
+	body = strings.TrimSpace(body)
+	if s == nil || s.store == nil || s.watcher == nil {
+		return ExternalInputNotSubmitted, fmt.Errorf("brain service is not configured")
+	}
+	if receipt == "" || body == "" {
+		return ExternalInputNotSubmitted, fmt.Errorf("external Brain input requires receipt and body")
+	}
+	host, err := s.store.HostSession()
+	if err != nil {
+		return ExternalInputNotSubmitted, err
+	}
+	hostID := strings.TrimSpace(host.ID)
+	if hostID == "" {
+		return ExternalInputNotSubmitted, fmt.Errorf("brain host is unavailable")
+	}
+	steering, err := s.NoteUserSteering(hostID)
+	if err != nil || !steering {
+		return ExternalInputNotSubmitted, firstNonNil(err, fmt.Errorf("brain host is unavailable"))
+	}
+	prepared, created, err := s.PrepareHostUserInput(hostID, receipt, body, "")
+	if err != nil {
+		s.CancelUserSteering(hostID)
+		return ExternalInputNotSubmitted, err
+	}
+	if !created {
+		s.CancelUserSteering(hostID)
+		switch prepared.State {
+		case BrainInputAdmissionAccepted:
+			if err := s.AdmitHostUserInput(prepared); err != nil {
+				return ExternalInputPending, err
+			}
+			return ExternalInputAccepted, nil
+		case BrainInputAdmissionNotSubmitted:
+			return ExternalInputNotSubmitted, nil
+		case BrainInputAdmissionUncertain:
+			return ExternalInputUncertain, nil
+		default:
+			return ExternalInputPending, nil
+		}
+	}
+
+	_, sendErr := s.watcher.SendInputWithReceiptResult(hostID, body, receipt)
+	if sendErr == nil {
+		if err := s.AdmitHostUserInput(prepared); err != nil {
+			return ExternalInputPending, err
+		}
+		return ExternalInputAccepted, nil
+	}
+	if watcher.InputOutcomeFromError(sendErr) == watcher.InputAmbiguous {
+		if err := s.ReleaseHostUserInputAttempt(prepared.RequestID, prepared.ThreadID); err != nil {
+			return ExternalInputPending, err
+		}
+		return ExternalInputUncertain, nil
+	}
+	if err := s.AbortHostUserInput(prepared.RequestID, prepared.ThreadID); err != nil {
+		return ExternalInputPending, err
+	}
+	s.CancelUserSteering(hostID)
+	return ExternalInputNotSubmitted, nil
+}
+
+func firstNonNil(values ...error) error {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
 func hostInputAttemptKey(requestID, threadID string) string {
 	return strings.TrimSpace(requestID) + "\x00" + strings.TrimSpace(threadID)
 }

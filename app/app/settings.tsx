@@ -8,6 +8,7 @@ import React, {
 import {
   Alert,
   LayoutAnimation,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -64,6 +65,7 @@ import {
   tryClaimPairScan,
 } from "../services/pairScanClaim";
 import { wsClient } from "../services/websocket";
+import type { TelegramConnectionStatus } from "../services/websocket";
 import {
   ConnectionState,
   countAgentsByServer,
@@ -709,6 +711,20 @@ export default function SettingsScreen() {
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
+              Channels
+            </Text>
+          </View>
+          <TelegramConnectionCard
+            key={currentServerId || "no-current-server"}
+            serverId={currentServerId}
+            connected={
+              Boolean(currentServerId) &&
+              serverConnections[currentServerId || ""] === "connected"
+            }
+          />
+
+          <View style={styles.sectionHeaderStandalone}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
               Appearance
             </Text>
           </View>
@@ -1179,6 +1195,388 @@ export default function SettingsScreen() {
   );
 }
 
+function TelegramConnectionCard({
+  serverId,
+  connected,
+}: {
+  serverId: string | null;
+  connected: boolean;
+}) {
+  const { theme } = useAppTheme();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const [status, setStatus] = useState<TelegramConnectionStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [showToken, setShowToken] = useState(false);
+  const [token, setToken] = useState("");
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!serverId || !connected) {
+        setStatus(null);
+        return () => {
+          cancelled = true;
+        };
+      }
+      setLoading(true);
+      void wsClient
+        .getTelegramConnectionStatus(serverId)
+        .then((next) => {
+          if (!cancelled) setStatus(next);
+        })
+        .catch(() => {
+          if (!cancelled) setStatus(null);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        setToken("");
+        setShowToken(false);
+      };
+    }, [connected, serverId]),
+  );
+
+  const runStatusMutation = async (
+    operation: () => Promise<TelegramConnectionStatus>,
+  ) => {
+    setBusy(true);
+    try {
+      setStatus(await operation());
+    } catch (error: any) {
+      Alert.alert(
+        "Telegram connection",
+        error?.message || "The connection could not be updated.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const configure = async () => {
+    const credential = token.trim();
+    if (!serverId || !credential) {
+      Alert.alert("Bot token required", "Enter the token issued by BotFather.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = await wsClient.configureTelegramConnection(
+        serverId,
+        credential,
+      );
+      setStatus(next);
+      setShowToken(false);
+    } catch (error: any) {
+      Alert.alert(
+        "Telegram setup failed",
+        error?.message || "The bot token could not be verified.",
+      );
+    } finally {
+      // The credential must not survive submission in component state.
+      setToken("");
+      setBusy(false);
+    }
+  };
+
+  const beginBinding = async () => {
+    if (!serverId) return;
+    setBusy(true);
+    try {
+      const challenge = await wsClient.beginTelegramBinding(serverId);
+      await Linking.openURL(challenge.url);
+      setStatus(await wsClient.getTelegramConnectionStatus(serverId));
+    } catch (error: any) {
+      Alert.alert(
+        "Telegram owner binding",
+        error?.message || "The private Telegram chat could not be opened.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmMutation = (
+    title: string,
+    message: string,
+    actionLabel: string,
+    operation: () => Promise<TelegramConnectionStatus>,
+  ) => {
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: actionLabel,
+        style: "destructive",
+        onPress: () => void runStatusMutation(operation),
+      },
+    ]);
+  };
+
+  const stateLabel = status
+    ? telegramConnectionStateLabel(status.state)
+    : loading
+      ? "Loading"
+      : "Unavailable";
+  const stateColor = status
+    ? telegramConnectionStateColor(status.state, colors)
+    : colors.textTertiary;
+  const hasConfiguredBot = Boolean(status?.bot_username);
+
+  return (
+    <View style={styles.telegramCard}>
+      <View style={styles.telegramHeader}>
+        <View style={styles.telegramIcon}>
+          <Ionicons name="paper-plane" size={18} color={colors.textOnAccent} />
+        </View>
+        <View style={styles.telegramHeadingCopy}>
+          <Text style={styles.telegramTitle}>Telegram</Text>
+          <Text style={styles.telegramIdentity} numberOfLines={1}>
+            {status?.bot_username
+              ? `@${status.bot_username}`
+              : "Current daemon"}
+          </Text>
+        </View>
+        <View
+          style={[styles.telegramState, { borderColor: stateColor }]}
+          accessibilityLabel={`Telegram ${stateLabel}`}
+        >
+          <View
+            style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
+          />
+          <Text style={[styles.telegramStateText, { color: stateColor }]}>
+            {stateLabel}
+          </Text>
+        </View>
+      </View>
+
+      {!serverId ? (
+        <Text style={styles.telegramDetail}>Pair a daemon first.</Text>
+      ) : !connected ? (
+        <Text style={styles.telegramDetail}>
+          Connect the current daemon to manage this channel.
+        </Text>
+      ) : (
+        <>
+          {status?.bot_name ? (
+            <Text style={styles.telegramDetail}>
+              {status.bot_name}
+              {status.owner_hint ? ` / ${status.owner_hint}` : " / owner not bound"}
+            </Text>
+          ) : (
+            <Text style={styles.telegramDetail}>
+              Create a bot with BotFather, then enter its token once.
+            </Text>
+          )}
+
+          {status?.last_error ? (
+            <View style={styles.telegramError}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={16}
+                color={colors.dangerText}
+              />
+              <Text style={styles.telegramErrorText}>{status.last_error}</Text>
+            </View>
+          ) : null}
+
+          {status && (status.last_receive_at || status.last_send_at) ? (
+            <Text style={styles.telegramMetadata}>
+              {status.last_receive_at
+                ? `Received ${formatConnectionTime(status.last_receive_at)}`
+                : "No messages received"}
+              {status.last_send_at
+                ? ` / Sent ${formatConnectionTime(status.last_send_at)}`
+                : ""}
+            </Text>
+          ) : null}
+
+          {showToken ? (
+            <View style={styles.telegramTokenForm}>
+              <TextInput
+                style={styles.input}
+                value={token}
+                onChangeText={setToken}
+                placeholder="BotFather token"
+                placeholderTextColor={colors.textSecondary}
+                selectionColor={colors.selectionBackground}
+                cursorColor={colors.accentStrong}
+                accessibilityLabel="Telegram bot token"
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+              />
+              <View style={styles.telegramActions}>
+                <ChannelAction
+                  icon="close"
+                  label="Cancel"
+                  disabled={busy}
+                  onPress={() => {
+                    setToken("");
+                    setShowToken(false);
+                  }}
+                />
+                <ChannelAction
+                  icon="checkmark"
+                  label={hasConfiguredBot ? "Rotate" : "Configure"}
+                  primary
+                  disabled={busy || token.trim() === ""}
+                  onPress={() => void configure()}
+                />
+              </View>
+            </View>
+          ) : (
+            <View style={styles.telegramActions}>
+              {!status || (!hasConfiguredBot && status.state === "disabled") ? (
+                <ChannelAction
+                  icon="add"
+                  label="Set Up"
+                  primary
+                  disabled={busy || loading}
+                  onPress={() => setShowToken(true)}
+                />
+              ) : null}
+              {status?.state === "disabled" && hasConfiguredBot ? (
+                <ChannelAction
+                  icon="power"
+                  label="Enable"
+                  primary
+                  disabled={busy}
+                  onPress={() =>
+                    void runStatusMutation(() =>
+                      wsClient.enableTelegramConnection(serverId),
+                    )
+                  }
+                />
+              ) : null}
+              {status?.state === "setup_pending" ? (
+                <ChannelAction
+                  icon="open-outline"
+                  label={status.binding_pending ? "Open Telegram" : "Bind Owner"}
+                  primary
+                  disabled={busy}
+                  onPress={() => void beginBinding()}
+                />
+              ) : null}
+              {status?.enabled ? (
+                <ChannelAction
+                  icon="pause"
+                  label="Disable"
+                  disabled={busy}
+                  onPress={() =>
+                    confirmMutation(
+                      "Disable Telegram",
+                      "Stop receiving and sending Telegram messages for this daemon?",
+                      "Disable",
+                      () => wsClient.disableTelegramConnection(serverId),
+                    )
+                  }
+                />
+              ) : null}
+              {hasConfiguredBot ? (
+                <ChannelAction
+                  icon="key-outline"
+                  label="Rotate"
+                  disabled={busy}
+                  onPress={() => setShowToken(true)}
+                />
+              ) : null}
+              {status?.owner_hint ? (
+                <ChannelAction
+                  icon="person-remove-outline"
+                  label="Revoke"
+                  danger
+                  disabled={busy}
+                  onPress={() =>
+                    confirmMutation(
+                      "Revoke Telegram owner",
+                      "Remove the verified Telegram owner and require a new binding?",
+                      "Revoke",
+                      () => wsClient.revokeTelegramOwner(serverId),
+                    )
+                  }
+                />
+              ) : null}
+              {hasConfiguredBot ? (
+                <ChannelAction
+                  icon="trash-outline"
+                  label="Remove"
+                  danger
+                  disabled={busy}
+                  onPress={() =>
+                    confirmMutation(
+                      "Remove Telegram bot",
+                      "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
+                      "Remove",
+                      () => wsClient.removeTelegramConnection(serverId),
+                    )
+                  }
+                />
+              ) : null}
+            </View>
+          )}
+
+          {status ? (
+            <Text style={styles.telegramPrivacy}>
+              Bot chats are Telegram cloud chats. The token remains on this daemon.
+            </Text>
+          ) : null}
+        </>
+      )}
+    </View>
+  );
+}
+
+function ChannelAction({
+  icon,
+  label,
+  primary = false,
+  danger = false,
+  disabled = false,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  label: string;
+  primary?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  onPress(): void;
+}) {
+  const { theme } = useAppTheme();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const foreground = primary
+    ? colors.textOnAccent
+    : danger
+      ? colors.dangerText
+      : colors.textPrimary;
+  return (
+    <AnimatedPressable
+      style={[
+        styles.channelAction,
+        primary && styles.channelActionPrimary,
+        danger && styles.channelActionDanger,
+        disabled && styles.channelActionDisabled,
+      ]}
+      preset="press"
+      scale={0.95}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled, busy: disabled }}
+      disabled={disabled}
+      onPress={onPress}
+    >
+      <Ionicons name={icon} size={16} color={foreground} />
+      <Text style={[styles.channelActionText, { color: foreground }]}>
+        {label}
+      </Text>
+    </AnimatedPressable>
+  );
+}
+
 function ServerNoticeCard({
   icon,
   accent,
@@ -1216,6 +1614,48 @@ function connectionLabel(state: ConnectionState): string {
     case "offline":
       return "Offline";
   }
+}
+
+function telegramConnectionStateLabel(
+  state: TelegramConnectionStatus["state"],
+): string {
+  switch (state) {
+    case "connected":
+      return "Connected";
+    case "setup_pending":
+      return "Setup pending";
+    case "degraded":
+      return "Degraded";
+    case "disabled":
+      return "Disabled";
+  }
+}
+
+function telegramConnectionStateColor(
+  state: TelegramConnectionStatus["state"],
+  colors: typeof Colors = Colors,
+): string {
+  switch (state) {
+    case "connected":
+      return colors.statusRunning;
+    case "setup_pending":
+      return colors.warning;
+    case "degraded":
+      return colors.dangerText;
+    case "disabled":
+      return colors.disabledText;
+  }
+}
+
+function formatConnectionTime(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "recently";
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function connectionColor(
@@ -1303,6 +1743,138 @@ function createStyles(theme: ResolvedZenTheme) {
       backgroundColor: colors.bgSurface,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
+    },
+    telegramCard: {
+      padding: 14,
+      borderRadius: Radii.sm,
+      backgroundColor: colors.bgSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    telegramHeader: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
+    telegramIcon: {
+      width: 36,
+      height: 36,
+      borderRadius: Radii.xs,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accentStrong,
+    },
+    telegramHeadingCopy: {
+      flex: 1,
+      minWidth: 0,
+    },
+    telegramTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textPrimary,
+    },
+    telegramIdentity: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textSecondary,
+    },
+    telegramState: {
+      minHeight: 28,
+      maxWidth: "42%",
+      paddingHorizontal: 9,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: Radii.xs,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    telegramStateDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      flexShrink: 0,
+    },
+    telegramStateText: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      flexShrink: 1,
+    },
+    telegramDetail: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      marginTop: 12,
+      color: colors.textSecondary,
+    },
+    telegramMetadata: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      marginTop: 8,
+      color: colors.textTertiary,
+    },
+    telegramError: {
+      marginTop: 12,
+      padding: 10,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceSubtle,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.dangerText,
+    },
+    telegramErrorText: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      flex: 1,
+      color: colors.dangerText,
+    },
+    telegramTokenForm: {
+      marginTop: 12,
+      paddingTop: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
+    telegramActions: {
+      marginTop: 12,
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    channelAction: {
+      minHeight: 44,
+      minWidth: 104,
+      paddingHorizontal: 12,
+      flexGrow: 1,
+      flexBasis: 104,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 7,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfacePressed,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    channelActionPrimary: {
+      backgroundColor: colors.accentStrong,
+      borderColor: colors.accentStrong,
+    },
+    channelActionDanger: {
+      borderColor: colors.dangerText,
+    },
+    channelActionDisabled: {
+      opacity: 0.5,
+    },
+    channelActionText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+    },
+    telegramPrivacy: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      marginTop: 12,
+      color: colors.textTertiary,
     },
     serverHeaderButton: {
       minHeight: 72,

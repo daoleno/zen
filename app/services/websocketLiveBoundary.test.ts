@@ -1483,3 +1483,76 @@ describe("structured input identity reuse", () => {
     client.disconnectAll();
   });
 });
+
+describe("Telegram current-daemon connection boundary", () => {
+  test("status and configuration correlate to the requested daemon", async () => {
+    const client = new MultiServerWebSocketClient();
+    const first = await connectClient(client, server);
+    const second = await connectClient(client, secondServer);
+    first.open();
+    second.open();
+
+    const pending = client.configureTelegramConnection(
+      server.id,
+      "fixture-token-never-returned",
+    );
+    const outbound = JSON.parse(first.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "telegram_connection_configure",
+      credential: "fixture-token-never-returned",
+    });
+
+    second.receive({
+      type: "telegram_connection_status",
+      request_id: outbound.request_id,
+      connection: { state: "connected", enabled: true },
+    });
+    await Promise.resolve();
+    expect(registeredHandlerCount(client)).toBeGreaterThan(0);
+
+    first.receive({
+      type: "telegram_connection_status",
+      request_id: outbound.request_id,
+      connection: {
+        state: "setup_pending",
+        enabled: true,
+        bot_name: "Zen",
+        bot_username: "zen_fixture_bot",
+        binding_pending: false,
+      },
+    });
+    await expect(pending).resolves.toEqual({
+      state: "setup_pending",
+      enabled: true,
+      bot_name: "Zen",
+      bot_username: "zen_fixture_bot",
+      binding_pending: false,
+    });
+    expect(registeredHandlerCount(client)).toBe(0);
+    client.disconnectAll();
+  });
+
+  test("binding challenge is validated and scoped to the current daemon", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client, server);
+    socket.open();
+
+    const pending = client.beginTelegramBinding(server.id);
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound.type).toBe("telegram_connection_bind");
+    socket.receive({
+      type: "telegram_binding_challenge",
+      request_id: outbound.request_id,
+      challenge: {
+        url: "https://t.me/zen_fixture_bot?start=fixture",
+        expires_at: "2026-08-24T12:10:00Z",
+      },
+    });
+    await expect(pending).resolves.toEqual({
+      url: "https://t.me/zen_fixture_bot?start=fixture",
+      expires_at: "2026-08-24T12:10:00Z",
+    });
+    expect(registeredHandlerCount(client)).toBe(0);
+    client.disconnectAll();
+  });
+});

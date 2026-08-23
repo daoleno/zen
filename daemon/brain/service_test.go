@@ -3,6 +3,7 @@ package brain
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,108 @@ type createdCall struct {
 type sentCall struct {
 	sessionID string
 	text      string
+}
+
+func TestSubmitExternalUserInputUsesCanonicalAdmissionAndReceipt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID   = "brain-host:@telegram-external"
+		threadID = "thread-telegram-external"
+		receipt  = "telegram:update:7001:42"
+		body     = "Continue the canonical Work"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "telegram-host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+	}
+	service := NewService(store, fw, nil)
+	disposition, err := service.SubmitExternalUserInput(receipt, body)
+	if err != nil || disposition != ExternalInputAccepted {
+		t.Fatalf("submission disposition=%q err=%v", disposition, err)
+	}
+	if len(fw.sentCalls) != 1 || fw.sentCalls[0].sessionID != hostID || fw.sentCalls[0].text != body || fw.receipts[hostID] != receipt {
+		t.Fatalf("provider calls=%+v receipts=%+v", fw.sentCalls, fw.receipts)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != receipt || items[0].Body != body || !items[0].BrainAdmission {
+		t.Fatalf("canonical timeline=%+v err=%v", items, err)
+	}
+
+	disposition, err = service.SubmitExternalUserInput(receipt, body)
+	if err != nil || disposition != ExternalInputAccepted {
+		t.Fatalf("duplicate disposition=%q err=%v", disposition, err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("duplicate receipt replayed provider input: %+v", fw.sentCalls)
+	}
+	items, err = store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("duplicate receipt replayed timeline: items=%+v err=%v", items, err)
+	}
+}
+
+func TestSubmitExternalUserInputAmbiguousIsDurableAndNotReplayed(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID   = "brain-host:@telegram-ambiguous"
+		threadID = "thread-telegram-ambiguous"
+		receipt  = "telegram:update:7001:43"
+	)
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
+		},
+		ownedGenerations: map[string]string{hostID: "telegram-host-generation"},
+		outcomes:         map[string]watcher.InputOutcome{},
+		turnStore:        store,
+		sendErr: &watcher.InputSubmissionError{
+			Result: watcher.InputResult{Outcome: watcher.InputAmbiguous, Receipt: receipt},
+			Cause:  errors.New("provider outcome unknown"),
+		},
+	}
+	service := NewService(store, fw, nil)
+	disposition, err := service.SubmitExternalUserInput(receipt, "Maybe accepted")
+	if err != nil || disposition != ExternalInputUncertain {
+		t.Fatalf("submission disposition=%q err=%v", disposition, err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("provider calls=%+v", fw.sentCalls)
+	}
+
+	fw.sendErr = nil
+	disposition, err = service.SubmitExternalUserInput(receipt, "Maybe accepted")
+	if err != nil || disposition != ExternalInputUncertain {
+		t.Fatalf("duplicate disposition=%q err=%v", disposition, err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("ambiguous receipt replayed provider input: %+v", fw.sentCalls)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil || len(items) != 1 || items[0].ID != "brain-input-uncertain:"+receipt {
+		t.Fatalf("uncertain timeline=%+v err=%v", items, err)
+	}
 }
 
 func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *testing.T) {

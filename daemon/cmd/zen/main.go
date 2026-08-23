@@ -32,6 +32,7 @@ import (
 	"github.com/daoleno/zen/daemon/server"
 	"github.com/daoleno/zen/daemon/setup"
 	"github.com/daoleno/zen/daemon/stats"
+	telegramchannel "github.com/daoleno/zen/daemon/telegram"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"golang.org/x/term"
@@ -301,6 +302,11 @@ func runDaemon(args []string, stderr io.Writer) error {
 		InputReadyBudget: work.DefaultScheduledInputReadyBudget,
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
+	telegramManager, err := telegramchannel.NewManager(authManager.StorageDir(), brainService)
+	if err != nil {
+		return fmt.Errorf("initialize Telegram connection: %w", err)
+	}
+	srv.SetTelegram(telegramManager)
 	srv.SetModelProfiles(profileOwner)
 	controlHandler.threadRuntimeSet = func(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 		snapshot, persist, err := srv.SetThreadRuntime(sessionID, choice)
@@ -314,6 +320,10 @@ func runDaemon(args []string, stderr io.Writer) error {
 		Handler: controlHandler,
 	}
 	runtimeOwners := []runtimeOwner{
+		{
+			name: "Telegram connection",
+			run:  telegramManager.Run,
+		},
 		{
 			name: "watcher",
 			run:  w.Run,

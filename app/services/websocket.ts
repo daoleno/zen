@@ -244,6 +244,32 @@ export interface BrainHousekeepingPayload {
   generated_at?: string;
 }
 
+export type TelegramConnectionState =
+  | "disabled"
+  | "setup_pending"
+  | "connected"
+  | "degraded";
+
+export interface TelegramConnectionStatus {
+  state: TelegramConnectionState;
+  enabled: boolean;
+  bot_name?: string;
+  bot_username?: string;
+  owner_hint?: string;
+  binding_pending: boolean;
+  topics_available?: boolean;
+  last_receive_at?: string;
+  last_send_at?: string;
+  last_error?: string;
+  webhook_conflict?: boolean;
+  ambiguous_delivery_count?: number;
+}
+
+export interface TelegramBindingChallenge {
+  url: string;
+  expires_at: string;
+}
+
 export interface CodexConversationSnapshotPayload {
   request_id?: string;
   agent_id?: string;
@@ -3310,6 +3336,134 @@ export class MultiServerWebSocketClient {
           type: "brain_chat_new",
           request_id: requestId,
         },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getTelegramConnectionStatus(serverId: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_status");
+  }
+
+  configureTelegramConnection(serverId: string, credential: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_configure", {
+      credential,
+    });
+  }
+
+  disableTelegramConnection(serverId: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_disable");
+  }
+
+  enableTelegramConnection(serverId: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_enable");
+  }
+
+  revokeTelegramOwner(serverId: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_revoke");
+  }
+
+  removeTelegramConnection(serverId: string) {
+    return this.requestTelegramStatus(serverId, "telegram_connection_remove");
+  }
+
+  beginTelegramBinding(serverId: string): Promise<TelegramBindingChallenge> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("telegram_binding_challenge", handleChallenge);
+        this.off("error", handleError);
+      };
+      const handleChallenge = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const challenge = payload.challenge;
+        if (
+          !challenge ||
+          typeof challenge.url !== "string" ||
+          typeof challenge.expires_at !== "string"
+        ) {
+          reject(new Error("The daemon returned an invalid Telegram binding challenge."));
+          return;
+        }
+        resolve(challenge as TelegramBindingChallenge);
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Could not start Telegram owner binding."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Telegram owner binding timed out."));
+      }, 20000);
+      this.on("telegram_binding_challenge", handleChallenge);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        { type: "telegram_connection_bind", request_id: requestId },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  private requestTelegramStatus(
+    serverId: string,
+    type:
+      | "telegram_connection_status"
+      | "telegram_connection_configure"
+      | "telegram_connection_enable"
+      | "telegram_connection_disable"
+      | "telegram_connection_revoke"
+      | "telegram_connection_remove",
+    fields: Record<string, unknown> = {},
+  ): Promise<TelegramConnectionStatus> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("telegram_connection_status", handleStatus);
+        this.off("error", handleError);
+      };
+      const handleStatus = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const connection = payload.connection;
+        if (
+          !connection ||
+          typeof connection.state !== "string" ||
+          typeof connection.enabled !== "boolean"
+        ) {
+          reject(new Error("The daemon returned an invalid Telegram connection status."));
+          return;
+        }
+        resolve(connection as TelegramConnectionStatus);
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Telegram connection request failed."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Telegram connection request timed out."));
+      }, 20000);
+      this.on("telegram_connection_status", handleStatus);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        { type, request_id: requestId, ...fields },
         cleanup,
         reject,
       );

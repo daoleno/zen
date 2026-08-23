@@ -33,6 +33,7 @@ import (
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
 	"github.com/daoleno/zen/daemon/stats"
+	telegramchannel "github.com/daoleno/zen/daemon/telegram"
 	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -89,6 +90,7 @@ type Server struct {
 	profiles                     *modelprofiles.Owner
 	calendar                     *calendar.Store
 	calendarScheduler            *calendar.Scheduler
+	telegram                     *telegramchannel.Manager
 	providerConversationLoader   func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
 	sendInputOverride            func(agentID, text string) error
 	sendInputWithReceiptOverride func(agentID, text, receipt string) error
@@ -142,6 +144,10 @@ func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Schedule
 	if store != nil {
 		s.calendarSubID, s.calendarSub = store.Subscribe()
 	}
+}
+
+func (s *Server) SetTelegram(manager *telegramchannel.Manager) {
+	s.telegram = manager
 }
 
 func (s *Server) closeEventSubscriptions() {
@@ -838,6 +844,57 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
 
+	case "telegram_connection_status":
+		s.sendTelegramStatus(conn, raw.RequestID)
+
+	case "telegram_connection_configure":
+		if s.telegram == nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
+			break
+		}
+		configureCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		_, err := s.telegram.Configure(configureCtx, raw.Credential)
+		cancel()
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_configure_failed", err.Error())
+			break
+		}
+		s.sendTelegramStatus(conn, raw.RequestID)
+
+	case "telegram_connection_bind":
+		if s.telegram == nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
+			break
+		}
+		challenge, err := s.telegram.BeginBinding()
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_bind_failed", err.Error())
+			break
+		}
+		s.sendJSON(conn, map[string]any{"type": "telegram_binding_challenge", "request_id": raw.RequestID, "challenge": challenge})
+
+	case "telegram_connection_enable", "telegram_connection_disable", "telegram_connection_revoke", "telegram_connection_remove":
+		if s.telegram == nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
+			break
+		}
+		var err error
+		switch raw.Type {
+		case "telegram_connection_enable":
+			err = s.telegram.Enable()
+		case "telegram_connection_disable":
+			err = s.telegram.Disable()
+		case "telegram_connection_revoke":
+			err = s.telegram.RevokeOwner()
+		case "telegram_connection_remove":
+			err = s.telegram.Remove()
+		}
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_mutation_failed", "Telegram connection could not be updated.")
+			break
+		}
+		s.sendTelegramStatus(conn, raw.RequestID)
+
 	case "brain_workspace_tree":
 		s.handleBrainWorkspaceTree(conn, raw)
 
@@ -1434,6 +1491,18 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", raw.Type))
 		}
 	}
+}
+
+func (s *Server) sendTelegramStatus(conn *websocket.Conn, requestID string) {
+	if s.telegram == nil {
+		s.sendErrorWithRequestID(conn, requestID, "telegram_unavailable", "Telegram connection is unavailable.")
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":       "telegram_connection_status",
+		"request_id": requestID,
+		"connection": s.telegram.Status(),
+	})
 }
 
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {

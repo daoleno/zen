@@ -6,6 +6,18 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
+// ExternalInputDisposition is the channel-neutral result of one exact Brain
+// admission attempt. Channels persist this value before acknowledging their
+// own transport receipt and must never infer provider acceptance themselves.
+type ExternalInputDisposition string
+
+const (
+	ExternalInputAccepted     ExternalInputDisposition = "accepted"
+	ExternalInputNotSubmitted ExternalInputDisposition = "not_submitted"
+	ExternalInputUncertain    ExternalInputDisposition = "uncertain"
+	ExternalInputPending      ExternalInputDisposition = "pending"
+)
+
 type AgentRef struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
