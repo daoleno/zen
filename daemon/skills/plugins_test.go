@@ -8,16 +8,21 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakePluginRuntime struct {
-	installed map[PluginHost][]managerInstalledPlugin
-	available map[PluginHost][]AvailablePlugin
-	listErr   map[PluginHost]error
-	executed  []fakePluginExecution
-	failure   string
+	mu                     sync.Mutex
+	installed              map[PluginHost][]managerInstalledPlugin
+	available              map[PluginHost][]AvailablePlugin
+	listErr                map[PluginHost]error
+	executed               []fakePluginExecution
+	failure                string
+	staleReadsAfterSuccess int
+	staleInstalled         map[PluginHost][]managerInstalledPlugin
+	staleReadsRemaining    map[PluginHost]int
 }
 
 type fakePluginExecution struct {
@@ -32,9 +37,11 @@ type concurrentPluginRuntime struct {
 
 func newFakePluginRuntime() *fakePluginRuntime {
 	return &fakePluginRuntime{
-		installed: map[PluginHost][]managerInstalledPlugin{},
-		available: map[PluginHost][]AvailablePlugin{},
-		listErr:   map[PluginHost]error{},
+		installed:           map[PluginHost][]managerInstalledPlugin{},
+		available:           map[PluginHost][]AvailablePlugin{},
+		listErr:             map[PluginHost]error{},
+		staleInstalled:      map[PluginHost][]managerInstalledPlugin{},
+		staleReadsRemaining: map[PluginHost]int{},
 	}
 }
 
@@ -52,10 +59,17 @@ func (runtime *fakePluginRuntime) List(_ context.Context, host PluginHost, _ Inv
 	if err := runtime.listErr[host]; err != nil {
 		return nil, err
 	}
+	runtime.mu.Lock()
+	installedEntries := runtime.installed[host]
+	if runtime.staleReadsRemaining[host] > 0 {
+		installedEntries = runtime.staleInstalled[host]
+		runtime.staleReadsRemaining[host]--
+	}
+	runtime.mu.Unlock()
 	if host == PluginHostClaude {
 		envelope := map[string]any{"installed": []any{}, "available": []any{}}
 		installed := envelope["installed"].([]any)
-		for _, entry := range runtime.installed[host] {
+		for _, entry := range installedEntries {
 			installed = append(installed, map[string]any{
 				"id": entry.pluginID, "version": entry.version, "scope": "user",
 				"enabled": entry.enabled, "installPath": entry.rootPath,
@@ -77,7 +91,7 @@ func (runtime *fakePluginRuntime) List(_ context.Context, host PluginHost, _ Inv
 	}
 	envelope := map[string]any{"installed": []any{}, "available": []any{}}
 	installed := envelope["installed"].([]any)
-	for _, entry := range runtime.installed[host] {
+	for _, entry := range installedEntries {
 		installed = append(installed, map[string]any{
 			"pluginId": entry.pluginID, "name": entry.name,
 			"marketplaceName": entry.marketplace, "version": entry.version,
@@ -151,10 +165,17 @@ func (runtime *fakePluginRuntime) Execute(_ context.Context, host PluginHost, ar
 			}
 			return MutationExecution{Success: false, ExitCode: 1, Output: "manager failed after deleting files"}, nil
 		}
+		if runtime.failure == "success_still_installed" {
+			return MutationExecution{Success: true, ExitCode: 0}, nil
+		}
 		if err := os.RemoveAll(root); err != nil {
 			return MutationExecution{}, err
 		}
 		runtime.installed[host] = append(runtime.installed[host][:index], runtime.installed[host][index+1:]...)
+		if runtime.staleReadsAfterSuccess > 0 {
+			runtime.staleInstalled[host] = before
+			runtime.staleReadsRemaining[host] = runtime.staleReadsAfterSuccess
+		}
 		if runtime.failure == "neighbor" && len(runtime.installed[host]) > 0 {
 			neighbor := runtime.installed[host][0]
 			neighborRoot := neighbor.rootPath
@@ -566,6 +587,76 @@ func TestExecutePluginMutationRemovesOnlySelectedCopyAndRefreshes(t *testing.T) 
 	}
 	if len(runtime.executed) != 1 || !slices.Equal(runtime.executed[0].args, []string{"plugin", "remove", target.PluginID, "--json"}) {
 		t.Fatalf("executed = %#v", runtime.executed)
+	}
+}
+
+func TestExecutePluginMutationConvergesAfterStaleManagerInventory(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	runtime.staleReadsAfterSuccess = 1
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "shared", "personal", "1.0.0")
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "shared", "team", "1.0.0")
+	inventory, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := inventory.Installed[0]
+	neighbor := inventory.Installed[1]
+	command, err := BuildPluginMutationCommand(options, requestFor(target), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := 0
+	execution, err := ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options,
+		PluginRuntime:    runtime,
+		PluginPostconditionWait: func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
+	})
+	if err != nil || !execution.Success {
+		t.Fatalf("execution = %#v err=%v", execution, err)
+	}
+	if waits != 1 {
+		t.Fatalf("waits = %d, want 1", waits)
+	}
+	if len(runtime.executed) != 1 {
+		t.Fatalf("manager executions = %d, want 1", len(runtime.executed))
+	}
+	after, err := DiscoverPluginInventory(options, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Installed) != 1 || after.Installed[0].CopyID != neighbor.CopyID {
+		t.Fatalf("after = %#v", after.Installed)
+	}
+}
+
+func TestExecutePluginMutationRejectsPersistentInstalledCopyAfterManagerSuccess(t *testing.T) {
+	options := pluginTestOptions(t)
+	runtime := newFakePluginRuntime()
+	addManagedPlugin(t, runtime, options, PluginHostCodex, "alpha", "personal", "1.0.0")
+	inventory, _ := DiscoverPluginInventory(options, runtime)
+	command, err := BuildPluginMutationCommand(options, requestFor(inventory.Installed[0]), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.failure = "success_still_installed"
+	waits := 0
+	_, err = ExecutePluginMutationCommand(context.Background(), command, MutationExecutionOptions{
+		InventoryOptions: options,
+		PluginRuntime:    runtime,
+		PluginPostconditionWait: func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "selected copy is still installed") {
+		t.Fatalf("err = %v", err)
+	}
+	if waits != len(pluginPostconditionBackoff) || len(runtime.executed) != 1 {
+		t.Fatalf("waits=%d executions=%d", waits, len(runtime.executed))
 	}
 }
 

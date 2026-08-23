@@ -1,6 +1,10 @@
 import type { ManagedSkillAgent } from "./skillsManagement";
 import { skillAgentLabel } from "./skillsManagement";
-import type { AvailablePlugin, InstalledPluginCopy } from "./pluginsManagement";
+import type {
+  AvailablePlugin,
+  InstalledPluginCopy,
+  PluginInventory,
+} from "./pluginsManagement";
 import { pluginAgentLabel, pluginHostLabel } from "./pluginsManagement";
 
 export type PluginCapabilityFilter = "all" | "uninstallable" | "readonly";
@@ -94,6 +98,20 @@ export function evaluatePluginUninstall(
     reason:
       copy.capability.reason ||
       "This Plugin copy cannot be uninstalled from here.",
+  };
+}
+
+export function reconcilePluginUninstallInventory(
+  selected: InstalledPluginCopy,
+  inventory: PluginInventory,
+): { removed: boolean; remainingNamedCopies: number } {
+  return {
+    removed: !inventory.installed.some(
+      (candidate) => candidate.copyId === selected.copyId,
+    ),
+    remainingNamedCopies: inventory.installed.filter(
+      (candidate) => candidate.name === selected.name,
+    ).length,
   };
 }
 

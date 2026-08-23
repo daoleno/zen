@@ -15,6 +15,7 @@ import {
   groupLogicalPlugins,
   pluginCopyLabel,
   pluginReadonlyReason,
+  reconcilePluginUninstallInventory,
 } from "./pluginsScreenModel";
 
 function copy(
@@ -149,6 +150,33 @@ describe("Plugin copy screen model", () => {
     });
     expect(pluginReadonlyReason(readonly)).toContain("cannot be removed");
     expect(pluginCopyLabel(readonly)).toBe("Codex · v1.2.3 · @personal");
+  });
+
+  test("reconciles uninstall outcomes against the exact selected copy", () => {
+    const selected = copy("shared", { copyId: "a".repeat(24) });
+    const neighbor = copy("shared", {
+      copyId: "b".repeat(24),
+      marketplace: "team",
+      pluginId: "shared@team",
+    });
+    const base = {
+      generatedAt: "2026-08-18T00:00:00Z",
+      available: [],
+      warnings: [],
+    };
+
+    expect(
+      reconcilePluginUninstallInventory(selected, {
+        ...base,
+        installed: [neighbor],
+      }),
+    ).toEqual({ removed: true, remainingNamedCopies: 1 });
+    expect(
+      reconcilePluginUninstallInventory(selected, {
+        ...base,
+        installed: [selected, neighbor],
+      }),
+    ).toEqual({ removed: false, remainingNamedCopies: 2 });
   });
 });
 

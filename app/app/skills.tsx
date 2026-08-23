@@ -32,6 +32,7 @@ import {
 import {
   evaluatePluginUninstall,
   groupLogicalPlugins,
+  reconcilePluginUninstallInventory,
 } from "../services/pluginsScreenModel";
 import {
   SkillsAutomaticInventoryOwner,
@@ -458,24 +459,48 @@ export default function SkillsScreen() {
         );
         if (!approved || currentServerId.current !== requestServerId)
           return;
-        const result = await wsClient.executePluginMutation(serverId, input);
+        let mutationError = "";
+        try {
+          const result = await wsClient.executePluginMutation(serverId, input);
+          if (!result.execution.success) {
+            mutationError =
+              result.execution.output ||
+              "The Plugin could not be uninstalled.";
+          }
+        } catch (error) {
+          mutationError =
+            error instanceof Error
+              ? error.message
+              : "The Plugin could not be uninstalled.";
+        }
         if (currentServerId.current !== requestServerId) return;
-        if (!result.execution.success) {
+        // Every terminal mutation outcome reconciles with authoritative
+        // inventory. The exact selected copy, not the response timing, owns
+        // whether the destructive action reached its desired state.
+        const refreshed = await refreshPlugins();
+        if (currentServerId.current !== requestServerId) return;
+        if (!refreshed) {
           setNotice({
             kind: "error",
             message:
-              result.execution.output ||
-              "The Plugin could not be uninstalled.",
+              mutationError ||
+              "The Plugin inventory could not confirm the uninstall.",
           });
           return;
         }
-        // Report what actually remains instead of implying the whole Plugin
-        // vanished: other copies (including protected ones) may still exist.
-        const refreshed = await refreshPlugins();
-        if (currentServerId.current !== requestServerId) return;
-        const remaining = (refreshed?.installed ?? []).filter(
-          (candidate) => candidate.name === copy.name,
-        ).length;
+        const reconciliation = reconcilePluginUninstallInventory(
+          copy,
+          refreshed,
+        );
+        if (!reconciliation.removed) {
+          setNotice({
+            kind: "error",
+            message:
+              mutationError || "The selected Plugin copy is still installed.",
+          });
+          return;
+        }
+        const remaining = reconciliation.remainingNamedCopies;
         setNotice({
           kind: "success",
           message: remaining

@@ -218,4 +218,10 @@ describe("local-only Skills surface contract", () => {
     expect(screen).toContain("evaluatePluginUninstall(copy)");
     expect(screen).toContain("copies remain");
   });
+  test("terminal Plugin mutations reconcile authoritative exact-copy state", () => {
+    expect(screen).toContain("reconcilePluginUninstallInventory");
+    expect(screen).toContain("const refreshed = await refreshPlugins()");
+    expect(screen).toContain("if (!reconciliation.removed)");
+    expect(screen).toContain("mutationError ||");
+  });
 });

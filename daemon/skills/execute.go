@@ -50,6 +50,9 @@ type MutationExecutionOptions struct {
 	// PluginRuntime is the owning-manager boundary for Plugin operations. Nil
 	// selects the production Codex/Claude CLI runtime.
 	PluginRuntime PluginRuntime
+	// PluginPostconditionWait overrides the bounded wait between Plugin
+	// inventory convergence reads. Nil uses a context-aware timer.
+	PluginPostconditionWait func(context.Context, time.Duration) error
 }
 
 // MutationTimeoutFor selects the bounded timeout for exact-copy deletion.

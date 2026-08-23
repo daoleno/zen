@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+var pluginPostconditionBackoff = [...]time.Duration{
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+}
+
 func BuildPluginMutationCommand(options InventoryOptions, request PluginMutationRequest, runtime PluginRuntime) (PluginMutationCommand, error) {
 	if err := ValidatePluginScope(request.Scope); err != nil {
 		return PluginMutationCommand{}, err
@@ -161,6 +167,16 @@ func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCom
 			return MutationExecution{}, errors.New("Plugin manager reported success, but the installed copy did not appear")
 		}
 	case PluginOperationUninstall:
+		after, err = convergePluginUninstallInventory(runCtx, options, runtime, target.CopyID, after)
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			return MutationExecution{}, ErrMutationCancelled
+		}
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return execution, ErrMutationTimedOut
+		}
+		if err != nil {
+			return MutationExecution{}, fmt.Errorf("verify Plugin mutation: %w", err)
+		}
 		if inventoryHasCopy(after, target.CopyID) {
 			return MutationExecution{}, errors.New("Plugin manager reported success, but the selected copy is still installed")
 		}
@@ -180,6 +196,38 @@ func ExecutePluginMutationCommand(ctx context.Context, command PluginMutationCom
 		execution.Output = verb + name + "."
 	}
 	return execution, nil
+}
+
+func convergePluginUninstallInventory(ctx context.Context, options MutationExecutionOptions, runtime PluginRuntime, copyID string, inventory PluginInventory) (PluginInventory, error) {
+	wait := options.PluginPostconditionWait
+	if wait == nil {
+		wait = waitForPluginPostcondition
+	}
+	for _, delay := range pluginPostconditionBackoff {
+		if !inventoryHasCopy(inventory, copyID) {
+			return inventory, nil
+		}
+		if err := wait(ctx, delay); err != nil {
+			return PluginInventory{}, err
+		}
+		refreshed, err := DiscoverPluginInventory(options.InventoryOptions, runtime)
+		if err != nil {
+			return PluginInventory{}, err
+		}
+		inventory = refreshed
+	}
+	return inventory, nil
+}
+
+func waitForPluginPostcondition(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func resolvePluginCopy(options InventoryOptions, request PluginMutationRequest, runtime PluginRuntime) (InstalledPluginCopy, error) {
