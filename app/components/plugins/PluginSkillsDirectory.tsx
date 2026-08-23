@@ -108,7 +108,7 @@ export function PluginSkillsDirectory({
                 color={colors.textTertiary}
               />
               <Ionicons
-                name="sparkles-outline"
+                name="book-outline"
                 size={17}
                 color={colors.warning}
               />

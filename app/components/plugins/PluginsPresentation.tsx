@@ -970,7 +970,7 @@ function componentIcon(
 ): React.ComponentProps<typeof Ionicons>["name"] {
   switch (kind) {
     case "skill":
-      return "sparkles-outline";
+      return "book-outline";
     case "agent":
       return "people-outline";
     case "command":

@@ -117,7 +117,7 @@ export function AgentSessionRow({
             accessibilityElementsHidden
             importantForAccessibility="no-hide-descendants"
           >
-            <Ionicons name="sparkles" size={9} color={colors.accentStrong} />
+            <Ionicons name="git-network" size={9} color={colors.accentStrong} />
           </View>
         ) : null}
       </View>

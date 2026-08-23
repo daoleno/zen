@@ -91,7 +91,7 @@ export function TerminalActionPopover({
   if (onOpenModel) {
     actions.push({
       key: "model",
-      icon: "sparkles-outline",
+      icon: "hardware-chip-outline",
       label: "Model",
       onPress: onOpenModel,
     });
