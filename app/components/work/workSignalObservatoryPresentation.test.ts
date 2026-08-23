@@ -41,4 +41,9 @@ describe("Work pull surface presentation", () => {
     expect(surfaceSource).toContain("useReducedMotion()");
     expect(surfaceSource).toContain("motion.modalAnimationType");
   });
+
+  test("keeps activity icons centered by the row layout", () => {
+    expect(surfaceSource).not.toContain('style={styles.rowIcon}');
+    expect(surfaceSource).not.toContain('alignSelf: "flex-start"');
+  });
 });

@@ -310,7 +310,6 @@ function WorkActivityRowView({
         name={workIcon(row)}
         size={19}
         color={statusColor}
-        style={styles.rowIcon}
       />
       <View style={styles.rowBody}>
         <View style={styles.rowTitleLine}>
@@ -483,7 +482,6 @@ function createStyles(theme: ResolvedZenTheme) {
       paddingHorizontal: 8,
       borderRadius: 8,
     },
-    rowIcon: { alignSelf: "flex-start", marginTop: 2 },
     rowBody: { flex: 1, minWidth: 0 },
     rowTitleLine: {
       flexDirection: "row",
