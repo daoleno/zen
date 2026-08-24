@@ -526,15 +526,7 @@ func TestRevokeClaimsPendingTerminalStartExactlyOnce(t *testing.T) {
 	)
 	defer conn.Close()
 
-	server.mu.Lock()
-	var ownedConn *websocket.Conn
-	for candidate := range server.clients {
-		ownedConn = candidate
-	}
-	server.mu.Unlock()
-	if ownedConn == nil {
-		t.Fatal("authenticated WebSocket ownership was not registered")
-	}
+	ownedConn, _ := waitForAuthenticatedWebSocketOwner(t, server, deviceID)
 	ownerID := clientID(ownedConn)
 	if err := conn.WriteJSON(clientMessage{
 		Type:     "terminal_open",
@@ -666,15 +658,7 @@ func TestRunWithReadyCleanupDrainJoinsRacingDetach(t *testing.T) {
 		manager.DaemonID(),
 		deviceID,
 	)
-	server.mu.Lock()
-	var ownedConn *websocket.Conn
-	for candidate := range server.clients {
-		ownedConn = candidate
-	}
-	server.mu.Unlock()
-	if ownedConn == nil {
-		t.Fatal("authenticated WebSocket ownership was not registered")
-	}
+	ownedConn, _ := waitForAuthenticatedWebSocketOwner(t, server, deviceID)
 	if _, err := server.terminal.Open(
 		clientID(ownedConn),
 		"blocking",
@@ -859,15 +843,7 @@ func testRunWithReadyJoinsCleanupBeforeFailedSessionDisappears(
 		deviceID,
 	)
 	defer conn.Close()
-	server.mu.Lock()
-	var ownedConn *websocket.Conn
-	for candidate := range server.clients {
-		ownedConn = candidate
-	}
-	server.mu.Unlock()
-	if ownedConn == nil {
-		t.Fatal("authenticated WebSocket ownership was not registered")
-	}
+	ownedConn, _ := waitForAuthenticatedWebSocketOwner(t, server, deviceID)
 	ownerID := clientID(ownedConn)
 
 	openDone := make(chan error, 1)
@@ -987,15 +963,11 @@ func TestRevokeAndShutdownDetachBlockedTerminalCleanupExactlyOnce(
 				deviceID,
 			)
 			defer conn.Close()
-			server.mu.Lock()
-			var ownedConn *websocket.Conn
-			for candidate := range server.clients {
-				ownedConn = candidate
-			}
-			server.mu.Unlock()
-			if ownedConn == nil {
-				t.Fatal("authenticated WebSocket ownership was not registered")
-			}
+			ownedConn, _ := waitForAuthenticatedWebSocketOwner(
+				t,
+				server,
+				deviceID,
+			)
 			ownerID := clientID(ownedConn)
 			if _, err := server.terminal.Open(
 				ownerID,
@@ -1102,17 +1074,8 @@ func TestClientDetachRaceClaimsEveryOwnershipKindExactlyOnce(t *testing.T) {
 	codexContext, cancelCodex := context.WithCancel(context.Background())
 	inventoryContext, cancelInventory := context.WithCancel(context.Background())
 	inspectContext, cancelInspect := context.WithCancel(context.Background())
+	ownedConn, owner := waitForAuthenticatedWebSocketOwner(t, server, deviceID)
 	server.mu.Lock()
-	var ownedConn *websocket.Conn
-	var owner *authenticatedClient
-	for candidate, candidateOwner := range server.clients {
-		ownedConn = candidate
-		owner = candidateOwner
-	}
-	if ownedConn == nil || owner == nil {
-		server.mu.Unlock()
-		t.Fatal("authenticated WebSocket ownership was not registered")
-	}
 	server.active[ownedConn] = "agent"
 	server.codexSubs[ownedConn]["thread"] = codexConversationSubscription{
 		cancel: cancelCodex,
@@ -1335,6 +1298,29 @@ func dialDeviceWebSocket(
 		t.Fatal(err)
 	}
 	return conn
+}
+
+func waitForAuthenticatedWebSocketOwner(
+	t *testing.T,
+	server *Server,
+	deviceID string,
+) (*websocket.Conn, *authenticatedClient) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		for conn, owner := range server.clients {
+			if owner != nil && owner.deviceID == deviceID {
+				server.mu.Unlock()
+				return conn, owner
+			}
+		}
+		server.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("authenticated WebSocket ownership was not registered")
+		}
+		runtime.Gosched()
+	}
 }
 
 func readWebSocketType(
