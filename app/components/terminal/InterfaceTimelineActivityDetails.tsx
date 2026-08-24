@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React from "react";
+import { StyleSheet, Text, View } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -49,12 +49,6 @@ export function InterfaceTimelineActivityDetails({
   const showPreview = Boolean(item.previewPath);
   const showSteps = Boolean(item.children?.length);
   const showFiles = Boolean(item.fileSummaries?.length || item.files?.length);
-  const developer = item.developerDetails;
-  const showDeveloper = Boolean(
-    developer?.providerToolId?.trim() ||
-    developer?.rawInput?.trim() ||
-    (developer?.transport && Object.keys(developer.transport).length > 0),
-  );
 
   return (
     <InterfaceTimelineExpandedBlock chrome={chrome}>
@@ -149,9 +143,6 @@ export function InterfaceTimelineActivityDetails({
         </DetailBlock>
       ) : null}
 
-      {showDeveloper ? (
-        <DeveloperDetails details={developer!} chrome={chrome} />
-      ) : null}
     </InterfaceTimelineExpandedBlock>
   );
 }
@@ -171,66 +162,6 @@ function DetailBlock({
         {label}
       </Text>
       {children}
-    </View>
-  );
-}
-
-function DeveloperDetails({
-  details,
-  chrome,
-}: {
-  details: NonNullable<ZenActivityTimelineItem["developerDetails"]>;
-  chrome: TerminalThemeChrome;
-}) {
-  const [open, setOpen] = useState(false);
-  const transportEntries = Object.entries(details.transport || {});
-
-  return (
-    <View style={styles.developer}>
-      <TouchableOpacity
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={
-          open ? "Hide developer details" : "Show developer details"
-        }
-        onPress={() => setOpen((value) => !value)}
-        activeOpacity={0.75}
-        hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-        style={styles.developerToggle}
-      >
-        <Text
-          style={[styles.developerToggleText, { color: chrome.textSubtle }]}
-        >
-          {open ? "Hide developer details" : "Developer details"}
-        </Text>
-      </TouchableOpacity>
-      {open ? (
-        <View style={styles.developerBody}>
-          {details.providerToolId ? (
-            <Text style={[styles.mono, { color: chrome.textMuted }]} selectable>
-              {details.providerToolId}
-            </Text>
-          ) : null}
-          {transportEntries.map(([key, value]) => (
-            <Text
-              key={key}
-              style={[styles.mono, { color: chrome.textMuted }]}
-              selectable
-            >
-              {key}: {value}
-            </Text>
-          ))}
-          {details.rawInput ? (
-            <Text
-              style={[styles.mono, { color: chrome.textMuted }]}
-              numberOfLines={8}
-              selectable
-            >
-              {details.rawInput}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -310,21 +241,5 @@ const styles = StyleSheet.create({
     minWidth: 0,
     fontFamily: Typography.uiFontMedium,
     lineHeight: 18,
-  },
-  developer: {
-    gap: 4,
-    paddingTop: 2,
-  },
-  developerToggle: {
-    alignSelf: "flex-start",
-    minHeight: 22,
-    justifyContent: "center",
-  },
-  developerToggleText: {
-    ...TypeScale.micro,
-    letterSpacing: 0.2,
-  },
-  developerBody: {
-    gap: 4,
   },
 });

@@ -46,11 +46,7 @@ function canExpandActivity(item: ZenActivityTimelineItem) {
     item.fileSummaries?.length ||
     item.files?.length ||
     item.previewPath ||
-    item.children?.length ||
-    item.developerDetails?.providerToolId ||
-    item.developerDetails?.rawInput ||
-    (item.developerDetails?.transport &&
-      Object.keys(item.developerDetails.transport).length > 0),
+    item.children?.length,
   );
 }
 

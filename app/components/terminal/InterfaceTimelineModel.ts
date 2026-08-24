@@ -14,6 +14,7 @@ import {
 import {
   collapsedToolLabel,
   distinctivePath,
+  hasDistinctToolIdentity,
   isExecWrapperToolName,
   isUnsafeCollapsedDetail,
   parseExecWrapperCalls,
@@ -667,6 +668,27 @@ function activityFromEvent(
         maxChars: TOOL_PAYLOAD_PREVIEW_CHARS,
       });
       const isWait = action.kind === "wait";
+      const hasDistinctStatus = Boolean(
+        details.statusLine &&
+          !["Done", "Finished"].includes(details.statusLine.trim()),
+      );
+      const hasMeaningfulPayload = Boolean(
+        result.text ||
+          details.command ||
+          details.query ||
+          details.files?.length ||
+          previewPath ||
+          semantic.children?.length,
+      );
+      if (
+        !running &&
+        !failed &&
+        !hasDistinctStatus &&
+        !hasMeaningfulPayload &&
+        (isWait || !hasDistinctToolIdentity(action))
+      ) {
+        return null;
+      }
       const developerDetails =
         isWait || action.kind === "read_files" || action.kind === "search_code"
           ? details.developer
@@ -679,12 +701,20 @@ function activityFromEvent(
             : semantic.providerToolId
               ? { providerToolId: semantic.providerToolId }
               : undefined;
+      const title = isWait
+        ? running
+          ? "Waiting"
+          : "Finished"
+        : semantic.title;
+      const detail = safeCollapsedDetail(
+        details.statusLine || (isWait ? details.quietDetail : semantic.detail),
+      );
       return {
         type: "activity",
         id: event.id || `tool:${event.seq}`,
         timestamp: event.timestamp,
         statusKey: event.status || "done",
-        title: isWait ? (running ? "Waiting" : "Finished") : semantic.title,
+        title,
         tone: running ? "running" : failed ? "failed" : "success",
         icon: semanticActivityIcon(
           semantic.title,
@@ -692,15 +722,11 @@ function activityFromEvent(
           running,
           failed,
         ),
-        detail: safeCollapsedDetail(
-          details.statusLine ||
-            (isWait ? details.quietDetail : semantic.detail),
-        ),
-        body: isWait ? undefined : result.text || undefined,
-        bodyKind:
-          !isWait && result.text
-            ? toolOutputBodyKind(event, result.text)
-            : undefined,
+        detail: detail?.trim() === title ? undefined : detail,
+        body: result.text || undefined,
+        bodyKind: result.text
+          ? toolOutputBodyKind(event, result.text)
+          : undefined,
         commandText: isWait ? undefined : details.command,
         queryText: details.query,
         statusLine: details.statusLine,

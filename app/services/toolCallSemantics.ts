@@ -388,6 +388,26 @@ export function semanticActionTitle(action: SemanticAction): string {
   return action.target ? `${action.label} ${action.target}` : action.label;
 }
 
+/** Whether a tool action identifies user-meaningful work without its result. */
+export function hasDistinctToolIdentity(action: SemanticAction): boolean {
+  if (action.kind !== "use_tool") {
+    return true;
+  }
+  const identity = stripToolNamespace(action.providerToolId || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return ![
+    "",
+    "tool",
+    "developer",
+    "developer tool",
+    "unknown",
+    "unknown tool",
+  ].includes(identity);
+}
+
 function semanticFromNestedCalls(
   calls: NestedToolCall[],
   status: SemanticActionStatus,

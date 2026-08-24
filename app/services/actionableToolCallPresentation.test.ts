@@ -234,6 +234,93 @@ describe("actionable collapsed tool-call projection", () => {
     expect(rows[0]?.body).toBe("ok");
   });
 
+  test("generic completed tool records without meaningful content stay hidden", () => {
+    const rows = activities([
+      {
+        id: "empty-wait",
+        seq: 1,
+        kind: "tool",
+        tool_name: "wait",
+        status: "done",
+      },
+      {
+        id: "generic-tool",
+        seq: 2,
+        kind: "tool",
+        tool_name: "tool",
+        status: "completed",
+      },
+      {
+        id: "developer-tool",
+        seq: 3,
+        kind: "tool",
+        title: "Developer tool",
+        status: "done",
+      },
+    ]);
+
+    expect(rows).toEqual([]);
+  });
+
+  test("named, running, failed, and result-bearing tool records remain visible", () => {
+    const rows = activities([
+      {
+        id: "named",
+        seq: 1,
+        kind: "tool",
+        tool_name: "fetch_build_artifact",
+        status: "done",
+      },
+      {
+        id: "running-generic",
+        seq: 2,
+        kind: "tool",
+        tool_name: "tool",
+        status: "running",
+      },
+      {
+        id: "failed-generic",
+        seq: 3,
+        kind: "tool",
+        title: "Developer tool",
+        status: "failed",
+        output: "Artifact lookup failed",
+      },
+      {
+        id: "result-generic",
+        seq: 4,
+        kind: "tool",
+        tool_name: "tool",
+        status: "done",
+        output: "Artifact ready",
+      },
+      {
+        id: "result-wait",
+        seq: 5,
+        kind: "tool",
+        tool_name: "wait",
+        status: "done",
+        output: "Build artifact ready",
+      },
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "named",
+      "running-generic",
+      "failed-generic",
+      "result-generic",
+      "result-wait",
+    ]);
+    expect(rows[0]?.title).toBe("Use Fetch Build Artifact");
+    expect(rows[0]?.accessibilityLabel).toBe("Use Fetch Build Artifact");
+    expect(rows[1]?.tone).toBe("running");
+    expect(rows[2]?.tone).toBe("failed");
+    expect(rows[3]?.body).toBe("Artifact ready");
+    expect(rows[4]?.title).toBe("Finished");
+    expect(rows[4]?.detail).toBeUndefined();
+    expect(rows[4]?.body).toBe("Build artifact ready");
+  });
+
   test("expansion does not repeat the collapsed result but keeps richer facts", () => {
     const base = {
       type: "activity" as const,
