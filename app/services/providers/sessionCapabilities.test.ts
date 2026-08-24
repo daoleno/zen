@@ -12,11 +12,13 @@ import {
   type RawAgent,
 } from "../../store/agents";
 
+const UPDATED_AT = 1_700_000_000_000;
+
 const baseRaw = (id: string, capabilities?: RawAgent["capabilities"]): RawAgent => ({
   id,
   name: id,
   status: "running",
-  updated_at: Date.now(),
+  updated_at: UPDATED_AT,
   capabilities,
 });
 
