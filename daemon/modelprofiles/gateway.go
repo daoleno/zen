@@ -148,9 +148,15 @@ func (g *Gateway) Listen() error {
 	if err != nil {
 		return fmt.Errorf("%w: gateway listen %s: %v", ErrInvalid, g.addr, err)
 	}
-	server := &http.Server{Handler: g}
+	// A restarted Gateway gets a fresh registry while handlers from this
+	// listener retain this generation and cannot enroll in the replacement.
+	registry := newWSConnRegistry()
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		g.serveHTTP(w, req, registry)
+	})}
 	g.ln = ln
 	g.server = server
+	g.ws = registry
 	go func() {
 		_ = server.Serve(ln)
 	}()
@@ -179,6 +185,7 @@ func (g *Gateway) Close() error {
 	g.mu.Lock()
 	ln := g.ln
 	server := g.server
+	registry := g.ws
 	g.ln = nil
 	g.server = nil
 	g.mu.Unlock()
@@ -188,8 +195,8 @@ func (g *Gateway) Close() error {
 	if ln != nil {
 		_ = ln.Close()
 	}
-	if g.ws != nil {
-		g.ws.closeAll(websocketCloseGoingAway, "gateway shutting down")
+	if registry != nil {
+		registry.closeAll(websocketCloseGoingAway, "gateway shutting down")
 	}
 	return nil
 }
@@ -276,6 +283,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeRouteError(w, http.StatusServiceUnavailable, ErrInvalid)
 		return
 	}
+	g.mu.RLock()
+	registry := g.ws
+	g.mu.RUnlock()
+	g.serveHTTP(w, req, registry)
+}
+
+func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *wsConnRegistry) {
+	if g == nil {
+		writeRouteError(w, http.StatusServiceUnavailable, ErrInvalid)
+		return
+	}
 	if !isLoopbackRemoteAddr(req.RemoteAddr) {
 		writeRouteError(w, http.StatusForbidden, ErrRouteAdmissionDenied)
 		return
@@ -322,7 +340,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				url: wsURL, headers: headers,
 			}, nil
 		}
-		proxyWebSocketToUpstream(req.Context(), w, req, resolve, g.ws)
+		proxyWebSocketToUpstream(req.Context(), w, req, resolve, registry)
 		return
 	}
 	if req.Method != http.MethodPost && req.Method != http.MethodGet {

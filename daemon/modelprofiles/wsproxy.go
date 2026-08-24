@@ -33,18 +33,31 @@ var wsProxyConnectionSequence atomic.Uint64
 type wsConnRegistry struct {
 	mu    sync.Mutex
 	conns map[*websocket.Conn]struct{}
+	// Shutdown is terminal for one listener generation. A 101 response can
+	// reach the client just before the handler calls add, so late adds must
+	// receive the same close frame instead of escaping the shutdown snapshot.
+	closed      bool
+	closeCode   int
+	closeReason string
 }
 
 func newWSConnRegistry() *wsConnRegistry {
 	return &wsConnRegistry{conns: map[*websocket.Conn]struct{}{}}
 }
-func (r *wsConnRegistry) add(c *websocket.Conn) {
+func (r *wsConnRegistry) add(c *websocket.Conn) bool {
 	if r == nil || c == nil {
-		return
+		return false
 	}
 	r.mu.Lock()
+	if r.closed {
+		code, reason := r.closeCode, r.closeReason
+		r.mu.Unlock()
+		closeWebSocket(c, code, reason)
+		return false
+	}
 	r.conns[c] = struct{}{}
 	r.mu.Unlock()
+	return true
 }
 func (r *wsConnRegistry) remove(c *websocket.Conn) {
 	if r == nil || c == nil {
@@ -59,6 +72,11 @@ func (r *wsConnRegistry) closeAll(code int, reason string) {
 		return
 	}
 	r.mu.Lock()
+	if !r.closed {
+		r.closed = true
+		r.closeCode = code
+		r.closeReason = reason
+	}
 	conns := make([]*websocket.Conn, 0, len(r.conns))
 	for c := range r.conns {
 		conns = append(conns, c)
@@ -66,9 +84,16 @@ func (r *wsConnRegistry) closeAll(code int, reason string) {
 	r.conns = map[*websocket.Conn]struct{}{}
 	r.mu.Unlock()
 	for _, c := range conns {
-		_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(2*time.Second))
-		_ = c.Close()
+		closeWebSocket(c, code, reason)
 	}
+}
+
+func closeWebSocket(c *websocket.Conn, code int, reason string) {
+	if c == nil {
+		return
+	}
+	_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(2*time.Second))
+	_ = c.Close()
 }
 
 var wsUpstreamDialer = websocket.Dialer{
@@ -180,10 +205,13 @@ func proxyWebSocketToUpstream(ctx context.Context, w http.ResponseWriter, req *h
 		return
 	}
 	connectionID := fmt.Sprintf("ws-%08x", wsProxyConnectionSequence.Add(1))
-	registry.add(clientConn)
-	defer registry.remove(clientConn)
 	clientConn.SetReadLimit(wsProxyMaxMessage)
 	defer clientConn.Close()
+	if !registry.add(clientConn) {
+		leg.close()
+		return
+	}
+	defer registry.remove(clientConn)
 	defer func() {
 		if leg != nil {
 			leg.close()

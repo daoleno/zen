@@ -397,3 +397,69 @@ func TestGatewayWebSocketShutdownClosesDownstream(t *testing.T) {
 		t.Fatalf("shutdown close = %v, want 1001", err)
 	}
 }
+
+func TestWSConnRegistryRejectsConnectionThatFinishesUpgradeAfterShutdown(t *testing.T) {
+	registry := newWSConnRegistry()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upgraded := make(chan *websocket.Conn, 1)
+	admit := make(chan struct{})
+	admitted := make(chan bool, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			admitted <- false
+			return
+		}
+		upgraded <- conn
+		<-admit
+		admitted <- registry.add(conn)
+	}))
+	t.Cleanup(server.Close)
+
+	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	<-upgraded
+	registry.closeAll(websocket.CloseGoingAway, "shutdown")
+	close(admit)
+	if <-admitted {
+		t.Fatal("connection admitted after registry shutdown")
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = client.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseGoingAway {
+		t.Fatalf("late admission close = %v, want 1001", err)
+	}
+}
+
+func TestGatewayWebSocketListenAfterCloseUsesFreshRegistry(t *testing.T) {
+	upstream := newWSUpstreamSimulator(t, nil)
+	gateway := gatewayTest(t)
+	gateway.SetUpstream(gatewayUpstreamFor(upstream.server.URL))
+	if err := gateway.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.Listen(); err != nil {
+		t.Fatal(err)
+	}
+
+	client, status := wsClientDial(t, "http://"+gateway.ActualAddr(), "/v1/responses", nil)
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake status = %d", status)
+	}
+	if err := client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"m","input":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if upstream.frameCount() > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("restarted gateway did not admit a WebSocket turn")
+}
