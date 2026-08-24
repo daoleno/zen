@@ -81,6 +81,7 @@ import { useCurrentServer } from "../store/currentServer";
 import {
   CONNECTION_KIND_OPTIONS,
   shouldShowTelegramConnection,
+  telegramSetupMode,
   type ConnectionKind,
 } from "../components/settings/connectionPresentation";
 
@@ -1256,6 +1257,9 @@ function TelegramConnectionRow({
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const setupMode = telegramSetupMode(serverId || undefined, connected);
+  const activeServerId = setupMode === "direct" && serverId ? serverId : null;
+  const visibleStatus = activeServerId ? status : null;
 
   useEffect(() => {
     if (openRequest > 0) setExpanded(true);
@@ -1396,18 +1400,58 @@ function TelegramConnectionRow({
     ]);
   };
 
-  const stateLabel = status
-    ? telegramConnectionStateLabel(status.state)
+  const renderLocalTelegramSetup = () => (
+    <View style={styles.telegramSetup}>
+      <View style={styles.telegramSetupRow}>
+        <View style={styles.telegramStepMarker}>
+          <Text style={styles.telegramStepNumber}>1</Text>
+        </View>
+        <View style={styles.telegramStepContent}>
+          <Text style={styles.telegramStepTitle}>Create or select a bot</Text>
+          <View style={styles.telegramActions}>
+            <ConnectionAction
+              icon="open-outline"
+              label="Open BotFather"
+              accessibilityLabel="Open official BotFather chat in Telegram"
+              onPress={() => void openBotFather()}
+            />
+          </View>
+        </View>
+      </View>
+      <View
+        style={[styles.telegramSetupRow, styles.telegramSetupRowLast]}
+      >
+        <View style={styles.telegramStepMarker}>
+          <Text style={styles.telegramStepNumber}>2</Text>
+        </View>
+        <View style={styles.telegramStepContent}>
+          <Text style={styles.telegramStepTitle}>On the machine running Zen</Text>
+          <Text
+            style={styles.telegramLocalCommand}
+            selectable
+            accessibilityLabel="Run zen telegram setup on the machine running Zen"
+          >
+            zen telegram setup
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+
+  const stateLabel = visibleStatus
+    ? telegramConnectionStateLabel(visibleStatus.state)
     : loading
       ? "Loading"
-      : "Unavailable";
-  const stateColor = status
-    ? telegramConnectionStateColor(status.state, colors)
+      : setupMode === "local"
+        ? "Local setup"
+        : "Unavailable";
+  const stateColor = visibleStatus
+    ? telegramConnectionStateColor(visibleStatus.state, colors)
     : colors.textTertiary;
-  const hasConfiguredBot = Boolean(status?.bot_username);
-  const hasBoundOwner = Boolean(status?.owner_hint);
+  const hasConfiguredBot = Boolean(visibleStatus?.bot_username);
+  const hasBoundOwner = Boolean(visibleStatus?.owner_hint);
   const visible = shouldShowTelegramConnection(
-    status?.bot_username,
+    visibleStatus?.bot_username,
     openRequest > 0,
   );
 
@@ -1421,7 +1465,7 @@ function TelegramConnectionRow({
         scale={0.99}
         accessibilityRole="button"
         accessibilityLabel={`Telegram${
-          status?.bot_username ? `, @${status.bot_username}` : ""
+          visibleStatus?.bot_username ? `, @${visibleStatus.bot_username}` : ""
         }, ${stateLabel}`}
         accessibilityHint={
           expanded
@@ -1448,9 +1492,9 @@ function TelegramConnectionRow({
           </View>
           <View style={styles.telegramHeadingCopy}>
             <Text style={styles.telegramTitle}>Telegram</Text>
-            {status?.bot_username ? (
+            {visibleStatus?.bot_username ? (
               <Text style={styles.telegramIdentity} numberOfLines={1}>
-                @{status.bot_username}
+                @{visibleStatus.bot_username}
               </Text>
             ) : null}
           </View>
@@ -1478,12 +1522,8 @@ function TelegramConnectionRow({
 
       {expanded ? (
         <View style={styles.telegramExpandedContent}>
-          {!serverId ? (
-            <Text style={styles.telegramDetail}>Pair a Zen Server first.</Text>
-          ) : !connected ? (
-            <Text style={styles.telegramDetail}>
-              Connect the current Zen Server to manage Telegram.
-            </Text>
+          {!activeServerId ? (
+            renderLocalTelegramSetup()
           ) : (
             <>
               {status?.last_error ? (
@@ -1681,7 +1721,7 @@ function TelegramConnectionRow({
                                 "Remove Telegram bot",
                                 "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
                                 "Remove",
-                                () => wsClient.removeTelegramConnection(serverId),
+                                () => wsClient.removeTelegramConnection(activeServerId),
                               )
                             }
                           />
@@ -1761,7 +1801,7 @@ function TelegramConnectionRow({
                       disabled={busy}
                       onPress={() =>
                         void runStatusMutation(() =>
-                          wsClient.enableTelegramConnection(serverId),
+                          wsClient.enableTelegramConnection(activeServerId),
                         )
                       }
                     />
@@ -1776,7 +1816,7 @@ function TelegramConnectionRow({
                           "Disable Telegram",
                           "Stop receiving and sending Telegram messages for this daemon?",
                           "Disable",
-                          () => wsClient.disableTelegramConnection(serverId),
+                          () => wsClient.disableTelegramConnection(activeServerId),
                         )
                       }
                     />
@@ -1800,7 +1840,7 @@ function TelegramConnectionRow({
                           "Revoke Telegram owner",
                           "Remove the verified Telegram owner and require a new binding?",
                           "Revoke",
-                          () => wsClient.revokeTelegramOwner(serverId),
+                          () => wsClient.revokeTelegramOwner(activeServerId),
                         )
                       }
                     />
@@ -1816,7 +1856,7 @@ function TelegramConnectionRow({
                           "Remove Telegram bot",
                           "Delete the daemon token, owner binding, offsets, and delivery state? Telegram cloud messages are not deleted.",
                           "Remove",
-                          () => wsClient.removeTelegramConnection(serverId),
+                          () => wsClient.removeTelegramConnection(activeServerId),
                         )
                       }
                     />
@@ -2160,6 +2200,12 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.caption,
       marginTop: 8,
       color: colors.textTertiary,
+    },
+    telegramLocalCommand: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      marginTop: 8,
+      color: colors.accentStrong,
     },
     telegramError: {
       marginTop: 12,

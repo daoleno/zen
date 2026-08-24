@@ -9,6 +9,7 @@ import (
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/modelprofiles"
+	telegramchannel "github.com/daoleno/zen/daemon/telegram"
 )
 
 const SocketName = "zen.sock"
@@ -109,6 +110,8 @@ type Response struct {
 	ThreadRuntime      *modelprofiles.ThreadRuntimeSelection    `json:"thread_runtime,omitempty"`
 	SessionRoute       *modelprofiles.WireSessionSnapshot       `json:"session_route,omitempty"`
 	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
+	TelegramStatus     *telegramchannel.Status                  `json:"telegram_status,omitempty"`
+	TelegramBinding    *telegramchannel.BindingChallenge        `json:"telegram_binding,omitempty"`
 }
 
 type Error struct {

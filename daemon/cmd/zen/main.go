@@ -90,6 +90,8 @@ func run(args []string, stderr io.Writer) error {
 			return runBrainCommand(args[1:], stderr)
 		case "calendar":
 			return runCalendarCommand(args[1:], stderr)
+		case "telegram":
+			return runTelegramCommand(args[1:], stderr)
 		case "codex-gateway":
 			return runCodexGatewayCommand(args[1:], stderr)
 		case "devices":
@@ -307,6 +309,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize Telegram connection: %w", err)
 	}
 	srv.SetTelegram(telegramManager)
+	controlHandler.telegram = telegramManager
 	srv.SetModelProfiles(profileOwner)
 	controlHandler.threadRuntimeSet = func(sessionID string, choice modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 		snapshot, persist, err := srv.SetThreadRuntime(sessionID, choice)

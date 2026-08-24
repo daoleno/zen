@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   CONNECTION_KIND_OPTIONS,
   shouldShowTelegramConnection,
+  telegramSetupMode,
 } from "./connectionPresentation";
 
 const settingsSource = readFileSync(
@@ -45,6 +46,32 @@ describe("Settings connection information architecture", () => {
     expect(shouldShowTelegramConnection("", false)).toBe(false);
     expect(shouldShowTelegramConnection("zen_owner_bot", false)).toBe(true);
     expect(shouldShowTelegramConnection(undefined, true)).toBe(true);
+  });
+
+  test("Telegram setup remains enterable without a reachable current server", () => {
+    expect(telegramSetupMode(undefined, false)).toBe("local");
+    expect(telegramSetupMode("current-daemon", false)).toBe("local");
+    expect(telegramSetupMode("current-daemon", true)).toBe("direct");
+
+    const telegram = sourceBlock(
+      "function TelegramConnectionRow",
+      "function ConnectionAction",
+    );
+    expect(telegram).toContain("On the machine running Zen");
+    expect(telegram).toContain("zen telegram setup");
+    expect(telegram).toContain('label="Open BotFather"');
+
+    const localSetup = sourceBlock(
+      "const renderLocalTelegramSetup",
+      "const stateLabel",
+    );
+    expect(localSetup).not.toContain("secureTextEntry");
+    expect(localSetup).not.toContain("setToken");
+    expect(localSetup).not.toContain("configureTelegramConnection");
+    expect(telegram).toContain(
+      'const activeServerId = setupMode === "direct" && serverId ? serverId : null',
+    );
+    expect(telegram).toContain("const visibleStatus = activeServerId ? status : null");
   });
 
   test("Zen Server selection preserves the established pairing path", () => {

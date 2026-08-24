@@ -17,6 +17,7 @@ import (
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
+	telegramchannel "github.com/daoleno/zen/daemon/telegram"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"github.com/google/uuid"
@@ -58,8 +59,14 @@ type controlApp struct {
 	calendarStore     *calendar.Store
 	calendarScheduler *calendar.Scheduler
 	profiles          *modelprofiles.Owner
+	telegram          telegramControlManager
 	threadRuntimeSet  func(string, modelprofiles.ThreadRuntimeChoice) (modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error)
 	stateDir          string
+}
+
+type telegramControlManager interface {
+	Configure(context.Context, string) (telegramchannel.Status, error)
+	BeginBinding() (telegramchannel.BindingChallenge, error)
 }
 
 const delegatedInitialReadinessBudget = 45 * time.Second
@@ -132,6 +139,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleDeviceRevoke(req)
 	case "pair":
 		return a.handlePair()
+	case "telegram_setup":
+		return a.handleTelegramSetup(req)
 	case "provider_list":
 		return a.handleProviderList()
 	case "provider_upsert":
@@ -164,6 +173,30 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "profile wire removed; use provider connection APIs")
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
+	}
+}
+
+func (a *controlApp) handleTelegramSetup(req control.Request) control.Response {
+	if a == nil || a.telegram == nil {
+		return control.ErrorResponse("telegram_unavailable", "Telegram is not configured.")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	credential := req.Credential
+	req.Credential = ""
+	status, err := a.telegram.Configure(ctx, credential)
+	credential = ""
+	cancel()
+	if err != nil {
+		return control.ErrorResponse("telegram_configure_failed", err.Error())
+	}
+	binding, err := a.telegram.BeginBinding()
+	if err != nil {
+		return control.ErrorResponse("telegram_bind_failed", err.Error())
+	}
+	return control.Response{
+		OK:              true,
+		TelegramStatus:  &status,
+		TelegramBinding: &binding,
 	}
 }
 
