@@ -39,6 +39,8 @@ mock.module("expo-file-system", () => ({
   Directory: {
     pickDirectoryAsync: async () => pickedDirectory,
   },
+  File: FakeFile,
+  UploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
 }));
 
 const { createExpoSessionFileDownloadBackend } = await import(

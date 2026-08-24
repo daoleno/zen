@@ -92,6 +92,7 @@ mock.module("expo-document-picker", () => ({
 }));
 
 mock.module("expo-file-system", () => ({
+  Directory: {},
   File: FakeFile,
   UploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
 }));
