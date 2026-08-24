@@ -1,6 +1,7 @@
 package modelprofiles
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,20 +17,35 @@ import (
 // stays true for zombies).
 func spawnFakeAppServer(t *testing.T, socketPath string) (int, <-chan struct{}) {
 	t.Helper()
-	cmd := exec.Command("sleep", "60")
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := exec.CommandContext(ctx, "sleep", "60")
 	cmd.Args = []string{"codex app-server --listen unix://" + socketPath, "60"}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() {
-		_, _ = cmd.Process.Wait()
+		_ = cmd.Wait()
 		close(done)
 	}()
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+		cancel()
 		<-done
 	})
+
+	// Start does not guarantee that process inspection observes the exec'd
+	// command line yet. Do not invoke cleanup before its PID-reuse guard can
+	// identify this child as the fake app-server.
+	ready := time.NewTicker(time.Millisecond)
+	defer ready.Stop()
+	for !codexAppServerProcess(cmd.Process.Pid, socketPath) {
+		select {
+		case <-done:
+			t.Fatal("fake app-server exited before its command line was observable")
+		case <-ready.C:
+		}
+	}
 	return cmd.Process.Pid, done
 }
 
