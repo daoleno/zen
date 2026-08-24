@@ -48,6 +48,7 @@ type durableState struct {
 	Outbox             []outboxRecord          `json:"outbox,omitempty"`
 	Projection         map[string]string       `json:"projection,omitempty"`
 	WorkMessages       map[string]int64        `json:"work_messages,omitempty"`
+	DeliveryStartedAt  time.Time               `json:"delivery_started_at,omitempty"`
 	LastReceiveAt      *time.Time              `json:"last_receive_at,omitempty"`
 	LastSendAt         *time.Time              `json:"last_send_at,omitempty"`
 	LastError          string                  `json:"last_error,omitempty"`

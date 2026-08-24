@@ -94,8 +94,11 @@ status, JSON state, logs, errors, metrics, CLI arguments, and mobile payloads ne
 
 `<daemon-state>/telegram/state.json` is atomically replaced with mode `0600`. It contains public bot
 identity, binding/challenge metadata, the next update offset, durable update dispositions, outbox
-rows, canonical-item checkpoints, and Work-to-message mappings. Both files are daemon-local and are
-independent of saved mobile server records; removing a mobile server does not delete the binding.
+rows, canonical-item checkpoints, Work-to-message mappings, and the durable owner-binding delivery
+boundary. Brain timeline rows at or before that boundary remain in Brain and are never backfilled to
+Telegram; only rows created after the connection starts can enter the Telegram outbox. Both files
+are daemon-local and are independent of saved mobile server records; removing a mobile server does
+not delete the binding.
 Processed-update history retains only a bounded window behind the durable monotonic offset. The
 outbox has a hard row bound, compacts only terminal sent/failed history, and never compacts pending,
 dispatching, or ambiguous rows to make room; saturation is a visible degraded state.

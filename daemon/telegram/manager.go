@@ -71,7 +71,37 @@ func NewManagerWithOptions(root string, owner brainOwner, options Options) (*Man
 	if backoff <= 0 {
 		backoff = time.Second
 	}
-	return &Manager{store: state, api: api, brain: owner, now: now, pollTimeout: pollTimeout, backoff: backoff, wake: make(chan struct{}, 1)}, nil
+	manager := &Manager{store: state, api: api, brain: owner, now: now, pollTimeout: pollTimeout, backoff: backoff, wake: make(chan struct{}, 1)}
+	if err := manager.initializeDeliveryBoundary(); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
+// initializeDeliveryBoundary upgrades an already-bound connection without
+// replaying timeline rows that predate this delivery contract. Only unsent
+// canonical projections are discarded; direct replies and indeterminate
+// dispatches retain their existing delivery semantics.
+func (m *Manager) initializeDeliveryBoundary() error {
+	state := m.store.snapshot()
+	if state.OwnerID == 0 || state.ChatID == 0 || !state.DeliveryStartedAt.IsZero() {
+		return nil
+	}
+	return m.store.mutate(func(current *durableState) error {
+		if current.OwnerID == 0 || current.ChatID == 0 || !current.DeliveryStartedAt.IsZero() {
+			return nil
+		}
+		current.DeliveryStartedAt = m.now().UTC()
+		outbox := current.Outbox[:0]
+		for _, row := range current.Outbox {
+			if row.State == "pending" && row.CanonicalID != "" {
+				continue
+			}
+			outbox = append(outbox, row)
+		}
+		current.Outbox = outbox
+		return nil
+	})
 }
 
 func (m *Manager) signal() {
@@ -104,6 +134,7 @@ func (m *Manager) Configure(ctx context.Context, token string) (Status, error) {
 	stateErr := m.store.mutate(func(state *durableState) error {
 		if state.BotID != 0 && state.BotID != bot.ID {
 			state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
+			state.DeliveryStartedAt = time.Time{}
 			state.NextOffset = 0
 			state.Processed = map[string]updateRecord{}
 			state.Outbox = nil
@@ -186,6 +217,7 @@ func (m *Manager) Enable() error {
 func (m *Manager) RevokeOwner() error {
 	return m.store.mutate(func(state *durableState) error {
 		state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
+		state.DeliveryStartedAt = time.Time{}
 		state.ChallengeSHA256 = ""
 		state.ChallengeExpiresAt = time.Time{}
 		state.Outbox = nil
@@ -436,6 +468,7 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 		}
 		current.OwnerID, current.ChatID = message.From.ID, message.Chat.ID
 		current.OwnerHint = ownerHint(*message.From)
+		current.DeliveryStartedAt = m.now().UTC()
 		current.ChallengeSHA256 = ""
 		current.ChallengeExpiresAt = time.Time{}
 		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", Text: "Zen Brain connected. Use /help for commands.", CreatedAt: m.now().UTC()})
@@ -569,6 +602,9 @@ func (m *Manager) projectTimeline() error {
 	}
 	return m.store.mutate(func(state *durableState) error {
 		for _, item := range items {
+			if !state.DeliveryStartedAt.IsZero() && !item.CreatedAt.After(state.DeliveryStartedAt) {
+				continue
+			}
 			switch {
 			case item.Kind == "assistant_message" || (item.Role == "assistant" && item.Kind == ""):
 				for index, chunk := range chunkText(item.Body, maxMessageText) {

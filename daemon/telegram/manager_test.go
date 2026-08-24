@@ -299,6 +299,118 @@ func TestBindingChallengeIsPrivateSingleUseAndExpires(t *testing.T) {
 	}
 }
 
+func TestBindingStartsOutboundProjectionWithoutHistoricalReplay(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	boundary := manager.now().UTC()
+	owner.timeline = []brain.TimelineItem{
+		{ID: "historical-assistant", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "before binding", CreatedAt: boundary.Add(-time.Minute)},
+		{ID: "same-time-assistant", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "at binding", CreatedAt: boundary},
+		{ID: "historical-work", ThreadID: "thread-1", SessionID: "agent", Role: "system", Kind: "work_card", WorkID: "work-before", Title: "Before binding", Status: "done", Summary: "Historical", CreatedAt: boundary.Add(-time.Second)},
+		{ID: "zero-time-assistant", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "legacy history"},
+	}
+
+	bindOwner(t, manager, 1, 10, 10)
+	if got := manager.store.snapshot().DeliveryStartedAt; !got.Equal(boundary) {
+		t.Fatalf("delivery boundary=%v, want %v", got, boundary)
+	}
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	for _, row := range state.Outbox {
+		if row.CanonicalID != "" {
+			t.Fatalf("pre-binding timeline row entered outbox: %+v", row)
+		}
+	}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+
+	owner.timeline = append(owner.timeline,
+		brain.TimelineItem{ID: "fresh-assistant", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "after binding", CreatedAt: boundary.Add(time.Second)},
+		brain.TimelineItem{ID: "fresh-work", ThreadID: "thread-1", SessionID: "agent", Role: "system", Kind: "work_card", WorkID: "work-after", Title: "After binding", Status: "running", Summary: "Fresh", CreatedAt: boundary.Add(time.Second)},
+	)
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := manager.deliverOne(context.Background(), "token"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(api.sent) != 3 || api.sent[1].Text != "after binding" || !strings.Contains(api.sent[2].Text, "After binding") {
+		t.Fatalf("post-binding delivery=%+v", api.sent)
+	}
+}
+
+func TestDeliveryBoundarySurvivesRestart(t *testing.T) {
+	manager, owner, api, root := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	boundary := manager.store.snapshot().DeliveryStartedAt
+	owner.timeline = []brain.TimelineItem{
+		{ID: "before-restart", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "old", CreatedAt: boundary.Add(-time.Second)},
+		{ID: "after-restart", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "new", CreatedAt: boundary.Add(time.Second)},
+	}
+
+	reopened := newTestManager(t, root, owner, api)
+	if got := reopened.store.snapshot().DeliveryStartedAt; !got.Equal(boundary) {
+		t.Fatalf("reopened boundary=%v, want %v", got, boundary)
+	}
+	if err := reopened.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.sent) != 2 || api.sent[1].Text != "new" {
+		t.Fatalf("restart delivery=%+v", api.sent)
+	}
+}
+
+func TestExistingConnectionInitializesBoundaryAndDropsOnlyPendingHistory(t *testing.T) {
+	root := t.TempDir()
+	owner := &fakeBrain{threadID: "thread-1"}
+	api := &fakeAPI{bot: User{ID: 7001, IsBot: true, Username: "zen_test_bot"}}
+	legacy := newTestManager(t, root, owner, api)
+	if err := legacy.store.mutate(func(state *durableState) error {
+		state.Enabled = true
+		state.BotID = 7001
+		state.OwnerID = 10
+		state.ChatID = 10
+		state.Outbox = []outboxRecord{
+			{ID: "assistant:old:0", Kind: "send", CanonicalID: "old", Text: "pending history", State: "pending"},
+			{ID: "command:1:0", Kind: "send", Text: "direct reply", State: "pending"},
+			{ID: "assistant:uncertain:0", Kind: "send", CanonicalID: "uncertain", Text: "maybe sent", State: "dispatching"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := newTestManager(t, root, owner, api)
+	state := reopened.store.snapshot()
+	if state.DeliveryStartedAt.IsZero() {
+		t.Fatal("existing connection did not initialize a delivery boundary")
+	}
+	if len(state.Outbox) != 2 || state.Outbox[0].ID != "command:1:0" || state.Outbox[1].State != "ambiguous" {
+		t.Fatalf("migrated outbox=%+v", state.Outbox)
+	}
+	owner.timeline = []brain.TimelineItem{
+		{ID: "legacy-zero", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "legacy"},
+		{ID: "future", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "future", CreatedAt: state.DeliveryStartedAt.Add(time.Second)},
+	}
+	if err := reopened.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	projected := reopened.store.snapshot().Outbox
+	if len(projected) != 3 || projected[2].CanonicalID != "future" {
+		t.Fatalf("projected outbox=%+v", projected)
+	}
+}
+
 func TestUnsupportedMediaCommandsAndNewChat(t *testing.T) {
 	manager, owner, _, _ := configuredManager(t)
 	bindOwner(t, manager, 1, 10, 10)
@@ -328,8 +440,8 @@ func TestOutboxProjectionRetryAmbiguityAndWorkEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.timeline = []brain.TimelineItem{
-		{ID: "assistant-1", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: strings.Repeat("a", 4100)},
-		{ID: "event-1", ThreadID: "thread-1", SessionID: "agent", Role: "system", Kind: "work_card", WorkID: "work-1", Title: "Telegram slice", Status: "running", Summary: "Testing"},
+		{ID: "assistant-1", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: strings.Repeat("a", 4100), CreatedAt: manager.now().Add(time.Second)},
+		{ID: "event-1", ThreadID: "thread-1", SessionID: "agent", Role: "system", Kind: "work_card", WorkID: "work-1", Title: "Telegram slice", Status: "running", Summary: "Testing", CreatedAt: manager.now().Add(time.Second)},
 	}
 	if err := manager.projectTimeline(); err != nil {
 		t.Fatal(err)
@@ -385,7 +497,7 @@ func TestWorkProjectionCoalescesBeforeInitialSend(t *testing.T) {
 	}
 	owner.timeline = []brain.TimelineItem{{
 		ID: "event-1", ThreadID: "thread-1", Kind: "work_card", WorkID: "work-1",
-		Title: "Telegram slice", Status: "running", Summary: "First revision",
+		Title: "Telegram slice", Status: "running", Summary: "First revision", CreatedAt: manager.now().Add(time.Second),
 	}}
 	if err := manager.projectTimeline(); err != nil {
 		t.Fatal(err)
@@ -426,7 +538,7 @@ func TestAmbiguousWorkSendNeverReplaysOrCreatesRevision(t *testing.T) {
 	}
 	owner.timeline = []brain.TimelineItem{{
 		ID: "event-1", ThreadID: "thread-1", Kind: "work_card", WorkID: "work-1",
-		Title: "Telegram slice", Status: "running", Summary: "May commit remotely",
+		Title: "Telegram slice", Status: "running", Summary: "May commit remotely", CreatedAt: manager.now().Add(time.Second),
 	}}
 	if err := manager.projectTimeline(); err != nil {
 		t.Fatal(err)
@@ -519,12 +631,18 @@ func TestWebhookConflictRotationRevokeAndRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindOwner(t, manager, 1, 20, 20)
+	if manager.store.snapshot().DeliveryStartedAt.IsZero() {
+		t.Fatal("binding did not establish delivery boundary")
+	}
 	api.bot = User{ID: 3, IsBot: true, Username: "three_bot"}
 	if _, err := manager.Configure(context.Background(), "token-three"); err != nil {
 		t.Fatal(err)
 	}
 	if manager.Status().OwnerHint != "" || manager.Status().State != StateSetupPending {
 		t.Fatalf("rotation retained owner: %+v", manager.Status())
+	}
+	if !manager.store.snapshot().DeliveryStartedAt.IsZero() {
+		t.Fatal("bot identity rotation retained delivery boundary")
 	}
 	if err := manager.RevokeOwner(); err != nil {
 		t.Fatal(err)
@@ -537,6 +655,9 @@ func TestWebhookConflictRotationRevokeAndRemove(t *testing.T) {
 	}
 	if err := manager.Remove(); err != nil {
 		t.Fatal(err)
+	}
+	if !manager.store.snapshot().DeliveryStartedAt.IsZero() {
+		t.Fatal("removal retained delivery boundary")
 	}
 	if _, err := os.Stat(filepath.Join(root, "telegram", "token")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("token remains: %v", err)
