@@ -43,6 +43,44 @@ export interface SkillTreeNode {
   children: SkillTreeNode[];
 }
 
+interface SkillsProjectCandidate {
+  serverId: string;
+  cwd?: string;
+  updated_at?: number;
+}
+
+/**
+ * Keep the Skills query context stable while Agent activity streams in.
+ * `updated_at` is runtime activity, so using its latest value as a live query
+ * key makes the selected cwd oscillate between active Sessions. We only use it
+ * to choose an initial/fallback cwd; an existing cwd remains selected while it
+ * is still represented on the current server.
+ */
+export function selectStableSkillsProjectCwd(
+  agents: readonly SkillsProjectCandidate[],
+  serverId: string | null | undefined,
+  previousCwd: string,
+): string {
+  if (!serverId) return "";
+  const candidates = agents.filter(
+    (agent) => agent.serverId === serverId && agent.cwd?.trim(),
+  );
+  const retained = previousCwd.trim();
+  if (
+    retained &&
+    candidates.some((agent) => agent.cwd?.trim() === retained)
+  ) {
+    return retained;
+  }
+  return (
+    [...candidates].sort(
+      (a, b) =>
+        (b.updated_at || 0) - (a.updated_at || 0) ||
+        (a.cwd?.trim() || "").localeCompare(b.cwd?.trim() || ""),
+    )[0]?.cwd?.trim() || ""
+  );
+}
+
 export function skillsSectionAgentCounts(
   inventory?: SkillsInventory,
 ): SkillsAgentCounts {

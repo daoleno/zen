@@ -36,6 +36,7 @@ import {
 import {
   SkillsAutomaticInventoryOwner,
   groupLogicalSkills,
+  selectStableSkillsProjectCwd,
 } from "../services/skillsScreenModel";
 import { skillsOutsidePlugins } from "../services/skillsPluginOwnership";
 import {
@@ -77,17 +78,24 @@ export default function SkillsScreen() {
   const mutationOwner = useRef(0);
   const automaticInventory = useRef(new SkillsAutomaticInventoryOwner());
   const automaticPlugins = useRef(new SkillsAutomaticInventoryOwner());
+  const selectedProject = useRef<{ serverId: string | null; cwd: string }>({
+    serverId: null,
+    cwd: "",
+  });
 
-  const projectCwd = useMemo(
-    () =>
-      serverId
-        ? state.agents
-            .filter((item) => item.serverId === serverId && item.cwd?.trim())
-            .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))[0]
-            ?.cwd?.trim() || ""
-        : "",
-    [serverId, state.agents],
-  );
+  const projectCwd = useMemo(() => {
+    const previous =
+      selectedProject.current.serverId === serverId
+        ? selectedProject.current.cwd
+        : "";
+    const cwd = selectStableSkillsProjectCwd(
+      state.agents,
+      serverId,
+      previous,
+    );
+    selectedProject.current = { serverId, cwd };
+    return cwd;
+  }, [serverId, state.agents]);
   const skillsContextKey = `${serverId ?? "none"}\u0000${projectCwd}`;
   const currentSkillsContext = useRef(skillsContextKey);
   const currentServerId = useRef(serverId);
