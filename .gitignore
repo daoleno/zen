@@ -39,6 +39,7 @@ Thumbs.db
 # Android build
 app/android/
 app/ios/
+app/modules/zen-file-upload/android/build/
 app/modules/zen-link-transport/android/build/
 
 # Expo

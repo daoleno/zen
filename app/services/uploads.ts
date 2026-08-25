@@ -3,6 +3,7 @@ import {
   File,
   type UploadProgress as NativeUploadProgress,
 } from "expo-file-system";
+import type { NativeUploadResult } from "../modules/zen-file-upload/src";
 
 const BINARY_UPLOAD_TYPE = 0;
 import { buildAuthorizationHeader } from "./auth";
@@ -44,6 +45,12 @@ export interface AttachmentUploadOperation {
 export interface AttachmentUploadOperationOptions {
   onProgress?(progress: UploadProgressSnapshot): void;
   now?(): number;
+}
+
+interface UploadTask {
+  uploadAsync(): Promise<NativeUploadResult>;
+  cancel(): void;
+  release(): void;
 }
 
 export class AttachmentUploadCancelledError extends Error {
@@ -108,7 +115,7 @@ export function createAttachmentUploadOperation(
   const originalName = asset.name || file.name || "upload";
   const contentType = asset.mimeType || file.type || "application/octet-stream";
   const encodedName = encodeUploadName(originalName);
-  let task: ReturnType<typeof file.createUploadTask> | null = null;
+  let task: UploadTask | null = null;
   let cancelRequested = false;
   let settled = false;
   let cancelFailure: Error | null = null;
@@ -127,29 +134,42 @@ export function createAttachmentUploadOperation(
         throw cancelFailure ?? new AttachmentUploadCancelledError();
       }
 
-      task = file.createUploadTask(uploadUrl, {
-        httpMethod: "POST",
-        uploadType: BINARY_UPLOAD_TYPE,
-        headers: {
-          ...headers,
-          "Content-Type": contentType,
-          [UPLOAD_NAME_HEADER]: encodedName,
-        },
-        onProgress(nativeProgress) {
-          if (cancelRequested || settled) {
-            return;
-          }
-          projectedProgress = projectUploadProgress(
-            projectedProgress,
-            nativeProgress,
-          );
-          projectedProgress = projectUploadTiming(
-            projectedProgress,
-            (options.now?.() ?? Date.now()) - uploadStartedAt,
-          );
-          options.onProgress?.(projectedProgress);
-        },
-      });
+      const uploadHeaders = {
+        ...headers,
+        "Content-Type": contentType,
+        [UPLOAD_NAME_HEADER]: encodedName,
+      };
+      const onNativeProgress = (nativeProgress: NativeUploadProgress) => {
+        if (cancelRequested || settled) {
+          return;
+        }
+        projectedProgress = projectUploadProgress(
+          projectedProgress,
+          nativeProgress,
+        );
+        projectedProgress = projectUploadTiming(
+          projectedProgress,
+          (options.now?.() ?? Date.now()) - uploadStartedAt,
+        );
+        options.onProgress?.(projectedProgress);
+      };
+      task =
+        (await createAndroidNativeUploadTask({
+          uri: asset.uri,
+          expectedSize:
+            typeof asset.size === "number" && Number.isFinite(asset.size)
+              ? asset.size
+              : null,
+          uploadUrl,
+          headers: uploadHeaders,
+          onProgress: onNativeProgress,
+        })) ??
+        file.createUploadTask(uploadUrl, {
+          httpMethod: "POST",
+          uploadType: BINARY_UPLOAD_TYPE,
+          headers: uploadHeaders,
+          onProgress: onNativeProgress,
+        });
 
       uploadStartedAt = options.now?.() ?? Date.now();
       const uploadResult = await task.uploadAsync();
@@ -209,6 +229,50 @@ export function createAttachmentUploadOperation(
         cancelFailure = normalizeError(error, "Could not cancel this upload.");
         return cancelFailure;
       }
+    },
+  };
+}
+
+let nativeUploadSequence = 0;
+
+async function createAndroidNativeUploadTask(input: {
+  uri: string;
+  expectedSize: number | null;
+  uploadUrl: string;
+  headers: Record<string, string>;
+  onProgress(progress: NativeUploadProgress): void;
+}): Promise<UploadTask | null> {
+  if (typeof navigator === "undefined" || navigator.product !== "ReactNative") {
+    return null;
+  }
+  const { getZenFileUploadModule } =
+    await import("../modules/zen-file-upload/src");
+  const native = getZenFileUploadModule();
+  if (!native) {
+    return null;
+  }
+  nativeUploadSequence += 1;
+  const uploadId = `attachment-${Date.now().toString(36)}-${nativeUploadSequence.toString(36)}`;
+  const subscription = native.addListener("onUploadProgress", (progress) => {
+    if (progress.uploadId === uploadId) {
+      input.onProgress(progress);
+    }
+  });
+  return {
+    uploadAsync: () =>
+      native.upload({
+        uploadId,
+        url: input.uploadUrl,
+        fileUri: input.uri,
+        expectedSize: input.expectedSize,
+        method: "POST",
+        headers: input.headers,
+      }),
+    cancel() {
+      native.cancel(uploadId);
+    },
+    release() {
+      subscription.remove();
     },
   };
 }

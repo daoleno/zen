@@ -3414,6 +3414,14 @@ func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, 
 		}
 	}()
 	startedAt := time.Now()
+	log.Printf(
+		"upload start remote=%q content_length=%d transport=%q user_agent=%q name=%q",
+		r.RemoteAddr,
+		r.ContentLength,
+		r.Header.Get("X-Zen-Upload-Transport"),
+		r.UserAgent(),
+		originalName,
+	)
 	written, copyErr := io.Copy(dst, io.LimitReader(r.Body, copyLimit+1))
 	closeErr := dst.Close()
 	if copyErr != nil {
@@ -3456,7 +3464,14 @@ func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, 
 	if duration > 0 {
 		rateMiB = float64(written) / (1024 * 1024) / duration.Seconds()
 	}
-	log.Printf("upload complete bytes=%d duration_ms=%d rate_mib_s=%.2f", written, duration.Milliseconds(), rateMiB)
+	log.Printf(
+		"upload complete remote=%q bytes=%d duration_ms=%d rate_mib_s=%.2f transport=%q",
+		r.RemoteAddr,
+		written,
+		duration.Milliseconds(),
+		rateMiB,
+		r.Header.Get("X-Zen-Upload-Transport"),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})

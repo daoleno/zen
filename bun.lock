@@ -56,12 +56,16 @@
         "typescript": "~6.0.3",
       },
     },
-    "app/modules/zen-terminal-vt": {
-      "name": "zen-terminal-vt",
+    "app/modules/zen-file-upload": {
+      "name": "zen-file-upload",
       "version": "0.1.0",
     },
     "app/modules/zen-link-transport": {
       "name": "zen-link-transport",
+      "version": "0.1.0",
+    },
+    "app/modules/zen-terminal-vt": {
+      "name": "zen-terminal-vt",
       "version": "0.1.0",
     },
   },
@@ -1197,6 +1201,8 @@
     "yargs": ["yargs@17.7.2", "https://registry.npmmirror.com/yargs/-/yargs-17.7.2.tgz", { "dependencies": { "cliui": "^8.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "require-directory": "^2.1.1", "string-width": "^4.2.3", "y18n": "^5.0.5", "yargs-parser": "^21.1.1" } }, "sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w=="],
 
     "yargs-parser": ["yargs-parser@21.1.1", "https://registry.npmmirror.com/yargs-parser/-/yargs-parser-21.1.1.tgz", {}, "sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw=="],
+
+    "zen-file-upload": ["zen-file-upload@workspace:app/modules/zen-file-upload"],
 
     "zen-link-transport": ["zen-link-transport@workspace:app/modules/zen-link-transport"],
 
