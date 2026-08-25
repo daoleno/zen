@@ -87,7 +87,7 @@ func (s *Store) fsmWorkByAttemptSession(sessionID string) (*lifecycle.State, boo
 	if sessionID == "" || s.fsm == nil {
 		return nil, false
 	}
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		if st.Attempt != nil && st.Attempt.SessionID == sessionID {
 			return st, true
 		}
@@ -502,7 +502,7 @@ func (s *Store) fsmFanoutSessionTerminal(sessionID, turnID string) error {
 		return nil
 	}
 	ref := SessionTerminalWakeRef(sessionID, turnID)
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		if st.Wake != nil && st.Wake.Kind == lifecycle.WakeSessionTerminal && st.Wake.Ref == ref {
 			if _, err := s.fsm.ClearWait(st.ID, lifecycle.WakeSessionTerminal, ref, "turn:"+turnID); err != nil {
 				return err
@@ -635,16 +635,26 @@ func (s *Store) SweepLifecycle() error {
 	if err := s.fsm.Sweep(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	database, err := s.loadPresentationLocked()
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	revisions := make(map[string]uint64, len(database.BrainWork))
+	for _, item := range database.BrainWork {
+		revisions[item.ID] = item.Revision
+	}
 	var firstErr error
-	for _, st := range s.fsm.ListStates() {
-		item, err := s.Work(string(st.ID))
-		if err != nil {
+	for _, st := range s.fsm.ListViews() {
+		revision, found := revisions[string(st.ID)]
+		if !found {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("read Work %s after lifecycle sweep: %w", st.ID, err)
+				firstErr = fmt.Errorf("read Work %s after lifecycle sweep: %w", st.ID, ErrWorkNotFound)
 			}
 			continue
 		}
-		if item.Revision == st.Revision {
+		if revision == st.Revision {
 			continue
 		}
 		if err := s.SyncWorkProjection(string(st.ID)); err != nil && firstErr == nil {

@@ -1110,18 +1110,26 @@ func leaseExpiredSourceID(token TurnToken, deadline time.Time) string {
 // persistently expired turns to lost. It never starts execution or creates a
 // Session.
 func (e *Engine) Sweep() error {
-	e.mu.Lock()
-	ids := make([]WorkID, 0, len(e.works))
-	for id := range e.works {
-		ids = append(ids, id)
-	}
-	e.mu.Unlock()
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-
+	states := e.ListViews()
 	now := e.nowUTC()
-	for _, id := range ids {
-		st, err := e.State(id)
-		if err != nil || st == nil {
+	for _, st := range states {
+		id := st.ID
+		if st.Status.Terminal() && st.Wake != nil {
+			kind := KWorkCompleted
+			if st.Status == StatusCancelled {
+				kind = KWorkCancelled
+			}
+			if _, err := e.dispatch(id, func(current *State, at time.Time) ([]Event, error) {
+				if current == nil || !current.Status.Terminal() || current.Wake == nil {
+					return nil, nil
+				}
+				return []Event{{
+					WorkID: id, Kind: kind, SourceID: "repair:terminal-wake", At: at,
+					Payload: CancelledPayload{Actor: "supervisor", Reason: "clear invalid terminal wake"},
+				}}, nil
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		if st.Review != nil && st.Review.Handler != nil && st.Review.Handler.DeliveredAt == nil &&
@@ -1196,11 +1204,7 @@ func (e *Engine) Sweep() error {
 // turn alive or polling Sessions.
 func (e *Engine) NextWakeAt() (time.Time, bool) {
 	e.mu.Lock()
-	ids := make([]WorkID, 0, len(e.works))
-	for id := range e.works {
-		ids = append(ids, id)
-	}
-	e.mu.Unlock()
+	defer e.mu.Unlock()
 	var next time.Time
 	consider := func(at time.Time) {
 		if at.IsZero() {
@@ -1210,9 +1214,9 @@ func (e *Engine) NextWakeAt() (time.Time, bool) {
 			next = at
 		}
 	}
-	for _, id := range ids {
-		st, err := e.State(id)
-		if err != nil || st == nil {
+	for _, actor := range e.works {
+		st := actor.st
+		if st == nil {
 			continue
 		}
 		if st.Attempt != nil {
@@ -1243,10 +1247,25 @@ func (e *Engine) State(id WorkID) (*State, error) {
 
 // ListStates returns cloned views of all aggregates sorted by ID.
 func (e *Engine) ListStates() []*State {
+	return e.listStates(true)
+}
+
+// ListViews returns safe read views of all aggregates sorted by ID. It omits
+// SeenSources, which is an internal dedupe index and can be much larger than
+// the operational state used by schedulers and projections.
+func (e *Engine) ListViews() []*State {
+	return e.listStates(false)
+}
+
+func (e *Engine) listStates(includeSeenSources bool) []*State {
 	e.mu.Lock()
 	states := make(map[WorkID]*State, len(e.works))
 	for id, actor := range e.works {
-		states[id] = actor.st.Clone()
+		if includeSeenSources {
+			states[id] = actor.st.Clone()
+		} else {
+			states[id] = actor.st.cloneView()
+		}
 	}
 	e.mu.Unlock()
 	ids := make([]WorkID, 0, len(states))
@@ -1310,5 +1329,5 @@ func ProjectCards(states []*State) []Card {
 
 // Cards returns the current projection.
 func (e *Engine) Cards() []Card {
-	return ProjectCards(e.ListStates())
+	return ProjectCards(e.ListViews())
 }

@@ -132,7 +132,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-
 	lifecycleLock, authManager, err := acquireDaemonAuthOwner(cfg.stateDir)
 	if err != nil {
 		return err

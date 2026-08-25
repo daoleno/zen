@@ -319,6 +319,13 @@ type presentationDatabase struct {
 	BrainTurns           []TurnRecord          `json:"brain_turns"`
 }
 
+type presentationReadCache struct {
+	valid    bool
+	size     int64
+	modTime  time.Time
+	database presentationDatabase
+}
+
 // workRecord is the on-disk Work shape during decode. Unknown never-released
 // fields are ignored. SourceThreadID is required after Create/bind/persist.
 type workRecord struct {
@@ -1070,11 +1077,77 @@ func validCompletionPolicy(policy CompletionPolicy) bool {
 }
 
 func (s *Store) loadPresentationLocked() (presentationDatabase, error) {
+	info, err := os.Stat(s.presentationPath())
+	if err != nil {
+		s.presentationCache = presentationReadCache{}
+		return presentationDatabase{}, err
+	}
+	if s.presentationCache.valid && s.presentationCache.size == info.Size() &&
+		s.presentationCache.modTime.Equal(info.ModTime()) {
+		return clonePresentationDatabase(s.presentationCache.database), nil
+	}
 	raw, err := os.ReadFile(s.presentationPath())
 	if err != nil {
 		return presentationDatabase{}, err
 	}
-	return decodePresentationDatabase(raw)
+	database, err := decodePresentationDatabase(raw)
+	if err != nil {
+		return presentationDatabase{}, err
+	}
+	// An external CLI may replace the file while it is being read. Cache only
+	// when the post-read version still matches the bytes that were decoded.
+	after, statErr := os.Stat(s.presentationPath())
+	if statErr == nil && after.Size() == int64(len(raw)) {
+		s.presentationCache = presentationReadCache{
+			valid: true, size: after.Size(), modTime: after.ModTime(), database: database,
+		}
+	} else {
+		s.presentationCache = presentationReadCache{}
+	}
+	return clonePresentationDatabase(database), nil
+}
+
+func clonePresentationDatabase(database presentationDatabase) presentationDatabase {
+	clone := database
+	clone.BrainInputAdmissions = append([]BrainInputAdmission(nil), database.BrainInputAdmissions...)
+	for index := range clone.BrainInputAdmissions {
+		clone.BrainInputAdmissions[index].AcceptedAt = cloneTimePointer(database.BrainInputAdmissions[index].AcceptedAt)
+		clone.BrainInputAdmissions[index].SettledAt = cloneTimePointer(database.BrainInputAdmissions[index].SettledAt)
+	}
+	if database.HostForegroundTurn != nil {
+		foreground := *database.HostForegroundTurn
+		clone.HostForegroundTurn = &foreground
+	}
+	clone.BrainWork = append([]Work(nil), database.BrainWork...)
+	for index := range clone.BrainWork {
+		clone.BrainWork[index].Wake = cloneWorkWake(database.BrainWork[index].Wake)
+		clone.BrainWork[index].Review = cloneWorkReview(database.BrainWork[index].Review)
+	}
+	clone.BrainWorkEvents = append([]WorkEvent(nil), database.BrainWorkEvents...)
+	for index := range clone.BrainWorkEvents {
+		event := &clone.BrainWorkEvents[index]
+		source := database.BrainWorkEvents[index]
+		event.HandledAt = cloneTimePointer(source.HandledAt)
+		event.ResolvedAt = cloneTimePointer(source.ResolvedAt)
+		event.DiscardedAt = cloneTimePointer(source.DiscardedAt)
+	}
+	clone.BrainTurns = append([]TurnRecord(nil), database.BrainTurns...)
+	for index := range clone.BrainTurns {
+		turn := &clone.BrainTurns[index]
+		source := database.BrainTurns[index]
+		turn.SettledAt = cloneTimePointer(source.SettledAt)
+		turn.Facts = append([]TurnFactRecord(nil), source.Facts...)
+		turn.Hints = append([]watcher.TurnHint(nil), source.Hints...)
+	}
+	return clone
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func (s *Store) persistPresentationLocked(database presentationDatabase) error {
@@ -1121,7 +1194,12 @@ func (s *Store) persistPresentationLocked(database presentationDatabase) error {
 	if err := validatePresentationDatabase(database); err != nil {
 		return err
 	}
-	return s.writePresentation(s.presentationPath(), database)
+	if err := s.writePresentation(s.presentationPath(), database); err != nil {
+		return err
+	}
+	s.presentationCache = presentationReadCache{}
+	s.turnCache = turnReadCache{}
+	return nil
 }
 
 func (s *Store) nowUTC() time.Time {
@@ -2333,8 +2411,8 @@ func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, b
 		openedAt time.Time
 	}
 	candidates := []candidate{}
-	for _, st := range s.fsm.ListStates() {
-		if st.Review == nil || st.Review.Handler != nil || st.Status.Terminal() {
+	for _, st := range s.fsm.ListViews() {
+		if st.Review == nil || st.Review.Handler != nil || st.Status.Terminal() || st.ActiveAdmission() != nil {
 			continue
 		}
 		candidates = append(candidates, candidate{id: string(st.ID), openedAt: st.Review.OpenedAt})

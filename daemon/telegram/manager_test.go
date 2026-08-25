@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,13 +17,22 @@ import (
 )
 
 type fakeBrain struct {
-	mu          sync.Mutex
-	receipts    []string
-	bodies      []string
-	disposition brain.ExternalInputDisposition
-	threadID    string
-	timeline    []brain.TimelineItem
-	newChats    int
+	mu                    sync.Mutex
+	receipts              []string
+	bodies                []string
+	disposition           brain.ExternalInputDisposition
+	threadID              string
+	timeline              []brain.TimelineItem
+	newChats              int
+	foreground            *brain.HostForegroundTurn
+	sessions              []brain.AgentRef
+	sessionWork           map[string]brain.Work
+	projections           map[string]brain.SessionProjection
+	sessionReceipts       []string
+	sessionBodies         []string
+	sessionDisposition    brain.ExternalInputDisposition
+	sessionDispositionErr error
+	sessionInputErr       error
 }
 
 func (f *fakeBrain) SubmitExternalUserInput(receipt, body string) (brain.ExternalInputDisposition, error) {
@@ -34,6 +44,48 @@ func (f *fakeBrain) SubmitExternalUserInput(receipt, body string) (brain.Externa
 		return brain.ExternalInputAccepted, nil
 	}
 	return f.disposition, nil
+}
+
+func (f *fakeBrain) DelegatedSessions() ([]brain.AgentRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]brain.AgentRef(nil), f.sessions...), nil
+}
+
+func (f *fakeBrain) WorkForSession(sessionID string) (brain.Work, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sessionWork == nil {
+		return brain.Work{}, false, nil
+	}
+	workItem, ok := f.sessionWork[sessionID]
+	return workItem, ok, nil
+}
+
+func (f *fakeBrain) SubmitExternalSessionInput(sessionID, receipt, body string) (brain.ExternalInputDisposition, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionReceipts = append(f.sessionReceipts, receipt)
+	f.sessionBodies = append(f.sessionBodies, body)
+	if f.sessionInputErr != nil {
+		return brain.ExternalInputUncertain, f.sessionInputErr
+	}
+	if f.sessionDisposition == "" {
+		return brain.ExternalInputAccepted, nil
+	}
+	return f.sessionDisposition, f.sessionDispositionErr
+}
+
+func (f *fakeBrain) SessionProjection(sessionID string) (brain.SessionProjection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.projections == nil {
+		return brain.SessionProjection{SessionID: sessionID, Present: true, Label: sessionID}, nil
+	}
+	if projection, ok := f.projections[sessionID]; ok {
+		return projection, nil
+	}
+	return brain.SessionProjection{SessionID: sessionID, Present: true, Label: sessionID}, nil
 }
 
 func (f *fakeBrain) ChatThreadID() (string, error) {
@@ -49,18 +101,125 @@ func (f *fakeBrain) NewChat() (brain.Snapshot, error) {
 	return brain.Snapshot{ChatThreadID: "new-thread"}, nil
 }
 
+func (f *fakeBrain) CurrentHostForegroundTurn() (*brain.HostForegroundTurn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.foreground == nil {
+		return nil, nil
+	}
+	copy := *f.foreground
+	return &copy, nil
+}
+
 type fakeAPI struct {
-	mu          sync.Mutex
-	bot         User
-	webhook     WebhookInfo
-	updates     []Update
-	sent        []SendRequest
-	edited      []EditRequest
-	nextSendErr error
-	nextEditErr error
-	nextID      int64
-	blockPoll   bool
-	pollStarted chan struct{}
+	mu             sync.Mutex
+	bot            User
+	webhook        WebhookInfo
+	updates        []Update
+	sent           []SendRequest
+	edited         []EditRequest
+	nextSendErr    error
+	nextEditErr    error
+	nextID         int64
+	blockPoll      bool
+	pollStarted    chan struct{}
+	actions        []ChatActionRequest
+	actionErr      error
+	mutationActive atomic.Int32
+	maxMutation    atomic.Int32
+	blockSend      chan struct{}
+	sendStarted    chan struct{}
+	createdTopics  []CreateForumTopicRequest
+	editedTopics   []EditForumTopicRequest
+	closingTopics  []ForumTopicIDRequest
+	reopenedTopics []ForumTopicIDRequest
+	deletedTopics  []ForumTopicIDRequest
+	nextTopic      ForumTopic
+	nextTopicIDs   []int64
+	topicErr       error
+	topicOpErrs    map[string]error
+	pollCount      int
+}
+
+func (f *fakeAPI) CreateForumTopic(_ context.Context, _ string, request CreateForumTopicRequest) (ForumTopic, error) {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createdTopics = append(f.createdTopics, request)
+	if f.topicErr != nil {
+		err := f.topicErr
+		f.topicErr = nil
+		return ForumTopic{}, err
+	}
+	topic := f.nextTopic
+	if len(f.nextTopicIDs) > 0 {
+		topic.MessageThreadID = f.nextTopicIDs[0]
+		f.nextTopicIDs = f.nextTopicIDs[1:]
+	}
+	if topic.MessageThreadID == 0 {
+		topic.MessageThreadID = 100 + int64(len(f.createdTopics))
+	}
+	if topic.Name == "" {
+		topic.Name = request.Name
+	}
+	return topic, nil
+}
+
+func (f *fakeAPI) EditForumTopic(_ context.Context, _ string, request EditForumTopicRequest) error {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.editedTopics = append(f.editedTopics, request)
+	return f.topicOpError("edit")
+}
+
+func (f *fakeAPI) CloseForumTopic(_ context.Context, _ string, request ForumTopicIDRequest) error {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closingTopics = append(f.closingTopics, request)
+	return f.topicOpError("close")
+}
+
+func (f *fakeAPI) ReopenForumTopic(_ context.Context, _ string, request ForumTopicIDRequest) error {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reopenedTopics = append(f.reopenedTopics, request)
+	return f.topicOpError("reopen")
+}
+
+func (f *fakeAPI) DeleteForumTopic(_ context.Context, _ string, request ForumTopicIDRequest) error {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedTopics = append(f.deletedTopics, request)
+	return f.topicOpError("delete")
+}
+
+func (f *fakeAPI) topicOpError(kind string) error {
+	if f.topicOpErrs != nil && f.topicOpErrs[kind] != nil {
+		err := f.topicOpErrs[kind]
+		f.topicOpErrs[kind] = nil
+		return err
+	}
+	return nil
+}
+
+func (f *fakeAPI) beginMutation() func() {
+	active := f.mutationActive.Add(1)
+	for {
+		maximum := f.maxMutation.Load()
+		if active <= maximum || f.maxMutation.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	return func() { f.mutationActive.Add(-1) }
 }
 
 func (f *fakeAPI) GetMe(context.Context, string) (User, error) {
@@ -72,6 +231,9 @@ func (f *fakeAPI) GetWebhookInfo(context.Context, string) (WebhookInfo, error) {
 }
 
 func (f *fakeAPI) GetUpdates(ctx context.Context, _ string, offset int64, _ int, _ []string) ([]Update, error) {
+	f.mu.Lock()
+	f.pollCount++
+	f.mu.Unlock()
 	if f.blockPoll {
 		if f.pollStarted != nil {
 			select {
@@ -95,6 +257,18 @@ func (f *fakeAPI) GetUpdates(ctx context.Context, _ string, offset int64, _ int,
 }
 
 func (f *fakeAPI) SendMessage(_ context.Context, _ string, request SendRequest) (Message, error) {
+	done := f.beginMutation()
+	defer done()
+	if f.sendStarted != nil {
+		select {
+		case <-f.sendStarted:
+		default:
+			close(f.sendStarted)
+		}
+	}
+	if f.blockSend != nil {
+		<-f.blockSend
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.nextSendErr != nil {
@@ -108,6 +282,8 @@ func (f *fakeAPI) SendMessage(_ context.Context, _ string, request SendRequest) 
 }
 
 func (f *fakeAPI) EditMessage(_ context.Context, _ string, request EditRequest) (Message, error) {
+	done := f.beginMutation()
+	defer done()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.nextEditErr != nil {
@@ -119,6 +295,21 @@ func (f *fakeAPI) EditMessage(_ context.Context, _ string, request EditRequest) 
 	return Message{MessageID: request.MessageID, Chat: Chat{ID: request.ChatID, Type: "private"}}, nil
 }
 
+func (f *fakeAPI) SendChatAction(_ context.Context, _ string, request ChatActionRequest) error {
+	done := f.beginMutation()
+	defer done()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.actions = append(f.actions, request)
+	return f.actionErr
+}
+
+func (f *fakeAPI) actionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.actions)
+}
+
 func newTestManager(t *testing.T, root string, owner *fakeBrain, api *fakeAPI) *Manager {
 	t.Helper()
 	manager, err := NewManagerWithOptions(root, owner, Options{
@@ -126,8 +317,10 @@ func newTestManager(t *testing.T, root string, owner *fakeBrain, api *fakeAPI) *
 		Now: func() time.Time {
 			return time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 		},
-		PollTimeout: 1,
-		Backoff:     time.Millisecond,
+		PollTimeout:    1,
+		Backoff:        time.Millisecond,
+		TypingInterval: 10 * time.Millisecond,
+		TypingDeadline: 100 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,7 +633,7 @@ func TestOutboxProjectionRetryAmbiguityAndWorkEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.timeline = []brain.TimelineItem{
-		{ID: "assistant-1", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: strings.Repeat("a", 4100), CreatedAt: manager.now().Add(time.Second)},
+		{ID: "assistant-1", ThreadID: "thread-1", SessionID: "host", Role: "assistant", Kind: "assistant_message", Body: "**" + strings.Repeat("a", 4100) + "**", CreatedAt: manager.now().Add(time.Second)},
 		{ID: "event-1", ThreadID: "thread-1", SessionID: "agent", Role: "system", Kind: "work_card", WorkID: "work-1", Title: "Telegram slice", Status: "running", Summary: "Testing", CreatedAt: manager.now().Add(time.Second)},
 	}
 	if err := manager.projectTimeline(); err != nil {
@@ -725,5 +918,253 @@ func TestRunStopsBlockedLongPoll(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("run did not stop")
+	}
+}
+
+func TestFormattedDeliveryAndSameRowPlainFallback(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	owner.timeline = []brain.TimelineItem{{
+		ID: "rich", ThreadID: "thread-1", Role: "assistant", Kind: "assistant_message",
+		Body: "**bold** and *italic*", CreatedAt: manager.now().Add(time.Second),
+	}}
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	row := state.Outbox[len(state.Outbox)-1]
+	if row.Variant != formattedVariant || row.PlainText != "bold and italic" || len(row.Entities) != 2 {
+		t.Fatalf("formatted row=%+v", row)
+	}
+	api.nextSendErr = &APIError{Code: 400, description: "Bad Request: can't parse entities: fixture"}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	fallback := manager.store.snapshot().Outbox[len(state.Outbox)-1]
+	if fallback.ID != row.ID || fallback.State != "pending" || fallback.Variant != plainVariant || fallback.Text != fallback.PlainText {
+		t.Fatalf("fallback row=%+v original=%+v", fallback, row)
+	}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.sent) != 2 || len(api.sent[1].Entities) != 0 || api.sent[1].Text != "bold and italic" {
+		t.Fatalf("plain retry=%+v", api.sent)
+	}
+	final := manager.store.snapshot().Outbox[len(state.Outbox)-1]
+	if final.ID != row.ID || final.State != "sent" || final.Variant != plainVariant {
+		t.Fatalf("final row=%+v", final)
+	}
+}
+
+func TestFormattedWorkEditFallsBackWithoutReplacement(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	owner.timeline = []brain.TimelineItem{{
+		ID: "work-1a", ThreadID: "thread-1", Kind: "work_card", WorkID: "work-1",
+		Title: "**Rich work**", Status: "running", CreatedAt: manager.now().Add(time.Second),
+	}}
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.sent) != 2 || len(api.sent[1].Entities) == 0 {
+		t.Fatalf("formatted Work send=%+v", api.sent)
+	}
+	messageID := manager.store.snapshot().WorkMessages["work-1"]
+	owner.timeline[0].ID = "work-1b"
+	owner.timeline[0].Summary = "**finished**"
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	api.nextEditErr = &APIError{Code: 400, description: "Bad Request: failed to parse entities"}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	rows := manager.store.snapshot().Outbox
+	pending := rows[len(rows)-1]
+	if pending.Kind != "edit" || pending.MessageID != messageID || pending.State != "pending" || pending.Variant != plainVariant {
+		t.Fatalf("edit fallback=%+v", pending)
+	}
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.edited) != 1 || len(api.edited[0].Entities) != 0 || len(api.sent) != 2 {
+		t.Fatalf("edit fallback replaced message: sends=%+v edits=%+v", api.sent, api.edited)
+	}
+}
+
+func TestFormattedTransportAmbiguityNeverFallsBack(t *testing.T) {
+	manager, owner, api, root := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	owner.timeline = []brain.TimelineItem{{
+		ID: "rich-ambiguous", ThreadID: "thread-1", Role: "assistant", Kind: "assistant_message",
+		Body: "**maybe sent**", CreatedAt: manager.now().Add(time.Second),
+	}}
+	if err := manager.projectTimeline(); err != nil {
+		t.Fatal(err)
+	}
+	api.nextSendErr = errors.New("malformed result envelope after remote commit")
+	if err := manager.deliverOne(context.Background(), "token"); err == nil {
+		t.Fatal("ambiguous formatted mutation succeeded")
+	}
+	row := manager.store.snapshot().Outbox[1]
+	if row.State != "ambiguous" || row.Variant != formattedVariant {
+		t.Fatalf("ambiguous row fell back: %+v", row)
+	}
+	reopened := newTestManager(t, root, owner, api)
+	if err := reopened.deliverOne(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.sent) != 1 || reopened.store.snapshot().Outbox[1].State != "ambiguous" {
+		t.Fatalf("ambiguous row replayed: sent=%+v", api.sent)
+	}
+}
+
+func TestTypingTracksExactForegroundTurnAndCreatesNoDurableRow(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	turn := &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "turn", StartedAt: manager.now()}
+	owner.foreground = turn
+	before := len(manager.store.snapshot().Outbox)
+	update := Update{UpdateID: 2, Message: &Message{MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "hello"}}
+	if err := manager.handleUpdate(context.Background(), "token", update); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool { return api.actionCount() >= 2 })
+	if got := len(manager.store.snapshot().Outbox); got != before {
+		t.Fatalf("typing created durable rows: before=%d after=%d", before, got)
+	}
+	owner.mu.Lock()
+	owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "new", StartedAt: manager.now()}
+	owner.mu.Unlock()
+	count := api.actionCount()
+	time.Sleep(3 * manager.typingInterval)
+	if got := api.actionCount(); got != count {
+		t.Fatalf("typing continued onto replacement turn: before=%d after=%d", count, got)
+	}
+}
+
+func TestTypingStopsForConnectionAndContextBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		stop func(*Manager) error
+	}{
+		{name: "disable", stop: (*Manager).Disable},
+		{name: "revoke", stop: (*Manager).RevokeOwner},
+		{name: "remove", stop: (*Manager).Remove},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, owner, api, _ := configuredManager(t)
+			bindOwner(t, manager, 1, 10, 10)
+			owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "turn", StartedAt: manager.now()}
+			manager.startTyping(context.Background(), "token")
+			waitFor(t, time.Second, func() bool { return api.actionCount() >= 1 })
+			if err := test.stop(manager); err != nil {
+				t.Fatal(err)
+			}
+			count := api.actionCount()
+			time.Sleep(3 * manager.typingInterval)
+			if got := api.actionCount(); got != count {
+				t.Fatalf("typing continued: before=%d after=%d", count, got)
+			}
+		})
+	}
+
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "turn", StartedAt: manager.now()}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.startTyping(ctx, "token")
+	waitFor(t, time.Second, func() bool { return api.actionCount() >= 1 })
+	cancel()
+	count := api.actionCount()
+	time.Sleep(3 * manager.typingInterval)
+	if got := api.actionCount(); got != count {
+		t.Fatalf("typing continued after context cancellation: before=%d after=%d", count, got)
+	}
+}
+
+func TestTypingStopsOnTurnClosureAndSafetyDeadline(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "turn", StartedAt: manager.now()}
+	manager.startTyping(context.Background(), "token")
+	waitFor(t, time.Second, func() bool { return api.actionCount() >= 2 })
+	owner.mu.Lock()
+	owner.foreground = nil
+	owner.mu.Unlock()
+	count := api.actionCount()
+	time.Sleep(3 * manager.typingInterval)
+	if got := api.actionCount(); got != count {
+		t.Fatalf("typing continued after exact turn closure: before=%d after=%d", count, got)
+	}
+
+	owner.mu.Lock()
+	owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "deadline", StartedAt: manager.now()}
+	owner.mu.Unlock()
+	manager.typingDeadline = 25 * time.Millisecond
+	manager.startTyping(context.Background(), "token")
+	waitFor(t, time.Second, func() bool { return api.actionCount() > count })
+	time.Sleep(2 * manager.typingDeadline)
+	deadlineCount := api.actionCount()
+	time.Sleep(3 * manager.typingInterval)
+	if got := api.actionCount(); got != deadlineCount {
+		t.Fatalf("typing exceeded safety deadline: before=%d after=%d", deadlineCount, got)
+	}
+}
+
+func TestTypingFailureDoesNotFailAcceptedInputAndMutationsSerialize(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	owner.foreground = &brain.HostForegroundTurn{HostSessionID: "host", HostGeneration: "gen", HostTurnID: "turn", StartedAt: manager.now()}
+	api.actionErr = errors.New("chat action unavailable")
+	update := Update{UpdateID: 2, Message: &Message{MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "accepted"}}
+	if err := manager.handleUpdate(context.Background(), "token", update); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.store.snapshot().Processed["2"].Disposition; got != "accepted" {
+		t.Fatalf("chat action failure changed admission: %q", got)
+	}
+	waitFor(t, time.Second, func() bool { return api.actionCount() >= 1 })
+	manager.stopTyping()
+
+	api.actionErr = nil
+	api.blockSend = make(chan struct{})
+	api.sendStarted = make(chan struct{})
+	delivered := make(chan error, 1)
+	go func() { delivered <- manager.deliverOne(context.Background(), "token") }()
+	<-api.sendStarted
+	manager.startTyping(context.Background(), "token")
+	time.Sleep(2 * manager.typingInterval)
+	close(api.blockSend)
+	if err := <-delivered; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool { return api.actionCount() >= 2 })
+	manager.stopTyping()
+	if maximum := api.maxMutation.Load(); maximum != 1 {
+		t.Fatalf("outbound Telegram mutations overlapped: max=%d", maximum)
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition was not met before timeout")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

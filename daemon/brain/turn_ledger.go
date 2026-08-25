@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,6 +53,14 @@ type TurnRecord struct {
 	// expired lease can never make a newer turn stale.
 	LeaseDeadline time.Time `json:"lease_deadline,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type turnReadCache struct {
+	valid   bool
+	size    int64
+	modTime time.Time
+	current map[string]TurnRecord
+	exact   map[string]TurnRecord
 }
 
 // TurnFactRecord is one durable applied observation on a turn. FactID is the
@@ -183,7 +192,7 @@ func (t TurnRecord) snapshot() watcher.TurnSnapshot {
 		TurnID:                 t.TurnID,
 		Status:                 t.Status,
 		AcceptedAt:             t.AcceptedAt,
-		SettledAt:              t.SettledAt,
+		SettledAt:              cloneTimePointer(t.SettledAt),
 		Summary:                t.Summary,
 		Attention:              t.Attention,
 		ControlState:           t.ControlState,
@@ -308,7 +317,7 @@ func (s *Store) fsmStateForAdmission(candidate watcher.InputAdmission) (*lifecyc
 		}
 		return st, nil
 	}
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		if st.Attempt != nil && st.Attempt.SessionID == candidate.SessionID {
 			return st, nil
 		}
@@ -323,7 +332,7 @@ func (s *Store) InputAdmission(sessionID, proposedTurnID string) (watcher.InputA
 	if s == nil || sessionID == "" || proposedTurnID == "" {
 		return watcher.InputAdmission{}, false, nil
 	}
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		if admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID)); admission != nil && admission.SessionID == sessionID {
 			return admissionSnapshot(st, admission), true, nil
 		}
@@ -343,7 +352,7 @@ func (s *Store) PendingInputAdmissions(sessionID string) ([]watcher.InputAdmissi
 		return nil, nil
 	}
 	out := make([]watcher.InputAdmission, 0)
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		admission := st.Admission
 		if admission != nil && admission.SessionID == sessionID &&
 			(admission.Status == lifecycle.AdmissionPrepared || admission.Status == lifecycle.AdmissionAmbiguous) {
@@ -401,7 +410,7 @@ func (s *Store) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadS
 	if s == nil || s.fsm == nil {
 		return watcher.InputAdmission{}, fmt.Errorf("brain store is not configured")
 	}
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))
 		if admission == nil || admission.SessionID != sessionID {
 			continue
@@ -491,7 +500,7 @@ func (s *Store) rebuildFSMProjections() error {
 	if s == nil || s.fsm == nil {
 		return fmt.Errorf("brain store is not configured")
 	}
-	states := s.fsm.ListStates()
+	states := s.fsm.ListViews()
 	var firstErr error
 	note := func(err error) {
 		if err != nil && firstErr == nil {
@@ -533,7 +542,7 @@ func (s *Store) rebuildFSMProjections() error {
 }
 
 func (s *Store) fsmAdmission(sessionID, proposedTurnID string) (*lifecycle.State, *lifecycle.AdmissionState, error) {
-	for _, st := range s.fsm.ListStates() {
+	for _, st := range s.fsm.ListViews() {
 		admission := st.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))
 		if admission != nil && admission.SessionID == sessionID {
 			return st, admission, nil
@@ -642,16 +651,13 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 	attemptState, hasAttempt := s.fsmWorkByAttemptSession(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	database, err := s.loadPresentationLocked()
+	turns, err := s.turnRecordsLocked()
 	if err != nil {
 		return watcher.TurnSnapshot{}, false, err
 	}
 	if hasAttempt && attemptState.Attempt != nil {
 		attemptToken := string(attemptState.Attempt.TurnToken)
-		for _, turn := range database.BrainTurns {
-			if turn.SessionID != sessionID || turn.TurnID != attemptToken {
-				continue
-			}
+		if turn, found := turns.exact[turnRecordKey(sessionID, attemptToken)]; found {
 			snapshot := turn.snapshot()
 			snapshot.LeaseDeadline = attemptState.Attempt.LeaseDeadline
 			if admission := attemptState.AdmissionByToken(attemptState.Attempt.TurnToken); admission != nil &&
@@ -692,7 +698,7 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 		}
 		return snapshot, true, nil
 	}
-	turn, found := currentTurnForSession(database, sessionID)
+	turn, found := turns.current[sessionID]
 	if !found {
 		return watcher.TurnSnapshot{}, false, nil
 	}
@@ -709,16 +715,47 @@ func (s *Store) TurnByID(sessionID, turnID string) (watcher.TurnSnapshot, bool, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	database, err := s.loadPresentationLocked()
+	turns, err := s.turnRecordsLocked()
 	if err != nil {
 		return watcher.TurnSnapshot{}, false, err
 	}
-	for _, turn := range database.BrainTurns {
-		if turn.SessionID == sessionID && turn.TurnID == turnID {
-			return turn.snapshot(), true, nil
-		}
+	turn, found := turns.exact[turnRecordKey(sessionID, turnID)]
+	if found {
+		return turn.snapshot(), true, nil
 	}
 	return watcher.TurnSnapshot{}, false, nil
+}
+
+func (s *Store) turnRecordsLocked() (*turnReadCache, error) {
+	info, err := os.Stat(s.presentationPath())
+	if err != nil {
+		return nil, err
+	}
+	if s.turnCache.valid && s.turnCache.size == info.Size() && s.turnCache.modTime.Equal(info.ModTime()) {
+		return &s.turnCache, nil
+	}
+	database, err := s.loadPresentationLocked()
+	if err != nil {
+		return nil, err
+	}
+	next := turnReadCache{
+		valid: true, size: info.Size(), modTime: info.ModTime(),
+		current: make(map[string]TurnRecord), exact: make(map[string]TurnRecord, len(database.BrainTurns)),
+	}
+	for _, turn := range database.BrainTurns {
+		next.exact[turnRecordKey(turn.SessionID, turn.TurnID)] = turn
+		current, found := next.current[turn.SessionID]
+		if !found || turn.AcceptedAt.After(current.AcceptedAt) ||
+			(turn.AcceptedAt.Equal(current.AcceptedAt) && turn.TurnID > current.TurnID) {
+			next.current[turn.SessionID] = turn
+		}
+	}
+	s.turnCache = next
+	return &s.turnCache, nil
+}
+
+func turnRecordKey(sessionID, turnID string) string {
+	return sessionID + "\x00" + turnID
 }
 
 func currentTurnForSession(database presentationDatabase, sessionID string) (TurnRecord, bool) {
@@ -1344,7 +1381,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	}
 	var state *lifecycle.State
 	var admission *lifecycle.AdmissionState
-	for _, candidate := range s.fsm.ListStates() {
+	for _, candidate := range s.fsm.ListViews() {
 		if exact := candidate.AdmissionByToken(lifecycle.TurnToken(fact.TurnID)); exact != nil &&
 			exact.SessionID == fact.SessionID && exact.SignalProtocol && exact.ClaimToken == "" {
 			state, admission = candidate, exact
@@ -1352,7 +1389,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 		}
 	}
 	if state == nil || admission == nil {
-		for _, candidate := range s.fsm.ListStates() {
+		for _, candidate := range s.fsm.ListViews() {
 			a := candidate.Admission
 			if a != nil && a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
 				return false, errDelegatedTurnMismatch

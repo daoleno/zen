@@ -6,11 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/brain"
 )
@@ -20,6 +21,13 @@ const (
 	maxMessageText     = 4096
 	maxOutboxRows      = 512
 	maxProcessedUpdate = 512
+	maxTopicMappings   = 64
+	maxTopicOps        = 128
+	maxTopicNameRunes  = 128
+	// topicCreateBackoff caps the retry delay for a definite createForumTopic
+	// rejection. Definite rejection proves no Topic was created, so retrying is
+	// safe; the cap keeps a permanently rejected create from busy-looping.
+	topicCreateBackoff = 5 * time.Minute
 )
 
 type brainOwner interface {
@@ -27,23 +35,35 @@ type brainOwner interface {
 	ChatThreadID() (string, error)
 	ThreadTimeline(threadID string, limit int) ([]brain.TimelineItem, error)
 	NewChat() (brain.Snapshot, error)
+	CurrentHostForegroundTurn() (*brain.HostForegroundTurn, error)
+	DelegatedSessions() ([]brain.AgentRef, error)
+	WorkForSession(sessionID string) (brain.Work, bool, error)
+	SubmitExternalSessionInput(sessionID, receipt, body string) (brain.ExternalInputDisposition, error)
+	SessionProjection(sessionID string) (brain.SessionProjection, error)
 }
 
 type Options struct {
-	API         API
-	Now         func() time.Time
-	PollTimeout int
-	Backoff     time.Duration
+	API            API
+	Now            func() time.Time
+	PollTimeout    int
+	Backoff        time.Duration
+	TypingInterval time.Duration
+	TypingDeadline time.Duration
 }
 
 type Manager struct {
-	store       *store
-	api         API
-	brain       brainOwner
-	now         func() time.Time
-	pollTimeout int
-	backoff     time.Duration
-	wake        chan struct{}
+	store          *store
+	api            API
+	brain          brainOwner
+	now            func() time.Time
+	pollTimeout    int
+	backoff        time.Duration
+	wake           chan struct{}
+	outboundMu     sync.Mutex
+	typingMu       sync.Mutex
+	typingCancel   context.CancelFunc
+	typingInterval time.Duration
+	typingDeadline time.Duration
 }
 
 func NewManager(root string, owner *brain.Service) (*Manager, error) {
@@ -71,7 +91,16 @@ func NewManagerWithOptions(root string, owner brainOwner, options Options) (*Man
 	if backoff <= 0 {
 		backoff = time.Second
 	}
-	manager := &Manager{store: state, api: api, brain: owner, now: now, pollTimeout: pollTimeout, backoff: backoff, wake: make(chan struct{}, 1)}
+	typingInterval := options.TypingInterval
+	if typingInterval <= 0 {
+		typingInterval = 4 * time.Second
+	}
+	typingDeadline := options.TypingDeadline
+	if typingDeadline <= 0 {
+		typingDeadline = 10 * time.Minute
+	}
+	manager := &Manager{store: state, api: api, brain: owner, now: now, pollTimeout: pollTimeout, backoff: backoff,
+		wake: make(chan struct{}, 1), typingInterval: typingInterval, typingDeadline: typingDeadline}
 	if err := manager.initializeDeliveryBoundary(); err != nil {
 		return nil, err
 	}
@@ -140,6 +169,10 @@ func (m *Manager) Configure(ctx context.Context, token string) (Status, error) {
 			state.Outbox = nil
 			state.Projection = map[string]string{}
 			state.WorkMessages = map[string]int64{}
+			state.Topics = nil
+			state.TopicOps = nil
+			state.TopicProjection = map[string]string{}
+			state.TopicMessages = map[string]int64{}
 		}
 		state.Enabled = true
 		state.BotID = bot.ID
@@ -193,6 +226,9 @@ func (m *Manager) Disable() error {
 		state.LastError = ""
 		return nil
 	})
+	if err == nil {
+		m.stopTyping()
+	}
 	m.signal()
 	return err
 }
@@ -215,7 +251,7 @@ func (m *Manager) Enable() error {
 }
 
 func (m *Manager) RevokeOwner() error {
-	return m.store.mutate(func(state *durableState) error {
+	err := m.store.mutate(func(state *durableState) error {
 		state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
 		state.DeliveryStartedAt = time.Time{}
 		state.ChallengeSHA256 = ""
@@ -223,11 +259,21 @@ func (m *Manager) RevokeOwner() error {
 		state.Outbox = nil
 		state.Projection = map[string]string{}
 		state.WorkMessages = map[string]int64{}
+		state.Topics = nil
+		state.TopicOps = nil
+		state.TopicProjection = map[string]string{}
+		state.TopicMessages = map[string]int64{}
 		return nil
 	})
+	if err == nil {
+		m.stopTyping()
+	}
+	m.signal()
+	return err
 }
 
 func (m *Manager) Remove() error {
+	m.stopTyping()
 	if err := m.store.removeToken(); err != nil {
 		return err
 	}
@@ -252,10 +298,25 @@ func (m *Manager) Status() Status {
 			status.AmbiguousDelivery++
 		}
 	}
+	status.TopicMappings = len(state.Topics)
+	for _, op := range state.TopicOps {
+		switch op.State {
+		case "ambiguous":
+			status.TopicAmbiguousOps++
+		case "failed":
+			status.TopicFailedOps++
+		}
+	}
+	for _, row := range state.Outbox {
+		if row.TopicKey != "" && row.State == "failed" {
+			status.TopicFailedMessages++
+		}
+	}
 	switch {
 	case !state.Enabled:
 		status.State = StateDisabled
-	case state.WebhookConflict || state.LastError != "" || status.AmbiguousDelivery > 0:
+	case state.WebhookConflict || state.LastError != "" || status.AmbiguousDelivery > 0 ||
+		status.TopicAmbiguousOps > 0 || status.TopicFailedMessages > 0:
 		status.State = StateDegraded
 	case state.OwnerID == 0 || state.ChatID == 0:
 		status.State = StateSetupPending
@@ -301,6 +362,16 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		if err := m.refreshTopicCapability(ctx, token); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			m.recordError("Telegram topic capability is temporarily unavailable.")
+			if !m.wait(ctx, m.jitteredBackoff()) {
+				return ctx.Err()
+			}
+			continue
+		}
 		state = m.store.snapshot()
 		if state.WebhookConflict {
 			continue
@@ -329,11 +400,46 @@ func (m *Manager) Run(ctx context.Context) error {
 			if err := m.projectTimeline(); err != nil {
 				m.recordError("Brain timeline projection is temporarily unavailable.")
 			}
+			if err := m.projectSessionTopics(ctx, token); err != nil {
+				m.recordError("Session topic projection is temporarily unavailable.")
+			}
 			if err := m.deliverPending(ctx, token, 8); err != nil && ctx.Err() == nil {
 				m.recordError("Telegram delivery is degraded.")
 			}
+			if err := m.deliverTopicOps(ctx, token, 8); err != nil && ctx.Err() == nil {
+				m.recordError("Telegram topic operations are degraded.")
+			}
 		}
 	}
+}
+
+// refreshTopicCapability re-reads getMe's has_topics_enabled so a BotFather
+// topic-mode change becomes actionable without leaving private talk state
+// unrepresented. Existing mappings stay when capability is lost: delivery to
+// an existing Topic does not depend on the flag; only new Topic creation does.
+func (m *Manager) refreshTopicCapability(ctx context.Context, token string) error {
+	bot, err := m.api.GetMe(ctx, token)
+	if err != nil {
+		return err
+	}
+	available := bot.Topics
+	current := m.store.snapshot()
+	message := ""
+	if !available {
+		message = "Telegram topic mode is disabled; enable Threaded mode in @BotFather to create Session topics."
+	}
+	if current.TopicsAvailable == available && (available || current.LastError == message) {
+		return nil
+	}
+	return m.store.mutate(func(state *durableState) error {
+		state.TopicsAvailable = available
+		if !available {
+			state.LastError = message
+		} else if state.LastError == message {
+			state.LastError = ""
+		}
+		return nil
+	})
 }
 
 func (m *Manager) refreshWebhookState(ctx context.Context, token string) error {
@@ -435,9 +541,19 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 	message := update.Message
 	if message != nil && message.From != nil && !message.From.IsBot && message.SenderChat == nil && message.Chat.Type == "private" {
 		if state.OwnerID == 0 {
-			disposition = m.tryBind(*message, state)
+			if isGeneralThread(message.MessageThreadID) {
+				disposition = m.tryBind(*message, state)
+			} else {
+				// Binding is a General-topic contract; a topic-scoped /start can
+				// never outrank the exact General route and fails closed.
+				disposition = "binding_rejected"
+			}
 		} else if message.From.ID == state.OwnerID && message.Chat.ID == state.ChatID {
-			disposition = m.handleOwnerMessage(ctx, *message, update.UpdateID)
+			if isGeneralThread(message.MessageThreadID) {
+				disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+			} else {
+				disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+			}
 		}
 	}
 	now := m.now().UTC()
@@ -480,7 +596,7 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 	return "bound"
 }
 
-func (m *Manager) handleOwnerMessage(ctx context.Context, message Message, updateID int64) string {
+func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message Message, updateID int64) string {
 	command, _ := parseCommand(message.Text)
 	switch command {
 	case "/help", "/start":
@@ -524,7 +640,7 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, message Message, updat
 	}
 	switch result {
 	case brain.ExternalInputAccepted:
-		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Accepted by Zen Brain.", message.MessageID)
+		m.startTyping(ctx, token)
 		return "accepted"
 	case brain.ExternalInputUncertain:
 		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether Brain received this message. It was not replayed.", message.MessageID)
@@ -537,10 +653,73 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, message Message, updat
 	}
 }
 
+func (m *Manager) startTyping(parent context.Context, token string) {
+	if m.brain == nil {
+		return
+	}
+	turn, err := m.brain.CurrentHostForegroundTurn()
+	if err != nil || turn == nil {
+		return
+	}
+	state := m.store.snapshot()
+	if !state.Enabled || state.OwnerID == 0 || state.ChatID == 0 {
+		return
+	}
+	m.stopTyping()
+	ctx, cancel := context.WithCancel(parent)
+	m.typingMu.Lock()
+	m.typingCancel = cancel
+	m.typingMu.Unlock()
+	go m.runTyping(ctx, token, state.ChatID, *turn)
+}
+
+func (m *Manager) runTyping(ctx context.Context, token string, chatID int64, expected brain.HostForegroundTurn) {
+	deadline := time.NewTimer(m.typingDeadline)
+	defer deadline.Stop()
+	for {
+		if !m.typingTurnActive(expected, chatID) {
+			return
+		}
+		m.outboundMu.Lock()
+		_ = m.api.SendChatAction(ctx, token, ChatActionRequest{ChatID: chatID, Action: "typing"})
+		m.outboundMu.Unlock()
+
+		timer := time.NewTimer(m.typingInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-deadline.C:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *Manager) typingTurnActive(expected brain.HostForegroundTurn, chatID int64) bool {
+	state := m.store.snapshot()
+	if !state.Enabled || state.OwnerID == 0 || state.ChatID != chatID {
+		return false
+	}
+	active, err := m.brain.CurrentHostForegroundTurn()
+	return err == nil && active != nil && *active == expected
+}
+
+func (m *Manager) stopTyping() {
+	m.typingMu.Lock()
+	cancel := m.typingCancel
+	m.typingCancel = nil
+	m.typingMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (m *Manager) enqueueText(id, text string, reply int64) {
 	_ = m.store.mutate(func(state *durableState) error {
-		for index, chunk := range chunkText(text, maxMessageText) {
-			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk, ReplyMessageID: reply, CreatedAt: m.now().UTC()})
+		for index, chunk := range chunkRichText(richText{Text: strings.TrimSpace(text)}, maxMessageText) {
+			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, ReplyMessageID: reply, CreatedAt: m.now().UTC()})
 		}
 		return nil
 	})
@@ -558,6 +737,12 @@ func enqueue(state *durableState, record outboxRecord) bool {
 		return false
 	}
 	record.State = "pending"
+	if record.PlainText == "" {
+		record.PlainText = record.Text
+	}
+	if record.Variant == "" {
+		record.Variant = plainVariant
+	}
 	state.Outbox = append(state.Outbox, record)
 	return true
 }
@@ -607,24 +792,31 @@ func (m *Manager) projectTimeline() error {
 			}
 			switch {
 			case item.Kind == "assistant_message" || (item.Role == "assistant" && item.Kind == ""):
-				for index, chunk := range chunkText(item.Body, maxMessageText) {
+				rendered := renderMarkdown(item.Body)
+				for index, chunk := range chunkRichText(rendered, maxMessageText) {
 					id := fmt.Sprintf("assistant:%s:%d", item.ID, index)
 					checkpoint := "outbox:" + id
-					digest := digestText(chunk)
+					digest := digestRichText(chunk)
 					if state.Projection[checkpoint] == digest {
 						continue
 					}
-					if enqueue(state, outboxRecord{ID: id, Kind: "send", CanonicalID: item.ID, Text: chunk, CreatedAt: m.now().UTC()}) {
+					if enqueue(state, outboxRecord{ID: id, Kind: "send", CanonicalID: item.ID, Text: chunk.Text,
+						PlainText: chunk.Text, Entities: chunk.Entities, Variant: variantFor(chunk), CreatedAt: m.now().UTC()}) {
 						state.Projection[checkpoint] = digest
 					}
 				}
 			case item.Kind == "work_card" && item.WorkID != "":
-				text := workCardText(item)
-				digest := digestText(text)
+				content := renderMarkdown(workCardText(item))
+				chunks := chunkRichText(content, maxMessageText)
+				if len(chunks) == 0 {
+					continue
+				}
+				formatted := chunks[0]
+				digest := digestRichText(formatted)
 				if state.Projection["work:"+item.WorkID] == digest {
 					continue
 				}
-				if coalescePendingWork(state, item, text, digest, m.now().UTC()) {
+				if coalescePendingWork(state, item, formatted, digest, m.now().UTC()) {
 					continue
 				}
 				messageID := state.WorkMessages[item.WorkID]
@@ -632,7 +824,9 @@ func (m *Manager) projectTimeline() error {
 				if messageID != 0 {
 					kind = "edit"
 				}
-				enqueue(state, outboxRecord{ID: "work:" + item.WorkID + ":" + digest, Kind: kind, CanonicalID: item.ID, WorkID: item.WorkID, MessageID: messageID, Text: text, CreatedAt: m.now().UTC()})
+				enqueue(state, outboxRecord{ID: "work:" + item.WorkID + ":" + digest, Kind: kind, CanonicalID: item.ID,
+					WorkID: item.WorkID, MessageID: messageID, Text: formatted.Text, PlainText: formatted.Text,
+					Entities: formatted.Entities, Variant: variantFor(formatted), CreatedAt: m.now().UTC()})
 			}
 		}
 		return nil
@@ -642,7 +836,7 @@ func (m *Manager) projectTimeline() error {
 // coalescePendingWork keeps one unsent logical row per Work. An indeterminate
 // dispatch blocks later automatic sends because no local state can prove
 // whether Telegram already created the Work message.
-func coalescePendingWork(state *durableState, item brain.TimelineItem, text, digest string, now time.Time) bool {
+func coalescePendingWork(state *durableState, item brain.TimelineItem, content richText, digest string, now time.Time) bool {
 	for index := range state.Outbox {
 		row := &state.Outbox[index]
 		if row.WorkID != item.WorkID {
@@ -652,7 +846,10 @@ func coalescePendingWork(state *durableState, item brain.TimelineItem, text, dig
 		case "pending":
 			row.ID = "work:" + item.WorkID + ":" + digest
 			row.CanonicalID = item.ID
-			row.Text = text
+			row.Text = content.Text
+			row.PlainText = content.Text
+			row.Entities = content.Entities
+			row.Variant = variantFor(content)
 			row.AttemptAt = time.Time{}
 			return true
 		case "dispatching", "ambiguous":
@@ -689,12 +886,31 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 
 	var sent Message
 	var err error
-	if row.Kind == "edit" {
-		sent, err = m.api.EditMessage(ctx, token, EditRequest{ChatID: state.ChatID, MessageID: row.MessageID, Text: row.Text})
-	} else {
-		sent, err = m.api.SendMessage(ctx, token, SendRequest{ChatID: state.ChatID, Text: row.Text, ReplyToMessageID: row.ReplyMessageID})
+	entities := row.Entities
+	if row.Variant != formattedVariant {
+		entities = nil
 	}
+	m.outboundMu.Lock()
+	if row.Kind == "edit" {
+		sent, err = m.api.EditMessage(ctx, token, EditRequest{ChatID: state.ChatID, MessageID: row.MessageID, Text: row.Text, Entities: entities})
+	} else {
+		sent, err = m.api.SendMessage(ctx, token, SendRequest{ChatID: state.ChatID, MessageThreadID: row.MessageThreadID, Text: row.Text, Entities: entities, ReplyToMessageID: row.ReplyMessageID})
+	}
+	m.outboundMu.Unlock()
 	if err != nil {
+		if row.Variant == formattedVariant && formattingRejected(err) {
+			return m.store.mutate(func(current *durableState) error {
+				for i := range current.Outbox {
+					if current.Outbox[i].ID == row.ID && current.Outbox[i].State == "dispatching" {
+						current.Outbox[i].State = "pending"
+						current.Outbox[i].Variant = plainVariant
+						current.Outbox[i].Text = current.Outbox[i].PlainText
+						current.Outbox[i].AttemptAt = time.Time{}
+					}
+				}
+				return nil
+			})
+		}
 		if retryable(err) {
 			delay := retryDelay(err)
 			if delay <= 0 {
@@ -737,7 +953,11 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 			current.Outbox[i].MessageID = sent.MessageID
 			if row.WorkID != "" {
 				current.WorkMessages[row.WorkID] = sent.MessageID
-				current.Projection["work:"+row.WorkID] = digestText(row.Text)
+				current.Projection["work:"+row.WorkID] = digestRichText(richText{Text: row.PlainText, Entities: row.Entities})
+			}
+			if row.TopicKey != "" {
+				current.TopicMessages[row.TopicKey] = sent.MessageID
+				current.TopicProjection[row.TopicKey] = digestRichText(richText{Text: row.PlainText, Entities: row.Entities})
 			}
 		}
 		current.LastSendAt = &now
@@ -798,6 +1018,18 @@ func digestText(text string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+func digestRichText(content richText) string {
+	encoded, _ := json.Marshal(content)
+	return digestText(string(encoded))
+}
+
+func variantFor(content richText) string {
+	if len(content.Entities) > 0 {
+		return formattedVariant
+	}
+	return plainVariant
+}
+
 func workCardText(item brain.TimelineItem) string {
 	parts := []string{strings.TrimSpace(item.Title)}
 	if parts[0] == "" {
@@ -809,33 +1041,8 @@ func workCardText(item brain.TimelineItem) string {
 		}
 	}
 	text := strings.Join(parts, "\n")
-	chunks := chunkText(text, maxMessageText)
-	if len(chunks) == 0 {
+	if strings.TrimSpace(text) == "" {
 		return "Work update"
 	}
-	return chunks[0]
-}
-
-func chunkText(text string, limit int) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	var chunks []string
-	for utf8.RuneCountInString(text) > limit {
-		runes := []rune(text)
-		split := limit
-		for i := limit; i > limit/2; i-- {
-			if runes[i-1] == '\n' || runes[i-1] == ' ' {
-				split = i
-				break
-			}
-		}
-		chunks = append(chunks, strings.TrimSpace(string(runes[:split])))
-		text = strings.TrimSpace(string(runes[split:]))
-	}
-	if text != "" {
-		chunks = append(chunks, text)
-	}
-	return chunks
+	return text
 }

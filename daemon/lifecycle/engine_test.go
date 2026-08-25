@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -859,6 +860,94 @@ func TestCancelReleasesAttempt(t *testing.T) {
 	}
 	if _, _, err := e.AdmitTurn("w1", AdmitTurnInput{SessionID: "s9", TurnToken: "t9"}); err != ErrTerminal {
 		t.Fatalf("post-terminal admit: %v", err)
+	}
+}
+
+func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
+	e, root := newTestEngine(t)
+	define(t, e, "w1", PolicyBounded)
+	if _, err := e.SetWait("w1", WakeUserInput, "operator confirmation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Complete("w1", 0, "operator", "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := e.State("w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != StatusDone || completed.Wake != nil {
+		t.Fatalf("completed Work retained wake: %+v", completed)
+	}
+	_ = e.Close()
+
+	database, err := readLifecycleDatabase(filepath.Join(root, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.Works["w1"].Wake = &WakeState{
+		Kind: WakeUserInput, Ref: "legacy wake", Since: time.Now().UTC(),
+	}
+	if err := writeLifecycleDatabase(filepath.Join(root, "state.json"), database); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.Sweep(); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := reopened.State("w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Status != StatusDone || repaired.Wake != nil {
+		t.Fatalf("legacy terminal Work was not repaired: %+v", repaired)
+	}
+}
+
+func TestOperationalViewsOmitLargeSeenSourcesAndRemainIsolated(t *testing.T) {
+	e, _ := newTestEngine(t)
+	defer e.Close()
+	define(t, e, "w-large-dedupe", PolicyBounded)
+
+	e.mu.Lock()
+	state := e.works["w-large-dedupe"].st
+	for i := 0; i < 100_000; i++ {
+		state.SeenSources[fmt.Sprintf("source-%06d", i)] = true
+	}
+	e.mu.Unlock()
+
+	full, err := e.State("w-large-dedupe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(full.SeenSources); got != 100_001 {
+		t.Fatalf("complete State lost dedupe sources: got %d", got)
+	}
+
+	views := e.ListViews()
+	if len(views) != 1 || views[0].ID != "w-large-dedupe" {
+		t.Fatalf("unexpected operational views: %+v", views)
+	}
+	if views[0].SeenSources != nil {
+		t.Fatalf("operational view copied %d internal dedupe sources", len(views[0].SeenSources))
+	}
+	views[0].Title = "mutated view"
+	unchanged, err := e.State("w-large-dedupe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Title == views[0].Title {
+		t.Fatal("operational view aliases canonical state")
+	}
+	if _, ok := e.NextWakeAt(); ok {
+		t.Fatal("Work without timers produced a wake")
+	}
+	if err := e.Sweep(); err != nil {
+		t.Fatal(err)
 	}
 }
 

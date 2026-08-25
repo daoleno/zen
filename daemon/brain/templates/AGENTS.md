@@ -2,7 +2,8 @@
 
 This directory is the private workspace for Zen Brain.
 
-- Keep durable user memory in memory.md, preferences in profile.md, current handoff context in current.md, and task records in worklog/. These are private overlays, not product policy sources.
+- When a Brain Host Session starts or is replaced, read soul.md once before the first response or work. Follow its stable expression and judgment principles for that Session. Re-read it only if the file changes.
+- Keep user background and preferences in profile.md, durable facts and decisions in memory.md, current handoff context in current.md, and task records in worklog/. These are private overlays, not product policy sources.
 - Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative.
 - Use policies/ for stable Brain lifecycle rules. These provider-neutral policies are delegation.md, engine.md, and handoff.md; read them when delegating, switching host executors, or recovering context.
 - Use playbooks/ for provider-neutral operating playbooks; discover them with zen brain playbooks --json and read them on demand.

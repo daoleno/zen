@@ -1,5 +1,8 @@
 import * as DocumentPicker from "expo-document-picker";
-import { File, type UploadProgress as NativeUploadProgress } from "expo-file-system";
+import {
+  File,
+  type UploadProgress as NativeUploadProgress,
+} from "expo-file-system";
 
 const BINARY_UPLOAD_TYPE = 0;
 import { buildAuthorizationHeader } from "./auth";
@@ -23,6 +26,8 @@ export type UploadProgressSnapshot = {
   transferredBytes: number | null;
   totalBytes: number | null;
   fraction: number | null;
+  bytesPerSecond?: number;
+  etaSeconds?: number;
 };
 
 export type ActiveAttachmentUpload = {
@@ -38,6 +43,7 @@ export interface AttachmentUploadOperation {
 
 export interface AttachmentUploadOperationOptions {
   onProgress?(progress: UploadProgressSnapshot): void;
+  now?(): number;
 }
 
 export class AttachmentUploadCancelledError extends Error {
@@ -107,6 +113,7 @@ export function createAttachmentUploadOperation(
   let settled = false;
   let cancelFailure: Error | null = null;
   let projectedProgress: UploadProgressSnapshot | null = null;
+  let uploadStartedAt = 0;
 
   const result = (async (): Promise<UploadedAttachment> => {
     try {
@@ -136,10 +143,15 @@ export function createAttachmentUploadOperation(
             projectedProgress,
             nativeProgress,
           );
+          projectedProgress = projectUploadTiming(
+            projectedProgress,
+            (options.now?.() ?? Date.now()) - uploadStartedAt,
+          );
           options.onProgress?.(projectedProgress);
         },
       });
 
+      uploadStartedAt = options.now?.() ?? Date.now();
       const uploadResult = await task.uploadAsync();
       if (cancelRequested) {
         throw cancelFailure ?? new AttachmentUploadCancelledError();
@@ -234,6 +246,37 @@ export function projectUploadProgress(
       : Math.max(previous?.fraction ?? 0, nativeFraction);
 
   return { transferredBytes, totalBytes, fraction };
+}
+
+function projectUploadTiming(
+  progress: UploadProgressSnapshot,
+  elapsedMilliseconds: number,
+): UploadProgressSnapshot {
+  if (
+    elapsedMilliseconds < 250 ||
+    progress.transferredBytes === null ||
+    progress.transferredBytes <= 0
+  ) {
+    return progress;
+  }
+  const bytesPerSecond = Math.round(
+    progress.transferredBytes / (elapsedMilliseconds / 1000),
+  );
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return progress;
+  }
+  if (progress.totalBytes === null) {
+    return { ...progress, bytesPerSecond };
+  }
+  const remainingBytes = Math.max(
+    0,
+    progress.totalBytes - progress.transferredBytes,
+  );
+  return {
+    ...progress,
+    bytesPerSecond,
+    etaSeconds: Math.ceil(remainingBytes / bytesPerSecond),
+  };
 }
 
 export async function pickUploadDocument(): Promise<UploadDocumentAsset | null> {

@@ -567,8 +567,17 @@ type State struct {
 	TerminalAt      *time.Time      `json:"terminal_at,omitempty"`
 }
 
-// Clone returns a deep copy (used for snapshots and safe read views).
+// Clone returns a complete deep copy, including the internal source-dedupe
+// index. Use cloneView for operational reads that do not inspect that index.
 func (s *State) Clone() *State {
+	return s.clone(true)
+}
+
+func (s *State) cloneView() *State {
+	return s.clone(false)
+}
+
+func (s *State) clone(includeSeenSources bool) *State {
 	if s == nil {
 		return nil
 	}
@@ -601,7 +610,8 @@ func (s *State) Clone() *State {
 		}
 		out.Admission = &admission
 	}
-	if len(s.SeenSources) > 0 {
+	out.SeenSources = nil
+	if includeSeenSources && len(s.SeenSources) > 0 {
 		out.SeenSources = make(map[string]bool, len(s.SeenSources))
 		for k, v := range s.SeenSources {
 			out.SeenSources[k] = v

@@ -30,6 +30,10 @@ func TestNewStoreCreatesExactlyOneCanonicalManagedBlock(t *testing.T) {
 	if got := mustReadFile(t, store.profileNotesPath()); string(got) != defaultProfileNotes {
 		t.Fatalf("profile.md = %q, want %q", got, defaultProfileNotes)
 	}
+	if got := mustReadFile(t, store.soulPath()); string(got) != defaultSoulPrinciples {
+		t.Fatalf("soul.md differs from shipped default:\n%s", got)
+	}
+	assertFileMode(t, store.soulPath(), 0o600)
 }
 
 func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *testing.T) {
@@ -40,6 +44,7 @@ func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *test
 		t.Fatal(err)
 	}
 	private := map[string]string{
+		filepath.Join(workspace, "soul.md"):       "# Private Soul\n\nuser-soul-sentinel\n",
 		filepath.Join(workspace, "profile.md"):    "# Private Profile\n\nuser-profile-sentinel\n",
 		filepath.Join(workspace, "memory.md"):     "# Private Memory\n\nuser-memory-sentinel\n",
 		filepath.Join(workspace, "current.md"):    "# Private Current\n\nuser-current-sentinel\n",
@@ -86,12 +91,12 @@ func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *test
 		}
 	}
 	for _, privateFact := range []string{
-		"user-profile-sentinel", "user-memory-sentinel", "user-current-sentinel", "user-worklog-sentinel",
+		"user-soul-sentinel", "user-profile-sentinel", "user-memory-sentinel", "user-current-sentinel", "user-worklog-sentinel",
 		"52466569-0fbc-4623-8fba-d754591a2f83", "49dc23f4-8f89-44b7-aa5b-e740173aad68", "OpenList",
 	} {
 		for name, template := range map[string]string{
 			"AGENTS.md": productWorkspaceInstructions, "delegation.md": productDelegationPolicy,
-			"engine.md": productEnginePolicy, "handoff.md": productHandoffPolicy,
+			"engine.md": productEnginePolicy, "handoff.md": productHandoffPolicy, "soul.md default": defaultSoulPrinciples,
 		} {
 			if strings.Contains(template, privateFact) {
 				t.Fatalf("shipped %s contains private fact %q", name, privateFact)
@@ -319,6 +324,63 @@ func TestNewStoreInitializesExactlyEmptyProfile(t *testing.T) {
 	}
 }
 
+func TestNewStorePreservesEveryExistingNonEmptySoul(t *testing.T) {
+	souls := map[string][]byte{
+		"minimal heading":  []byte("# Brain Soul\n\n"),
+		"whitespace":       []byte(" \n\t\n"),
+		"old looking text": []byte("# Brain Soul\n\nKnown principles: keep this.  \n"),
+	}
+	for name, soul := range souls {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			workspace := filepath.Join(root, "workspace")
+			if err := os.MkdirAll(workspace, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(workspace, "soul.md")
+			if err := os.WriteFile(path, soul, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixed := time.Date(2005, 5, 6, 7, 8, 9, 0, time.UTC)
+			if err := os.Chtimes(path, fixed, fixed); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewStore(root); err != nil {
+				t.Fatal(err)
+			}
+			assertBytesAndMtime(t, path, soul, fixed)
+		})
+	}
+}
+
+func TestNewStoreInitializesExactlyEmptySoulAndThenPreservesIt(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workspace, "soul.md")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustReadFile(t, path); string(got) != defaultSoulPrinciples {
+		t.Fatalf("empty soul differs from shipped default:\n%s", got)
+	}
+	assertFileMode(t, path, 0o600)
+
+	fixed := time.Date(2005, 6, 7, 8, 9, 10, 0, time.UTC)
+	if err := os.Chtimes(path, fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	assertBytesAndMtime(t, path, []byte(defaultSoulPrinciples), fixed)
+}
+
 func TestHousekeepingReportsOnlySortedChangedPaths(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -347,6 +409,49 @@ func TestHousekeepingReportsOnlySortedChangedPaths(t *testing.T) {
 	if len(second.ChangedPaths) != 0 {
 		t.Fatalf("second changed paths = %v, want none", second.ChangedPaths)
 	}
+}
+
+func TestHousekeepingCreatesMissingSoulOnceAndPreservesPrivateSoul(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.soulPath()); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, nil, nil)
+
+	first, err := service.Housekeeping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SoulPath != "soul.md" || !equalStrings(first.ChangedPaths, []string{"soul.md"}) {
+		t.Fatalf("first report = %+v", first)
+	}
+	second, err := service.Housekeeping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.ChangedPaths) != 0 {
+		t.Fatalf("second changed paths = %v, want none", second.ChangedPaths)
+	}
+
+	private := []byte("# Private Soul\n\nPRIVATE_SOUL_SENTINEL\n")
+	if err := os.WriteFile(store.soulPath(), private, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2006, 7, 8, 9, 10, 11, 0, time.UTC)
+	if err := os.Chtimes(store.soulPath(), fixed, fixed); err != nil {
+		t.Fatal(err)
+	}
+	third, err := service.Housekeeping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third.ChangedPaths) != 0 {
+		t.Fatalf("third changed paths = %v, want none", third.ChangedPaths)
+	}
+	assertBytesAndMtime(t, store.soulPath(), private, fixed)
 }
 
 func lateFailureFixture(t *testing.T) (root, agentsPath, handoffPath string, agents []byte, fixed time.Time) {

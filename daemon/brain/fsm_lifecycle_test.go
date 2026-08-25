@@ -1221,6 +1221,64 @@ func TestLifecycleStoreRejectsAdmissionWithoutAttemptedAt(t *testing.T) {
 	}
 }
 
+func TestClaimNextReviewSkipsWorkWithAmbiguousAdmission(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title: "ambiguous review delivery", Objective: "remain quarantined without repeated claims",
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FSM().OpenReview(lifecycle.WorkID(item.ID), "submission_ambiguous", "provider disappeared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkProjection(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	claim, claimed, err := store.ClaimNextReviewAction("brain-host:@1")
+	if err != nil || !claimed {
+		t.Fatalf("initial claim=%+v claimed=%v err=%v", claim, claimed, err)
+	}
+	acceptedAt := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
+	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
+		WorkID: item.ID, SessionID: "brain-host:@1", ProposedTurnID: claim.ProviderTurnID,
+		Receipt: claim.ProviderTurnID, ClaimToken: claim.HandlingID,
+		PayloadSHA256:   pendingSubmissionDigest("ambiguous review"),
+		ProcessIdentity: "process-1", PaneGeneration: "pane-1",
+		Mode: watcher.InputAdmissionFresh, AcceptedAt: acceptedAt,
+	})
+	if err != nil || !created {
+		t.Fatalf("prepare=%+v created=%v err=%v", pending, created, err)
+	}
+	if err := store.MarkInputAdmissionAmbiguous(pending.SessionID, pending.ProposedTurnID, "provider disappeared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReleaseReviewLease(item.ID, claim.HandlingID, claim.ProviderTurnID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.ActiveAdmission() == nil || before.Review == nil || before.Review.Handler != nil {
+		t.Fatalf("fixture is not quarantined: %+v", before)
+	}
+	if next, found, err := store.ClaimNextReviewAction("brain-host:@2"); err != nil || found {
+		t.Fatalf("ambiguous Work was reclaimed: action=%+v found=%v err=%v", next, found, err)
+	}
+	after, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("quarantined Work revision changed: %d -> %d", before.Revision, after.Revision)
+	}
+}
+
 func TestProjectAcceptedAdmissionRejectsZeroAttemptedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

@@ -275,6 +275,13 @@ type TimelineItem struct {
 	WaitFor        string `json:"wait_for,omitempty"`
 }
 
+type timelineReadCache struct {
+	valid   bool
+	size    int64
+	modTime time.Time
+	items   []TimelineItem
+}
+
 func (s *Store) messagesPath() string {
 	return filepath.Join(s.statePath(), "messages.jsonl")
 }
@@ -361,6 +368,7 @@ func (s *Store) appendTimelineItemLocked(item TimelineItem) (TimelineItem, error
 	if err := syncDirectory(filepath.Dir(s.messagesPath())); err != nil {
 		return TimelineItem{}, err
 	}
+	s.timelineCache = timelineReadCache{}
 	return item, nil
 }
 
@@ -413,42 +421,19 @@ func (s *Store) threadTimelineLocked(threadID string, limit int) ([]TimelineItem
 	if limit <= 0 {
 		limit = defaultThreadTimelineLimit
 	}
-	file, err := os.Open(s.messagesPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return []TimelineItem{}, nil
-	}
+	items, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
 	out := []TimelineItem{}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var item TimelineItem
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			return nil, fmt.Errorf("decode timeline line %d: %w", lineNumber, err)
-		}
+	for _, item := range items {
 		item.ID = strings.TrimSpace(item.ID)
 		item.ThreadID = strings.TrimSpace(item.ThreadID)
-		if item.ID == "" {
-			return nil, fmt.Errorf("decode timeline line %d: id is required", lineNumber)
-		}
 		if item.ThreadID != threadID {
 			continue
 		}
 		normalizeLegacyTimelineKind(&item)
 		out = append(out, item)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	sortTimelineItems(out)
 	if len(out) > limit {
@@ -729,10 +714,19 @@ func (s *Store) MarkTimelineWorkCardsRead(workID string) error {
 }
 
 func (s *Store) readAllTimelineItemsLocked() ([]TimelineItem, error) {
-	file, err := os.Open(s.messagesPath())
-	if errors.Is(err, os.ErrNotExist) {
+	info, statErr := os.Stat(s.messagesPath())
+	if errors.Is(statErr, os.ErrNotExist) {
+		s.timelineCache = timelineReadCache{}
 		return []TimelineItem{}, nil
 	}
+	if statErr != nil {
+		return nil, statErr
+	}
+	if s.timelineCache.valid && s.timelineCache.size == info.Size() &&
+		s.timelineCache.modTime.Equal(info.ModTime()) {
+		return cloneTimelineItems(s.timelineCache.items), nil
+	}
+	file, err := os.Open(s.messagesPath())
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +751,24 @@ func (s *Store) readAllTimelineItemsLocked() ([]TimelineItem, error) {
 		normalizeLegacyTimelineKind(&item)
 		out = append(out, item)
 	}
-	return out, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	s.timelineCache = timelineReadCache{
+		valid: true, size: info.Size(), modTime: info.ModTime(), items: cloneTimelineItems(out),
+	}
+	return out, nil
+}
+
+func cloneTimelineItems(items []TimelineItem) []TimelineItem {
+	out := append([]TimelineItem(nil), items...)
+	for index := range out {
+		if out[index].ScheduledFor != nil {
+			scheduledFor := *out[index].ScheduledFor
+			out[index].ScheduledFor = &scheduledFor
+		}
+	}
+	return out
 }
 
 func (s *Store) rewriteTimelineLocked(items []TimelineItem) error {
@@ -793,7 +804,11 @@ func (s *Store) rewriteTimelineLocked(items []TimelineItem) error {
 	if err := os.Rename(tmpName, s.messagesPath()); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(s.messagesPath()))
+	if err := syncDirectory(filepath.Dir(s.messagesPath())); err != nil {
+		return err
+	}
+	s.timelineCache = timelineReadCache{}
+	return nil
 }
 
 func timelineItemsToConversationEvents(items []TimelineItem) []work.CodexConversationEvent {

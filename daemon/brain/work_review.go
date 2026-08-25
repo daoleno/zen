@@ -250,11 +250,14 @@ func cloneWorkReview(review *WorkReview) *WorkReview {
 	copy.EventID = strings.TrimSpace(copy.EventID)
 	copy.Resolution = strings.TrimSpace(copy.Resolution)
 	copy.ResolvedBy = strings.TrimSpace(copy.ResolvedBy)
+	copy.ResolvedAt = cloneTimePointer(review.ResolvedAt)
 	if review.Lease != nil {
 		lease := *review.Lease
 		lease.HostSessionID = strings.TrimSpace(lease.HostSessionID)
 		lease.HandlingID = strings.TrimSpace(lease.HandlingID)
 		lease.ProviderTurnID = strings.TrimSpace(lease.ProviderTurnID)
+		lease.DeliveredAt = cloneTimePointer(review.Lease.DeliveredAt)
+		lease.HandlingEndedAt = cloneTimePointer(review.Lease.HandlingEndedAt)
 		copy.Lease = &lease
 	} else {
 		copy.Lease = nil

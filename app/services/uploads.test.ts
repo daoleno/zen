@@ -316,6 +316,43 @@ describe("native attachment upload", () => {
     );
   });
 
+  test("reports average native throughput and ETA after a stable sample window", async () => {
+    nativeUploadDeferred = deferred();
+    const snapshots: unknown[] = [];
+    let now = 1_000;
+    const operation = createAttachmentUploadOperation(
+      selectedAsset,
+      manualServer,
+      {
+        now: () => now,
+        onProgress: (progress) => snapshots.push(progress),
+      },
+    );
+    await flushMicrotasks();
+    const onProgress = uploadCalls[0].options.onProgress as (progress: {
+      bytesSent: number;
+      totalBytes: number;
+    }) => void;
+
+    now = 1_100;
+    onProgress({ bytesSent: 128, totalBytes: 1024 });
+    now = 1_500;
+    onProgress({ bytesSent: 512, totalBytes: 1024 });
+
+    expect(snapshots).toEqual([
+      { transferredBytes: 128, totalBytes: 1024, fraction: 0.125 },
+      {
+        transferredBytes: 512,
+        totalBytes: 1024,
+        fraction: 0.5,
+        bytesPerSecond: 1024,
+        etaSeconds: 1,
+      },
+    ]);
+    nativeUploadDeferred.resolve(uploadResult);
+    await operation.result;
+  });
+
   test("cancel calls the exact native task once and suppresses late progress/success", async () => {
     nativeUploadDeferred = deferred();
     const snapshots: unknown[] = [];

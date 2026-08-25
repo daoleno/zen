@@ -20,6 +20,13 @@ func (s *Service) HasChatThread(threadID string) (bool, error) {
 	return s.store.HasChatThread(threadID)
 }
 
+func (s *Service) ConversationProjectionVersion() (string, error) {
+	if s == nil || s.store == nil {
+		return "", nil
+	}
+	return s.store.ConversationProjectionVersion()
+}
+
 func (s *Service) ChatThreadIDs() ([]string, error) {
 	if s == nil || s.store == nil {
 		return []string{}, nil

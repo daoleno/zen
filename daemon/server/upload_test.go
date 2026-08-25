@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -325,6 +326,113 @@ func TestUploadCancelledContextDoesNotFinalizeFile(t *testing.T) {
 	assertUploadDirEntries(t, server.uploadDir, nil)
 }
 
+func TestConcurrentKnownLengthUploadsDoNotSerializeBodyReads(t *testing.T) {
+	stateDir := t.TempDir()
+	deviceID := "device-concurrent-upload"
+	authManager, privateKey := uploadAuthFixture(t, stateDir, deviceID)
+	server := New(authManager, nil, nil, nil, nil, nil, nil)
+	limits := uploadLimits{fileBytes: 1 << 20, storeBytes: 2 << 20, retention: uploadRetention}
+
+	firstBody := newGatedUploadBody(512 << 10)
+	firstRequest := rawUploadRequest(t, authManager, privateKey, deviceID, firstBody, "first.bin", "application/octet-stream")
+	firstRequest.ContentLength = 512 << 10
+	firstResponse := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		server.handleUploadWithLimits(firstResponse, firstRequest, limits)
+		close(firstDone)
+	}()
+	<-firstBody.started
+
+	secondRequest := rawUploadRequest(t, authManager, privateKey, deviceID, bytes.NewReader(make([]byte, 128<<10)), "second.bin", "application/octet-stream")
+	secondRequest.ContentLength = 128 << 10
+	secondResponse := httptest.NewRecorder()
+	server.handleUploadWithLimits(secondResponse, secondRequest, limits)
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second upload blocked behind first body read: status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+
+	close(firstBody.release)
+	<-firstDone
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first upload status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	server.uploadMu.Lock()
+	defer server.uploadMu.Unlock()
+	if server.uploadActive != 0 || server.uploadReservedBytes != 0 {
+		t.Fatalf("upload reservations leaked: active=%d bytes=%d", server.uploadActive, server.uploadReservedBytes)
+	}
+}
+
+func TestConcurrentUploadReservationsProtectCapacityAndActivePartial(t *testing.T) {
+	stateDir := t.TempDir()
+	deviceID := "device-concurrent-capacity"
+	authManager, privateKey := uploadAuthFixture(t, stateDir, deviceID)
+	server := New(authManager, nil, nil, nil, nil, nil, nil)
+	limits := uploadLimits{fileBytes: 1 << 20, storeBytes: 1 << 20, retention: uploadRetention}
+
+	firstBody := newGatedUploadBody(768 << 10)
+	firstRequest := rawUploadRequest(t, authManager, privateKey, deviceID, firstBody, "reserved.bin", "application/octet-stream")
+	firstRequest.ContentLength = 768 << 10
+	firstResponse := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		server.handleUploadWithLimits(firstResponse, firstRequest, limits)
+		close(firstDone)
+	}()
+	<-firstBody.started
+
+	entries, err := os.ReadDir(server.uploadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialFound := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".upload-") && strings.HasSuffix(entry.Name(), ".partial") {
+			partialFound = true
+		}
+	}
+	if !partialFound {
+		t.Fatal("active partial upload is missing")
+	}
+
+	secondBody := &countingReadCloser{}
+	secondRequest := rawUploadRequest(t, authManager, privateKey, deviceID, secondBody, "too-much.bin", "application/octet-stream")
+	secondRequest.ContentLength = 512 << 10
+	secondResponse := httptest.NewRecorder()
+	server.handleUploadWithLimits(secondResponse, secondRequest, limits)
+	if secondResponse.Code != http.StatusInsufficientStorage {
+		t.Fatalf("second upload status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	if secondBody.reads != 0 {
+		t.Fatalf("rejected body reads=%d, want 0", secondBody.reads)
+	}
+	entries, err = os.ReadDir(server.uploadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialFound = false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".upload-") && strings.HasSuffix(entry.Name(), ".partial") {
+			partialFound = true
+		}
+	}
+	if !partialFound {
+		t.Fatal("capacity check removed the active partial upload")
+	}
+
+	close(firstBody.release)
+	<-firstDone
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first upload status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	server.uploadMu.Lock()
+	defer server.uploadMu.Unlock()
+	if server.uploadActive != 0 || server.uploadReservedBytes != 0 {
+		t.Fatalf("upload reservations leaked: active=%d bytes=%d", server.uploadActive, server.uploadReservedBytes)
+	}
+}
+
 func TestCleanupUploadStoreRemovesExpiredAndOrphanPartialFiles(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
@@ -482,3 +590,28 @@ func (reader *countingReadCloser) Read([]byte) (int, error) {
 func (*countingReadCloser) Close() error {
 	return nil
 }
+
+type gatedUploadBody struct {
+	started chan struct{}
+	release chan struct{}
+	body    *bytes.Reader
+	once    sync.Once
+}
+
+func newGatedUploadBody(size int) *gatedUploadBody {
+	return &gatedUploadBody{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		body:    bytes.NewReader(make([]byte, size)),
+	}
+}
+
+func (body *gatedUploadBody) Read(buffer []byte) (int, error) {
+	body.once.Do(func() {
+		close(body.started)
+		<-body.release
+	})
+	return body.body.Read(buffer)
+}
+
+func (*gatedUploadBody) Close() error { return nil }

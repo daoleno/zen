@@ -227,6 +227,51 @@ func TestReadCodexUsageByDateSplitsAcrossLocalDays(t *testing.T) {
 	}
 }
 
+func TestCodexRolloutCacheIsolatedAndInvalidatedAfterAppend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	firstLine := `{"timestamp":"2026-04-05T15:59:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(firstLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector := NewCollector()
+	first, err := collector.readCodexUsageByDate(path, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(collector.codexRolloutCache) != 1 || first["2026-04-05"].totalTokens != 110 {
+		t.Fatalf("first cached usage = %#v cache=%#v", first, collector.codexRolloutCache)
+	}
+	first["2026-04-05"] = codexUsage{totalTokens: 999}
+	second, err := collector.readCodexUsageByDate(path, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second["2026-04-05"].totalTokens != 110 {
+		t.Fatal("caller mutation aliased the Codex rollout cache")
+	}
+
+	secondLine := `{"timestamp":"2026-04-05T16:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":40,"output_tokens":18,"reasoning_output_tokens":4,"total_tokens":178}}}}` + "\n"
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(secondLine); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := collector.readCodexUsageByDate(path, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third["2026-04-05"].totalTokens != 178 {
+		t.Fatalf("appended rollout did not invalidate cache: %#v", third)
+	}
+}
+
 func TestReadCodexUsageHandlesLargeRolloutLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout.jsonl")

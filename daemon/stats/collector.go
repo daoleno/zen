@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +24,10 @@ import (
 // it never modifies source files.
 type Collector struct {
 	mu                       sync.RWMutex
+	refreshMu                sync.Mutex
+	codexRolloutCacheMu      sync.Mutex
 	cached                   *StatsResponse
+	codexRolloutCache        map[string]codexRolloutCacheEntry
 	codexUsageClient         codexUsageHTTPClient
 	codexUsageEndpoint       string
 	codexUsageTimeout        time.Duration
@@ -40,6 +44,7 @@ func NewCollector() *Collector {
 		codexUsageEndpoint: codexUsageEndpoint,
 		codexUsageTimeout:  8 * time.Second,
 		now:                time.Now,
+		codexRolloutCache:  make(map[string]codexRolloutCacheEntry),
 	}
 }
 
@@ -261,6 +266,9 @@ type sessionUsage struct {
 // ── Refresh logic ──────────────────────────────────────────
 
 func (c *Collector) refresh() {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
 	home := homeDir()
 	if home == "" {
 		return
@@ -1005,7 +1013,7 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			projectName = ""
 		}
 
-		usageByDate, err := readCodexUsageByDate(t.RolloutPath, time.Local)
+		usageByDate, err := c.readCodexUsageByDate(t.RolloutPath, time.Local)
 		if err != nil || len(usageByDate) == 0 {
 			skipped++
 			if len(skippedExamples) < 3 {
@@ -1096,6 +1104,14 @@ type codexUsage struct {
 	cacheRead       int64
 }
 
+type codexRolloutCacheEntry struct {
+	size     int64
+	modTime  time.Time
+	timezone string
+	byDate   map[string]codexUsage
+	err      error
+}
+
 func (u codexUsage) hasTokens() bool {
 	return u.totalTokens > 0 ||
 		u.inputTokens > 0 ||
@@ -1118,6 +1134,50 @@ func readCodexUsage(path string) (codexUsage, error) {
 		return codexUsage{}, fmt.Errorf("no token_count event found")
 	}
 	return usage, nil
+}
+
+func (c *Collector) readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsage, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		c.codexRolloutCacheMu.Lock()
+		delete(c.codexRolloutCache, path)
+		c.codexRolloutCacheMu.Unlock()
+		return nil, err
+	}
+	timezone := ""
+	if loc != nil {
+		timezone = loc.String()
+	}
+
+	c.codexRolloutCacheMu.Lock()
+	if cached, ok := c.codexRolloutCache[path]; ok && cached.size == info.Size() &&
+		cached.modTime.Equal(info.ModTime()) && cached.timezone == timezone {
+		c.codexRolloutCacheMu.Unlock()
+		return cloneCodexUsageByDate(cached.byDate), cached.err
+	}
+	c.codexRolloutCacheMu.Unlock()
+
+	byDate, readErr := readCodexUsageByDate(path, loc)
+	c.codexRolloutCacheMu.Lock()
+	if c.codexRolloutCache == nil {
+		c.codexRolloutCache = make(map[string]codexRolloutCacheEntry)
+	}
+	c.codexRolloutCache[path] = codexRolloutCacheEntry{
+		size: info.Size(), modTime: info.ModTime(), timezone: timezone, byDate: cloneCodexUsageByDate(byDate), err: readErr,
+	}
+	c.codexRolloutCacheMu.Unlock()
+	return byDate, readErr
+}
+
+func cloneCodexUsageByDate(source map[string]codexUsage) map[string]codexUsage {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]codexUsage, len(source))
+	for date, usage := range source {
+		clone[date] = usage
+	}
+	return clone
 }
 
 func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsage, error) {
@@ -1155,8 +1215,13 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for scanner.Scan() {
+		raw := scanner.Bytes()
+		if !bytes.Contains(raw, []byte(`"type":"token_count"`)) ||
+			!bytes.Contains(raw, []byte(`"type":"event_msg"`)) {
+			continue
+		}
 		var line tokenCountLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+		if err := json.Unmarshal(raw, &line); err != nil {
 			continue
 		}
 		if line.Type != "event_msg" || line.Payload.Type != "token_count" {

@@ -2503,17 +2503,21 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	}
 }
 
-func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) {
+func TestServiceBootstrapPromptReferencesPrivateWorkspaceWithoutEmbeddingIt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	memorySecret := "MEMORY_SECRET_SHOULD_NOT_BE_IN_BOOTSTRAP"
 	profileSecret := "PROFILE_SECRET_SHOULD_NOT_BE_IN_BOOTSTRAP"
+	soulSecret := "SOUL_SECRET_SHOULD_NOT_BE_IN_BOOTSTRAP"
 	if err := os.WriteFile(store.memoryPath(), []byte("# Brain Memory\n\n"+memorySecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(store.profileNotesPath(), []byte("# Brain Profile\n\n"+profileSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.soulPath(), []byte("# Brain Soul\n\n"+soulSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{}
@@ -2534,6 +2538,9 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 	prompt := fw.sentCalls[0].text
 	for _, want := range []string{
 		"Treat this bootstrap as a map, not the full context",
+		"At the start of this Brain Host Session, read soul.md once before the first response or work",
+		"Follow its stable expression and judgment principles for this Session",
+		"Re-read it only if the file changes",
 		"read memory.md/profile.md on demand",
 		"repairs product-owned standard Brain workspace blocks",
 		"zen brain context --json",
@@ -2543,6 +2550,7 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 		"current.md",
 		"memory.md",
 		"profile.md",
+		"soul.md",
 		"policies/delegation.md",
 		"policies/engine.md",
 		"policies/handoff.md",
@@ -2554,6 +2562,7 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 	for _, unexpected := range []string{
 		memorySecret,
 		profileSecret,
+		soulSecret,
 		"Current memory:",
 		"Current profile notes:",
 	} {

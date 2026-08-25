@@ -11,7 +11,30 @@ import (
 	"time"
 )
 
-const stateSchema = 1
+const stateSchema = 3
+
+const (
+	formattedVariant = "formatted"
+	plainVariant     = "plain"
+
+	// Topic mapping lifecycle states. Routing authority is the Session ID;
+	// these states mirror the Session's durable lifecycle so input can fail
+	// closed exactly.
+	topicStateActive    = "active"
+	topicStateCompleted = "completed"
+	topicStateStale     = "stale"
+
+	// Topic operation kinds and states. Ops share the outbox's
+	// pending -> dispatching -> sent/failed/ambiguous discipline because
+	// createForumTopic has no caller-supplied idempotency key: only a definite
+	// API rejection may retry, a transport-indeterminate outcome stays
+	// ambiguous and is never retried automatically.
+	topicOpCreate = "create"
+	topicOpRename = "rename"
+	topicOpClose  = "close"
+	topicOpReopen = "reopen"
+	topicOpDelete = "delete"
+)
 
 type updateRecord struct {
 	Disposition string    `json:"disposition"`
@@ -19,16 +42,47 @@ type updateRecord struct {
 }
 
 type outboxRecord struct {
-	ID             string    `json:"id"`
-	Kind           string    `json:"kind"`
-	CanonicalID    string    `json:"canonical_id,omitempty"`
-	WorkID         string    `json:"work_id,omitempty"`
-	Text           string    `json:"text"`
-	ReplyMessageID int64     `json:"reply_message_id,omitempty"`
-	MessageID      int64     `json:"message_id,omitempty"`
-	State          string    `json:"state"`
-	AttemptAt      time.Time `json:"attempt_at,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID              string          `json:"id"`
+	Kind            string          `json:"kind"`
+	CanonicalID     string          `json:"canonical_id,omitempty"`
+	WorkID          string          `json:"work_id,omitempty"`
+	TopicKey        string          `json:"topic_key,omitempty"`
+	Text            string          `json:"text"`
+	PlainText       string          `json:"plain_text,omitempty"`
+	Entities        []MessageEntity `json:"entities,omitempty"`
+	Variant         string          `json:"variant,omitempty"`
+	ReplyMessageID  int64           `json:"reply_message_id,omitempty"`
+	MessageThreadID int64           `json:"message_thread_id,omitempty"`
+	MessageID       int64           `json:"message_id,omitempty"`
+	State           string          `json:"state"`
+	AttemptAt       time.Time       `json:"attempt_at,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+
+type topicMapping struct {
+	SessionID       string    `json:"session_id"`
+	ThreadID        string    `json:"thread_id,omitempty"`
+	WorkID          string    `json:"work_id,omitempty"`
+	ChatID          int64     `json:"chat_id"`
+	MessageThreadID int64     `json:"message_thread_id"`
+	Label           string    `json:"label,omitempty"`
+	State           string    `json:"state"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type topicOpRecord struct {
+	ID              string    `json:"id"`
+	Kind            string    `json:"kind"`
+	SessionID       string    `json:"session_id,omitempty"`
+	MessageThreadID int64     `json:"message_thread_id,omitempty"`
+	Label           string    `json:"label,omitempty"`
+	ThreadID        string    `json:"thread_id,omitempty"`
+	WorkID          string    `json:"work_id,omitempty"`
+	State           string    `json:"state"`
+	AttemptAt       time.Time `json:"attempt_at,omitempty"`
+	Attempts        int       `json:"attempts,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type durableState struct {
@@ -48,6 +102,10 @@ type durableState struct {
 	Outbox             []outboxRecord          `json:"outbox,omitempty"`
 	Projection         map[string]string       `json:"projection,omitempty"`
 	WorkMessages       map[string]int64        `json:"work_messages,omitempty"`
+	Topics             []topicMapping          `json:"topics,omitempty"`
+	TopicOps           []topicOpRecord         `json:"topic_ops,omitempty"`
+	TopicProjection    map[string]string       `json:"topic_projection,omitempty"`
+	TopicMessages      map[string]int64        `json:"topic_messages,omitempty"`
 	DeliveryStartedAt  time.Time               `json:"delivery_started_at,omitempty"`
 	LastReceiveAt      *time.Time              `json:"last_receive_at,omitempty"`
 	LastSendAt         *time.Time              `json:"last_send_at,omitempty"`
@@ -70,6 +128,7 @@ func openStore(root string) (*store, error) {
 	}
 	s := &store{dir: dir, statePath: filepath.Join(dir, "state.json"), tokenPath: filepath.Join(dir, "token")}
 	s.state = newDurableState()
+	migrated := false
 	data, err := os.ReadFile(s.statePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -78,15 +137,35 @@ func openStore(root string) (*store, error) {
 		if err := json.Unmarshal(data, &s.state); err != nil {
 			return nil, fmt.Errorf("decode Telegram state: %w", err)
 		}
-		if s.state.Schema != stateSchema {
+		switch s.state.Schema {
+		case 1:
+			for index := range s.state.Outbox {
+				s.state.Outbox[index].PlainText = s.state.Outbox[index].Text
+				s.state.Outbox[index].Variant = "plain"
+			}
+			s.state.Schema = stateSchema
+			migrated = true
+		case 2:
+			// Schema 2 -> 3 only introduces topic state maps/slices, which
+			// did not exist before; every existing row is preserved as-is.
+			s.state.Schema = stateSchema
+			migrated = true
+		case stateSchema:
+		default:
 			return nil, fmt.Errorf("unsupported Telegram state schema")
 		}
 	}
 	s.ensureMapsLocked()
-	changed := false
+	changed := migrated
 	for index := range s.state.Outbox {
 		if s.state.Outbox[index].State == "dispatching" {
 			s.state.Outbox[index].State = "ambiguous"
+			changed = true
+		}
+	}
+	for index := range s.state.TopicOps {
+		if s.state.TopicOps[index].State == "dispatching" {
+			s.state.TopicOps[index].State = "ambiguous"
 			changed = true
 		}
 	}
@@ -99,19 +178,12 @@ func openStore(root string) (*store, error) {
 }
 
 func newDurableState() durableState {
-	return durableState{Schema: stateSchema, Processed: map[string]updateRecord{}, Projection: map[string]string{}, WorkMessages: map[string]int64{}}
+	return durableState{Schema: stateSchema, Processed: map[string]updateRecord{}, Projection: map[string]string{}, WorkMessages: map[string]int64{},
+		TopicProjection: map[string]string{}, TopicMessages: map[string]int64{}}
 }
 
 func (s *store) ensureMapsLocked() {
-	if s.state.Processed == nil {
-		s.state.Processed = map[string]updateRecord{}
-	}
-	if s.state.Projection == nil {
-		s.state.Projection = map[string]string{}
-	}
-	if s.state.WorkMessages == nil {
-		s.state.WorkMessages = map[string]int64{}
-	}
+	ensureDurableMaps(&s.state)
 }
 
 func (s *store) snapshot() durableState {
@@ -120,6 +192,7 @@ func (s *store) snapshot() durableState {
 	data, _ := json.Marshal(s.state)
 	var copy durableState
 	_ = json.Unmarshal(data, &copy)
+	ensureDurableMaps(&copy)
 	return copy
 }
 
@@ -131,6 +204,24 @@ func (s *store) mutate(fn func(*durableState) error) error {
 	}
 	s.ensureMapsLocked()
 	return s.saveLocked()
+}
+
+func ensureDurableMaps(state *durableState) {
+	if state.Processed == nil {
+		state.Processed = map[string]updateRecord{}
+	}
+	if state.Projection == nil {
+		state.Projection = map[string]string{}
+	}
+	if state.WorkMessages == nil {
+		state.WorkMessages = map[string]int64{}
+	}
+	if state.TopicProjection == nil {
+		state.TopicProjection = map[string]string{}
+	}
+	if state.TopicMessages == nil {
+		state.TopicMessages = map[string]int64{}
+	}
 }
 
 func (s *store) saveLocked() error {

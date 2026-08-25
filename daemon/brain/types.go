@@ -70,6 +70,7 @@ type BrainContext struct {
 type HousekeepingReport struct {
 	Workspace            string     `json:"workspace,omitempty"`
 	CurrentPath          string     `json:"current_path"`
+	SoulPath             string     `json:"soul_path"`
 	PolicyPaths          []string   `json:"policy_paths"`
 	PlaybookPaths        []string   `json:"playbook_paths"`
 	WorklogPath          string     `json:"worklog_path"`

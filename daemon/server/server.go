@@ -112,6 +112,8 @@ type Server struct {
 	brainSnapshotBroadcastHook func(payload map[string]any)
 	uploadDir                  string
 	uploadMu                   sync.Mutex
+	uploadActive               int
+	uploadReservedBytes        int64
 	sessionFileAgentLoader     func(agentID string) *classifier.Agent
 	sessionFileCapabilityClock func() time.Time
 	authRevocationUnsubscribe  func()
@@ -1718,9 +1720,11 @@ func (s *Server) cancelCodexSubscriptionsLocked(conn *websocket.Conn) {
 }
 
 type codexConversationSubscriptionSnapshot struct {
-	conversation work.CodexConversation
-	fingerprint  string
-	eventsByID   map[string]work.CodexConversationEvent
+	conversation           work.CodexConversation
+	fingerprint            string
+	providerFingerprint    string
+	brainProjectionVersion string
+	eventsByID             map[string]work.CodexConversationEvent
 	// eventFingerprints memoizes per-event content fingerprints so unchanged
 	// history is never re-hashed on later polls or deltas.
 	eventFingerprints map[string]string
@@ -1846,7 +1850,22 @@ func (s *Server) publishCodexConversationSubscription(
 
 	conversation = work.SanitizeConversationProjection(conversation)
 	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
-	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
+	providerFingerprint := codexConversationSubscriptionFingerprint(conversation)
+	brainProjectionVersion := ""
+	if brainScoped {
+		if version, versionErr := s.brainConversationProjectionVersion(raw.ConversationScopeKey); versionErr == nil {
+			brainProjectionVersion = version
+			if (*previous) != nil && (*previous).providerFingerprint == providerFingerprint &&
+				(*previous).brainProjectionVersion == brainProjectionVersion &&
+				(*previous).attached == resolved.fromWatcher {
+				return
+			}
+		}
+		conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
+		if version, versionErr := s.brainConversationProjectionVersion(raw.ConversationScopeKey); versionErr == nil {
+			brainProjectionVersion = version
+		}
+	}
 
 	// Never-erase guard: an unavailable empty load (transcript miss, malformed
 	// partial write, mtime flap) must never replace an authoritative non-empty
@@ -1891,13 +1910,15 @@ func (s *Server) publishCodexConversationSubscription(
 		return
 	}
 	next := codexConversationSubscriptionSnapshot{
-		conversation:      conversation,
-		fingerprint:       fingerprint.fingerprint,
-		eventsByID:        codexConversationEventsByID(conversation.Events),
-		eventFingerprints: fingerprint.eventFingerprints,
-		revision:          1,
-		readerVersion:     readerVersion,
-		attached:          resolved.fromWatcher,
+		conversation:           conversation,
+		fingerprint:            fingerprint.fingerprint,
+		providerFingerprint:    providerFingerprint,
+		brainProjectionVersion: brainProjectionVersion,
+		eventsByID:             codexConversationEventsByID(conversation.Events),
+		eventFingerprints:      fingerprint.eventFingerprints,
+		revision:               1,
+		readerVersion:          readerVersion,
+		attached:               resolved.fromWatcher,
 	}
 	if (*previous) != nil {
 		next.revision = (*previous).revision + 1
@@ -1948,6 +1969,29 @@ func (s *Server) publishCodexConversationSubscription(
 	)
 	s.sendJSON(conn, delta)
 	*previous = &next
+}
+
+func (s *Server) brainConversationProjectionVersion(scopeKey string) (string, error) {
+	const prefix = "brain-thread:"
+	if s.brain == nil || !strings.HasPrefix(strings.TrimSpace(scopeKey), prefix) {
+		return "", nil
+	}
+	threadID := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(scopeKey), prefix))
+	version, err := s.brain.ConversationProjectionVersion()
+	if err != nil {
+		return "", err
+	}
+	hash := fnv.New64a()
+	writeFingerprintString(hash, version)
+	if s.calendar != nil {
+		for _, result := range s.calendar.ScheduledResults(threadID, 0) {
+			writeFingerprintString(hash, result.ID)
+			writeFingerprintString(hash, string(result.Status))
+			writeFingerprintString(hash, result.Body)
+			writeFingerprintString(hash, result.CreatedAt.Format(time.RFC3339Nano))
+		}
+	}
+	return fmt.Sprintf("%016x", hash.Sum64()), nil
 }
 
 func conversationForProviderAttachment(conversation work.CodexConversation, attached bool) work.CodexConversation {
@@ -3311,40 +3355,65 @@ func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, 
 	}
 
 	s.uploadMu.Lock()
-	defer s.uploadMu.Unlock()
 	if err := os.MkdirAll(s.uploadDir, 0o700); err != nil {
+		s.uploadMu.Unlock()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	storedBytes, err := cleanupUploadStore(s.uploadDir, time.Now(), limits)
+	storedBytes, err := inspectUploadStore(s.uploadDir, time.Now(), limits, s.uploadActive == 0)
 	if err != nil {
+		s.uploadMu.Unlock()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	remainingStore := limits.storeBytes - storedBytes
+	remainingStore := limits.storeBytes - storedBytes - s.uploadReservedBytes
 	if remainingStore <= 0 {
+		s.uploadMu.Unlock()
 		http.Error(w, "upload storage capacity reached; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
 		return
 	}
 	if r.ContentLength >= 0 && r.ContentLength > remainingStore {
+		s.uploadMu.Unlock()
 		http.Error(w, "upload exceeds remaining storage capacity; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
 		return
 	}
-	copyLimit := min(limits.fileBytes, remainingStore)
+	reservation := min(limits.fileBytes, remainingStore)
+	if r.ContentLength >= 0 {
+		reservation = r.ContentLength
+	}
+	copyLimit := min(limits.fileBytes, reservation)
 	name := uuid.New().String() + safeUploadExtension(originalName)
 	path := filepath.Join(s.uploadDir, name)
 	dst, createErr := os.CreateTemp(s.uploadDir, ".upload-*.partial")
 	if createErr != nil {
+		s.uploadMu.Unlock()
 		http.Error(w, createErr.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.uploadActive++
+	s.uploadReservedBytes += reservation
+	s.uploadMu.Unlock()
+
 	partialPath := dst.Name()
 	keepPartial := true
+	reservationReleased := false
+	releaseReservation := func() {
+		if reservationReleased {
+			return
+		}
+		s.uploadMu.Lock()
+		s.uploadActive--
+		s.uploadReservedBytes -= reservation
+		s.uploadMu.Unlock()
+		reservationReleased = true
+	}
+	defer releaseReservation()
 	defer func() {
 		if keepPartial {
 			_ = os.Remove(partialPath)
 		}
 	}()
+	startedAt := time.Now()
 	written, copyErr := io.Copy(dst, io.LimitReader(r.Body, copyLimit+1))
 	closeErr := dst.Close()
 	if copyErr != nil {
@@ -3371,17 +3440,33 @@ func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, 
 		writeUploadReadError(w, contextErr, limits)
 		return
 	}
-	if renameErr := os.Rename(partialPath, path); renameErr != nil {
+	s.uploadMu.Lock()
+	renameErr := os.Rename(partialPath, path)
+	s.uploadActive--
+	s.uploadReservedBytes -= reservation
+	s.uploadMu.Unlock()
+	reservationReleased = true
+	if renameErr != nil {
 		http.Error(w, renameErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	keepPartial = false
+	duration := time.Since(startedAt)
+	rateMiB := 0.0
+	if duration > 0 {
+		rateMiB = float64(written) / (1024 * 1024) / duration.Seconds()
+	}
+	log.Printf("upload complete bytes=%d duration_ms=%d rate_mib_s=%.2f", written, duration.Milliseconds(), rateMiB)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})
 }
 
 func cleanupUploadStore(dir string, now time.Time, limits uploadLimits) (int64, error) {
+	return inspectUploadStore(dir, now, limits, true)
+}
+
+func inspectUploadStore(dir string, now time.Time, limits uploadLimits, removePartials bool) (int64, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return 0, nil
@@ -3400,8 +3485,10 @@ func cleanupUploadStore(dir string, now time.Time, limits uploadLimits) (int64, 
 		}
 		path := filepath.Join(dir, entry.Name())
 		if strings.HasPrefix(entry.Name(), ".upload-") && strings.HasSuffix(entry.Name(), ".partial") {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return 0, fmt.Errorf("remove partial upload %s: %w", entry.Name(), err)
+			if removePartials {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return 0, fmt.Errorf("remove partial upload %s: %w", entry.Name(), err)
+				}
 			}
 			continue
 		}

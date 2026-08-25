@@ -65,6 +65,12 @@ func Reduce(prev *State, ev Event) *State {
 
 	case KWorkCancelled:
 		if terminal(s) {
+			// Older transaction images could retain a parked wake after a
+			// terminal transition. A same-status supervisor repair event makes
+			// that invalid state converge without reopening the Work.
+			if s.Status == StatusCancelled {
+				s.Wake = nil
+			}
 			return noop(s, ev)
 		}
 		p := payload[CancelledPayload](ev)
@@ -74,9 +80,13 @@ func Reduce(prev *State, ev Event) *State {
 		now := ev.At
 		s.TerminalAt = &now
 		s.Review = nil
+		s.Wake = nil
 
 	case KWorkCompleted:
 		if terminal(s) {
+			if s.Status == StatusDone {
+				s.Wake = nil
+			}
 			return noop(s, ev)
 		}
 		p := payload[CancelledPayload](ev)
@@ -86,6 +96,7 @@ func Reduce(prev *State, ev Event) *State {
 		now := ev.At
 		s.TerminalAt = &now
 		s.Review = nil
+		s.Wake = nil
 
 	case KAdmissionPrepared:
 		if terminal(s) || ev.TurnToken == "" || s.AdmissionByToken(ev.TurnToken) != nil || s.ActiveAdmission() != nil {
@@ -371,6 +382,7 @@ func Reduce(prev *State, ev Event) *State {
 			s.Status = StatusCancelled
 			now := ev.At
 			s.TerminalAt = &now
+			s.Wake = nil
 		case DispositionWait:
 			if s.Attempt == nil {
 				s.Wake = &WakeState{
@@ -457,6 +469,7 @@ func applyCompletionRule(s *State, ev Event, p DonePayload) {
 		now := ev.At
 		s.TerminalAt = &now
 		s.Review = nil
+		s.Wake = nil
 	default:
 		// An unaffirmed result awaits Brain judgment. until_done changes only
 		// whether this result can implicitly complete the Work; it never queues

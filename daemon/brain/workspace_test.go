@@ -30,6 +30,9 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	if !workspaceTreeHasFile(tree.Entries, "profile.md") {
 		t.Fatal("WorkspaceTree() missing profile.md")
 	}
+	if !workspaceTreeHasFile(tree.Entries, "soul.md") {
+		t.Fatal("WorkspaceTree() missing soul.md")
+	}
 	if !workspaceTreeHasFile(tree.Entries, "current.md") {
 		t.Fatal("WorkspaceTree() missing current.md")
 	}
@@ -116,6 +119,32 @@ func TestNewStoreCreatesMinimalUserOwnedProfile(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "## Voice") || strings.Contains(string(raw), "## Response Shape") {
 		t.Fatalf("profile.md contains product communication policy:\n%s", raw)
+	}
+}
+
+func TestNewStoreCreatesDefaultSoulWithPrivateMode(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(store.soulPath())
+	if err != nil {
+		t.Fatalf("read soul.md: %v", err)
+	}
+	if string(raw) != defaultSoulPrinciples {
+		t.Fatalf("soul.md differs from shipped default:\n%s", raw)
+	}
+	assertFileMode(t, store.soulPath(), 0o600)
+	for _, marker := range []string{
+		"stable expression and judgment principles",
+		"ASD-STE100 Simplified Technical English as a practical style baseline",
+		"Zen does not claim full ASD-STE100 conformance without formal dictionary and document validation",
+		"ASD-STE100 does not govern Chinese",
+	} {
+		if !strings.Contains(string(raw), marker) {
+			t.Fatalf("soul.md missing %q:\n%s", marker, raw)
+		}
 	}
 }
 
@@ -284,6 +313,8 @@ func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 		t.Fatalf("AGENTS.md does not contain one managed block:\n%s", content)
 	}
 	for _, marker := range []string{
+		"When a Brain Host Session starts or is replaced, read soul.md once",
+		"Re-read it only if the file changes",
 		"## Brain Communication Rules",
 		"Avoid AI slop",
 		"Answer first",

@@ -54,5 +54,21 @@ scheduler retry.
 Fresh Brain homes receive the provider-neutral lifecycle and delegated
 Agent protocol from the versioned templates under `daemon/brain/templates/`.
 Managed-block repair refreshes those product-owned blocks while preserving
-user-authored text and the private `profile.md`, `memory.md`, `current.md`, and
-worklogs.
+user-authored text and the private `soul.md`, `profile.md`, `memory.md`,
+`current.md`, and worklogs. `soul.md` owns stable expression and judgment
+principles. `profile.md` owns user background and preferences. `memory.md` owns
+durable facts and decisions. Fresh and upgraded homes receive a missing or
+empty `soul.md` with mode `0600`; reconciliation and `zen brain gc` preserve
+every nonempty `soul.md` byte for byte. Brain Host startup and managed
+`AGENTS.md` require the Host to read `soul.md` once when each Brain Host Session
+starts or is replaced, before its first response or work. The Host follows the
+loaded principles for that Session and re-reads the file only if it changes.
+The bootstrap prompt references the file but never copies its private contents.
+
+The shipped `soul.md` uses ASD-STE100 Simplified Technical English as a
+practical English style baseline: short direct sentences, one instruction or
+idea per sentence where practical, active voice, explicit actors and
+conditions, consistent terms, defined abbreviations, and no decorative idioms
+or vague references. Zen does not claim full ASD-STE100 conformance without
+formal dictionary and document validation. Chinese uses analogous clarity
+rules; Zen does not claim that the English standard governs Chinese.

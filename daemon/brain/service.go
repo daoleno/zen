@@ -57,6 +57,11 @@ type Service struct {
 	execs   *work.ExecutorConfig
 	now     func() time.Time
 
+	// sessionConversationHook overrides the provider conversation reader for
+	// the Session projection surface. Tests inject sanitized fixtures; nil
+	// keeps the real reader. It carries no routing or input authority.
+	sessionConversationHook func(agent *classifier.Agent, provider string, now time.Time) (work.CodexConversation, error)
+
 	dispatchMu sync.Mutex
 	// inFlightHostInputs protects only the live Prepare -> provider mutation ->
 	// Admit/Abort critical section. It is deliberately process-local: durable
@@ -552,6 +557,7 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 	return HousekeepingReport{
 		Workspace:            s.store.WorkspacePath(),
 		CurrentPath:          "current.md",
+		SoulPath:             "soul.md",
 		PolicyPaths:          []string{"policies/delegation.md", "policies/engine.md", "policies/handoff.md"},
 		PlaybookPaths:        seedPlaybookPaths(),
 		WorklogPath:          worklogDirName,
@@ -2148,6 +2154,16 @@ func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDi
 	return ExternalInputNotSubmitted, nil
 }
 
+// CurrentHostForegroundTurn exposes the canonical durable foreground identity
+// to read-only presentation adapters. It grants no authority to close or alter
+// the turn.
+func (s *Service) CurrentHostForegroundTurn() (*HostForegroundTurn, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	return s.store.CurrentHostForegroundTurn()
+}
+
 func firstNonNil(values ...error) error {
 	for _, value := range values {
 		if value != nil {
@@ -3403,14 +3419,15 @@ Delegated executor: %s (%s via %s)
 Host executor capabilities: %s
 
 Durable state rules:
+- At the start of this Brain Host Session, read soul.md once before the first response or work. Follow its stable expression and judgment principles for this Session. Re-read it only if the file changes. Its private contents are not included in this bootstrap.
 - Keep long-term memory in memory.md; read it only when durable memory is relevant to the user's current request.
-- Keep personality, preferences, and profile notes in profile.md; read it when preferences or user background matter.
+- Keep user background, preferences, and profile notes in profile.md; read it when preferences or user background matter.
 - Keep a human-readable handoff projection in current.md. Work/Event database state is authoritative.
 - Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable lifecycle rules.
 - Use playbooks/ for provider-neutral operating playbooks. Discover them with zen brain playbooks --json; read playbook files on demand (progressive disclosure — do not assume full bodies are in bootstrap).
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
 - Do not use arbitrary project repositories as Brain's default workspace.
-- Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration; read memory.md/profile.md on demand instead of assuming they are in the prompt.
+- Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration. The Session-start rule above owns soul.md loading; read memory.md/profile.md on demand instead of assuming their contents are in the prompt.
 
 Agent lifecycle rules:
 - You are running in a real tmux agent session.

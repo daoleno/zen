@@ -73,7 +73,7 @@ func (s *Store) reconcileManagedWorkspace() error {
 }
 
 func (s *Store) planManagedWorkspaceReconciliation() ([]workspaceWritePlan, error) {
-	plans := make([]workspaceWritePlan, 0, 5)
+	plans := make([]workspaceWritePlan, 0, 6)
 	for _, spec := range s.managedMarkdownSpecs() {
 		current, exists, err := readOptionalFile(spec.path)
 		if err != nil {
@@ -102,6 +102,21 @@ func (s *Store) planManagedWorkspaceReconciliation() ([]workspaceWritePlan, erro
 	if !profileExists || !bytes.Equal(currentProfile, updatedProfile) {
 		plans = append(plans, workspaceWritePlan{
 			path: profilePath, relativePath: "profile.md", data: updatedProfile,
+		})
+	}
+
+	soulPath := s.soulPath()
+	currentSoul, soulExists, err := readOptionalFile(soulPath)
+	if err != nil {
+		return nil, fmt.Errorf("read Brain workspace soul.md: %w", err)
+	}
+	updatedSoul := currentSoul
+	if !soulExists || len(currentSoul) == 0 {
+		updatedSoul = []byte(defaultSoulPrinciples)
+	}
+	if !soulExists || !bytes.Equal(currentSoul, updatedSoul) {
+		plans = append(plans, workspaceWritePlan{
+			path: soulPath, relativePath: "soul.md", data: updatedSoul,
 		})
 	}
 	return plans, nil
@@ -212,6 +227,7 @@ func standardWorkspaceRelativePaths() []string {
 		"current.md",
 		"memory.md",
 		"profile.md",
+		"soul.md",
 		"policies/delegation.md",
 		"policies/engine.md",
 		"policies/handoff.md",

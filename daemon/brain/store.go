@@ -24,11 +24,14 @@ const (
 type Store struct {
 	Root string
 
-	mu      sync.Mutex
-	subMu   sync.Mutex
-	subs    map[int]chan WorkChange
-	nextSub int
-	now     func() time.Time
+	mu                sync.Mutex
+	subMu             sync.Mutex
+	subs              map[int]chan WorkChange
+	nextSub           int
+	now               func() time.Time
+	timelineCache     timelineReadCache
+	turnCache         turnReadCache
+	presentationCache presentationReadCache
 
 	// fsm is the canonical delegated-Work lifecycle engine (docs/work-lifecycle.md).
 	fsm *lifecycle.Engine
@@ -98,6 +101,32 @@ func (s *Store) WorkspacePath() string {
 
 func (s *Store) HostSessionPath() string {
 	return filepath.Join(s.statePath(), "host_session.json")
+}
+
+// ConversationProjectionVersion returns a cheap version of every durable
+// Brain file that can change a thread conversation projection. Callers use it
+// only as an invalidation key; canonical content still comes from the normal
+// Store readers after the key changes.
+func (s *Store) ConversationProjectionVersion() (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths := []string{s.messagesPath(), s.presentationPath(), s.ChatStatePath(), s.HostSessionPath()}
+	var version strings.Builder
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(&version, "%s:missing;", path)
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&version, "%s:%d:%d;", path, info.Size(), info.ModTime().UnixNano())
+	}
+	return version.String(), nil
 }
 
 // HostReplacementsPath is an append-only audit log for Brain host replacements.
@@ -467,6 +496,10 @@ func (s *Store) statePath() string {
 
 func (s *Store) memoryPath() string {
 	return filepath.Join(s.WorkspacePath(), "memory.md")
+}
+
+func (s *Store) soulPath() string {
+	return filepath.Join(s.WorkspacePath(), "soul.md")
 }
 
 func (s *Store) remindersPath() string {

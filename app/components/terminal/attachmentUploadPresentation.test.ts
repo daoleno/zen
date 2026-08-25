@@ -3,6 +3,7 @@ import {
   buildAttachmentUploadPresentation,
   buildAttachmentUploadProgressLabel,
   formatAttachmentUploadBytes,
+  formatAttachmentUploadDuration,
 } from "./attachmentUploadPresentation";
 
 describe("attachment upload presentation", () => {
@@ -31,6 +32,20 @@ describe("attachment upload presentation", () => {
     expect(formatAttachmentUploadBytes(0)).toBe("0 B");
     expect(formatAttachmentUploadBytes(1024)).toBe("1 KB");
     expect(formatAttachmentUploadBytes(2.5 * 1024 ** 3)).toBe("2.5 GB");
+  });
+
+  test("stable throughput replaces verbose byte totals and includes ETA", () => {
+    expect(
+      buildAttachmentUploadProgressLabel({
+        transferredBytes: 512 * 1024 ** 2,
+        totalBytes: 1536 * 1024 ** 2,
+        fraction: 1 / 3,
+        bytesPerSecond: 12.4 * 1024 ** 2,
+        etaSeconds: 83,
+      }),
+    ).toBe("33% · 12 MB/s · 1m 23s left");
+    expect(formatAttachmentUploadDuration(0)).toBe("0s");
+    expect(formatAttachmentUploadDuration(3725)).toBe("1h 2m");
   });
 
   test("the shared presentation model exposes determinate accessibility and one Cancel action", () => {
