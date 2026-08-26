@@ -84,7 +84,9 @@ interface UseInterfaceChatSurfaceStateInput {
     draft: string;
     setDraft: (value: string) => void;
   }) => ReactNode;
-  composerModelControl?: import("../../services/providers/sessionModelHelpers").ComposerModelControlPresentation | null;
+  composerModelControl?:
+    | import("../../services/providers/sessionModelHelpers").ComposerModelControlPresentation
+    | null;
   onComposerModelControlPress?: () => void;
   onSwitchToTerminal?: () => void;
   onConsumeInitialComposerFocus?: () => void;
@@ -405,16 +407,18 @@ export function useInterfaceChatSurfaceState({
     [conversation?.activity],
   );
   const timeline = usePinnedTimeline(
-    events.length +
-      pendingUserMessages.length +
-      (runningActivity ? 1 : 0),
+    events.length + pendingUserMessages.length + (runningActivity ? 1 : 0),
     conversationCacheKey,
     topChromeInset,
   );
   const handleKeyboardLifecycleInvalidate = useCallback(
-    (reason: "route" | "app") => {
-      composerInput.blur();
-      timeline.clearTurnFocusForLifecycle();
+    (reason: "route" | "app" | "foreground_closed" | "ime_closed") => {
+      if (reason !== "app") {
+        composerInput.blur();
+      }
+      if (reason !== "ime_closed") {
+        timeline.clearTurnFocusForLifecycle();
+      }
       if (
         reason === "app" &&
         initialComposerFocusGrant &&

@@ -92,7 +92,9 @@ export interface InterfaceChatBodyProps {
   onTurnFocusSpacerLayout(height: number, requestEpoch: number): void;
   onTimelineTextSelectionGestureStart(): void;
   onTimelineTextSelectionGestureEnd(): void;
-  onKeyboardLifecycleInvalidate(reason: "route" | "app"): void;
+  onKeyboardLifecycleInvalidate(
+    reason: "route" | "app" | "foreground_closed" | "ime_closed",
+  ): void;
   onScrollToLatest(animated?: boolean): void;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;

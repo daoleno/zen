@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const repositoryRoot = join(import.meta.dir, "..");
@@ -11,7 +11,8 @@ const productionSourcePaths = execFileSync(
 )
   .split("\0")
   .filter((path) => /\.(?:js|jsx|ts|tsx)$/.test(path))
-  .filter((path) => !/\.(?:test|spec)\.[^.]+$/.test(path));
+  .filter((path) => !/\.(?:test|spec)\.[^.]+$/.test(path))
+  .filter((path) => existsSync(join(repositoryRoot, path)));
 
 function source(relativePath: string): string {
   return readFileSync(join(repositoryRoot, relativePath), "utf8");
@@ -31,12 +32,12 @@ describe("product icon semantics", () => {
     expect(
       source("app/components/plugins/PluginSkillsDirectory.tsx"),
     ).toContain('name="book-outline"');
-    expect(
-      source("app/components/plugins/PluginsPresentation.tsx"),
-    ).toMatch(/case "skill":\s+return "book-outline";/);
-    expect(
-      source("app/components/terminal/TerminalActionPopover.tsx"),
-    ).toMatch(/key: "model",\s+icon: "hardware-chip-outline"/);
+    expect(source("app/components/plugins/PluginsPresentation.tsx")).toMatch(
+      /case "skill":\s+return "book-outline";/,
+    );
+    expect(source("app/components/terminal/TerminalActionPopover.tsx")).toMatch(
+      /key: "model",\s+icon: "hardware-chip-outline"/,
+    );
     expect(source("app/components/agents/AgentSessionRow.tsx")).toContain(
       '<Ionicons name="git-network" size={9} color={colors.accentStrong} />',
     );

@@ -27,11 +27,13 @@ export interface StructuredChatKeyboardLifecycleGate {
   enabled: boolean;
   appActive: boolean;
   composerFocused: boolean;
-  epoch: number;
-  acceptedNativeSampleEpoch: number;
+  revision: number;
+  authoritativeRevision: number;
+  nativeImeVisible: boolean;
+  nativeComposerFocused: boolean;
+  forceLifecycleContractionRevision: number;
   keyboardTranslation: number;
   keyboardProgress: number;
-  mayBindPreexistingGeometry: boolean;
 }
 
 export type StructuredChatKeyboardLifecycleEvent =
@@ -40,17 +42,19 @@ export type StructuredChatKeyboardLifecycleEvent =
   | { type: "composer_focus"; focused: boolean }
   | {
       type: "native_sample";
-      sourceEpoch: number;
+      sourceRevision: number;
       height: number;
       progress: number;
       updatesGeometry: boolean;
     }
-  /**
-   * Composer focus may bind KeyboardController's current geometry only in the
-   * never-invalidated mount epoch. Lifecycle recovery always requires a native
-   * sample captured by the current handler epoch.
-   */
-  | { type: "composer_focus_bind"; height: number; progress: number };
+  | {
+      type: "authoritative_snapshot";
+      sourceRevision: number;
+      imeVisible: boolean;
+      imeHeight: number;
+      composerFocused: boolean;
+      foregroundReconciliation: boolean;
+    };
 
 export interface StructuredChatGatedOverlayTranslateYInput {
   gate: StructuredChatKeyboardLifecycleGate;
@@ -95,11 +99,13 @@ export function createStructuredChatKeyboardLifecycleGate({
     enabled,
     appActive,
     composerFocused: false,
-    epoch: 1,
-    acceptedNativeSampleEpoch: 0,
+    revision: 1,
+    authoritativeRevision: 0,
+    nativeImeVisible: false,
+    nativeComposerFocused: false,
+    forceLifecycleContractionRevision: 0,
     keyboardTranslation: 0,
     keyboardProgress: 0,
-    mayBindPreexistingGeometry: true,
   };
 }
 
@@ -116,8 +122,6 @@ export function structuredChatKeyboardGeometryIsOpen(
   );
 }
 
-// Must precede reduce: the worklets plugin rewrites this to a const factory,
-// and a later binding is captured as undefined on Metro's UI runtime.
 function invalidateStructuredChatKeyboardLifecycleGate(
   gate: StructuredChatKeyboardLifecycleGate,
   changes: Partial<
@@ -131,11 +135,13 @@ function invalidateStructuredChatKeyboardLifecycleGate(
   return {
     ...gate,
     ...changes,
-    epoch: gate.epoch + 1,
-    acceptedNativeSampleEpoch: 0,
+    revision: gate.revision + 1,
+    authoritativeRevision: 0,
+    nativeImeVisible: false,
+    nativeComposerFocused: false,
+    forceLifecycleContractionRevision: gate.revision + 1,
     keyboardTranslation: 0,
     keyboardProgress: 0,
-    mayBindPreexistingGeometry: false,
   };
 }
 
@@ -145,51 +151,61 @@ export function reduceStructuredChatKeyboardLifecycleGate(
 ): StructuredChatKeyboardLifecycleGate {
   "worklet";
   if (event.type === "native_sample") {
-    const currentEpochOwnsGeometry =
-      gate.acceptedNativeSampleEpoch === gate.epoch;
-    // Android KeyboardController events commonly finish before React
-    // TextInput onFocus. JS composerFocused must not drop a current-epoch
-    // sample; overlay translation still waits for focus via gateOpen.
     if (
       !gate.enabled ||
       !gate.appActive ||
-      event.sourceEpoch !== gate.epoch ||
+      event.sourceRevision !== gate.revision ||
+      gate.authoritativeRevision !== gate.revision ||
+      !gate.nativeImeVisible ||
+      !gate.nativeComposerFocused ||
       !Number.isFinite(event.height) ||
-      !Number.isFinite(event.progress) ||
-      (!currentEpochOwnsGeometry &&
-        !structuredChatKeyboardGeometryIsOpen(event.height, event.progress))
+      !Number.isFinite(event.progress)
     ) {
       return gate;
     }
     return {
       ...gate,
-      acceptedNativeSampleEpoch: gate.epoch,
       keyboardTranslation: event.updatesGeometry
         ? -Math.abs(event.height)
         : gate.keyboardTranslation,
       keyboardProgress: event.updatesGeometry
         ? event.progress
         : gate.keyboardProgress,
-      mayBindPreexistingGeometry: false,
     };
   }
 
-  if (event.type === "composer_focus_bind") {
+  if (event.type === "authoritative_snapshot") {
     if (
       !gate.enabled ||
       !gate.appActive ||
-      !gate.composerFocused ||
-      !gate.mayBindPreexistingGeometry ||
-      !structuredChatKeyboardGeometryIsOpen(event.height, event.progress)
+      event.sourceRevision !== gate.revision
     ) {
       return gate;
     }
+    const nativeOpen =
+      event.imeVisible &&
+      event.composerFocused &&
+      Number.isFinite(event.imeHeight) &&
+      event.imeHeight > 0;
     return {
       ...gate,
-      acceptedNativeSampleEpoch: gate.epoch,
-      keyboardTranslation: event.height,
-      keyboardProgress: event.progress,
-      mayBindPreexistingGeometry: false,
+      composerFocused:
+        event.foregroundReconciliation && !nativeOpen
+          ? false
+          : gate.composerFocused,
+      authoritativeRevision: gate.revision,
+      nativeImeVisible:
+        event.imeVisible &&
+        Number.isFinite(event.imeHeight) &&
+        event.imeHeight > 0,
+      nativeComposerFocused: event.composerFocused,
+      forceLifecycleContractionRevision: nativeOpen
+        ? 0
+        : event.foregroundReconciliation
+          ? gate.revision
+          : gate.forceLifecycleContractionRevision,
+      keyboardTranslation: nativeOpen ? -Math.abs(event.imeHeight) : 0,
+      keyboardProgress: nativeOpen ? 1 : 0,
     };
   }
 
@@ -198,10 +214,19 @@ export function reduceStructuredChatKeyboardLifecycleGate(
       return gate;
     }
     if (event.focused) {
+      if (!gate.enabled || !gate.appActive) {
+        return gate;
+      }
       return {
         ...gate,
         composerFocused: true,
       };
+    }
+    if (
+      gate.authoritativeRevision === gate.revision &&
+      !gate.nativeImeVisible
+    ) {
+      return { ...gate, composerFocused: false };
     }
     return invalidateStructuredChatKeyboardLifecycleGate(gate, {
       composerFocused: false,
@@ -231,14 +256,22 @@ export function structuredChatKeyboardLifecycleGateOpen(
     gate.enabled &&
     gate.appActive &&
     gate.composerFocused &&
-    gate.acceptedNativeSampleEpoch === gate.epoch
+    gate.authoritativeRevision === gate.revision &&
+    gate.nativeImeVisible &&
+    gate.nativeComposerFocused
   );
 }
 
 export interface StructuredChatKeyboardLifecycleDispatchResult {
-  epoch: number;
-  epochChanged: boolean;
+  revision: number;
+  revisionChanged: boolean;
   invalidateReason: "route" | "app" | null;
+}
+
+export interface StructuredChatAuthoritativeSnapshotDispatchResult {
+  revision: number;
+  accepted: boolean;
+  shouldBlurComposer: boolean;
 }
 
 export type StructuredChatKeyboardLifecycleDispatchEvent = Extract<
@@ -249,10 +282,10 @@ export type StructuredChatKeyboardLifecycleDispatchEvent = Extract<
 /**
  * Single-owner gate mutation for the UI runtime. The JS thread must never
  * read-modify-write the gate shared value: its copy lags the UI runtime's
- * accepted native samples, so a JS write-back drops acceptedNativeSampleEpoch
- * and the keyboard translation and pins the Composer to the screen bottom
- * while the IME is open. JS effects schedule this worklet with runOnUIAsync
- * and use the reported transition for callback-epoch and invalidation
+ * authoritative native snapshot and animation geometry, so a JS write-back
+ * can drop the admitted revision and pin the Composer to the screen bottom.
+ * JS effects schedule this worklet with runOnUIAsync and use the reported
+ * transition for callback-revision and invalidation
  * bookkeeping.
  */
 export function dispatchStructuredChatKeyboardLifecycleEvent(
@@ -263,14 +296,37 @@ export function dispatchStructuredChatKeyboardLifecycleEvent(
   const previous = gate.value;
   const next = reduceStructuredChatKeyboardLifecycleGate(previous, event);
   gate.value = next;
-  const epochChanged = next.epoch !== previous.epoch;
+  const revisionChanged = next.revision !== previous.revision;
   const invalidateReason =
-    epochChanged && event.type === "set_enabled" && !event.enabled
+    revisionChanged && event.type === "set_enabled" && !event.enabled
       ? "route"
-      : epochChanged && event.type === "app_state" && !event.active
+      : revisionChanged && event.type === "app_state" && !event.active
         ? "app"
         : null;
-  return { epoch: next.epoch, epochChanged, invalidateReason };
+  return { revision: next.revision, revisionChanged, invalidateReason };
+}
+
+export function dispatchStructuredChatAuthoritativeSnapshot(
+  gate: { value: StructuredChatKeyboardLifecycleGate },
+  event: Extract<
+    StructuredChatKeyboardLifecycleEvent,
+    { type: "authoritative_snapshot" }
+  >,
+): StructuredChatAuthoritativeSnapshotDispatchResult {
+  "worklet";
+  const previous = gate.value;
+  const next = reduceStructuredChatKeyboardLifecycleGate(previous, event);
+  gate.value = next;
+  const accepted = next !== previous;
+  return {
+    revision: next.revision,
+    accepted,
+    shouldBlurComposer:
+      accepted &&
+      ((!next.nativeImeVisible && previous.nativeImeVisible) ||
+        (event.foregroundReconciliation &&
+          (!next.nativeImeVisible || !next.nativeComposerFocused))),
+  };
 }
 
 export function structuredChatOverlayTranslateY(
@@ -374,7 +430,7 @@ export function structuredChatEffectiveClearanceForKeyboardLifecycle(
   // Ordinary contractions preserve the reader's occupied range. A lifecycle
   // invalidation is different: that occupied range came from an obsolete IME
   // sample and must contract with the gated Composer/fade translation.
-  if (!structuredChatKeyboardLifecycleGateOpen(input.gate)) {
+  if (input.gate.forceLifecycleContractionRevision === input.gate.revision) {
     return Math.max(0, input.requestedClearance);
   }
   return structuredChatEffectiveClearance(input);

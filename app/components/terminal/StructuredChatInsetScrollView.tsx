@@ -129,6 +129,9 @@ export const StructuredChatInsetScrollView = forwardRef<
   );
 
   const animatedProps = useAnimatedProps(() => {
+    // A foreground revision must remap every native inset owner even when the
+    // contracted numbers equal the previous closed state.
+    keyboardLifecycleGate.value.revision;
     const dynamicTop = inverted ? effectiveClearance.value : 0;
     const dynamicBottom = inverted ? 0 : effectiveClearance.value;
     return {
@@ -153,18 +156,19 @@ export const StructuredChatInsetScrollView = forwardRef<
     contentInset?.right,
     contentInset?.top,
     inverted,
+    keyboardLifecycleGate,
     scrollIndicatorInsets?.bottom,
     scrollIndicatorInsets?.left,
     scrollIndicatorInsets?.right,
     scrollIndicatorInsets?.top,
   ]);
-  const webContentInsetStyle = useAnimatedStyle(
-    () => ({
+  const webContentInsetStyle = useAnimatedStyle(() => {
+    keyboardLifecycleGate.value.revision;
+    return {
       paddingTop: inverted ? effectiveClearance.value : undefined,
       paddingBottom: inverted ? undefined : effectiveClearance.value,
-    }),
-    [inverted],
-  );
+    };
+  }, [inverted, keyboardLifecycleGate]);
 
   const scrollView = (
     <Reanimated.ScrollView

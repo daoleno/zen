@@ -16,7 +16,7 @@ describe("structured chat keyboard overlay", () => {
     expect(frame).toContain("structuredChatGatedOverlayTranslateY({");
     expect(frame).toContain('AppState.addEventListener("change"');
     expect(frame).toContain("useGenericKeyboardHandler(");
-    expect(frame).toContain("composer_focus_bind");
+    expect(frame).toContain("authoritative_snapshot");
     expect(frame).toContain("composerFocused");
     expect(frame).not.toMatch(/reanimated\.(height|progress)\.value\s*=/);
     expect(frame).toContain("useStructuredChatWindowMode(enabled)");
@@ -101,7 +101,7 @@ describe("structured chat keyboard overlay", () => {
     expect(frame).not.toContain("styles.bottomFade");
     expect(frame).toContain("<StructuredChatContentFade");
     expect(frame).toContain("composerHeight={composerHeight}");
-    expect(frame).toContain("overlayTranslateY={overlayTranslateY}");
+    expect(frame).toContain("keyboardLifecycleGate={keyboardLifecycleGate}");
     expect(contentFade).toContain("function AndroidStructuredChatContentFade");
     expect(contentFade).toContain("function IosStructuredChatContentFade");
     expect(contentFade).toContain("function WebStructuredChatContentFade");
@@ -118,9 +118,7 @@ describe("structured chat keyboard overlay", () => {
       "structuredChatNativeMaskColors(canvasColor)",
     );
     expect(contentFade).toContain("backgroundColor: colors.visible");
-    expect(contentFade).toContain(
-      "colors={[colors.visible, colors.hidden]}",
-    );
+    expect(contentFade).toContain("colors={[colors.visible, colors.hidden]}");
     expect(contentFade).not.toContain("TerminalThemeChrome");
     expect(contentFade).not.toContain("appBackground");
   });
@@ -139,9 +137,7 @@ describe("structured chat keyboard overlay", () => {
 
   test("keeps primary and structured Agent Chat headers in overlay layout", () => {
     const primaryShell = source("../navigation/PrimaryDrawerShell.tsx");
-    const terminalLayout = source(
-      "./screen/TerminalScreenLayout.tsx",
-    );
+    const terminalLayout = source("./screen/TerminalScreenLayout.tsx");
 
     expect(primaryShell).toContain("styles.appBarOverlay,");
     expect(primaryShell).not.toContain(
@@ -171,9 +167,7 @@ describe("structured chat keyboard overlay", () => {
   });
 
   test("keeps floating Agent navigation first in accessibility traversal", () => {
-    const terminalLayout = source(
-      "./screen/TerminalScreenLayout.tsx",
-    );
+    const terminalLayout = source("./screen/TerminalScreenLayout.tsx");
 
     expect(terminalLayout.indexOf("styles.headerOverlay")).toBeLessThan(
       terminalLayout.indexOf("<TerminalViewport"),

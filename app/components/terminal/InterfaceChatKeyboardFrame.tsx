@@ -2,29 +2,33 @@ import React, {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useId,
   useRef,
   useState,
 } from "react";
 import { AppState, Platform, StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import {
-  useGenericKeyboardHandler,
-  useKeyboardContext,
-} from "react-native-keyboard-controller";
-import { runOnUI, runOnUIAsync } from "react-native-worklets";
+import { useGenericKeyboardHandler } from "react-native-keyboard-controller";
+import { runOnUIAsync } from "react-native-worklets";
 import Reanimated, {
+  runOnJS,
   useDerivedValue,
   useAnimatedStyle,
   useSharedValue,
   type SharedValue,
 } from "react-native-reanimated";
+import { getZenKeyboardForegroundSnapshot } from "zen-keyboard-lifecycle";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { withAlpha } from "./colorWithAlpha";
-import { useStructuredChatWindowMode } from "./chatKeyboardWindowMode";
+import {
+  reapplyStructuredChatWindowModeLease,
+  useStructuredChatWindowMode,
+} from "./chatKeyboardWindowMode";
 import { useInterfaceComposerLayout } from "./useInterfaceComposerLayout";
 import { StructuredChatContentFade } from "./StructuredChatContentFade";
 import {
   createStructuredChatKeyboardLifecycleGate,
+  dispatchStructuredChatAuthoritativeSnapshot,
   dispatchStructuredChatKeyboardLifecycleEvent,
   reduceStructuredChatKeyboardLifecycleGate,
   resolveInterfaceChatCanvasColor,
@@ -44,7 +48,9 @@ interface InterfaceChatKeyboardFrameProps {
     extraContentPadding: SharedValue<number>,
     keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
   ): React.ReactNode;
-  onKeyboardLifecycleInvalidate?: (reason: "route" | "app") => void;
+  onKeyboardLifecycleInvalidate?: (
+    reason: "route" | "app" | "foreground_closed" | "ime_closed",
+  ) => void;
   composer?: React.ReactNode;
   floatingAction?: React.ReactNode;
   portal?: React.ReactNode;
@@ -71,7 +77,8 @@ export function InterfaceChatKeyboardFrame({
   const { composerHeight, handleComposerLayout } = useInterfaceComposerLayout({
     enabled: overlayEnabled,
   });
-  const { reanimated } = useKeyboardContext();
+  const reactId = useId();
+  const composerNativeId = `zen-structured-chat-composer-${reactId}`;
   const initialKeyboardLifecycleGate =
     createStructuredChatKeyboardLifecycleGate({
       enabled,
@@ -80,13 +87,14 @@ export function InterfaceChatKeyboardFrame({
   // KeyboardController provides raw native samples; this shared value is the
   // sole accepted lifecycle + geometry owner for both layout consumers.
   const keyboardLifecycleGate = useSharedValue(initialKeyboardLifecycleGate);
-  // A handler closure captures the epoch in which it was registered. Native
+  // A handler closure captures the revision in which it was registered. Native
   // callbacks already queued by the previous Activity/focus lifetime can then
-  // be rejected instead of being credited to whichever epoch is current when
+  // be rejected instead of being credited to whichever revision is current when
   // they finally arrive.
-  const [nativeCallbackEpoch, setNativeCallbackEpoch] = useState(
-    initialKeyboardLifecycleGate.epoch,
+  const [nativeCallbackRevision, setNativeCallbackRevision] = useState(
+    initialKeyboardLifecycleGate.revision,
   );
+  const appStateRef = useRef(AppState.currentState);
   useStructuredChatWindowMode(enabled);
   const disposedRef = useRef(false);
   useEffect(() => {
@@ -100,12 +108,55 @@ export function InterfaceChatKeyboardFrame({
       if (disposedRef.current) {
         return;
       }
-      setNativeCallbackEpoch(result.epoch);
+      setNativeCallbackRevision(result.revision);
       if (result.invalidateReason) {
         onKeyboardLifecycleInvalidate?.(result.invalidateReason);
       }
     },
     [onKeyboardLifecycleInvalidate],
+  );
+  const nativeSnapshotRequestsRef = useRef(new Set<string>());
+  const requestAuthoritativeSnapshot = useCallback(
+    (sourceRevision: number, foregroundReconciliation: boolean) => {
+      const requestKey = `${sourceRevision}:${foregroundReconciliation ? 1 : 0}`;
+      if (nativeSnapshotRequestsRef.current.has(requestKey)) {
+        return;
+      }
+      nativeSnapshotRequestsRef.current.add(requestKey);
+      void getZenKeyboardForegroundSnapshot(composerNativeId, sourceRevision)
+        .catch(() => ({
+          revision: sourceRevision,
+          imeVisible: false,
+          imeHeight: 0,
+          composerFocused: false,
+          evidence: "snapshot_failed",
+        }))
+        .then((snapshot) =>
+          runOnUIAsync(
+            dispatchStructuredChatAuthoritativeSnapshot,
+            keyboardLifecycleGate,
+            {
+              type: "authoritative_snapshot" as const,
+              sourceRevision: snapshot.revision,
+              imeVisible: snapshot.imeVisible,
+              imeHeight: snapshot.imeHeight,
+              composerFocused: snapshot.composerFocused,
+              foregroundReconciliation,
+            },
+          ),
+        )
+        .then((result) => {
+          if (!disposedRef.current && result.shouldBlurComposer) {
+            onKeyboardLifecycleInvalidate?.(
+              foregroundReconciliation ? "foreground_closed" : "ime_closed",
+            );
+          }
+        })
+        .finally(() => {
+          nativeSnapshotRequestsRef.current.delete(requestKey);
+        });
+    },
+    [composerNativeId, keyboardLifecycleGate, onKeyboardLifecycleInvalidate],
   );
 
   useLayoutEffect(() => {
@@ -113,48 +164,67 @@ export function InterfaceChatKeyboardFrame({
       dispatchStructuredChatKeyboardLifecycleEvent,
       keyboardLifecycleGate,
       { type: "set_enabled", enabled },
-    ).then(handleGateDispatch);
-  }, [enabled, keyboardLifecycleGate, handleGateDispatch]);
+    ).then((result) => {
+      handleGateDispatch(result);
+      if (enabled && AppState.currentState === "active") {
+        requestAuthoritativeSnapshot(result.revision, false);
+      }
+    });
+  }, [
+    enabled,
+    keyboardLifecycleGate,
+    handleGateDispatch,
+    requestAuthoritativeSnapshot,
+  ]);
 
   useEffect(() => {
-    const updateAppState = (active: boolean) => {
+    const updateAppState = (
+      active: boolean,
+      foregroundReconciliation: boolean,
+    ) => {
       void runOnUIAsync(
         dispatchStructuredChatKeyboardLifecycleEvent,
         keyboardLifecycleGate,
         { type: "app_state", active },
-      ).then(handleGateDispatch);
+      ).then((result) => {
+        handleGateDispatch(result);
+        if (active) {
+          reapplyStructuredChatWindowModeLease();
+          requestAuthoritativeSnapshot(
+            result.revision,
+            foregroundReconciliation,
+          );
+        }
+      });
     };
-    updateAppState(AppState.currentState === "active");
+    updateAppState(AppState.currentState === "active", false);
     const subscription = AppState.addEventListener("change", (state) => {
-      updateAppState(state === "active");
+      const foregroundReconciliation =
+        appStateRef.current !== "active" && state === "active";
+      appStateRef.current = state;
+      updateAppState(state === "active", foregroundReconciliation);
     });
     return () => subscription.remove();
-  }, [keyboardLifecycleGate, handleGateDispatch]);
+  }, [keyboardLifecycleGate, handleGateDispatch, requestAuthoritativeSnapshot]);
 
-  // The gate is owned by the UI runtime: composer focus and the pre-existing
-  // geometry bind are scheduled there so the reduce always sees the live
-  // accepted samples instead of a stale JS-side snapshot.
+  // React focus confirms the matching native target but cannot admit keyboard
+  // geometry. The current native snapshot remains the sole OPEN authority.
   useLayoutEffect(() => {
     void runOnUIAsync(
       dispatchStructuredChatKeyboardLifecycleEvent,
       keyboardLifecycleGate,
       { type: "composer_focus", focused: enabled && composerFocused },
     ).then(handleGateDispatch);
-    if (!enabled || !composerFocused) {
-      return;
+    if (enabled && composerFocused) {
+      requestAuthoritativeSnapshot(nativeCallbackRevision, false);
     }
-    runOnUI(dispatchComposerFocusBind)(
-      keyboardLifecycleGate,
-      reanimated.height,
-      reanimated.progress,
-    );
   }, [
     composerFocused,
     enabled,
     keyboardLifecycleGate,
-    reanimated.height,
-    reanimated.progress,
     handleGateDispatch,
+    nativeCallbackRevision,
+    requestAuthoritativeSnapshot,
   ]);
 
   useGenericKeyboardHandler(
@@ -163,27 +233,43 @@ export function InterfaceChatKeyboardFrame({
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
-          nativeCallbackEpoch,
+          nativeCallbackRevision,
           event.height,
           event.progress,
           KEYBOARD_GEOMETRY_PLATFORM === "ios",
         );
+        if (
+          keyboardLifecycleGate.value.authoritativeRevision !==
+            keyboardLifecycleGate.value.revision ||
+          !keyboardLifecycleGate.value.nativeImeVisible ||
+          !keyboardLifecycleGate.value.nativeComposerFocused
+        ) {
+          runOnJS(requestAuthoritativeSnapshot)(nativeCallbackRevision, false);
+        }
       },
       onMove: (event) => {
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
-          nativeCallbackEpoch,
+          nativeCallbackRevision,
           event.height,
           event.progress,
           KEYBOARD_GEOMETRY_PLATFORM === "android",
         );
+        if (
+          keyboardLifecycleGate.value.authoritativeRevision !==
+            keyboardLifecycleGate.value.revision ||
+          !keyboardLifecycleGate.value.nativeImeVisible ||
+          !keyboardLifecycleGate.value.nativeComposerFocused
+        ) {
+          runOnJS(requestAuthoritativeSnapshot)(nativeCallbackRevision, false);
+        }
       },
       onInteractive: (event) => {
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
-          nativeCallbackEpoch,
+          nativeCallbackRevision,
           event.height,
           event.progress,
           true,
@@ -193,26 +279,28 @@ export function InterfaceChatKeyboardFrame({
         "worklet";
         acceptNativeKeyboardSample(
           keyboardLifecycleGate,
-          nativeCallbackEpoch,
+          nativeCallbackRevision,
           event.height,
           event.progress,
           KEYBOARD_GEOMETRY_PLATFORM === "android",
         );
+        runOnJS(requestAuthoritativeSnapshot)(nativeCallbackRevision, false);
       },
     },
-    [keyboardLifecycleGate, nativeCallbackEpoch],
+    [
+      keyboardLifecycleGate,
+      nativeCallbackRevision,
+      requestAuthoritativeSnapshot,
+    ],
   );
 
-  const overlayTranslateY = useDerivedValue(() => {
-    return structuredChatGatedOverlayTranslateY({
-      gate: keyboardLifecycleGate.value,
-      keyboardVerticalOffset,
-    });
-  }, [keyboardLifecycleGate, keyboardVerticalOffset]);
   const scrollClearance = useDerivedValue(() =>
     structuredChatScrollClearance(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     ),
   );
   // The overlay transform reads the gate shared value directly instead of an
@@ -250,7 +338,8 @@ export function InterfaceChatKeyboardFrame({
         <StructuredChatContentFade
           canvasColor={canvasColor}
           composerHeight={composerHeight}
-          overlayTranslateY={overlayTranslateY}
+          keyboardLifecycleGate={keyboardLifecycleGate}
+          keyboardVerticalOffset={keyboardVerticalOffset}
         >
           {renderTimeline(scrollClearance, keyboardLifecycleGate)}
         </StructuredChatContentFade>
@@ -272,6 +361,7 @@ export function InterfaceChatKeyboardFrame({
         >
           <View
             collapsable={false}
+            nativeID={composerNativeId}
             onLayout={handleComposerLayout}
             style={styles.overlayContent}
           >
@@ -288,7 +378,7 @@ export function InterfaceChatKeyboardFrame({
 
 function acceptNativeKeyboardSample(
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
-  sourceEpoch: number,
+  sourceRevision: number,
   height: number,
   progress: number,
   updatesGeometry: boolean,
@@ -298,29 +388,10 @@ function acceptNativeKeyboardSample(
     keyboardLifecycleGate.value,
     {
       type: "native_sample",
-      sourceEpoch,
+      sourceRevision,
       height,
       progress,
       updatesGeometry,
-    },
-  );
-}
-
-function dispatchComposerFocusBind(
-  keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
-  height: SharedValue<number>,
-  progress: SharedValue<number>,
-) {
-  "worklet";
-  // Reads the live native values on the UI runtime: a JS-side read of
-  // reanimated.height/progress would see the stale copy and could bind the
-  // wrong geometry or miss a just-opened IME entirely.
-  keyboardLifecycleGate.value = reduceStructuredChatKeyboardLifecycleGate(
-    keyboardLifecycleGate.value,
-    {
-      type: "composer_focus_bind",
-      height: height.value,
-      progress: progress.value,
     },
   );
 }

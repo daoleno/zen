@@ -8,7 +8,9 @@ import Reanimated, {
 } from "react-native-reanimated";
 import {
   structuredChatContentFadeGeometry,
+  structuredChatGatedOverlayTranslateY,
   structuredChatNativeMaskColors,
+  type StructuredChatKeyboardLifecycleGate,
 } from "./chatKeyboardOverlayPolicy";
 
 const WEB_MASK_VISIBLE = "rgba(255, 255, 255, 1)";
@@ -30,7 +32,8 @@ type WebMaskStyle = ViewStyle & {
 interface StructuredChatContentFadeProps {
   canvasColor: string;
   composerHeight: SharedValue<number>;
-  overlayTranslateY: SharedValue<number>;
+  keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>;
+  keyboardVerticalOffset: number;
   children: React.ReactNode;
 }
 
@@ -59,21 +62,28 @@ export function StructuredChatContentFade(
 function AndroidStructuredChatContentFade({
   canvasColor,
   composerHeight,
-  overlayTranslateY,
+  keyboardLifecycleGate,
+  keyboardVerticalOffset,
   children,
 }: StructuredChatContentFadeProps) {
   const colors = structuredChatNativeMaskColors(canvasColor);
   const opaqueCoverStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     );
     return { height: geometry.transparentBottomInset };
   });
   const fadeOverlayStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     );
     return {
       bottom: geometry.transparentBottomInset,
@@ -107,21 +117,28 @@ function AndroidStructuredChatContentFade({
 function IosStructuredChatContentFade({
   canvasColor,
   composerHeight,
-  overlayTranslateY,
+  keyboardLifecycleGate,
+  keyboardVerticalOffset,
   children,
 }: StructuredChatContentFadeProps) {
   const colors = structuredChatNativeMaskColors(canvasColor);
   const opaqueMaskStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     );
     return { bottom: geometry.opaqueBottomInset };
   });
   const fadeMaskStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     );
     return {
       bottom: geometry.transparentBottomInset,
@@ -159,13 +176,17 @@ function IosStructuredChatContentFade({
 
 function WebStructuredChatContentFade({
   composerHeight,
-  overlayTranslateY,
+  keyboardLifecycleGate,
+  keyboardVerticalOffset,
   children,
 }: StructuredChatContentFadeProps) {
   const webMaskStyle = useAnimatedStyle<WebMaskStyle>(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
-      overlayTranslateY.value,
+      structuredChatGatedOverlayTranslateY({
+        gate: keyboardLifecycleGate.value,
+        keyboardVerticalOffset,
+      }),
     );
     const maskImage = [
       "linear-gradient(to bottom,",

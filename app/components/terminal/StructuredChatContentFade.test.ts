@@ -2,9 +2,13 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { join } from "node:path";
 import React from "react";
 import type { SharedValue } from "react-native-reanimated";
+import type { StructuredChatKeyboardLifecycleGate } from "./chatKeyboardOverlayPolicy";
 
 type TestPlatform = "android" | "ios" | "web";
-type TestElement = React.ReactElement<Record<string, unknown>, React.ElementType>;
+type TestElement = React.ReactElement<
+  Record<string, unknown>,
+  React.ElementType
+>;
 
 const ISOLATED_RUN_ENV = "ZEN_STRUCTURED_CHAT_CONTENT_FADE_TEST";
 const isolatedRun = process.env[ISOLATED_RUN_ENV] === "1";
@@ -23,9 +27,7 @@ Object.defineProperty(platform, "OS", {
   get: () => platformOS,
 });
 const timeline = React.createElement(TimelineMarker, { id: "timeline" });
-let StructuredChatContentFade: typeof import(
-  "./StructuredChatContentFade"
-)["StructuredChatContentFade"];
+let StructuredChatContentFade: (typeof import("./StructuredChatContentFade"))["StructuredChatContentFade"];
 
 if (!isolatedRun) {
   test("executes platform routing in an isolated Bun module graph", () => {
@@ -75,9 +77,8 @@ if (!isolatedRun) {
     useAnimatedStyle: (worklet: () => unknown) => worklet(),
   }));
 
-  const contentFadeModule = require(
-    "./StructuredChatContentFade",
-  ) as typeof import("./StructuredChatContentFade");
+  const contentFadeModule =
+    require("./StructuredChatContentFade") as typeof import("./StructuredChatContentFade");
   ({ StructuredChatContentFade } = contentFadeModule);
 
   afterAll(() => {
@@ -86,6 +87,26 @@ if (!isolatedRun) {
 }
 
 const sharedValue = (value: number) => ({ value }) as SharedValue<number>;
+
+function keyboardGate(
+  overlayTranslateY: number,
+): SharedValue<StructuredChatKeyboardLifecycleGate> {
+  const open = overlayTranslateY < 0;
+  return {
+    value: {
+      enabled: true,
+      appActive: true,
+      composerFocused: open,
+      revision: 1,
+      authoritativeRevision: open ? 1 : 0,
+      nativeImeVisible: open,
+      nativeComposerFocused: open,
+      forceLifecycleContractionRevision: 0,
+      keyboardTranslation: overlayTranslateY,
+      keyboardProgress: open ? 1 : 0,
+    },
+  } as SharedValue<StructuredChatKeyboardLifecycleGate>;
+}
 
 function renderContentFade(
   os: TestPlatform,
@@ -96,7 +117,8 @@ function renderContentFade(
   const routed = StructuredChatContentFade({
     canvasColor: "#0F0F14",
     composerHeight: sharedValue(composerHeight),
-    overlayTranslateY: sharedValue(overlayTranslateY),
+    keyboardLifecycleGate: keyboardGate(overlayTranslateY),
+    keyboardVerticalOffset: 0,
     children: timeline,
   }) as TestElement;
   const RoutedComponent = routed.type as (
@@ -192,9 +214,7 @@ describeIsolated("StructuredChatContentFade routing", () => {
     >;
     const gradientStyles = gradient.props.style as Record<string, number>[];
 
-    expect((routed.type as Function).name).toBe(
-      "IosStructuredChatContentFade",
-    );
+    expect((routed.type as Function).name).toBe("IosStructuredChatContentFade");
     expect(rendered.type).toBe(MaskedViewMarker);
     expect(rendered.props.children).toBe(timeline);
     expect(rendered.props).not.toHaveProperty("androidRenderingMode");
@@ -226,9 +246,7 @@ describeIsolated("StructuredChatContentFade routing", () => {
       "rgba(255, 255, 255, 0) 100%)",
     ].join(" ");
 
-    expect((routed.type as Function).name).toBe(
-      "WebStructuredChatContentFade",
-    );
+    expect((routed.type as Function).name).toBe("WebStructuredChatContentFade");
     expect(rendered.type).toBe(AnimatedViewMarker);
     expect(rendered.props.children).toBe(timeline);
     expect(maskStyle).toEqual({

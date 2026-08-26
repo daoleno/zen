@@ -1,0 +1,13 @@
+{
+  "platforms": ["android", "apple"],
+  "apple": {
+    "modules": ["ZenKeyboardLifecycleModule"],
+    "podspecPath": ["ZenKeyboardLifecycle.podspec"]
+  },
+  "android": {
+    "modules": ["expo.modules.zenkeyboardlifecycle.ZenKeyboardLifecycleModule"]
+  },
+  "ios": {
+    "modules": ["ZenKeyboardLifecycleModule"]
+  }
+}

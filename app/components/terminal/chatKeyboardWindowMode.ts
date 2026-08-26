@@ -13,6 +13,12 @@ function applyStructuredChatWindowMode() {
   );
 }
 
+export function reapplyStructuredChatWindowModeLease() {
+  if (Platform.OS === "android" && activeStructuredChatLeases > 0) {
+    applyStructuredChatWindowMode();
+  }
+}
+
 function restoreWindowModeAfterEffectsSettle() {
   queueMicrotask(() => {
     if (activeStructuredChatLeases > 0) {
@@ -39,10 +45,7 @@ export function useStructuredChatWindowMode(enabled: boolean) {
     applyStructuredChatWindowMode();
 
     return () => {
-      activeStructuredChatLeases = Math.max(
-        0,
-        activeStructuredChatLeases - 1,
-      );
+      activeStructuredChatLeases = Math.max(0, activeStructuredChatLeases - 1);
       restoreWindowModeAfterEffectsSettle();
     };
   }, [enabled]);

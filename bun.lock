@@ -60,6 +60,10 @@
       "name": "zen-file-upload",
       "version": "0.1.0",
     },
+    "app/modules/zen-keyboard-lifecycle": {
+      "name": "zen-keyboard-lifecycle",
+      "version": "0.1.0",
+    },
     "app/modules/zen-link-transport": {
       "name": "zen-link-transport",
       "version": "0.1.0",
@@ -1203,6 +1207,8 @@
     "yargs-parser": ["yargs-parser@21.1.1", "https://registry.npmmirror.com/yargs-parser/-/yargs-parser-21.1.1.tgz", {}, "sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw=="],
 
     "zen-file-upload": ["zen-file-upload@workspace:app/modules/zen-file-upload"],
+
+    "zen-keyboard-lifecycle": ["zen-keyboard-lifecycle@workspace:app/modules/zen-keyboard-lifecycle"],
 
     "zen-link-transport": ["zen-link-transport@workspace:app/modules/zen-link-transport"],
 

@@ -64,7 +64,9 @@ interface UseInterfaceChatBodyPropsInput {
   onDismissActionMenu(): void;
   onModelControlPress?(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
-  onKeyboardLifecycleInvalidate(reason: "route" | "app"): void;
+  onKeyboardLifecycleInvalidate(
+    reason: "route" | "app" | "foreground_closed" | "ime_closed",
+  ): void;
   showUnavailableAction?: boolean;
   composerAccessory?: ReactNode;
   skillsSheet?: ReactNode;
