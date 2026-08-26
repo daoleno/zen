@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministic local staging for a beta release candidate.
+# Deterministic local staging for a release candidate.
 #
 # Stages under dist-download/v<version>/ (gitignored), always from a clean dir:
 #   - Linux amd64/arm64 and macOS arm64 daemon archives

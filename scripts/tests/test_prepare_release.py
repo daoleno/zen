@@ -77,6 +77,37 @@ class NextBetaVersionTests(unittest.TestCase):
                     prepare_release.next_beta_version(value)
 
 
+class ExplicitReleaseVersionTests(unittest.TestCase):
+    def test_accepts_newer_stable_and_beta_targets(self):
+        self.assertEqual(
+            prepare_release.validate_target_version("0.1.0-beta.22", "0.1.0"),
+            "0.1.0",
+        )
+        self.assertEqual(
+            prepare_release.validate_target_version("0.1.0-beta.22", "0.1.2"),
+            "0.1.2",
+        )
+        self.assertEqual(
+            prepare_release.validate_target_version("0.1.2", "0.1.3-beta.1"),
+            "0.1.3-beta.1",
+        )
+
+    def test_rejects_malformed_or_non_increasing_targets(self):
+        for target in (
+            "v0.1.2",
+            "0.1",
+            "0.1.2-rc.1",
+            "0.1.0-beta.0",
+            "0.1.0-beta.22",
+            "0.0.9",
+        ):
+            with self.subTest(target=target):
+                with self.assertRaises(prepare_release.PrepareError):
+                    prepare_release.validate_target_version(
+                        "0.1.0-beta.22", target
+                    )
+
+
 class ChangelogValidationTests(unittest.TestCase):
     def test_accepts_older_semver_core_history(self):
         scratch = os.environ.get("ZEN_BUILD_TMPDIR") or os.environ.get("TMPDIR")
@@ -146,15 +177,38 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
             git(root, "commit", "-m", "Add reviewed release change")
         return root
 
-    def run_script(self, root: Path) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self, root: Path, version: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        command = [str(SCRIPT), "--repo", str(root)]
+        if version is not None:
+            command.extend(("--version", version))
         return subprocess.run(
-            [str(SCRIPT), "--repo", str(root)],
+            command,
             cwd=ROOT,
             check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def test_prepares_an_explicit_stable_release(self):
+        root = self.create_repo()
+
+        result = self.run_script(root, "0.1.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["current_version"], CURRENT_VERSION)
+        self.assertEqual(output["next_version"], "0.1.2")
+        self.assertEqual(output["next_tag"], "v0.1.2")
+
+        base = json.loads((root / "app/app.base.json").read_text(encoding="utf-8"))
+        self.assertEqual(base["expo"]["version"], "0.1.2")
+        notes = (root / "docs/releases/v0.1.2.md").read_text(encoding="utf-8")
+        self.assertIn("This release contains", notes)
+        self.assertNotIn("This beta contains", notes)
+        changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertLess(changelog.index("v0.1.2"), changelog.index(CURRENT_TAG))
 
     def test_updates_exact_identity_files_from_current_release_notes(self):
         root = self.create_repo()
@@ -377,14 +431,16 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
-    def test_next_beta_workflow_is_manual_atomic_and_build_gated(self):
+    def test_release_workflow_is_explicit_manual_atomic_and_build_gated(self):
         workflow = (ROOT / ".github/workflows/release-next-beta.yml").read_text(
             encoding="utf-8"
         )
         dispatch = workflow.split("workflow_dispatch:", 1)[1].split(
             "concurrency:", 1
         )[0]
-        self.assertNotIn("inputs:", dispatch)
+        self.assertIn("inputs:", dispatch)
+        self.assertIn("version:", dispatch)
+        self.assertIn("required: true", dispatch)
         self.assertLess(
             workflow.index("Test release preparation and workflow contracts"),
             workflow.index("Prepare deterministic release identity and notes"),
@@ -416,7 +472,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "fetch-depth: 0",
             'PYTHONDONTWRITEBYTECODE: "1"',
             'START_SHA="$(git rev-parse refs/remotes/origin/main)"',
-            "./scripts/prepare-release.py",
+            './scripts/prepare-release.py --version "$TARGET_VERSION"',
             "./scripts/verify-release-identity.sh",
             "go test ./cmd/zen",
             'git config user.name "github-actions[bot]"',

@@ -8,4 +8,4 @@ contact_links:
     about: Report vulnerabilities privately; do not file public issues for unpatched remote exploits.
   - name: Release blockers
     url: https://github.com/daoleno/zen/blob/main/docs/release-blockers.md
-    about: Known honest-beta blockers (Android native libs, published release artifacts).
+    about: Current release-readiness blockers and their resolution evidence.

@@ -16,8 +16,10 @@ const nativeLibsWorkflow = fs.readFileSync(
 );
 
 describe('iOS signed release identity contract', () => {
-  it('automatically publishes only immutable reviewed beta tag pushes as Preview', () => {
-    expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/);
+  it('automatically publishes immutable reviewed stable or beta tag pushes as Preview', () => {
+    expect(workflow).toMatch(
+      /push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*"\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/,
+    );
     expect(workflow).not.toMatch(/release:\s*\n\s*types:/);
     expect(workflow).toContain("github.event_name == 'push' && 'preview'");
     expect(workflow).toContain("github.event_name == 'push' && 'testflight'");

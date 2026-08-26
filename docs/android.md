@@ -1,6 +1,6 @@
 # Android app
 
-## Install the beta APK
+## Install the APK
 
 Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the newest `zen-android-arm64-v*.apk` together with `SHA256SUMS`.
 
@@ -12,14 +12,14 @@ Before installing, download `SHA256SUMS` from the same release and verify the AP
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-The official beta certificate SHA-256 fingerprint is:
+The official release certificate SHA-256 fingerprint is:
 
 ```text
 C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:
 4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD
 ```
 
-Android will ask you to allow installation from the browser or file manager you used. A Play Protect warning is possible because this beta is distributed outside Play Store.
+Android will ask you to allow installation from the browser or file manager you used. A Play Protect warning is possible because Zen is distributed outside Play Store.
 
 After installation, follow [Connect and pair](connect-and-pair.md): use `zen --lan` on a trusted private network or keep bare `zen` behind an HTTPS endpoint, then scan or import the generated pairing code in Settings.
 
@@ -27,7 +27,7 @@ After installation, follow [Connect and pair](connect-and-pair.md): use `zen --l
 
 | Claim                                          | Status                                                                                              |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Pair, reconnect, session list, structured Chat | Intended beta surface                                                                               |
+| Pair, reconnect, session list, structured Chat | Supported release surface                                                                            |
 | Native terminal (Ghostty VT)                   | Requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator)  |
 | Structured agent interfaces                    | Codex, Claude Code, Cursor Agent, Grok, Pi, and OpenCode share the same React Native Chat/Terminal UI used on iOS |
 | iOS                                            | Separate source-build target; see [ios.md](ios.md)                                                  |
@@ -156,7 +156,7 @@ There is **no** committed binary. Honest redistributable terminal support requir
 2. Publishing checksummed libs/APK with the MIT notice (GitHub Release), or
 3. Running the optional native CI workflow and attaching its artifacts.
 
-## Release APK (sideload beta)
+## Release APK (sideload)
 
 ```bash
 # 1) Native libs (arm64)
@@ -232,7 +232,7 @@ Each release has versioned notes under `docs/releases/`; the release page includ
 
 ### CI (GitHub Actions)
 
-Signed arm64 APK and daemon binaries are built in parallel when a reviewed annotated beta tag is pushed by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). After gated aggregation and verification, the workflow publishes the matching GitHub prerelease. Manual dispatch is build-only by default and requires an explicit reviewed boolean for publication recovery. Required secret **names** and release preparation details: [ci-release.md](ci-release.md).
+Signed arm64 APK and daemon binaries are built in parallel when a reviewed annotated stable or beta tag is pushed by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). After gated aggregation and verification, the workflow publishes the matching GitHub Release. Stable tags become normal Latest releases; beta tags remain prereleases. Manual dispatch is build-only by default and requires an explicit reviewed boolean for publication recovery. Required secret **names** and release preparation details: [ci-release.md](ci-release.md).
 
 ## Related docs
 

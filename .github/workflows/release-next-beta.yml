@@ -1,10 +1,15 @@
-name: Release next beta
+name: Release reviewed version
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Target X.Y.Z or X.Y.Z-beta.N without the v prefix"
+        required: true
+        type: string
 
 concurrency:
-  group: release-next-beta
+  group: release-reviewed-version
   cancel-in-progress: false
 
 permissions:
@@ -13,7 +18,7 @@ permissions:
 
 jobs:
   release:
-    name: Prepare, tag, and dispatch reviewed beta
+    name: Prepare, tag, and dispatch reviewed release
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -59,9 +64,11 @@ jobs:
 
       - name: Prepare deterministic release identity and notes
         id: release
+        env:
+          TARGET_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          RESULT="$(./scripts/prepare-release.py)"
+          RESULT="$(./scripts/prepare-release.py --version "$TARGET_VERSION")"
           printf '%s\n' "$RESULT"
           python3 - "$RESULT" "$RUNNER_TEMP/zen-release-paths" >> "$GITHUB_OUTPUT" <<'PY'
           import json

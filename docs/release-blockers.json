@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "updated": "2026-07-13",
-  "blockers": [
+  "updated": "2026-08-27",
+  "blockers": [],
+  "resolved": [
     {
       "id": "android-native-terminal-artifacts",
-      "severity": "blocker",
-      "summary": "libghostty_vt.so gitignored; pipeline/docs exist but no published checksummed arm64 artifacts yet",
+      "severity": "resolved",
+      "summary": "Signed arm64 APK and daemon archives are published with checksums and a signed update manifest",
       "paths": [
         {
           "path": "app/modules/zen-terminal-vt/libs/android/*/libghostty_vt.so",
@@ -37,13 +38,14 @@
         }
       ],
       "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution",
-      "pipeline_status": "partial",
-      "remaining": "Publish checksummed arm64 libs/APK (or green native-libs workflow artifacts on a release tag); no stranger-consumable published artifact exists yet"
+      "pipeline_status": "complete",
+      "evidence": "https://github.com/daoleno/zen/releases/tag/v0.1.0-beta.22",
+      "resolved_at": "2026-08-24"
     },
     {
       "id": "ios-distribution-artifacts",
-      "severity": "blocker",
-      "summary": "iOS source and Simulator builds work; Preview IPA upload is not public installability; Ghostty XCFramework remains gitignored until published distribution",
+      "severity": "resolved",
+      "summary": "Protected CI publishes the verified Preview build through the public TestFlight group",
       "paths": [
         {
           "path": "app/modules/zen-terminal-vt/libs/ios/GhosttyVt.xcframework",
@@ -83,11 +85,10 @@
         }
       ],
       "acceptance": "Reproducible CI verifies the XCFramework and Ghostty notice in the app bundle, signs/archives Zen, and publishes a publicly installable TestFlight/App Store path (Preview IPA upload alone is insufficient)",
-      "pipeline_status": "partial",
-      "remaining": "Complete Apple Beta App Review / public installability for Preview (or App Store), validate a physical device, and publish the supported delivery channel; do not treat App Store Connect upload as public availability"
-    }
-  ],
-  "resolved": [
+      "pipeline_status": "complete",
+      "evidence": "https://testflight.apple.com/join/rTKCDzMt",
+      "resolved_at": "2026-08-24"
+    },
     {
       "id": "theme-image-provenance-unknown",
       "severity": "resolved",

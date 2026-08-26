@@ -1,12 +1,12 @@
 # CI release pipeline (signed Android + daemons)
 
-Release preparation starts in the manual [`.github/workflows/release-next-beta.yml`](../.github/workflows/release-next-beta.yml) workflow. Verified artifact construction and public GitHub prerelease publication remain in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml); the preparation workflow does not build or publish public assets itself.
+Release preparation starts in the manual [`.github/workflows/release-next-beta.yml`](../.github/workflows/release-next-beta.yml) workflow. Verified artifact construction and public GitHub Release publication remain in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml); the preparation workflow does not build or publish public assets itself.
 
 The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. Normal CI compiles and links an unsigned iOS Simulator app on macOS. Signed iOS archive/export and optional TestFlight upload are isolated in [`ios-release.yml`](../.github/workflows/ios-release.yml); see [iOS CI and release automation](ios-ci-release.md).
 
 ## What it does
 
-| Step | Beta tag push or manual rebuild | Publishing tag push / reviewed recovery only |
+| Step | Release tag push or manual rebuild | Publishing tag push / reviewed recovery only |
 | --- | --- | --- |
 | Checkout selected ref | yes | — |
 | `verify-release-identity.sh` | yes | — |
@@ -16,11 +16,11 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 | Verify package / version / ABI / Ghostty native imports / notice / cert fingerprint | yes | — |
 | Stage tree + checksums + signed updater manifest | yes | — |
 | Upload workflow artifact | yes | — |
-| Upload/replace assets on **existing** GitHub prerelease | **no** | yes |
+| Upload/replace assets on **existing** GitHub Release | **no** | yes |
 
-The canonical normal flow is one manual **Release next beta** dispatch with no version input. It checks out current `main` with full tag history, derives the next beta from the tracked current version and annotated current tag, increments Android and iOS build identities, generates canonical notes from the intervening commits, updates the root changelog index, and runs the release identity and focused contract tests. Only after every gate passes does it commit exactly those generated paths as `github-actions[bot]`, create the annotated next tag at that commit, prove `origin/main` still equals the starting SHA, and atomically push the new `main` commit and tag. Main drift, malformed identity, missing history, dirty state, existing output, or any failed test stops before that atomic push.
+The canonical normal flow is one manual **Release reviewed version** dispatch with an explicit `X.Y.Z` or `X.Y.Z-beta.N` version. It checks out current `main` with full tag history, proves the target is newer than the tracked current version and annotated current tag, increments Android and iOS build identities, generates canonical notes from the intervening commits, updates the root changelog index, and runs the release identity and focused contract tests. Only after every gate passes does it commit exactly those generated paths as `github-actions[bot]`, create the annotated target tag at that commit, prove `origin/main` still equals the starting SHA, and atomically push the new `main` commit and tag. Main drift, malformed identity, missing history, dirty state, existing output, or any failed test stops before that atomic push.
 
-GitHub suppresses recursive workflow triggers for pushes made with `GITHUB_TOKEN`, so the workflow explicitly dispatches both downstream workflows after the atomic push. It dispatches `release-artifacts.yml` with the exact new tag and `publish=true`, and dispatches `ios-release.yml` at the same tag with the tracked next iOS build number, `app_identity=preview`, and `destination=testflight`. This preserves the two downstream effects of a maintainer-pushed beta tag. The artifact workflow checks out that immutable tag, proves strict syntax, version equality, annotated-tag identity, exact HEAD resolution, and ancestry on `origin/main`, then reruns the tracked identity verifier. Daemon builds and Android/native work run in parallel. A final job combines those verified outputs, creates deterministic archives and checksums, signs and verifies the updater manifest, and uploads one complete workflow artifact. Only then does the write-scoped job create or reuse the matching draft prerelease, upload and verify the exact non-empty asset set, and publish it. A failed build cannot create a public release; a failed first upload can leave only a draft.
+GitHub suppresses recursive workflow triggers for pushes made with `GITHUB_TOKEN`, so the workflow explicitly dispatches both downstream workflows after the atomic push. It dispatches `release-artifacts.yml` with the exact new tag and `publish=true`, and dispatches `ios-release.yml` at the same tag with the tracked next iOS build number, `app_identity=preview`, and `destination=testflight`. This preserves the two downstream effects of a maintainer-pushed release tag. The artifact workflow checks out that immutable tag, proves strict syntax, version equality, annotated-tag identity, exact HEAD resolution, and ancestry on `origin/main`, then reruns the tracked identity verifier. Daemon builds and Android/native work run in parallel. A final job combines those verified outputs, creates deterministic archives and checksums, signs and verifies the updater manifest, and uploads one complete workflow artifact. Only then does the write-scoped job create or reuse the matching draft, upload and verify the exact non-empty asset set, and publish it. Stable tags become normal Latest releases; beta tags remain prereleases. A failed build cannot create a public release; a failed first upload can leave only a draft.
 
 ## Repository secrets (names only)
 
@@ -59,8 +59,8 @@ C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `ref` | string | — | Exact annotated `vX.Y.Z-beta.N` tag to rebuild |
-| `publish` | boolean | `false` | Reviewed recovery authorization to reconcile and publish the matching draft/existing prerelease |
+| `ref` | string | — | Exact annotated `vX.Y.Z` or `vX.Y.Z-beta.N` tag to rebuild |
+| `publish` | boolean | `false` | Reviewed recovery authorization to reconcile and publish the matching draft/existing release |
 
 Permissions: validation, build, and aggregation jobs have `contents: read`; only the final gated publish job has `contents: write`.
 
@@ -68,27 +68,28 @@ Permissions: validation, build, and aggregation jobs have `contents: read`; only
 
 Prerequisites:
 
-1. Current `main` is clean and contains commits after its tracked annotated beta tag.
-2. All existing beta notes are indexed in root `CHANGELOG.md`; future preparation prepends one link without copying full notes.
+1. Current `main` is clean and contains commits after its tracked annotated release tag.
+2. All existing release notes are indexed in root `CHANGELOG.md`; future preparation prepends one link without copying full notes.
 3. The four `ZEN_ANDROID_*` secrets above are configured on the repository.
 4. `ZEN_UPDATE_SIGNING_KEY_BASE64` is configured with the updater manifest key.
 
-The normal maintainer action is to dispatch **Release next beta** from the Actions UI or CLI:
+The normal maintainer action is to dispatch **Release reviewed version** from the Actions UI or CLI:
 
 ```bash
 gh workflow run release-next-beta.yml \
-  --ref main
+  --ref main \
+  -f version=0.1.2
 ```
 
-There is no version input. Review the run's computed machine-readable version/tag, identity checks, tests, atomic push, and downstream dispatch. The workflow uses only `GITHUB_TOKEN`; it has no PAT, release service, database, external action bot, or second publication engine.
+Review the requested machine-readable version/tag, identity checks, tests, atomic push, and downstream dispatch. The workflow uses only `GITHUB_TOKEN`; it has no PAT, release service, database, external action bot, or second publication engine.
 
 ### Maintainer fallback: manual annotated tag
 
 If the preparation workflow is unavailable, a maintainer may perform the same tracked identity and canonical-notes updates manually, run `./scripts/verify-release-identity.sh` and the release tests, commit and push that exact change to `main`, then use the existing annotated-tag path:
 
 ```bash
-git tag -a vX.Y.Z-beta.N -m "Zen vX.Y.Z-beta.N"
-git push origin vX.Y.Z-beta.N
+git tag -a vX.Y.Z -m "Zen vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 The manual tag remains a recovery/maintainer fallback, not a second release engine. Its tag push invokes the same existing artifact workflow.
@@ -101,8 +102,8 @@ Artifact publication recovery:
 
 ```bash
 gh workflow run release-artifacts.yml \
-  --ref vX.Y.Z-beta.N \
-  -f ref=vX.Y.Z-beta.N \
+  --ref vX.Y.Z \
+  -f ref=vX.Y.Z \
   -f publish=true
 ```
 
@@ -110,14 +111,14 @@ Preview TestFlight recovery uses the tracked build number from `app/ios-build.js
 
 ```bash
 gh workflow run ios-release.yml \
-  --ref vX.Y.Z-beta.N \
-  -f ref=vX.Y.Z-beta.N \
+  --ref vX.Y.Z \
+  -f ref=vX.Y.Z \
   -f build_number=N \
   -f app_identity=preview \
   -f destination=testflight
 ```
 
-Do not create a GitHub release by hand. Recovery repeats every identity, SHA, main-ancestry, asset, checksum, and signature gate; it can safely resume a matching draft or reconcile an existing prerelease with `--clobber`. It never creates or rewrites a tag and never force-pushes.
+Do not create a GitHub Release by hand. Recovery repeats every identity, SHA, main-ancestry, asset, checksum, and signature gate; it can safely resume a matching draft or reconcile an existing release with `--clobber`. It never creates or rewrites a tag and never force-pushes.
 
 ## Build-time baseline and optimization
 
@@ -150,7 +151,7 @@ Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release
 
 | Script | Role |
 | --- | --- |
-| `scripts/prepare-release.py` | Validate the current annotated beta, derive and write the next tracked identity, canonical notes, and changelog entry |
+| `scripts/prepare-release.py` | Validate the current annotated release and write the explicit newer identity, canonical notes, and changelog entry |
 | `scripts/materialize-android-keystore.sh` | Base64 → temp keystore file (0600); prints path only |
 | `scripts/verify-apk-release.sh` | Package/version/ABI/notice/certificate checks |
 | `scripts/android-release-apk.sh` | Clean prebuild + signed assembleRelease |
@@ -164,9 +165,9 @@ Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release
 - The updater accepts one public release stream, including prereleases by semantic-version precedence; it has no channel setting.
 - The detached Ed25519 signature authenticates manifest version, platform mapping, archive size, and SHA-256 before download installation.
 - CI does not read developer home directories (including `~/.zen/release-keys`).
-- `Release next beta` can change `main` and create a tag only in one atomic push after all preparation gates pass and only while `origin/main` still equals its starting SHA.
+- `Release reviewed version` can change `main` and create a tag only in one atomic push after all preparation gates pass and only while `origin/main` still equals its starting SHA.
 - Public assets remain build-gated in `release-artifacts.yml`; the preparation workflow dispatches it and the existing Preview TestFlight workflow with the same exact reviewed annotated tag.
-- Manual artifact dispatch publishes only with the reviewed boolean; the existing strict annotated beta tag path remains available for maintainer recovery.
+- Manual artifact dispatch publishes only with the reviewed boolean; the strict annotated stable/beta tag path remains available for maintainer recovery.
 - Gradle caches only dependency/build state under the runner's Gradle home. Zig/Ghostty source and unsigned native-output keys include the native lock and build/verification inputs; every cache hit still runs release-grade manifest, checksum, ABI, and notice verification.
 - No cache path includes a keystore, updater signing key, signed APK, or staged release output.
 - Pinned Zig archives are SHA-256 verified on both cache misses and hits and extracted under `$RUNNER_TEMP/zen-tools` (not `/usr/local`). No `sudo` or unverified installers.

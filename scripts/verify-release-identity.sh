@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify canonical beta identity sources and optional stage layout.
+# Verify canonical release identity sources and optional stage layout.
 #
 # Usage:
 #   ./scripts/verify-release-identity.sh
@@ -29,8 +29,8 @@ EXPECTED_IOS_BUILD_NUMBER="23"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
 if [[ -n "$RELEASE_TAG" ]]; then
-  [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || {
-    echo "error: release tag must exactly match vX.Y.Z-beta.N" >&2
+  [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.[1-9][0-9]*)?$ ]] || {
+    echo "error: release tag must exactly match vX.Y.Z or vX.Y.Z-beta.N" >&2
     exit 1
   }
   [[ "$RELEASE_TAG" == "v${EXPECTED_VERSION}" ]] || {
@@ -263,8 +263,12 @@ if "ZEN_ANDROID_KEYSTORE_BASE64" not in wf:
     errors.append("release-artifacts.yml must reference ZEN_ANDROID_KEYSTORE_BASE64")
 if "workflow_dispatch" not in wf:
     errors.append("release-artifacts.yml must support workflow_dispatch")
-if 'tags:' not in wf or '"v*.*.*-beta.*"' not in wf:
-    errors.append("release-artifacts.yml must trigger from beta tag pushes")
+if (
+    'tags:' not in wf
+    or '"v*.*.*"' not in wf
+    or '"v*.*.*-beta.*"' not in wf
+):
+    errors.append("release-artifacts.yml must trigger from stable and beta tag pushes")
 if "types: [published]" in wf or "github.event.release" in wf:
     errors.append("release-artifacts.yml must not depend on a release-published event")
 if "type: boolean" not in wf or "needs.validate.outputs.publish == 'true'" not in wf:
@@ -298,8 +302,10 @@ if "GH_REPO" not in wf or "github.repository" not in wf:
     errors.append("release-artifacts.yml publish path must set GH_REPO from github.repository")
 for required in (
     'needs: [validate, daemon, android]',
-    'gh release create "$TAG" --verify-tag --draft --prerelease',
-    'gh release edit "$TAG" --draft=false --prerelease',
+    'RELEASE_IS_PRERELEASE=true',
+    'RELEASE_IS_PRERELEASE=false',
+    '--prerelease="$RELEASE_IS_PRERELEASE"',
+    '--latest="$RELEASE_IS_STABLE"',
 ):
     if required not in wf:
         errors.append(f"release-artifacts.yml missing gated release contract: {required}")

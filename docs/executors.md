@@ -2,7 +2,7 @@
 
 Zen launches and observes AI CLIs through tmux. Configuration is optional: if `~/.zen/executors.toml` is missing, built-in defaults apply.
 
-**One authenticated executor on `PATH` is enough** for a usable beta. You do not need Codex, Claude, Cursor, Grok, Pi, and OpenCode all installed.
+**One authenticated executor on `PATH` is enough** for a usable Zen installation. You do not need Codex, Claude, Cursor, Grok, Pi, and OpenCode all installed.
 
 ## Built-in defaults (current code)
 

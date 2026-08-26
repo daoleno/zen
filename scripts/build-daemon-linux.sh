@@ -7,7 +7,7 @@
 # Usage:
 #   ./scripts/build-daemon-linux.sh
 #   ./scripts/build-daemon-linux.sh --out-dir dist-download/staging/bin
-#   ZEN_VERSION=0.1.0-beta.1 ./scripts/build-daemon-linux.sh
+#   ZEN_VERSION=0.1.2 ./scripts/build-daemon-linux.sh
 
 set -euo pipefail
 

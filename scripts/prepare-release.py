@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the next Zen beta release as one deterministic tracked change."""
+"""Prepare a Zen release as one deterministic tracked change."""
 
 from __future__ import annotations
 
@@ -20,8 +20,14 @@ BETA_VERSION_RE = re.compile(
     r"(?P<patch>0|[1-9][0-9]*)-beta\."
     r"(?P<beta>[1-9][0-9]*)$"
 )
+RELEASE_VERSION_RE = re.compile(
+    r"^(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+    r"(?:-beta\.(?P<beta>[1-9][0-9]*))?$"
+)
 CHANGELOG_ENTRY_RE = re.compile(
-    r"^- \[(v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*)\]"
+    r"^- \[(v[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[1-9][0-9]*)?)\]"
     r"\(docs/releases/\1\.md\)$",
     re.MULTILINE,
 )
@@ -48,6 +54,32 @@ def next_beta_version(current: str) -> str:
         f"{match.group('major')}.{match.group('minor')}.{match.group('patch')}"
         f"-beta.{int(match.group('beta')) + 1}"
     )
+
+
+def release_precedence(version: str) -> tuple[int, int, int, int, int]:
+    match = RELEASE_VERSION_RE.fullmatch(version)
+    if match is None:
+        raise PrepareError(
+            f"version must exactly match X.Y.Z or X.Y.Z-beta.N; got {version!r}"
+        )
+    beta = match.group("beta")
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+        1 if beta is None else 0,
+        int(beta or 0),
+    )
+
+
+def validate_target_version(current: str, target: str) -> str:
+    current_order = release_precedence(current)
+    target_order = release_precedence(target)
+    if target_order <= current_order:
+        raise PrepareError(
+            f"target version must be newer than current version {current}; got {target}"
+        )
+    return target
 
 
 def run_git(root: Path, *args: str, check: bool = True) -> str:
@@ -151,18 +183,7 @@ def validate_changelog(
     if content.count("\n- [") != len(entries):
         raise PrepareError("CHANGELOG.md contains malformed release entries")
 
-    def precedence(tag: str) -> tuple[int, int, int, int]:
-        match = BETA_VERSION_RE.fullmatch(tag.removeprefix("v"))
-        if match is None:
-            raise PrepareError(f"CHANGELOG.md contains malformed beta tag: {tag}")
-        return (
-            int(match.group("major")),
-            int(match.group("minor")),
-            int(match.group("patch")),
-            int(match.group("beta")),
-        )
-
-    order = [precedence(tag) for tag in entries]
+    order = [release_precedence(tag.removeprefix("v")) for tag in entries]
     if any(left <= right for left, right in zip(order, order[1:])):
         raise PrepareError(
             "CHANGELOG.md release entries are not strictly reverse chronological"
@@ -266,12 +287,15 @@ def build_release_notes(
     certificate: str,
 ) -> str:
     marketing_version = next_version.split("-beta.", 1)[0]
+    release_description = (
+        "This beta contains" if "-beta." in next_version else "This release contains"
+    )
     changes = "\n".join(
         f"- {markdown_subject(subject)} (`{sha[:7]}`)" for sha, subject in commits
     )
     return f"""# Zen {next_tag}
 
-This beta contains the reviewed changes on `main` since `{current_tag}`.
+{release_description} the reviewed changes on `main` since `{current_tag}`.
 
 ## What changed
 
@@ -325,7 +349,7 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def prepare(root: Path) -> dict[str, object]:
+def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
     root = root.resolve()
     git_root = Path(run_git(root, "rev-parse", "--show-toplevel")).resolve()
     if git_root != root:
@@ -350,7 +374,11 @@ def prepare(root: Path) -> dict[str, object]:
     if not isinstance(android_package, str) or not android_package.strip():
         raise PrepareError("app/app.base.json Android package must be a non-empty string")
 
-    next_version = next_beta_version(current_version)
+    next_version = (
+        next_beta_version(current_version)
+        if target_version is None
+        else validate_target_version(current_version, target_version)
+    )
     current_tag = f"v{current_version}"
     next_tag = f"v{next_version}"
     require_annotated_tag(root, current_tag)
@@ -523,7 +551,7 @@ def prepare(root: Path) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Prepare the next tracked Zen beta release"
+        description="Prepare a tracked Zen release"
     )
     parser.add_argument(
         "--repo",
@@ -531,9 +559,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parent.parent,
         help="repository root (defaults to this script's repository)",
     )
+    parser.add_argument(
+        "--version",
+        help="explicit target X.Y.Z or X.Y.Z-beta.N (default: increment beta ordinal)",
+    )
     args = parser.parse_args(argv)
     try:
-        result = prepare(args.repo)
+        result = prepare(args.repo, args.version)
     except PrepareError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

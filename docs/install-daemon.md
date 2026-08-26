@@ -17,7 +17,7 @@ You do not need every executor. One is enough.
 curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
 ```
 
-On every fresh bootstrap run without `ZEN_VERSION`, the installer queries GitHub at run time and selects the SemVer-highest public nondraft Release whose tag matches supported `vX.Y.Z` or `vX.Y.Z-beta.N` syntax. GitHub's `prerelease` flag does not affect eligibility: strict SemVer ordering makes a stable tag outrank a beta at the same core version, while a beta with a higher core version outranks a stable release with a lower core. The default therefore follows today's beta releases and automatically moves to a future stable release without an embedded version that needs routine README or script updates. `ZEN_VERSION` is optional pinning only.
+On every fresh bootstrap run without `ZEN_VERSION`, the installer queries GitHub at run time and selects the SemVer-highest public nondraft Release whose tag matches supported `vX.Y.Z` or `vX.Y.Z-beta.N` syntax. GitHub's `prerelease` flag does not affect eligibility: strict SemVer ordering makes a stable tag outrank a beta at the same core version, while a beta with a higher core version outranks a stable release with a lower core. The default follows the highest published version without an embedded version that needs routine README or script updates. `ZEN_VERSION` is optional pinning only.
 
 The installer detects the supported platform, downloads the selected release's exact archive and `SHA256SUMS` from the official [`daoleno/zen`](https://github.com/daoleno/zen) release, verifies SHA-256, rejects unexpected archive entries and links, and atomically installs a mode-`0755` executable. It never invokes `sudo`, installs packages, installs AI CLIs, logs in, or sends telemetry.
 
@@ -171,7 +171,7 @@ This path depends on the published module and Go proxy state. If `@latest` fails
 
 ## Run as a background service
 
-The beta does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same host user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
+Zen does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same host user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
 
 Do not run the daemon as root merely to keep it alive.
 
@@ -219,7 +219,7 @@ pair time; Pairing V2 receives candidates from explicit Link config.
 
 ## Keep it running
 
-For a personal beta, a tmux pane or systemd user unit is enough. Example user unit (adjust paths):
+For personal use, a tmux pane or systemd user unit is enough. Example user unit (adjust paths):
 
 ```ini
 [Unit]

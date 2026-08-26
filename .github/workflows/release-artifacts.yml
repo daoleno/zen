@@ -2,7 +2,7 @@ name: Release artifacts
 
 # Secure release pipeline: Linux amd64/arm64, macOS arm64, signed Android arm64 APK.
 #
-# An annotated vX.Y.Z-beta.N tag push is the sole normal release action. Manual
+# An annotated vX.Y.Z or vX.Y.Z-beta.N tag push is the normal release action. Manual
 # dispatch can rebuild, and can recover publication only with explicit review.
 #
 # Secrets (GitHub Actions repository secrets only; never commit values):
@@ -17,15 +17,16 @@ name: Release artifacts
 on:
   push:
     tags:
+      - "v*.*.*"
       - "v*.*.*-beta.*"
   workflow_dispatch:
     inputs:
       ref:
-        description: "Exact annotated vX.Y.Z-beta.N tag to rebuild/recover"
+        description: "Exact annotated vX.Y.Z or vX.Y.Z-beta.N tag to rebuild/recover"
         required: true
         type: string
       publish:
-        description: "Reviewed recovery: publish/reconcile the matching prerelease"
+        description: "Reviewed recovery: publish/reconcile the matching release"
         required: true
         type: boolean
         default: false
@@ -247,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v zig
-          # Sideload beta ships arm64 only; --release enforces release_grade + arm64.
+          # The sideload release ships arm64 only; --release enforces release_grade + arm64.
           # Do not run bare verify-libghostty.sh here (that requires dual-ABI lock ABIs).
           ./scripts/build-libghostty.sh --abis arm64-v8a
           ./scripts/verify-libghostty.sh --release
@@ -369,7 +370,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Reconcile draft and publish prerelease
+    name: Reconcile draft and publish release
     needs: [validate, aggregate]
     if: ${{ needs.validate.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
@@ -401,16 +402,27 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${GH_REPO:-}"
+          if [[ "$TAG" == *-beta.* ]]; then
+            RELEASE_IS_PRERELEASE=true
+            RELEASE_IS_STABLE=false
+          else
+            RELEASE_IS_PRERELEASE=false
+            RELEASE_IS_STABLE=true
+          fi
           notes="docs/releases/${TAG}.md"
           test -s "$notes"
           if ! meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url 2>/dev/null)"; then
-            gh release create "$TAG" --verify-tag --draft --prerelease --title "Zen $TAG" --notes-file "$notes"
+            gh release create "$TAG" --verify-tag --draft \
+              --prerelease="$RELEASE_IS_PRERELEASE" \
+              --latest="$RELEASE_IS_STABLE" \
+              --title "Zen $TAG" --notes-file "$notes"
             meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url)"
           fi
           is_pre="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isPrerelease"])')"
           is_draft="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isDraft"])')"
-          if [[ "$is_pre" != "True" && "$is_pre" != "true" ]]; then
-            echo "error: existing $TAG release is not a prerelease" >&2
+          actual_pre="$(printf '%s' "$is_pre" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$actual_pre" != "$RELEASE_IS_PRERELEASE" ]]; then
+            echo "error: existing $TAG release prerelease state is $actual_pre; expected $RELEASE_IS_PRERELEASE" >&2
             exit 1
           fi
           cd stage
@@ -435,8 +447,14 @@ jobs:
             exit 1
           }
           if [[ "$is_draft" == "True" || "$is_draft" == "true" ]]; then
-            gh release edit "$TAG" --draft=false --prerelease --notes-file "../$notes"
+            gh release edit "$TAG" --draft=false \
+              --prerelease="$RELEASE_IS_PRERELEASE" \
+              --latest="$RELEASE_IS_STABLE" \
+              --notes-file "../$notes"
           else
-            gh release edit "$TAG" --prerelease --notes-file "../$notes"
+            gh release edit "$TAG" \
+              --prerelease="$RELEASE_IS_PRERELEASE" \
+              --latest="$RELEASE_IS_STABLE" \
+              --notes-file "../$notes"
           fi
           gh release view "$TAG" --json isDraft,isPrerelease,url,assets

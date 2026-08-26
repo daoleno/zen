@@ -1,6 +1,6 @@
 # GitHub repo metadata (manual)
 
-Do **not** apply these with `gh` from automation unless a maintainer asks. This file only records suggested GitHub UI fields for an honest public beta landing.
+Do **not** apply these with `gh` from automation unless a maintainer asks. This file only records suggested GitHub UI fields for the public project.
 
 ## Suggested description
 

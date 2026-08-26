@@ -1,11 +1,12 @@
 name: iOS signed release
 
-# Annotated Zen beta tag pushes automatically ship the closed Preview identity
+# Annotated Zen release tag pushes automatically ship the closed Preview identity
 # to TestFlight. Manual dispatch remains available for Preview and Production;
 # Production is never selected by an automatic event.
 on:
   push:
     tags:
+      - "v*.*.*"
       - "v*.*.*-beta.*"
   workflow_dispatch:
     inputs:

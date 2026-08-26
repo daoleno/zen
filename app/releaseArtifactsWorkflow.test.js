@@ -17,8 +17,10 @@ const nativeVerifier = fs.readFileSync(
 const appPackage = fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8');
 
 describe('release asset workflow contract', () => {
-  it('uses an immutable beta tag push as the only automatic publication path', () => {
-    expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/);
+  it('uses immutable stable or beta tag pushes as the only automatic publication path', () => {
+    expect(workflow).toMatch(
+      /push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*"\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/,
+    );
     expect(workflow).not.toMatch(/release:\s*\n\s*types:/);
     expect(workflow).toContain('type: boolean');
     expect(workflow).toContain("needs.validate.outputs.publish == 'true'");
@@ -26,9 +28,13 @@ describe('release asset workflow contract', () => {
     expect(identityVerifier).toContain('release tag $RELEASE_TAG does not match tracked version');
     expect(identityVerifier).toContain('checked-out release tag does not resolve to HEAD');
     expect(identityVerifier).toContain('release tag commit is not on origin/main');
-    expect(workflow).toContain('gh release create "$TAG" --verify-tag --draft --prerelease');
+    expect(workflow).toContain('RELEASE_IS_PRERELEASE=true');
+    expect(workflow).toContain('RELEASE_IS_PRERELEASE=false');
+    expect(workflow).toContain('--prerelease="$RELEASE_IS_PRERELEASE"');
+    expect(workflow).toContain('--latest="$RELEASE_IS_STABLE"');
+    expect(workflow).toContain('gh release create "$TAG" --verify-tag --draft');
     expect(workflow).toContain('gh release upload "$TAG" "${assets[@]}" --clobber');
-    expect(workflow).toContain('gh release edit "$TAG" --draft=false --prerelease');
+    expect(workflow).toContain('gh release edit "$TAG" --draft=false');
   });
 
   it('builds daemon and Android in parallel before deterministic signed aggregation', () => {

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-This project is in an early public beta. Security fixes target the default branch (`main`). There are no long-term supported release trains yet.
+Security fixes target the latest stable release and the default branch (`main`). Zen does not maintain parallel long-term support release trains yet.
 
 ## What Zen trusts
 
