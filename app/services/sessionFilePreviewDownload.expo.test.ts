@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from "bun:test";
 
 const calls: Array<Record<string, unknown>> = [];
 let fetchImpl: (url: string, init: RequestInit) => Promise<Response>;
+let platformOS = "android";
+let nativeAvailable = true;
 
 class FakeFile {
   exists = true;
@@ -43,6 +45,26 @@ mock.module("expo-file-system", () => ({
   UploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
 }));
 
+mock.module("react-native", () => ({
+  Platform: {
+    get OS() {
+      return platformOS;
+    },
+  },
+}));
+
+mock.module("../modules/zen-file-upload/src", () => ({
+  getZenFileDownloadModule() {
+    if (!nativeAvailable) return null;
+    return {
+      async download(request: Record<string, unknown>) {
+        calls.push({ kind: "native-download", request });
+        return { bytesWritten: request.expectedSize ?? 0 };
+      },
+    };
+  },
+}));
+
 const { createExpoSessionFileDownloadBackend } = await import(
   "./sessionFilePreviewDownload.expo"
 );
@@ -64,9 +86,10 @@ describe("Expo Session file download backend", () => {
     globalThis.fetch = fetchImpl as typeof globalThis.fetch;
   }
 
-  test("streams the authenticated response directly into the owned SAF file", async () => {
+  test("uses the native Android transport instead of a JS response stream", async () => {
     calls.length = 0;
-    setFetch("payload");
+    platformOS = "android";
+    nativeAvailable = true;
     const { backend, destination } = await createDestination();
 
     await backend.download("https://host.example/file?cap=1", destination, {
@@ -80,44 +103,43 @@ describe("Expo Session file download backend", () => {
       mimeType: "text/plain",
     });
     expect(calls[1]).toMatchObject({
-      kind: "fetch",
-      url: "https://host.example/file?cap=1",
-      init: {
-        method: "GET",
+      kind: "native-download",
+      request: {
+        url: "https://host.example/file?cap=1",
+        destinationUri: "content://picked/notes.md",
+        expectedSize: 7,
+        maxBytes: 50 * 1024 * 1024,
         headers: { "Cache-Control": "no-store" },
       },
     });
-    expect(calls[2]).toEqual({
-      kind: "writable",
-      uri: "content://picked/notes.md",
-    });
-    expect(new TextDecoder().decode(pickedFile.chunks[0])).toBe("payload");
-    expect(calls.some((call) => call.kind === "copy")).toBe(false);
-  });
-
-  test("validates the response size in JavaScript", async () => {
-    calls.length = 0;
-    setFetch("short");
-    const { backend, destination } = await createDestination();
-
-    await expect(
-      backend.download("https://host.example/file", destination, {
-        headers: {},
-        expectedBytes: 7,
-      }),
-    ).rejects.toThrow("expected 7 bytes, received 5");
-  });
-
-  test("surfaces HTTP failures before opening the owned SAF file", async () => {
-    calls.length = 0;
-    setFetch("", 500);
-    const { backend, destination } = await createDestination();
-
-    await expect(
-      backend.download("https://host.example/file", destination, {
-        headers: {},
-      }),
-    ).rejects.toThrow("HTTP 500");
+    expect(calls.some((call) => call.kind === "fetch")).toBe(false);
     expect(calls.some((call) => call.kind === "writable")).toBe(false);
+  });
+
+  test("an old Android build fails safely before opening the directory picker", async () => {
+    calls.length = 0;
+    platformOS = "android";
+    nativeAvailable = false;
+    const backend = createExpoSessionFileDownloadBackend();
+
+    await expect(backend.pickDirectory()).rejects.toThrow(
+      "does not include the native Android download transport",
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("keeps the response-stream backend on non-Android platforms", async () => {
+    calls.length = 0;
+    platformOS = "ios";
+    nativeAvailable = false;
+    setFetch("payload");
+    const { backend, destination } = await createDestination();
+
+    await backend.download("https://host.example/file", destination, {
+      headers: {},
+      expectedBytes: 7,
+    });
+    expect(calls.some((call) => call.kind === "fetch")).toBe(true);
+    expect(calls.some((call) => call.kind === "writable")).toBe(true);
   });
 });
