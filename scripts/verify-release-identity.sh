@@ -3,8 +3,8 @@
 #
 # Usage:
 #   ./scripts/verify-release-identity.sh
-#   ./scripts/verify-release-identity.sh --tag v0.1.0-beta.22
-#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.22
+#   ./scripts/verify-release-identity.sh --tag v0.1.2
+#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.2
 
 set -euo pipefail
 
@@ -22,10 +22,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-EXPECTED_VERSION="0.1.0-beta.22"
+EXPECTED_VERSION="0.1.2"
 EXPECTED_PACKAGE="com.daoleno.zen"
-EXPECTED_VERSION_CODE="22"
-EXPECTED_IOS_BUILD_NUMBER="23"
+EXPECTED_VERSION_CODE="23"
+EXPECTED_IOS_BUILD_NUMBER="24"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
 if [[ -n "$RELEASE_TAG" ]]; then
@@ -63,19 +63,21 @@ verify_ios_identity() {
   local expected_name="$2"
   local expected_bundle="$3"
   ZEN_IOS_APP_VARIANT="$variant" \
-    node - "$expected_name" "$expected_bundle" "$EXPECTED_PACKAGE" "$EXPECTED_IOS_BUILD_NUMBER" <<'JS'
+    node - "$expected_name" "$expected_bundle" "$EXPECTED_PACKAGE" "$EXPECTED_IOS_BUILD_NUMBER" "$EXPECTED_VERSION" <<'JS'
 const createConfig = require('./app/app.config.js');
 const expectedDisplayName = process.argv[2];
 const expectedBundle = process.argv[3];
 const expectedAndroidPackage = process.argv[4];
 const expectedIOSBuildNumber = process.argv[5];
+const expectedVersion = process.argv[6];
+const expectedMarketingVersion = expectedVersion.split('-', 1)[0];
 const config = createConfig();
 
 if (config.name !== 'Zen') {
   throw new Error(`top-level Expo name must remain Zen; got ${config.name}`);
 }
-if (config.version !== '0.1.0-beta.22') {
-  throw new Error(`general/Android version must remain 0.1.0-beta.22; got ${config.version}`);
+if (config.version !== expectedVersion) {
+  throw new Error(`general/Android version must remain ${expectedVersion}; got ${config.version}`);
 }
 if (config.ios.bundleIdentifier !== expectedBundle) {
   throw new Error(`iOS bundle identifier is ${config.ios.bundleIdentifier}; expected ${expectedBundle}`);
@@ -85,9 +87,9 @@ if (config.ios.infoPlist.CFBundleDisplayName !== expectedDisplayName) {
     `iOS display name is ${config.ios.infoPlist.CFBundleDisplayName}; expected ${expectedDisplayName}`,
   );
 }
-if (config.ios.infoPlist.CFBundleShortVersionString !== '0.1.0') {
+if (config.ios.infoPlist.CFBundleShortVersionString !== expectedMarketingVersion) {
   throw new Error(
-    `iOS marketing version must resolve to 0.1.0; got ${config.ios.infoPlist.CFBundleShortVersionString}`,
+    `iOS marketing version must resolve to ${expectedMarketingVersion}; got ${config.ios.infoPlist.CFBundleShortVersionString}`,
   );
 }
 if (config.ios.infoPlist.CFBundleVersion !== expectedIOSBuildNumber) {

@@ -22,8 +22,10 @@ CURRENT_VERSION_CODE = ROOT_BASE["expo"]["android"]["versionCode"]
 CURRENT_IOS_BUILD = json.loads(
     (ROOT / "app/ios-build.json").read_text(encoding="utf-8")
 )["buildNumber"]
-NEXT_VERSION = prepare_release.next_beta_version(CURRENT_VERSION)
+NEXT_VERSION = prepare_release.next_release_version(CURRENT_VERSION)
 NEXT_TAG = f"v{NEXT_VERSION}"
+CURRENT_CORE = tuple(int(part) for part in CURRENT_VERSION.split("-", 1)[0].split("."))
+STABLE_TARGET = f"{CURRENT_CORE[0]}.{CURRENT_CORE[1]}.{CURRENT_CORE[2] + 1}"
 INDEXED_NOTE_PATHS = tuple(
     f"docs/releases/{tag}.md"
     for tag in prepare_release.CHANGELOG_ENTRY_RE.findall(
@@ -58,7 +60,10 @@ def git(root: Path, *args: str) -> str:
 
 class NextBetaVersionTests(unittest.TestCase):
     def test_increments_only_beta_ordinal(self):
-        self.assertEqual(prepare_release.next_beta_version(CURRENT_VERSION), NEXT_VERSION)
+        self.assertEqual(
+            prepare_release.next_beta_version("0.1.0-beta.22"),
+            "0.1.0-beta.23",
+        )
         self.assertEqual(
             prepare_release.next_beta_version("12.34.56-beta.99"),
             "12.34.56-beta.100",
@@ -75,6 +80,13 @@ class NextBetaVersionTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(prepare_release.PrepareError):
                     prepare_release.next_beta_version(value)
+
+    def test_default_release_increment_handles_stable_versions(self):
+        self.assertEqual(prepare_release.next_release_version("0.1.2"), "0.1.3")
+        self.assertEqual(
+            prepare_release.next_release_version("0.1.2-beta.9"),
+            "0.1.2-beta.10",
+        )
 
 
 class ExplicitReleaseVersionTests(unittest.TestCase):
@@ -195,20 +207,28 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
     def test_prepares_an_explicit_stable_release(self):
         root = self.create_repo()
 
-        result = self.run_script(root, "0.1.2")
+        result = self.run_script(root, STABLE_TARGET)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)
         self.assertEqual(output["current_version"], CURRENT_VERSION)
-        self.assertEqual(output["next_version"], "0.1.2")
-        self.assertEqual(output["next_tag"], "v0.1.2")
+        self.assertEqual(output["next_version"], STABLE_TARGET)
+        self.assertEqual(output["next_tag"], f"v{STABLE_TARGET}")
 
         base = json.loads((root / "app/app.base.json").read_text(encoding="utf-8"))
-        self.assertEqual(base["expo"]["version"], "0.1.2")
-        notes = (root / "docs/releases/v0.1.2.md").read_text(encoding="utf-8")
+        self.assertEqual(base["expo"]["version"], STABLE_TARGET)
+        notes = (root / f"docs/releases/v{STABLE_TARGET}.md").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("This release contains", notes)
         self.assertNotIn("This beta contains", notes)
+        self.assertNotIn("treated as beta", notes)
+        self.assertIn("real Apple Silicon host", notes)
         changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertLess(changelog.index("v0.1.2"), changelog.index(CURRENT_TAG))
+        self.assertLess(
+            changelog.index(f"v{STABLE_TARGET}"), changelog.index(CURRENT_TAG)
+        )
+        ios_docs = (root / "docs/ios-ci-release.md").read_text(encoding="utf-8")
+        self.assertIn(f"marketing version `{STABLE_TARGET}`", ios_docs)
 
     def test_updates_exact_identity_files_from_current_release_notes(self):
         root = self.create_repo()
@@ -285,7 +305,7 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn(CURRENT_VERSION, verifier)
-        self.assertEqual(verifier.count(NEXT_VERSION), 5)
+        self.assertEqual(verifier.count(NEXT_VERSION), 3)
         self.assertIn(
             f'EXPECTED_VERSION_CODE="{CURRENT_VERSION_CODE + 1}"', verifier
         )

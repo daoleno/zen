@@ -56,6 +56,21 @@ def next_beta_version(current: str) -> str:
     )
 
 
+def next_release_version(current: str) -> str:
+    beta = BETA_VERSION_RE.fullmatch(current)
+    if beta is not None:
+        return next_beta_version(current)
+    match = RELEASE_VERSION_RE.fullmatch(current)
+    if match is None:
+        raise PrepareError(
+            f"current version must exactly match X.Y.Z or X.Y.Z-beta.N; got {current!r}"
+        )
+    return (
+        f"{match.group('major')}.{match.group('minor')}."
+        f"{int(match.group('patch')) + 1}"
+    )
+
+
 def release_precedence(version: str) -> tuple[int, int, int, int, int]:
     match = RELEASE_VERSION_RE.fullmatch(version)
     if match is None:
@@ -272,6 +287,15 @@ def markdown_subject(subject: str) -> str:
     return subject.replace("\\", "\\\\").replace("`", "\\`")
 
 
+def release_install_text(install: str, version: str) -> str:
+    if "-beta." in version:
+        return install
+    return install.replace(
+        "The macOS binary is cross-built and should be treated as beta until it has completed broader real-device testing.",
+        "The macOS binary is cross-built; validate it on a real Apple Silicon host before operational use.",
+    )
+
+
 def build_release_notes(
     *,
     next_version: str,
@@ -375,7 +399,7 @@ def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
         raise PrepareError("app/app.base.json Android package must be a non-empty string")
 
     next_version = (
-        next_beta_version(current_version)
+        next_release_version(current_version)
         if target_version is None
         else validate_target_version(current_version, target_version)
     )
@@ -461,7 +485,7 @@ def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
         current_version,
         next_version,
         relative="scripts/verify-release-identity.sh",
-        expected_count=5,
+        expected_count=3,
     )
     verifier = replace_literal(
         verifier,
@@ -485,8 +509,14 @@ def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
     )
     ios_docs = replace_literal(
         sources["docs/ios-ci-release.md"],
-        f"`{current_version}`",
-        f"`{next_version}`",
+        f"tracked general/Android version is `{current_version}`",
+        f"tracked general/Android version is `{next_version}`",
+        relative="docs/ios-ci-release.md",
+    )
+    ios_docs = replace_literal(
+        ios_docs,
+        f"marketing version `{current_version.split('-', 1)[0]}`",
+        f"marketing version `{next_version.split('-', 1)[0]}`",
         relative="docs/ios-ci-release.md",
     )
     ios_docs = replace_literal(
@@ -509,7 +539,7 @@ def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
         next_tag=next_tag,
         current_tag=current_tag,
         commits=commits,
-        install=note_facts["install"],
+        install=release_install_text(note_facts["install"], next_version),
         ios_bundle=preview_bundle,
         ios_build=next_ios_build,
         android_package=android_package,
@@ -561,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--version",
-        help="explicit target X.Y.Z or X.Y.Z-beta.N (default: increment beta ordinal)",
+        help="explicit target X.Y.Z or X.Y.Z-beta.N (default: increment beta ordinal or stable patch)",
     )
     args = parser.parse_args(argv)
     try:

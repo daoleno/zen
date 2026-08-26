@@ -1,5 +1,6 @@
 const { describe, expect, it } = require("bun:test");
 const createConfig = require("./app.config.js");
+const { expo: baseConfig } = require("./app.base.json");
 const { buildNumber: trackedIOSBuildNumber } = require("./ios-build.json");
 const {
   resolveIOSBuildNumber,
@@ -17,7 +18,9 @@ describe("native platform config", () => {
     expect(config.name).toBe("Zen");
     expect(config.ios.bundleIdentifier).toBe("com.daoleno.zen");
     expect(config.ios.infoPlist.CFBundleDisplayName).toBe("Zen");
-    expect(config.ios.infoPlist.CFBundleShortVersionString).toBe("0.1.0");
+    expect(config.ios.infoPlist.CFBundleShortVersionString).toBe(
+      baseConfig.version.split("-", 1)[0],
+    );
     expect(config.ios.infoPlist.CFBundleVersion).toBe(expectedBuildNumber);
     expect(config.ios.buildNumber).toBe(expectedBuildNumber);
   });
