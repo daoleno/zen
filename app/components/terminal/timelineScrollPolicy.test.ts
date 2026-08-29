@@ -3,10 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   INITIAL_TIMELINE_SCROLL_STATE,
   TIMELINE_BOTTOM_THRESHOLD,
-  focusTimelineOnSentMessage,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
-  settleFocusedTimeline,
   timelineDragContinuesWithMomentum,
   timelineListStabilityProps,
   timelineDistanceFromLatest,
@@ -53,15 +51,6 @@ describe("timeline scroll policy", () => {
     );
   });
 
-  test("a sent-message focus settles detached until the reader follows again", () => {
-    const focused = focusTimelineOnSentMessage();
-
-    expect(focused).toEqual({ mode: "focused" });
-    expect(settleFocusedTimeline(focused)).toEqual({ mode: "detached" });
-    expect(settleFocusedTimeline(INITIAL_TIMELINE_SCROLL_STATE)).toBe(
-      INITIAL_TIMELINE_SCROLL_STATE,
-    );
-  });
 
   test("user-initiated return reattaches and clears the affordance", () => {
     expect(returnTimelineToBottom()).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
@@ -73,12 +62,8 @@ describe("timeline scroll policy", () => {
     expect(timelineDistanceFromLatest(280, 0)).toBe(280);
   });
 
-  test("list integration delegates pixel anchoring to native visible-child tracking", () => {
-    expect(timelineListStabilityProps(false)).toEqual({
-      maintainVisibleContentPosition: {
-        minIndexForVisible: 0,
-        autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
-      },
+  test("list integration leaves position ownership to the native list", () => {
+    expect(timelineListStabilityProps()).toEqual({
       removeClippedSubviews: false,
       scrollsChildToFocus: false,
       windowSize: 5,
@@ -89,32 +74,16 @@ describe("timeline scroll policy", () => {
   });
 
   test("native child focus cannot become a second timeline scroll owner", () => {
-    expect(timelineListStabilityProps(false).scrollsChildToFocus).toBe(false);
+    expect(timelineListStabilityProps().scrollsChildToFocus).toBe(false);
   });
 
-  test("touch and text selection suspend native follow without disabling native anchoring", () => {
-    expect(timelineListStabilityProps(true)).toMatchObject({
-      maintainVisibleContentPosition: { minIndexForVisible: 0 },
-      removeClippedSubviews: false,
-      scrollsChildToFocus: false,
-      // Detached reading widens the bounded viewport-multiple window so rows
-      // near the reader stay measured through newest-edge mutations.
-      windowSize: 21,
-      maxToRenderPerBatch: 24,
-      initialNumToRender: 16,
-    });
-    expect(timelineListStabilityProps(true)).not.toHaveProperty(
+  test("list virtualization remains fixed across interaction state", () => {
+    expect(timelineListStabilityProps()).not.toHaveProperty(
+      "maintainVisibleContentPosition",
+    );
+    expect(timelineListStabilityProps()).not.toHaveProperty(
       "disableVirtualization",
     );
-    expect(
-      timelineListStabilityProps(true).maintainVisibleContentPosition,
-    ).not.toHaveProperty("autoscrollToTopThreshold");
-    expect(
-      timelineListStabilityProps(false).maintainVisibleContentPosition,
-    ).toEqual({
-      minIndexForVisible: 0,
-      autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
-    });
   });
 
   test("a fling keeps native follow suspended across drag-end to momentum-begin", () => {

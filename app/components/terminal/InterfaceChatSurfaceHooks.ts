@@ -17,10 +17,8 @@ import {
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import {
   INITIAL_TIMELINE_SCROLL_STATE,
-  focusTimelineOnSentMessage,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
-  settleFocusedTimeline,
   timelineDragContinuesWithMomentum,
   timelineDistanceFromLatest,
   type TimelineScrollState,
@@ -228,39 +226,18 @@ export function usePinnedTimeline(
         if (next.pendingMessageId !== previous.pendingMessageId) {
           setTurnFocusPendingMessageId(next.pendingMessageId);
         }
-        if (
-          event.type !== "cancel" &&
-          event.type !== "reset" &&
-          previous.phase !== "idle" &&
-          next.phase === "idle"
-        ) {
-          const settled = settleFocusedTimeline(scrollStateRef.current);
-          if (settled !== scrollStateRef.current) {
-            scrollStateRef.current = settled;
-            setNativeFollowSuspended(true);
-            setShowJumpToLatest(itemCount > 0);
-          }
-        }
       }
       return transition;
     },
-    [itemCount, turnFocusClearanceRequest, turnFocusSpacer],
+    [turnFocusClearanceRequest, turnFocusSpacer],
   );
 
   const cancelTurnFocus = useCallback(
     (reason: TurnFocusCancelReason) => {
       automaticReturnsInFlightRef.current = 0;
       applyTurnFocusEvent({ type: "cancel", reason });
-      if (
-        reason !== "return-to-latest" &&
-        scrollStateRef.current.mode === "focused"
-      ) {
-        scrollStateRef.current = settleFocusedTimeline(scrollStateRef.current);
-        setNativeFollowSuspended(true);
-        setShowJumpToLatest(itemCount > 0);
-      }
     },
-    [applyTurnFocusEvent, itemCount],
+    [applyTurnFocusEvent],
   );
 
   const handleTimelineTouchActiveChange = useCallback(
@@ -340,9 +317,6 @@ export function usePinnedTimeline(
         return;
       }
       turnFocusIntentSeqRef.current += 1;
-      scrollStateRef.current = focusTimelineOnSentMessage();
-      setNativeFollowSuspended(false);
-      setShowJumpToLatest(itemCount > 0);
       transitionTurnFocus({
         type: "intent",
         generation: resetKey,
@@ -366,7 +340,6 @@ export function usePinnedTimeline(
     [
       cancelTurnFocus,
       implicitAnchorSuspended,
-      itemCount,
       reducedMotion,
       resetKey,
       transitionTurnFocus,
@@ -638,20 +611,12 @@ export function usePinnedTimeline(
         updateJumpButton();
         return;
       }
-      if (
-        scrollStateRef.current.mode === "attached" &&
-        distanceFromLatestRef.current > 1
-      ) {
-        scrollToLatest(false);
-        return;
-      }
       updateJumpButton();
     },
     [
       attachToLatest,
       implicitAnchorSuspended,
       itemCount,
-      scrollToLatest,
       topChromeInset,
       updateTurnFocusGeometry,
       updateJumpButton,
@@ -689,9 +654,8 @@ export function usePinnedTimeline(
       detachFromLatest();
       return;
     }
-    // Item-count changes are live list mutations. Native visible-child
-    // tracking owns both detached anchoring and newest-edge follow so this
-    // effect must not race it with an imperative scroll.
+    // Item-count changes update the list only. Do not reposition the reader
+    // from a lifecycle or data subscription callback.
     updateJumpButton();
   }, [
     attachToLatest,

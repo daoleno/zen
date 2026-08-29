@@ -4,10 +4,7 @@ import type { CodexConversationEvent } from "../../services/codexConversation";
 import {
   buildZenTimeline,
 } from "./InterfaceTimelineModel";
-import {
-  TIMELINE_BOTTOM_THRESHOLD,
-  timelineListStabilityProps,
-} from "./timelineScrollPolicy";
+import { timelineListStabilityProps } from "./timelineScrollPolicy";
 
 function assistant(
   id: string,
@@ -25,7 +22,7 @@ function assistant(
 }
 
 describe("timeline history viewport stability", () => {
-  test("canonical append retains history identity under the native anchor owner", () => {
+  test("canonical append retains history item identity", () => {
     const before = buildZenTimeline([
       assistant("oldest", 0, "oldest"),
       assistant("history-anchor", 2, "settled history"),
@@ -42,12 +39,12 @@ describe("timeline history viewport stability", () => {
       before.find((item) => item.id === "history-anchor")?.id,
     );
     expect(after).not.toBe(before);
-    expect(timelineListStabilityProps(false)).toMatchObject({
-      maintainVisibleContentPosition: { minIndexForVisible: 0 },
-    });
+    expect(timelineListStabilityProps()).not.toHaveProperty(
+      "maintainVisibleContentPosition",
+    );
   });
 
-  test("same-ID streaming update keeps the mounted anchor key", () => {
+  test("same-ID streaming update keeps the mounted item key", () => {
     const partial = buildZenTimeline([
       assistant("history-anchor", 1, "history"),
       assistant("streaming-assistant", 2, "partial"),
@@ -65,30 +62,16 @@ describe("timeline history viewport stability", () => {
       partial.map((item) => item.id),
     );
     expect(complete).not.toBe(partial);
-    expect(timelineListStabilityProps(false)).toMatchObject({
-      maintainVisibleContentPosition: { minIndexForVisible: 0 },
-    });
+    expect(timelineListStabilityProps()).not.toHaveProperty(
+      "maintainVisibleContentPosition",
+    );
   });
 
-  test("newest-edge follow belongs to native and suspends for accepted interaction", () => {
-    expect(
-      timelineListStabilityProps(false).maintainVisibleContentPosition,
-    ).toEqual({
-      minIndexForVisible: 0,
-      autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
-    });
-    expect(
-      timelineListStabilityProps(true).maintainVisibleContentPosition,
-    ).toEqual({
-      minIndexForVisible: 0,
-    });
-    // Bounded virtualization: the detached window is a fixed viewport-multiple
-    // constant, never the history length, and virtualization stays enabled.
-    expect(timelineListStabilityProps(true).windowSize).toBe(21);
-    expect(timelineListStabilityProps(false).windowSize).toBe(5);
-    expect(timelineListStabilityProps(true)).not.toHaveProperty(
-      "disableVirtualization",
-    );
+  test("newest-edge follow is not injected by list mutations", () => {
+    const props = timelineListStabilityProps();
+    expect(props).not.toHaveProperty("maintainVisibleContentPosition");
+    expect(props.windowSize).toBe(5);
+    expect(props).not.toHaveProperty("disableVirtualization");
   });
 
   test("content-size and item-count mutations cannot issue an imperative follow", async () => {
@@ -112,7 +95,7 @@ describe("timeline history viewport stability", () => {
     expect(itemCountOwner).toContain("updateJumpButton();");
   });
 
-  test("send focus is cross-platform and settles without restoring native follow", async () => {
+  test("send focus does not restore a detached viewport", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
     ).text();
@@ -128,15 +111,11 @@ describe("timeline history viewport stability", () => {
     );
 
     expect(requestOwner).not.toContain('Platform.OS === "web"');
-    expect(requestOwner).toContain("focusTimelineOnSentMessage()");
-    expect(transitionOwner).toContain("settleFocusedTimeline(");
-    expect(transitionOwner).toContain("setNativeFollowSuspended(true);");
-    expect(hooksSource).toContain(
-      'reason !== "return-to-latest" &&\n        scrollStateRef.current.mode === "focused"',
-    );
+    expect(requestOwner).not.toContain("focusTimelineOnSentMessage()");
+    expect(transitionOwner).not.toContain("settleFocusedTimeline(");
   });
 
-  test("jump-to-latest cancels sent-message focus before restoring follow", async () => {
+  test("jump-to-latest cancels pending turn focus before following latest", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
     ).text();
@@ -151,14 +130,12 @@ describe("timeline history viewport stability", () => {
     expect(jumpOwner).toContain("scrollToLatestOffset(");
   });
 
-  test("touch, selection, drag and momentum all drive the native follow suspension", async () => {
+  test("touch, selection, drag and momentum only suspend automatic follow", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
     ).text();
 
-    expect(hooksSource).toContain(
-      "nativeFollowSuspended,",
-    );
+    expect(hooksSource).toContain("nativeFollowSuspended,");
     expect(hooksSource.match(/syncNativeFollowSuspension\(\);/g)?.length).toBe(
       8,
     );
@@ -179,7 +156,7 @@ describe("timeline history viewport stability", () => {
     );
   });
 
-  test("a suspended canonical mutation truthfully detaches the reader", async () => {
+  test("canonical mutations do not own the reader viewport", async () => {
     const hooksSource = await Bun.file(
       new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
     ).text();
@@ -197,9 +174,7 @@ describe("timeline history viewport stability", () => {
     expect(viewSource).toContain(
       "previousItemsRef.current = items;\n    onItemsMutated?.();",
     );
-    expect(hooksSource).toContain(
-      'implicitAnchorSuspended() || scrollStateRef.current.mode === "detached"',
-    );
+    expect(viewSource).not.toContain("maintainVisibleContentPosition");
   });
 });
 

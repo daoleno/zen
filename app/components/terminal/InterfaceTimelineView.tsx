@@ -177,8 +177,8 @@ export function InterfaceTimelineView({
 }: InterfaceTimelineViewProps) {
   const { theme: zenTheme } = useAppTheme();
   const listStabilityProps = React.useMemo(
-    () => timelineListStabilityProps(nativeFollowSuspended),
-    [nativeFollowSuspended],
+    () => timelineListStabilityProps(),
+    [],
   );
   const turnFocusCellMeasurementRef = React.useRef<TurnFocusCellMeasurement>(
     {},

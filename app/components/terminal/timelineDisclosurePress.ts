@@ -2,10 +2,10 @@
  * Tool-card disclosure press ownership.
  *
  * React Native's TouchableOpacity is cancelable by a parent ScrollView. While a
- * finger is down on a Tool header, content-size mutations (streaming follow,
- * maintainVisibleContentPosition, inset/clearance geometry) can make the parent
- * take the responder after onPressIn feedback and before onPress. The user sees
- * press feedback with no disclosure toggle.
+ * finger is down on a Tool header, content-size mutations (streaming updates
+ * and inset/clearance geometry) can make the parent take the responder after
+ * onPressIn feedback and before onPress. The user sees press feedback with no
+ * disclosure toggle.
  *
  * Invariant: an accepted Tool-header press commits exactly one disclosure
  * toggle on clean release. The parent may steal the responder only after the
