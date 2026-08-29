@@ -134,22 +134,6 @@ describe("timeline history viewport stability", () => {
     expect(hooksSource).toContain(
       'reason !== "return-to-latest" &&\n        scrollStateRef.current.mode === "focused"',
     );
-    expect(hooksSource).toContain(
-      "shouldFocusTimelineOnSentMessage(scrollStateRef.current)",
-    );
-  });
-
-  test("detached history has an explicit message anchor restore owner", async () => {
-    const hooksSource = await Bun.file(
-      new URL("./InterfaceChatSurfaceHooks.ts", import.meta.url),
-    ).text();
-    const viewSource = await Bun.file(
-      new URL("./InterfaceTimelineView.tsx", import.meta.url),
-    ).text();
-    expect(hooksSource).toContain("captureTimelineScrollAnchor(");
-    expect(hooksSource).toContain("resolveTimelineScrollAnchorOffset(");
-    expect(viewSource).toContain("onAnchorChange");
-    expect(viewSource).toContain("onAnchorLayout");
   });
 
   test("jump-to-latest cancels sent-message focus before restoring follow", async () => {

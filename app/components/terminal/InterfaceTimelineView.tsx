@@ -110,12 +110,6 @@ interface InterfaceTimelineViewProps {
   /** Passively observes touch lifetime without taking the scroll responder. */
   onTouchActiveChange?(active: boolean): void;
   onItemsMutated?(): void;
-  onAnchorChange?(
-    itemId: string,
-    itemOffset: number,
-    contentOffset: number,
-  ): void;
-  onAnchorLayout?(itemId: string, itemOffset: number): void;
   onContentSizeChange(width: number, height: number): void;
   onClearanceChange?(
     intentToken: number,
@@ -168,8 +162,6 @@ export function InterfaceTimelineView({
   onMomentumScrollEnd,
   onTouchActiveChange,
   onItemsMutated,
-  onAnchorChange,
-  onAnchorLayout,
   onContentSizeChange,
   onClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -198,11 +190,8 @@ export function InterfaceTimelineView({
   const perfItemCountRef = React.useRef(items.length);
   const perfSawVisibleRowsRef = React.useRef(false);
   const perfBlankStartedAtRef = React.useRef<number | null>(null);
-  const contentOffsetRef = React.useRef(0);
-  const visibleAnchorIdRef = React.useRef<string | null>(null);
-  const cellOffsetsRef = React.useRef(new Map<string, number>());
   perfItemCountRef.current = items.length;
-  React.useLayoutEffect(() => {
+  React.useEffect(() => {
     const previousPerfItems = previousPerfItemsRef.current;
     if (
       isTimelineProjectionPerfEnabled() &&
@@ -283,25 +272,14 @@ export function InterfaceTimelineView({
     },
     [chrome, formatPatchPath, loadAssetPreview, theme, truncateBody],
   );
-  const handleItemLayout = React.useCallback(
-    (itemId: string, itemOffset: number) => {
-      cellOffsetsRef.current.set(itemId, itemOffset);
-      onAnchorLayout?.(itemId, itemOffset);
-      if (visibleAnchorIdRef.current === itemId) {
-        onAnchorChange?.(itemId, itemOffset, contentOffsetRef.current);
-      }
-    },
-    [onAnchorChange, onAnchorLayout],
-  );
   const renderTimelineCell = React.useCallback(
     (props: CellRendererProps<TimelineRenderItem>) => (
       <TurnFocusTimelineCell
         {...props}
         measurementRef={turnFocusCellMeasurementRef}
-        onItemLayout={handleItemLayout}
       />
     ),
-    [handleItemLayout],
+    [],
   );
   const renderScrollComponent = React.useCallback(
     (props: ScrollViewProps) => (
@@ -335,12 +313,6 @@ export function InterfaceTimelineView({
   }, [onTouchActiveChange]);
   const handleViewableItemsChanged = React.useCallback(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
-      const messageToken = viewableItems
-        .filter(
-          (token) => token.isViewable && token.item?.type !== "date-divider",
-        )
-        .sort((left, right) => (right.index ?? 0) - (left.index ?? 0))[0];
-      visibleAnchorIdRef.current = messageToken?.item?.id ?? null;
       if (!isTimelineProjectionPerfEnabled()) {
         perfSawVisibleRowsRef.current = false;
         perfBlankStartedAtRef.current = null;
@@ -369,20 +341,6 @@ export function InterfaceTimelineView({
       }
     },
     [],
-  );
-  const handleScroll = React.useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      contentOffsetRef.current = event.nativeEvent.contentOffset.y;
-      onScroll(event);
-      const anchorId = visibleAnchorIdRef.current;
-      const anchorOffset = anchorId
-        ? cellOffsetsRef.current.get(anchorId)
-        : undefined;
-      if (anchorId && anchorOffset !== undefined) {
-        onAnchorChange?.(anchorId, anchorOffset, contentOffsetRef.current);
-      }
-    },
-    [onAnchorChange, onScroll],
   );
 
   const emptyContent = React.useMemo(
@@ -456,7 +414,7 @@ export function InterfaceTimelineView({
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={32}
           onLayout={onLayout}
-          onScroll={handleScroll}
+          onScroll={onScroll}
           onScrollBeginDrag={onScrollBeginDrag}
           onScrollEndDrag={onScrollEndDrag}
           onMomentumScrollBegin={onMomentumScrollBegin}
@@ -487,20 +445,17 @@ function TurnFocusTimelineCell({
   children,
   item,
   measurementRef,
-  onItemLayout,
   onFocusCapture,
   onLayout,
   style,
 }: CellRendererProps<TimelineRenderItem> & {
   measurementRef: React.RefObject<TurnFocusCellMeasurement>;
-  onItemLayout?(itemId: string, itemOffset: number): void;
 }) {
   const handleLayout = React.useCallback(
     (event: LayoutChangeEvent) => {
       // This positioned content cell includes newer Activity/divider siblings;
       // a wrapper inside renderItem would only report its local y (normally 0).
       onLayout?.(event);
-      onItemLayout?.(item.id, event.nativeEvent.layout.y);
       const measurement = measurementRef.current;
       const geometry = turnFocusRowGeometryFromCell(
         measurement.pendingMessageId,
@@ -517,7 +472,7 @@ function TurnFocusTimelineCell({
         geometry.newestEdgeOffset,
       );
     },
-    [item.id, measurementRef, onItemLayout, onLayout],
+    [item.id, measurementRef, onLayout],
   );
 
   return (

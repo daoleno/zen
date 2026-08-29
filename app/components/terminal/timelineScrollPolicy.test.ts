@@ -7,7 +7,6 @@ import {
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
   settleFocusedTimeline,
-  shouldFocusTimelineOnSentMessage,
   timelineDragContinuesWithMomentum,
   timelineListStabilityProps,
   timelineDistanceFromLatest,
@@ -62,12 +61,6 @@ describe("timeline scroll policy", () => {
     expect(settleFocusedTimeline(INITIAL_TIMELINE_SCROLL_STATE)).toBe(
       INITIAL_TIMELINE_SCROLL_STATE,
     );
-  });
-
-  test("sending while reading history does not enter turn-focus", () => {
-    expect(shouldFocusTimelineOnSentMessage({ mode: "attached" })).toBe(true);
-    expect(shouldFocusTimelineOnSentMessage({ mode: "detached" })).toBe(false);
-    expect(shouldFocusTimelineOnSentMessage({ mode: "focused" })).toBe(false);
   });
 
   test("user-initiated return reattaches and clears the affordance", () => {
