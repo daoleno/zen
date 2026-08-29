@@ -77,6 +77,12 @@ export interface InterfaceChatBodyProps {
   ): void;
   onTimelineTouchActiveChange(active: boolean): void;
   onTimelineItemsMutated(): void;
+  onTimelineAnchorChange(
+    itemId: string,
+    itemOffset: number,
+    contentOffset: number,
+  ): void;
+  onTimelineAnchorLayout(itemId: string, itemOffset: number): void;
   onTimelineContentSizeChange(width: number, height: number): void;
   onTimelineClearanceChange(
     intentToken: number,
@@ -169,6 +175,8 @@ export function InterfaceChatBody({
   onTimelineMomentumScrollEnd,
   onTimelineTouchActiveChange,
   onTimelineItemsMutated,
+  onTimelineAnchorChange,
+  onTimelineAnchorLayout,
   onTimelineContentSizeChange,
   onTimelineClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -316,6 +324,8 @@ export function InterfaceChatBody({
           onMomentumScrollEnd={onTimelineMomentumScrollEnd}
           onTouchActiveChange={onTimelineTouchActiveChange}
           onItemsMutated={onTimelineItemsMutated}
+          onAnchorChange={onTimelineAnchorChange}
+          onAnchorLayout={onTimelineAnchorLayout}
           onContentSizeChange={onTimelineContentSizeChange}
           onClearanceChange={onTimelineClearanceChange}
           onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}

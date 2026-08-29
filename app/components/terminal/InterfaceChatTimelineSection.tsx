@@ -73,6 +73,12 @@ interface InterfaceChatTimelineSectionProps {
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTouchActiveChange(active: boolean): void;
   onItemsMutated(): void;
+  onAnchorChange(
+    itemId: string,
+    itemOffset: number,
+    contentOffset: number,
+  ): void;
+  onAnchorLayout(itemId: string, itemOffset: number): void;
   onContentSizeChange(width: number, height: number): void;
   onClearanceChange(
     intentToken: number,
@@ -133,6 +139,8 @@ export function InterfaceChatTimelineSection({
   onMomentumScrollEnd,
   onTouchActiveChange,
   onItemsMutated,
+  onAnchorChange,
+  onAnchorLayout,
   onContentSizeChange,
   onClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -228,6 +236,8 @@ export function InterfaceChatTimelineSection({
         onMomentumScrollEnd={onMomentumScrollEnd}
         onTouchActiveChange={onTouchActiveChange}
         onItemsMutated={onItemsMutated}
+        onAnchorChange={onAnchorChange}
+        onAnchorLayout={onAnchorLayout}
         onContentSizeChange={onContentSizeChange}
         onClearanceChange={onClearanceChange}
         onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}

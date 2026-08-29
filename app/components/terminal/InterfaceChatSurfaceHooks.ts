@@ -21,10 +21,16 @@ import {
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
   settleFocusedTimeline,
+  shouldFocusTimelineOnSentMessage,
   timelineDragContinuesWithMomentum,
   timelineDistanceFromLatest,
   type TimelineScrollState,
 } from "./timelineScrollPolicy";
+import {
+  captureTimelineScrollAnchor,
+  resolveTimelineScrollAnchorOffset,
+  type TimelineScrollAnchor,
+} from "./timelineScrollAnchor";
 import {
   createTurnFocusState,
   reduceTurnFocus,
@@ -124,6 +130,9 @@ export function usePinnedTimeline(
   const rawContentOffsetRef = useRef(0);
   const distanceFromLatestRef = useRef(0);
   const textSelectionActiveRef = useRef(false);
+  const timelineAnchorRef = useRef<TimelineScrollAnchor | null>(null);
+  const anchorRestorePendingRef = useRef(false);
+  const anchorRestoreInFlightRef = useRef(false);
   const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -290,7 +299,68 @@ export function usePinnedTimeline(
     if (implicitAnchorSuspended()) {
       detachFromLatest();
     }
+    if (
+      scrollStateRef.current.mode === "detached" &&
+      timelineAnchorRef.current
+    ) {
+      anchorRestorePendingRef.current = true;
+    }
   }, [detachFromLatest, implicitAnchorSuspended]);
+
+  const handleTimelineAnchorChange = useCallback(
+    (itemId: string, itemOffset: number, contentOffset: number) => {
+      if (
+        scrollStateRef.current.mode !== "detached" ||
+        anchorRestorePendingRef.current
+      ) {
+        return;
+      }
+      const anchor = captureTimelineScrollAnchor(
+        itemId,
+        contentOffset,
+        itemOffset,
+      );
+      if (anchor) {
+        timelineAnchorRef.current = anchor;
+        anchorRestorePendingRef.current = false;
+      }
+    },
+    [],
+  );
+
+  const handleTimelineAnchorLayout = useCallback(
+    (itemId: string, itemOffset: number) => {
+      const anchor = timelineAnchorRef.current;
+      if (
+        !anchor ||
+        anchor.itemId !== itemId ||
+        scrollStateRef.current.mode !== "detached" ||
+        !anchorRestorePendingRef.current ||
+        anchorRestoreInFlightRef.current ||
+        !scrollRef.current
+      ) {
+        return;
+      }
+      const target = resolveTimelineScrollAnchorOffset(anchor, itemOffset);
+      if (
+        target === null ||
+        Math.abs(rawContentOffsetRef.current - target) < 1
+      ) {
+        anchorRestorePendingRef.current = false;
+        return;
+      }
+      anchorRestoreInFlightRef.current = true;
+      scrollRef.current.scrollToOffset({ offset: target, animated: false });
+      rawContentOffsetRef.current = target;
+      distanceFromLatestRef.current = timelineDistanceFromLatest(
+        target,
+        latestOffsetRef.current,
+      );
+      anchorRestorePendingRef.current = false;
+      anchorRestoreInFlightRef.current = false;
+    },
+    [],
+  );
 
   const scrollToLatest = useCallback(
     (animated: boolean = true, exactLatestOffset?: number) => {
@@ -337,6 +407,13 @@ export function usePinnedTimeline(
   const requestTurnFocus = useCallback(
     (pendingMessageId: string) => {
       if (!pendingMessageId) {
+        return;
+      }
+      // A detached reader is reviewing history. Sending must not steal that
+      // viewport by entering the automatic turn-focus flow.
+      if (!shouldFocusTimelineOnSentMessage(scrollStateRef.current)) {
+        setNativeFollowSuspended(true);
+        setShowJumpToLatest(itemCount > 0);
         return;
       }
       turnFocusIntentSeqRef.current += 1;
@@ -442,6 +519,12 @@ export function usePinnedTimeline(
   );
 
   const clearTurnFocusForLifecycle = useCallback(() => {
+    if (
+      scrollStateRef.current.mode === "detached" &&
+      timelineAnchorRef.current
+    ) {
+      anchorRestorePendingRef.current = true;
+    }
     cancelTurnFocus("lifecycle");
   }, [cancelTurnFocus]);
 
@@ -603,6 +686,12 @@ export function usePinnedTimeline(
         detachFromLatest();
         return;
       }
+      if (
+        scrollStateRef.current.mode === "detached" &&
+        timelineAnchorRef.current
+      ) {
+        anchorRestorePendingRef.current = true;
+      }
       updateJumpButton();
     },
     [
@@ -637,6 +726,12 @@ export function usePinnedTimeline(
       if (implicitAnchorSuspended()) {
         updateJumpButton();
         return;
+      }
+      if (
+        scrollStateRef.current.mode === "detached" &&
+        timelineAnchorRef.current
+      ) {
+        anchorRestorePendingRef.current = true;
       }
       if (
         scrollStateRef.current.mode === "attached" &&
@@ -721,6 +816,8 @@ export function usePinnedTimeline(
     handleMomentumScrollEnd,
     handleTimelineTouchActiveChange,
     handleTimelineItemsMutated,
+    handleTimelineAnchorChange,
+    handleTimelineAnchorLayout,
     handleContentSizeChange,
     handleClearanceChange,
     handleLayout,

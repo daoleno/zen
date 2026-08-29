@@ -87,6 +87,10 @@ export function focusTimelineOnSentMessage(): TimelineScrollState {
   return { mode: "focused" };
 }
 
+export function shouldFocusTimelineOnSentMessage(state: TimelineScrollState) {
+  return state.mode === "attached";
+}
+
 export function settleFocusedTimeline(
   state: TimelineScrollState,
 ): TimelineScrollState {
