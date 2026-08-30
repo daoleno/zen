@@ -283,6 +283,7 @@ export function InterfaceChatKeyboardFrame({
           event.height,
           event.progress,
           KEYBOARD_GEOMETRY_PLATFORM === "android",
+          true,
         );
         runOnJS(requestAuthoritativeSnapshot)(nativeCallbackRevision, false);
       },
@@ -382,6 +383,7 @@ function acceptNativeKeyboardSample(
   height: number,
   progress: number,
   updatesGeometry: boolean,
+  settled = false,
 ) {
   "worklet";
   keyboardLifecycleGate.value = reduceStructuredChatKeyboardLifecycleGate(
@@ -392,6 +394,7 @@ function acceptNativeKeyboardSample(
       height,
       progress,
       updatesGeometry,
+      settled,
     },
   );
 }

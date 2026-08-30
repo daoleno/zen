@@ -46,6 +46,8 @@ export type StructuredChatKeyboardLifecycleEvent =
       height: number;
       progress: number;
       updatesGeometry: boolean;
+      /** The native handler delivered the terminal animation sample. */
+      settled?: boolean;
     }
   | {
       type: "authoritative_snapshot";
@@ -162,6 +164,22 @@ export function reduceStructuredChatKeyboardLifecycleGate(
       !Number.isFinite(event.progress)
     ) {
       return gate;
+    }
+    // Android can report the last non-zero IME height on the hide end
+    // callback while progress is already zero. Treat that terminal sample as
+    // authoritative for the overlay position so a stale keyboard height can
+    // never leave the Composer floating after the IME has disappeared.
+    if (
+      event.settled &&
+      !structuredChatKeyboardGeometryIsOpen(event.height, event.progress)
+    ) {
+      return {
+        ...gate,
+        nativeImeVisible: false,
+        nativeComposerFocused: false,
+        keyboardTranslation: 0,
+        keyboardProgress: 0,
+      };
     }
     return {
       ...gate,

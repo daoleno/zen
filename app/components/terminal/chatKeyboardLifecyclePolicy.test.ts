@@ -69,6 +69,7 @@ function sample(
     height?: number;
     progress?: number;
     updatesGeometry?: boolean;
+    settled?: boolean;
   } = {},
 ) {
   return reduceStructuredChatKeyboardLifecycleGate(gate, {
@@ -77,6 +78,7 @@ function sample(
     height: input.height ?? KEYBOARD_HEIGHT,
     progress: input.progress ?? 1,
     updatesGeometry: input.updatesGeometry ?? true,
+    settled: input.settled ?? false,
   });
 }
 
@@ -300,6 +302,24 @@ describe("authoritative structured-chat keyboard lifecycle", () => {
     gate = sample(gate, { height: 160, progress: 0.5 });
     expect(gate.keyboardTranslation).toBe(-160);
     expect(gate.keyboardProgress).toBe(0.5);
+  });
+
+  test("settled hide sample clears a stale non-zero keyboard height", () => {
+    const open = activeGate();
+    const gate = reduceStructuredChatKeyboardLifecycleGate(open, {
+      type: "native_sample",
+      sourceRevision: open.revision,
+      height: KEYBOARD_HEIGHT,
+      progress: 0,
+      updatesGeometry: true,
+      settled: true,
+    });
+
+    expect(gate.nativeImeVisible).toBe(false);
+    expect(gate.nativeComposerFocused).toBe(false);
+    expect(gate.keyboardTranslation).toBe(0);
+    expect(gate.keyboardProgress).toBe(0);
+    expect(structuredChatKeyboardLifecycleGateOpen(gate)).toBe(false);
   });
 
   test("an early authoritative hidden focus snapshot remains eligible for event-driven visible reconciliation", () => {
