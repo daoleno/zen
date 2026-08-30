@@ -3,7 +3,10 @@ import {
   File,
   type UploadProgress as NativeUploadProgress,
 } from "expo-file-system";
-import type { NativeUploadResult } from "../modules/zen-file-upload/src";
+import {
+  getZenFileUploadModule,
+  type NativeUploadResult,
+} from "../modules/zen-file-upload/src";
 
 const BINARY_UPLOAD_TYPE = 0;
 import { buildAuthorizationHeader } from "./auth";
@@ -245,8 +248,6 @@ async function createAndroidNativeUploadTask(input: {
   if (typeof navigator === "undefined" || navigator.product !== "ReactNative") {
     return null;
   }
-  const { getZenFileUploadModule } =
-    await import("../modules/zen-file-upload/src");
   const native = getZenFileUploadModule();
   if (!native) {
     return null;

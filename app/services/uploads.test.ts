@@ -28,6 +28,14 @@ let releaseCalls = 0;
 let cancelCalls = 0;
 let nativeUploadError: Error | null = null;
 let nativeCancelError: Error | null = null;
+let nativeModule: {
+  upload(request: Record<string, unknown>): Promise<typeof uploadResult>;
+  cancel(uploadId: string): boolean;
+  addListener(
+    eventName: "onUploadProgress",
+    listener: (progress: { uploadId: string; bytesSent: number; totalBytes: number }) => void,
+  ): { remove(): void };
+} | null = null;
 let nativeUploadDeferred: ReturnType<
   typeof deferred<typeof uploadResult>
 > | null = null;
@@ -97,6 +105,14 @@ mock.module("expo-file-system", () => ({
   UploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
 }));
 
+// The production module is Android-only and imports expo-modules-core. Keep
+// the Bun service tests on the shared JS fallback path unless a test opts into
+// a React Native navigator explicitly.
+mock.module("../modules/zen-file-upload/src", () => ({
+  getZenFileUploadModule: () => nativeModule,
+  getZenFileDownloadModule: () => null,
+}));
+
 mock.module("./auth", () => ({
   buildAuthorizationHeader: async (options: unknown) => {
     authorizationOptions = options;
@@ -158,6 +174,7 @@ beforeEach(() => {
   cancelCalls = 0;
   nativeUploadError = null;
   nativeCancelError = null;
+  nativeModule = null;
   nativeUploadDeferred = null;
   uploadCalls.length = 0;
   uploadResult = {
@@ -173,6 +190,59 @@ beforeEach(() => {
 });
 
 describe("native attachment upload", () => {
+  test("uses the statically loaded native module without an async Metro bundle", async () => {
+    const nativeRequests: Record<string, unknown>[] = [];
+    const nativeSubscriptions: Array<{
+      listener: (progress: { uploadId: string; bytesSent: number; totalBytes: number }) => void;
+      removed: boolean;
+    }> = [];
+    nativeModule = {
+      upload: async (request) => {
+        nativeRequests.push(request);
+        return uploadResult;
+      },
+      cancel: () => true,
+      addListener: (_eventName, listener) => {
+        const subscription = { listener, removed: false };
+        nativeSubscriptions.push(subscription);
+        return {
+          remove() {
+            subscription.removed = true;
+          },
+        };
+      },
+    };
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator",
+    );
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { product: "ReactNative" },
+    });
+
+    try {
+      const attachment = await uploadDocumentForServer("server-a");
+      expect(nativeRequests).toHaveLength(1);
+      expect(nativeRequests[0]).toMatchObject({
+        fileUri: selectedAsset.uri,
+        expectedSize: selectedAsset.size,
+        method: "POST",
+      });
+      expect(uploadCalls).toHaveLength(0);
+      expect(nativeSubscriptions).toHaveLength(1);
+      expect(nativeSubscriptions[0].removed).toBe(true);
+      expect(attachment).not.toBeNull();
+      expect(attachment?.path).toBe("/state/uploads/server-file.zip");
+    } finally {
+      if (previousNavigator) {
+        Object.defineProperty(globalThis, "navigator", previousNavigator);
+      } else {
+        delete (globalThis as { navigator?: unknown }).navigator;
+      }
+    }
+  });
+
   test("Link upload fails closed before creating a raw native upload task", async () => {
     storedServer = {
       ...manualServer,
