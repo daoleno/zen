@@ -210,9 +210,13 @@ When intent is unclear or the task spans multiple modes, pick one flow:
 | Ready to delegate but brief is weak | delegate-brief |
 | Large work needs decomposition | slice-work |
 | Objective huge, map unknown | wayfind |
-| Straight execution with clear brief | delegate directly |
+| Any repository/tool execution, including a clear or gnarly bug fix | delegate directly |
 
 When routing depends on a material user decision, include it in the next align round. When it does not, choose the smallest matching flow and proceed.
+
+## Worker-first rule
+
+If the requested outcome changes or validates code, configuration, infrastructure, or a repository artifact, create or reuse a visible delegated Worker before doing substantive execution. A complex debugging task is still one Worker concern; complexity is a reason to give that Worker a tighter brief, not a reason for Brain to absorb the implementation.
 `
 
 const defaultAlignPlaybook = `---

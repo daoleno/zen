@@ -2452,7 +2452,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
 		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session",
 		"Brain is the user's scheduler",
-		"proactively create or reuse a visible delegated agent session",
+		"Brain's operating goal is to understand the task",
 		"Brain is the orchestrator, not the execution pool",
 		"Delegate a subtask only when it can be named clearly",
 		"Run independent delegated subtasks in parallel when that reduces elapsed time",
@@ -3108,8 +3108,8 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Brain is the orchestrator, not the execution pool") {
 		t.Fatalf("workspace instructions do not describe orchestrator behavior:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Delegate only clean subtasks with one concern") {
-		t.Fatalf("workspace instructions do not describe scoped delegated briefs:\n%s", instructions)
+	if !strings.Contains(string(instructions), "Brain's operating goal is to understand the task") {
+		t.Fatalf("workspace instructions do not describe Brain's operating goal:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "inspect their reports before integrating results") {
 		t.Fatalf("workspace instructions do not describe delegated result review:\n%s", instructions)

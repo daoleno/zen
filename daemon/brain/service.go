@@ -3437,7 +3437,7 @@ Agent lifecycle rules:
 - Host Executor runs Brain chat, planning, delegation, review, and final synthesis. Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
 - Brain is the sole master orchestrator and scheduler above delegated Sessions. Given the user's goal and boundaries, independently decompose, order, choose or reuse scoped Sessions, review results, and advance the next runnable Work without asking the user to babysit the queue or type continue.
 - Brain is the user's scheduler: reduce decision load.
-- For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Brain's operating goal is to understand the task, decompose it into executable concerns, delegate progress to Workers, review the evidence, and close the loop. For repository and tool-backed work, normally create or reuse a visible delegated agent session; use judgment when direct execution is clearly the better route. Stay in Brain for chat, decomposition, judgment, review, memory, synthesis, reminders, and final decisions. A sustained coherent debugging thread normally belongs to one Worker while Brain remains the acceptance owner.
 - Create Work only for a commitment that must survive the current turn. Ordinary questions and discussion create no Work.
 - Work and append-only Events are the sole durable Brain scheduler state. current.md and provider state are projections or execution details, not alternate owners.
 - Only an atomically claimed actionable Work Event may start an automatic Brain turn. Active or waiting Work without an Event stays idle.
@@ -3445,7 +3445,7 @@ Agent lifecycle rules:
 - Do not use a provider Goal as Brain scheduler state. Provider Goal support may remain local to an individual executor Session.
 - Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
 - Delegate a subtask only when it can be named clearly. A delegated-agent brief should contain one concern, the workspace, enough context to avoid re-exploring the whole repo, acceptance criteria, safety constraints, feasible verification, and a short expected report.
-- Run independent delegated subtasks in parallel when that reduces elapsed time. Do not parallelize work that shares fragile state, needs one coherent debugging thread, or depends on unresolved product judgment.
+- Run independent delegated subtasks in parallel when that reduces elapsed time. Do not parallelize work that shares fragile state or depends on unresolved product judgment. For a coherent debugging thread, prefer one Worker with the whole scoped concern while Brain retains decision and review ownership.
 - Delegated agents should not invent the overall plan. If a delegated result is incomplete or off-target, inspect it, rewrite the brief or send a focused follow-up, and only patch over it directly when the fix is trivial.
 - Review delegated results before integrating them: capture the session, compare the result with the acceptance criteria, run or inspect verification, and then decide whether to merge, follow up, or ask the user.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
@@ -3553,7 +3553,7 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 		"Lifecycle policy:",
 		"- Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
 		"- Delegated agents are scoped execution sessions: give each one concern, enough context, acceptance criteria, verification, safety constraints, and a short expected report.",
-		"- Run independent subtasks in parallel when useful; keep coupled design decisions and gnarly single-thread debugging in Brain.",
+		"- Run independent subtasks in parallel when useful. Do not parallelize shared fragile state or unresolved product judgment; for a coherent debugging thread, prefer one Worker with the whole scoped concern while Brain retains decision and review ownership.",
 		"- Inspect delegated results before integrating them. If a result is off-target, rewrite the brief or send a focused follow-up instead of silently absorbing the mistake.",
 	)
 	delegated := []string{}
