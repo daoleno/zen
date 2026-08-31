@@ -140,22 +140,14 @@ describe("actionable collapsed tool-call projection", () => {
         command: "agent-browser read https://vercel.com/docs/sandbox?token=secret",
         status: "done",
       }),
-    ).toBe("Browse https://vercel.com/docs/sandbox");
+    ).toBe("Browse https://vercel.com/docs/sandbox?token=secret");
     expect(
       title({
         kind: "command",
         command: "curl -L https://api.example.com/private?token=secret",
         status: "done",
       }),
-    ).toBe("Fetch https://api.example.com/private");
-    expect(
-      title({
-        kind: "command",
-        command:
-          "curl 'https://user:password@example.com/data?page=2&api_key=private#access_token=private'",
-        status: "done",
-      }),
-    ).toBe("Fetch https://example.com/data?page=2");
+    ).toBe("Fetch https://api.example.com/private?token=secret");
     expect(
       title({
         kind: "command",

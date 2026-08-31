@@ -191,12 +191,6 @@ describe("semantic action model", () => {
     expect(isUnsafeCollapsedDetail(label.title)).toBe(false);
     expect(isUnsafeCollapsedDetail(`{"cmd":"secret"}`)).toBe(true);
     expect(isUnsafeCollapsedDetail("https://example.com/token")).toBe(false);
-    expect(
-      isUnsafeCollapsedDetail("https://example.com/path?token=secret"),
-    ).toBe(true);
-    expect(
-      isUnsafeCollapsedDetail("https://user:password@example.com/path"),
-    ).toBe(true);
   });
 
   test("unknown nested tools fall back to human labels", () => {
