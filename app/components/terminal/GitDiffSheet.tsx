@@ -149,7 +149,6 @@ export function GitDiffSheet({
       visible={visible}
       animationType="slide"
       onRequestClose={onClose}
-      statusBarTranslucent
     >
       <SafeAreaView
         style={[styles.root, { backgroundColor: chrome.appBackground }]}

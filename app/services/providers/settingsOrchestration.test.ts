@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { modelSupportChangeKeepsDefaultValid } from "./settingsOrchestration";
+import {
+  defaultRuntimeSeedAction,
+  modelSupportChangeKeepsDefaultValid,
+} from "./settingsOrchestration";
 import type { ProvidersSnapshot } from "./types";
 
 const snapshot: ProvidersSnapshot = {
@@ -17,6 +20,38 @@ const snapshot: ProvidersSnapshot = {
 };
 
 describe("future-thread default runtime policy", () => {
+  test("preserves a complete seed while changing the connection", () => {
+    expect(defaultRuntimeSeedAction({
+      snapshot,
+      client: "codex",
+      connectionId: "a",
+    })).toEqual({ kind: "preserve", modelId: "m1" });
+    expect(defaultRuntimeSeedAction({
+      snapshot,
+      client: "codex",
+      connectionId: "b",
+    })).toEqual({ kind: "preserve", modelId: "m1" });
+  });
+
+  test("requires a model choice when switching from direct login", () => {
+    expect(defaultRuntimeSeedAction({
+      snapshot: { ...snapshot, defaults: {} },
+      client: "codex",
+      connectionId: "b",
+    })).toEqual({
+      kind: "choose",
+      models: [{ id: "m2", available: true, source: "bundled" }],
+    });
+  });
+
+  test("asks for discovery when the target has no available models", () => {
+    expect(defaultRuntimeSeedAction({
+      snapshot: { ...snapshot, defaults: {}, models: {} },
+      client: "codex",
+      connectionId: "b",
+    })).toEqual({ kind: "unavailable" });
+  });
+
   test("refuses support changes that disable the selected default model", () => {
     expect(modelSupportChangeKeepsDefaultValid({
       snapshot,

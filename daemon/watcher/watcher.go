@@ -108,6 +108,10 @@ type OwnedGeneration struct {
 	PaneGeneration  string
 }
 
+// InputReceiptForGeneration derives a stable receipt from the exact owned
+// provider generation selected for a readiness-bounded startup admission.
+type InputReceiptForGeneration func(OwnedGeneration) string
+
 func (identity targetProcessIdentity) valid() bool {
 	return strings.TrimSpace(identity.Command) != "" &&
 		identity.PanePID > 0 &&
@@ -568,12 +572,16 @@ func (w *Watcher) resolveOwnedTarget(sessionID string) (OwnedGeneration, error) 
 	if paneGeneration == "" {
 		return OwnedGeneration{}, fmt.Errorf("%w: tmux pane generation is temporarily unavailable for %s", ErrOwnershipProbeUnavailable, sessionID)
 	}
+	return ownedGenerationForTarget(sessionID, identity, paneGeneration), nil
+}
+
+func ownedGenerationForTarget(sessionID string, identity targetProcessIdentity, paneGeneration string) OwnedGeneration {
 	processIdentity := delegatedTurnIdentity(identity)
 	sum := sha256.Sum256([]byte(processIdentity + "\x00" + paneGeneration))
 	return OwnedGeneration{
 		SessionID: sessionID, Generation: fmt.Sprintf("%x", sum[:]),
 		ProcessIdentity: processIdentity, PaneGeneration: paneGeneration,
-	}, nil
+	}
 }
 
 func (w *Watcher) deprojectOwnershipLoss(sessionID string) error {
@@ -2578,6 +2586,60 @@ func (w *Watcher) SendInputWithReceiptResult(sessionID, text, receipt string) (I
 		text,
 		receipt,
 	)
+}
+
+// SendInputWithReceiptWhenReadyResult is the initial-provider counterpart to
+// SendInputWithReceiptResult. It waits only until a newly launched Harness can
+// safely accept input, then crosses the same identity-bound receipt queue.
+// Established live Sessions must use SendInputWithReceiptResult directly.
+func (w *Watcher) SendInputWithReceiptWhenReadyResult(
+	sessionID, command, payload string,
+	receiptFor InputReceiptForGeneration,
+) (InputResult, OwnedGeneration, error) {
+	if receiptFor == nil {
+		err := definitelyNotSubmitted("", fmt.Errorf("input receipt authority is required"))
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	if payload == "" {
+		err := definitelyNotSubmitted("", fmt.Errorf("receipt input payload is empty"))
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	resolver := w.targetForSession
+	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	if !known {
+		err := definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	if !waitForInputReadyGuarded(
+		w.socketPathFor(sessionID),
+		sessionID,
+		identity.Command,
+		inputReadyTimeout(identity.Command),
+		func() error { return guardTargetIdentity(resolver, sessionID, identity) },
+	) && needsInputReadinessWait(identity.Command, "") {
+		err := agentInputNotReady(identity.Command)
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
+	if paneGeneration == "" {
+		err := definitelyNotSubmitted("", fmt.Errorf("tmux pane generation is temporarily unavailable for %s", sessionID))
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	owned := ownedGenerationForTarget(sessionID, identity, paneGeneration)
+	receipt := strings.TrimSpace(receiptFor(owned))
+	if receipt == "" {
+		err := definitelyNotSubmitted("", fmt.Errorf("input receipt authority returned an empty receipt"))
+		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
+	}
+	result, err := w.sessionInputOwner().submit(
+		sessionID,
+		identity,
+		resolver,
+		identity.Command,
+		payload,
+		receipt,
+	)
+	return result, owned, err
 }
 
 // InputReceiptResult reads the existing Session Input receipt ledger without

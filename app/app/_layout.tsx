@@ -806,7 +806,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
-        <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
+        <KeyboardProvider>
           <AgentProvider>
             <CurrentServerProvider>
               <CurrentSessionProvider>

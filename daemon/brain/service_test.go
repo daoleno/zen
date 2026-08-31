@@ -37,6 +37,7 @@ type fakeWatcher struct {
 	providerEvidence map[string]watcher.ProviderActivityObservation
 	providerProbeErr map[string]error
 	ownedGenerations map[string]string
+	readyInputCalls  int
 }
 
 type createdCall struct {
@@ -488,6 +489,19 @@ func (w *fakeWatcher) SendInputWithReceiptResult(sessionID, text, receipt string
 	w.receipts[sessionID] = receipt
 	w.outcomes[receipt] = watcher.InputAccepted
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
+}
+
+func (w *fakeWatcher) SendInputWithReceiptWhenReadyResult(
+	sessionID, _ string, text string,
+	receiptFor watcher.InputReceiptForGeneration,
+) (watcher.InputResult, watcher.OwnedGeneration, error) {
+	w.readyInputCalls++
+	owned, err := w.ResolveBrainHostGeneration(sessionID)
+	if err != nil {
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted}, watcher.OwnedGeneration{}, err
+	}
+	result, err := w.SendInputWithReceiptResult(sessionID, text, receiptFor(owned))
+	return result, owned, err
 }
 
 func (w *fakeWatcher) SubmitDelegatedInput(sessionID, payload, turnID string, _ time.Time) (watcher.InputResult, error) {
@@ -1186,7 +1200,7 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 		t.Fatalf("running provider output replayed delivered review: woke=%v err=%v", woke, err)
 	}
 	stable := requireReviewDelivered(t, store, item.ID)
-	if len(fw.sentCalls) != 1 || stable.DeliveryWorkRevision != deliveredRevision {
+	if len(fw.sentCalls) != 2 || stable.DeliveryWorkRevision != deliveredRevision {
 		t.Fatalf("reducer replay churned queued admission: sends=%d revision=%d want=%d", len(fw.sentCalls), stable.DeliveryWorkRevision, deliveredRevision)
 	}
 
@@ -1207,8 +1221,9 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 	if lease.HostSessionID != hostID {
 		t.Fatalf("pending review delivered through wrong Host: %+v", lease)
 	}
-	if len(fw.sentCalls) != 1 || !strings.Contains(fw.sentCalls[0].text, event.ID) {
-		t.Fatalf("Host delivery calls=%+v, want one payload containing %s", fw.sentCalls, event.ID)
+	if len(fw.sentCalls) != 2 || !strings.Contains(fw.sentCalls[0].text, event.ID) ||
+		!strings.Contains(fw.sentCalls[1].text, brainWorkerRoleContract) {
+		t.Fatalf("Host queue calls=%+v, want review %s followed by one activation", fw.sentCalls, event.ID)
 	}
 }
 
@@ -1337,7 +1352,7 @@ func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, nil)
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1379,11 +1394,11 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 		},
 	})
 
-	first, err := service.Snapshot()
+	first, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.Snapshot()
+	second, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1414,7 +1429,7 @@ func TestServiceSnapshotAndContextDoNotMutateThreadRegistryForHost(t *testing.T)
 			"codex": {Name: "codex", Command: "codex"},
 		},
 	})
-	first, err := service.Snapshot()
+	first, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1424,7 +1439,7 @@ func TestServiceSnapshotAndContextDoNotMutateThreadRegistryForHost(t *testing.T)
 
 	raw := []byte("{\"thread_id\":\"thread-current\",\"thread_ids\":[\"thread-old\",\"thread-current\"]}\n")
 	path, before := writeChatStateFixture(t, root, raw)
-	second, err := service.Snapshot()
+	second, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1476,11 +1491,11 @@ func TestServiceSnapshotReusesGrokHostEvenWhenClassifiedBlocked(t *testing.T) {
 	// Prefer the recorded grok host executor for this Snapshot path.
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "grok")
 
-	first, err := service.Snapshot()
+	first, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.Snapshot()
+	second, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1524,7 +1539,7 @@ func TestServiceSnapshotReplacesHostWhenTmuxSessionMissing(t *testing.T) {
 	})
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "grok")
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1575,7 +1590,7 @@ func TestServiceSnapshotResumesProviderSessionWhenTmuxMissing(t *testing.T) {
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1623,7 +1638,7 @@ func TestServiceSnapshotResumesCodexFromTranscriptPathOnly(t *testing.T) {
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	host, err := store.HostSession()
@@ -1639,8 +1654,8 @@ func TestServiceSnapshotResumesCodexFromTranscriptPathOnly(t *testing.T) {
 	}
 }
 
-// Snapshot → ensureHostAgent never calls NewChat/SetChatState; chat_state bytes
-// stay identical. thread_ids is cumulative NewChat history only.
+// EnsureHostSnapshot never calls NewChat/SetChatState; chat_state bytes stay
+// identical. thread_ids is cumulative NewChat history only.
 func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1668,7 +1683,7 @@ func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1682,8 +1697,28 @@ func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.
 	if !bytes.Equal(beforeRaw, afterRaw) {
 		t.Fatalf("chat_state mutated:\nbefore=%s\nafter=%s", beforeRaw, afterRaw)
 	}
-	if len(fw.killed) != 0 || len(fw.sentCalls) != 0 {
-		t.Fatalf("resume must not NewChat-kill or bootstrap: killed=%#v sent=%#v", fw.killed, fw.sentCalls)
+	if len(fw.killed) != 0 || len(fw.sentCalls) != 1 {
+		t.Fatalf("resume must preserve the Host and send one private activation: killed=%#v sent=%#v", fw.killed, fw.sentCalls)
+	}
+	if activation := fw.sentCalls[0].text; !strings.Contains(activation, "Brain Host activation contract:") ||
+		!strings.Contains(activation, brainWorkerRoleContractVersion) ||
+		!strings.Contains(activation, brainWorkerRoleContract) ||
+		strings.Contains(activation, "You are Brain inside zen") {
+		t.Fatalf("native-resume activation = %q", activation)
+	}
+	host, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.ProviderSessionID != providerSessionID || host.TranscriptPath != "/tmp/rollout-"+providerSessionID+".jsonl" {
+		t.Fatalf("provider identity changed during activation: %+v", host)
+	}
+	snapshot, err = service.EnsureHostSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("repeated native-resume Snapshot duplicated activation: %#v", fw.sentCalls)
 	}
 }
 
@@ -1729,7 +1764,7 @@ func TestServiceMissingTmuxFailClosedTable(t *testing.T) {
 			})
 			t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", tc.executorID)
 
-			_, err = service.Snapshot()
+			_, err = service.EnsureHostSnapshot()
 			if err == nil {
 				t.Fatal("expected fail-closed error")
 			}
@@ -1777,7 +1812,7 @@ func TestServiceSnapshotDoesNotRebindUnrelatedHostAsContinuity(t *testing.T) {
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1889,7 +1924,7 @@ func TestServiceSnapshotResumeBindFailureKillsNewHostKeepsOld(t *testing.T) {
 		return fmt.Errorf("injected binding write failure")
 	}
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected binding failure")
 	}
@@ -1917,7 +1952,7 @@ func TestServiceSnapshotResumeBindFailureKillsNewHostKeepsOld(t *testing.T) {
 }
 
 // ProjectionSnapshot must never create/resume/rebind even when the recorded
-// host is absent from tmux (continuity stays on intentional Snapshot paths).
+// host is absent from tmux (continuity stays on explicit lifecycle paths).
 func TestProjectionSnapshotAbsentHostDoesNotMutate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1987,7 +2022,7 @@ func TestServiceSnapshotProbeUnknownPreservesBindingCreatesZero(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "liveness unknown") {
 		t.Fatalf("err=%v", err)
 	}
@@ -2047,7 +2082,7 @@ func TestServiceSnapshotRecoverCandidateProbeUnknownCreatesZero(t *testing.T) {
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "candidate liveness unknown") {
 		t.Fatalf("err=%v", err)
 	}
@@ -2115,7 +2150,7 @@ func TestServiceSnapshotRecoverLiveMigratesProviderBindingAtomically(t *testing.
 				ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 			})
 
-			snapshot, err := service.Snapshot()
+			snapshot, err := service.EnsureHostSnapshot()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2180,7 +2215,7 @@ func TestServiceSnapshotRecoverLiveBindFailureKeepsOldDoesNotKill(t *testing.T) 
 		return fmt.Errorf("injected recover bind failure")
 	}
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected recover bind failure")
 	}
@@ -2233,7 +2268,7 @@ func TestServiceSnapshotAdoptsLiveHostProviderWhenExecutorIDEmpty(t *testing.T) 
 		},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2289,7 +2324,7 @@ func TestServiceSnapshotRebindsAliveHostWhenRecordedTargetMissing(t *testing.T) 
 		},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2346,7 +2381,7 @@ func TestServiceSnapshotAuditsProviderMismatchReplacement(t *testing.T) {
 	// Explicit env switch to codex while a grok host is still alive.
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2379,7 +2414,7 @@ func TestServiceSnapshotFallsBackToCodexNotDelegatedExecutor(t *testing.T) {
 		"codex":  {Name: "codex", Command: "codex"},
 	}))
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2403,7 +2438,7 @@ func TestServiceSnapshotHonorsHostExecutorOverride(t *testing.T) {
 		"claude": {Name: "claude", Command: "claude"},
 	}))
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2439,7 +2474,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"codex": {Name: "codex", Command: "codex"},
 	}))
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(fw.sentCalls) != 1 {
@@ -2453,6 +2488,8 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session",
 		"Brain is the user's scheduler",
 		"Brain's operating goal is to understand the task",
+		brainWorkerRoleContractVersion,
+		brainWorkerRoleContract,
 		"Brain is the orchestrator, not the execution pool",
 		"Delegate a subtask only when it can be named clearly",
 		"Run independent delegated subtasks in parallel when that reduces elapsed time",
@@ -2491,6 +2528,11 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		t.Fatalf("bootstrap prompt still routes delegated agents to the current Brain executor:\n%s", prompt)
 	}
 	for _, unexpected := range []string{
+		"normally create or reuse",
+		"use judgment when direct execution",
+		"clearly the better route",
+		"clearer or faster",
+		"patch over it directly",
 		"resource admission is a ceiling",
 		"smallest useful frontier",
 		"Resource-Aware Scheduling",
@@ -2525,7 +2567,7 @@ func TestServiceBootstrapPromptReferencesPrivateWorkspaceWithoutEmbeddingIt(t *t
 		"codex": {Name: "codex", Command: "codex"},
 	}))
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2661,7 +2703,16 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	if len(fw.sentCalls) != 2 {
 		t.Fatalf("sent calls = %#v", fw.sentCalls)
 	}
-	handoff := fw.sentCalls[1].text
+	handoff := ""
+	for _, call := range fw.sentCalls {
+		if strings.Contains(call.text, "Brain host executor handoff:") {
+			handoff = call.text
+			break
+		}
+	}
+	if handoff == "" {
+		t.Fatalf("executor handoff was not delivered: %#v", fw.sentCalls)
+	}
 	for _, want := range []string{
 		"Brain host executor handoff:",
 		"Previous host executor: grok",
@@ -2675,6 +2726,8 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 		"Delegated agents are scoped execution sessions",
 		"Run independent subtasks in parallel when useful",
 		"Inspect delegated results before integrating them.",
+		brainWorkerRoleContractVersion,
+		brainWorkerRoleContract,
 	} {
 		if !strings.Contains(handoff, want) {
 			t.Fatalf("handoff missing %q:\n%s", want, handoff)
@@ -2966,7 +3019,7 @@ func TestServiceSnapshotReplacesMismatchedHostSession(t *testing.T) {
 		},
 	})
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3007,7 +3060,7 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 		"codex": {Name: "codex", Command: "codex"},
 	}))
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3044,7 +3097,7 @@ func TestServiceSnapshotFiltersHiddenHostFromVisibleAgents(t *testing.T) {
 	}
 	service := NewService(store, fw, nil)
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,8 +1,10 @@
 package stats
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,9 +77,37 @@ VALUES ('bad-thread', '/tmp/onlora', 'gpt-5.5', 362727822, 1710000000, 171000360
 	}
 
 	c := &Collector{}
+	var logs bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousLogWriter) })
 	daily, modelsByDate, projectsByDate := c.collectCodexStats(home)
 	if len(daily) != 0 || len(modelsByDate) != 0 || len(projectsByDate) != 0 {
 		t.Fatalf("unparsable rollout should not create synthetic usage: daily=%v models=%v projects=%v", daily, modelsByDate, projectsByDate)
+	}
+	c.collectCodexStats(home)
+	if got := strings.Count(logs.String(), "skipped 1 Codex threads without parsable token_count rollout"); got != 1 {
+		t.Fatalf("historical rollout warning count = %d, want one; logs=%s", got, logs.String())
+	}
+}
+
+func TestHistoricalCodexRolloutSkipsAreReportedOncePerSignature(t *testing.T) {
+	c := &Collector{}
+	missing := fmt.Errorf("stat /tmp/old-rollout.jsonl: %w", os.ErrNotExist)
+	if !isHistoricalCodexRolloutSkip(missing) {
+		t.Fatal("missing rollout should be classified as historical")
+	}
+	if !c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", missing) {
+		t.Fatal("first historical skip should be reported")
+	}
+	if c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", missing) {
+		t.Fatal("same historical skip should be deduplicated")
+	}
+	if !c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", fmt.Errorf("bufio.Scanner: token too long")) {
+		t.Fatal("a changed error signature should remain observable")
+	}
+	if isHistoricalCodexRolloutSkip(fmt.Errorf("invalid character '}' looking for beginning of value")) {
+		t.Fatal("real parse errors must not be classified as historical noise")
 	}
 }
 

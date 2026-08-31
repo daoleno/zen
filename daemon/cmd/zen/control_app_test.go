@@ -306,6 +306,18 @@ func (w *fakeControlWatcher) SendInputWithReceiptResult(sessionID, text, receipt
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
+func (w *fakeControlWatcher) SendInputWithReceiptWhenReadyResult(
+	sessionID, _ string, text string,
+	receiptFor watcher.InputReceiptForGeneration,
+) (watcher.InputResult, watcher.OwnedGeneration, error) {
+	owned, err := w.ResolveBrainHostGeneration(sessionID)
+	if err != nil {
+		return watcher.InputResult{Outcome: watcher.InputNotSubmitted}, watcher.OwnedGeneration{}, err
+	}
+	result, err := w.SendInputWithReceiptResult(sessionID, text, receiptFor(owned))
+	return result, owned, err
+}
+
 func (w *fakeControlWatcher) InputReceiptResult(_ string, receipt string) (watcher.InputResult, bool, error) {
 	for _, current := range w.receipts {
 		if current == receipt {

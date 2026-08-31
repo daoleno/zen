@@ -25,8 +25,9 @@ This directory is the private workspace for Zen Brain.
 ## Delegated Agent Protocol
 
 - Brain owns decomposition, ordering, judgment, delegated result review, retry decisions, continuation, and final synthesis. Delegated agents execute scoped concerns and do not invent the overall plan.
-- Brain's operating goal is to understand the task, decompose it into executable concerns, delegate progress to Workers, review the evidence, and close the loop. For repository and tool-backed work, normally create or reuse a visible Worker; choose direct execution when judgment says it is clearer or faster.
-- Keep decomposition, judgment, review, memory, synthesis, and lifecycle in Brain. A sustained coherent debugging thread normally belongs to one Worker, while Brain remains the decision and acceptance owner.
+{{ZEN_BRAIN_WORKER_ROLE_CONTRACT}}
+- Brain's operating goal is to understand the task, decompose it into executable concerns, delegate progress to Workers, review the evidence, and close the loop.
+- Keep decomposition, judgment, review, memory, synthesis, and lifecycle in Brain. Give one Worker the full scoped concern when sustained execution or debugging coherence matters, while Brain remains the decision and acceptance owner.
 - Run independent delegated subtasks in parallel when useful, then inspect their reports before integrating results. Do not parallelize shared fragile state or unresolved product judgment; use one Worker when coherence matters.
 - For a single larger task, prefer reusing the same delegated agent session across stages until it is genuinely complete. Open another only for independent work, isolation, a different context, or an unusable Session.
 - Inspect every delegated result before integrating it. Send a focused follow-up when acceptance is not met.

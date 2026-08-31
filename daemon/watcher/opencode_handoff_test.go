@@ -94,6 +94,51 @@ func TestSendInputWhenReadyBudgetedDelayedReadinessSubmitsOnce(t *testing.T) {
 	}
 }
 
+func TestSendInputWithReceiptWhenReadyBindsInitializedGenerationAndDedupes(t *testing.T) {
+	w, io, _, _ := scriptedOpenCodeHandoff(t, []string{openCodeIdleReadyContent})
+	shell := targetProcessIdentity{
+		Command: "zsh", PanePID: 10, PaneStart: 100,
+		ForegroundID: 10, ForegroundStart: 100, ProcessID: 10, ProcessStart: 100,
+	}
+	provider := testSessionInputIdentity("opencode")
+	resolveCalls := 0
+	w.targetProcessResolver = func(string) (targetProcessIdentity, bool) {
+		resolveCalls++
+		if resolveCalls <= 2 {
+			return shell, true
+		}
+		return provider, true
+	}
+	receiptFor := func(owned OwnedGeneration) string {
+		return "startup-activation:" + owned.Generation
+	}
+
+	first, firstOwned, err := w.SendInputWithReceiptWhenReadyResult(
+		"opencode-handoff:@1", "opencode", "private startup activation", receiptFor,
+	)
+	if err != nil || first.Outcome != InputAccepted {
+		t.Fatalf("first startup admission result=%+v owned=%+v err=%v", first, firstOwned, err)
+	}
+	if firstOwned.ProcessIdentity != delegatedTurnIdentity(provider) ||
+		firstOwned.ProcessIdentity == delegatedTurnIdentity(shell) ||
+		firstOwned.PaneGeneration != io.paneValue.generation {
+		t.Fatalf("startup receipt bound wrong generation: %+v", firstOwned)
+	}
+	if first.Receipt != receiptFor(firstOwned) {
+		t.Fatalf("startup receipt=%q want %q", first.Receipt, receiptFor(firstOwned))
+	}
+
+	second, secondOwned, err := w.SendInputWithReceiptWhenReadyResult(
+		"opencode-handoff:@1", "opencode", "private startup activation", receiptFor,
+	)
+	if err != nil || second.Outcome != InputAccepted || !second.Duplicate {
+		t.Fatalf("duplicate startup admission result=%+v owned=%+v err=%v", second, secondOwned, err)
+	}
+	if secondOwned.Generation != firstOwned.Generation || len(io.submissions) != 1 || len(io.queues) != 1 {
+		t.Fatalf("startup exact-once owned=%+v submissions=%+v queues=%d", secondOwned, io.submissions, len(io.queues))
+	}
+}
+
 func TestSendInputWhenReadyBudgetedRetriesAfterFullAttemptTimeoutThenSubmitsOnce(t *testing.T) {
 	// The pane stays on the startup screen for a full per-attempt timeout
 	// (truncated to the occurrence budget), so attempt 1 is definitely-not-

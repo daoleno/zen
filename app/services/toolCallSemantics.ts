@@ -3,9 +3,9 @@
  *
  * Safety invariants:
  * - Never evaluate JavaScript from provider payloads.
- * - Collapsed labels expose only bounded, safely-derived command intent or
- *   distinctive paths; never patches, secret-looking paths, URLs, tokens, or
- *   unclassified raw arguments.
+ * - Collapsed labels expose bounded command intent and URLs from the user's
+ *   own Agent activity; credential-bearing values and secret-looking paths
+ *   remain hidden.
  * - Raw provider/tool identifiers stay secondary (expansion only).
  */
 
@@ -64,6 +64,8 @@ const SECRET_PATH_RE =
 const TOKEN_RE =
   /\b(sk-[a-z0-9_-]{8,}|ghp_[a-z0-9]{8,}|xox[baprs]-[a-z0-9-]{8,})\b/i;
 const URL_RE = /https?:\/\/[^\s"'`]+/i;
+const SENSITIVE_URL_QUERY_RE =
+  /^(?:access[_-]?token|api[_-]?key|auth(?:orization)?|client[_-]?secret|code|cookie|credential|key|pass(?:word|wd)?|secret|signature|sig|token)$/i;
 const SECRET_COMMAND_RE =
   /(?:(?:^|\s)(?:[A-Z0-9_]*(?:TOKEN|PASSWORD|PASSWD|API_KEY|SECRET|AUTHORIZATION|COOKIE)[A-Z0-9_]*\s*=\s*\S+|--?(?:token|password|passwd|api[_-]?key|authorization|cookie|client[_-]?secret)(?:=|\s+)\S+|authorization:\s*\S+|bearer\s+\S+)|(?:^|[\s/])\.env(?:\.[^\s/]*)?(?:\s|$))/i;
 const COLLAPSED_TARGET_LIMIT = 64;
@@ -702,6 +704,18 @@ function classifyCommand(command: string): SemanticActionKind {
 }
 
 function commandActionLabel(command: string, kind: SemanticActionKind): string {
+  // Codex commonly uses agent-browser through the exec wrapper. Treat it as a
+  // browsing action so a useful URL does not collapse every row to "Run".
+  if (/\bagent-browser\b/i.test(command)) {
+    return "Browse";
+  }
+  if (
+    kind === "run_command" &&
+    /\b(?:curl|wget)\b/i.test(command) &&
+    URL_RE.test(command)
+  ) {
+    return "Fetch";
+  }
   if (kind === "test_app") {
     return "Run";
   }
@@ -717,7 +731,15 @@ function collapsedCommandTarget(
   label: string,
 ): string | undefined {
   const normalized = command.replace(/\s+/g, " ").trim();
-  if (!normalized || isSecretBearingCommand(normalized)) {
+  if (!normalized) {
+    return undefined;
+  }
+  // Keep the user's URL visible in browser/fetch activity. Credential-looking
+  // values are still rejected by safeCollapsedValue below.
+  if (label === "Browse" || label === "Fetch") {
+    return browserCommandTarget(normalized);
+  }
+  if (isSecretBearingCommand(normalized)) {
     return undefined;
   }
   const segment = meaningfulCommandSegment(normalized, kind, label);
@@ -737,6 +759,39 @@ function collapsedCommandTarget(
     return safeCollapsedValue(buildCommandTarget(tokens));
   }
   return safeCollapsedValue(genericCommandSummary(tokens));
+}
+
+/** Keep the public URL location visible without projecting URL credentials. */
+function browserCommandTarget(command: string): string | undefined {
+  const match = command.match(URL_RE);
+  if (match?.[0]) {
+    return safeCollapsedValue(sanitizeCollapsedURL(match[0]));
+  }
+  const tokens = simpleCommandTokens(command);
+  const browserIndex = tokens.findIndex((token) =>
+    /(^|\/)agent-browser$/i.test(token),
+  );
+  const action = browserIndex >= 0 ? tokens[browserIndex + 1] : undefined;
+  return action ? safeCollapsedValue(action) : undefined;
+}
+
+function sanitizeCollapsedURL(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_URL_QUERY_RE.test(key)) {
+        url.searchParams.delete(key);
+      }
+    }
+    // Fragments can carry OAuth tokens and do not identify the fetched
+    // server resource, so collapsed activity never needs to expose them.
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function genericCommandSummary(tokens: string[]): string {
@@ -912,7 +967,6 @@ function simpleCommandTokens(value: string): string[] {
 function isSecretBearingCommand(command: string): boolean {
   return (
     TOKEN_RE.test(command) ||
-    URL_RE.test(command) ||
     SECRET_PATH_RE.test(command) ||
     SECRET_COMMAND_RE.test(command)
   );
@@ -1416,9 +1470,9 @@ export function isUnsafeCollapsedDetail(value?: string): boolean {
     return true;
   }
   if (
-    URL_RE.test(trimmed) ||
     TOKEN_RE.test(trimmed) ||
-    SECRET_PATH_RE.test(trimmed)
+    containsSensitiveURLCredentials(trimmed) ||
+    (SECRET_PATH_RE.test(trimmed) && !URL_RE.test(trimmed))
   ) {
     return true;
   }
@@ -1426,4 +1480,24 @@ export function isUnsafeCollapsedDetail(value?: string): boolean {
     return true;
   }
   return false;
+}
+
+function containsSensitiveURLCredentials(value: string): boolean {
+  const match = value.match(URL_RE);
+  if (!match?.[0]) {
+    return false;
+  }
+  try {
+    const url = new URL(match[0]);
+    return Boolean(
+      url.username ||
+        url.password ||
+        url.hash ||
+        [...url.searchParams.keys()].some((key) =>
+          SENSITIVE_URL_QUERY_RE.test(key),
+        ),
+    );
+  } catch {
+    return true;
+  }
 }

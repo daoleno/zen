@@ -115,6 +115,57 @@ func TestBrainSnapshotHostAgentCapabilitiesUnmanaged(t *testing.T) {
 	assertHostStaysHiddenFromAgentList(t, srv, hidden)
 }
 
+func TestBrainSnapshotBroadcastDoesNotAdmitHostActivation(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		hostID   = "brain-agent-brain-hidden:@busy-broadcast"
+		threadID = "brain-thread-client-data-restored"
+	)
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	fw := &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {
+			ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
+			State: classifier.StateRunning, Summary: "Processing current provider turn",
+		},
+	}}
+	service := brain.NewService(store, fw, work.NewExecutorConfig("codex", map[string]work.Executor{
+		"codex": {Name: "codex", Command: "codex", Kind: "codex"},
+	}))
+	srv := &Server{brain: service}
+	var broadcast map[string]any
+	srv.brainSnapshotBroadcastHook = func(payload map[string]any) {
+		broadcast = payload
+	}
+
+	srv.broadcastBrainSnapshot()
+
+	if broadcast == nil || broadcast["type"] != "brain_snapshot" {
+		t.Fatalf("brain snapshot was not broadcast: %#v", broadcast)
+	}
+	payload, ok := broadcast["brain"].(map[string]any)
+	if !ok || payload["chat_thread_id"] != threadID {
+		t.Fatalf("brain client data payload = %#v", broadcast["brain"])
+	}
+	if fw.readyInputCalls != 0 || fw.receiptInputCalls != 0 {
+		t.Fatalf("snapshot broadcast mutated Host input: ready=%d receipt=%d", fw.readyInputCalls, fw.receiptInputCalls)
+	}
+	activation, err := store.HostActivation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activation.SessionID != "" {
+		t.Fatalf("snapshot broadcast falsely marked activation: %+v", activation)
+	}
+}
+
 func TestBrainSnapshotHostAgentCapabilitiesFailClosedMissingAgentOrOwner(t *testing.T) {
 	hostID := "brain-agent-brain-hidden:@missing"
 

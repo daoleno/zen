@@ -11,10 +11,14 @@ import _ "embed"
 var defaultSoulPrinciples string
 
 //go:embed templates/AGENTS.md
-var productWorkspaceInstructions string
+var productWorkspaceInstructionsTemplate string
+
+var productWorkspaceInstructions = projectBrainWorkerRoleContract(productWorkspaceInstructionsTemplate)
 
 //go:embed templates/policies/delegation.md
-var productDelegationPolicy string
+var productDelegationPolicyTemplate string
+
+var productDelegationPolicy = projectBrainWorkerRoleContract(productDelegationPolicyTemplate)
 
 //go:embed templates/policies/engine.md
 var productEnginePolicy string

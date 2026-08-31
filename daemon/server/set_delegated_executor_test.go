@@ -18,8 +18,10 @@ import (
 )
 
 type brainServiceTestWatcher struct {
-	sessions  map[string]*classifier.Agent
-	turnStore *brain.Store
+	sessions          map[string]*classifier.Agent
+	turnStore         *brain.Store
+	readyInputCalls   int
+	receiptInputCalls int
 }
 
 func (w *brainServiceTestWatcher) Agents() []*classifier.Agent {
@@ -61,7 +63,18 @@ func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) err
 }
 
 func (w *brainServiceTestWatcher) SendInputWithReceiptResult(_, _, receipt string) (watcher.InputResult, error) {
+	w.receiptInputCalls++
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
+}
+
+func (w *brainServiceTestWatcher) SendInputWithReceiptWhenReadyResult(
+	_, _, _ string,
+	receiptFor watcher.InputReceiptForGeneration,
+) (watcher.InputResult, watcher.OwnedGeneration, error) {
+	w.readyInputCalls++
+	owned := watcher.OwnedGeneration{SessionID: "startup", Generation: "startup-generation"}
+	receipt := receiptFor(owned)
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, owned, nil
 }
 func (w *brainServiceTestWatcher) SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error) {
 	if w.turnStore == nil {

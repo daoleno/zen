@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	ErrExecutorNotConfigured = errors.New("brain host executor is not configured")
-	ErrExecutorLockedByEnv   = errors.New("brain host executor is locked by environment override")
+	ErrExecutorNotConfigured   = errors.New("brain host executor is not configured")
+	ErrExecutorLockedByEnv     = errors.New("brain host executor is locked by environment override")
+	ErrHostActivationAmbiguous = errors.New("brain Host activation delivery is ambiguous")
 	// ErrRouteTransferNotDurable means TransferSession applied in memory but
 	// route-bindings.json durability was not proven. Host bind/success audit
 	// must not proceed.
@@ -40,6 +41,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
+	SendInputWithReceiptWhenReadyResult(sessionID, command, payload string, receiptFor watcher.InputReceiptForGeneration) (watcher.InputResult, watcher.OwnedGeneration, error)
 	SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
@@ -68,7 +70,8 @@ type Service struct {
 	// BrainInputAdmission + watcher receipt state remain the restart authority.
 	inFlightHostInputs map[string]struct{}
 
-	reconcileMu sync.Mutex
+	reconcileMu      sync.Mutex
+	hostActivationMu sync.Mutex
 
 	routeMu sync.Mutex
 	routes  SessionRouteLifecycle
@@ -366,7 +369,15 @@ func (s *Service) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloa
 	return submission, errors.Join(abortErr, dispatchErr)
 }
 
+// Snapshot is the read-only client projection. Host continuity and activation
+// are explicit lifecycle operations so client reads never mutate a provider.
 func (s *Service) Snapshot() (Snapshot, error) {
+	return s.ProjectionSnapshot()
+}
+
+// EnsureHostSnapshot reconciles Host continuity and then returns the current
+// projection. Callers must be lifecycle owners, never client snapshot paths.
+func (s *Service) EnsureHostSnapshot() (Snapshot, error) {
 	snapshot, err := s.store.Snapshot()
 	if err != nil {
 		return Snapshot{}, err
@@ -409,9 +420,9 @@ func (s *Service) Snapshot() (Snapshot, error) {
 // ProjectionSnapshot builds a brain_snapshot for wire projection without
 // ensureHostAgent. Hidden-host discovery/removal refreshes use this so
 // capability convergence never creates, resumes, rebinds, transfers routes,
-// or rewrites host binding. Continuity remains owned by Snapshot, NewChat,
-// and other intentional lifecycle entry points under tri-state/route-transfer
-// rules.
+// or rewrites host binding. Continuity remains owned by EnsureHostSnapshot,
+// NewChat, and other intentional lifecycle entry points under tri-state and
+// route-transfer rules.
 func (s *Service) ProjectionSnapshot() (Snapshot, error) {
 	if s == nil || s.store == nil {
 		return Snapshot{}, fmt.Errorf("brain service is not configured")
@@ -657,7 +668,7 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 	if err := s.store.SetHostExecutorID(executor.ID); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot, err := s.Snapshot()
+	snapshot, err := s.EnsureHostSnapshot()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -1633,10 +1644,11 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	// exact terminal evidence; ambient Agent state can never clear the
 	// durable turn or fabricate a boundary.
 	if host, hostErr := s.store.HostSession(); hostErr == nil && strings.TrimSpace(host.ID) == agentID {
+		activationErr := s.ensureHostActivation(agentID, event.Agent.Command, s.hostExecutor(), false, false)
 		s.dispatchMu.Lock()
 		defer s.dispatchMu.Unlock()
 		woke, reconcileErr := s.reconcileHostLaneLocked()
-		return requeued || woke, reconcileErr
+		return requeued || woke, errors.Join(activationErr, reconcileErr)
 	}
 	if requeued {
 		return s.ReconcileHostLane()
@@ -2486,6 +2498,9 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 							return AgentRef{}, err
 						}
 					}
+					if err := s.ensureHostActivation(id, command, executor, false, false); err != nil {
+						return AgentRef{}, err
+					}
 					_, _ = s.BindHostProviderTranscript()
 					return agentRefFromClassifier(agent), nil
 				}
@@ -2536,6 +2551,9 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 			}
 			if recovered != nil {
 				if err := s.rebindRecoveredHost(id, recovered, executor, hostSession); err != nil {
+					return AgentRef{}, err
+				}
+				if err := s.ensureHostActivation(recovered.ID, recovered.Command, executor, false, false); err != nil {
 					return AgentRef{}, err
 				}
 				return agentRefFromClassifier(recovered), nil
@@ -2646,7 +2664,7 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 			provisionalID = plan.ProvisionalID
 			// Prepare Applied+!Durable may proceed: CommitLaunch is the
 			// durability barrier for the exact final Session-owned route.
-			// Brain Snapshot/NewChat has no persistence-warning wire, so a
+			// Brain Host lifecycle/NewChat has no persistence-warning wire, so a
 			// later Applied+!Durable or errored Commit must fail closed
 			// (unlike control/App keep-with-warning).
 			if planErr != nil || !plan.Persist.Durable {
@@ -2777,10 +2795,8 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 			Detail:           replaceDetail,
 		})
 	}
-	if resumeToken == "" {
-		if prompt := s.hostBootstrapPrompt(executor); prompt != "" {
-			_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
-		}
+	if err := s.ensureHostActivation(agentID, command, executor, true, resumeToken == ""); err != nil {
+		return AgentRef{}, err
 	}
 	if agent := s.watcher.GetAgent(agentID); agent != nil {
 		return agentRefFromClassifier(agent), nil
@@ -2795,6 +2811,112 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		Updated: s.now().UTC(),
 		Hidden:  true,
 	}, nil
+}
+
+func (s *Service) ensureHostActivation(sessionID, command string, executor work.AgentExecutor, startup, bootstrap bool) error {
+	if s == nil || s.store == nil || s.watcher == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+
+	s.hostActivationMu.Lock()
+	defer s.hostActivationMu.Unlock()
+	prompt := brainHostActivationPrompt()
+	if bootstrap {
+		prompt = s.hostBootstrapPrompt(executor)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return fmt.Errorf("Brain Host activation prompt is empty")
+	}
+	if startup {
+		result, owned, err := s.watcher.SendInputWithReceiptWhenReadyResult(
+			sessionID,
+			command,
+			prompt,
+			func(owned watcher.OwnedGeneration) string {
+				return hostActivationReceipt(sessionID, owned.Generation, brainWorkerRoleContractVersion)
+			},
+		)
+		if err != nil {
+			return hostActivationDeliveryError(result, err)
+		}
+		if result.Outcome != watcher.InputAccepted {
+			return fmt.Errorf("deliver Brain Host activation: receipt outcome %q", result.Outcome)
+		}
+		return s.markHostActivation(sessionID, result.Receipt, owned)
+	}
+
+	owned, err := s.watcher.ResolveBrainHostGeneration(sessionID)
+	if err != nil {
+		return fmt.Errorf("resolve Brain Host activation generation: %w", err)
+	}
+	generation := strings.TrimSpace(owned.Generation)
+	if generation == "" {
+		return fmt.Errorf("resolve Brain Host activation generation: empty generation for %q", sessionID)
+	}
+	current, err := s.store.HostActivation()
+	if err != nil {
+		return fmt.Errorf("read Brain Host activation: %w", err)
+	}
+	if current.StateVersion == hostActivationStateVersion &&
+		current.SessionID == sessionID &&
+		current.HostGeneration == generation &&
+		current.ContractVersion == brainWorkerRoleContractVersion {
+		return nil
+	}
+
+	receipt := hostActivationReceipt(sessionID, generation, brainWorkerRoleContractVersion)
+	result, found, receiptErr := s.watcher.InputReceiptResult(sessionID, receipt)
+	if receiptErr != nil {
+		return fmt.Errorf("settle Brain Host activation receipt: %w", receiptErr)
+	}
+	if found {
+		switch result.Outcome {
+		case watcher.InputAccepted:
+			return s.markHostActivation(sessionID, receipt, owned)
+		case watcher.InputAmbiguous:
+			return fmt.Errorf("%w: receipt %q; refusing replay", ErrHostActivationAmbiguous, receipt)
+		}
+	}
+	result, err = s.watcher.SendInputWithReceiptResult(sessionID, prompt, receipt)
+	if err != nil {
+		return hostActivationDeliveryError(result, err)
+	}
+	if result.Outcome != watcher.InputAccepted {
+		return fmt.Errorf("deliver Brain Host activation: receipt outcome %q", result.Outcome)
+	}
+	return s.markHostActivation(sessionID, receipt, owned)
+}
+
+func hostActivationDeliveryError(result watcher.InputResult, err error) error {
+	if result.Outcome == watcher.InputAmbiguous {
+		return fmt.Errorf("%w: receipt %q; refusing replay: %v", ErrHostActivationAmbiguous, result.Receipt, err)
+	}
+	return fmt.Errorf("deliver Brain Host activation: %w", err)
+}
+
+func hostActivationReceipt(sessionID, generation, contractVersion string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(generation) + "\x00" + strings.TrimSpace(contractVersion)))
+	return fmt.Sprintf("brain-host-activation:%x", digest[:])
+}
+
+func (s *Service) markHostActivation(sessionID, receipt string, owned watcher.OwnedGeneration) error {
+	generation := strings.TrimSpace(owned.Generation)
+	if err := s.store.MarkHostActivation(HostActivation{
+		SessionID:       sessionID,
+		HostGeneration:  generation,
+		ProcessIdentity: strings.TrimSpace(owned.ProcessIdentity),
+		PaneGeneration:  strings.TrimSpace(owned.PaneGeneration),
+		ContractVersion: brainWorkerRoleContractVersion,
+		Receipt:         strings.TrimSpace(receipt),
+		ActivatedAt:     s.now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("persist Brain Host activation: %w", err)
+	}
+	return nil
 }
 
 func brainSessionEnvironment() map[string]string {
@@ -3407,7 +3529,7 @@ func (s *Service) hostBootstrapPrompt(executor work.AgentExecutor) string {
 	}
 	delegatedExecutor := s.brainDelegatedExecutor()
 	worktreeRoot, _ := work.DefaultWorktreeRoot()
-	return strings.TrimSpace(fmt.Sprintf(`
+	bootstrap := strings.TrimSpace(fmt.Sprintf(`
 You are Brain inside zen, the user's private second brain and agent orchestrator.
 
 Work as a warm, direct, capable chat assistant. Reply in the user's language unless they ask otherwise.
@@ -3437,7 +3559,7 @@ Agent lifecycle rules:
 - Host Executor runs Brain chat, planning, delegation, review, and final synthesis. Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
 - Brain is the sole master orchestrator and scheduler above delegated Sessions. Given the user's goal and boundaries, independently decompose, order, choose or reuse scoped Sessions, review results, and advance the next runnable Work without asking the user to babysit the queue or type continue.
 - Brain is the user's scheduler: reduce decision load.
-- Brain's operating goal is to understand the task, decompose it into executable concerns, delegate progress to Workers, review the evidence, and close the loop. For repository and tool-backed work, normally create or reuse a visible delegated agent session; use judgment when direct execution is clearly the better route. Stay in Brain for chat, decomposition, judgment, review, memory, synthesis, reminders, and final decisions. A sustained coherent debugging thread normally belongs to one Worker while Brain remains the acceptance owner.
+- Brain's operating goal is to understand the task, decompose it into executable concerns, delegate progress to Workers, review the evidence, and close the loop. Stay in Brain for conversation, clarification, decomposition, judgment, lifecycle, review, acceptance, and synthesis. Give one Worker the full scoped concern when sustained execution or debugging coherence matters.
 - Create Work only for a commitment that must survive the current turn. Ordinary questions and discussion create no Work.
 - Work and append-only Events are the sole durable Brain scheduler state. current.md and provider state are projections or execution details, not alternate owners.
 - Only an atomically claimed actionable Work Event may start an automatic Brain turn. Active or waiting Work without an Event stays idle.
@@ -3446,7 +3568,7 @@ Agent lifecycle rules:
 - Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
 - Delegate a subtask only when it can be named clearly. A delegated-agent brief should contain one concern, the workspace, enough context to avoid re-exploring the whole repo, acceptance criteria, safety constraints, feasible verification, and a short expected report.
 - Run independent delegated subtasks in parallel when that reduces elapsed time. Do not parallelize work that shares fragile state or depends on unresolved product judgment. For a coherent debugging thread, prefer one Worker with the whole scoped concern while Brain retains decision and review ownership.
-- Delegated agents should not invent the overall plan. If a delegated result is incomplete or off-target, inspect it, rewrite the brief or send a focused follow-up, and only patch over it directly when the fix is trivial.
+- Delegated agents should not invent the overall plan. If a delegated result is incomplete or off-target, inspect it, rewrite the brief, or send a focused follow-up.
 - Review delegated results before integrating them: capture the session, compare the result with the acceptance criteria, run or inspect verification, and then decide whether to merge, follow up, or ask the user.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the repository supplied by the user as the default workspace, even when it is dirty; preserve unrelated changes. Delegation and parallelism do not themselves justify a worktree.
@@ -3490,6 +3612,7 @@ Reference files:
 - policies/handoff.md
 - playbooks/ (catalog via zen brain playbooks --json)
 `, snapshot.Workspace, worktreeRoot, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), worktreeRoot, zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+	return brainHostActivationPrompt() + "\n\n" + bootstrap
 }
 
 func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, agents []AgentRef) error {
@@ -3549,6 +3672,9 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 		"- Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
 		"- Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
 		"- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.",
+		"",
+		"Brain/Worker role contract ("+brainWorkerRoleContractVersion+"):",
+		brainWorkerRoleContract,
 		"",
 		"Lifecycle policy:",
 		"- Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",

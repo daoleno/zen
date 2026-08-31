@@ -60,6 +60,46 @@ func TestThreadTimelineSurvivesEmptyProviderHost(t *testing.T) {
 	}
 }
 
+func TestMaterializeProviderConversationSuppressesQueuedHostActivationTurn(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "brain_thread_private_queued_activation"
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	events := []work.CodexConversationEvent{
+		{ID: "old-user", Timestamp: "2026-08-31T14:00:00Z", Kind: "user_message", Role: "user", Body: "earlier public question"},
+		{ID: "old-assistant", Timestamp: "2026-08-31T14:00:01Z", Kind: "assistant_message", Role: "assistant", Body: "earlier public answer"},
+		{ID: "activation-user", Timestamp: "2026-08-31T14:00:02Z", Kind: "user_message", Role: "user", Body: "Brain Host activation contract:\nVersion: zen-brain-worker-role/v1"},
+		{ID: "activation-tool", Timestamp: "2026-08-31T14:00:03Z", Kind: "tool_message", Role: "tool", Body: "private activation tool output"},
+		{ID: "activation-assistant", Timestamp: "2026-08-31T14:00:04Z", Kind: "assistant_message", Role: "assistant", Body: "Activation acknowledged."},
+		{ID: "next-user", Timestamp: "2026-08-31T14:00:05Z", Kind: "user_message", Role: "user", Body: "continue publicly"},
+		{ID: "next-assistant", Timestamp: "2026-08-31T14:00:06Z", Kind: "assistant_message", Role: "assistant", Body: "public continuation"},
+	}
+	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+		Available: true,
+		SessionID: "host-with-queued-activation",
+		Events:    events,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"old-user", "old-assistant", "next-user", "next-assistant"}
+	if len(items) != len(want) {
+		t.Fatalf("private activation reached app timeline: %+v", items)
+	}
+	for i, id := range want {
+		if items[i].ID != id {
+			t.Fatalf("timeline[%d] = %+v, want %q", i, items[i], id)
+		}
+	}
+}
+
 func TestWorkCardProjectionReplacesInPlace(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

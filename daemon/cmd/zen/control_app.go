@@ -33,6 +33,7 @@ type controlWatcher interface {
 	RebindDelegatedTurnProjection(id string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
+	SendInputWithReceiptWhenReadyResult(sessionID, command, payload string, receiptFor watcher.InputReceiptForGeneration) (watcher.InputResult, watcher.OwnedGeneration, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	SendInputWhenReady(sessionID, command, text string) error
 	SubmitInput(sessionID, payload string) error

@@ -13,6 +13,7 @@ const (
 	delegationManagedID      = "policy-delegation"
 	executorManagedID        = "policy-executor"
 	handoffManagedID         = "policy-handoff"
+	brainFlowsManagedID      = "playbook-brain-flows-routing"
 	managedMarkerPrefix      = "<!-- zen:brain-managed:"
 	managedMarkerStartSuffix = ":start -->"
 	managedMarkerEndSuffix   = ":end -->"

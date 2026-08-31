@@ -121,6 +121,28 @@ func TestSuppressPrivateHostTurnsHidesHandoffAndKeepsLaterReplies(t *testing.T) 
 	}
 }
 
+func TestSuppressPrivateHostTurnsHidesActivationAfterPublicHistory(t *testing.T) {
+	events := []CodexConversationEvent{
+		{ID: "old-user", Kind: "user_message", Role: "user", Body: "earlier public question"},
+		{ID: "old-asst", Kind: "assistant_message", Role: "assistant", Body: "earlier public answer"},
+		{ID: "activation-user", Kind: "user_message", Role: "user", Body: "Brain Host activation contract:\nVersion: zen-brain-worker-role/v1\nprivate policy"},
+		{ID: "activation-tool", Kind: "tool_message", Role: "tool", Body: "private activation tool output"},
+		{ID: "activation-asst", Kind: "assistant_message", Role: "assistant", Body: "Activation acknowledged."},
+		{ID: "next-user", Kind: "user_message", Role: "user", Body: "continue publicly"},
+		{ID: "next-asst", Kind: "assistant_message", Role: "assistant", Body: "public continuation"},
+	}
+	got := SuppressPrivateHostTurns(events)
+	want := []string{"old-user", "old-asst", "next-user", "next-asst"}
+	if len(got) != len(want) {
+		t.Fatalf("suppressed = %+v", got)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Fatalf("suppressed[%d] = %+v, want id %q", i, got[i], id)
+		}
+	}
+}
+
 func writeGrokHostSessionFixture(t *testing.T, home, cwd, sessionID string, startedAt time.Time, publicUser, assistant string) string {
 	t.Helper()
 	cwd = filepath.Clean(cwd)

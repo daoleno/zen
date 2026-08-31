@@ -33,7 +33,7 @@ func TestInitialBrainHostPrepareCommitUsesExecutorDefault(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.prepareCalls) != 1 || routes.prepareCalls[0][0] != "codex" || routes.prepareCalls[0][1] != "" {
@@ -135,7 +135,7 @@ func TestExecutorMismatchReplacementPrepareCommit(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(fw.killed) != 1 || fw.killed[0] != oldID {
@@ -190,7 +190,7 @@ func TestMissingTmuxResumeUsesImmutableBindingNotDefaultPrepare(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.prepareCalls) != 0 {
@@ -247,7 +247,7 @@ func TestMissingTmuxResumeWithoutBindingPreparesDefault(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.resumeCalls) != 1 || routes.resumeCalls[0] != oldID {
@@ -286,7 +286,7 @@ func TestBrainHostCreateFailureAbortsProvisional(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err == nil {
+	if _, err := service.EnsureHostSnapshot(); err == nil {
 		t.Fatal("expected create failure")
 	}
 	if len(routes.abortCalls) != 1 || routes.abortCalls[0] != "pending:abort-me" {
@@ -317,7 +317,7 @@ func TestBrainHostCommitPersistFailureCleansUp(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err == nil {
+	if _, err := service.EnsureHostSnapshot(); err == nil {
 		t.Fatal("expected commit failure")
 	}
 	if len(routes.abortCalls) != 1 || routes.abortCalls[0] != "pending:commit-fail" {
@@ -353,7 +353,7 @@ func TestBrainHostAliasPrepareUsesCanonicalClientHint(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "primary")
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.prepareCalls) != 1 || routes.prepareCalls[0][0] != "codex" {
@@ -381,7 +381,7 @@ func TestBrainHostClaudeAliasPrepareUsesCanonicalClientHint(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "desk-claude")
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if routes.prepareCalls[0][0] != "claude" {
@@ -402,7 +402,7 @@ func TestBrainHostRawCustomBypassSkipsPrepareBinding(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "custom")
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.prepareCalls) != 1 {
@@ -439,7 +439,7 @@ func TestPrepareNondurableThenDurableCommitIsDurabilityBarrier(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.abortCalls) != 0 {
@@ -482,7 +482,7 @@ func TestInitialCommitNondurableFailsClosedNoHostBind(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, modelprofiles.ErrPersistDirSync) || !strings.Contains(err.Error(), "not durable") {
 		t.Fatalf("err=%v", err)
 	}
@@ -598,7 +598,7 @@ func TestAliasCommitNondurableFailsClosedNoHostBind(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "primary")
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "not durable") {
 		t.Fatalf("err=%v", err)
 	}
@@ -641,7 +641,7 @@ func TestCommitNondurableCleanupKillFailurePreservesRouteNoHostBind(t *testing.T
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "not durable") {
 		t.Fatalf("err=%v", err)
 	}

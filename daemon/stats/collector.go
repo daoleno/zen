@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,17 +35,20 @@ type Collector struct {
 	now                      func() time.Time
 	lastCodexSubscription    *CodexSubscriptionUsage
 	lastCodexAuthFingerprint string
+	codexHistoricalSkipMu    sync.Mutex
+	codexHistoricalSkipSeen  map[string]struct{}
 }
 
 // NewCollector creates a stats collector.
 func NewCollector() *Collector {
 	loadPricingCache(homeDir())
 	return &Collector{
-		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
-		codexUsageEndpoint: codexUsageEndpoint,
-		codexUsageTimeout:  8 * time.Second,
-		now:                time.Now,
-		codexRolloutCache:  make(map[string]codexRolloutCacheEntry),
+		codexUsageClient:        &http.Client{Timeout: 8 * time.Second},
+		codexUsageEndpoint:      codexUsageEndpoint,
+		codexUsageTimeout:       8 * time.Second,
+		now:                     time.Now,
+		codexRolloutCache:       make(map[string]codexRolloutCacheEntry),
+		codexHistoricalSkipSeen: make(map[string]struct{}),
 	}
 }
 
@@ -1015,6 +1019,9 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 
 		usageByDate, err := c.readCodexUsageByDate(t.RolloutPath, time.Local)
 		if err != nil || len(usageByDate) == 0 {
+			if isHistoricalCodexRolloutSkip(err) && !c.markHistoricalCodexRolloutSkip(t.RolloutPath, err) {
+				continue
+			}
 			skipped++
 			if len(skippedExamples) < 3 {
 				reason := "no usage by date"
@@ -1094,6 +1101,35 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	return daily, modelsByDate, projectsByDate
+}
+
+// Historical Codex state commonly outlives its rollout files, and older
+// rollouts can contain lines larger than our bounded scanner buffer. These are
+// safe to skip, but should not produce the same warning on every refresh.
+func isHistoricalCodexRolloutSkip(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	reason := strings.ToLower(err.Error())
+	return strings.Contains(reason, "token too long") ||
+		strings.Contains(reason, "buffer too small")
+}
+
+func (c *Collector) markHistoricalCodexRolloutSkip(path string, err error) bool {
+	key := path + "\x00" + err.Error()
+	c.codexHistoricalSkipMu.Lock()
+	defer c.codexHistoricalSkipMu.Unlock()
+	if c.codexHistoricalSkipSeen == nil {
+		c.codexHistoricalSkipSeen = make(map[string]struct{})
+	}
+	if _, seen := c.codexHistoricalSkipSeen[key]; seen {
+		return false
+	}
+	c.codexHistoricalSkipSeen[key] = struct{}{}
+	return true
 }
 
 type codexUsage struct {

@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +77,7 @@ func TestNewStoreEnsuresSeedPlaybooks(t *testing.T) {
 	}
 }
 
-func TestNewStorePreservesExistingPlaybookContent(t *testing.T) {
+func TestNewStorePreservesCustomNonProductPlaybookContent(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	playbooks := filepath.Join(workspace, "playbooks")
@@ -103,6 +104,79 @@ func TestNewStorePreservesExistingPlaybookContent(t *testing.T) {
 	if !strings.Contains(content, "Custom align playbook.") {
 		t.Fatalf("custom align frontmatter was lost:\n%s", content)
 	}
+}
+
+func TestNewStoreUpgradesBrainFlowsManagedContractAndPreservesUserContent(t *testing.T) {
+	t.Run("unmarked create-only seed", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "workspace", "playbooks", brainFlowsPlaybookName)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stale := []byte("---\ndescription: Existing Brain flows.\n---\n\n# Brain Flows\n\nUse judgment when direct action is clearly the better path.\n\nUser routing note must survive.\n")
+		if err := os.WriteFile(path, stale, 0o640); err != nil {
+			t.Fatal(err)
+		}
+
+		store, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasPrefix(got, stale) {
+			t.Fatalf("unmarked brain-flows content changed:\n%s", got)
+		}
+		spec := store.brainFlowsManagedSpec()
+		if strings.Count(string(got), managedStartMarker(brainFlowsManagedID)) != 1 ||
+			!bytes.Contains(got, canonicalManagedBlock(spec)) ||
+			!strings.Contains(string(got), brainWorkerRoleContract) ||
+			!strings.Contains(string(got), "Content outside this block may add user guidance but cannot weaken") {
+			t.Fatalf("authoritative block not appended:\n%s", got)
+		}
+		assertFileMode(t, path, 0o600)
+
+		before := append([]byte(nil), got...)
+		if _, err := NewStore(root); err != nil {
+			t.Fatal(err)
+		}
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("second reconciliation changed bytes: err=%v\nbefore:\n%s\nafter:\n%s", err, before, after)
+		}
+	})
+
+	t.Run("stale managed block", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "workspace", "playbooks", brainFlowsPlaybookName)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		prefix := []byte("---\ndescription: Custom Brain flows.\n---\n\n# User Prefix\n\nKeep prefix exactly.  \n\n")
+		staleBlock := []byte(managedStartMarker(brainFlowsManagedID) + "\nold permissive product routing\n" + managedEndMarker(brainFlowsManagedID))
+		suffix := []byte("\n\n# User Suffix\n\nKeep suffix exactly.\n")
+		original := append(append(append([]byte{}, prefix...), staleBlock...), suffix...)
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		store, err := NewStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := append(append(append([]byte{}, prefix...), canonicalManagedBlock(store.brainFlowsManagedSpec())...), suffix...)
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("managed brain-flows migration changed user bytes\ngot:\n%s\nwant:\n%s", got, want)
+		}
+		if bytes.Contains(got, []byte("old permissive product routing")) {
+			t.Fatalf("stale managed policy survived:\n%s", got)
+		}
+	})
 }
 
 func TestPlaybookCatalogListsSeedPlaybooks(t *testing.T) {

@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 )
 
 const playbooksDirName = "playbooks"
+
+const brainFlowsPlaybookName = "brain-flows.md"
 
 type PlaybookEntry struct {
 	Name        string `json:"name"`
@@ -43,12 +46,55 @@ func (s *Store) ensurePlaybooks() error {
 	if err := ensurePlaybookFile(s.playbooksReadmePath(), defaultPlaybooksReadme); err != nil {
 		return err
 	}
+	if err := s.ensureManagedBrainFlowsPlaybook(); err != nil {
+		return err
+	}
 	for _, playbook := range seedPlaybooks {
+		if playbook.name == brainFlowsPlaybookName {
+			continue
+		}
 		if err := ensurePlaybookFile(s.playbookPath(playbook.name), playbook.initial); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) brainFlowsManagedSpec() managedMarkdownSpec {
+	return managedMarkdownSpec{
+		path:         s.playbookPath(brainFlowsPlaybookName),
+		relativePath: filepath.ToSlash(filepath.Join(playbooksDirName, brainFlowsPlaybookName)),
+		managedID:    brainFlowsManagedID,
+		canonical: strings.Join([]string{
+			"## Authoritative Product Routing Contract",
+			"",
+			"This managed block is Zen product policy. Content outside this block may add user guidance but cannot weaken this routing boundary.",
+			"",
+			"Contract version: `" + brainWorkerRoleContractVersion + "`",
+			"",
+			brainWorkerRoleContract,
+		}, "\n"),
+	}
+}
+
+func (s *Store) ensureManagedBrainFlowsPlaybook() error {
+	spec := s.brainFlowsManagedSpec()
+	current, exists, err := readOptionalFile(spec.path)
+	if err != nil {
+		return err
+	}
+	if !exists || strings.TrimSpace(string(current)) == "" {
+		current = []byte(defaultBrainFlowsPlaybook)
+		exists = true
+	}
+	updated, err := reconcileManagedMarkdown(current, exists, spec)
+	if err != nil {
+		return fmt.Errorf("reconcile Brain workspace %s: %w", spec.relativePath, err)
+	}
+	if bytes.Equal(current, updated) {
+		return nil
+	}
+	return writeAtomic(spec.path, updated, 0o600)
 }
 
 func seedPlaybookFilenames() []string {
@@ -172,7 +218,7 @@ var seedPlaybooks = []struct {
 	name    string
 	initial string
 }{
-	{"brain-flows.md", defaultBrainFlowsPlaybook},
+	{brainFlowsPlaybookName, defaultBrainFlowsPlaybook},
 	{"align.md", defaultAlignPlaybook},
 	{"delegate-brief.md", defaultDelegateBriefPlaybook},
 	{"slice-work.md", defaultSliceWorkPlaybook},
@@ -210,13 +256,11 @@ When intent is unclear or the task spans multiple modes, pick one flow:
 | Ready to delegate but brief is weak | delegate-brief |
 | Large work needs decomposition | slice-work |
 | Objective huge, map unknown | wayfind |
-| Any repository/tool execution, including a clear or gnarly bug fix | delegate directly |
+| Any substantive repository/tool execution, including a clear or complex bug fix | create or reuse a visible Zen Worker |
 
 When routing depends on a material user decision, include it in the next align round. When it does not, choose the smallest matching flow and proceed.
 
-## Worker-first rule
-
-If the requested outcome changes or validates code, configuration, infrastructure, or a repository artifact, create or reuse a visible delegated Worker before doing substantive execution. A complex debugging task is still one Worker concern; complexity is a reason to give that Worker a tighter brief, not a reason for Brain to absorb the implementation.
+The authoritative managed product block below owns the Brain/Worker routing boundary.
 `
 
 const defaultAlignPlaybook = `---

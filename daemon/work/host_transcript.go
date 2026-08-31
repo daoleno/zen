@@ -322,7 +322,7 @@ func hostDataRootForPath(path, provider string) string {
 	return ""
 }
 
-// IsPrivateHostPrompt reports Brain bootstrap/handoff inputs that must never
+// IsPrivateHostPrompt reports Brain activation/bootstrap/handoff inputs that must never
 // become visible Interface rows.
 func IsPrivateHostPrompt(body string) bool {
 	trimmed := strings.TrimSpace(body)
@@ -330,6 +330,9 @@ func IsPrivateHostPrompt(body string) bool {
 		return false
 	}
 	if strings.Contains(trimmed, "Brain host executor handoff:") {
+		return true
+	}
+	if strings.Contains(trimmed, "Brain Host activation contract:") {
 		return true
 	}
 	if strings.Contains(trimmed, "You are Brain inside zen") {
@@ -342,25 +345,26 @@ func IsPrivateHostPrompt(body string) bool {
 	return isGrokBootstrapUserMessage(trimmed)
 }
 
-// SuppressPrivateHostTurns drops bootstrap/handoff user rows and every host
-// output that precedes the first public user turn. Later real assistant
-// replies remain.
+// SuppressPrivateHostTurns drops every private Host prompt and its resulting
+// assistant/tool output. A later public user turn ends suppression, including
+// when activation is injected after earlier public history on native resume.
 func SuppressPrivateHostTurns(events []CodexConversationEvent) []CodexConversationEvent {
 	if len(events) == 0 {
 		return events
 	}
-	publicUserSeen := false
+	suppressPrivateOutput := true
 	out := make([]CodexConversationEvent, 0, len(events))
 	for _, event := range events {
 		switch strings.TrimSpace(event.Kind) {
 		case "user_message":
 			if IsPrivateHostPrompt(event.Body) {
+				suppressPrivateOutput = true
 				continue
 			}
-			publicUserSeen = true
+			suppressPrivateOutput = false
 			out = append(out, event)
 		default:
-			if !publicUserSeen {
+			if suppressPrivateOutput {
 				continue
 			}
 			out = append(out, event)

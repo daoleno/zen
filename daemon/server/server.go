@@ -126,6 +126,7 @@ type Server struct {
 	calendarSub                 <-chan calendar.Event
 	brainWorkSubID              int
 	brainWorkSub                <-chan brain.WorkChange
+	brainHostStartupComplete    bool
 	signalSystemStartupComplete bool
 
 	clients            map[*websocket.Conn]*authenticatedClient
@@ -3081,7 +3082,7 @@ func (s *Server) broadcastBrainSnapshot() {
 
 // broadcastBrainHostCapabilityRefresh projects brain_snapshot for Hidden-host
 // discovery/removal without ensureHostAgent. Continuity (create/resume/rebind)
-// is owned by intentional Snapshot/NewChat paths, not by projection events.
+// is owned by startup lifecycle reconciliation and NewChat, not projection.
 func (s *Server) broadcastBrainHostCapabilityRefresh() {
 	if s.brain == nil {
 		return
@@ -3158,6 +3159,20 @@ func (s *Server) heartbeat(ctx context.Context) {
 			allAgentSessions := s.watcher.Agents()
 			agentSessions := visibleAgentSessions(allAgentSessions)
 			if s.brain != nil && s.watcher != nil && s.watcher.SnapshotReady() {
+				if !s.brainHostStartupComplete {
+					_, err := s.brain.EnsureHostSnapshot()
+					switch {
+					case err == nil:
+						s.brainHostStartupComplete = true
+					case errors.Is(err, brain.ErrHostActivationAmbiguous):
+						// The receipt is the no-replay authority. Stop automatic
+						// startup retries and leave the activation unmarked.
+						s.brainHostStartupComplete = true
+						log.Printf("brain Host startup activation is ambiguous: %v", err)
+					default:
+						log.Printf("brain Host startup reconciliation failed: %v", err)
+					}
+				}
 				if !s.signalSystemStartupComplete {
 					complete, err := s.brain.ReconcileSignalSystemStartup(allAgentSessions, 64)
 					if err != nil {

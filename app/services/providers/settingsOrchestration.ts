@@ -21,6 +21,35 @@ import {
   curatedConnectionInput,
 } from "./presentation";
 
+export type DefaultRuntimeSeedAction =
+  | { kind: "preserve"; modelId: string }
+  | { kind: "choose"; models: ProviderModelsResult["models"] }
+  | { kind: "unavailable" };
+
+/**
+ * Select the next Settings step before switching a Provider. A Provider
+ * switch can preserve a complete client model seed (including when the target
+ * catalog has not been synced yet), or it must ask the user to choose one
+ * from the target connection's synced catalog. Never send a provider-only
+ * switch with an empty runtime model: the daemon correctly rejects that state
+ * because a future Session could not launch.
+ */
+export function defaultRuntimeSeedAction(input: {
+  snapshot: ProvidersSnapshot;
+  client: string;
+  connectionId: string;
+}): DefaultRuntimeSeedAction {
+  const current = input.snapshot.defaults[input.client];
+  const available = (input.snapshot.models[input.connectionId] ?? []).filter(
+    (model) => model.available && model.known !== false,
+  );
+  if (current?.connection_id && current.model_id) {
+    return { kind: "preserve", modelId: current.model_id };
+  }
+  if (available.length === 0) return { kind: "unavailable" };
+  return { kind: "choose", models: available };
+}
+
 export function modelSupportChangeKeepsDefaultValid(input: {
   snapshot: ProvidersSnapshot;
   client: string;

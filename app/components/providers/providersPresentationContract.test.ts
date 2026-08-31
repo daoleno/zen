@@ -326,9 +326,10 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("clientForConnection(");
   });
 
-  test("settings switches the active provider without opening a default-model picker", () => {
+  test("settings chooses a model before switching a provider without a complete seed", () => {
     expect(screenSource).toContain("wsClient.switchProvider");
-    expect(screenSource).not.toContain('purpose: "default"');
+    expect(screenSource).toContain('purpose: "default"');
+    expect(screenSource).toContain("defaultRuntimeSeedAction");
   });
 
   test("model chips select the exact default model for the current Provider", () => {

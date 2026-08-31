@@ -6,6 +6,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   NOTICE_BUNDLE_REL,
@@ -88,8 +89,9 @@ describe("withZenIOSBuild native version contract", () => {
 
 describe("withZenIOSBuild Ghostty MIT notice packaging", () => {
   test("copies the tracked notice into the iOS app project root for flatten-safe packaging", () => {
+    // Metro watches the project root; test fixtures must live in the OS temp dir.
     const root = mkdtempSync(
-      join(process.env.TMPDIR || process.cwd(), "zen-ios-notice-"),
+      join(tmpdir(), "zen-ios-notice-"),
     );
     try {
       const projectRoot = join(root, "app");

@@ -133,6 +133,46 @@ describe("actionable collapsed tool-call projection", () => {
     expect(longTitle.endsWith("…")).toBe(true);
   });
 
+  test("browser and fetch commands keep a useful URL target", () => {
+    expect(
+      title({
+        kind: "command",
+        command: "agent-browser read https://vercel.com/docs/sandbox?token=secret",
+        status: "done",
+      }),
+    ).toBe("Browse https://vercel.com/docs/sandbox");
+    expect(
+      title({
+        kind: "command",
+        command: "curl -L https://api.example.com/private?token=secret",
+        status: "done",
+      }),
+    ).toBe("Fetch https://api.example.com/private");
+    expect(
+      title({
+        kind: "command",
+        command:
+          "curl 'https://user:password@example.com/data?page=2&api_key=private#access_token=private'",
+        status: "done",
+      }),
+    ).toBe("Fetch https://example.com/data?page=2");
+    expect(
+      title({
+        kind: "command",
+        command: "agent-browser skills get core",
+        status: "done",
+      }),
+    ).toBe("Browse skills");
+    expect(
+      title({
+        toolName: "exec",
+        input:
+          'const r=await tools.exec_command({cmd:"agent-browser read https://developers.cloudflare.com/containers/"}); text(r.output);',
+        status: "done",
+      }),
+    ).toBe("Browse https://developers.cloudflare.com/containers/");
+  });
+
   test("missing and secret-bearing inputs fail closed while expansion remains exact", () => {
     const secretCommand =
       "curl -H 'Authorization: Bearer sk-secret12345678' https://example.test/private";
@@ -150,7 +190,11 @@ describe("actionable collapsed tool-call projection", () => {
         status: "done",
       },
     ];
-    expect(secretShapes.map(title)).toEqual(["Run", "Run", "Run"]);
+    expect(secretShapes.map(title)).toEqual([
+      "Fetch https://example.test/private",
+      "Fetch https://example.test/private",
+      "Fetch https://example.test/private",
+    ]);
     expect(
       title({
         toolName: "Read",
@@ -169,7 +213,7 @@ describe("actionable collapsed tool-call projection", () => {
         exit_code: 0,
       },
     ]);
-    expect(activity?.title).toBe("Run");
+    expect(activity?.title).toBe("Fetch https://example.test/private");
     expect(activity?.commandText).toBe(secretCommand);
     expect(activity?.detail).toBe("Succeeded");
   });

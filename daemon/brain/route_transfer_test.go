@@ -169,7 +169,7 @@ func TestMissingTmuxTransferPersistFailureKillsAndKeepsOldResumable(t *testing.T
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected fail-closed snapshot")
 	}
@@ -225,7 +225,7 @@ func TestMissingTmuxTransferAppliedNondurableFailsClosedNoSuccess(t *testing.T) 
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) || !strings.Contains(err.Error(), "live owner") {
 		t.Fatalf("err=%v", err)
 	}
@@ -308,7 +308,7 @@ func TestProviderMismatchReplacementReleasesRoute(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
 
-	if _, err := service.Snapshot(); err != nil {
+	if _, err := service.EnsureHostSnapshot(); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.releases) != 1 || routes.releases[0] != oldID {
@@ -346,7 +346,7 @@ func TestProviderMismatchKillFailureStillLivePreservesAndAborts(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected teardown failure")
 	}
@@ -388,7 +388,7 @@ func TestProviderMismatchReleaseFailureSurfaced(t *testing.T) {
 	service.SetSessionRouteLifecycle(routes)
 	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "injected release failure") {
 		t.Fatalf("err=%v", err)
 	}
@@ -422,7 +422,7 @@ func TestResumeRouteTransferFailureSurfacesKillError(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected transfer+kill failure")
 	}
@@ -463,7 +463,7 @@ func TestRecoverLiveTransfersRouteBeforeHostBind(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestRecoverLiveRouteTransferFailurePreservesBindingNoAudit(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "route transfer") {
 		t.Fatalf("err=%v", err)
 	}
@@ -574,7 +574,7 @@ func TestRecoverLiveNoRouteTransferIsNoOp(t *testing.T) {
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	snapshot, err := service.Snapshot()
+	snapshot, err := service.EnsureHostSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +635,7 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensatesNoBind(t *testing.T
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) {
 		t.Fatalf("err=%v", err)
 	}
@@ -704,7 +704,7 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensationAmbiguityPreserves
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) || !strings.Contains(err.Error(), "live owner") {
 		t.Fatalf("err=%v", err)
 	}
@@ -756,7 +756,7 @@ func TestResumeRouteTransferAppliedNondurableCompensatesKillsSpawn(t *testing.T)
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) {
 		t.Fatalf("err=%v", err)
 	}
@@ -820,7 +820,7 @@ func TestResumeRouteTransferAppliedNondurableCompensationFailurePreservesLive(t 
 	})
 	service.SetSessionRouteLifecycle(routes)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) || !strings.Contains(err.Error(), "live owner") {
 		t.Fatalf("err=%v", err)
 	}
@@ -883,7 +883,7 @@ func TestRecoverLiveBindFailureAfterTransferRollsRouteNoAudit(t *testing.T) {
 		return errors.New("injected recover bind failure after transfer")
 	}
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !strings.Contains(err.Error(), "injected recover bind failure") {
 		t.Fatalf("err=%v", err)
 	}
@@ -953,7 +953,7 @@ func TestRouteTransferRollbackFailureRetainsLiveOwner(t *testing.T) {
 		}
 	}
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil {
 		t.Fatal("expected bind+rollback failure")
 	}
@@ -1168,7 +1168,7 @@ func TestResumeNondurableTransferRealOwnerRestoresRestartVisibleRoute(t *testing
 	})
 	service.SetSessionRouteLifecycle(owner)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) {
 		t.Fatalf("err=%v", err)
 	}
@@ -1241,7 +1241,7 @@ func TestRecoverNondurableTransferRealOwnerRestoresRestartVisibleRoute(t *testin
 	})
 	service.SetSessionRouteLifecycle(owner)
 
-	_, err = service.Snapshot()
+	_, err = service.EnsureHostSnapshot()
 	if err == nil || !errors.Is(err, ErrRouteTransferNotDurable) {
 		t.Fatalf("err=%v", err)
 	}
