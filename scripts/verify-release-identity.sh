@@ -3,8 +3,8 @@
 #
 # Usage:
 #   ./scripts/verify-release-identity.sh
-#   ./scripts/verify-release-identity.sh --tag v0.1.2
-#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.2
+#   ./scripts/verify-release-identity.sh --tag v0.1.3
+#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.3
 
 set -euo pipefail
 
@@ -22,10 +22,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-EXPECTED_VERSION="0.1.2"
+EXPECTED_VERSION="0.1.3"
 EXPECTED_PACKAGE="com.daoleno.zen"
-EXPECTED_VERSION_CODE="23"
-EXPECTED_IOS_BUILD_NUMBER="24"
+EXPECTED_VERSION_CODE="24"
+EXPECTED_IOS_BUILD_NUMBER="25"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
 if [[ -n "$RELEASE_TAG" ]]; then
