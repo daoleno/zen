@@ -45,15 +45,14 @@ type PollSources struct {
 // function. Nil entries keep the production source. Test-only; production
 // code must never install it.
 func (w *Watcher) SetPollSources(sources PollSources) func() {
-	previousList := listTmuxWindowsFunc
-	previousCapture := capturePaneContentFunc
-	previousSnapshot := snapshotProcessesFunc
 	w.mu.Lock()
 	previousSources := w.pollSources
+	previousList := w.listWindows
+	previousCapture := w.capturePane
+	previousSnapshot := w.snapshotProcesses
 	w.pollSources = &sources
-	w.mu.Unlock()
 	if sources.ListWindows != nil {
-		listTmuxWindowsFunc = func() ([]tmuxWindow, error) {
+		w.listWindows = func() ([]tmuxWindow, error) {
 			windows, err := sources.ListWindows()
 			if err != nil {
 				return nil, err
@@ -71,10 +70,10 @@ func (w *Watcher) SetPollSources(sources PollSources) func() {
 		}
 	}
 	if sources.CapturePane != nil {
-		capturePaneContentFunc = sources.CapturePane
+		w.capturePane = sources.CapturePane
 	}
 	if sources.SnapshotProcesses != nil {
-		snapshotProcessesFunc = func() map[int]processInfo {
+		w.snapshotProcesses = func() map[int]processInfo {
 			processes := sources.SnapshotProcesses()
 			out := make(map[int]processInfo, len(processes))
 			for _, process := range processes {
@@ -87,11 +86,12 @@ func (w *Watcher) SetPollSources(sources PollSources) func() {
 			return out
 		}
 	}
+	w.mu.Unlock()
 	return func() {
-		listTmuxWindowsFunc = previousList
-		capturePaneContentFunc = previousCapture
-		snapshotProcessesFunc = previousSnapshot
 		w.mu.Lock()
+		w.listWindows = previousList
+		w.capturePane = previousCapture
+		w.snapshotProcesses = previousSnapshot
 		w.pollSources = previousSources
 		w.mu.Unlock()
 	}

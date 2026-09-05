@@ -58,6 +58,25 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 			}
 		}
 	}
+	bootstrap := service.hostBootstrapPrompt(service.hostExecutor())
+	for _, marker := range []string{
+		"Brain Worklog (private): " + store.WorklogPath(),
+		"Do not write Brain Worklog records to the project repository, cwd, or cwd/docs/worklog",
+		"return the expected report in the agent result",
+	} {
+		if !strings.Contains(bootstrap, marker) {
+			t.Fatalf("Host bootstrap missing Worklog boundary %q:\n%s", marker, bootstrap)
+		}
+	}
+	delegation := read(store.policyPath("delegation.md"))
+	for _, marker := range []string{
+		"do not write Brain Worklog records into the project repository or worker cwd",
+		"persist it only under the runtime Brain workspace `worklog/`",
+	} {
+		if !strings.Contains(delegation, marker) {
+			t.Fatalf("delegation policy missing Worklog boundary %q:\n%s", marker, delegation)
+		}
+	}
 }
 
 func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {

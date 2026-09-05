@@ -26,12 +26,6 @@ type DelegatedSessionOwner interface {
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	KillSession(sessionID string) error
 	ProbeSession(target string) (watcher.SessionPresence, error)
-	SendInputWhenReady(sessionID, command, text string) error
-	// SendInputWhenReadyBudgeted bounds the initial handoff to the exact
-	// spawned provider input surface for one scheduled occurrence: readiness
-	// evidence must arrive within budget, definitely-not-submitted attempts
-	// may retry within it, and ambiguous admission or loss of the spawned
-	// identity fails closed without replay.
 	SendInputWhenReadyBudgeted(sessionID, command, text string, budget time.Duration) error
 }
 
@@ -65,7 +59,8 @@ type TmuxRunner struct {
 	Env       map[string]string
 	Profiles  ProfileLaunchOwner
 	ProfileID string
-	// InputReadyBudget bounds the initial handoff; zero = legacy single attempt.
+	// InputReadyBudget bounds the initial handoff. Zero selects the provider-
+	// neutral default so every scheduled execution uses the same admission path.
 	InputReadyBudget time.Duration
 }
 
@@ -148,17 +143,18 @@ func (r TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 }
 
 // SendWhenReady waits for a freshly spawned known agent UI before sending the
-// initial prompt. With InputReadyBudget set, the bounded handoff retries safe
-// definitely-not-submitted readiness timeouts within the same occurrence and
-// fails closed on ambiguous admission or a lost spawned identity.
+// initial prompt. The bounded handoff retries safe definitely-not-submitted
+// readiness timeouts within the same occurrence and fails closed on ambiguous
+// admission or a lost spawned identity.
 func (r TmuxRunner) SendWhenReady(agentID, command, text string) error {
 	if r.Watcher == nil {
 		return fmt.Errorf("delegated watcher is required")
 	}
-	if r.InputReadyBudget > 0 {
-		return r.Watcher.SendInputWhenReadyBudgeted(agentID, command, text, r.InputReadyBudget)
+	budget := r.InputReadyBudget
+	if budget <= 0 {
+		budget = DefaultScheduledInputReadyBudget
 	}
-	return r.Watcher.SendInputWhenReady(agentID, command, text)
+	return r.Watcher.SendInputWhenReadyBudgeted(agentID, command, text, budget)
 }
 
 // Abort terminates the one fresh window created for a failed Calendar launch

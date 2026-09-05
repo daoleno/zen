@@ -221,6 +221,7 @@ export interface BrainWorkspaceFile {
 export interface BrainContextPayload {
   thread_id?: string;
   workspace?: string;
+  worklog_path?: string;
   current?: string;
   memory?: string;
   profile?: string;

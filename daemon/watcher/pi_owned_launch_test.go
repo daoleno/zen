@@ -208,7 +208,7 @@ func TestPollPreservesOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 			args:      "pi",
 		},
 	}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"brain-agent-pi:@1": "pi v0.73.1\nworking\n",
 	}, processes)
 	defer restore()
@@ -234,7 +234,7 @@ func TestPollPreservesOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 
 	// A provider switch clears the stale Pi ownership.
 	restore()
-	restore = installFakePollSeams([]tmuxWindow{
+	restore = installFakePollSeams(w, []tmuxWindow{
 		{target: "brain-agent-pi:@1", name: "codex", cwd: "/repo/zen", command: "codex", panePID: 555, delegated: true},
 	}, map[string]string{
 		"brain-agent-pi:@1": "Codex\n",
@@ -279,7 +279,7 @@ func TestPollPreservesQuotedOwnedPiLaunchCommandAcrossRefresh(t *testing.T) {
 	}, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC))
 	drainWatcherEvents(w)
 
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{target: "brain-agent-pi-quoted:@1", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 448, delegated: true},
 	}, map[string]string{
 		"brain-agent-pi-quoted:@1": "pi v0.73.1\nworking\n",
@@ -330,7 +330,7 @@ func TestPollPiSiblingAgentsNeverShareOwnedPaths(t *testing.T) {
 	}, time.Date(2026, 8, 7, 9, 0, 1, 0, time.UTC))
 	drainWatcherEvents(w)
 
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{target: "brain-agent-pi-a:@1", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 610, delegated: true},
 		{target: "brain-agent-pi-b:@2", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 620, delegated: true},
 	}, map[string]string{
@@ -369,7 +369,7 @@ func TestPollDiscoveredPiWithoutLaunchCommandKeepsDetectedIdentity(t *testing.T)
 	w.pollNow = fakePollClock([]time.Time{
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 	})
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{target: "main:@0", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 710},
 	}, map[string]string{
 		"main:@0": "pi\n",
@@ -409,7 +409,7 @@ func TestPollRediscoveredPiWindowRestoresOwnedLaunchCommandFromTmuxOption(t *tes
 		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC),
 	})
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{
 			target: "brain-agent-pi-restart:@1", name: "pi", cwd: "/repo/zen",
 			command: "pi", panePID: 900,
@@ -527,7 +527,7 @@ func TestPollPiSessionBindingFailsClosedOnCorruptedOption(t *testing.T) {
 	w.pollNow = fakePollClock([]time.Time{
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 	})
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{
 			target: "brain-agent-pi-corrupt:@1", name: "pi", cwd: "/repo/zen",
 			command: "pi", panePID: 910,
@@ -559,7 +559,7 @@ func TestPollPiSessionBindingClearedOnProviderSwitch(t *testing.T) {
 	w.pollNow = fakePollClock([]time.Time{
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 	})
-	restore := installFakePollSeams([]tmuxWindow{
+	restore := installFakePollSeams(w, []tmuxWindow{
 		{
 			target: "brain-agent-pi-switch:@1", name: "codex", cwd: "/repo/zen",
 			command: "codex", panePID: 920,

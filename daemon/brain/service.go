@@ -414,6 +414,7 @@ func (s *Service) EnsureHostSnapshot() (Snapshot, error) {
 	}
 	snapshot.CurrentWork = inventory.Current
 	snapshot.WorkBacklog = inventory.Backlog
+	snapshot.WorklogPath = s.store.WorklogPath()
 	return snapshot, nil
 }
 
@@ -516,6 +517,7 @@ func (s *Service) Context() (BrainContext, error) {
 	return BrainContext{
 		ThreadID:          snapshot.ChatThreadID,
 		Workspace:         snapshot.Workspace,
+		WorklogPath:       snapshot.WorklogPath,
 		Current:           snapshot.Current,
 		Memory:            snapshot.Memory,
 		Profile:           snapshot.Profile,
@@ -571,7 +573,7 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 		SoulPath:             "soul.md",
 		PolicyPaths:          []string{"policies/delegation.md", "policies/engine.md", "policies/handoff.md"},
 		PlaybookPaths:        seedPlaybookPaths(),
-		WorklogPath:          worklogDirName,
+		WorklogPath:          s.store.WorklogPath(),
 		OpenDelegatedAgents:  delegated,
 		ChangedPaths:         changedPaths,
 		RecommendedNextSteps: steps,
@@ -2122,7 +2124,10 @@ func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDi
 	}
 	steering, err := s.NoteUserSteering(hostID)
 	if err != nil || !steering {
-		return ExternalInputNotSubmitted, firstNonNil(err, fmt.Errorf("brain host is unavailable"))
+		if err != nil {
+			return ExternalInputNotSubmitted, err
+		}
+		return ExternalInputNotSubmitted, fmt.Errorf("brain host is unavailable")
 	}
 	prepared, created, err := s.PrepareHostUserInput(hostID, receipt, body, "")
 	if err != nil {
@@ -2174,15 +2179,6 @@ func (s *Service) CurrentHostForegroundTurn() (*HostForegroundTurn, error) {
 		return nil, nil
 	}
 	return s.store.CurrentHostForegroundTurn()
-}
-
-func firstNonNil(values ...error) error {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
 }
 
 func hostInputAttemptKey(requestID, threadID string) string {
@@ -2470,106 +2466,20 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	if s == nil || s.store == nil || s.watcher == nil {
 		return AgentRef{}, nil
 	}
-	hostSession, err := s.store.HostSession()
+	discovery, err := s.discoverHostAgent(executor)
 	if err != nil {
 		return AgentRef{}, err
 	}
-	command, err := s.hostCommand(executor)
-	if err != nil {
-		return AgentRef{}, err
+	if discovery.reuse != nil {
+		return agentRefFromClassifier(discovery.reuse), nil
 	}
-	id := strings.TrimSpace(hostSession.ID)
-	replaceReason := ""
-	replaceDetail := ""
-
-	if id != "" {
-		presence, probeErr := s.watcher.ProbeSession(id)
-		switch {
-		case probeErr != nil || presence == watcher.SessionPresenceUnknown:
-			if probeErr == nil {
-				probeErr = fmt.Errorf("tmux probe returned unknown for %q", id)
-			}
-			return AgentRef{}, fmt.Errorf("brain host recorded session liveness unknown: %w", probeErr)
-		case presence == watcher.SessionPresencePresent:
-			if agent := s.watcher.GetAgent(id); agent != nil {
-				if s.hostAgentMatches(agent, executor) {
-					if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
-						if err := s.store.SetHostSession(id, executor.ID); err != nil {
-							return AgentRef{}, err
-						}
-					}
-					if err := s.ensureHostActivation(id, command, executor, false, false); err != nil {
-						return AgentRef{}, err
-					}
-					_, _ = s.BindHostProviderTranscript()
-					return agentRefFromClassifier(agent), nil
-				}
-				// Explicit provider/executor mismatch (e.g. user switched host executor).
-				replaceReason = hostReplaceReasonProviderMismatch
-				replaceDetail = fmt.Sprintf(
-					"recorded_executor=%q resolved_executor=%q agent_command=%q agent_provider=%q",
-					hostSession.ExecutorID,
-					executor.ID,
-					strings.TrimSpace(agent.Command),
-					work.InferAgentProvider(agent.Command),
-				)
-				s.recordHostReplacement(HostReplacementEvent{
-					Reason:           replaceReason,
-					FromID:           id,
-					FromExecutorID:   hostSession.ExecutorID,
-					FromCommand:      agent.Command,
-					ResolvedExecutor: executor.ID,
-					Detail:           replaceDetail,
-				})
-				if err := s.teardownHostSession(id); err != nil {
-					return AgentRef{}, fmt.Errorf("brain host provider replacement teardown: %w", err)
-				}
-			} else {
-				// Tmux target still exists but watcher has not observed it yet (common right
-				// after daemon restart). Do not replace; return a bootstrap stub.
-				if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
-					if err := s.store.SetHostSession(id, executor.ID); err != nil {
-						return AgentRef{}, err
-					}
-				}
-				return AgentRef{
-					ID:      id,
-					Name:    "Brain",
-					Status:  string(classifier.StateRunning),
-					Summary: "Session starting",
-					Cwd:     s.brainWorkspace(),
-					Command: command,
-					Updated: firstNonZeroTime(hostSession.UpdatedAt, s.now().UTC()),
-					Hidden:  true,
-				}, nil
-			}
-		default:
-			// Proven Absent only — prefer rebinding a live matching Brain host.
-			recovered, recoverErr := s.recoverMatchingHost(executor, hostSession)
-			if recoverErr != nil {
-				return AgentRef{}, recoverErr
-			}
-			if recovered != nil {
-				if err := s.rebindRecoveredHost(id, recovered, executor, hostSession); err != nil {
-					return AgentRef{}, err
-				}
-				if err := s.ensureHostActivation(recovered.ID, recovered.Command, executor, false, false); err != nil {
-					return AgentRef{}, err
-				}
-				return agentRefFromClassifier(recovered), nil
-			}
-			replaceReason = hostReplaceReasonMissingTmux
-			replaceDetail = fmt.Sprintf("probe=absent id=%q", id)
-			s.recordHostReplacement(HostReplacementEvent{
-				Reason:           replaceReason,
-				FromID:           id,
-				FromExecutorID:   hostSession.ExecutorID,
-				ResolvedExecutor: executor.ID,
-				Detail:           replaceDetail,
-			})
-		}
-	} else {
-		replaceReason = hostReplaceReasonNoRecordedHost
+	hostSession := discovery.hostSession
+	command := discovery.command
+	id := discovery.id
+	replaceReason := discovery.replaceReason
+	replaceDetail := discovery.replaceDetail
+	if discovery.bootstrap {
+		return hostBootstrapRef(s, discovery), nil
 	}
 
 	resumeToken := ""
@@ -2615,66 +2525,14 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		}
 	}
 
-	sessionEnv := brainSessionEnvironment()
 	routes := s.sessionRoutes()
-	provisionalID := ""
-	// Missing-tmux resume reuses the immutable existing route binding so the
-	// thread keeps its exact identity. New host launches (initial, NewChat,
-	// provider/executor mismatch) and resumes whose binding no longer exists
-	// (dropped or never routed) resolve the selected executor default through
-	// PrepareLaunch — a live thread must never stay stuck on a dead route.
-	resumeBindingFound := false
-	if routes != nil && strings.TrimSpace(id) != "" && resumeToken != "" {
-		routeCommand, routeEnv, found, routeErr := routes.ResumeLaunch(id, command)
-		if routeErr != nil {
-			s.recordHostReplacement(HostReplacementEvent{
-				Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
-				FromID:           id,
-				FromExecutorID:   hostSession.ExecutorID,
-				ResolvedExecutor: executor.ID,
-				Detail: fmt.Sprintf(
-					"has_session=false id=%q provider_session=%q route_resume_failed=%v",
-					id, resumeToken, routeErr,
-				),
-			})
-			return AgentRef{}, fmt.Errorf(
-				"brain host refusing blank replacement: recorded route for session %q cannot be resumed: %w",
-				id, routeErr,
-			)
-		}
-		resumeBindingFound = found
-		if found {
-			if strings.TrimSpace(routeCommand) != "" {
-				command = routeCommand
-			}
-			sessionEnv = mergeStringMaps(sessionEnv, routeEnv)
-		}
+	prepared, err := s.prepareHostLaunch(executor, id, command, resumeToken)
+	if err != nil {
+		return AgentRef{}, err
 	}
-	if routes != nil && !resumeBindingFound {
-		clientHint := work.ProfileClientExecutor(executor.Provider, executor.Command, executor.ID)
-		plan, planErr := routes.PrepareLaunch(clientHint, "", command)
-		if planErr != nil && !plan.Persist.Applied && !plan.Bypass {
-			return AgentRef{}, fmt.Errorf("brain host profile prepare: %w", planErr)
-		}
-		if plan.Applied && !plan.Bypass {
-			if strings.TrimSpace(plan.Command) != "" {
-				command = plan.Command
-			}
-			sessionEnv = mergeStringMaps(sessionEnv, plan.Env)
-			provisionalID = plan.ProvisionalID
-			// Prepare Applied+!Durable may proceed: CommitLaunch is the
-			// durability barrier for the exact final Session-owned route.
-			// Brain Host lifecycle/NewChat has no persistence-warning wire, so a
-			// later Applied+!Durable or errored Commit must fail closed
-			// (unlike control/App keep-with-warning).
-			if planErr != nil || !plan.Persist.Durable {
-				if planErr == nil {
-					planErr = modelprofiles.ErrPersistDirSync
-				}
-				log.Printf("brain host profile prepare applied; Commit is durability barrier (prepare uncertain: %v)", planErr)
-			}
-		}
-	}
+	command = prepared.command
+	sessionEnv := prepared.env
+	provisionalID := prepared.provisionalID
 
 	agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
 		Cwd:         s.brainWorkspace(),
@@ -3535,6 +3393,7 @@ You are Brain inside zen, the user's private second brain and agent orchestrator
 Work as a warm, direct, capable chat assistant. Reply in the user's language unless they ask otherwise.
 
 Brain workspace: %s
+Brain Worklog (private): %s
 Managed worktree root: %s
 Host executor: %s (%s via %s)
 Delegated executor: %s (%s via %s)
@@ -3548,6 +3407,7 @@ Durable state rules:
 - Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable lifecycle rules.
 - Use playbooks/ for provider-neutral operating playbooks. Discover them with zen brain playbooks --json; read playbook files on demand (progressive disclosure — do not assume full bodies are in bootstrap).
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
+- Brain internal audits, handoffs, and delegated reports belong in the private Brain Worklog at %s. Do not write Brain Worklog records to the project repository, cwd, or cwd/docs/worklog. For delegated work, return the expected report in the agent result unless persistence is explicitly requested; if product documentation is needed, name its repository path separately.
 - Do not use arbitrary project repositories as Brain's default workspace.
 - Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration. The Session-start rule above owns soul.md loading; read memory.md/profile.md on demand instead of assuming their contents are in the prompt.
 
@@ -3611,7 +3471,7 @@ Reference files:
 - policies/engine.md
 - policies/handoff.md
 - playbooks/ (catalog via zen brain playbooks --json)
-`, snapshot.Workspace, worktreeRoot, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), worktreeRoot, zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+`, snapshot.Workspace, snapshot.WorklogPath, worktreeRoot, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), snapshot.WorklogPath, worktreeRoot, zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 	return brainHostActivationPrompt() + "\n\n" + bootstrap
 }
 
@@ -3662,6 +3522,7 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 		"",
 		"Primary persisted context:",
 		"Read current.md in the Brain workspace before continuing. Its current contents are included below when available.",
+		"Brain internal audit, handoff, and delegated reports belong under the runtime Brain workspace worklog/ directory. Never write Brain Worklog records to a project repository, worker cwd, or cwd/docs/worklog; return delegated reports in the agent result unless persistence is explicitly requested.",
 	)
 	if strings.TrimSpace(currentContext) != "" {
 		lines = append(lines, "", "current.md:", strings.TrimSpace(currentContext))

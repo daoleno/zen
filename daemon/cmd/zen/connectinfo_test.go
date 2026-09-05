@@ -50,7 +50,11 @@ func TestBuildConnectLinkIncludesDaemonIdentity(t *testing.T) {
 		ExpiresAt: time.Date(2026, 4, 5, 8, 0, 0, 0, time.UTC),
 	}
 
-	rawLink := buildConnectLink("wss://zen.example.com/ws", manager, pairing)
+	rawLink := buildConnectLinkWithPublicKey(
+		"wss://zen.example.com/ws",
+		manager.PublicKeyHex(),
+		pairing,
+	)
 	parsed, err := url.Parse(rawLink)
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -105,7 +109,11 @@ func TestBuildConnectionOffersUsesEndpoint(t *testing.T) {
 		ExpiresAt: time.Date(2026, 4, 5, 8, 0, 0, 0, time.UTC),
 	}
 
-	offers, err := buildConnectionOffers("https://zen.example.com/gateway", manager, pairing)
+	offers, err := buildConnectionOffersWithPublicKey(
+		"https://zen.example.com/gateway",
+		manager.PublicKeyHex(),
+		pairing,
+	)
 	if err != nil {
 		t.Fatalf("buildConnectionOffers returned error: %v", err)
 	}

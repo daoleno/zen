@@ -193,23 +193,25 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 // contentByTarget maps window target to captured pane text; all panes are
 // reported alive. processes is the fake process table used to derive each
 // Session's StartedAt. It returns a restore function.
+
 func installFakePollSeams(
+	w *Watcher,
 	windows []tmuxWindow,
 	contentByTarget map[string]string,
 	processes map[int]processInfo,
 ) func() {
-	previousList := listTmuxWindowsFunc
-	previousCapture := capturePaneContentFunc
-	previousSnapshot := snapshotProcessesFunc
-	listTmuxWindowsFunc = func() ([]tmuxWindow, error) { return windows, nil }
-	capturePaneContentFunc = func(target string) (string, bool, int) {
+	previousList := w.listWindows
+	previousCapture := w.capturePane
+	previousSnapshot := w.snapshotProcesses
+	w.listWindows = func() ([]tmuxWindow, error) { return windows, nil }
+	w.capturePane = func(target string) (string, bool, int) {
 		return contentByTarget[target], true, -1
 	}
-	snapshotProcessesFunc = func() map[int]processInfo { return processes }
+	w.snapshotProcesses = func() map[int]processInfo { return processes }
 	return func() {
-		listTmuxWindowsFunc = previousList
-		capturePaneContentFunc = previousCapture
-		snapshotProcessesFunc = previousSnapshot
+		w.listWindows = previousList
+		w.capturePane = previousCapture
+		w.snapshotProcesses = previousSnapshot
 	}
 }
 
@@ -276,7 +278,7 @@ func TestPollRediscoveredSessionsKeepRealActivityTimes(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC),
 	})
-	restore := installFakePollSeams(testWindows(), map[string]string{
+	restore := installFakePollSeams(w, testWindows(), map[string]string{
 		"sess-a:@1": contentA,
 		"sess-b:@2": contentB,
 	}, liveSessionProcesses())
@@ -318,7 +320,7 @@ func TestPollNoopPreservesUpdatedAtAndOrder(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 4, 0, time.UTC),
 	})
-	restore := installFakePollSeams(testWindows(), map[string]string{
+	restore := installFakePollSeams(w, testWindows(), map[string]string{
 		"sess-a:@1": contentA,
 		"sess-b:@2": contentB,
 	}, liveSessionProcesses())
@@ -382,7 +384,7 @@ func TestHiddenHostProviderTerminalEmitsActivityChangeWithoutPaneOutput(t *testi
 		target: "brain-agent-brain-provider-boundary:@1", name: "Brain", cwd: "/brain",
 		command: "codex", panePID: 111, hidden: true,
 	}}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		windows[0].target: contentA,
 	}, map[int]processInfo{111: fakeProcess(111, sessionAStarted)})
 	defer restore()
@@ -405,7 +407,7 @@ func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 		time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC),
 		time.Date(2026, 8, 7, 10, 0, 4, 0, time.UTC),
 	})
-	restore := installFakePollSeams(testWindows(), map[string]string{
+	restore := installFakePollSeams(w, testWindows(), map[string]string{
 		"sess-a:@1": contentA,
 		"sess-b:@2": contentB,
 	}, liveSessionProcesses())
@@ -418,7 +420,7 @@ func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 	beforeB := agentByID(before, "sess-b:@2")
 
 	restore()
-	restore = installFakePollSeams(testWindows(), map[string]string{
+	restore = installFakePollSeams(w, testWindows(), map[string]string{
 		"sess-a:@1": contentA + "new provider output\n",
 		"sess-b:@2": contentB,
 	}, liveSessionProcesses())
@@ -467,7 +469,7 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 		time.Date(2026, 8, 7, 10, 0, 4, 0, time.UTC),
 	})
 	windows := testWindows()
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"sess-a:@1": "Claude Code\nidle prompt\n❯ \n",
 		"sess-b:@2": contentB,
 	}, liveSessionProcesses())
@@ -480,8 +482,8 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 
 	// Pane dies: same captured lines, but liveness flips. Classification moves
 	// sess-a to done with no content change.
-	previousCapture := capturePaneContentFunc
-	capturePaneContentFunc = func(target string) (string, bool, int) {
+	previousCapture := w.capturePane
+	w.capturePane = func(target string) (string, bool, int) {
 		content, alive, deadStatus := previousCapture(target)
 		if target == "sess-a:@1" {
 			return content, false, 1
@@ -538,7 +540,7 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	windows := []tmuxWindow{
 		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "claude", panePID: 333},
 	}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"brain-agent-worker:@1": "Claude Code\nFinished verification\n",
 	}, map[int]processInfo{
 		333: fakeProcess(333, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)),

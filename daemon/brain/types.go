@@ -46,12 +46,14 @@ type Snapshot struct {
 	Executors         []work.AgentExecutor `json:"executors"`
 	ChatThreadID      string               `json:"chat_thread_id,omitempty"`
 	Workspace         string               `json:"workspace,omitempty"`
+	WorklogPath       string               `json:"worklog_path,omitempty"`
 	GeneratedAt       time.Time            `json:"generated_at"`
 }
 
 type BrainContext struct {
 	ThreadID          string               `json:"thread_id,omitempty"`
 	Workspace         string               `json:"workspace,omitempty"`
+	WorklogPath       string               `json:"worklog_path,omitempty"`
 	Current           string               `json:"current,omitempty"`
 	Memory            string               `json:"memory,omitempty"`
 	Profile           string               `json:"profile,omitempty"`

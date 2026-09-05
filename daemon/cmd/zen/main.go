@@ -960,7 +960,7 @@ func parseAgentSpawnArgs(args []string, stderr io.Writer) (cliConfig, control.Re
 	var contextRef string
 	fs.StringVar(&completionPolicy, "completion", string(brain.CompletionBounded), "Work completion policy: bounded or until_done")
 	fs.StringVar(&doneCriteriaRef, "done-criteria", "", "required done-criteria reference for until_done Work")
-	fs.StringVar(&contextRef, "context", "", "optional worklog/context reference")
+	fs.StringVar(&contextRef, "context", "", "optional Brain Worklog/context reference (relative to the configured Brain workspace)")
 	fs.BoolVar(&req.Hidden, "hidden", false, "create a hidden session")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent spawn -name Franklin -executor codex -cwd /repo -prompt-file task.md [flags]")
@@ -1390,7 +1390,7 @@ func runBrainWorkCreate(args []string, stderr io.Writer) error {
 	fs.StringVar(&item.DoneCriteriaRef, "done-criteria", "", "done-criteria reference required for until_done")
 	fs.StringVar(&item.NextAction, "next-action", "", "next useful action")
 	fs.StringVar(&item.WaitFor, "wait-for", "", "current wait condition")
-	fs.StringVar(&item.ContextRef, "context", "", "worklog/context reference")
+	fs.StringVar(&item.ContextRef, "context", "", "Brain Worklog/context reference (relative to the configured Brain workspace)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1421,7 +1421,7 @@ func runBrainWorkUpdate(args []string, stderr io.Writer) error {
 	fs.StringVar(&item.DoneCriteriaRef, "done-criteria", "", "done-criteria reference")
 	fs.StringVar(&item.NextAction, "next-action", "", "next useful action")
 	fs.StringVar(&item.WaitFor, "wait-for", "", "current wait condition")
-	fs.StringVar(&item.ContextRef, "context", "", "worklog/context reference")
+	fs.StringVar(&item.ContextRef, "context", "", "Brain Worklog/context reference (relative to the configured Brain workspace)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

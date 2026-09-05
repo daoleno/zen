@@ -113,6 +113,7 @@ export type BrainSnapshot = {
   current_work?: BrainCurrentWork[];
   work_backlog?: BrainWorkBacklog;
   workspace?: string;
+  worklog_path?: string;
   generated_at?: string;
 };
 
@@ -197,6 +198,8 @@ function normalizeSnapshot(
       : [],
     work_backlog: normalizeWorkBacklog(raw?.work_backlog),
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
+    worklog_path:
+      typeof raw?.worklog_path === "string" ? raw.worklog_path : undefined,
     generated_at:
       typeof raw?.generated_at === "string" ? raw.generated_at : undefined,
   };
@@ -549,6 +552,7 @@ function brainServerStatesEqual(
     left.hydrated === right.hydrated &&
     left.chat_thread_id === right.chat_thread_id &&
     left.workspace === right.workspace &&
+    left.worklog_path === right.worklog_path &&
     agentRefsEqual(left.host_agent, right.host_agent) &&
     adapterRefsEqual(left.host_adapter, right.host_adapter) &&
     adapterRefsEqual(left.delegated_adapter, right.delegated_adapter) &&
@@ -559,7 +563,7 @@ function brainServerStatesEqual(
       right.scheduled_results ?? [],
     ) &&
     currentWorkArraysEqual(left.current_work ?? [], right.current_work ?? []) &&
-    JSON.stringify(left.work_backlog) === JSON.stringify(right.work_backlog)
+    workBacklogEqual(left.work_backlog, right.work_backlog)
   );
 }
 
@@ -569,9 +573,80 @@ function currentWorkArraysEqual(
 ) {
   return (
     left.length === right.length &&
-    left.every(
-      (item, index) => JSON.stringify(item) === JSON.stringify(right[index]),
-    )
+    left.every((item, index) => currentWorkEqual(item, right[index]))
+  );
+}
+
+function currentWorkEqual(
+  left: BrainCurrentWork,
+  right: BrainCurrentWork,
+): boolean {
+  return (
+    left.work_id === right.work_id &&
+    left.revision === right.revision &&
+    left.title === right.title &&
+    left.status === right.status &&
+    left.progress_mode === right.progress_mode &&
+    left.attempt_session_id === right.attempt_session_id &&
+    left.attempt_delegated === right.attempt_delegated &&
+    left.wait_for === right.wait_for &&
+    workWakeEqual(left.wake, right.wake) &&
+    left.attention_state === right.attention_state &&
+    sessionFinalizationArraysEqual(
+      left.session_finalizations ?? [],
+      right.session_finalizations ?? [],
+    ) &&
+    left.unread_result === right.unread_result
+  );
+}
+
+function workWakeEqual(
+  left: BrainWorkWake | undefined,
+  right: BrainWorkWake | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  return Boolean(left && right && left.kind === right.kind && left.ref === right.ref);
+}
+
+function sessionFinalizationArraysEqual(
+  left: BrainSessionFinalization[],
+  right: BrainSessionFinalization[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => sessionFinalizationEqual(item, right[index]))
+  );
+}
+
+function sessionFinalizationEqual(
+  left: BrainSessionFinalization,
+  right: BrainSessionFinalization,
+): boolean {
+  return (
+    left.session_id === right.session_id &&
+    left.delegated === right.delegated &&
+    left.state === right.state &&
+    left.attempts === right.attempts &&
+    left.last_error === right.last_error &&
+    left.updated_at === right.updated_at
+  );
+}
+
+function workBacklogEqual(
+  left: BrainWorkBacklog | undefined,
+  right: BrainWorkBacklog | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  return Boolean(
+    left &&
+      right &&
+      left.total === right.total &&
+      left.queued_attention === right.queued_attention &&
+      left.historical_results === right.historical_results,
   );
 }
 
@@ -581,10 +656,26 @@ function scheduledResultArraysEqual(
 ) {
   return (
     left.length === right.length &&
-    left.every(
-      (message, index) =>
-        JSON.stringify(message) === JSON.stringify(right[index]),
+    left.every((message, index) =>
+      scheduledResultEqual(message, right[index]),
     )
+  );
+}
+
+function scheduledResultEqual(
+  left: BrainScheduledResult,
+  right: BrainScheduledResult,
+): boolean {
+  return (
+    left.id === right.id &&
+    left.thread_id === right.thread_id &&
+    left.body === right.body &&
+    left.created_at === right.created_at &&
+    left.status === right.status &&
+    left.title === right.title &&
+    left.calendar_item_id === right.calendar_item_id &&
+    left.calendar_run_id === right.calendar_run_id &&
+    left.scheduled_for === right.scheduled_for
   );
 }
 

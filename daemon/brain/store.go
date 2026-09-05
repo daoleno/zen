@@ -99,6 +99,16 @@ func (s *Store) WorkspacePath() string {
 	return filepath.Join(s.Root, "workspace")
 }
 
+// WorklogPath returns the private Brain Worklog directory for this runtime
+// store. It is always derived from the configured Brain workspace so callers
+// never resolve Worklog references relative to their project cwd.
+func (s *Store) WorklogPath() string {
+	if s == nil {
+		return ""
+	}
+	return filepath.Join(s.WorkspacePath(), worklogDirName)
+}
+
 func (s *Store) HostSessionPath() string {
 	return filepath.Join(s.statePath(), "host_session.json")
 }
@@ -343,6 +353,7 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 		Personality: firstNonEmpty(profile.Personality, defaultPersonality),
 		Agents:      agents,
 		Workspace:   s.WorkspacePath(),
+		WorklogPath: s.WorklogPath(),
 		GeneratedAt: time.Now().UTC(),
 	}, nil
 }
@@ -531,7 +542,7 @@ func (s *Store) policyPath(name string) string {
 }
 
 func (s *Store) worklogPath() string {
-	return filepath.Join(s.WorkspacePath(), worklogDirName)
+	return s.WorklogPath()
 }
 
 func (s *Store) worklogReadmePath() string {

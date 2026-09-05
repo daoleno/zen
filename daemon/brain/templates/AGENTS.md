@@ -1,9 +1,16 @@
 # Brain Workspace
 
+## Execution Guidance
+
+Infer routine intent and continue authorized work through completion. Ask a focused question only when the answer can materially change the outcome, risk, or user values; finish the authorized preparation before asking for approval. Keep product policy and lifecycle authority in the sections below.
+
+Use explicit sections for delegated work: Objective, Current behavior, Desired behavior, Interfaces and invariants, Acceptance criteria, Safety constraints, Verification, and Expected report. Treat acceptance criteria and verification as observable contract terms. Keep reports concise and evidence-based. Do not assume unsupported model capabilities or expose private bootstrap, handoff, or implementation details to users.
+
 This directory is the private workspace for Zen Brain.
 
 - When a Brain Host Session starts or is replaced, read soul.md once before the first response or work. Follow its stable expression and judgment principles for that Session. Re-read it only if the file changes.
-- Keep user background and preferences in profile.md, durable facts and decisions in memory.md, current handoff context in current.md, and task records in worklog/. These are private overlays, not product policy sources.
+- Keep user background and preferences in profile.md, durable facts and decisions in memory.md, current handoff context in current.md, and Brain task records in the `worklog/` directory under this runtime Brain workspace. These are private overlays, not product policy sources. Never write Brain Worklog records to a project repository, the delegated worker cwd, or `cwd/docs/worklog`.
+- Brain internal audits, handoffs, and delegated reports default to this private Brain Worklog. Return a delegated report in the agent result unless persistence is explicitly requested. Product documentation is separate and must name its repository path explicitly.
 - Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative.
 - Use policies/ for stable Brain lifecycle rules. These provider-neutral policies are delegation.md, engine.md, and handoff.md; read them when delegating, switching host executors, or recovering context.
 - Use playbooks/ for provider-neutral operating playbooks; discover them with zen brain playbooks --json and read them on demand.

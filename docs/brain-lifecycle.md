@@ -65,6 +65,13 @@ starts or is replaced, before its first response or work. The Host follows the
 loaded principles for that Session and re-reads the file only if it changes.
 The bootstrap prompt references the file but never copies its private contents.
 
+Brain Worklog boundary: internal audits, handoffs, and delegated reports belong
+under the configured Brain workspace's `worklog/` directory (normally
+`~/.zen/brain/workspace/worklog`). They must not be written to a project
+repository, a Worker cwd, or `cwd/docs/worklog`. Delegated reports should be
+returned in the agent result unless persistence is explicitly requested. Product
+documentation is separate and must name its repository path explicitly.
+
 The shipped `soul.md` uses ASD-STE100 Simplified Technical English as a
 practical English style baseline: short direct sentences, one instruction or
 idea per sentence where practical, active voice, explicit actors and

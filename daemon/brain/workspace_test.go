@@ -77,6 +77,22 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	}
 }
 
+func TestWorklogPathIsDerivedFromRuntimeBrainWorkspace(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	want := filepath.Join(root, "workspace", "worklog")
+	if got := store.WorklogPath(); got != want {
+		t.Fatalf("WorklogPath() = %q, want %q", got, want)
+	}
+	if strings.Contains(store.WorklogPath(), filepath.Join("docs", "worklog")) {
+		t.Fatalf("WorklogPath() points into a project docs/worklog: %q", store.WorklogPath())
+	}
+}
+
 func TestWorkspaceTreeDoesNotRecursivelyLoadLargeFolders(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

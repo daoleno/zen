@@ -24,11 +24,6 @@ func LoopbackClaudeRootURL(listenAddr, routeID string) (string, error) {
 	return loopbackURL(listenAddr, routeID, false)
 }
 
-// LoopbackRouteBaseURL is an alias for Codex base (tests / legacy callers).
-func LoopbackRouteBaseURL(listenAddr, routeID string) (string, error) {
-	return LoopbackCodexBaseURL(listenAddr, routeID)
-}
-
 func loopbackURL(listenAddr, routeID string, withV1 bool) (string, error) {
 	routeID = strings.TrimSpace(routeID)
 	if routeID == "" || strings.ContainsAny(routeID, "/?#") {

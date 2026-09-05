@@ -304,6 +304,8 @@ description: Write an executable delegated-agent contract with observable comple
 
 Write delegated prompts as behavioral contracts. Prefer how things should work over where files live.
 
+Follow explicit behavioral contracts. Supply safe defaults and observable completion conditions so routine work can continue. Keep private lifecycle and implementation details scoped to the delegated session.
+
 ## Template
 
 - **Objective**: one sentence outcome
@@ -314,7 +316,7 @@ Write delegated prompts as behavioral contracts. Prefer how things should work o
 - **Out of scope**: explicit exclusions
 - **Safety constraints**: what not to break, secrets, scope limits
 - **Verification**: commands or checks the agent can run
-- **Expected report**: files changed, behavior added, tests run, caveats
+- **Expected report**: files changed, behavior added, tests run, caveats; return it in the agent result
 
 ## Rules
 
@@ -322,6 +324,7 @@ Write delegated prompts as behavioral contracts. Prefer how things should work o
 - Give the agent a concrete outcome and bounded implementation responsibility.
 - Include the known context and environment facts needed to begin in the named workspace.
 - Make acceptance criteria and verification observable in the agent's report.
+- Explicitly state: do not write Brain Worklog records into the project repository or worker cwd. Brain internal reports belong under the runtime Brain workspace worklog/; product documentation, when required, must name its repository path separately.
 - File paths only when the task is a narrow patch.
 `
 

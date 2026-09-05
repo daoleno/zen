@@ -58,8 +58,8 @@ func scriptedOpenCodeHandoff(t *testing.T, contents []string) (*Watcher, *fakeSe
 	}
 	mu := &sync.Mutex{}
 	calls := 0
-	previous := capturePaneContentFunc
-	capturePaneContentFunc = func(string) (string, bool, int) {
+	previous := w.capturePane
+	w.capturePane = func(string) (string, bool, int) {
 		mu.Lock()
 		defer mu.Unlock()
 		index := calls
@@ -69,7 +69,7 @@ func scriptedOpenCodeHandoff(t *testing.T, contents []string) (*Watcher, *fakeSe
 		calls++
 		return contents[index], true, -1
 	}
-	t.Cleanup(func() { capturePaneContentFunc = previous })
+	t.Cleanup(func() { w.capturePane = previous })
 	return w, io, mu, &calls
 }
 
@@ -147,8 +147,8 @@ func TestSendInputWhenReadyBudgetedRetriesAfterFullAttemptTimeoutThenSubmitsOnce
 	// fail, one later submit succeeds, task runs once.
 	w, io, mu, calls := scriptedOpenCodeHandoff(t, nil)
 	readyAt := 9 // first attempt makes up to 8 probes (~1.05s of 900ms budget)
-	previous := capturePaneContentFunc
-	capturePaneContentFunc = func(string) (string, bool, int) {
+	previous := w.capturePane
+	w.capturePane = func(string) (string, bool, int) {
 		mu.Lock()
 		defer mu.Unlock()
 		*calls++
@@ -157,7 +157,7 @@ func TestSendInputWhenReadyBudgetedRetriesAfterFullAttemptTimeoutThenSubmitsOnce
 		}
 		return openCodeStartingContent, true, -1
 	}
-	defer func() { capturePaneContentFunc = previous }()
+	defer func() { w.capturePane = previous }()
 
 	start := time.Now()
 	err := w.SendInputWhenReadyBudgeted("opencode-handoff:@1", "opencode", "task\n", 1400*time.Millisecond)
@@ -179,8 +179,8 @@ func TestSubmitDelegatedInputWhenReadyBudgetedRetriesReadinessAndAdmitsOneTurn(t
 	payload := "execute this delegated task exactly once"
 	w, io, mu, calls := scriptedOpenCodeHandoff(t, nil)
 	readyAt := 9
-	previous := capturePaneContentFunc
-	capturePaneContentFunc = func(string) (string, bool, int) {
+	previous := w.capturePane
+	w.capturePane = func(string) (string, bool, int) {
 		mu.Lock()
 		defer mu.Unlock()
 		*calls++
@@ -189,7 +189,7 @@ func TestSubmitDelegatedInputWhenReadyBudgetedRetriesReadinessAndAdmitsOneTurn(t
 		}
 		return openCodeStartingContent, true, -1
 	}
-	defer func() { capturePaneContentFunc = previous }()
+	defer func() { w.capturePane = previous }()
 	ledger := newFakeTurnLedger()
 	w.turnLedger = ledger
 	w.sessionInput.ledger = ledger

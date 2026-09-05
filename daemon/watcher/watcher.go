@@ -126,14 +126,8 @@ func (identity targetProcessIdentity) equal(other targetProcessIdentity) bool {
 	return identity.valid() && other.valid() && identity == other
 }
 
-// Poll observation seams for deterministic tests. Production rebinds them to
-// watcher-bound closures at New() so inventory and pane captures resolve each
-// target's tmux server; tests in this package swap them before invoking poll.
-var listTmuxWindowsFunc = func() ([]tmuxWindow, error) { return listTmuxWindowsOn("") }
-var capturePaneContentFunc = func(target string) (string, bool, int) { return capturePaneContentOn("", target) }
-var snapshotProcessesFunc = snapshotProcesses
-var tmuxSubmitSleep = time.Sleep
-
+// Poll observation seams are kept on each Watcher so deterministic tests and
+// embedded instances cannot change another watcher's target view.
 func guardTargetIdentity(
 	resolver func(string) (targetProcessIdentity, bool),
 	target string,
@@ -274,6 +268,13 @@ type Watcher struct {
 	sessionInput          *sessionInputOwner
 	targetProcessResolver func(string) (targetProcessIdentity, bool)
 	targetCommandResolver func(string) (string, bool)
+	// Poll and input readers are owned by the watcher instance. Keeping these
+	// seams local prevents one test or embedded watcher from changing another
+	// watcher's tmux view while a poll or mutation is in flight.
+	listWindows       func() ([]tmuxWindow, error)
+	capturePane       func(string) (string, bool, int)
+	snapshotProcesses func() map[int]processInfo
+	submitSleep       func(time.Duration)
 	// targetOwnershipResolver is a test-only seam for tmux-free input tests.
 	// Production leaves it nil and proves the window-local durable marker.
 	targetOwnershipResolver func(string) (bool, error)
@@ -299,20 +300,94 @@ func New(pollInterval time.Duration) *Watcher {
 		providerSignals:  make(map[string]providerActivitySignal),
 		events:           make(chan SessionEvent, 100),
 		resources:        noopDelegatedResourceManager{},
+		submitSleep:      time.Sleep,
 	}
 	// The production session input IO and poll sources are bound to this
-	// watcher so every tmux invocation resolves each target's server. Test
-	// seams replace the package-level function pointers and restore these
-	// closures.
+	// watcher so every tmux invocation resolves each target's server.
 	w.sessionInput = newSessionInputOwner(realSessionInputIO{socketFor: w.socketPathFor})
-	listTmuxWindowsFunc = w.listTmuxWindows
-	capturePaneContentFunc = w.capturePaneContent
+	w.listWindows = w.listTmuxWindows
+	w.capturePane = w.capturePaneContent
+	w.snapshotProcesses = snapshotProcesses
 	return w
+}
+
+func (w *Watcher) pollReaders() (func() ([]tmuxWindow, error), func(string) (string, bool, int), func() map[int]processInfo) {
+	w.mu.RLock()
+	list, capture, snapshot := w.listWindows, w.capturePane, w.snapshotProcesses
+	w.mu.RUnlock()
+	if list == nil {
+		list = w.listTmuxWindows
+	}
+	if capture == nil {
+		capture = w.capturePaneContent
+	}
+	if snapshot == nil {
+		snapshot = snapshotProcesses
+	}
+	return list, capture, snapshot
 }
 
 type probeLossState struct {
 	turnID string
 	since  time.Time
+}
+
+// paneObservation is the immutable result of one tmux inventory/capture pass.
+// Keeping capture data separate from ledger mutation makes the polling boundary
+// explicit and allows tests to exercise observation without a live reducer.
+type paneObservation struct {
+	win        tmuxWindow
+	content    string
+	alive      bool
+	deadStatus int
+	lines      []string
+}
+
+type preparedPollAgent struct {
+	id                string
+	epoch             int64
+	agentSnap         classifier.Agent
+	content           string
+	lines             []string
+	alive             bool
+	deadStatus        int
+	panePID           int
+	classified        classifier.AgentState
+	classifiedSummary string
+	oldState          classifier.AgentState
+	contentChanged    bool
+	existed           bool
+	exists            bool
+	prev              string
+	previousMetadata  agentMetadataSnapshot
+	now               time.Time
+}
+
+type probedPollAgent struct {
+	preparedPollAgent
+	activity classifier.ActivitySignal
+	provider ProviderActivityObservation
+	turn     TurnSnapshot
+	hasTurn  bool
+	turnErr  error
+}
+
+func observePanes(
+	windows []tmuxWindow,
+	capture func(string) (string, bool, int),
+) []paneObservation {
+	observations := make([]paneObservation, 0, len(windows))
+	for _, win := range windows {
+		content, alive, deadStatus := capture(win.target)
+		observations = append(observations, paneObservation{
+			win:        win,
+			content:    content,
+			alive:      alive,
+			deadStatus: deadStatus,
+			lines:      strings.Split(content, "\n"),
+		})
+	}
+	return observations
 }
 
 // SetTmuxServer installs the one caller-visible tmux server that hosts every
@@ -1127,7 +1202,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) poll() {
-	windows, err := listTmuxWindowsFunc()
+	listWindows, capturePane, snapshotProcesses := w.pollReaders()
+	windows, err := listWindows()
 	if err != nil {
 		if isNoTmuxServerError(err) {
 			w.resourceManager().Reconcile(nil)
@@ -1135,54 +1211,17 @@ func (w *Watcher) poll() {
 		return
 	}
 	w.resourceManager().Reconcile(windows)
-	processes := snapshotProcessesFunc()
+	processes := snapshotProcesses()
 	processSnapshotAt := time.Now()
 
-	type paneObs struct {
-		win        tmuxWindow
-		content    string
-		alive      bool
-		deadStatus int
-		lines      []string
-	}
-	observations := make([]paneObs, 0, len(windows))
-	for _, win := range windows {
-		content, alive, deadStatus := capturePaneContentFunc(win.target)
-		observations = append(observations, paneObs{
-			win:        win,
-			content:    content,
-			alive:      alive,
-			deadStatus: deadStatus,
-			lines:      strings.Split(content, "\n"),
-		})
-	}
-
-	type preparedAgent struct {
-		id                string
-		epoch             int64
-		agentSnap         classifier.Agent
-		content           string
-		lines             []string
-		alive             bool
-		deadStatus        int
-		panePID           int
-		classified        classifier.AgentState
-		classifiedSummary string
-		oldState          classifier.AgentState
-		contentChanged    bool
-		existed           bool
-		exists            bool
-		prev              string
-		previousMetadata  agentMetadataSnapshot
-		now               time.Time
-	}
+	observations := observePanes(windows, capturePane)
 
 	w.mu.Lock()
 	w.pollGeneration++
 	generation := w.pollGeneration
 	probe := w.activityProbe
 	providerProbe := w.providerActivityProbe
-	prepared := make([]preparedAgent, 0, len(observations))
+	prepared := make([]preparedPollAgent, 0, len(observations))
 	seen := make(map[string]bool, len(observations))
 
 	for _, obs := range observations {
@@ -1250,7 +1289,7 @@ func (w *Watcher) poll() {
 		classified, classifiedSummary := classifyPaneAndApplyProgressInvalidation(agent, obs.alive, obs.lines, now)
 
 		w.agentEpoch[win.target] = generation
-		prepared = append(prepared, preparedAgent{
+		prepared = append(prepared, preparedPollAgent{
 			id:                win.target,
 			epoch:             generation,
 			agentSnap:         *agent,
@@ -1272,72 +1311,7 @@ func (w *Watcher) poll() {
 	}
 	w.mu.Unlock()
 
-	type probedAgent struct {
-		preparedAgent
-		activity classifier.ActivitySignal
-		provider ProviderActivityObservation
-		turn     TurnSnapshot
-		hasTurn  bool
-		turnErr  error
-	}
-	results := make([]probedAgent, 0, len(prepared))
-	for _, item := range prepared {
-		activity := classifier.ActivitySignal{}
-		if probe != nil {
-			toolChild := false
-			if isCursorAgentCommand(item.agentSnap.Command) {
-				toolChild = cursorToolChildActive(item.panePID, processes)
-			}
-			activity = probe.Infer(classifier.ActivityInput{
-				Agent:           item.agentSnap,
-				PaneContent:     item.content,
-				ToolChildActive: toolChild,
-			})
-		}
-		// Canonical-turn path: read the ledger snapshot and apply provider +
-		// liveness facts through the single reducer. Pane/classifier activity
-		// never terminalizes and never sets attention for turn-tracked
-		// sessions; it only refreshes the projection. Unknown turns are still
-		// probed so a later turn-bound Provider terminal can upgrade them.
-		// applyPollFacts runs for every mutable ledger-tracked turn even with
-		// a nil Provider probe: only the Provider observation is gated, so
-		// liveness facts (abnormal exit, end-of-identity) always apply.
-		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
-		pendingList, pendingErr := w.pendingInputAdmissions(item.id)
-		hasPending := len(pendingList) > 0
-		if pendingErr != nil {
-			turnErr = pendingErr
-		}
-		provider := ProviderActivityObservation{}
-		if providerProbe != nil && pendingErr == nil && (item.agentSnap.Hidden || hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
-			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
-		}
-		if hasPending && providerFactRelevant(provider) {
-			for _, pending := range pendingList {
-				// Each pending row is one exact input transaction: only the row
-				// whose payload digest and generation match the provider's
-				// admission tuple resolves; the others stay pending.
-				if _, resolved := w.resolvePendingProviderAdmission(pending, provider, item.now); resolved {
-					turn, hasTurn, turnErr = w.ledgerTurnAuthoritative(item.id, item.now)
-				}
-			}
-		}
-		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
-			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
-		}
-		if providerProbe != nil && !item.agentSnap.Hidden && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
-			providerProbe.ForgetProviderActivity(item.id)
-		}
-		results = append(results, probedAgent{
-			preparedAgent: item,
-			activity:      activity,
-			provider:      provider,
-			turn:          turn,
-			hasTurn:       hasTurn,
-			turnErr:       turnErr,
-		})
-	}
-
+	results := w.collectPollEvidence(prepared, processes, probe, providerProbe)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1448,47 +1422,82 @@ func (w *Watcher) poll() {
 		}
 	}
 
+	w.projectMissingAgentsLocked(seen, providerProbe)
+	w.compactAgentOrderLocked()
+}
+
+// projectMissingAgentsLocked applies disappearance evidence and emits the
+// removal projection. The successful inventory is the evidence boundary: a
+// missing target is removed, while mutable ledger turns are resolved through
+// the canonical fact path before their projection is discarded.
+func (w *Watcher) projectMissingAgentsLocked(seen map[string]bool, providerProbe ProviderActivityProbe) {
 	for id := range w.agents {
-		if !seen[id] {
-			old := w.agents[id]
-			turn, hasTurn := w.ledgerTurns[id]
-			if hasTurn && !TurnImmutable(turn.Status) {
-				// Positive identity disappearance (CR.3): the inventory
-				// succeeded and the target is absent from it, so the recorded
-				// pane/process identity is gone. End is not outcome: without a
-				// readable bound Provider terminal this resolves to Unknown +
-				// session.uncertain, never Failed. A bound terminal readable
-				// at death decides first (C.2.4).
-				w.resolveRemovedTurnFacts(id, *old, turn, providerProbe)
-			}
-			if providerProbe != nil {
-				providerProbe.ForgetProviderActivity(id)
-			}
-			delete(w.agents, id)
-			delete(w.prevContent, id)
-			delete(w.hidden, id)
-			delete(w.delegated, id)
-			delete(w.agentEpoch, id)
-			delete(w.ledgerTurns, id)
-			delete(w.appliedFactIDs, id)
-			delete(w.ledgerTurnReadAt, id)
-			delete(w.probeLossSince, id)
-			delete(w.providerSignals, id)
-			archived := cloneAgent(old)
-			if archived != nil {
-				archived.State = classifier.StateRemoved
-			}
-			w.events <- SessionEvent{
-				Type:     "agent_removed",
-				AgentID:  id,
-				Agent:    archived,
-				OldState: string(old.State),
-				NewState: string(classifier.StateRemoved),
-				TurnID:   turn.TurnID,
+		if seen[id] {
+			continue
+		}
+		old := w.agents[id]
+		turn, hasTurn := w.ledgerTurns[id]
+		if hasTurn && !TurnImmutable(turn.Status) {
+			w.resolveRemovedTurnFacts(id, *old, turn, providerProbe)
+		}
+		if providerProbe != nil {
+			providerProbe.ForgetProviderActivity(id)
+		}
+		delete(w.agents, id)
+		delete(w.prevContent, id)
+		delete(w.hidden, id)
+		delete(w.delegated, id)
+		delete(w.agentEpoch, id)
+		delete(w.ledgerTurns, id)
+		delete(w.appliedFactIDs, id)
+		delete(w.ledgerTurnReadAt, id)
+		delete(w.probeLossSince, id)
+		delete(w.providerSignals, id)
+		archived := cloneAgent(old)
+		if archived != nil {
+			archived.State = classifier.StateRemoved
+		}
+		w.events <- SessionEvent{Type: "agent_removed", AgentID: id, Agent: archived, OldState: string(old.State), NewState: string(classifier.StateRemoved), TurnID: turn.TurnID}
+	}
+}
+
+// collectPollEvidence reads activity and the canonical turn ledger without
+// holding the watcher mutex. It is the evidence boundary between tmux
+// observation and the locked Session projection.
+func (w *Watcher) collectPollEvidence(prepared []preparedPollAgent, processes map[int]processInfo, probe classifier.ActivityProbe, providerProbe ProviderActivityProbe) []probedPollAgent {
+	results := make([]probedPollAgent, 0, len(prepared))
+	for _, item := range prepared {
+		activity := classifier.ActivitySignal{}
+		if probe != nil {
+			toolChild := isCursorAgentCommand(item.agentSnap.Command) && cursorToolChildActive(item.panePID, processes)
+			activity = probe.Infer(classifier.ActivityInput{Agent: item.agentSnap, PaneContent: item.content, ToolChildActive: toolChild})
+		}
+		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
+		pendingList, pendingErr := w.pendingInputAdmissions(item.id)
+		hasPending := len(pendingList) > 0
+		if pendingErr != nil {
+			turnErr = pendingErr
+		}
+		provider := ProviderActivityObservation{}
+		if providerProbe != nil && pendingErr == nil && (item.agentSnap.Hidden || hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
+			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+		}
+		if hasPending && providerFactRelevant(provider) {
+			for _, pending := range pendingList {
+				if _, resolved := w.resolvePendingProviderAdmission(pending, provider, item.now); resolved {
+					turn, hasTurn, turnErr = w.ledgerTurnAuthoritative(item.id, item.now)
+				}
 			}
 		}
+		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
+			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
+		}
+		if providerProbe != nil && !item.agentSnap.Hidden && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
+			providerProbe.ForgetProviderActivity(item.id)
+		}
+		results = append(results, probedPollAgent{preparedPollAgent: item, activity: activity, provider: provider, turn: turn, hasTurn: hasTurn, turnErr: turnErr})
 	}
-	w.compactAgentOrderLocked()
+	return results
 }
 
 func (w *Watcher) compactAgentOrderLocked() {
@@ -2553,7 +2562,7 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
 			return definitelyNotSubmitted("", err)
 		}
-		return sendDraftInputLocked(w.socketPathFor(sessionID), sessionID, text, tmuxSubmitDelay(identity.Command), nil)
+		return w.sendDraftInputLocked(w.socketPathFor(sessionID), sessionID, text, tmuxSubmitDelay(identity.Command), nil)
 	})
 }
 
@@ -2610,7 +2619,7 @@ func (w *Watcher) SendInputWithReceiptWhenReadyResult(
 		err := definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
 	}
-	if !waitForInputReadyGuarded(
+	if !w.waitForInputReadyGuarded(
 		w.socketPathFor(sessionID),
 		sessionID,
 		identity.Command,
@@ -2730,7 +2739,7 @@ func (w *Watcher) sendInputWhenReadyAttempt(
 	guard := func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}
-	if !waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, command, timeout, guard) &&
+	if !w.waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, command, timeout, guard) &&
 		needsInputReadinessWait(command, "") {
 		return agentInputNotReady(command)
 	}
@@ -2745,7 +2754,7 @@ func (w *Watcher) sendInputWhenReadyAttempt(
 		}
 		// The non-submit draft send is a server-local mutation: route it
 		// through the target's own tmux server exactly like the submit path.
-		return sendDraftInputLocked(w.socketPathFor(sessionID), sessionID, text, tmuxSubmitDelay(command), nil)
+		return w.sendDraftInputLocked(w.socketPathFor(sessionID), sessionID, text, tmuxSubmitDelay(command), nil)
 	})
 }
 
@@ -2758,7 +2767,7 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 	if !known {
 		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
-	if !waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
+	if !w.waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
 		return agentInputNotReady(identity.Command)
@@ -2824,7 +2833,7 @@ func (w *Watcher) submitDelegatedInputWhenReadyAttempt(
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
 			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
 	}
-	if !waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, timeout, func() error {
+	if !w.waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, timeout, func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
@@ -3126,6 +3135,14 @@ func (w *Watcher) admissionSleepValue(duration time.Duration) {
 	time.Sleep(duration)
 }
 
+func (w *Watcher) submitSleepValue(duration time.Duration) {
+	if w != nil && w.submitSleep != nil {
+		w.submitSleep(duration)
+		return
+	}
+	time.Sleep(duration)
+}
+
 func (w *Watcher) admissionTimeoutValue(command string) time.Duration {
 	if w != nil && w.admissionTimeout != nil {
 		return w.admissionTimeout(command)
@@ -3142,7 +3159,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func sendDraftInputLocked(
+func (w *Watcher) sendDraftInputLocked(
 	socket, sessionID string,
 	text string,
 	submitDelay time.Duration,
@@ -3156,7 +3173,7 @@ func sendDraftInputLocked(
 	}
 	if submit {
 		if body != "" {
-			tmuxSubmitSleep(submitDelay)
+			w.submitSleepValue(submitDelay)
 		}
 		if guard != nil {
 			if err := guard(); err != nil {
@@ -3168,7 +3185,7 @@ func sendDraftInputLocked(
 	return nil
 }
 
-func waitForInputReadyGuarded(
+func (w *Watcher) waitForInputReadyGuarded(
 	socket, sessionID string,
 	command string,
 	timeout time.Duration,
@@ -3183,7 +3200,8 @@ func waitForInputReadyGuarded(
 		if guard != nil && guard() != nil {
 			return false
 		}
-		content, alive, _ := capturePaneContentFunc(sessionID)
+		_, capturePane, _ := w.pollReaders()
+		content, alive, _ := capturePane(sessionID)
 		if !alive {
 			return false
 		}

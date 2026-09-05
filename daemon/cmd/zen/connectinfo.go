@@ -33,14 +33,6 @@ type privateNetworkAddress struct {
 	ip    net.IP
 }
 
-func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
-	return buildConnectionOffersWithPublicKey(
-		endpoint,
-		authManager.PublicKeyHex(),
-		pairing,
-	)
-}
-
 func buildConnectionOffersWithPublicKey(
 	endpoint string,
 	daemonPublicKey string,
@@ -283,14 +275,6 @@ func normalizeEndpoint(rawValue string) (string, error) {
 	}
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func buildConnectLink(serverURL string, authManager *auth.Manager, pairing auth.PairingToken) string {
-	return buildConnectLinkWithPublicKey(
-		serverURL,
-		authManager.PublicKeyHex(),
-		pairing,
-	)
 }
 
 func buildConnectLinkWithPublicKey(

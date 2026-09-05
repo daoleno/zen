@@ -1251,17 +1251,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		})
 
 	case "terminal_snapshot":
-		text, err := s.watcher.CapturePaneContent(raw.TargetID)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "terminal_snapshot_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "terminal_snapshot",
-			"request_id": raw.RequestID,
-			"target_id":  raw.TargetID,
-			"text":       text,
-		})
+		s.handleTerminalMessage(conn, raw)
 
 	case "codex_asset":
 		s.handleCodexAsset(conn, raw)
@@ -1272,104 +1262,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "session_file_text":
 		s.handleSessionFileText(conn, raw)
 
-	case "terminal_open":
-		backend := raw.Backend
-		if backend == "" {
-			backend = "tmux"
-		}
-		targetID := raw.TargetID
-		if targetID == "" {
-			targetID = raw.AgentID
-		}
-		if backend == "tmux" {
-			presence, probeErr := s.watcher.ProbeSession(targetID)
-			if probeErr != nil || presence != watcher.SessionPresencePresent {
-				message := "tmux target is not an available Zen-owned Session"
-				if probeErr != nil {
-					message = probeErr.Error()
-				}
-				s.sendJSON(conn, map[string]any{
-					"type":    "terminal_error",
-					"code":    "open_failed",
-					"message": message,
-				})
-				return
-			}
-		}
-		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
-			Cols:   raw.Cols,
-			Rows:   raw.Rows,
-			Socket: s.watcher.SocketPathFor(targetID),
-		}, func(v any) {
-			s.sendJSON(conn, v)
-		})
-		if err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":    "terminal_error",
-				"code":    "open_failed",
-				"message": err.Error(),
-			})
-			return
-		}
-	case "terminal_input":
-		if err := s.terminal.Input(clientID(conn), raw.SessionID, raw.Data); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "input_failed",
-				"message":    err.Error(),
-			})
-		}
-
-	case "terminal_resize":
-		if err := s.terminal.Resize(clientID(conn), raw.SessionID, raw.Cols, raw.Rows); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "resize_failed",
-				"message":    err.Error(),
-			})
-		}
-
-	case "terminal_scroll":
-		if err := s.terminal.Scroll(clientID(conn), raw.SessionID, raw.Lines); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "scroll_failed",
-				"message":    err.Error(),
-			})
-		}
-
-	case "terminal_scroll_cancel":
-		if err := s.terminal.ScrollCancel(clientID(conn), raw.SessionID); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "scroll_cancel_failed",
-				"message":    err.Error(),
-			})
-		}
-
-	case "terminal_focus_pane":
-		if err := s.terminal.FocusPane(clientID(conn), raw.SessionID, raw.Col, raw.Row); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "focus_pane_failed",
-				"message":    err.Error(),
-			})
-		}
-
-	case "terminal_close":
-		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {
-			s.sendJSON(conn, map[string]any{
-				"type":       "terminal_error",
-				"session_id": raw.SessionID,
-				"code":       "close_failed",
-				"message":    err.Error(),
-			})
-		}
+	case "terminal_open", "terminal_input", "terminal_resize", "terminal_scroll", "terminal_scroll_cancel", "terminal_focus_pane", "terminal_close":
+		s.handleTerminalMessage(conn, raw)
 
 	case "send_action":
 		err := s.sendAction(raw.AgentID, raw.Action)
@@ -1492,6 +1386,69 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		log.Printf("unknown message type: %s", raw.Type)
 		if raw.RequestID != "" {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", raw.Type))
+		}
+	}
+}
+
+// handleTerminalMessage owns the terminal protocol family. The outer client
+// dispatcher only selects the family, keeping terminal ownership and error
+// shaping together.
+func (s *Server) handleTerminalMessage(conn *websocket.Conn, raw clientMessage) {
+	switch raw.Type {
+	case "terminal_snapshot":
+		text, err := s.watcher.CapturePaneContent(raw.TargetID)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "terminal_snapshot_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "terminal_snapshot", "request_id": raw.RequestID, "target_id": raw.TargetID, "text": text})
+	case "terminal_open":
+		backend := raw.Backend
+		if backend == "" {
+			backend = "tmux"
+		}
+		targetID := raw.TargetID
+		if targetID == "" {
+			targetID = raw.AgentID
+		}
+		if backend == "tmux" {
+			presence, probeErr := s.watcher.ProbeSession(targetID)
+			if probeErr != nil || presence != watcher.SessionPresencePresent {
+				message := "tmux target is not an available Zen-owned Session"
+				if probeErr != nil {
+					message = probeErr.Error()
+				}
+				s.sendJSON(conn, map[string]any{"type": "terminal_error", "code": "open_failed", "message": message})
+				return
+			}
+		}
+		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{Cols: raw.Cols, Rows: raw.Rows, Socket: s.watcher.SocketPathFor(targetID)}, func(v any) { s.sendJSON(conn, v) })
+		if err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "code": "open_failed", "message": err.Error()})
+		}
+	case "terminal_input":
+		if err := s.terminal.Input(clientID(conn), raw.SessionID, raw.Data); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "input_failed", "message": err.Error()})
+		}
+	case "terminal_resize":
+		if err := s.terminal.Resize(clientID(conn), raw.SessionID, raw.Cols, raw.Rows); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "resize_failed", "message": err.Error()})
+		}
+	case "terminal_scroll":
+		if err := s.terminal.Scroll(clientID(conn), raw.SessionID, raw.Lines); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "scroll_failed", "message": err.Error()})
+		}
+	case "terminal_scroll_cancel":
+		if err := s.terminal.ScrollCancel(clientID(conn), raw.SessionID); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "scroll_cancel_failed", "message": err.Error()})
+		}
+	case "terminal_focus_pane":
+		if err := s.terminal.FocusPane(clientID(conn), raw.SessionID, raw.Col, raw.Row); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "focus_pane_failed", "message": err.Error()})
+		}
+	case "terminal_close":
+		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {
+			s.sendJSON(conn, map[string]any{"type": "terminal_error", "session_id": raw.SessionID, "code": "close_failed", "message": err.Error()})
 		}
 	}
 }
@@ -2259,16 +2216,13 @@ func parseConversationEventTime(value string) (time.Time, bool) {
 }
 
 func codexConversationIdentity(conversation work.CodexConversation) string {
-	return firstNonEmptyString(conversation.SessionID, conversation.Path, conversation.CWD)
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
+	if strings.TrimSpace(conversation.SessionID) != "" {
+		return conversation.SessionID
 	}
-	return ""
+	if strings.TrimSpace(conversation.Path) != "" {
+		return conversation.Path
+	}
+	return conversation.CWD
 }
 
 type codexConversationFingerprintMemo struct {

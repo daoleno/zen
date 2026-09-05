@@ -7,6 +7,22 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
+func TestObservePanesCapturesImmutableObservation(t *testing.T) {
+	windows := []tmuxWindow{{target: "a"}, {target: "b"}}
+	got := observePanes(windows, func(target string) (string, bool, int) {
+		if target == "a" {
+			return "one\ntwo", true, 0
+		}
+		return "dead", false, 17
+	})
+	if len(got) != 2 || got[0].win.target != "a" || !got[0].alive || len(got[0].lines) != 2 {
+		t.Fatalf("unexpected first observation: %+v", got)
+	}
+	if got[1].alive || got[1].deadStatus != 17 || len(got[1].lines) != 1 {
+		t.Fatalf("unexpected second observation: %+v", got)
+	}
+}
+
 // TestPollDeadPaneNeverFailsWithoutExactAttribution covers the Round-4
 // rule: liveness-derived terminal attribution is removed. A dead pane with a
 // non-zero exit never produces a canonical Failed fact, regardless of how
@@ -194,7 +210,7 @@ func TestPollRemovedTurnReconciliationAppliesUncertain(t *testing.T) {
 	windows := []tmuxWindow{
 		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "opencode", panePID: 333, delegated: true},
 	}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"brain-agent-worker:@1": "OpenCode\nworking\n",
 	}, map[int]processInfo{
 		333: fakeProcess(333, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)),
@@ -209,7 +225,7 @@ func TestPollRemovedTurnReconciliationAppliesUncertain(t *testing.T) {
 
 	// The window disappears from a successful inventory.
 	restore()
-	restore = installFakePollSeams(nil, map[string]string{}, map[int]processInfo{})
+	restore = installFakePollSeams(w, nil, map[string]string{}, map[int]processInfo{})
 	defer restore()
 	w.poll()
 	drainWatcherEvents(w)
@@ -258,7 +274,7 @@ func TestPollPiBlockedPaneNeverWakesTurnTrackedSession(t *testing.T) {
 	windows := []tmuxWindow{
 		{target: "brain-agent-pi:@1", name: "pi", cwd: "/repo/zen", command: "pi", panePID: 444, delegated: true},
 	}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"brain-agent-pi:@1": content,
 	}, map[int]processInfo{
 		444: fakeProcess(444, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)),
@@ -308,18 +324,18 @@ func TestPollLivenessAppliesWithoutProviderProbe(t *testing.T) {
 	windows := []tmuxWindow{
 		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "opencode", panePID: 100, delegated: true},
 	}
-	restore := installFakePollSeams(windows, map[string]string{
+	restore := installFakePollSeams(w, windows, map[string]string{
 		"brain-agent-worker:@1": "OpenCode\n",
 	}, map[int]processInfo{})
 	defer restore()
 	// The pane dies with a non-zero exit: the liveness fact must reach the
 	// reducer even with a nil probe.
-	previousCapture := capturePaneContentFunc
-	capturePaneContentFunc = func(target string) (string, bool, int) {
+	previousCapture := w.capturePane
+	w.capturePane = func(target string) (string, bool, int) {
 		content, _, _ := previousCapture(target)
 		return content, false, 1
 	}
-	defer func() { capturePaneContentFunc = previousCapture }()
+	defer func() { w.capturePane = previousCapture }()
 
 	w.poll()
 	drainWatcherEvents(w)

@@ -201,4 +201,114 @@ describe("Brain current Work and backlog normalization", () => {
       historical_results: 202,
     });
   });
+
+  test("keeps reducer identity for equivalent typed projections regardless of key order", () => {
+    const first = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        current_work: [
+          {
+            work_id: "work-a",
+            revision: 2,
+            title: "Ship",
+            status: "running",
+            progress_mode: "owned",
+            attempt_session_id: "session-a",
+            unread_result: false,
+          },
+        ],
+        work_backlog: {
+          total: 1,
+          queued_attention: 0,
+          historical_results: 0,
+        },
+      },
+    });
+    const second = brainReducer(first, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        current_work: [
+          {
+            unread_result: false,
+            progress_mode: "owned",
+            status: "running",
+            title: "Ship",
+            revision: 2,
+            attempt_session_id: "session-a",
+            work_id: "work-a",
+          },
+        ],
+        work_backlog: {
+          historical_results: 0,
+          queued_attention: 0,
+          total: 1,
+        },
+      },
+    });
+
+    expect(second).toBe(first);
+  });
+
+  test("invalidates reducer identity when nested Work lifecycle evidence changes", () => {
+    const first = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        current_work: [
+          {
+            work_id: "work-a",
+            revision: 2,
+            title: "Ship",
+            status: "running",
+            progress_mode: "owned",
+            session_finalizations: [
+              {
+                session_id: "session-a",
+                delegated: true,
+                state: "pending",
+                updated_at: "2026-09-05T00:00:00Z",
+              },
+            ],
+            unread_result: false,
+          },
+        ],
+      },
+    });
+    const second = brainReducer(first, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        current_work: [
+          {
+            work_id: "work-a",
+            revision: 2,
+            title: "Ship",
+            status: "running",
+            progress_mode: "owned",
+            session_finalizations: [
+              {
+                session_id: "session-a",
+                delegated: true,
+                state: "complete",
+                updated_at: "2026-09-05T00:01:00Z",
+              },
+            ],
+            unread_result: false,
+          },
+        ],
+      },
+    });
+
+    expect(second).not.toBe(first);
+  });
 });

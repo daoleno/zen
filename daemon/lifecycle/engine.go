@@ -71,11 +71,10 @@ func Open(root string) (*Engine, error) {
 	return e, nil
 }
 
-// Close is retained for Store lifecycle symmetry. Every command is already
-// durable before it returns.
-func (e *Engine) Close() error {
-	return nil
-}
+// Close is a compatibility-free lifecycle hook for owners that use a common
+// shutdown path. Engine commands are durable before they return, so there is
+// no runtime resource to release here.
+func (e *Engine) Close() error { return nil }
 
 func (e *Engine) databaseLocked(states map[WorkID]*State, events []Event, nextSeq uint64) lifecycleDatabase {
 	database := lifecycleDatabase{

@@ -2949,7 +2949,7 @@ func TestWatcherPollResolvesOnlyExactPendingRowAmongCoexistingRows(t *testing.T)
 		AdmissionCursor: 2, AdmissionAt: now, InputSHA256: digestB, Structured: true,
 	}
 	windows := []tmuxWindow{{target: sessionID, name: "worker", cwd: "/repo/zen", command: "opencode", panePID: 333, delegated: true}}
-	restore := installFakePollSeams(windows, map[string]string{sessionID: "OpenCode\nworking\n"}, map[int]processInfo{333: fakeProcess(333, now)})
+	restore := installFakePollSeams(w, windows, map[string]string{sessionID: "OpenCode\nworking\n"}, map[int]processInfo{333: fakeProcess(333, now)})
 	defer restore()
 	w.poll()
 

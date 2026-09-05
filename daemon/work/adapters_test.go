@@ -10,23 +10,23 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func TestTmuxRunnerSendWhenReadyUsesBudgetedHandoffWhenConfigured(t *testing.T) {
+func TestTmuxRunnerSendWhenReadyAlwaysUsesBoundedHandoff(t *testing.T) {
 	fw := &fakeDelegatedWatcher{}
 	runner := TmuxRunner{Watcher: fw}
 
 	if err := runner.SendWhenReady("opencode:@1", "opencode", "task\n"); err != nil {
 		t.Fatal(err)
 	}
-	if len(fw.budgetedCalls) != 0 || len(fw.sendReadyCalls) != 1 {
-		t.Fatalf("legacy handoff = budgeted %#v, legacy %#v", fw.budgetedCalls, fw.sendReadyCalls)
+	if len(fw.budgetedCalls) != 1 || fw.budgetedCalls[0] != "opencode:@1|opencode|task\n|1m30s" {
+		t.Fatalf("default bounded handoff = %#v", fw.budgetedCalls)
 	}
 
 	runner.InputReadyBudget = DefaultScheduledInputReadyBudget
 	if err := runner.SendWhenReady("opencode:@1", "opencode", "task\n"); err != nil {
 		t.Fatal(err)
 	}
-	if len(fw.budgetedCalls) != 1 || fw.budgetedCalls[0] != "opencode:@1|opencode|task\n|1m30s" {
-		t.Fatalf("budgeted handoff = %#v, legacy %#v", fw.budgetedCalls, fw.sendReadyCalls)
+	if len(fw.budgetedCalls) != 2 || fw.budgetedCalls[1] != "opencode:@1|opencode|task\n|1m30s" {
+		t.Fatalf("configured bounded handoff = %#v", fw.budgetedCalls)
 	}
 }
 
@@ -57,16 +57,14 @@ func TestTmuxRunnerRequiresOwnedWatcherLifecycle(t *testing.T) {
 }
 
 type fakeDelegatedWatcher struct {
-	created        []watcher.CreateSessionOptions
-	killed         []string
-	createErr      error
-	killErr        error
-	sessions       map[string]bool
-	nextID         string
-	sendReadyErr   error
-	sendReadyCalls []string
-	budgetedCalls  []string
-	budgetedErrs   []error
+	created       []watcher.CreateSessionOptions
+	killed        []string
+	createErr     error
+	killErr       error
+	sessions      map[string]bool
+	nextID        string
+	budgetedCalls []string
+	budgetedErrs  []error
 }
 
 func (f *fakeDelegatedWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
@@ -100,11 +98,6 @@ func (f *fakeDelegatedWatcher) ProbeSession(target string) (watcher.SessionPrese
 	return watcher.SessionPresenceAbsent, nil
 }
 
-func (f *fakeDelegatedWatcher) SendInputWhenReady(sessionID, command, text string) error {
-	f.sendReadyCalls = append(f.sendReadyCalls, sessionID+"|"+command+"|"+text)
-	return f.sendReadyErr
-}
-
 func (f *fakeDelegatedWatcher) SendInputWhenReadyBudgeted(sessionID, command, text string, budget time.Duration) error {
 	f.budgetedCalls = append(f.budgetedCalls, sessionID+"|"+command+"|"+text+"|"+budget.String())
 	if len(f.budgetedErrs) > 0 {
@@ -112,7 +105,7 @@ func (f *fakeDelegatedWatcher) SendInputWhenReadyBudgeted(sessionID, command, te
 		f.budgetedErrs = f.budgetedErrs[1:]
 		return err
 	}
-	return f.sendReadyErr
+	return nil
 }
 
 type fakeProfileOwner struct {
