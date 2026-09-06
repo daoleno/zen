@@ -79,7 +79,7 @@ func printStartupInfo(w io.Writer, listenAddr, stateDir string, addresses []priv
 		if label == "Same Wi-Fi/LAN" {
 			label = "LAN"
 		}
-		fmt.Fprintf(w, "  %-8s%s\n", label, "http://"+net.JoinHostPort(address.ip.String(), port))
+		fmt.Fprintf(w, "  %-8s %s\n", label, "http://"+net.JoinHostPort(address.ip.String(), port))
 	}
 	if len(usable) > 0 {
 		endpoint := "http://" + net.JoinHostPort(usable[0].ip.String(), port)

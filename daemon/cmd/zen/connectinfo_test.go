@@ -196,6 +196,9 @@ func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
 	if strings.Count(rendered, "zen pair") != 1 {
 		t.Fatalf("startup should offer one primary pairing command: %q", rendered)
 	}
+	if !strings.Contains(rendered, "Tailscale http://") {
+		t.Fatalf("long address label must retain a separator: %q", rendered)
+	}
 }
 
 func TestStartupWithoutPrivateAddressIsActionable(t *testing.T) {
