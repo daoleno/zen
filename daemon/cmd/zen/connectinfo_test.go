@@ -139,8 +139,8 @@ func TestPrintStartupInfoForLoopback(t *testing.T) {
 
 	rendered := output.String()
 	for _, want := range []string{
-		"local-only mode",
-		"restart with zen --lan",
+		"Local only",
+		"zen --lan",
 		"expose http://127.0.0.1:9876",
 		"zen pair -state-dir /tmp/zen-state https://your-zen-host.example",
 	} {
@@ -158,9 +158,9 @@ func TestPrintLinkStartupInfoUsesNoEndpointAsPrimaryAndKeepsAdvanced(t *testing.
 	printLinkStartupInfo(&output, "127.0.0.1:9876", "/tmp/zen-state")
 	rendered := output.String()
 	for _, expected := range []string{
-		"Zen Link connecting outbound",
+		"Connecting outbound",
 		"zen pair -state-dir /tmp/zen-state",
-		"Advanced / Self-managed",
+		"Direct",
 		"zen pair <endpoint>",
 	} {
 		if !strings.Contains(rendered, expected) {
@@ -181,10 +181,10 @@ func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
 
 	rendered := output.String()
 	for _, want := range []string{
-		"ready for trusted private-network access",
-		"another terminal",
+		"Zen ",
+		"trusted private networks only",
 		"zen pair http://192.168.1.42:9876",
-		"zen pair http://100.101.102.103:9876",
+		"http://100.101.102.103:9876",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("startup info missing %q: %q", want, rendered)
@@ -192,6 +192,17 @@ func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
 	}
 	if strings.Contains(rendered, "zen pair http://0.0.0.0") {
 		t.Fatalf("startup info offered wildcard pairing address: %q", rendered)
+	}
+	if strings.Count(rendered, "zen pair") != 1 {
+		t.Fatalf("startup should offer one primary pairing command: %q", rendered)
+	}
+}
+
+func TestStartupWithoutPrivateAddressIsActionable(t *testing.T) {
+	var output bytes.Buffer
+	printStartupInfo(&output, "[::]:9876", "", nil)
+	if !strings.Contains(output.String(), "No LAN or Tailscale address detected") || strings.Contains(output.String(), "zen pair http://") {
+		t.Fatalf("invalid no-address startup: %q", output.String())
 	}
 }
 

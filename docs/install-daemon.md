@@ -114,6 +114,8 @@ If `~/.local/bin` is not on your `PATH`, install into another user-owned directo
 
 ## Build from source
 
+Startup prints the listening address, available private-network addresses, and one pairing command. Saved model routes are reclaimed when the selected tmux server confirms their sessions are absent. Live or unobservable sessions retain their routes; a model-settings warning for a retained route does not mean the HTTP server failed to start.
+
 Source builds require the Go toolchain declared in `daemon/go.mod`:
 
 ```bash

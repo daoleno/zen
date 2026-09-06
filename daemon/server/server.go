@@ -422,9 +422,10 @@ func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) 
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("zen listening on %s", listener.Addr())
 	if onReady != nil {
 		onReady()
+	} else {
+		log.Printf("zen listening on %s", listener.Addr())
 	}
 	serveErr := srv.Serve(listener)
 	cancel()

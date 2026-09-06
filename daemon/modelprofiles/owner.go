@@ -51,6 +51,8 @@ type OwnerConfig struct {
 	Lookup        func(string) (string, bool)
 	Credentials   CredentialStore // Zen private store (or test fake); optional
 	Verifier      ProfileContractVerifier
+	// SessionProbe checks restored sessions before new launches begin.
+	SessionProbe  func(string) (SessionLiveness, error)
 	ListenNetwork string // default "tcp"
 	// PreferAddr overrides ListenerFile for tests when the listener is started
 	// (live-route restore or first managed launch).
@@ -169,14 +171,18 @@ type CatalogProjection struct {
 
 // RestoreContractNotices returns the durable routes restored at StartOwner
 // whose persisted contract drifted from the current daemon authority
-// (secret-free; immutable after start). The routes are kept live — notices are
-// advisory, for startup logging and diagnostics. Empty when nothing drifted.
+// (secret-free). Released routes are omitted; retained routes keep advisory
+// notices for startup logging and diagnostics. Empty when nothing drifted.
 func (o *Owner) RestoreContractNotices() []RestoreContractNotice {
 	if o == nil {
 		return nil
 	}
-	out := make([]RestoreContractNotice, len(o.restoreNotices))
-	copy(out, o.restoreNotices)
+	out := make([]RestoreContractNotice, 0, len(o.restoreNotices))
+	for _, notice := range o.restoreNotices {
+		if _, exists := o.table.Get(notice.SessionID); exists {
+			out = append(out, notice)
+		}
+	}
 	return out
 }
 
@@ -301,7 +307,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	// provider:* credential ref that no catalog row or route binding references
 	// (staged secrets from crashed edits, old secrets whose cleanup did not run).
 	o.sweepOrphanProviderCredentialsLocked()
-	sweepErr := o.sweepProvisionalRoutesLocked()
+	sweepErr := o.sweepRestoredRoutesLocked(cfg.SessionProbe)
 	// Stale live-control artifacts: restored bindings whose recorded app-server
 	// pid is dead (or no longer matches) leave daemon-owned socket/pid/log
 	// files behind. Remove them so sessions restart clean; a live matching
@@ -339,9 +345,9 @@ func isProvisionalSessionID(sessionID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(sessionID), provisionalSessionPrefix)
 }
 
-// sweepProvisionalRoutesLocked removes durable pending:* cleanup records before
+// sweepRestoredRoutesLocked removes abandoned launches and absent sessions before
 // live-route listener decisions. Caller must hold o.mu.
-func (o *Owner) sweepProvisionalRoutesLocked() error {
+func (o *Owner) sweepRestoredRoutesLocked(probe func(string) (SessionLiveness, error)) error {
 	if o == nil || o.table == nil {
 		return nil
 	}
@@ -349,6 +355,11 @@ func (o *Owner) sweepProvisionalRoutesLocked() error {
 	for _, state := range o.table.Snapshot() {
 		if isProvisionalSessionID(state.Binding.SessionID) {
 			pending = append(pending, state.Binding.SessionID)
+		} else if probe != nil {
+			presence, err := probe(state.Binding.SessionID)
+			if err == nil && presence == SessionLivenessAbsent {
+				pending = append(pending, state.Binding.SessionID)
+			}
 		}
 	}
 	if len(pending) == 0 {
@@ -358,7 +369,7 @@ func (o *Owner) sweepProvisionalRoutesLocked() error {
 	for _, id := range pending {
 		if err := o.table.Release(id); err != nil && !errors.Is(err, ErrBindingNotFound) {
 			o.table.ReplaceSnapshot(before)
-			return fmt.Errorf("%w: release provisional %s: %v", ErrLaunchCleanupIncomplete, id, err)
+			return fmt.Errorf("%w: release orphan route %s: %v", ErrLaunchCleanupIncomplete, id, err)
 		}
 	}
 	after := o.table.Snapshot()
@@ -367,7 +378,7 @@ func (o *Owner) sweepProvisionalRoutesLocked() error {
 			// Rename committed: keep swept memory aligned with disk.
 		} else {
 			o.table.ReplaceSnapshot(before)
-			return fmt.Errorf("%w: persist provisional sweep: %w", ErrLaunchCleanupIncomplete, err)
+			return fmt.Errorf("%w: persist route sweep: %w", ErrLaunchCleanupIncomplete, err)
 		}
 	}
 	// Listener metadata is converged by StartOwner after sweep when the table

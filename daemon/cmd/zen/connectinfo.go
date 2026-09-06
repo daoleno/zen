@@ -60,47 +60,43 @@ func buildConnectionOffersWithPublicKey(
 }
 
 func printStartupInfo(w io.Writer, listenAddr, stateDir string, addresses []privateNetworkAddress) {
+	fmt.Fprintf(w, "\n  Zen %s\n  Listen  %s\n", Version, listenAddr)
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
-		fmt.Fprintf(w, "Zen is listening on %s.\n", listenAddr)
-		fmt.Fprintln(w, "Run zen pair with an HTTPS endpoint that forwards the full daemon origin.")
+		fmt.Fprint(w, "  Pair    zen pair <reachable-endpoint>\n\n")
 		return
 	}
-
 	if isLoopbackHost(host) {
-		fmt.Fprintf(w, "Zen is ready in local-only mode on http://%s.\n", listenAddr)
-		fmt.Fprintln(w, "To connect your phone:")
-		fmt.Fprintln(w, "  - Same trusted Wi-Fi or Tailnet: restart with zen --lan")
-		fmt.Fprintf(w, "  - HTTPS endpoint: expose http://%s, then in another terminal run:\n", listenAddr)
-		fmt.Fprintf(w, "      %s\n", pairCommand(stateDir, "https://your-zen-host.example"))
+		fmt.Fprintln(w, "  Mode    Local only")
+		fmt.Fprintln(w, "\n  LAN     zen --lan")
+		fmt.Fprintf(w, "  HTTPS   expose http://%s\n", listenAddr)
+		fmt.Fprintf(w, "  Pair    %s\n\n", pairCommand(stateDir, "https://your-zen-host.example"))
 		return
 	}
-
 	usable := startupPairingAddresses(host, addresses)
-	if isWildcardHost(host) || len(usable) > 0 {
-		fmt.Fprintln(w, "Zen is ready for trusted private-network access.")
-		if len(usable) == 0 {
-			fmt.Fprintln(w, "No LAN or Tailscale address was detected. Check your network, then restart Zen.")
-			return
+	for _, address := range usable {
+		label := address.label
+		if label == "Same Wi-Fi/LAN" {
+			label = "LAN"
 		}
-		fmt.Fprintln(w, "In another terminal, run a pairing command for the network your phone uses:")
-		for _, address := range usable {
-			endpoint := "http://" + net.JoinHostPort(address.ip.String(), port)
-			fmt.Fprintf(w, "  - %s: %s\n", address.label, pairCommand(stateDir, endpoint))
-		}
-		fmt.Fprintln(w, "Use HTTP only on a trusted private network.")
-		return
+		fmt.Fprintf(w, "  %-8s%s\n", label, "http://"+net.JoinHostPort(address.ip.String(), port))
 	}
-
-	fmt.Fprintf(w, "Zen is listening on %s.\n", listenAddr)
-	fmt.Fprintln(w, "In another terminal, run zen pair with the private or HTTPS address your phone can reach.")
+	if len(usable) > 0 {
+		endpoint := "http://" + net.JoinHostPort(usable[0].ip.String(), port)
+		fmt.Fprintf(w, "\n  Pair    %s\n", pairCommand(stateDir, endpoint))
+		fmt.Fprintln(w, "  HTTP is for trusted private networks only.")
+	} else if isWildcardHost(host) {
+		fmt.Fprintln(w, "\n  WARN    No LAN or Tailscale address detected.")
+	} else {
+		fmt.Fprintln(w, "\n  Pair    zen pair <reachable-endpoint>")
+	}
+	fmt.Fprintln(w)
 }
 
 func printLinkStartupInfo(w io.Writer, listenAddr, stateDir string) {
-	fmt.Fprintf(w, "Zen is ready on %s with Zen Link connecting outbound.\n", listenAddr)
-	fmt.Fprintln(w, "In another terminal, run:")
-	fmt.Fprintf(w, "  %s\n", pairCommand(stateDir, ""))
-	fmt.Fprintln(w, "Advanced / Self-managed connections remain available with zen pair <endpoint>.")
+	fmt.Fprintf(w, "\n  Zen %s\n  Listen  %s\n  Link    Connecting outbound\n", Version, listenAddr)
+	fmt.Fprintf(w, "\n  Pair    %s\n", pairCommand(stateDir, ""))
+	fmt.Fprint(w, "  Direct  zen pair <endpoint>\n\n")
 }
 
 func printPairingInfo(w io.Writer, offers []connectionOffer) {

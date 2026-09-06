@@ -160,8 +160,9 @@ var (
 	ErrSessionLivenessUnknown = errors.New("session liveness probe ambiguous")
 )
 
-// SessionLiveness is the tri-state probe result used after a non-nil KillSession
-// error. It never authorizes route release.
+// SessionLiveness distinguishes present, absent and unobservable sessions.
+// Startup may reclaim absent sessions; a failed teardown still requires its
+// resource cleanup to succeed before releasing a route.
 type SessionLiveness int
 
 const (

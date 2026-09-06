@@ -266,6 +266,20 @@ func runDaemon(args []string, stderr io.Writer) error {
 		ListenerPath:  listenerPath,
 		DiscoveryPath: discoveryPath,
 		Credentials:   credentialStore,
+		SessionProbe: func(id string) (modelprofiles.SessionLiveness, error) {
+			presence, err := w.ProbeSession(id)
+			if err != nil {
+				return modelprofiles.SessionLivenessUnknown, err
+			}
+			switch presence {
+			case watcher.SessionPresencePresent:
+				return modelprofiles.SessionLivenessPresent, nil
+			case watcher.SessionPresenceAbsent:
+				return modelprofiles.SessionLivenessAbsent, nil
+			default:
+				return modelprofiles.SessionLivenessUnknown, nil
+			}
+		},
 		// Per-session Codex app-server control sockets (live native
 		// thread/settings/update for managed Codex sessions).
 		CodexControlDir: filepath.Join(authManager.StorageDir(), "codex-ctl"),
@@ -280,7 +294,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("start model profiles owner: %w", err)
 	}
 	for _, n := range profileOwner.RestoreContractNotices() {
-		log.Printf("route %s (session %s) restored with stale contract: %s; the restored binding remains authoritative until an explicit model switch", n.RouteID, n.SessionID, n.Reason)
+		log.Printf("WARN model settings changed for session %s; keeping its running configuration until an explicit model switch (%s)", n.SessionID, n.Reason)
 	}
 	defer func() { _ = profileOwner.Close() }()
 	if takeover := profileOwner.Takeover(); takeover != nil {

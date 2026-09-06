@@ -85,10 +85,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	defer tree.Close()
 
-	fmt.Fprintf(stderr, "zen-dev watching %s\n", root)
-	if len(args) > 0 {
-		fmt.Fprintf(stderr, "zen-dev args: %s\n", strings.Join(args, " "))
-	}
+	fmt.Fprintf(stderr, "  Dev     Watching %s\n", root)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
