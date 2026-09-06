@@ -46,7 +46,7 @@ func TestCollectorSmoke(t *testing.T) {
 	}
 }
 
-func TestCollectCodexStatsSkipsUnparsableRollouts(t *testing.T) {
+func TestCollectCodexStatsSkipsDeletedRolloutsWithoutInventingUsage(t *testing.T) {
 	sqlite3, err := exec.LookPath("sqlite3")
 	if err != nil {
 		t.Skip("sqlite3 not found")
@@ -86,28 +86,8 @@ VALUES ('bad-thread', '/tmp/onlora', 'gpt-5.5', 362727822, 1710000000, 171000360
 		t.Fatalf("unparsable rollout should not create synthetic usage: daily=%v models=%v projects=%v", daily, modelsByDate, projectsByDate)
 	}
 	c.collectCodexStats(home)
-	if got := strings.Count(logs.String(), "skipped 1 Codex threads without parsable token_count rollout"); got != 1 {
-		t.Fatalf("historical rollout warning count = %d, want one; logs=%s", got, logs.String())
-	}
-}
-
-func TestHistoricalCodexRolloutSkipsAreReportedOncePerSignature(t *testing.T) {
-	c := &Collector{}
-	missing := fmt.Errorf("stat /tmp/old-rollout.jsonl: %w", os.ErrNotExist)
-	if !isHistoricalCodexRolloutSkip(missing) {
-		t.Fatal("missing rollout should be classified as historical")
-	}
-	if !c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", missing) {
-		t.Fatal("first historical skip should be reported")
-	}
-	if c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", missing) {
-		t.Fatal("same historical skip should be deduplicated")
-	}
-	if !c.markHistoricalCodexRolloutSkip("/tmp/old-rollout.jsonl", fmt.Errorf("bufio.Scanner: token too long")) {
-		t.Fatal("a changed error signature should remain observable")
-	}
-	if isHistoricalCodexRolloutSkip(fmt.Errorf("invalid character '}' looking for beginning of value")) {
-		t.Fatal("real parse errors must not be classified as historical noise")
+	if logs.Len() != 0 {
+		t.Fatalf("deleted rollout is not a parsing failure: %s", logs.String())
 	}
 }
 
@@ -306,7 +286,7 @@ func TestReadCodexUsageHandlesLargeRolloutLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout.jsonl")
 	content := `{"timestamp":"2026-05-08T01:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}
-{"type":"event_msg","payload":{"type":"large_context","data":"` + strings.Repeat("x", 2*1024*1024) + `"}}
+{"type":"event_msg","payload":{"type":"large_context","data":"` + strings.Repeat("x", 20*1024*1024) + `"}}
 {"timestamp":"2026-05-08T01:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":40,"output_tokens":18,"reasoning_output_tokens":4,"total_tokens":178}}}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -320,6 +300,32 @@ func TestReadCodexUsageHandlesLargeRolloutLines(t *testing.T) {
 
 	if usage.totalTokens != 178 || usage.inputTokens != 120 || usage.cacheRead != 40 || usage.outputTokens != 18 || usage.reasoningTokens != 4 {
 		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestReadCodexUsageAcceptsSpacedJSONAndUnterminatedLastLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	data := `{"timestamp": "2026-05-08T01:00:00Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := readCodexUsage(path)
+	if err != nil || usage.totalTokens != 110 {
+		t.Fatalf("usage=%+v err=%v", usage, err)
+	}
+}
+
+func TestReadCodexUsageWithoutTokenEventsIsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"session_meta"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := readCodexUsageByDate(path, time.UTC)
+	if err != nil || len(usage) != 0 {
+		t.Fatalf("usage=%+v err=%v", usage, err)
+	}
+	if _, err := readCodexUsageByDate(t.TempDir(), time.UTC); err == nil {
+		t.Fatal("actual I/O failure must remain visible")
 	}
 }
 

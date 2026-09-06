@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -35,20 +36,17 @@ type Collector struct {
 	now                      func() time.Time
 	lastCodexSubscription    *CodexSubscriptionUsage
 	lastCodexAuthFingerprint string
-	codexHistoricalSkipMu    sync.Mutex
-	codexHistoricalSkipSeen  map[string]struct{}
 }
 
 // NewCollector creates a stats collector.
 func NewCollector() *Collector {
 	loadPricingCache(homeDir())
 	return &Collector{
-		codexUsageClient:        &http.Client{Timeout: 8 * time.Second},
-		codexUsageEndpoint:      codexUsageEndpoint,
-		codexUsageTimeout:       8 * time.Second,
-		now:                     time.Now,
-		codexRolloutCache:       make(map[string]codexRolloutCacheEntry),
-		codexHistoricalSkipSeen: make(map[string]struct{}),
+		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
+		codexUsageEndpoint: codexUsageEndpoint,
+		codexUsageTimeout:  8 * time.Second,
+		now:                time.Now,
+		codexRolloutCache:  make(map[string]codexRolloutCacheEntry),
 	}
 }
 
@@ -1018,21 +1016,17 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 		}
 
 		usageByDate, err := c.readCodexUsageByDate(t.RolloutPath, time.Local)
-		if err != nil || len(usageByDate) == 0 {
-			if isHistoricalCodexRolloutSkip(err) && !c.markHistoricalCodexRolloutSkip(t.RolloutPath, err) {
-				continue
-			}
+		if errors.Is(err, os.ErrNotExist) || (err == nil && len(usageByDate) == 0) {
+			continue
+		}
+		if err != nil {
 			skipped++
 			if len(skippedExamples) < 3 {
-				reason := "no usage by date"
-				if err != nil {
-					reason = err.Error()
-				}
 				threadID := t.ID
 				if threadID == "" {
 					threadID = t.RolloutPath
 				}
-				skippedExamples = append(skippedExamples, fmt.Sprintf("%s (%s)", threadID, reason))
+				skippedExamples = append(skippedExamples, fmt.Sprintf("%s (%s)", threadID, err))
 			}
 			continue
 		}
@@ -1101,35 +1095,6 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	return daily, modelsByDate, projectsByDate
-}
-
-// Historical Codex state commonly outlives its rollout files, and older
-// rollouts can contain lines larger than our bounded scanner buffer. These are
-// safe to skip, but should not produce the same warning on every refresh.
-func isHistoricalCodexRolloutSkip(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	reason := strings.ToLower(err.Error())
-	return strings.Contains(reason, "token too long") ||
-		strings.Contains(reason, "buffer too small")
-}
-
-func (c *Collector) markHistoricalCodexRolloutSkip(path string, err error) bool {
-	key := path + "\x00" + err.Error()
-	c.codexHistoricalSkipMu.Lock()
-	defer c.codexHistoricalSkipMu.Unlock()
-	if c.codexHistoricalSkipSeen == nil {
-		c.codexHistoricalSkipSeen = make(map[string]struct{})
-	}
-	if _, seen := c.codexHistoricalSkipSeen[key]; seen {
-		return false
-	}
-	c.codexHistoricalSkipSeen[key] = struct{}{}
-	return true
 }
 
 type codexUsage struct {
@@ -1246,14 +1211,16 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 
 	byDate := make(map[string]codexUsage)
 	var previous *codexUsage
-	found := false
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		if !bytes.Contains(raw, []byte(`"type":"token_count"`)) ||
-			!bytes.Contains(raw, []byte(`"type":"event_msg"`)) {
+	reader := bufio.NewReader(f)
+	for {
+		raw, err := reader.ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			break
+		}
+		if !bytes.Contains(raw, []byte(`"token_count"`)) {
 			continue
 		}
 		var line tokenCountLine
@@ -1288,13 +1255,6 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 
 		byDate[date] = addCodexUsage(byDate[date], delta)
 		previous = &current
-		found = true
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, fmt.Errorf("no token_count event found")
 	}
 	return byDate, nil
 }
