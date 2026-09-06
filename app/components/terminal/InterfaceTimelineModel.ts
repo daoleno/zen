@@ -23,7 +23,6 @@ import {
   type SemanticAction,
   type SemanticActionKind,
 } from "../../services/toolCallSemantics";
-import { parseHeartbeatWakeMessage } from "./CodexHeartbeatWake";
 import type { PendingUserMessage } from "./InterfaceChatSession";
 import { presentPendingUserMessageLifecycle } from "./pendingUserMessageLifecycle";
 import {
@@ -128,15 +127,9 @@ export function buildZenTimelineFromSortedEvents(
     if (event.kind === "user_message" || event.kind === "assistant_message") {
       flushExploration();
       const extracted = extractDisplayMessage(event.body || "");
-      const heartbeatWake =
-        event.kind === "user_message" &&
-        /^Heartbeat wake:/i.test(extracted.body.trimStart())
-          ? parseHeartbeatWakeMessage(extracted.body)
-          : null;
       if (
         !extracted.body &&
-        extracted.attachments.length === 0 &&
-        !heartbeatWake
+        extracted.attachments.length === 0
       ) {
         continue;
       }
@@ -149,10 +142,9 @@ export function buildZenTimelineFromSortedEvents(
         id: event.id || `${event.kind}:${event.seq}`,
         role: event.kind === "user_message" ? "user" : "assistant",
         timestamp: event.timestamp,
-        body: heartbeatWake ? "" : extracted.body,
+        body: extracted.body,
         attachments: extracted.attachments,
         streaming: event.partial,
-        heartbeatWake: heartbeatWake || undefined,
         ...(turnFocusAnchorId ? { turnFocusAnchorId } : {}),
       });
       continue;

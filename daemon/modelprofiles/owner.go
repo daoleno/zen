@@ -1513,20 +1513,20 @@ type LaunchRouteOwner interface {
 // provisional and/or committed route and surfaces retryable cleanup state.
 func CleanupFailedLaunch(
 	owner LaunchRouteOwner,
-	provisionalID, agentID string,
+	provisionalID, workerID string,
 	kill func(string) error,
 	probe func(string) (SessionLiveness, error),
 ) LaunchCleanupResult {
 	persist := PersistResult{Applied: true, Durable: true}
 	var err error
 	provisionalID = strings.TrimSpace(provisionalID)
-	agentID = strings.TrimSpace(agentID)
+	workerID = strings.TrimSpace(workerID)
 
-	if agentID != "" && kill != nil {
-		if killErr := kill(agentID); killErr != nil {
-			err = joinErrors(killErr, fmt.Errorf("%w: kill session %s", ErrLaunchCleanupIncomplete, agentID))
+	if workerID != "" && kill != nil {
+		if killErr := kill(workerID); killErr != nil {
+			err = joinErrors(killErr, fmt.Errorf("%w: kill session %s", ErrLaunchCleanupIncomplete, workerID))
 			if probe != nil {
-				live, probeErr := probe(agentID)
+				live, probeErr := probe(workerID)
 				switch {
 				case probeErr != nil:
 					err = joinErrors(err, ErrSessionLivenessUnknown)
@@ -1563,15 +1563,15 @@ func CleanupFailedLaunch(
 			persist = combinePersistResults(persist, abortPersist)
 		}
 	}
-	if agentID != "" {
-		releasePersist, releaseErr := owner.ReleaseSession(agentID)
+	if workerID != "" {
+		releasePersist, releaseErr := owner.ReleaseSession(workerID)
 		if releaseErr != nil {
 			err = joinErrors(err, releaseErr)
 		}
 		if !releasePersist.Applied {
 			persist = PersistResult{Applied: false, Durable: false}
 			if releaseErr == nil && !errors.Is(err, ErrLaunchCleanupIncomplete) {
-				err = joinErrors(err, fmt.Errorf("%w: release session %s", ErrLaunchCleanupIncomplete, agentID))
+				err = joinErrors(err, fmt.Errorf("%w: release session %s", ErrLaunchCleanupIncomplete, workerID))
 			}
 		} else {
 			persist = combinePersistResults(persist, releasePersist)

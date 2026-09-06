@@ -8,7 +8,7 @@ import { Claude, Codex, Grok, OpenCode } from '@lobehub/icons-rn';
 import { useAppTheme } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
 import { surfacesFromTheme } from '../../constants/themedSurfaces';
-import type { AgentKind } from '../../services/agentPresentation';
+import type { AgentKind } from '../../services/workerPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { FlavorLetterBadge } from './FlavorLetterBadge';
 import { CursorMark } from '../icons/CursorMark';

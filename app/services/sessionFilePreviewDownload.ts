@@ -194,14 +194,14 @@ export function sessionFileCanDownload(
 
 export function sessionFileDownloadRequest(
   identity: {
-    agentId: string;
+    workerId: string;
     processId: number;
     startedAt: number;
   },
   metadata: SessionFileMetadata,
 ): SessionFileBinaryRequest {
   return {
-    agentId: identity.agentId,
+    workerId: identity.workerId,
     processId: identity.processId,
     startedAt: identity.startedAt,
     path: metadata.path,

@@ -288,7 +288,7 @@ func ledgerTestStore(t *testing.T) (*Store, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-test:@1"
+	sessionID := "zen-worker-test:@1"
 	item, err := store.CreateWork(Work{
 		Title: "Canonical turn test", Objective: "Exercise the single reducer.",
 		Status: WorkRunning, AttemptSessionID: sessionID,

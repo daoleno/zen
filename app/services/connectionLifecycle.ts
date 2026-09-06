@@ -1,4 +1,4 @@
-import type { ConnectionState } from "../store/agents";
+import type { ConnectionState } from "../store/workers";
 
 /** Why the client reported a disconnect. */
 export type DisconnectReason = "intentional" | "transport_closed";
@@ -12,7 +12,7 @@ export type DisconnectLifecycleDecision = {
 
 export type ConnectedReadModelClient = {
   listWorkItems(serverId: string): void;
-  listAgentSessions(serverId: string): void;
+  listWorkerSessions(serverId: string): void;
   requestBrainSnapshot(serverId: string): void;
   listCalendarItems(serverId: string): void;
 };
@@ -26,7 +26,7 @@ export function createConnectedReadRefreshHandler(
 ) {
   return ({ serverId }: { serverId: string }) => {
     client.listWorkItems(serverId);
-    client.listAgentSessions(serverId);
+    client.listWorkerSessions(serverId);
     client.requestBrainSnapshot(serverId);
     client.listCalendarItems(serverId);
   };
@@ -114,10 +114,10 @@ export function resolveBrainActiveServerId<T extends { id: string }>({
  */
 export function shouldShowBrainLoadingState({
   hydrated,
-  hasHostAgent,
+  hasHostWorker,
 }: {
   hydrated: boolean;
-  hasHostAgent: boolean;
+  hasHostWorker: boolean;
 }): boolean {
-  return !(hydrated && hasHostAgent);
+  return !(hydrated && hasHostWorker);
 }

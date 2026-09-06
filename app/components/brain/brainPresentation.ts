@@ -1,6 +1,6 @@
-import type { BrainAdapterRef } from "../../store/brain";
+import type { BrainExecutorRef } from "../../store/brain";
 
-export type ExecutorTarget = "brain" | "agents";
+export type ExecutorTarget = "brain" | "workers";
 
 export function brainProviderLabel(value?: string): string {
   const normalized = value?.trim().toLowerCase();
@@ -20,7 +20,7 @@ export function brainProviderLabel(value?: string): string {
   }
 }
 
-export function brainAdapterLabel(adapter?: BrainAdapterRef | null): string {
+export function brainAdapterLabel(adapter?: BrainExecutorRef | null): string {
   if (!adapter) {
     return "";
   }
@@ -35,7 +35,7 @@ export function brainAdapterLabel(adapter?: BrainAdapterRef | null): string {
 }
 
 export function brainAdapterProviderKey(
-  adapter?: BrainAdapterRef | null,
+  adapter?: BrainExecutorRef | null,
 ): string {
   const normalized = adapter?.provider?.trim().toLowerCase();
   if (
@@ -52,10 +52,10 @@ export function brainAdapterProviderKey(
 
 /** Current Brain Host and Agents executors for trailing Action icons; same id is not duplicated. */
 export function distinctExecutorAdapters(
-  host?: BrainAdapterRef | null,
-  delegated?: BrainAdapterRef | null,
-): BrainAdapterRef[] {
-  const out: BrainAdapterRef[] = [];
+  host?: BrainExecutorRef | null,
+  delegated?: BrainExecutorRef | null,
+): BrainExecutorRef[] {
+  const out: BrainExecutorRef[] = [];
   if (host?.id) {
     out.push(host);
   }
@@ -66,8 +66,8 @@ export function distinctExecutorAdapters(
 }
 
 export function switchExecutorAccessibilityLabel(
-  host?: BrainAdapterRef | null,
-  delegated?: BrainAdapterRef | null,
+  host?: BrainExecutorRef | null,
+  delegated?: BrainExecutorRef | null,
 ): string {
   const brain = brainAdapterLabel(host) || "unavailable";
   const agents = brainAdapterLabel(delegated) || "unavailable";
@@ -77,7 +77,7 @@ export function switchExecutorAccessibilityLabel(
 export function brainStatusLine({
   adapter,
 }: {
-  adapter?: BrainAdapterRef | null;
+  adapter?: BrainExecutorRef | null;
 }): string {
   // Header stays compact — workspace paths live in the workspace viewer, not chrome.
   return brainAdapterLabel(adapter) || "Waiting for connection";

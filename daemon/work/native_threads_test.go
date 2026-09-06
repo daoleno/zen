@@ -94,7 +94,7 @@ func TestCodexAppServerThreadProviderMapsListThreads(t *testing.T) {
 		t.Fatalf("threads = %#v", page.Threads)
 	}
 	thread := page.Threads[0]
-	if thread.ID != "codex:thread-1" || thread.NativeID != "thread-1" || thread.Provider != AgentProviderCodex {
+	if thread.ID != "codex:thread-1" || thread.NativeID != "thread-1" || thread.Provider != WorkerProviderCodex {
 		t.Fatalf("thread ids = %+v", thread)
 	}
 	if thread.Title != "Architecture review" || thread.Preview != "Review Brain executor direction\nwith details" {
@@ -269,14 +269,14 @@ func TestCodexAppServerThreadProviderResumesThread(t *testing.T) {
 }
 
 func TestNativeThreadRuntimeResumeLaunchBuildsCodexTmuxCommand(t *testing.T) {
-	executor := NewAgentExecutor("codex", Executor{
+	executor := NewWorkerExecutor("codex", Executor{
 		Name:    "codex",
 		Command: "/opt/bin/codex --dangerously-bypass-approvals-and-sandbox",
 	})
 	thread := NativeThread{
 		ID:       "codex:thread-1",
 		NativeID: "thread-1",
-		Provider: AgentProviderCodex,
+		Provider: WorkerProviderCodex,
 		Cwd:      "/repo/zen",
 	}
 
@@ -298,10 +298,10 @@ func TestNativeThreadRuntimeResumeLaunchBuildsCodexTmuxCommand(t *testing.T) {
 }
 
 func TestNativeThreadRuntimeResumeLaunchUsesOptionsCwdWhenThreadHasNone(t *testing.T) {
-	executor := NewAgentExecutor("codex", Executor{Name: "codex", Command: "codex"})
+	executor := NewWorkerExecutor("codex", Executor{Name: "codex", Command: "codex"})
 	thread := NativeThread{
 		ID:       "codex:thread-1",
-		Provider: AgentProviderCodex,
+		Provider: WorkerProviderCodex,
 	}
 
 	launch, ok := NativeThreadRuntimeResumeLaunch(executor, thread, NativeThreadResumeOptions{
@@ -487,13 +487,13 @@ func TestCodexAppServerThreadProviderSetsAndClearsGoal(t *testing.T) {
 }
 
 func TestNativeThreadProviderFactoryOnlyEnablesCodex(t *testing.T) {
-	codex := NewAgentExecutor("codex", Executor{Name: "codex", Command: "codex"})
-	if provider, ok := NewNativeThreadProvider(codex); !ok || provider.ProviderID() != AgentProviderCodex {
+	codex := NewWorkerExecutor("codex", Executor{Name: "codex", Command: "codex"})
+	if provider, ok := NewNativeThreadProvider(codex); !ok || provider.ProviderID() != WorkerProviderCodex {
 		t.Fatalf("codex provider = (%#v, %v)", provider, ok)
 	}
 	// Claude has structured transcript conversation support, but not Codex
 	// app-server native thread APIs.
-	claude := NewAgentExecutor("claude", Executor{Name: "claude", Command: "claude"})
+	claude := NewWorkerExecutor("claude", Executor{Name: "claude", Command: "claude"})
 	if provider, ok := NewNativeThreadProvider(claude); ok || provider != nil {
 		t.Fatalf("claude should not expose Codex-style native thread provider = (%#v, %v)", provider, ok)
 	}

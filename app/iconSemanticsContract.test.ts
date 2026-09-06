@@ -38,7 +38,7 @@ describe("product icon semantics", () => {
     expect(source("app/components/terminal/TerminalActionPopover.tsx")).toMatch(
       /key: "model",\s+icon: "hardware-chip-outline"/,
     );
-    expect(source("app/components/agents/AgentSessionRow.tsx")).toContain(
+    expect(source("app/components/workers/WorkerSessionRow.tsx")).toContain(
       '<Ionicons name="git-network" size={9} color={colors.accentStrong} />',
     );
   });

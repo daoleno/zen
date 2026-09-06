@@ -238,7 +238,7 @@ export function InterfaceDevicePerformanceDemo({
               additionsText: "+0",
               deletionsText: "−0",
             }}
-            isStructuredChatAgent
+            isStructuredChatWorker
             onBack={NOOP}
             onOpenSessionDetails={NOOP}
             onOpenGitDiff={NOOP}

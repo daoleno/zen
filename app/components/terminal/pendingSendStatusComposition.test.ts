@@ -19,7 +19,7 @@ describe("pending send status composition", () => {
     ).text();
     const zenUser = bubbleSource.slice(
       bubbleSource.indexOf("export function ZenUserMessage"),
-      bubbleSource.indexOf("function HeartbeatWakeCard"),
+      bubbleSource.indexOf("export function ZenAssistantMessage"),
     );
     const stylesAt = bubbleSource.indexOf("const styles = StyleSheet.create({");
     const stylesBlock = bubbleSource.slice(stylesAt);

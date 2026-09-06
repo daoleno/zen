@@ -1,4 +1,4 @@
-import type { Agent } from '../store/agents';
+import type { Worker } from '../store/workers';
 import { commandBinary } from './agentCommands';
 
 export type TerminalFlavor =
@@ -29,13 +29,13 @@ type FlavorSignal = {
   weight: number;
 };
 
-type AgentFlavorSource = Pick<
-  Agent,
+type WorkerFlavorSource = Pick<
+  Worker,
   'name' | 'project' | 'cwd' | 'command' | 'summary' | 'last_output_lines'
 >;
 
 export function detectTerminalFlavor(
-  agent: AgentFlavorSource,
+  agent: WorkerFlavorSource,
 ): TerminalFlavor {
   const signals: FlavorSignal[] = [];
   const command = normalize(agent.command);

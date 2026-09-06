@@ -15,7 +15,7 @@ import { TerminalOutputStateCard } from "./TerminalOutputStateCard";
 interface TerminalOutputPaneProps {
   sessionKey: string | null;
   serverId: string;
-  agentId: string;
+  workerId: string;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
@@ -43,7 +43,7 @@ interface TerminalOutputPaneProps {
 function TerminalOutputPaneImpl({
   sessionKey,
   serverId,
-  agentId,
+  workerId,
   theme,
   chrome,
   terminalRef,
@@ -67,7 +67,7 @@ function TerminalOutputPaneImpl({
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalOutputPaneProps) {
-  const hasTerminalTarget = Boolean(sessionKey && serverId && agentId);
+  const hasTerminalTarget = Boolean(sessionKey && serverId && workerId);
   const shouldAutoResumeTerminal =
     terminalSurfaceActive && canRenderTerminal && hasTerminalTarget;
 
@@ -89,7 +89,7 @@ function TerminalOutputPaneImpl({
       cancelAnimationFrame(frame);
     };
   }, [
-    agentId,
+    workerId,
     hasTerminalTarget,
     serverId,
     sessionKey,
@@ -110,12 +110,12 @@ function TerminalOutputPaneImpl({
           outputBottomInset > 0 ? { paddingBottom: outputBottomInset } : null,
         ]}
       >
-        {shouldMountTerminalSurface && sessionKey && serverId && agentId ? (
+        {shouldMountTerminalSurface && sessionKey && serverId && workerId ? (
           <TerminalSurface
             key={sessionKey}
             ref={terminalRef}
             serverId={serverId}
-            targetId={agentId}
+            targetId={workerId}
             theme={theme}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={onCtrlArmedChange}

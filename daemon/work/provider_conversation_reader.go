@@ -66,14 +66,14 @@ func (r *ProviderConversationReader) ChangedEventIDs() []string {
 }
 
 type providerConversationBinding struct {
-	provider  string
-	agentID   string
-	agentName string
-	cwd       string
-	command   string
-	startedAt time.Time
-	processID int
-	hidden    bool
+	provider   string
+	workerID   string
+	workerName string
+	cwd        string
+	command    string
+	startedAt  time.Time
+	processID  int
+	hidden     bool
 }
 
 type providerConversationSource struct {
@@ -100,26 +100,26 @@ func NewProviderConversationReader() *ProviderConversationReader {
 // Source selection intentionally runs on every call; only parsing of the
 // selected unchanged source is reused.
 func (r *ProviderConversationReader) Load(
-	agent classifier.Agent,
+	worker classifier.Worker,
 	provider string,
 	now time.Time,
 ) (CodexConversation, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	r.bind(agent, provider)
+	r.bind(worker, provider)
 
 	switch provider {
-	case AgentProviderCursor:
-		return r.loadCursorConversationForAgent(agent, now)
-	case AgentProviderGrok:
-		return r.loadGrokConversationForAgent(agent, now)
-	case AgentProviderClaude:
-		return r.loadClaudeConversationForAgent(agent, now)
-	case AgentProviderCodex:
-		return r.loadCodexConversationForAgent(agent, now)
-	case AgentProviderPi:
-		return r.loadPiConversationForAgent(agent, now)
-	case AgentProviderOpenCode:
-		return r.loadOpenCodeConversationForAgent(agent, now)
+	case WorkerProviderCursor:
+		return r.loadCursorConversationForWorker(worker, now)
+	case WorkerProviderGrok:
+		return r.loadGrokConversationForWorker(worker, now)
+	case WorkerProviderClaude:
+		return r.loadClaudeConversationForWorker(worker, now)
+	case WorkerProviderCodex:
+		return r.loadCodexConversationForWorker(worker, now)
+	case WorkerProviderPi:
+		return r.loadPiConversationForWorker(worker, now)
+	case WorkerProviderOpenCode:
+		return r.loadOpenCodeConversationForWorker(worker, now)
 	default:
 		r.resetSource()
 		return CodexConversation{
@@ -130,16 +130,16 @@ func (r *ProviderConversationReader) Load(
 	}
 }
 
-func (r *ProviderConversationReader) bind(agent classifier.Agent, provider string) {
+func (r *ProviderConversationReader) bind(worker classifier.Worker, provider string) {
 	next := providerConversationBinding{
-		provider:  provider,
-		agentID:   strings.TrimSpace(agent.ID),
-		agentName: strings.TrimSpace(agent.Name),
-		cwd:       strings.TrimSpace(agent.Cwd),
-		command:   strings.TrimSpace(agent.Command),
-		startedAt: agent.StartedAt,
-		processID: agent.ProcessID,
-		hidden:    agent.Hidden,
+		provider:   provider,
+		workerID:   strings.TrimSpace(worker.ID),
+		workerName: strings.TrimSpace(worker.Name),
+		cwd:        strings.TrimSpace(worker.Cwd),
+		command:    strings.TrimSpace(worker.Command),
+		startedAt:  worker.StartedAt,
+		processID:  worker.ProcessID,
+		hidden:     worker.Hidden,
 	}
 	if r.bound && r.binding.equal(next) {
 		return
@@ -148,7 +148,7 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 		r.cursorProjectRootsCWD = ""
 		r.cursorProjectRoots = nil
 	}
-	if !r.bound || r.binding.provider != next.provider || r.binding.agentID != next.agentID ||
+	if !r.bound || r.binding.provider != next.provider || r.binding.workerID != next.workerID ||
 		r.binding.command != next.command || r.binding.cwd != next.cwd {
 		r.openCodeOwnedSessionID = ""
 		r.openCodeOwnedCandidate = openCodeSessionCandidate{}
@@ -174,8 +174,8 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 
 func (b providerConversationBinding) equal(other providerConversationBinding) bool {
 	return b.provider == other.provider &&
-		b.agentID == other.agentID &&
-		b.agentName == other.agentName &&
+		b.workerID == other.workerID &&
+		b.workerName == other.workerName &&
 		b.cwd == other.cwd &&
 		b.command == other.command &&
 		b.startedAt.Equal(other.startedAt) &&

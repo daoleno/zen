@@ -32,8 +32,8 @@ func TestOpenCodeEqualCountDeleteInsertSwap(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo/swap", Command: "opencode", StartedAt: started}
-	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	worker := classifier.Worker{Cwd: "/repo/swap", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestOpenCodeEqualCountDeleteInsertSwap(t *testing.T) {
 		t.Fatalf("swap: %v: %s", err, out)
 	}
 
-	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	second, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestOpenCodeEqualCountDeleteInsertSwap(t *testing.T) {
 
 	// A fresh subscription must observe the swapped state too.
 	fresh := NewProviderConversationReader()
-	freshConversation, err := fresh.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	freshConversation, err := fresh.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

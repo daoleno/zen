@@ -47,16 +47,16 @@ func piOwnedSessionRoot(zenHome string) (string, error) {
 func EnsurePiSessionLaunchCommand(command string) (string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
-		command = AgentProviderPi
+		command = WorkerProviderPi
 	}
-	if InferAgentProvider(command) != AgentProviderPi {
+	if InferWorkerProvider(command) != WorkerProviderPi {
 		return command, nil
 	}
 	options, ok := inspectLaunchCommandOptions(command)
 	if !ok {
 		return command, nil
 	}
-	if !scheduledProviderExecutable(AgentProviderPi, options.executable) {
+	if !scheduledProviderExecutable(WorkerProviderPi, options.executable) {
 		return command, nil
 	}
 	continuePresent, _ := options.option("", "--continue", "-c")

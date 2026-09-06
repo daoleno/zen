@@ -58,6 +58,29 @@ public listener for Link.
 6. Android and iOS consume the same TypeScript transport contract. Only the
    TLS/SPKI socket bridge is platform native.
 
+## Execution Ownership
+
+Brain owns objectives, scheduling, review and acceptance. A Zen Worker is its
+managed execution unit, distinct from provider-native Agent roles and Codex
+internal subagents. The lifecycle engine serializes Work transitions; Watcher
+supplies exact Session/process evidence and publishes ordered projections.
+Host transport receipts and Worker execution authority are separate records.
+See [Work lifecycle](work-lifecycle.md) for receipt and upgrade contracts.
+
+Watcher takes an inventory epoch before external reads. A registration or
+control update after that boundary cannot be deleted or overwritten by the old
+inventory. Missing-Session evidence is persisted outside the state lock and
+retried on storage failure. Event publication is serialized separately, so a
+slow event consumer can read a snapshot without deadlocking the publisher.
+
+The app's current-server owner also guards delayed results. Sessions, service
+discovery, Stats, Terminal and Work routes do not choose a server by latency or
+aggregate configuration records. Switching servers hides old data immediately;
+already-submitted operations retain their original identity until settlement.
+Unsaved Work text remains in the app-lifetime Work draft store, keyed by server
+and document. This is not durable offline storage; daemon saves remain the
+durable document authority.
+
 ## Zen Link relay protocol
 
 The MVP deliberately uses standard, widely implemented primitives:

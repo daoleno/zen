@@ -39,7 +39,7 @@ func main() {
 		}
 	}()
 
-	// Periodically print agent list summary to stderr.
+	// Periodically print worker list summary to stderr.
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -48,13 +48,13 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				agents := w.Agents()
-				if len(agents) == 0 {
+				workers := w.Workers()
+				if len(workers) == 0 {
 					fmt.Fprintln(os.Stderr, "[no tmux sessions found]")
 					continue
 				}
-				fmt.Fprintf(os.Stderr, "\n=== %d agents ===\n", len(agents))
-				for _, a := range agents {
+				fmt.Fprintf(os.Stderr, "\n=== %d agents ===\n", len(workers))
+				for _, a := range workers {
 					fmt.Fprintf(os.Stderr, "  %-20s [%-8s] %s\n", a.ID, a.State, a.Summary)
 				}
 			}

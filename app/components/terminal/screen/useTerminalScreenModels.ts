@@ -1,9 +1,9 @@
 import type { ConnectionIssue } from "../../../services/connectionIssue";
-import type { Agent, ConnectionState } from "../../../store/agents";
-import type { BrainAgentRef } from "../../../store/brain";
+import type { Worker, ConnectionState } from "../../../store/workers";
+import type { BrainWorkerRef } from "../../../store/brain";
 import type { WorkItem } from "../../../store/work";
 import type {
-  StoredAgentAliases,
+  StoredWorkerAliases,
   StoredInterfaceRenderModes,
 } from "../../../services/storage";
 import { useTerminalGitDiff } from "../useTerminalGitDiff";
@@ -14,48 +14,48 @@ import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
 interface UseTerminalScreenModelsInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   routeSessionHint: TerminalRouteSessionHint;
   screenFocused: boolean;
-  agentByKey: ReadonlyMap<string, Agent>;
+  workerByKey: ReadonlyMap<string, Worker>;
   workByKey: Record<string, WorkItem>;
-  agentAliases: StoredAgentAliases;
+  workerAliases: StoredWorkerAliases;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   interfaceRenderModes: StoredInterfaceRenderModes;
-  brainHostAgent?: BrainAgentRef | null;
+  brainHostWorker?: BrainWorkerRef | null;
   brainHostServerId?: string | null;
 }
 
 export function useTerminalScreenModels({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   routeSessionHint,
   screenFocused,
-  agentByKey,
+  workerByKey,
   workByKey,
-  agentAliases,
+  workerAliases,
   serverConnections,
   serverConnectionIssues,
   interfaceRenderModes,
-  brainHostAgent,
+  brainHostWorker,
   brainHostServerId,
 }: UseTerminalScreenModelsInput) {
   const theme = useTerminalThemeChrome();
   const route = useTerminalRouteModel({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     routeSessionHint,
-    agentByKey,
+    workerByKey,
     workByKey,
-    agentAliases,
+    workerAliases,
     serverConnections,
     serverConnectionIssues,
     interfaceRenderModes,
-    brainHostAgent,
+    brainHostWorker,
     brainHostServerId,
   });
   const viewport = useTerminalViewportModel({
@@ -69,7 +69,7 @@ export function useTerminalScreenModels({
   });
   const gitDiff = useTerminalGitDiff({
     serverId,
-    agentId,
+    workerId,
     cwd: route.gitDiffCwd,
     connectionState: route.connectionState,
     hasTerminalRoute: route.hasTerminalRoute,

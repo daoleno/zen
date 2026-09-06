@@ -231,6 +231,6 @@ describe("screenshot demo isolation", () => {
     expect(demoRouteSource).not.toContain('from "../services/websocket"');
     expect(demoRouteSource).not.toContain('from "../services/storage"');
     expect(demoRouteSource).not.toContain('from "../store/brain"');
-    expect(demoRouteSource).not.toContain('from "../store/agents"');
+    expect(demoRouteSource).not.toContain('from "../store/workers"');
   });
 });

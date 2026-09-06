@@ -14,7 +14,7 @@ import {
 
 interface KillRecord {
   serverId: string;
-  agentId: string;
+  workerId: string;
   requestId?: string;
 }
 
@@ -32,8 +32,8 @@ class FakeTransport implements SessionTerminationTransport {
     this.listeners.get(type)?.delete(handler);
   }
 
-  killAgent(serverId: string, agentId: string, requestId?: string): void {
-    this.kills.push({ serverId, agentId, requestId });
+  killWorker(serverId: string, workerId: string, requestId?: string): void {
+    this.kills.push({ serverId, workerId, requestId });
   }
 
   emit(type: string, data: any): void {
@@ -48,9 +48,9 @@ class FakeTransport implements SessionTerminationTransport {
 }
 
 const targets = [
-  { sessionKey: "[\"srv-a\",\"agent-1\"]", serverId: "srv-a", agentId: "agent-1" },
-  { sessionKey: "[\"srv-a\",\"agent-2\"]", serverId: "srv-a", agentId: "agent-2" },
-  { sessionKey: "[\"srv-b\",\"agent-3\"]", serverId: "srv-b", agentId: "agent-3" },
+  { sessionKey: "[\"srv-a\",\"agent-1\"]", serverId: "srv-a", workerId: "agent-1" },
+  { sessionKey: "[\"srv-a\",\"agent-2\"]", serverId: "srv-a", workerId: "agent-2" },
+  { sessionKey: "[\"srv-b\",\"agent-3\"]", serverId: "srv-b", workerId: "agent-3" },
 ];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,7 +61,7 @@ function settleAll(
 ): void {
   // Fail agent-2, succeed the rest via archived events.
   for (const kill of transport.kills) {
-    if (kill.agentId === "agent-2") {
+    if (kill.workerId === "agent-2") {
       transport.emit("error", {
         serverId: kill.serverId,
         request_id: kill.requestId,
@@ -69,9 +69,9 @@ function settleAll(
         message: "session still live",
       });
     } else {
-      transport.emit("agent_session_archived", {
+      transport.emit("worker_session_archived", {
         serverId: kill.serverId,
-        agent_session: { id: kill.agentId },
+        worker_session: { id: kill.workerId },
       });
     }
   }
@@ -119,7 +119,7 @@ describe("SessionTerminationBatch.start", () => {
     for (const kill of transport.kills) {
       expect(kill.requestId).toBeTruthy();
     }
-    expect(new Set(transport.kills.map((k) => k.agentId))).toEqual(
+    expect(new Set(transport.kills.map((k) => k.workerId))).toEqual(
       new Set(["agent-1", "agent-2", "agent-3"]),
     );
   });
@@ -139,7 +139,7 @@ describe("SessionTerminationBatch.start", () => {
 
   test("offline transport failure settles immediately as retryable", () => {
     const transport = new FakeTransport();
-    transport.killAgent = () => {
+    transport.killWorker = () => {
       throw new Error("Daemon is not connected.");
     };
     const settled: SessionTerminationSummary[] = [];
@@ -172,7 +172,7 @@ describe("SessionTerminationBatch settlement", () => {
       onSettled: () => undefined,
     });
     batch.start();
-    const kill = transport.kills.find((k) => k.agentId === "agent-1")!;
+    const kill = transport.kills.find((k) => k.workerId === "agent-1")!;
     transport.emit("error", {
       serverId: "srv-a",
       request_id: kill.requestId,
@@ -207,7 +207,7 @@ describe("SessionTerminationBatch settlement", () => {
     expect(batch.summary.failed).toBe(0);
   });
 
-  test("agent_session_archived settles the matching Session as success", () => {
+  test("worker_session_archived settles the matching Session as success", () => {
     const transport = new FakeTransport();
     const batch = new SessionTerminationBatch({
       transport,
@@ -215,15 +215,15 @@ describe("SessionTerminationBatch settlement", () => {
       onSettled: () => undefined,
     });
     batch.start();
-    transport.emit("agent_session_archived", {
+    transport.emit("worker_session_archived", {
       serverId: "srv-a",
-      agent_session: { id: "agent-1" },
+      worker_session: { id: "agent-1" },
     });
     expect(batch.summary.succeeded).toBe(1);
     expect(batch.summary.running).toBe(false);
   });
 
-  test("absence from a full agent_session_list settles as success", () => {
+  test("absence from a full worker_session_list settles as success", () => {
     const transport = new FakeTransport();
     const batch = new SessionTerminationBatch({
       transport,
@@ -232,22 +232,22 @@ describe("SessionTerminationBatch settlement", () => {
     });
     batch.start();
     // Snapshot without agent-1 but with agent-3: only agent-1 settles.
-    transport.emit("agent_session_list", {
+    transport.emit("worker_session_list", {
       serverId: "srv-a",
-      agent_sessions: [{ id: "agent-9" }],
+      worker_sessions: [{ id: "agent-9" }],
     });
     expect(batch.summary.succeeded).toBe(1);
     expect(batch.summary.pending).toBe(1);
     // Next snapshot without agent-3 settles the rest.
-    transport.emit("agent_session_list", {
+    transport.emit("worker_session_list", {
       serverId: "srv-b",
-      agent_sessions: [],
+      worker_sessions: [],
     });
     expect(batch.summary.succeeded).toBe(2);
     expect(batch.summary.running).toBe(false);
   });
 
-  test("presence in agent_session_list keeps the entry pending", () => {
+  test("presence in worker_session_list keeps the entry pending", () => {
     const transport = new FakeTransport();
     const batch = new SessionTerminationBatch({
       transport,
@@ -255,9 +255,9 @@ describe("SessionTerminationBatch settlement", () => {
       onSettled: () => undefined,
     });
     batch.start();
-    transport.emit("agent_session_list", {
+    transport.emit("worker_session_list", {
       serverId: "srv-a",
-      agent_sessions: [{ id: "agent-1" }],
+      worker_sessions: [{ id: "agent-1" }],
     });
     expect(batch.summary.pending).toBe(1);
   });
@@ -271,9 +271,9 @@ describe("SessionTerminationBatch settlement", () => {
     });
     batch.start();
     const kill = transport.kills[0];
-    transport.emit("agent_session_archived", {
+    transport.emit("worker_session_archived", {
       serverId: "srv-a",
-      agent_session: { id: "agent-1" },
+      worker_session: { id: "agent-1" },
     });
     transport.emit("error", {
       serverId: "srv-a",
@@ -332,7 +332,7 @@ describe("SessionTerminationBatch settlement", () => {
     expect(final.total).toBe(3);
     expect(final.succeeded).toBe(2);
     expect(final.failed).toBe(1);
-    expect(final.failedEntries.map((e) => e.agentId)).toEqual(["agent-2"]);
+    expect(final.failedEntries.map((e) => e.workerId)).toEqual(["agent-2"]);
     expect(final.running).toBe(false);
     // Never reports all succeeded when only some did.
     expect(final.succeeded).not.toBe(final.total);
@@ -348,9 +348,9 @@ describe("SessionTerminationBatch settlement", () => {
     });
     batch.start();
     for (const kill of transport.kills) {
-      transport.emit("agent_session_archived", {
+      transport.emit("worker_session_archived", {
         serverId: kill.serverId,
-        agent_session: { id: kill.agentId },
+        worker_session: { id: kill.workerId },
       });
     }
     expect(batch.summary.succeeded).toBe(2);
@@ -373,17 +373,17 @@ describe("SessionTerminationBatch dispose", () => {
     });
     batch.start();
     expect(transport.listenerCount("error")).toBe(1);
-    expect(transport.listenerCount("agent_session_archived")).toBe(1);
-    expect(transport.listenerCount("agent_session_list")).toBe(1);
+    expect(transport.listenerCount("worker_session_archived")).toBe(1);
+    expect(transport.listenerCount("worker_session_list")).toBe(1);
     expect(summaries).toHaveLength(1); // initial running summary from start()
     batch.dispose();
     expect(transport.listenerCount("error")).toBe(0);
-    expect(transport.listenerCount("agent_session_archived")).toBe(0);
-    expect(transport.listenerCount("agent_session_list")).toBe(0);
+    expect(transport.listenerCount("worker_session_archived")).toBe(0);
+    expect(transport.listenerCount("worker_session_list")).toBe(0);
     // No event or timer may settle after dispose.
-    transport.emit("agent_session_archived", {
+    transport.emit("worker_session_archived", {
       serverId: "srv-a",
-      agent_session: { id: "agent-1" },
+      worker_session: { id: "agent-1" },
     });
     await sleep(40);
     expect(summaries).toHaveLength(1);
@@ -393,14 +393,11 @@ describe("SessionTerminationBatch dispose", () => {
 
 describe("confirmation and summary copy", () => {
   test("confirmation names the exact selected count", () => {
-    expect(sessionTerminationConfirmMessage(1, 1)).toContain(
+    expect(sessionTerminationConfirmMessage(1)).toContain(
       "This session will be terminated.",
     );
-    expect(sessionTerminationConfirmMessage(3, 1)).toContain(
+    expect(sessionTerminationConfirmMessage(3)).toContain(
       "These 3 sessions will be terminated.",
-    );
-    expect(sessionTerminationConfirmMessage(3, 2)).toContain(
-      "across 2 daemons",
     );
   });
 

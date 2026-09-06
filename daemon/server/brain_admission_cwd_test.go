@@ -18,7 +18,7 @@ func TestBrainAdmissionClearsPendingPathAcrossCWDLossAndProviderEcho(t *testing.
 		t.Fatal(err)
 	}
 	threadID := "thread-admission-p0"
-	hostID := "brain-agent-host:@p0"
+	hostID := "zen-worker-host:@p0"
 	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
 		t.Fatal(err)
 	}

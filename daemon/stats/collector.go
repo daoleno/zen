@@ -279,16 +279,16 @@ func (c *Collector) refresh() {
 	}
 
 	// Collect range-scoped agent usage from timestamped local data files.
-	agentByDate := c.collectClaudeSessionStats(home)
-	mergeDateAgg(agentByDate, c.collectGrokStats(home))
-	mergeDateAgg(agentByDate, c.collectCursorAgentStats(home))
-	mergeDateAgg(agentByDate, c.collectOpenCodeStats(home))
-	mergeDateAgg(agentByDate, c.collectPiStats(home))
+	workerByDate := c.collectClaudeSessionStats(home)
+	mergeDateAgg(workerByDate, c.collectGrokStats(home))
+	mergeDateAgg(workerByDate, c.collectCursorAgentStats(home))
+	mergeDateAgg(workerByDate, c.collectOpenCodeStats(home))
+	mergeDateAgg(workerByDate, c.collectPiStats(home))
 
 	// Collect Codex CLI data.
 	codexDaily, codexModelsByDate, codexProjectsByDate := c.collectCodexStats(home)
 
-	dailyMap := buildDailySessions(agentByDate, codexDaily)
+	dailyMap := buildDailySessions(workerByDate, codexDaily)
 
 	// Build time-range aggregates
 	now := time.Now()
@@ -313,19 +313,19 @@ func (c *Collector) refresh() {
 			fromDate = monthAgo
 		}
 
-		modelAgg := aggregateModelsByDate(agentByDate, fromDate, "9999-99-99")
+		modelAgg := aggregateModelsByDate(workerByDate, fromDate, "9999-99-99")
 		mergeModelAgg(modelAgg, aggregateCodexModelsByDate(codexModelsByDate, fromDate, "9999-99-99"))
 		rd.Models = buildModelStats(modelAgg)
-		rd.Tools = buildToolStats(aggregateToolsByDate(agentByDate, fromDate, "9999-99-99"))
-		rd.Skills = buildSkillStats(aggregateSkillsByDate(agentByDate, fromDate, "9999-99-99"))
+		rd.Tools = buildToolStats(aggregateToolsByDate(workerByDate, fromDate, "9999-99-99"))
+		rd.Skills = buildSkillStats(aggregateSkillsByDate(workerByDate, fromDate, "9999-99-99"))
 		rd.Projects = buildProjectStats(
-			aggregateProjectsByDate(agentByDate, fromDate, "9999-99-99"),
+			aggregateProjectsByDate(workerByDate, fromDate, "9999-99-99"),
 			aggregateCodexProjectsByDate(codexProjectsByDate, fromDate, "9999-99-99"),
 		)
 		attachRangeTotals(rd)
 
 		// Build per-day activity cells for this range.
-		rd.Days = buildDayCells(agentByDate, codexModelsByDate, fromDate, "9999-99-99")
+		rd.Days = buildDayCells(workerByDate, codexModelsByDate, fromDate, "9999-99-99")
 	}
 
 	// Publish local history before the bounded network lookup so an unavailable

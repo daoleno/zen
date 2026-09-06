@@ -45,25 +45,25 @@ type SessionProjection struct {
 // projection order (newest activity first). It never launches, rebinds, hides,
 // or retires a Session: this is the read-only inventory used by presentation
 // adapters.
-func (s *Service) DelegatedSessions() ([]AgentRef, error) {
+func (s *Service) DelegatedSessions() ([]WorkerRef, error) {
 	if s == nil || s.watcher == nil {
-		return []AgentRef{}, nil
+		return []WorkerRef{}, nil
 	}
 	host, err := s.store.HostSession()
 	if err != nil {
 		return nil, err
 	}
 	hostID := strings.TrimSpace(host.ID)
-	agents := s.watcher.Agents()
-	out := make([]AgentRef, 0, len(agents))
-	for _, agent := range agents {
-		if agent == nil || agent.Hidden || !agent.Delegated || strings.TrimSpace(agent.ID) == "" {
+	workers := s.watcher.Workers()
+	out := make([]WorkerRef, 0, len(workers))
+	for _, worker := range workers {
+		if worker == nil || worker.Hidden || !worker.Delegated || strings.TrimSpace(worker.ID) == "" {
 			continue
 		}
-		if hostID != "" && agent.ID == hostID {
+		if hostID != "" && worker.ID == hostID {
 			continue
 		}
-		out = append(out, agentRefFromClassifier(agent))
+		out = append(out, workerRefFromClassifier(worker))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Updated.After(out[j].Updated)
@@ -130,8 +130,8 @@ func (s *Service) SubmitExternalSessionInput(sessionID, receipt, body string) (E
 	if receipt == "" || body == "" {
 		return ExternalInputNotSubmitted, fmt.Errorf("external Session input requires receipt and body")
 	}
-	agent := s.watcher.GetAgent(sessionID)
-	if agent == nil || agent.Hidden || !agent.Delegated {
+	worker := s.watcher.GetWorker(sessionID)
+	if worker == nil || worker.Hidden || !worker.Delegated {
 		return ExternalInputNotSubmitted, fmt.Errorf("delegated Session is unavailable")
 	}
 	result, err := s.watcher.SendInputWithReceiptResult(sessionID, body, receipt)
@@ -152,11 +152,11 @@ func (s *Service) SessionProjection(sessionID string) (SessionProjection, error)
 	if s == nil || s.watcher == nil || s.store == nil {
 		return projection, nil
 	}
-	agent := s.watcher.GetAgent(projection.SessionID)
-	if agent != nil && !agent.Hidden && agent.Delegated {
+	worker := s.watcher.GetWorker(projection.SessionID)
+	if worker != nil && !worker.Hidden && worker.Delegated {
 		projection.Present = true
-		projection.Label = sessionDisplayLabel(agent)
-		projection.Status = string(agent.State)
+		projection.Label = sessionDisplayLabel(worker)
+		projection.Status = string(worker.State)
 		if turn, hasTurn, turnErr := s.store.Turn(projection.SessionID); turnErr == nil && hasTurn {
 			projection.TurnID = turn.TurnID
 			projection.TurnStatus = string(turn.Status)
@@ -168,7 +168,7 @@ func (s *Service) SessionProjection(sessionID string) (SessionProjection, error)
 			projection.WorkTitle = workItem.Title
 			projection.ThreadID = workItem.SourceThreadID
 		}
-		projection.Assistant = s.sessionAssistantItems(agent, s.nowUTC())
+		projection.Assistant = s.sessionAssistantItems(worker, s.nowUTC())
 	} else {
 		// The Session is absent/not visible: retain Turn/Work so an adapter can
 		// mark completion/staleness without having to guess.
@@ -187,12 +187,12 @@ func (s *Service) SessionProjection(sessionID string) (SessionProjection, error)
 	return projection, nil
 }
 
-func (s *Service) sessionAssistantItems(agent *classifier.Agent, now time.Time) []SessionAssistantItem {
-	provider := work.InferAgentProvider(agent.Command, agent.Name)
+func (s *Service) sessionAssistantItems(worker *classifier.Worker, now time.Time) []SessionAssistantItem {
+	provider := work.InferWorkerProvider(worker.Command, worker.Name)
 	if provider == "" {
 		return nil
 	}
-	conversation, err := s.loadSessionAssistantConversation(agent, provider, now)
+	conversation, err := s.loadSessionAssistantConversation(worker, provider, now)
 	if err != nil {
 		return nil
 	}
@@ -219,20 +219,20 @@ func (s *Service) sessionAssistantItems(agent *classifier.Agent, now time.Time) 
 	return items
 }
 
-func (s *Service) loadSessionAssistantConversation(agent *classifier.Agent, provider string, now time.Time) (work.CodexConversation, error) {
+func (s *Service) loadSessionAssistantConversation(worker *classifier.Worker, provider string, now time.Time) (work.CodexConversation, error) {
 	if s != nil && s.sessionConversationHook != nil {
-		return s.sessionConversationHook(agent, provider, now)
+		return s.sessionConversationHook(worker, provider, now)
 	}
-	if agent == nil {
+	if worker == nil {
 		return work.CodexConversation{}, nil
 	}
-	return work.NewProviderConversationReader().Load(*agent, provider, now)
+	return work.NewProviderConversationReader().Load(*worker, provider, now)
 }
 
-func sessionDisplayLabel(agent *classifier.Agent) string {
-	name := strings.TrimSpace(agent.Name)
+func sessionDisplayLabel(worker *classifier.Worker) string {
+	name := strings.TrimSpace(worker.Name)
 	if name == "" {
-		return strings.TrimSpace(agent.ID)
+		return strings.TrimSpace(worker.ID)
 	}
 	runes := []rune(name)
 	if len(runes) > 128 {

@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect } from "react";
-import { useAgents } from "../../../store/agents";
+import { useWorkers } from "../../../store/workers";
 import { useBrain } from "../../../store/brain";
 import { useWork } from "../../../store/work";
 import { useCurrentSession } from "../../../store/currentSession";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
-import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
+import { useTerminalWorkerIndex } from "./useTerminalWorkerIndex";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenAccessory } from "./useTerminalScreenAccessory";
 import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
@@ -18,12 +18,12 @@ import { useSessionResourceSheet } from "./useSessionResourceSheet";
 import { useSessionProviderSheet } from "./useSessionProviderSheet";
 
 export default function TerminalScreen() {
-  const { state } = useAgents();
+  const { state } = useWorkers();
   const { state: brainState } = useBrain();
   const { state: workState } = useWork();
   const { setCurrentSession } = useCurrentSession();
   const {
-    agentId,
+    workerId,
     serverId,
     sessionKey,
     initialComposerFocusGrant,
@@ -50,24 +50,23 @@ export default function TerminalScreen() {
   // current model on this Session. Kept across screen pop (never cleared) so
   // opening Settings from anywhere targets the Session the user last viewed.
   useEffect(() => {
-    if (!serverId || !agentId) return;
-    setCurrentSession({ serverId, agentId });
-  }, [agentId, serverId, setCurrentSession]);
+    if (!serverId || !workerId) return;
+    setCurrentSession({ serverId, workerId });
+  }, [workerId, serverId, setCurrentSession]);
   const chromeLayout = useTerminalScreenChrome({ sessionKey });
   const { closeMenu, menuPosition, menuVisible } = chromeLayout;
-  const { agentByKey } = useTerminalAgentIndex({
-    agents: state.agents,
+  const { workerByKey } = useTerminalWorkerIndex({
+    agents: state.workers,
     hydratedServers: state.hydratedServers,
   });
   const brainForServer = serverId ? brainState.byServer[serverId] : undefined;
   const {
-    agentAliases,
-    setAgentAliases,
+    workerAliases,
+    setWorkerAliases,
     interfaceRenderModes,
     setInterfaceRenderModes,
-    setRecentAgentOpens,
+    setRecentWorkerOpens,
     server,
-    setServer,
   } = useTerminalScreenStorage({
     serverId,
     sessionKey,
@@ -80,17 +79,17 @@ export default function TerminalScreen() {
     viewport: viewportModel,
   } = useTerminalScreenModels({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     routeSessionHint,
     screenFocused,
-    agentByKey,
+    workerByKey,
     workByKey: workState.byKey,
-    agentAliases,
+    workerAliases,
     serverConnections: state.serverConnections,
     serverConnectionIssues: state.serverConnectionIssues,
     interfaceRenderModes,
-    brainHostAgent: brainForServer?.host_agent ?? null,
+    brainHostWorker: brainForServer?.host_worker ?? null,
     brainHostServerId: brainForServer?.serverId ?? null,
   });
   const { chromeColors, chatChrome, chatTheme, statusBarStyle, terminalTheme } =
@@ -102,9 +101,9 @@ export default function TerminalScreen() {
     connectionState,
     displayName,
     hasTerminalRoute,
-    isStructuredChatAgent,
+    isStructuredChatWorker,
     linkedWork,
-    presentedAgent,
+    presentedWorker,
     showInterfaceChat,
   } = route;
   const {
@@ -116,7 +115,7 @@ export default function TerminalScreen() {
     handleAccessoryLayout,
   } = useTerminalScreenAccessory({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     accessoryVisible: viewportModel.accessoryVisible,
     ctrlDisabled: renameVisible,
@@ -134,16 +133,16 @@ export default function TerminalScreen() {
   const navigationActions = useTerminalNavigationActions({
     sessionKey,
     serverId,
-    agentId,
+    workerId,
     connectionState,
     displayName,
-    agentServerName: agent?.serverName,
+    workerServerName: agent?.serverName,
     closeMenu,
   });
 
   const sessionActions = useTerminalSessionActions({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     connectionState,
     creatingSession,
@@ -154,22 +153,21 @@ export default function TerminalScreen() {
     setNewTerminalVisible,
     setCreatingSession,
     setRenameVisible,
-    setAgentAliases,
+    setWorkerAliases,
     setInterfaceRenderModes,
-    setRecentAgentOpens,
-    setServer,
+    setRecentWorkerOpens,
   });
   const { openNewTerminal } = sessionActions;
 
   const resourceSheet = useSessionResourceSheet({
     serverId,
-    agentId,
+    workerId,
     connectionConnected: connectionState === "connected",
   });
 
   const routeSheet = useSessionProviderSheet({
     serverId,
-    agentId,
+    workerId,
     capabilities: agent?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
     eagerLoad: true,
@@ -190,7 +188,7 @@ export default function TerminalScreen() {
   const { overlayProps, topBarProps, viewportProps } =
     useTerminalScreenLayoutProps({
       agent,
-      agentId,
+      workerId,
       accessoryBottomOffset,
       chrome: chromeColors,
       chatChrome,
@@ -209,15 +207,15 @@ export default function TerminalScreen() {
       handleCtrlArmedChange,
       hasLinkedWork: Boolean(linkedWork),
       hasTerminalRoute,
-      isStructuredChatAgent,
+      isStructuredChatWorker,
       keyboardVisible,
       menuPosition,
       menuVisible,
       newTerminalVisible,
       outputBottomInset,
-      presentedAgent,
+      presentedWorker,
       renameDraft,
-      renamePlaceholder: agent?.name || agentId,
+      renamePlaceholder: agent?.name || workerId,
       renameVisible,
       resourceSheetVisible: resourceSheet.visible,
       resourceSheetLoading: resourceSheet.loading,

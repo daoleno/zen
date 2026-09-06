@@ -46,12 +46,12 @@ import {
   type SkillsSurfaceSection,
 } from "../services/skillsSurfaceModel";
 import { wsClient } from "../services/websocket";
-import { useAgents } from "../store/agents";
+import { useWorkers } from "../store/workers";
 import { useCurrentServer } from "../store/currentServer";
 
 export default function SkillsScreen() {
   const router = useRouter();
-  const { state } = useAgents();
+  const { state } = useWorkers();
   const { currentServer } = useCurrentServer();
   const serverId = currentServer?.id ?? null;
   const connected = Boolean(
@@ -90,13 +90,13 @@ export default function SkillsScreen() {
         ? selectedProject.current.cwd
         : "";
     const cwd = selectStableSkillsProjectCwd(
-      state.agents,
+      state.workers,
       serverId,
       previous,
     );
     selectedProject.current = { serverId, cwd };
     return cwd;
-  }, [serverId, state.agents]);
+  }, [serverId, state.workers]);
   const skillsContextKey = `${serverId ?? "none"}\u0000${projectCwd}`;
   const currentSkillsContext = useRef(skillsContextKey);
   const currentServerId = useRef(serverId);

@@ -19,11 +19,11 @@ func TestProviderAdmissionDigestPreservesEmbeddedWrapperMarkers(t *testing.T) {
 		"trailing spaces and tabs \t",
 	}
 	for _, provider := range []string{
-		AgentProviderCursor,
-		AgentProviderClaude,
-		AgentProviderGrok,
-		AgentProviderPi,
-		AgentProviderOpenCode,
+		WorkerProviderCursor,
+		WorkerProviderClaude,
+		WorkerProviderGrok,
+		WorkerProviderPi,
+		WorkerProviderOpenCode,
 	} {
 		for _, payload := range payloads {
 			t.Run(provider+"/"+fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), func(t *testing.T) {
@@ -45,7 +45,7 @@ func providerAdmissionFixtureEvent(
 ) CodexConversationEvent {
 	t.Helper()
 	switch provider {
-	case AgentProviderCursor:
+	case WorkerProviderCursor:
 		path := filepath.Join(t.TempDir(), "cursor-admission.jsonl")
 		writeJSONL(t, path, map[string]any{
 			"role": "user",
@@ -62,7 +62,7 @@ func providerAdmissionFixtureEvent(
 			t.Fatal(err)
 		}
 		return firstAdmissionFixtureEvent(t, conversation.Events)
-	case AgentProviderClaude:
+	case WorkerProviderClaude:
 		path := filepath.Join(t.TempDir(), "claude-admission.jsonl")
 		writeJSONL(t, path, map[string]any{
 			"type":      "user",
@@ -79,7 +79,7 @@ func providerAdmissionFixtureEvent(
 			t.Fatal(err)
 		}
 		return firstAdmissionFixtureEvent(t, conversation.Events)
-	case AgentProviderGrok:
+	case WorkerProviderGrok:
 		dir := t.TempDir()
 		writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
 			"info": map[string]any{"id": "grok-admission", "cwd": "/repo"},
@@ -92,7 +92,7 @@ func providerAdmissionFixtureEvent(
 			t.Fatal(err)
 		}
 		return firstAdmissionFixtureEvent(t, conversation.Events)
-	case AgentProviderPi:
+	case WorkerProviderPi:
 		path := filepath.Join(t.TempDir(), "pi-admission.jsonl")
 		writeJSONL(t, path,
 			map[string]any{
@@ -110,7 +110,7 @@ func providerAdmissionFixtureEvent(
 			t.Fatal(err)
 		}
 		return firstAdmissionFixtureEvent(t, conversation.Events)
-	case AgentProviderOpenCode:
+	case WorkerProviderOpenCode:
 		dbPath := filepath.Join(t.TempDir(), "opencode-admission.db")
 		started := time.Date(2026, 8, 6, 2, 0, 0, 0, time.UTC)
 		createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{

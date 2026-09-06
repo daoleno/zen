@@ -64,7 +64,7 @@ func TestRealOpenCodeTiming(t *testing.T) {
 	t.Logf("real-session cold-full-read: %d ms (events=%d)", coldMs, len(conversation.Events))
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		Cwd:     sessions[0].Directory,
 		Command: "opencode",
 	}
@@ -72,17 +72,17 @@ func TestRealOpenCodeTiming(t *testing.T) {
 	// the warm-subscription and idle-poll timings measure the same history (a
 	// directory can hold many sessions and the freshest-root binding may pick
 	// a different one). bind() clears a pre-set pin on its first run.
-	if _, err := reader.Load(agent, AgentProviderOpenCode, time.Now()); err != nil {
+	if _, err := reader.Load(worker, WorkerProviderOpenCode, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	reader.openCodeOwnedSessionID = sessions[0].ID
 	reader.openCodeOwnedCandidate = openCodeSessionCandidate{
-		ID:        sessions[0].ID,
-		CWD:       sessions[0].Directory,
-		Updated:   time.Now().UTC(),
+		ID:      sessions[0].ID,
+		CWD:     sessions[0].Directory,
+		Updated: time.Now().UTC(),
 	}
 	started = time.Now()
-	warm, err := reader.Load(agent, AgentProviderOpenCode, time.Now())
+	warm, err := reader.Load(worker, WorkerProviderOpenCode, time.Now())
 	warmMs := time.Since(started).Microseconds()
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestRealOpenCodeTiming(t *testing.T) {
 	t.Logf("real-session warm-subscription-load: %d us (events=%d version=%d)", warmMs, len(warm.Events), reader.ConversationVersion())
 
 	started = time.Now()
-	again, err := reader.Load(agent, AgentProviderOpenCode, time.Now())
+	again, err := reader.Load(worker, WorkerProviderOpenCode, time.Now())
 	idleMs := time.Since(started).Microseconds()
 	if err != nil {
 		t.Fatal(err)

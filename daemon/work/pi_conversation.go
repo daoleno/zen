@@ -28,8 +28,8 @@ type piTranscriptCandidate struct {
 	Updated   time.Time
 }
 
-func (r *ProviderConversationReader) loadPiConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadPiConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -38,7 +38,7 @@ func (r *ProviderConversationReader) loadPiConversationForAgent(agent classifier
 		}, nil
 	}
 
-	candidate, ok, err := r.findPiTranscript(agent, now)
+	candidate, ok, err := r.findPiTranscript(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -80,7 +80,7 @@ func (r *ProviderConversationReader) loadPiConversationForAgent(agent classifier
 }
 
 func (r *ProviderConversationReader) loadPiConversation(path string) (CodexConversation, error) {
-	return r.loadFileConversation(AgentProviderPi, path, parsePiConversation)
+	return r.loadFileConversation(WorkerProviderPi, path, parsePiConversation)
 }
 
 // findPiTranscript binds the Pi session for an agent: an explicitly owned
@@ -89,28 +89,28 @@ func (r *ProviderConversationReader) loadPiConversation(path string) (CodexConve
 // launched without --session only persist under the shared directory, so
 // auto-binding keeps the Interface attached instead of collapsing to
 // Working-only.
-func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
-	if path := PiOwnedSessionPath(agent.Command); path != "" {
-		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
+func (r *ProviderConversationReader) findPiTranscript(worker classifier.Worker, now time.Time) (piTranscriptCandidate, bool, error) {
+	if path := PiOwnedSessionPath(worker.Command); path != "" {
+		candidate, ok, err := readPiOwnedSessionCandidate(path, worker.Cwd, now)
 		if err != nil || ok {
 			return candidate, ok, err
 		}
 		// Owned path not yet flushed: honest missing transcript.
 		return piTranscriptCandidate{}, false, nil
 	}
-	if dir := PiOwnedSessionDir(agent.Command); dir != "" {
-		return findPiExclusiveSessionDir(dir, agent, now)
+	if dir := PiOwnedSessionDir(worker.Command); dir != "" {
+		return findPiExclusiveSessionDir(dir, worker, now)
 	}
 	if pinned := strings.TrimSpace(r.piPinnedSessionPath); pinned != "" {
-		candidate, ok, err := readPiOwnedSessionCandidate(pinned, agent.Cwd, now)
-		if err == nil && ok && piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
+		candidate, ok, err := readPiOwnedSessionCandidate(pinned, worker.Cwd, now)
+		if err == nil && ok && piTranscriptBelongsToInstance(candidate, worker.StartedAt) {
 			return candidate, true, nil
 		}
 		r.piPinnedSessionPath = ""
 	}
 	// Owned-directory auto-bind: the durable binding can be unavailable even
 	// though the Zen-owned transcript exists and is fresh — sessions created
-	// before the durable @zen_agent_pi_session option existed, argv-rewritten
+	// before the durable @zen_worker_pi_session option existed, argv-rewritten
 	// node-based Pi, and daemon-restart re-discovery all lose the launch
 	// command. The authoritative owned JSONL is then the only recoverable
 	// record; without this scan the Interface projects an empty
@@ -119,13 +119,13 @@ func (r *ProviderConversationReader) findPiTranscript(agent classifier.Agent, no
 	// shared-directory rules: a unique startedAt-window match wins, otherwise
 	// the freshest unambiguous candidate binds, and wrong-cwd, stale, or
 	// ambiguous candidates never bind.
-	if candidate, ok, err := findPiOwnedCWDTranscript(agent, now); err != nil || ok {
+	if candidate, ok, err := findPiOwnedCWDTranscript(worker, now); err != nil || ok {
 		if ok {
 			r.piPinnedSessionPath = candidate.Path
 		}
 		return candidate, ok, err
 	}
-	candidate, ok, err := findPiSharedCWDTranscript(agent, now)
+	candidate, ok, err := findPiSharedCWDTranscript(worker, now)
 	if err != nil || !ok {
 		return candidate, ok, err
 	}
@@ -160,8 +160,8 @@ func piTranscriptBelongsToInstance(candidate piTranscriptCandidate, startedAt ti
 // freshest unambiguous transcript binds. Wrong-cwd and stale transcripts
 // never bind; equal-window or equal-updated candidates refuse as ambiguous
 // rather than guessing.
-func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func findPiOwnedCWDTranscript(worker classifier.Worker, now time.Time) (piTranscriptCandidate, bool, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		return piTranscriptCandidate{}, false, nil
 	}
 	root, err := piOwnedSessionRoot("")
@@ -181,8 +181,8 @@ func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscri
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
-		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
-		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
+		candidate, ok, err := readPiOwnedSessionCandidate(path, worker.Cwd, now)
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, worker.StartedAt) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -190,8 +190,8 @@ func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscri
 	if len(candidates) == 0 {
 		return piTranscriptCandidate{}, false, nil
 	}
-	if len(piWindowCandidates(candidates, agent.StartedAt)) > 0 {
-		if matched, ok := matchPiTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+	if len(piWindowCandidates(candidates, worker.StartedAt)) > 0 {
+		if matched, ok := matchPiTranscriptToWorkerStart(candidates, worker.StartedAt); ok {
 			return matched, true, nil
 		}
 		return piTranscriptCandidate{}, false, nil
@@ -203,15 +203,15 @@ func findPiOwnedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscri
 // (~/.pi/agent/sessions/--<cwd>--). A unique StartedAt window match wins;
 // otherwise the freshest unambiguous transcript binds. Wrong-cwd and stale
 // transcripts never bind.
-func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func findPiSharedCWDTranscript(worker classifier.Worker, now time.Time) (piTranscriptCandidate, bool, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		return piTranscriptCandidate{}, false, nil
 	}
 	sessionsDir, err := piAgentSessionsDir()
 	if err != nil {
 		return piTranscriptCandidate{}, false, err
 	}
-	dir := filepath.Join(sessionsDir, encodePiSessionDirName(agent.Cwd))
+	dir := filepath.Join(sessionsDir, encodePiSessionDirName(worker.Cwd))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -225,8 +225,8 @@ func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscr
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
-		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, agent.StartedAt) {
+		candidate, ok, err := readPiOwnedSessionCandidate(path, worker.Cwd, now)
+		if err != nil || !ok || !piTranscriptBelongsToInstance(candidate, worker.StartedAt) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -234,8 +234,8 @@ func findPiSharedCWDTranscript(agent classifier.Agent, now time.Time) (piTranscr
 	if len(candidates) == 0 {
 		return piTranscriptCandidate{}, false, nil
 	}
-	if len(piWindowCandidates(candidates, agent.StartedAt)) > 0 {
-		if matched, ok := matchPiTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+	if len(piWindowCandidates(candidates, worker.StartedAt)) > 0 {
+		if matched, ok := matchPiTranscriptToWorkerStart(candidates, worker.StartedAt); ok {
 			return matched, true, nil
 		}
 		return piTranscriptCandidate{}, false, nil
@@ -265,7 +265,7 @@ func piWindowCandidates(candidates []piTranscriptCandidate, startedAt time.Time)
 	return out
 }
 
-func matchPiTranscriptToAgentStart(candidates []piTranscriptCandidate, startedAt time.Time) (piTranscriptCandidate, bool) {
+func matchPiTranscriptToWorkerStart(candidates []piTranscriptCandidate, startedAt time.Time) (piTranscriptCandidate, bool) {
 	window := piWindowCandidates(candidates, startedAt)
 	if len(window) == 0 {
 		return piTranscriptCandidate{}, false
@@ -354,7 +354,7 @@ func encodePiSessionDirName(cwd string) string {
 	return "--" + replacer.Replace(trimmed) + "--"
 }
 
-func readPiOwnedSessionCandidate(path, agentCWD string, now time.Time) (piTranscriptCandidate, bool, error) {
+func readPiOwnedSessionCandidate(path, workerCWD string, now time.Time) (piTranscriptCandidate, bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -369,7 +369,7 @@ func readPiOwnedSessionCandidate(path, agentCWD string, now time.Time) (piTransc
 	if err != nil {
 		return piTranscriptCandidate{}, false, nil
 	}
-	if !piHeaderMatchesAgent(meta, agentCWD) {
+	if !piHeaderMatchesWorker(meta, workerCWD) {
 		return piTranscriptCandidate{}, false, nil
 	}
 	updated := info.ModTime()
@@ -378,14 +378,14 @@ func readPiOwnedSessionCandidate(path, agentCWD string, now time.Time) (piTransc
 	}
 	return piTranscriptCandidate{
 		ID:        firstNonEmpty(meta.ID, strings.TrimSuffix(filepath.Base(path), ".jsonl")),
-		CWD:       firstNonEmpty(meta.CWD, agentCWD),
+		CWD:       firstNonEmpty(meta.CWD, workerCWD),
 		Path:      path,
 		CreatedAt: meta.CreatedAt,
 		Updated:   updated,
 	}, true, nil
 }
 
-func findPiExclusiveSessionDir(dir string, agent classifier.Agent, now time.Time) (piTranscriptCandidate, bool, error) {
+func findPiExclusiveSessionDir(dir string, worker classifier.Worker, now time.Time) (piTranscriptCandidate, bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -399,19 +399,19 @@ func findPiExclusiveSessionDir(dir string, agent classifier.Agent, now time.Time
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		candidate, ok, err := readPiOwnedSessionCandidate(path, agent.Cwd, now)
+		candidate, ok, err := readPiOwnedSessionCandidate(path, worker.Cwd, now)
 		if err != nil {
 			return piTranscriptCandidate{}, false, err
 		}
 		if !ok {
 			continue
 		}
-		if !agent.StartedAt.IsZero() {
+		if !worker.StartedAt.IsZero() {
 			created := candidate.CreatedAt.UTC()
 			// Header CreatedAt may not precede the process start: the
 			// transcript of this instance is written after the process
 			// begins (positive flush latency only).
-			if created.IsZero() || created.Before(agent.StartedAt.UTC()) || created.After(agent.StartedAt.UTC().Add(2*time.Minute)) {
+			if created.IsZero() || created.Before(worker.StartedAt.UTC()) || created.After(worker.StartedAt.UTC().Add(2*time.Minute)) {
 				continue
 			}
 		}
@@ -476,13 +476,13 @@ func readPiSessionHeader(path string) (piSessionHeader, error) {
 	}
 }
 
-func piHeaderMatchesAgent(meta piSessionHeader, agentCWD string) bool {
-	agentCWD = strings.TrimSpace(agentCWD)
-	if agentCWD == "" || meta.CWD == "" {
-		return meta.CWD == "" && agentCWD == ""
+func piHeaderMatchesWorker(meta piSessionHeader, workerCWD string) bool {
+	workerCWD = strings.TrimSpace(workerCWD)
+	if workerCWD == "" || meta.CWD == "" {
+		return meta.CWD == "" && workerCWD == ""
 	}
-	for _, candidate := range transcriptCWDCandidates(agentCWD) {
-		if pathsEquivalent(meta.CWD, candidate) || pathsEquivalent(meta.CWD, agentCWD) {
+	for _, candidate := range transcriptCWDCandidates(workerCWD) {
+		if pathsEquivalent(meta.CWD, candidate) || pathsEquivalent(meta.CWD, workerCWD) {
 			return true
 		}
 	}

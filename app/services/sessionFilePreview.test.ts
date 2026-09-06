@@ -55,14 +55,14 @@ describe("current-Session file renderer contract", () => {
 
   test("builds the authenticated streaming endpoint without route ownership", () => {
     const url = buildSessionFileBinaryUrl("wss://host.example/ws", {
-      agentId: "main:@7",
+      workerId: "main:@7",
       processId: 412,
       startedAt: 1_784_518_400_123,
       path: "docs/guide.pdf",
       generation: "generation-token",
     });
     expect(url).toBe(
-      "https://host.example/session-file?agent_id=main%3A%407&process_id=412&started_at=1784518400123&path=docs%2Fguide.pdf&generation=generation-token",
+      "https://host.example/session-file?worker_id=main%3A%407&process_id=412&started_at=1784518400123&path=docs%2Fguide.pdf&generation=generation-token",
     );
     expect(url).not.toContain("/terminal/");
   });
@@ -84,7 +84,7 @@ describe("current-Session file renderer contract", () => {
     expect(
       bindSessionFileRequestToGeneration(
         {
-          agentId: "main:@7",
+          workerId: "main:@7",
           processId: 412,
           startedAt: 1_784_518_400_123,
           path: "shared-alias.md",
@@ -92,7 +92,7 @@ describe("current-Session file renderer contract", () => {
         metadata,
       ),
     ).toEqual({
-      agentId: "main:@7",
+      workerId: "main:@7",
       processId: 412,
       startedAt: 1_784_518_400_123,
       path: "/host/other-repo/shared.md",
@@ -210,7 +210,7 @@ describe("current-Session preview lifecycle", () => {
       serverId: "server-a",
       serverUrl: "wss://server-a.example/ws",
       daemonId: "daemon-a",
-      agentId: "main:@7",
+      workerId: "main:@7",
       processId: 412,
       startedAt: 1_784_518_400_123,
       cwd: "/repo/zen",

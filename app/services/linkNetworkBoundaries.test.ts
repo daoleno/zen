@@ -207,7 +207,7 @@ if (!integrationEnabled) {
 
     test("Session File including Range/retry source creation has no raw URL fallback", async () => {
       const request = {
-        agentId: "agent-a",
+        workerId: "agent-a",
         processId: 7,
         startedAt: 1_700_000_000_000,
         path: "/workspace/private.png",
@@ -235,7 +235,7 @@ if (!integrationEnabled) {
       nativeOffline = false;
       fetchScenario = "file-capability";
       const request = {
-        agentId: "agent-a",
+        workerId: "agent-a",
         processId: 7,
         startedAt: 1_700_000_000_000,
         path: "/workspace/private.png",
@@ -258,7 +258,7 @@ if (!integrationEnabled) {
         "Content-Type": "application/json",
       });
       expect(JSON.parse(String(observedFetches[0].init?.body))).toEqual({
-        agent_id: request.agentId,
+        worker_id: request.workerId,
         process_id: request.processId,
         started_at: request.startedAt,
         path: request.path,
@@ -294,7 +294,7 @@ if (!integrationEnabled) {
         manualServer.id,
         manualServer.daemonId,
         {
-          agentId: "agent-manual",
+          workerId: "agent-manual",
           processId: 9,
           startedAt: 1_700_000_000_000,
           path: "/workspace/manual.pdf",

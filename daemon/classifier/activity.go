@@ -9,7 +9,7 @@ import (
 // evidence. It upgrades Unknown after progress/classification merge; it never
 // reads provider transcripts or invents Running from raw pane churn alone.
 type ActivitySignal struct {
-	State    AgentState
+	State    WorkerState
 	Summary  string
 	Source   string // stable machine tag, e.g. "cursor_pane_stop_marker"
 	Provider string // adapter name, e.g. "cursor", "codex"
@@ -18,7 +18,7 @@ type ActivitySignal struct {
 // ActivityInput is the provider-neutral observation bundle passed to adapters.
 // Watcher fills shared fields; adapters ignore hints they do not use.
 type ActivityInput struct {
-	Agent           Agent
+	Worker          Worker
 	PaneContent     string
 	ToolChildActive bool // optional process-tree hint (non-idle worker child)
 }
@@ -88,7 +88,7 @@ func (p *MultiActivityProbe) Infer(in ActivityInput) ActivitySignal {
 // MergeActivitySignal applies a provider activity signal to an already-resolved
 // status. Progress leases, sticky done/failed/blocked, and pane blocked/failed
 // always win: activity only fills Unknown.
-func MergeActivitySignal(base AgentState, baseSummary string, signal ActivitySignal) (AgentState, string) {
+func MergeActivitySignal(base WorkerState, baseSummary string, signal ActivitySignal) (WorkerState, string) {
 	if signal.State == "" || signal.State == StateUnknown {
 		return base, baseSummary
 	}
@@ -109,8 +109,8 @@ func MergeActivitySignal(base AgentState, baseSummary string, signal ActivitySig
 //
 // Brain progress leases remain highest priority for Running among durable
 // progress signals; provider adapters only resolve remaining Unknown panes.
-func ResolveSessionStatus(agent *Agent, classified AgentState, classifiedSummary string, now time.Time, activity ActivitySignal) (AgentState, string) {
-	state, summary := MergeProgressAndClassification(agent, classified, classifiedSummary, now)
+func ResolveSessionStatus(worker *Worker, classified WorkerState, classifiedSummary string, now time.Time, activity ActivitySignal) (WorkerState, string) {
+	state, summary := MergeProgressAndClassification(worker, classified, classifiedSummary, now)
 	return MergeActivitySignal(state, summary, activity)
 }
 

@@ -1,6 +1,6 @@
 package watcher
 
-import "github.com/daoleno/zen/daemon/agentproc"
+import "github.com/daoleno/zen/daemon/workerproc"
 
 const (
 	resourceBackendCgroupPool         = "cgroup_pool"
@@ -44,11 +44,11 @@ func hostPressureState(available, hostReserve uint64) string {
 }
 
 func applySharedPoolLimits(snap *SessionResourceSnapshot, limits delegatedResourceLimits) {
-	total := agentproc.PhysicalMemory()
-	if high, err := agentproc.ParseMemoryLimit(limits.MemoryHigh, total); err == nil && high > 0 {
+	total := workerproc.PhysicalMemory()
+	if high, err := workerproc.ParseMemoryLimit(limits.MemoryHigh, total); err == nil && high > 0 {
 		snap.PoolMemoryHighBytes = uint64Ptr(high)
 	}
-	if max, err := agentproc.ParseMemoryLimit(limits.MemoryMax, total); err == nil && max > 0 {
+	if max, err := workerproc.ParseMemoryLimit(limits.MemoryMax, total); err == nil && max > 0 {
 		snap.PoolMemoryMaxBytes = uint64Ptr(max)
 	}
 }

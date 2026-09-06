@@ -137,7 +137,13 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 	}
 	index := workIndex(database.BrainWork, workID)
 	if index < 0 {
-		return ErrWorkNotFound
+		database.BrainWork = append(database.BrainWork, Work{
+			ID: workID, Revision: st.Revision, Title: st.Title, Objective: st.Objective,
+			Status: WorkOpen, SourceThreadID: st.SourceThreadID,
+			CompletionPolicy: CompletionPolicy(st.Policy), DoneCriteriaRef: st.DoneCriteriaRef,
+			NextAction: st.NextAction, CreatedAt: st.CreatedAt, UpdatedAt: st.UpdatedAt,
+		})
+		index = len(database.BrainWork) - 1
 	}
 	item := database.BrainWork[index]
 

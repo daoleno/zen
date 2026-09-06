@@ -2,7 +2,7 @@ import type { AppStateStatus } from "react-native";
 
 interface TerminalPresenceFacts {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   appState: AppStateStatus;
   focused: boolean;
@@ -10,21 +10,21 @@ interface TerminalPresenceFacts {
 
 export function currentTerminalPresence({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   appState,
   focused,
-}: TerminalPresenceFacts): { serverId: string; agentId: string } | null {
+}: TerminalPresenceFacts): { serverId: string; workerId: string } | null {
   if (
     !focused ||
     appState !== "active" ||
     !sessionKey ||
     !serverId ||
-    !agentId
+    !workerId
   ) {
     return null;
   }
-  return { serverId, agentId };
+  return { serverId, workerId };
 }
 
 export function createTerminalConnectedPresenceHandler(

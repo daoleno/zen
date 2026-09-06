@@ -1,5 +1,5 @@
 export type NotificationDestination =
-  | { kind: "terminal"; agentId: string; serverId: string }
+  | { kind: "terminal"; workerId: string; serverId: string }
   | { kind: "inbox" }
   | { kind: "calendar"; calendarId?: string; serverId?: string }
   | {
@@ -29,10 +29,10 @@ export function resolveNotificationDestination(
     return null;
   }
   const fields = data as Record<string, unknown>;
-  const agentId = optionalString(fields.agent_id);
+  const workerId = optionalString(fields.worker_id);
   const serverId = optionalString(fields.server_id);
-  if (agentId && serverId) {
-    return { kind: "terminal", agentId, serverId };
+  if (workerId && serverId) {
+    return { kind: "terminal", workerId, serverId };
   }
 
   switch (fields.screen) {

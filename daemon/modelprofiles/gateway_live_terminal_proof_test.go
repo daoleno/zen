@@ -1,7 +1,7 @@
 package modelprofiles_test
 
 // Opt-in live proof: an ORDINARY Terminal Codex (started directly, not via
-// `zen agent spawn`) routes through the machine-level gateway, and a Settings
+// `zen worker spawn`) routes through the machine-level gateway, and a Settings
 // Provider switch retargets the same long-lived CLI process to the new
 // upstream.
 //

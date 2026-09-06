@@ -35,19 +35,19 @@ type SessionServiceURL struct {
 
 // SessionService is a listening TCP port owned by a tmux pane process tree.
 type SessionService struct {
-	ID        string              `json:"id"`
-	AgentID   string              `json:"agent_id"`
-	AgentName string              `json:"agent_name"`
-	Project   string              `json:"project,omitempty"`
-	Cwd       string              `json:"cwd,omitempty"`
-	Command   string              `json:"command,omitempty"`
-	Process   string              `json:"process,omitempty"`
-	PID       int                 `json:"pid"`
-	Port      int                 `json:"port"`
-	Protocol  string              `json:"protocol"`
-	Binds     []string            `json:"binds"`
-	URLs      []SessionServiceURL `json:"urls"`
-	LocalOnly bool                `json:"local_only"`
+	ID         string              `json:"id"`
+	WorkerID   string              `json:"worker_id"`
+	WorkerName string              `json:"worker_name"`
+	Project    string              `json:"project,omitempty"`
+	Cwd        string              `json:"cwd,omitempty"`
+	Command    string              `json:"command,omitempty"`
+	Process    string              `json:"process,omitempty"`
+	PID        int                 `json:"pid"`
+	Port       int                 `json:"port"`
+	Protocol   string              `json:"protocol"`
+	Binds      []string            `json:"binds"`
+	URLs       []SessionServiceURL `json:"urls"`
+	LocalOnly  bool                `json:"local_only"`
 }
 
 type servicePane struct {
@@ -83,16 +83,16 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 		return SessionServiceSnapshot{}, err
 	}
 
-	agentsByID := make(map[string]*classifierAgentSnapshot)
-	for _, agent := range w.Agents() {
-		if agent == nil || agent.Hidden {
+	agentsByID := make(map[string]*classifierWorkerSnapshot)
+	for _, worker := range w.Workers() {
+		if worker == nil || worker.Hidden {
 			continue
 		}
-		agentsByID[agent.ID] = &classifierAgentSnapshot{
-			name:    agent.Name,
-			project: agent.Project,
-			cwd:     agent.Cwd,
-			command: agent.Command,
+		agentsByID[worker.ID] = &classifierWorkerSnapshot{
+			name:    worker.Name,
+			project: worker.Project,
+			cwd:     worker.Cwd,
+			command: worker.Command,
 		}
 	}
 
@@ -106,23 +106,23 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 		key := fmt.Sprintf("%s|%d|%d", pane.target, socket.pid, socket.port)
 		service := servicesByKey[key]
 		if service == nil {
-			agent := agentsByID[pane.target]
-			agentName := formatAgentName(pane.name, pane.target)
+			worker := agentsByID[pane.target]
+			workerName := formatWorkerName(pane.name, pane.target)
 			project := projectNameFromPath(pane.cwd)
 			command := pane.command
 			cwd := pane.cwd
-			if agent != nil {
-				if agent.name != "" {
-					agentName = agent.name
+			if worker != nil {
+				if worker.name != "" {
+					workerName = worker.name
 				}
-				if agent.project != "" {
-					project = agent.project
+				if worker.project != "" {
+					project = worker.project
 				}
-				if agent.cwd != "" {
-					cwd = agent.cwd
+				if worker.cwd != "" {
+					cwd = worker.cwd
 				}
-				if agent.command != "" {
-					command = agent.command
+				if worker.command != "" {
+					command = worker.command
 				}
 			}
 
@@ -135,16 +135,16 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 			}
 
 			service = &SessionService{
-				ID:        fmt.Sprintf("%s:%d:%d", pane.target, socket.pid, socket.port),
-				AgentID:   pane.target,
-				AgentName: agentName,
-				Project:   project,
-				Cwd:       cwd,
-				Command:   command,
-				Process:   process,
-				PID:       socket.pid,
-				Port:      socket.port,
-				Protocol:  "tcp",
+				ID:         fmt.Sprintf("%s:%d:%d", pane.target, socket.pid, socket.port),
+				WorkerID:   pane.target,
+				WorkerName: workerName,
+				Project:    project,
+				Cwd:        cwd,
+				Command:    command,
+				Process:    process,
+				PID:        socket.pid,
+				Port:       socket.port,
+				Protocol:   "tcp",
 			}
 			servicesByKey[key] = service
 		}
@@ -169,8 +169,8 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 		if services[i].Project != services[j].Project {
 			return services[i].Project < services[j].Project
 		}
-		if services[i].AgentName != services[j].AgentName {
-			return services[i].AgentName < services[j].AgentName
+		if services[i].WorkerName != services[j].WorkerName {
+			return services[i].WorkerName < services[j].WorkerName
 		}
 		if services[i].Port != services[j].Port {
 			return services[i].Port < services[j].Port
@@ -192,7 +192,7 @@ func nonNilServiceInterfaces(interfaces []SessionServiceInterface) []SessionServ
 	return interfaces
 }
 
-type classifierAgentSnapshot struct {
+type classifierWorkerSnapshot struct {
 	name    string
 	project string
 	cwd     string
@@ -253,7 +253,7 @@ func parseServicePanes(output string) []servicePane {
 		}
 		target := strings.TrimSpace(parts[0])
 		sessionName := strings.SplitN(target, ":", 2)[0]
-		if target == "" || strings.HasPrefix(sessionName, "zen-") {
+		if target == "" || strings.HasPrefix(sessionName, "zen-view-") {
 			continue
 		}
 

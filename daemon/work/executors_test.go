@@ -17,10 +17,10 @@ func TestLoadExecutors_Defaults(t *testing.T) {
 	if _, ok := cfg.ByName["claude"]; !ok {
 		t.Fatal("claude missing")
 	}
-	if agent, ok := cfg.ByName["agent"]; !ok {
+	if worker, ok := cfg.ByName["agent"]; !ok {
 		t.Fatal("agent missing")
-	} else if agent.Command != "cursor-agent --force --sandbox disabled" || agent.Kind != "cursor" {
-		t.Fatalf("agent = %+v", agent)
+	} else if worker.Command != "cursor-agent --force --sandbox disabled" || worker.Kind != "cursor" {
+		t.Fatalf("agent = %+v", worker)
 	}
 	if _, ok := cfg.ByName["codex"]; !ok {
 		t.Fatal("codex missing")

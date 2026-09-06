@@ -133,10 +133,10 @@ func (c *Client) sendTo(token string, msg Message) error {
 	return nil
 }
 
-func formatNotificationAgentLabel(agentName, agentID string) string {
-	raw := strings.TrimSpace(agentName)
+func formatNotificationWorkerLabel(workerName, workerID string) string {
+	raw := strings.TrimSpace(workerName)
 	if raw == "" {
-		raw = strings.TrimSpace(agentID)
+		raw = strings.TrimSpace(workerID)
 	}
 	if raw == "" {
 		return ""
@@ -175,22 +175,22 @@ func buildNotificationBody(summary, fallback string) string {
 	return fallback
 }
 
-func notificationData(agentID, serverRef string) map[string]string {
+func notificationData(workerID, serverRef string) map[string]string {
 	return map[string]string{
-		"agent_id":  agentID,
+		"worker_id": workerID,
 		"screen":    "terminal",
 		"server_id": serverRef,
 	}
 }
 
 // NotifyAgentBlocked sends a high-priority notification for a blocked agent.
-func (c *Client) NotifyAgentBlocked(agentID, agentName, summary string) error {
+func (c *Client) NotifyWorkerBlocked(workerID, workerName, summary string) error {
 	registration, err := c.registration()
 	if err != nil {
 		return err
 	}
 
-	label := formatNotificationAgentLabel(agentName, agentID)
+	label := formatNotificationWorkerLabel(workerName, workerID)
 	title := label + " needs input"
 	if label == "" {
 		title = "Agent needs input"
@@ -199,18 +199,18 @@ func (c *Client) NotifyAgentBlocked(agentID, agentName, summary string) error {
 		Title:    title,
 		Body:     buildNotificationBody(summary, "Waiting for your response."),
 		Priority: "high",
-		Data:     notificationData(agentID, registration.serverRef),
+		Data:     notificationData(workerID, registration.serverRef),
 	})
 }
 
 // NotifyAgentFailed sends a high-priority notification for a failed agent.
-func (c *Client) NotifyAgentFailed(agentID, agentName, summary string) error {
+func (c *Client) NotifyWorkerFailed(workerID, workerName, summary string) error {
 	registration, err := c.registration()
 	if err != nil {
 		return err
 	}
 
-	label := formatNotificationAgentLabel(agentName, agentID)
+	label := formatNotificationWorkerLabel(workerName, workerID)
 	title := label + " failed"
 	if label == "" {
 		title = "Agent failed"
@@ -219,18 +219,18 @@ func (c *Client) NotifyAgentFailed(agentID, agentName, summary string) error {
 		Title:    title,
 		Body:     buildNotificationBody(summary, "Check the terminal for details."),
 		Priority: "high",
-		Data:     notificationData(agentID, registration.serverRef),
+		Data:     notificationData(workerID, registration.serverRef),
 	})
 }
 
 // NotifyAgentDone sends a low-priority neutral completion notification.
-func (c *Client) NotifyAgentDone(agentID, agentName, summary string) error {
+func (c *Client) NotifyWorkerDone(workerID, workerName, summary string) error {
 	registration, err := c.registration()
 	if err != nil {
 		return err
 	}
 
-	label := formatNotificationAgentLabel(agentName, agentID)
+	label := formatNotificationWorkerLabel(workerName, workerID)
 	title := label + " finished"
 	if label == "" {
 		title = "Agent finished"
@@ -239,7 +239,7 @@ func (c *Client) NotifyAgentDone(agentID, agentName, summary string) error {
 		Title:    title,
 		Body:     buildNotificationBody(summary, "Session completed."),
 		Priority: "default",
-		Data:     notificationData(agentID, registration.serverRef),
+		Data:     notificationData(workerID, registration.serverRef),
 	})
 }
 

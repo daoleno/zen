@@ -18,7 +18,7 @@ type WorkRunner struct {
 	Store    *work.Store
 	Launcher *work.Launcher
 	Watcher  interface {
-		GetAgent(string) *classifier.Agent
+		GetWorker(string) *classifier.Worker
 		HasSession(string) bool
 	}
 	Brain interface {
@@ -65,25 +65,25 @@ func (r *WorkRunner) InspectScheduledAction(_ context.Context, item Item, run Ru
 		}
 		return StatusRunning, "", "", false
 	}
-	agentSession := strings.TrimSpace(run.AgentSession)
-	if agentSession == "" {
+	workerSession := strings.TrimSpace(run.WorkerSession)
+	if workerSession == "" {
 		return StatusRunning, "", "", false
 	}
-	agent := r.Watcher.GetAgent(agentSession)
-	if agent == nil {
-		if r.Watcher.HasSession(agentSession) {
+	worker := r.Watcher.GetWorker(workerSession)
+	if worker == nil {
+		if r.Watcher.HasSession(workerSession) {
 			return StatusRunning, "", "", true
 		}
 		return StatusRunning, "", "", false
 	}
-	switch agent.State {
+	switch worker.State {
 	case classifier.StateDone:
 		if readErr != nil {
 			return StatusFailed, "", "Linked agent completed, but its current scheduled Work is unavailable or invalid.", true
 		}
 		return StatusFailed, "", "Linked agent completed before producing a valid terminal scheduled Work deliverable.", true
 	case classifier.StateFailed, classifier.StateRemoved:
-		failure := compactFailure(agent.Summary)
+		failure := compactFailure(worker.Summary)
 		if failure == "" {
 			failure = "Linked agent failed before producing a terminal scheduled Work deliverable."
 		}
@@ -161,9 +161,9 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 	}
 	written, err := r.Store.Write(started, time.Time{})
 	if err != nil {
-		return ActionResult{WorkID: created.ID, AgentSession: started.Frontmatter.AgentSession, Launched: true}, fmt.Errorf("persist started Work item: %w", err)
+		return ActionResult{WorkID: created.ID, WorkerSession: started.Frontmatter.WorkerSession, Launched: true}, fmt.Errorf("persist started Work item: %w", err)
 	}
-	return ActionResult{WorkID: written.ID, AgentSession: written.Frontmatter.AgentSession, Launched: true}, nil
+	return ActionResult{WorkID: written.ID, WorkerSession: written.Frontmatter.WorkerSession, Launched: true}, nil
 }
 
 func scheduledWorkBody(item Item, run Run) string {

@@ -36,8 +36,8 @@ type codexTranscriptCandidate struct {
 	Updated time.Time
 }
 
-func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscriptCandidate, bool, error) {
-	cwd := strings.TrimSpace(agent.Cwd)
+func findCodexTranscript(worker classifier.Worker, now time.Time) (codexTranscriptCandidate, bool, error) {
+	cwd := strings.TrimSpace(worker.Cwd)
 	if cwd == "" {
 		return codexTranscriptCandidate{}, false, nil
 	}
@@ -53,7 +53,7 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if err != nil {
 		return codexTranscriptCandidate{}, false, nil
 	}
-	openRolloutPaths := openCodexRolloutPathsForProcess(agent.ProcessID)
+	openRolloutPaths := openCodexRolloutPathsForProcess(worker.ProcessID)
 
 	var candidates []codexTranscriptCandidate
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
@@ -95,16 +95,16 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if len(freshCandidates) == 0 {
 		return codexTranscriptCandidate{}, false, nil
 	}
-	if matched, ok := matchCodexTranscriptToAgentStart(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchCodexTranscriptToWorkerStart(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if isCodexResumeCommand(agent.Command) {
+	if isCodexResumeCommand(worker.Command) {
 		return latestUpdatedCodexTranscript(freshCandidates), true, nil
 	}
-	if matched, ok := matchCodexTranscriptToActiveSession(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchCodexTranscriptToActiveSession(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if matched, ok := fallbackCodexTranscriptForAgent(freshCandidates, agent); ok {
+	if matched, ok := fallbackCodexTranscriptForWorker(freshCandidates, worker); ok {
 		return matched, true, nil
 	}
 	return codexTranscriptCandidate{}, false, nil
@@ -145,13 +145,13 @@ func matchCodexTranscriptToActiveSession(candidates []codexTranscriptCandidate, 
 	return latestUpdatedCodexTranscript(eligible), true
 }
 
-func fallbackCodexTranscriptForAgent(candidates []codexTranscriptCandidate, agent classifier.Agent) (codexTranscriptCandidate, bool) {
-	if len(candidates) == 0 || !isBrainCodexAgent(agent) {
+func fallbackCodexTranscriptForWorker(candidates []codexTranscriptCandidate, worker classifier.Worker) (codexTranscriptCandidate, bool) {
+	if len(candidates) == 0 || !isBrainCodexWorker(worker) {
 		return codexTranscriptCandidate{}, false
 	}
-	if !agent.StartedAt.IsZero() {
+	if !worker.StartedAt.IsZero() {
 		var eligible []codexTranscriptCandidate
-		minCreatedAt := agent.StartedAt.UTC().Add(-5 * time.Second)
+		minCreatedAt := worker.StartedAt.UTC().Add(-5 * time.Second)
 		for _, candidate := range candidates {
 			createdAt := candidateCreatedAt(candidate.Row)
 			if !createdAt.IsZero() && createdAt.Before(minCreatedAt) {
@@ -170,18 +170,18 @@ func fallbackCodexTranscriptForAgent(candidates []codexTranscriptCandidate, agen
 	return latestUpdatedCodexTranscript(candidates), true
 }
 
-func isBrainCodexAgent(agent classifier.Agent) bool {
-	if !agent.Hidden {
+func isBrainCodexWorker(worker classifier.Worker) bool {
+	if !worker.Hidden {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(agent.Name), "Brain") {
+	if strings.EqualFold(strings.TrimSpace(worker.Name), "Brain") {
 		return true
 	}
-	sessionName, _, _ := strings.Cut(strings.TrimSpace(agent.ID), ":")
-	return strings.HasPrefix(sessionName, "brain-agent-brain-")
+	sessionName, _, _ := strings.Cut(strings.TrimSpace(worker.ID), ":")
+	return strings.HasPrefix(sessionName, "zen-worker-brain-")
 }
 
-func matchCodexTranscriptToAgentProcess(candidates []codexTranscriptCandidate, processID int) (codexTranscriptCandidate, bool) {
+func matchCodexTranscriptToWorkerProcess(candidates []codexTranscriptCandidate, processID int) (codexTranscriptCandidate, bool) {
 	if processID <= 0 {
 		return codexTranscriptCandidate{}, false
 	}
@@ -215,7 +215,7 @@ func matchCodexTranscriptToOpenRollouts(candidates []codexTranscriptCandidate, p
 	return latestUpdatedCodexTranscript(matched), true
 }
 
-func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
+func matchCodexTranscriptToWorkerStart(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
 	if startedAt.IsZero() {
 		return codexTranscriptCandidate{}, false
 	}

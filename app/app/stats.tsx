@@ -27,7 +27,7 @@ import {
   UiTextMetrics,
   useAppTheme,
 } from '../constants/tokens';
-import { useAgents } from '../store/agents';
+import { useWorkers } from '../store/workers';
 import { useCurrentServer } from '../store/currentServer';
 import { wsClient } from '../services/websocket';
 import { AnimatedPressable } from '../components/ui/AnimatedPressable';
@@ -54,15 +54,14 @@ import {
   isCostKnown,
   isTokenBreakdownKnown,
   isTotalTokensKnown,
-  mergeStatsPayloads,
+  normalizeStatsPayload,
   type DayCell,
   type ModelStat,
   type ProjectStat,
   type RangeData,
-  type StatsPayload,
-} from '../services/statsPayloadMerge';
+  type StatsView,
+} from '../services/statsPayload';
 
-export type { StatsPayload } from '../services/statsPayloadMerge';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -324,21 +323,24 @@ export default function StatsScreen() {
   const s = useMemo(() => createStyles(colors), [colors]);
   const { width } = useWindowDimensions();
   const reducedMotion = useReducedMotion();
-  const { state: agentsState } = useAgents();
-  const { currentServer } = useCurrentServer();
+  const { state: agentsState } = useWorkers();
+  const { currentServer, isCurrentServer } = useCurrentServer();
   const currentServerId = currentServer?.id ?? null;
   const [range, setRange] = useState<TimeRange>(INITIAL_STATS_RANGE);
-  const [statsData, setStatsData] = useState<StatsPayload | null>(null);
+  const [statsSnapshot, setStatsSnapshot] = useState<{ serverId: string; data: StatsView | null } | null>(null);
+  const statsData = statsSnapshot?.serverId === currentServerId ? statsSnapshot.data : null;
   const [loading, setLoading] = useState(true);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
-  const [selectedDay, setSelectedDay] = useState<DayCell | null>(null);
+  const [daySelection, setDaySelection] = useState<{ serverId: string | null; day: DayCell } | null>(null);
+  const selectedDay = daySelection?.serverId === currentServerId ? daySelection?.day ?? null : null;
+  const setSelectedDay = (day: DayCell | null) => setDaySelection(day ? { serverId: currentServerId, day } : null);
   const [nestedHorizontalScrollActive, setNestedHorizontalScrollActive] = useState(false);
   const [rangeTabBarWidth, setRangeTabBarWidth] = useState(0);
-  const statsDataRef = useRef<StatsPayload | null>(null);
+  const statsSnapshotRef = useRef(statsSnapshot);
 
   useEffect(() => {
-    statsDataRef.current = statsData;
-  }, [statsData]);
+    statsSnapshotRef.current = statsSnapshot;
+  }, [statsSnapshot]);
 
   const toggleSection = useCallback((section: string) => {
     setExpandedSections(prev => {
@@ -349,93 +351,46 @@ export default function StatsScreen() {
     });
   }, []);
 
-  const connectedServerIds = useMemo(
-    () =>
-      Object.entries(agentsState.serverConnections)
-        .filter(([, state]) => state === 'connected')
-        .map(([serverId]) => serverId)
-        .sort(),
-    [agentsState.serverConnections],
-  );
-  const hasConnectingServer = useMemo(
-    () => Object.values(agentsState.serverConnections).includes('connecting'),
-    [agentsState.serverConnections],
-  );
-  const connectedServerIdsKey = useMemo(
-    () => connectedServerIds.join('|'),
-    [connectedServerIds],
-  );
+  const connectionState = currentServerId ? agentsState.serverConnections[currentServerId] : undefined;
+  const hasConnectingServer = connectionState === 'connecting';
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
+      const serverId = currentServerId;
       const loadStats = (attempt: number) => {
         retryTimer = null;
-        const liveServerIds = connectedServerIds.filter((id) => wsClient.isConnected(id));
-        if (liveServerIds.length === 0) {
-          if (!statsDataRef.current) {
-            setStatsData(null);
-          }
-          setLoading(!statsDataRef.current && hasConnectingServer);
+        const cached = statsSnapshotRef.current?.serverId === serverId ? statsSnapshotRef.current.data : null;
+        if (!serverId || !isCurrentServer(serverId) || !wsClient.isConnected(serverId)) {
+          setLoading(!cached && hasConnectingServer);
           return;
         }
-
-        // The effective Provider state of the current server decides whether
-        // official Codex subscription usage is meaningful. A routed
-        // Provider/API-key Codex connection hides the subscription even when
-        // stale official usage is still cached or returned by another server.
-        setLoading(!statsDataRef.current);
+        setLoading(!cached);
         void (async () => {
-          let providerSnapshot = null;
-          if (currentServerId && wsClient.isConnected(currentServerId)) {
-            try {
-              providerSnapshot = await wsClient.listProviders(currentServerId);
-            } catch {
-              providerSnapshot = null;
-            }
-          }
-          const results = await Promise.allSettled(
-            liveServerIds.map(id => wsClient.getStats(id)),
-          );
-          if (cancelled) return;
-          const payloads = results
-            .filter((r): r is PromiseFulfilledResult<StatsPayload> => r.status === 'fulfilled')
-            .map(r => r.value)
-            .map(payload =>
-              codexSubscriptionVisibleForProviderState(
-                payload.codexSubscription,
-                providerSnapshot,
-              )
-                ? payload
-                : { ...payload, codexSubscription: undefined },
-            );
-          const merged = mergeStatsPayloads(payloads);
-          const rangesReady = Object.keys(merged?.ranges ?? {}).length > 0;
-
-          if (!rangesReady && attempt < EMPTY_STATS_MAX_RETRIES) {
-            retryTimer = setTimeout(
-              () => loadStats(attempt + 1),
-              EMPTY_STATS_RETRY_MS * (attempt + 1),
-            );
+          const [providerSnapshot, payload] = await Promise.all([
+            wsClient.listProviders(serverId).catch(() => null),
+            wsClient.getStats(serverId).catch(() => null),
+          ]);
+          if (cancelled || !isCurrentServer(serverId)) return;
+          const current = payload && codexSubscriptionVisibleForProviderState(payload.codexSubscription, providerSnapshot)
+            ? payload
+            : payload ? { ...payload, codexSubscription: undefined } : null;
+          const data = normalizeStatsPayload(current);
+          if (Object.keys(data?.ranges ?? {}).length === 0 && attempt < EMPTY_STATS_MAX_RETRIES) {
+            retryTimer = setTimeout(() => loadStats(attempt + 1), EMPTY_STATS_RETRY_MS * (attempt + 1));
             return;
           }
-
-          statsDataRef.current = merged;
-          setStatsData(merged);
+          const snapshot = { serverId, data };
+          statsSnapshotRef.current = snapshot;
+          setStatsSnapshot(snapshot);
         })().finally(() => {
-          if (!cancelled && !retryTimer) setLoading(false);
+          if (!cancelled && isCurrentServer(serverId) && !retryTimer) setLoading(false);
         });
       };
-
       loadStats(0);
-
-      return () => {
-        cancelled = true;
-        if (retryTimer) clearTimeout(retryTimer);
-      };
-    }, [connectedServerIdsKey, currentServerId, hasConnectingServer]),
+      return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+    }, [connectionState, currentServerId, hasConnectingServer, isCurrentServer]),
   );
 
   const selectRangeIndex = useCallback((index: number) => {
@@ -499,7 +454,7 @@ export default function StatsScreen() {
 export function StatsScreenshotDemo({
   statsData,
 }: {
-  statsData: StatsPayload;
+  statsData: StatsView;
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
@@ -610,7 +565,7 @@ function StatsRangeTabBar({
 interface StatsRangeSceneProps {
   range: TimeRange;
   active: boolean;
-  statsData: StatsPayload | null;
+  statsData: StatsView | null;
   loading: boolean;
   expandedSections: Set<string>;
   toggleSection(section: string): void;

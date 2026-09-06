@@ -1,22 +1,21 @@
-import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Alert } from "react-native";
 import { useRouter } from "expo-router";
+import { useCurrentServer } from "../../../store/currentServer";
 import {
-  isAgentSessionListFreshForConnection,
+  isWorkerSessionListFreshForConnection,
   type ConnectionState,
-  useAgents,
-} from "../../../store/agents";
+  useWorkers,
+} from "../../../store/workers";
 import type { WorkItem } from "../../../store/work";
 import {
-  getServerById,
-  markAgentOpened,
-  setAgentAlias,
+  markWorkerOpened,
+  setWorkerAlias,
   setInterfaceRenderMode,
-  type StoredAgentAliases,
+  type StoredWorkerAliases,
   type StoredInterfaceRenderMode,
   type StoredInterfaceRenderModes,
-  type StoredRecentAgentOpens,
-  type StoredServer,
+  type StoredRecentWorkerOpens,
 } from "../../../services/storage";
 import { makeSessionKey } from "../../../services/sessionKeys";
 import {
@@ -26,7 +25,7 @@ import {
   reconcileCreateSessionFailure,
   reconcileCreateSessionSuccess,
   shouldUnlockCreateAfterAmbiguity,
-  bumpAgentSessionListReceipt,
+  bumpWorkerSessionListReceipt,
   type CreateAmbiguityGateState,
 } from "../../../services/providers";
 import { wsClient } from "../../../services/websocket";
@@ -62,7 +61,7 @@ async function resolveLaunchSelection(
 
 interface UseTerminalSessionActionsInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   connectionState: ConnectionState;
   creatingSession: boolean;
@@ -73,15 +72,14 @@ interface UseTerminalSessionActionsInput {
   setNewTerminalVisible(value: boolean): void;
   setCreatingSession(value: boolean): void;
   setRenameVisible(value: boolean): void;
-  setAgentAliases(value: StoredAgentAliases): void;
+  setWorkerAliases(value: StoredWorkerAliases): void;
   setInterfaceRenderModes: Dispatch<SetStateAction<StoredInterfaceRenderModes>>;
-  setRecentAgentOpens: Dispatch<SetStateAction<StoredRecentAgentOpens>>;
-  setServer: Dispatch<SetStateAction<StoredServer | null>>;
+  setRecentWorkerOpens: Dispatch<SetStateAction<StoredRecentWorkerOpens>>;
 }
 
 export function useTerminalSessionActions({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   connectionState,
   creatingSession,
@@ -92,13 +90,14 @@ export function useTerminalSessionActions({
   setNewTerminalVisible,
   setCreatingSession,
   setRenameVisible,
-  setAgentAliases,
+  setWorkerAliases,
   setInterfaceRenderModes,
-  setRecentAgentOpens,
-  setServer,
+  setRecentWorkerOpens,
 }: UseTerminalSessionActionsInput) {
   const router = useRouter();
-  const { state } = useAgents();
+  const { refreshServers, isCurrentServer } = useCurrentServer();
+  const createInFlightRef = useRef(false);
+  const { state } = useWorkers();
   const [createAmbiguityBlocks, setCreateAmbiguityBlocks] =
     useState<CreateAmbiguityGateState>({});
   const [listReceiptByServer, setListReceiptByServer] = useState<
@@ -110,12 +109,12 @@ export function useTerminalSessionActions({
       const id = payload?.serverId?.trim();
       if (!id) return;
       setListReceiptByServer((current) =>
-        bumpAgentSessionListReceipt(current, id),
+        bumpWorkerSessionListReceipt(current, id),
       );
     };
-    wsClient.on("agent_session_list", onList);
+    wsClient.on("worker_session_list", onList);
     return () => {
-      wsClient.off("agent_session_list", onList);
+      wsClient.off("worker_session_list", onList);
     };
   }, []);
 
@@ -126,7 +125,7 @@ export function useTerminalSessionActions({
         const connectionGeneration =
           state.connectionGenerationByServer[id] ?? 0;
         const listReceipt = listReceiptByServer[id] ?? 0;
-        const listFresh = isAgentSessionListFreshForConnection(state, id);
+        const listFresh = isWorkerSessionListFreshForConnection(state, id);
         if (
           shouldUnlockCreateAfterAmbiguity({
             block,
@@ -142,17 +141,17 @@ export function useTerminalSessionActions({
     });
   }, [
     listReceiptByServer,
-    state.agentSessionListGenerationByServer,
+    state.workerSessionListGenerationByServer,
     state.connectionGenerationByServer,
     state.serverConnections,
   ]);
 
   const handleSaveRename = useCallback(async () => {
     if (!sessionKey) return;
-    const nextAliases = await setAgentAlias(sessionKey, renameDraft);
-    setAgentAliases(nextAliases);
+    const nextAliases = await setWorkerAlias(sessionKey, renameDraft);
+    setWorkerAliases(nextAliases);
     setRenameVisible(false);
-  }, [renameDraft, sessionKey, setAgentAliases, setRenameVisible]);
+  }, [renameDraft, sessionKey, setWorkerAliases, setRenameVisible]);
 
   const applyInterfaceRenderMode = useCallback(
     (mode: StoredInterfaceRenderMode) => {
@@ -182,6 +181,7 @@ export function useTerminalSessionActions({
 
   const createTerminal = useCallback(
     async (input: CreateTerminalInput) => {
+      if (!isCurrentServer(serverId) || createInFlightRef.current) return;
       if (!serverId || connectionState !== "connected" || creatingSession) {
         if (connectionState !== "connected") {
           Alert.alert(
@@ -194,7 +194,7 @@ export function useTerminalSessionActions({
       const connectionGeneration =
         state.connectionGenerationByServer[serverId] ?? 0;
       const listReceipt = listReceiptByServer[serverId] ?? 0;
-      const listFresh = isAgentSessionListFreshForConnection(state, serverId);
+      const listFresh = isWorkerSessionListFreshForConnection(state, serverId);
       if (
         isCreateBlockedByAmbiguity({
           blocks: createAmbiguityBlocks,
@@ -205,7 +205,7 @@ export function useTerminalSessionActions({
         })
       ) {
         // Request list proof — do not clear the block here.
-        wsClient.listAgentSessions(serverId);
+        wsClient.listWorkerSessions(serverId);
         Alert.alert(
           "Refresh required",
           "Previous create result was ambiguous. Waiting for a confirmed session list before creating another terminal.",
@@ -216,6 +216,7 @@ export function useTerminalSessionActions({
       setNewTerminalVisible(false);
       closeMenu();
       setCreatingSession(true);
+      createInFlightRef.current = true;
       let dispatched = false;
       try {
         const startedAt = Date.now();
@@ -224,8 +225,9 @@ export function useTerminalSessionActions({
         // fallback when the selection is stale; failure to load Providers
         // never blocks creation (the daemon falls back to its own state).
         const selection = await resolveLaunchSelection(serverId, input.command);
+        if (!isCurrentServer(serverId)) return;
         const pending = wsClient.createSession(serverId, {
-          targetId: agentId,
+          targetId: workerId,
           cwd: input.cwd,
           command: input.command,
           name: input.name,
@@ -245,8 +247,9 @@ export function useTerminalSessionActions({
                 listReceipt: listReceiptByServer[serverId] ?? 0,
               }),
             );
-            wsClient.listAgentSessions(serverId);
+            wsClient.listWorkerSessions(serverId);
           }
+          if (!isCurrentServer(serverId)) return;
           Alert.alert(
             reconciled.kind === "ambiguous"
               ? "Refresh required"
@@ -255,21 +258,20 @@ export function useTerminalSessionActions({
           );
           return;
         }
-        const nextAgentId = reconciled.agentId;
-        const nextSessionKey = makeSessionKey(serverId, nextAgentId);
+        setCreateAmbiguityBlocks((current) => clearCreateAmbiguityForServer(current, serverId));
+        if (!isCurrentServer(serverId)) return;
+        const nextWorkerId = reconciled.workerId;
+        const nextSessionKey = makeSessionKey(serverId, nextWorkerId);
         const openedAt = Date.now();
-        void markAgentOpened(nextSessionKey, openedAt);
-        setRecentAgentOpens((previous) => ({
+        void markWorkerOpened(nextSessionKey, openedAt);
+        setRecentWorkerOpens((previous) => ({
           ...previous,
           [nextSessionKey]: openedAt,
         }));
-        setCreateAmbiguityBlocks((current) =>
-          clearCreateAmbiguityForServer(current, serverId),
-        );
         router.replace({
           pathname: "/terminal/[id]",
           params: {
-            id: nextAgentId,
+            id: nextWorkerId,
             serverId,
             cwd: input.cwd,
             command: input.command,
@@ -297,8 +299,9 @@ export function useTerminalSessionActions({
             }),
           );
           // Fire-and-forget list must not clear the block.
-          wsClient.listAgentSessions(serverId);
+          wsClient.listWorkerSessions(serverId);
         }
+        if (!isCurrentServer(serverId)) return;
         Alert.alert(
           reconciled.kind === "ambiguous"
             ? "Refresh required"
@@ -306,21 +309,23 @@ export function useTerminalSessionActions({
           reconciled.kind === "navigable" ? "Create failed." : reconciled.message,
         );
       } finally {
+        createInFlightRef.current = false;
         setCreatingSession(false);
       }
     },
     [
-      agentId,
+      workerId,
       closeMenu,
       connectionState,
       createAmbiguityBlocks,
       creatingSession,
       listReceiptByServer,
+      isCurrentServer,
       router,
       serverId,
       setCreatingSession,
       setNewTerminalVisible,
-      setRecentAgentOpens,
+      setRecentWorkerOpens,
       state,
     ],
   );
@@ -354,19 +359,10 @@ export function useTerminalSessionActions({
     setRenameVisible(true);
   }, [closeMenu, setRenameVisible]);
 
-  const refreshServerMeta = useCallback(async () => {
-    if (!serverId) return;
-    const next = await getServerById(serverId);
-    setServer(next);
-  }, [serverId, setServer]);
-
   const retryServerConnection = useCallback(async () => {
-    if (!serverId) return;
-    const storedServer = await getServerById(serverId);
-    if (!storedServer) return;
-    setServer(storedServer);
-    wsClient.connectServer(storedServer);
-  }, [serverId, setServer]);
+    if (!isCurrentServer(serverId)) return;
+    await refreshServers();
+  }, [serverId, refreshServers, isCurrentServer]);
 
   return {
     createTerminal,
@@ -376,7 +372,6 @@ export function useTerminalSessionActions({
     handleSaveRename,
     toggleInterfaceRenderMode,
     applyInterfaceRenderMode,
-    refreshServerMeta,
     retryServerConnection,
   };
 }

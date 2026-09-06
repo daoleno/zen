@@ -109,7 +109,7 @@ accounts, billing, or a global abuse database.
 | `<state>/uploads/`                                              | Authenticated uploads: **2 GiB/file, 8 GiB aggregate, seven-day retention** |
 | `~/.zen/work/`, `~/.zen/brain/`                                 | User-owned Work and Brain data                                              |
 | Agent homes                                                     | Provider transcripts Zen may read for Chat                                  |
-| `~/.zen/worktrees/`, `~/.zen/run/agent-resources/`, `~/.zen/t/` | Explicit agent worktree, lease, and owned temporary state                   |
+| `~/.zen/worktrees/`, `~/.zen/run/worker-resources/`, `~/.zen/t/` | Explicit agent worktree, lease, and owned temporary state                   |
 
 The previous documentation values of 32 MiB/file and 512 MiB aggregate were
 stale. The authoritative daemon constants and app preflight are 2 GiB/file and

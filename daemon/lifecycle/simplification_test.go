@@ -54,14 +54,11 @@ func TestDueRetryIgnoresUnrelatedInputAndWakesExactlyOnce(t *testing.T) {
 	}
 	e.mu.Unlock()
 
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
 	reopened, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	setNow(reopened, dueAt.Add(-time.Nanosecond))
 	if next, ok := reopened.NextWakeAt(); !ok || !next.Equal(dueAt) {
 		t.Fatalf("reloaded next wake=(%v,%v), want %v", next, ok, dueAt)
@@ -99,7 +96,7 @@ func TestDueRetryIgnoresUnrelatedInputAndWakesExactlyOnce(t *testing.T) {
 
 func TestExpiredClaimReusesExactEventID(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-claim", PolicyBounded)
 	opened, err := e.OpenReviewEvent("w-claim", "needs_input", "question", "event-exact")
 	if err != nil {
@@ -136,7 +133,7 @@ func TestExpiredClaimReusesExactEventID(t *testing.T) {
 
 func TestAttemptSessionTokenFenceAndHeartbeatSemantics(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-fence", PolicyUntilDone)
 	st := admit(t, e, "w-fence", "turn-current", "session-current")
 	base := st.Revision
@@ -169,7 +166,7 @@ func TestAttemptSessionTokenFenceAndHeartbeatSemantics(t *testing.T) {
 
 func TestAttemptTokenCannotBeReusedByAnotherSession(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-token-session", PolicyUntilDone)
 	admit(t, e, "w-token-session", "turn-exact", "session-1")
 	applied, _, err := e.AdmitTurn("w-token-session", AdmitTurnInput{SessionID: "session-2", TurnToken: "turn-exact", Delegated: true})
@@ -180,7 +177,7 @@ func TestAttemptTokenCannotBeReusedByAnotherSession(t *testing.T) {
 
 func TestLostAttemptDoesNotCompleteAndNextAttemptCanContinue(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-lost", PolicyUntilDone)
 	admit(t, e, "w-lost", "turn-lost", "session-1")
 	lost, err := e.ReportTurnLost("w-lost", attemptID("session-1", "turn-lost", 1), "process disappeared")
@@ -200,7 +197,7 @@ func TestLostAttemptDoesNotCompleteAndNextAttemptCanContinue(t *testing.T) {
 
 func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-late-terminal", PolicyUntilDone)
 	admitted := admit(t, e, "w-late-terminal", "turn-old", "session-1")
 	identity := attemptID("session-1", "turn-old", admitted.Attempt.Generation)

@@ -1,10 +1,10 @@
-import type { Agent, ConnectionState } from "../store/agents";
+import type { Worker, ConnectionState } from "../store/workers";
 
 /**
  * Telegram-style multi-selection over the Sessions list.
  *
  * Selection is keyed by the app's canonical stable Session key
- * (`makeSessionKey(serverId, agentId)`), never by row index, display name or
+ * (`makeSessionKey(serverId, workerId)`), never by row index, display name or
  * order. That is what lets selection survive list reorder, section moves and
  * live updates; it is pruned only when the authoritative Session row
  * disappears from the daemon-backed store.
@@ -93,7 +93,7 @@ export interface SessionTerminationEligibility {
 /**
  * Termination eligibility follows the daemon contract and the existing
  * single-Session terminate rule: every Session in the authoritative list is
- * terminable through `kill_agent` (kill is idempotent for already-gone
+ * terminable through `kill_worker` (kill is idempotent for already-gone
  * Sessions, and Brain/user-owned Sessions are regular tmux Sessions on the
  * daemon), but only while its daemon connection is established. Offline rows
  * stay visible but are excluded from selection with a truthful reason.
@@ -111,16 +111,9 @@ export function sessionTerminationEligibility(
 }
 
 export function isSessionTerminable(
-  agent: Pick<Agent, "serverId">,
+  agent: Pick<Worker, "serverId">,
   serverConnections: Record<string, ConnectionState>,
 ): boolean {
   return sessionTerminationEligibility(serverConnections[agent.serverId])
     .eligible;
-}
-
-/** Number of distinct daemons spanned by a selection (for confirmation copy). */
-export function countSelectionServers(
-  agents: readonly Pick<Agent, "serverId">[],
-): number {
-  return new Set(agents.map((agent) => agent.serverId)).size;
 }

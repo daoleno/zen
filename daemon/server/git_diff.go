@@ -251,8 +251,8 @@ func (s *Server) buildGitDiffFileContent(targetID, cwd, path string) (gitDiffFil
 func (s *Server) resolveGitRepoRoot(targetID, cwd string) (repoRoot string, reason string, err error) {
 	resolvedCwd := strings.TrimSpace(cwd)
 	if resolvedCwd == "" && targetID != "" {
-		if agent := s.watcher.GetAgent(targetID); agent != nil {
-			resolvedCwd = strings.TrimSpace(agent.Cwd)
+		if worker := s.watcher.GetWorker(targetID); worker != nil {
+			resolvedCwd = strings.TrimSpace(worker.Cwd)
 		}
 	}
 	if resolvedCwd == "" {

@@ -8,7 +8,7 @@ export type Frontmatter = {
   started?: string | null;
   status?: string;
   title?: string;
-  agent_session?: string;
+  worker_session?: string;
   extra?: Record<string, unknown>;
   [key: string]: unknown;
 };
@@ -30,11 +30,13 @@ export type WorkItem = {
 export type WorkState = {
   byKey: Record<string, WorkItem>;
   byProject: Record<string, string[]>;
+  draftsByKey: Record<string, { body: string; baseMtime: string }>;
 };
 
 export const initialWorkState: WorkState = {
   byKey: {},
   byProject: {},
+  draftsByKey: {},
 };
 
 type RawWorkItem = {
@@ -63,6 +65,9 @@ type Action =
       workItem: RawWorkItem;
     }
   | { type: "WORK_ITEM_DELETED"; serverId: string; id?: string; path?: string }
+  | { type: "WORK_DRAFT_CHANGED"; serverId: string; id: string; body: string; baseMtime: string }
+  | { type: "WORK_DRAFT_SAVED"; serverId: string; id: string; body: string; baseMtime: string; mtime: string }
+  | { type: "WORK_DRAFT_DISCARDED"; serverId: string; id: string }
   | { type: "REMOVE_SERVER"; serverId: string };
 
 function makeWorkItemKey(serverId: string, itemId: string) {
@@ -130,9 +135,9 @@ function normalizeWorkItem(
         typeof frontmatter.title === "string"
           ? frontmatter.title.trim()
           : undefined,
-      agent_session:
-        typeof frontmatter.agent_session === "string"
-          ? frontmatter.agent_session
+      worker_session:
+        typeof frontmatter.worker_session === "string"
+          ? frontmatter.worker_session
           : undefined,
     },
     mtime: normalizeTimestamp(raw.mtime),
@@ -164,6 +169,28 @@ function groupByProject(byKey: Record<string, WorkItem>) {
 
 export function workReducer(state: WorkState, action: Action): WorkState {
   switch (action.type) {
+    case "WORK_DRAFT_CHANGED": {
+      const key = makeWorkItemKey(action.serverId, action.id);
+      const draft = state.draftsByKey[key];
+      if (draft?.body === action.body && draft.baseMtime === action.baseMtime) return state;
+      return { ...state, draftsByKey: { ...state.draftsByKey, [key]: { body: action.body, baseMtime: action.baseMtime } } };
+    }
+    case "WORK_DRAFT_SAVED": {
+      const key = makeWorkItemKey(action.serverId, action.id);
+      const draft = state.draftsByKey[key];
+      if (!draft || draft.baseMtime !== action.baseMtime) return state;
+      const draftsByKey = { ...state.draftsByKey };
+      if (draft.body === action.body) delete draftsByKey[key];
+      else draftsByKey[key] = { ...draft, baseMtime: action.mtime };
+      return { ...state, draftsByKey };
+    }
+    case "WORK_DRAFT_DISCARDED": {
+      const key = makeWorkItemKey(action.serverId, action.id);
+      if (!state.draftsByKey[key]) return state;
+      const draftsByKey = { ...state.draftsByKey };
+      delete draftsByKey[key];
+      return { ...state, draftsByKey };
+    }
     case "WORK_ITEMS_SNAPSHOT": {
       const previousServerItemCount = Object.values(state.byKey).filter(
         (item) => item.serverId === action.serverId,
@@ -186,6 +213,7 @@ export function workReducer(state: WorkState, action: Action): WorkState {
         return state;
       }
       return {
+        ...state,
         byKey: nextByKey,
         byProject: groupByProject(nextByKey),
       };
@@ -241,6 +269,7 @@ export function workReducer(state: WorkState, action: Action): WorkState {
         Object.entries(state.byKey).filter(([, value]) => value.serverId !== action.serverId),
       );
       return {
+        ...state,
         byKey: nextByKey,
         byProject: groupByProject(nextByKey),
       };
@@ -280,7 +309,7 @@ function frontmatterEqual(left: Frontmatter, right: Frontmatter): boolean {
       left.started === right.started &&
       left.status === right.status &&
       left.title === right.title &&
-      left.agent_session === right.agent_session &&
+      left.worker_session === right.worker_session &&
       left.extra === right.extra &&
       extraFrontmatterFieldsEqual(left, right)
     )
@@ -295,7 +324,7 @@ const knownFrontmatterKeys = new Set([
   "started",
   "status",
   "title",
-  "agent_session",
+  "worker_session",
   "extra",
 ]);
 

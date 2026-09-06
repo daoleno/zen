@@ -180,10 +180,10 @@ export const TypeScale = {
 
 export type TypeScaleRole = keyof typeof TypeScale;
 
-export type AgentStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
+export type WorkerStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
 export type RunStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 
-export const statusColor = (status: AgentStatus): string => {
+export const statusColor = (status: WorkerStatus): string => {
   switch (status) {
     case 'failed': return Colors.statusFailed;
     case 'blocked': return Colors.statusBlocked;

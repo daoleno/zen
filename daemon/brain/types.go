@@ -18,7 +18,7 @@ const (
 	ExternalInputPending      ExternalInputDisposition = "pending"
 )
 
-type AgentRef struct {
+type WorkerRef struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	Status    string     `json:"status"`
@@ -33,53 +33,53 @@ type AgentRef struct {
 }
 
 type Snapshot struct {
-	Memory            string               `json:"memory"`
-	Profile           string               `json:"profile"`
-	Current           string               `json:"current,omitempty"`
-	Personality       string               `json:"personality"`
-	CurrentWork       []CurrentWork        `json:"current_work"`
-	WorkBacklog       WorkBacklog          `json:"work_backlog"`
-	Agents            []AgentRef           `json:"agents"`
-	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
-	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`
-	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
-	Executors         []work.AgentExecutor `json:"executors"`
-	ChatThreadID      string               `json:"chat_thread_id,omitempty"`
-	Workspace         string               `json:"workspace,omitempty"`
-	WorklogPath       string               `json:"worklog_path,omitempty"`
-	GeneratedAt       time.Time            `json:"generated_at"`
+	Memory            string                `json:"memory"`
+	Profile           string                `json:"profile"`
+	Current           string                `json:"current,omitempty"`
+	Personality       string                `json:"personality"`
+	CurrentWork       []CurrentWork         `json:"current_work"`
+	WorkBacklog       WorkBacklog           `json:"work_backlog"`
+	Workers           []WorkerRef           `json:"workers"`
+	HostWorker        *WorkerRef            `json:"host_worker,omitempty"`
+	HostExecutor      *work.WorkerExecutor  `json:"host_executor,omitempty"`
+	DelegatedExecutor *work.WorkerExecutor  `json:"delegated_executor,omitempty"`
+	Executors         []work.WorkerExecutor `json:"executors"`
+	ChatThreadID      string                `json:"chat_thread_id,omitempty"`
+	Workspace         string                `json:"workspace,omitempty"`
+	WorklogPath       string                `json:"worklog_path,omitempty"`
+	GeneratedAt       time.Time             `json:"generated_at"`
 }
 
 type BrainContext struct {
-	ThreadID          string               `json:"thread_id,omitempty"`
-	Workspace         string               `json:"workspace,omitempty"`
-	WorklogPath       string               `json:"worklog_path,omitempty"`
-	Current           string               `json:"current,omitempty"`
-	Memory            string               `json:"memory,omitempty"`
-	Profile           string               `json:"profile,omitempty"`
-	Personality       string               `json:"personality,omitempty"`
-	CurrentWork       []CurrentWork        `json:"current_work"`
-	WorkBacklog       WorkBacklog          `json:"work_backlog"`
-	Playbooks         []PlaybookEntry      `json:"playbooks,omitempty"`
-	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
-	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`
-	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
-	Executors         []work.AgentExecutor `json:"executors"`
-	Agents            []AgentRef           `json:"agents"`
-	GeneratedAt       time.Time            `json:"generated_at"`
+	ThreadID          string                `json:"thread_id,omitempty"`
+	Workspace         string                `json:"workspace,omitempty"`
+	WorklogPath       string                `json:"worklog_path,omitempty"`
+	Current           string                `json:"current,omitempty"`
+	Memory            string                `json:"memory,omitempty"`
+	Profile           string                `json:"profile,omitempty"`
+	Personality       string                `json:"personality,omitempty"`
+	CurrentWork       []CurrentWork         `json:"current_work"`
+	WorkBacklog       WorkBacklog           `json:"work_backlog"`
+	Playbooks         []PlaybookEntry       `json:"playbooks,omitempty"`
+	HostWorker        *WorkerRef            `json:"host_worker,omitempty"`
+	HostExecutor      *work.WorkerExecutor  `json:"host_executor,omitempty"`
+	DelegatedExecutor *work.WorkerExecutor  `json:"delegated_executor,omitempty"`
+	Executors         []work.WorkerExecutor `json:"executors"`
+	Workers           []WorkerRef           `json:"workers"`
+	GeneratedAt       time.Time             `json:"generated_at"`
 }
 
 type HousekeepingReport struct {
-	Workspace            string     `json:"workspace,omitempty"`
-	CurrentPath          string     `json:"current_path"`
-	SoulPath             string     `json:"soul_path"`
-	PolicyPaths          []string   `json:"policy_paths"`
-	PlaybookPaths        []string   `json:"playbook_paths"`
-	WorklogPath          string     `json:"worklog_path"`
-	OpenDelegatedAgents  []AgentRef `json:"open_delegated_agents"`
-	ChangedPaths         []string   `json:"changed_paths"`
-	RecommendedNextSteps []string   `json:"recommended_next_steps,omitempty"`
-	GeneratedAt          time.Time  `json:"generated_at"`
+	Workspace            string      `json:"workspace,omitempty"`
+	CurrentPath          string      `json:"current_path"`
+	SoulPath             string      `json:"soul_path"`
+	PolicyPaths          []string    `json:"policy_paths"`
+	PlaybookPaths        []string    `json:"playbook_paths"`
+	WorklogPath          string      `json:"worklog_path"`
+	OpenDelegatedWorkers []WorkerRef `json:"open_delegated_workers"`
+	ChangedPaths         []string    `json:"changed_paths"`
+	RecommendedNextSteps []string    `json:"recommended_next_steps,omitempty"`
+	GeneratedAt          time.Time   `json:"generated_at"`
 }
 
 type WorkspaceTree struct {

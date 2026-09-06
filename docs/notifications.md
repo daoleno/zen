@@ -33,7 +33,7 @@ zen should stay silent for these states and events:
 
 There is one primary suppression rule:
 
-- If the exact agent session is currently open and focused, do not notify.
+- If the exact Worker session is currently open and focused, do not notify.
 
 Everything else should stay straightforward:
 

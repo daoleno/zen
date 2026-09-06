@@ -83,7 +83,7 @@ type Run struct {
 	Status         Status     `json:"status"`
 	Manual         bool       `json:"manual,omitempty"`
 	WorkID         string     `json:"work_id,omitempty"`
-	AgentSession   string     `json:"agent_session,omitempty"`
+	WorkerSession  string     `json:"worker_session,omitempty"`
 	Result         string     `json:"result,omitempty"`
 	FailureReason  string     `json:"failure_reason,omitempty"`
 	PreviousStatus Status     `json:"previous_status,omitempty"`

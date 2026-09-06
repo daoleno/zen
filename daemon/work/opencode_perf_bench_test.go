@@ -64,11 +64,11 @@ func buildOpenCodePerfFixture(tb testing.TB, options openCodePerfFixtureOptions)
 	ms := func(t time.Time) int64 { return t.UnixMilli() }
 
 	fixture := &openCodePerfFixture{
-		dbPath:     dbPath,
-		sessionID:  sessionID,
-		directory:  directory,
-		startedAt:  started,
-		nextID:     map[string]int{"msg": 0, "prt": 0},
+		dbPath:    dbPath,
+		sessionID: sessionID,
+		directory: directory,
+		startedAt: started,
+		nextID:    map[string]int{"msg": 0, "prt": 0},
 	}
 
 	var b strings.Builder
@@ -190,8 +190,8 @@ func (f *openCodePerfFixture) nextRowID(prefix string) string {
 	return fmt.Sprintf("%s_%08d", prefix, f.nextID[prefix])
 }
 
-func (f *openCodePerfFixture) agent() classifier.Agent {
-	return classifier.Agent{Cwd: f.directory, Command: "opencode", StartedAt: f.startedAt}
+func (f *openCodePerfFixture) worker() classifier.Worker {
+	return classifier.Worker{Cwd: f.directory, Command: "opencode", StartedAt: f.startedAt}
 }
 
 // appendStreamingRows simulates one OpenCode incremental write burst: a new
@@ -283,7 +283,7 @@ func BenchmarkOpenCodeLoadFullConversation(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		reader := NewProviderConversationReader()
-		conversation, err := reader.Load(classifier.Agent{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}, AgentProviderOpenCode, fixture.startedAt.Add(time.Hour))
+		conversation, err := reader.Load(classifier.Worker{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}, WorkerProviderOpenCode, fixture.startedAt.Add(time.Hour))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -303,10 +303,10 @@ func BenchmarkOpenCodeIncrementalPoll(b *testing.B) {
 		toolPartBytes: 12000,
 	})
 	b.Setenv("ZEN_OPENCODE_DB", fixture.dbPath)
-	agent := classifier.Agent{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}
+	worker := classifier.Worker{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}
 	reader := NewProviderConversationReader()
 	now := fixture.startedAt.Add(time.Hour)
-	if _, err := reader.Load(agent, AgentProviderOpenCode, now); err != nil {
+	if _, err := reader.Load(worker, WorkerProviderOpenCode, now); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
@@ -315,7 +315,7 @@ func BenchmarkOpenCodeIncrementalPoll(b *testing.B) {
 		if i%10 == 9 {
 			fixture.updateStreamingTextPart(b, 120)
 		}
-		if _, err := reader.Load(agent, AgentProviderOpenCode, now.Add(time.Duration(i+1)*time.Millisecond)); err != nil {
+		if _, err := reader.Load(worker, WorkerProviderOpenCode, now.Add(time.Duration(i+1)*time.Millisecond)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -330,17 +330,17 @@ func BenchmarkOpenCodeIncrementalBurst(b *testing.B) {
 		toolPartBytes: 12000,
 	})
 	b.Setenv("ZEN_OPENCODE_DB", fixture.dbPath)
-	agent := classifier.Agent{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}
+	worker := classifier.Worker{Cwd: fixture.directory, Command: "opencode", StartedAt: fixture.startedAt}
 	now := fixture.startedAt.Add(time.Hour)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		reader := NewProviderConversationReader()
-		if _, err := reader.Load(agent, AgentProviderOpenCode, now); err != nil {
+		if _, err := reader.Load(worker, WorkerProviderOpenCode, now); err != nil {
 			b.Fatal(err)
 		}
 		fixture.appendStreamingRows(b, 4000)
-		if _, err := reader.Load(agent, AgentProviderOpenCode, now.Add(time.Duration(i+1)*time.Millisecond)); err != nil {
+		if _, err := reader.Load(worker, WorkerProviderOpenCode, now.Add(time.Duration(i+1)*time.Millisecond)); err != nil {
 			b.Fatal(err)
 		}
 	}

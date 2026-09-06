@@ -14,7 +14,7 @@ function hostSections(snapshot: SessionResourceSnapshot) {
 describe("SessionResourceSheet host section policy", () => {
   test("places healthy availability only in a visible pool card", () => {
     const sections = hostSections({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -35,7 +35,7 @@ describe("SessionResourceSheet host section policy", () => {
 
   test("places healthy availability in the footer without a pool card", () => {
     const sections = hostSections({
-      agent_id: "main:@8",
+      worker_id: "main:@8",
       session: { managed: false },
       host: { available_bytes: 23 * 1024 ** 3, pressure: "ok" },
     });
@@ -47,7 +47,7 @@ describe("SessionResourceSheet host section policy", () => {
 
   test("keeps unavailable headroom as subdued support instead of a warning", () => {
     const sections = hostSections({
-      agent_id: "main:@9",
+      worker_id: "main:@9",
       session: { managed: true },
       host: { available_bytes: 23 * 1024 ** 3 },
     });
@@ -61,7 +61,7 @@ describe("SessionResourceSheet host section policy", () => {
 
   test("reserves the warning section for confirmed pressure", () => {
     const sections = hostSections({
-      agent_id: "main:@10",
+      worker_id: "main:@10",
       session: { managed: true, memory_current_bytes: 2048 },
       host: { available_bytes: 1025, pressure: "pressure" },
     });

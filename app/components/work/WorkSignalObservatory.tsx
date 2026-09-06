@@ -11,15 +11,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { useReducedMotion } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
-  isAgentSessionListFreshForConnection,
-  useAgents,
-  type Agent,
-} from "../../store/agents";
+  isWorkerSessionListFreshForConnection,
+  useWorkers,
+  type Worker,
+} from "../../store/workers";
 import { useBrain } from "../../store/brain";
 import { useCurrentServer } from "../../store/currentServer";
-import type { StoredAgentAliases } from "../../services/storage";
-import { presentAgent } from "../../services/agentPresentation";
-import { agentStatusLabel } from "../../services/agentStatusPresentation";
+import { selectCurrentServerItems } from "../../services/currentServerSelection";
+import type { StoredWorkerAliases } from "../../services/storage";
+import { presentWorker } from "../../services/workerPresentation";
+import { workerStatusLabel } from "../../services/workerStatusPresentation";
 import { TypeScale, UiTextMetrics, useAppTheme } from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
@@ -31,9 +32,9 @@ import { resolveWorkObservatoryMotion } from "./workSignalObservatoryInteraction
 
 type WorkSignalObservatoryProps = {
   visible: boolean;
-  aliases: StoredAgentAliases;
+  aliases: StoredWorkerAliases;
   onClose(): void;
-  onOpenSession(agent: Agent): void;
+  onOpenSession(agent: Worker): void;
   onOpenBrain(): void;
 };
 
@@ -48,28 +49,28 @@ export function WorkSignalObservatory({
   const reducedMotion = useReducedMotion();
   const motion = resolveWorkObservatoryMotion(reducedMotion);
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { state: agentState } = useAgents();
+  const { state: workerState } = useWorkers();
   const { state: brainState } = useBrain();
   const { currentServer, currentServerId, hydrated } = useCurrentServer();
   const serverId = currentServerId;
   const brain = serverId ? brainState.byServer[serverId] : undefined;
-  const currentAgents = useMemo(
-    () => agentState.agents.filter((agent) => agent.serverId === serverId),
-    [agentState.agents, serverId],
+  const currentWorkers = useMemo(
+    () => selectCurrentServerItems(workerState.workers, serverId),
+    [workerState.workers, serverId],
   );
-  const agentById = useMemo(
-    () => new Map(currentAgents.map((agent) => [agent.id, agent] as const)),
-    [currentAgents],
+  const workerById = useMemo(
+    () => new Map(currentWorkers.map((agent) => [agent.id, agent] as const)),
+    [currentWorkers],
   );
   const owners = useMemo(
     () =>
-      currentAgents.map((agent) => ({
+      currentWorkers.map((agent) => ({
         sessionId: agent.id,
-        title: presentAgent(agent, aliases[agent.key]).title,
+        title: presentWorker(agent, aliases[agent.key]).title,
         status: agent.status,
         delegated: agent.delegated === true,
       })),
-    [aliases, currentAgents],
+    [aliases, currentWorkers],
   );
   const model = useMemo(
     () =>
@@ -81,19 +82,19 @@ export function WorkSignalObservatory({
     [brain?.current_work, brain?.work_backlog?.historical_results, owners],
   );
   const connectionState = serverId
-    ? agentState.serverConnections[serverId] ?? "offline"
+    ? workerState.serverConnections[serverId] ?? "offline"
     : "offline";
   const ready = Boolean(
     hydrated &&
       currentServer &&
       brain?.hydrated &&
       serverId &&
-      isAgentSessionListFreshForConnection(agentState, serverId),
+      isWorkerSessionListFreshForConnection(workerState, serverId),
   );
   const activateRow = useCallback(
     (row: WorkActivityRow) => {
       if (row.action === "open_session" && row.owner) {
-        const agent = agentById.get(row.owner.sessionId);
+        const agent = workerById.get(row.owner.sessionId);
         if (agent) {
           onClose();
           onOpenSession(agent);
@@ -105,7 +106,7 @@ export function WorkSignalObservatory({
         onOpenBrain();
       }
     },
-    [agentById, onClose, onOpenBrain, onOpenSession],
+    [workerById, onClose, onOpenBrain, onOpenSession],
   );
 
   return (
@@ -293,7 +294,7 @@ function WorkActivityRowView({
     row.statusLabel,
     `Work ${row.title}`,
     row.owner
-      ? `Delegated agent ${row.owner.title}, ${agentStatusLabel(row.owner.status)}`
+      ? `Delegated Zen Worker ${row.owner.title}, ${workerStatusLabel(row.owner.status)}`
       : undefined,
     row.unread ? "Unread result" : undefined,
   ]
@@ -328,7 +329,7 @@ function WorkActivityRowView({
               color={theme.colors.textTertiary}
             />
             <Text style={styles.ownerText} numberOfLines={1}>
-              {row.owner.title} · {agentStatusLabel(row.owner.status)}
+              {row.owner.title} · {workerStatusLabel(row.owner.status)}
             </Text>
           </View>
         ) : null}

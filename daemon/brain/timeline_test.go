@@ -332,7 +332,7 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 		if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 			t.Fatal(err)
 		}
-		sessionID := "brain-agent-stale-card:@2"
+		sessionID := "zen-worker-stale-card:@2"
 		item, err := store.CreateWork(Work{
 			Title:            "zen-telegram-performance-publish",
 			Objective:        "Prove stale materializes a card",
@@ -384,7 +384,7 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-signal-card:@1"
+	sessionID := "zen-worker-signal-card:@1"
 	item, err := store.CreateWork(Work{
 		Title: "Signal card", Objective: "Project the canonical control result",
 		Status: WorkRunning, AttemptSessionID: sessionID, CompletionPolicy: CompletionBounded,
@@ -433,7 +433,7 @@ func TestMatchingControlDoneProjectsOneExistingWorkResultCard(t *testing.T) {
 	if len(items) != 1 || items[0].ID != projected.Review.EventID || items[0].Kind != timelineKindWorkCard ||
 		items[0].EventKind != "session.done" || items[0].Summary != fact.Summary ||
 		items[0].Phase != fact.Phase || items[0].Attention != fact.Attention ||
-		items[0].AgentEventKind != fact.EventKind || items[0].DetailsJSON != fact.DetailsJSON ||
+		items[0].WorkerEventKind != fact.EventKind || items[0].DetailsJSON != fact.DetailsJSON ||
 		items[0].NextAction != "Review the delegated Session result." || items[0].WaitFor != "" {
 		t.Fatalf("control result card = %+v event=%+v", items, providerDone)
 	}
@@ -469,7 +469,7 @@ func assertReducerMaterializesKind(t *testing.T, kind string, class watcher.Evid
 	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-route-card:@" + kind
+	sessionID := "zen-worker-route-card:@" + kind
 	item, err := store.CreateWork(Work{
 		Title:            "zen-telegram-performance-publish",
 		Objective:        "Prove session lifecycle materializes cards",
@@ -564,11 +564,11 @@ func TestTimelineOmitsCanonicalDirectWorkEventUserRows(t *testing.T) {
 		ResolutionRequired: true, ResolveCommand: "zen brain work resolve --event-id 1aa90ab5-cf46-4643-9985-f6fd26c9526b --handling-id handling-envelope --provider-turn-id provider-turn-envelope --revision 7 --disposition complete",
 		WorkTitle:  "zen-telegram-performance-publish",
 		Kind:       "session.failed",
-		Source:     "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
+		Source:     "zen-telegram-performance-publish (zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730)",
 		Summary:    "Delegated provider process or pane is no longer live",
 		NextAction: "Inspect the delegated Session failure.",
 		ContextRef: "worklog/2026-08-06-zen-telegram-performance-publish.md",
-		PayloadRef: "session:brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730",
+		PayloadRef: "session:zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730",
 	})
 	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
 		Available: true,

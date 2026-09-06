@@ -6,7 +6,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type { CodexConversation } from "../../services/codexConversation";
 import type { UploadedAttachment } from "../../services/uploads";
 import {
@@ -15,7 +15,7 @@ import {
   type CodexConversationSnapshotPayload,
   type CodexConversationSyncStatusPayload,
 } from "../../services/websocket";
-import type { AgentStatus } from "../../constants/tokens";
+import type { WorkerStatus } from "../../constants/tokens";
 import {
   beginPendingUserMessageAttempt as beginPendingUserMessageAttemptState,
   rejectPendingUserMessage as rejectPendingUserMessageState,
@@ -87,8 +87,8 @@ export type PendingUserMessageRejection = {
   message: string;
 };
 
-export type InterfaceChatAgentInfo = {
-  status?: AgentStatus;
+export type InterfaceChatWorkerInfo = {
+  status?: WorkerStatus;
   summary?: string;
   phase?: string;
   attention?: string;
@@ -106,9 +106,9 @@ export type InterfaceChatAgentInfo = {
 
 interface UseInterfaceChatSessionInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   conversationScopeKey?: string;
-  agentInfo?: InterfaceChatAgentInfo;
+  workerInfo?: InterfaceChatWorkerInfo;
   connectionState: ConnectionState;
   screenFocused: boolean;
 }
@@ -836,15 +836,15 @@ function planStepsEqual(
 
 export function useInterfaceChatSession({
   serverId,
-  agentId,
+  workerId,
   conversationScopeKey,
-  agentInfo,
+  workerInfo,
   connectionState,
   screenFocused,
 }: UseInterfaceChatSessionInput) {
   const composerCacheKey = interfaceChatSessionCacheKey(
     serverId,
-    agentId,
+    workerId,
     conversationScopeKey,
   );
   const cacheKey = composerCacheKey;
@@ -994,7 +994,7 @@ export function useInterfaceChatSession({
       !screenFocused ||
       connectionState !== "connected" ||
       !serverId ||
-      !agentId
+      !workerId
     ) {
       return;
     }
@@ -1005,12 +1005,12 @@ export function useInterfaceChatSession({
     const unsubscribe = wsClient.subscribeCodexConversation(
       serverId,
       {
-        targetId: agentId,
-        cwd: agentInfo?.cwd,
-        command: agentInfo?.command,
-        name: agentInfo?.name,
-        startedAt: agentInfo?.startedAt,
-        processId: agentInfo?.processId,
+        targetId: workerId,
+        cwd: workerInfo?.cwd,
+        command: workerInfo?.command,
+        name: workerInfo?.name,
+        startedAt: workerInfo?.startedAt,
+        processId: workerInfo?.processId,
         conversationScopeKey,
       },
       {
@@ -1053,12 +1053,12 @@ export function useInterfaceChatSession({
       unsubscribe();
     };
   }, [
-    agentId,
-    agentInfo?.command,
-    agentInfo?.cwd,
-    agentInfo?.name,
-    agentInfo?.processId,
-    agentInfo?.startedAt,
+    workerId,
+    workerInfo?.command,
+    workerInfo?.cwd,
+    workerInfo?.name,
+    workerInfo?.processId,
+    workerInfo?.startedAt,
     conversationScopeKey,
     connectionState,
     screenFocused,

@@ -86,8 +86,8 @@ func ResolveCodexTranscriptIdentity(processID int) (CodexTranscriptIdentity, boo
 
 // ResolveCodexTranscriptIdentityForAgent prefers an existing host binding, then
 // resolves from the live process tree. Cwd matching is never authority.
-func ResolveCodexTranscriptIdentityForAgent(
-	agent classifier.Agent,
+func ResolveCodexTranscriptIdentityForWorker(
+	worker classifier.Worker,
 	existing CodexTranscriptIdentity,
 ) CodexTranscriptIdentity {
 	existing.SessionID = strings.TrimSpace(existing.SessionID)
@@ -109,7 +109,7 @@ func ResolveCodexTranscriptIdentityForAgent(
 		if existing.DataRoot != "" {
 			roots = append(roots, existing.DataRoot)
 		}
-		roots = append(roots, providerDataRootsForProcessTree(agent.ProcessID)...)
+		roots = append(roots, providerDataRootsForProcessTree(worker.ProcessID)...)
 		for _, root := range uniqueStrings(roots) {
 			if row, ok, err := lookupCodexThreadByIDInRoot(existing.SessionID, root); err == nil && ok {
 				path := strings.TrimSpace(row.RolloutPath)
@@ -127,7 +127,7 @@ func ResolveCodexTranscriptIdentityForAgent(
 			}
 		}
 	}
-	if resolved, ok := ResolveCodexTranscriptIdentity(agent.ProcessID); ok {
+	if resolved, ok := ResolveCodexTranscriptIdentity(worker.ProcessID); ok {
 		return resolved
 	}
 	return existing

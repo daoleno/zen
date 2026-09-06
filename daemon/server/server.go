@@ -71,9 +71,9 @@ var upgrader = websocket.Upgrader{
 
 type notificationPusher interface {
 	SetRegistration(token, serverRef string)
-	NotifyAgentBlocked(agentID, agentName, summary string) error
-	NotifyAgentFailed(agentID, agentName, summary string) error
-	NotifyAgentDone(agentID, agentName, summary string) error
+	NotifyWorkerBlocked(workerID, workerName, summary string) error
+	NotifyWorkerFailed(workerID, workerName, summary string) error
+	NotifyWorkerDone(workerID, workerName, summary string) error
 	NotifyScheduledResult(title, status, threadID, resultID string) error
 }
 
@@ -91,14 +91,14 @@ type Server struct {
 	calendar                     *calendar.Store
 	calendarScheduler            *calendar.Scheduler
 	telegram                     *telegramchannel.Manager
-	providerConversationLoader   func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
-	sendInputOverride            func(agentID, text string) error
-	sendInputWithReceiptOverride func(agentID, text, receipt string) error
-	sendActionOverride           func(agentID, action string) error
-	killSessionOverride          func(agentID string) error
-	hasSessionOverride           func(agentID string) bool
-	probeSessionOverride         func(agentID string) (watcher.SessionPresence, error)
-	getAgentOverride             func(agentID string) *classifier.Agent
+	providerConversationLoader   func(reader *work.ProviderConversationReader, workerID string) (work.CodexConversation, error)
+	sendInputOverride            func(workerID, text string) error
+	sendInputWithReceiptOverride func(workerID, text, receipt string) error
+	sendActionOverride           func(workerID, action string) error
+	killSessionOverride          func(workerID string) error
+	hasSessionOverride           func(workerID string) bool
+	probeSessionOverride         func(workerID string) (watcher.SessionPresence, error)
+	getWorkerOverride            func(workerID string) *classifier.Worker
 	// skillsMutationExecuteOverride / pluginMutationExecuteOverride replace the
 	// production executor in handler tests so ownership and cancellation can be
 	// proven without touching real Plugin or Skill state.
@@ -114,7 +114,7 @@ type Server struct {
 	uploadMu                   sync.Mutex
 	uploadActive               int
 	uploadReservedBytes        int64
-	sessionFileAgentLoader     func(agentID string) *classifier.Agent
+	sessionFileWorkerLoader    func(workerID string) *classifier.Worker
 	sessionFileCapabilityClock func() time.Time
 	authRevocationUnsubscribe  func()
 	runtimeClosing             bool
@@ -295,7 +295,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 type clientMessage struct {
 	Type                 string                                 `json:"type"`
 	RequestID            string                                 `json:"request_id"`
-	AgentID              string                                 `json:"agent_id"`
+	WorkerID             string                                 `json:"worker_id"`
 	TargetID             string                                 `json:"target_id"`
 	Cwd                  string                                 `json:"cwd"`
 	Command              string                                 `json:"command"`
@@ -337,7 +337,7 @@ type clientMessage struct {
 	Limit                int                                    `json:"limit"`
 	Operation            string                                 `json:"operation"`
 	Scope                string                                 `json:"scope"`
-	Agents               []string                               `json:"agents"`
+	SkillAgents          []string                               `json:"agents"`
 	SkillID              string                                 `json:"skill_id"`
 	SkillRoot            string                                 `json:"root_path"`
 	SkillCanonical       string                                 `json:"canonical_path"`
@@ -467,7 +467,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer s.detachAuthenticatedClient(conn, owner)
 
 	log.Printf("client connected (%d total)", s.clientCount())
-	s.sendAgentSessionList(conn)
+	s.sendWorkerSessionList(conn)
 	if s.work != nil {
 		s.sendJSON(conn, map[string]any{
 			"type":       "work_items_snapshot",
@@ -798,21 +798,22 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	}
 
 	switch raw.Type {
-	case "list_agents", "list_agent_sessions":
-		s.sendAgentSessionList(conn)
-
+	case "list_worker_sessions", "set_active_worker", "create_session", "kill_worker":
+		s.handleSessionLifecycleMessage(conn, raw)
+	case "telegram_connection_status", "telegram_connection_configure", "telegram_connection_bind", "telegram_connection_enable", "telegram_connection_disable", "telegram_connection_revoke", "telegram_connection_remove":
+		s.handleTelegramMessage(conn, raw)
+	case "send_input", "send_key", "send_action":
+		s.handleSessionInputMessage(conn, raw)
+	case "git_diff_status", "git_diff_patch", "git_diff_file_content", "git_repo_entries", "git_repo_file_content", "list_dir":
+		s.handleRepositoryMessage(conn, raw)
 	case "list_session_services":
 		s.handleListSessionServices(conn, raw)
-
 	case "list_work_items":
 		s.handleListWorkItems(conn, raw)
-
 	case "write_work_item":
 		s.handleWriteWorkItem(conn, raw)
-
 	case "delete_work_item":
 		s.handleDeleteWorkItem(conn, raw)
-
 	case "list_calendar_items":
 		s.sendCalendarSnapshot(conn, raw.RequestID)
 	case "get_calendar_item":
@@ -825,31 +826,203 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.handleCancelCalendarItem(conn, raw)
 	case "run_calendar_item":
 		s.handleRunCalendarItem(conn, raw)
-
 	case "brain_snapshot":
 		s.sendBrainSnapshot(conn, raw.RequestID)
-
 	case "brain_context":
 		s.handleBrainContext(conn, raw)
-
 	case "brain_gc":
 		s.handleBrainGC(conn, raw)
-
 	case "brain_work_read":
 		s.handleBrainWorkRead(conn, raw)
-
 	case "brain_set_executor":
 		s.handleBrainSetExecutor(conn, raw)
-
 	case "set_delegated_executor":
 		s.handleSetDelegatedExecutor(conn, raw)
-
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
+	case "brain_workspace_tree":
+		s.handleBrainWorkspaceTree(conn, raw)
+	case "brain_workspace_file":
+		s.handleBrainWorkspaceFile(conn, raw)
+	case "register_push":
+		if raw.PushToken != "" && s.pusher != nil {
+			s.pusher.SetRegistration(raw.PushToken, raw.ServerRef)
+			s.sendJSON(conn, map[string]any{"type": "push_registered", "ok": true})
+		}
+	case "codex_conversation_subscribe":
+		s.handleCodexConversationSubscribe(conn, raw)
+	case "codex_conversation_unsubscribe":
+		s.handleCodexConversationUnsubscribe(conn, raw)
+	case "codex_slash_commands":
+		s.handleCodexSlashCommands(conn, raw)
+	case "codex_skills":
+		s.handleCodexSkills(conn, raw)
+	case "skills_inventory":
+		s.handleSkillsInventory(conn, raw)
+	case "skills_command":
+		s.handleSkillsCommand(conn, raw)
+	case "skills_mutation":
+		s.handleSkillsMutation(conn, raw)
+	case "skills_inspect":
+		s.handleSkillsInspect(conn, raw)
+	case "plugins_inventory":
+		s.handlePluginsInventory(conn, raw)
+	case "plugin_command":
+		s.handlePluginCommand(conn, raw)
+	case "plugin_mutation":
+		s.handlePluginMutation(conn, raw)
+	case "codex_terminal_snapshot":
+		text, err := s.watcher.CapturePaneContent(raw.TargetID)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "codex_terminal_snapshot_failed", err.Error())
+			return
+		}
+		text = work.CleanCodexDisplayText(text)
+		s.sendJSON(conn, map[string]any{
+			"type":       "codex_terminal_snapshot",
+			"request_id": raw.RequestID,
+			"target_id":  raw.TargetID,
+			"text":       text,
+		})
+	case "terminal_snapshot":
+		s.handleTerminalMessage(conn, raw)
+	case "codex_asset":
+		s.handleCodexAsset(conn, raw)
+	case "session_file_metadata":
+		s.handleSessionFileMetadata(conn, raw)
+	case "session_file_text":
+		s.handleSessionFileText(conn, raw)
+	case "terminal_open", "terminal_input", "terminal_resize", "terminal_scroll", "terminal_scroll_cancel", "terminal_focus_pane", "terminal_close":
+		s.handleTerminalMessage(conn, raw)
+	case "get_stats":
+		if resp := s.stats.Stats(); resp != nil {
+			payload := map[string]any{
+				"type":       "stats_data",
+				"request_id": raw.RequestID,
+				"ranges":     resp.Ranges,
+			}
+			// Official subscription usage is only meaningful for the direct
+			// ChatGPT/Codex login. When the effective Codex connection is a
+			// routed Provider/API-key connection, suppress the subscription
+			// even if stale official usage is still cached on this host.
+			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" &&
+				(s.profiles == nil || !s.profiles.CodexRoutedDefault()) {
+				payload["codexSubscription"] = resp.CodexSubscription
+			}
+			s.sendJSON(conn, payload)
+		} else {
+			s.sendJSON(conn, map[string]any{
+				"type":       "stats_data",
+				"request_id": raw.RequestID,
+				"ranges":     map[string]any{},
+			})
+		}
+	case "get_session_resource_snapshot":
+		s.handleGetSessionResourceSnapshot(conn, raw)
+	default:
+		log.Printf("unknown message type: %s", raw.Type)
+		if raw.RequestID != "" {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", raw.Type))
+		}
+	}
+}
 
+func (s *Server) handleSessionLifecycleMessage(conn *websocket.Conn, raw clientMessage) {
+	switch raw.Type {
+	case "list_worker_sessions":
+		s.sendWorkerSessionList(conn)
+	case "set_active_worker":
+		s.mu.Lock()
+		s.active[conn] = raw.WorkerID
+		s.mu.Unlock()
+	case "create_session":
+		command := strings.TrimSpace(raw.Command)
+		if work.InferWorkerProvider(command) == work.WorkerProviderPi {
+			ensured, err := work.EnsurePiSessionLaunchCommand(command)
+			if err != nil {
+				s.sendJSON(conn, map[string]any{
+					"type":       "error",
+					"code":       "create_session_failed",
+					"message":    err.Error(),
+					"request_id": raw.RequestID,
+				})
+				return
+			}
+			command = ensured
+		}
+		connectionID := strings.TrimSpace(raw.ConnectionID)
+		if connectionID == "" {
+			connectionID = strings.TrimSpace(raw.ProfileID)
+		}
+		workerID, routeSnap, persist, err := s.createSessionWithProfiles(raw.TargetID, watcher.CreateSessionOptions{
+			Cwd:     raw.Cwd,
+			Command: command,
+			Name:    raw.Name,
+		}, connectionID)
+		if err != nil && (!persist.Applied || strings.TrimSpace(workerID) == "") {
+			code := "create_session_failed"
+			if mapped := modelprofiles.ControlErrorCode(err); mapped != "" && mapped != modelprofiles.CodeProfilesUnavailable {
+				code = mapped
+			}
+			s.sendJSON(conn, map[string]any{
+				"type":       "error",
+				"code":       code,
+				"message":    err.Error(),
+				"request_id": raw.RequestID,
+			})
+			return
+		}
+		response := map[string]any{
+			"type":       "session_created",
+			"request_id": raw.RequestID,
+			"worker_id":  workerID,
+		}
+		if worker := s.watcher.GetWorker(workerID); worker != nil {
+			response["worker_session"] = s.workerSessionWire(worker)
+		}
+		if routeSnap != nil {
+			response["session_route"] = routeSnap
+			if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
+				response["persistence_outcome"] = outcome
+				response["persistence_durable"] = durable
+			}
+			if err != nil {
+				response["persistence_warning"] = err.Error()
+			}
+		}
+		s.sendJSON(conn, response)
+	case "kill_worker":
+		teardown := s.teardownWorkerSession(raw.WorkerID)
+		if teardown.Err != nil {
+			log.Printf("kill_worker error: %v", teardown.Err)
+			code := modelprofiles.ControlErrorCode(teardown.Err)
+			if code == "" || code == modelprofiles.CodeProfilesUnavailable || code == "close_failed" {
+				code = "kill_failed"
+			}
+			payload := map[string]any{
+				"type":    "error",
+				"code":    code,
+				"message": teardown.Err.Error(),
+			}
+			if raw.RequestID != "" {
+				payload["request_id"] = raw.RequestID
+			}
+			if teardown.Persist.Applied {
+				outcome, durable := modelprofiles.WirePersistFields(teardown.Persist)
+				if outcome != "" {
+					payload["persistence_outcome"] = outcome
+					payload["persistence_durable"] = durable
+				}
+			}
+			s.sendJSON(conn, payload)
+		}
+	}
+}
+
+func (s *Server) handleTelegramMessage(conn *websocket.Conn, raw clientMessage) {
+	switch raw.Type {
 	case "telegram_connection_status":
 		s.sendTelegramStatus(conn, raw.RequestID)
-
 	case "telegram_connection_configure":
 		if s.telegram == nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
@@ -863,7 +1036,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			break
 		}
 		s.sendTelegramStatus(conn, raw.RequestID)
-
 	case "telegram_connection_bind":
 		if s.telegram == nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
@@ -875,7 +1047,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			break
 		}
 		s.sendJSON(conn, map[string]any{"type": "telegram_binding_challenge", "request_id": raw.RequestID, "challenge": challenge})
-
 	case "telegram_connection_enable", "telegram_connection_disable", "telegram_connection_revoke", "telegram_connection_remove":
 		if s.telegram == nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "telegram_unavailable", "Telegram connection is unavailable.")
@@ -897,29 +1068,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			break
 		}
 		s.sendTelegramStatus(conn, raw.RequestID)
+	}
+}
 
-	case "brain_workspace_tree":
-		s.handleBrainWorkspaceTree(conn, raw)
-
-	case "brain_workspace_file":
-		s.handleBrainWorkspaceFile(conn, raw)
-
-	case "register_push":
-		if raw.PushToken != "" && s.pusher != nil {
-			s.pusher.SetRegistration(raw.PushToken, raw.ServerRef)
-			s.sendJSON(conn, map[string]any{"type": "push_registered", "ok": true})
-		}
-
-	case "set_active_agent":
-		s.mu.Lock()
-		s.active[conn] = raw.AgentID
-		s.mu.Unlock()
-
+func (s *Server) handleSessionInputMessage(conn *websocket.Conn, raw clientMessage) {
+	switch raw.Type {
 	case "send_input":
 		brainSteering := false
 		if s.brain != nil {
 			var steeringErr error
-			brainSteering, steeringErr = s.brain.NoteUserSteering(raw.AgentID)
+			brainSteering, steeringErr = s.brain.NoteUserSteering(raw.WorkerID)
 			if steeringErr != nil {
 				s.sendJSON(conn, map[string]any{
 					"type": "input_failed", "request_id": raw.RequestID,
@@ -935,13 +1093,13 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		var brainAdmission brain.BrainInputAdmission
 		if brainSteering {
 			prepared, created, prepareErr := s.brain.PrepareHostUserInput(
-				raw.AgentID,
+				raw.WorkerID,
 				raw.RequestID,
 				displayBody,
 				raw.ConversationScopeKey,
 			)
 			if prepareErr != nil {
-				s.brain.CancelUserSteering(raw.AgentID)
+				s.brain.CancelUserSteering(raw.WorkerID)
 				log.Printf("brain prepare user input error: %v", prepareErr)
 				s.sendJSON(conn, map[string]any{
 					"type":       "input_failed",
@@ -956,7 +1114,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				// Accepted is an idempotent duplicate that may still need
 				// timeline projection. Terminal non-admission states never cross
 				// the provider mutation boundary again.
-				s.brain.CancelUserSteering(raw.AgentID)
+				s.brain.CancelUserSteering(raw.WorkerID)
 				if prepared.State == brain.BrainInputAdmissionAccepted {
 					if admitErr := s.brain.AdmitHostUserInput(prepared); admitErr == nil {
 						s.sendJSON(conn, map[string]any{"type": "input_sent", "request_id": raw.RequestID})
@@ -985,7 +1143,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				break
 			}
 		}
-		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
+		err := s.sendInputWithReceipt(raw.WorkerID, raw.Text, raw.RequestID)
 		if err != nil {
 			inputOutcome := watcher.InputOutcomeFromError(err)
 			if watcher.IsStaleReceiptMismatch(err) {
@@ -997,14 +1155,14 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				if brainSteering {
 					if abortErr := s.brain.AbortHostUserInput(brainAdmission.RequestID, brainAdmission.ThreadID); abortErr != nil {
 						log.Printf("brain abort stale user input error: %v", abortErr)
-						s.brain.CancelUserSteering(raw.AgentID)
+						s.brain.CancelUserSteering(raw.WorkerID)
 						s.sendJSON(conn, map[string]any{
 							"type":       "input_pending",
 							"request_id": raw.RequestID,
 						})
 						break
 					}
-					s.brain.CancelUserSteering(raw.AgentID)
+					s.brain.CancelUserSteering(raw.WorkerID)
 				}
 				s.sendJSON(conn, map[string]any{
 					"type":       "input_failed",
@@ -1033,11 +1191,11 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 					// The provider proved non-submission, but failure to durably
 					// remove the intent must remain a no-replay pending outcome.
 					log.Printf("brain abort user input error: %v", abortErr)
-					s.brain.CancelUserSteering(raw.AgentID)
+					s.brain.CancelUserSteering(raw.WorkerID)
 					s.sendJSON(conn, map[string]any{"type": "input_pending", "request_id": raw.RequestID})
 					break
 				}
-				s.brain.CancelUserSteering(raw.AgentID)
+				s.brain.CancelUserSteering(raw.WorkerID)
 				s.sendJSON(conn, map[string]any{
 					"type":       "input_failed",
 					"request_id": raw.RequestID,
@@ -1072,201 +1230,20 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"request_id": raw.RequestID,
 			})
 		}
-
 	case "send_key":
-		if err := s.watcher.SendKey(raw.AgentID, raw.Key); err != nil {
+		if err := s.watcher.SendKey(raw.WorkerID, raw.Key); err != nil {
 			log.Printf("send_key error: %v", err)
 			s.sendErrorWithRequestID(conn, raw.RequestID, "send_key_failed", err.Error())
 		} else if raw.RequestID != "" {
 			s.sendJSON(conn, map[string]any{
 				"type":       "key_sent",
 				"request_id": raw.RequestID,
-				"agent_id":   raw.AgentID,
+				"worker_id":  raw.WorkerID,
 				"key":        raw.Key,
 			})
 		}
-
-	case "create_session":
-		command := strings.TrimSpace(raw.Command)
-		if work.InferAgentProvider(command) == work.AgentProviderPi {
-			ensured, err := work.EnsurePiSessionLaunchCommand(command)
-			if err != nil {
-				s.sendJSON(conn, map[string]any{
-					"type":       "error",
-					"code":       "create_session_failed",
-					"message":    err.Error(),
-					"request_id": raw.RequestID,
-				})
-				return
-			}
-			command = ensured
-		}
-		connectionID := strings.TrimSpace(raw.ConnectionID)
-		if connectionID == "" {
-			connectionID = strings.TrimSpace(raw.ProfileID)
-		}
-		agentID, routeSnap, persist, err := s.createSessionWithProfiles(raw.TargetID, watcher.CreateSessionOptions{
-			Cwd:     raw.Cwd,
-			Command: command,
-			Name:    raw.Name,
-		}, connectionID)
-		if err != nil && (!persist.Applied || strings.TrimSpace(agentID) == "") {
-			code := "create_session_failed"
-			if mapped := modelprofiles.ControlErrorCode(err); mapped != "" && mapped != modelprofiles.CodeProfilesUnavailable {
-				code = mapped
-			}
-			s.sendJSON(conn, map[string]any{
-				"type":       "error",
-				"code":       code,
-				"message":    err.Error(),
-				"request_id": raw.RequestID,
-			})
-			return
-		}
-		response := map[string]any{
-			"type":       "session_created",
-			"request_id": raw.RequestID,
-			"agent_id":   agentID,
-		}
-		if agent := s.watcher.GetAgent(agentID); agent != nil {
-			response["agent_session"] = s.agentSessionWire(agent)
-		}
-		if routeSnap != nil {
-			response["session_route"] = routeSnap
-			if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
-				response["persistence_outcome"] = outcome
-				response["persistence_durable"] = durable
-			}
-			if err != nil {
-				response["persistence_warning"] = err.Error()
-			}
-		}
-		s.sendJSON(conn, response)
-
-	case "git_diff_status":
-		payload, err := s.buildGitDiffStatus(raw.TargetID, raw.Cwd)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_status_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "git_diff_status",
-			"request_id": raw.RequestID,
-			"status":     payload,
-		})
-
-	case "git_diff_patch":
-		payload, err := s.buildGitDiffPatch(raw.TargetID, raw.Cwd, raw.Path)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_patch_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "git_diff_patch",
-			"request_id": raw.RequestID,
-			"patch":      payload,
-		})
-
-	case "git_diff_file_content":
-		payload, err := s.buildGitDiffFileContent(raw.TargetID, raw.Cwd, raw.Path)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_file_content_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "git_diff_file_content",
-			"request_id": raw.RequestID,
-			"content":    payload,
-		})
-
-	case "git_repo_entries":
-		payload, err := s.buildGitRepoEntries(raw.TargetID, raw.Cwd, raw.Path)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_entries_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "git_repo_entries",
-			"request_id": raw.RequestID,
-			"browser":    payload,
-		})
-
-	case "git_repo_file_content":
-		payload, err := s.buildGitRepoFileContent(raw.TargetID, raw.Cwd, raw.Path)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_file_content_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "git_repo_file_content",
-			"request_id": raw.RequestID,
-			"content":    payload,
-		})
-
-	case "codex_conversation_subscribe":
-		s.handleCodexConversationSubscribe(conn, raw)
-
-	case "codex_conversation_unsubscribe":
-		s.handleCodexConversationUnsubscribe(conn, raw)
-
-	case "codex_slash_commands":
-		s.handleCodexSlashCommands(conn, raw)
-
-	case "codex_skills":
-		s.handleCodexSkills(conn, raw)
-
-	case "skills_inventory":
-		s.handleSkillsInventory(conn, raw)
-
-	case "skills_command":
-		s.handleSkillsCommand(conn, raw)
-
-	case "skills_mutation":
-		s.handleSkillsMutation(conn, raw)
-
-	case "skills_inspect":
-		s.handleSkillsInspect(conn, raw)
-
-	case "plugins_inventory":
-		s.handlePluginsInventory(conn, raw)
-
-	case "plugin_command":
-		s.handlePluginCommand(conn, raw)
-
-	case "plugin_mutation":
-		s.handlePluginMutation(conn, raw)
-
-	case "codex_terminal_snapshot":
-		text, err := s.watcher.CapturePaneContent(raw.TargetID)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "codex_terminal_snapshot_failed", err.Error())
-			return
-		}
-		text = work.CleanCodexDisplayText(text)
-		s.sendJSON(conn, map[string]any{
-			"type":       "codex_terminal_snapshot",
-			"request_id": raw.RequestID,
-			"target_id":  raw.TargetID,
-			"text":       text,
-		})
-
-	case "terminal_snapshot":
-		s.handleTerminalMessage(conn, raw)
-
-	case "codex_asset":
-		s.handleCodexAsset(conn, raw)
-
-	case "session_file_metadata":
-		s.handleSessionFileMetadata(conn, raw)
-
-	case "session_file_text":
-		s.handleSessionFileText(conn, raw)
-
-	case "terminal_open", "terminal_input", "terminal_resize", "terminal_scroll", "terminal_scroll_cancel", "terminal_focus_pane", "terminal_close":
-		s.handleTerminalMessage(conn, raw)
-
 	case "send_action":
-		err := s.sendAction(raw.AgentID, raw.Action)
+		err := s.sendAction(raw.WorkerID, raw.Action)
 		if err != nil {
 			log.Printf("send_action error: %v", err)
 			s.sendJSON(conn, map[string]any{
@@ -1281,33 +1258,66 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"request_id": raw.RequestID,
 			})
 		}
+	}
+}
 
-	case "kill_agent":
-		teardown := s.teardownAgentSession(raw.AgentID)
-		if teardown.Err != nil {
-			log.Printf("kill_agent error: %v", teardown.Err)
-			code := modelprofiles.ControlErrorCode(teardown.Err)
-			if code == "" || code == modelprofiles.CodeProfilesUnavailable || code == "close_failed" {
-				code = "kill_failed"
-			}
-			payload := map[string]any{
-				"type":    "error",
-				"code":    code,
-				"message": teardown.Err.Error(),
-			}
-			if raw.RequestID != "" {
-				payload["request_id"] = raw.RequestID
-			}
-			if teardown.Persist.Applied {
-				outcome, durable := modelprofiles.WirePersistFields(teardown.Persist)
-				if outcome != "" {
-					payload["persistence_outcome"] = outcome
-					payload["persistence_durable"] = durable
-				}
-			}
-			s.sendJSON(conn, payload)
+func (s *Server) handleRepositoryMessage(conn *websocket.Conn, raw clientMessage) {
+	switch raw.Type {
+	case "git_diff_status":
+		payload, err := s.buildGitDiffStatus(raw.TargetID, raw.Cwd)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_status_failed", err.Error())
+			return
 		}
-
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_diff_status",
+			"request_id": raw.RequestID,
+			"status":     payload,
+		})
+	case "git_diff_patch":
+		payload, err := s.buildGitDiffPatch(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_patch_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_diff_patch",
+			"request_id": raw.RequestID,
+			"patch":      payload,
+		})
+	case "git_diff_file_content":
+		payload, err := s.buildGitDiffFileContent(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_file_content_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_diff_file_content",
+			"request_id": raw.RequestID,
+			"content":    payload,
+		})
+	case "git_repo_entries":
+		payload, err := s.buildGitRepoEntries(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_entries_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_repo_entries",
+			"request_id": raw.RequestID,
+			"browser":    payload,
+		})
+	case "git_repo_file_content":
+		payload, err := s.buildGitRepoFileContent(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_file_content_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_repo_file_content",
+			"request_id": raw.RequestID,
+			"content":    payload,
+		})
 	case "list_dir":
 		dirPath := raw.Cwd
 		if dirPath == "" {
@@ -1354,39 +1364,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"path":       dirPath,
 			"entries":    dirs,
 		})
-
-	case "get_stats":
-		if resp := s.stats.Stats(); resp != nil {
-			payload := map[string]any{
-				"type":       "stats_data",
-				"request_id": raw.RequestID,
-				"ranges":     resp.Ranges,
-			}
-			// Official subscription usage is only meaningful for the direct
-			// ChatGPT/Codex login. When the effective Codex connection is a
-			// routed Provider/API-key connection, suppress the subscription
-			// even if stale official usage is still cached on this host.
-			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" &&
-				(s.profiles == nil || !s.profiles.CodexRoutedDefault()) {
-				payload["codexSubscription"] = resp.CodexSubscription
-			}
-			s.sendJSON(conn, payload)
-		} else {
-			s.sendJSON(conn, map[string]any{
-				"type":       "stats_data",
-				"request_id": raw.RequestID,
-				"ranges":     map[string]any{},
-			})
-		}
-
-	case "get_session_resource_snapshot":
-		s.handleGetSessionResourceSnapshot(conn, raw)
-
-	default:
-		log.Printf("unknown message type: %s", raw.Type)
-		if raw.RequestID != "" {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", raw.Type))
-		}
 	}
 }
 
@@ -1409,7 +1386,7 @@ func (s *Server) handleTerminalMessage(conn *websocket.Conn, raw clientMessage) 
 		}
 		targetID := raw.TargetID
 		if targetID == "" {
-			targetID = raw.AgentID
+			targetID = raw.WorkerID
 		}
 		if backend == "tmux" {
 			presence, probeErr := s.watcher.ProbeSession(targetID)
@@ -1465,44 +1442,44 @@ func (s *Server) sendTelegramStatus(conn *websocket.Conn, requestID string) {
 	})
 }
 
-func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
-	agentSessions := s.currentVisibleAgentSessions()
-	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
+func (s *Server) sendWorkerSessionList(conn *websocket.Conn) {
+	workerSessions := s.currentVisibleWorkerSessions()
+	s.sendJSON(conn, map[string]any{"type": "worker_session_list", "worker_sessions": s.workerSessionsWire(workerSessions)})
 }
 
-type resolvedCodexConversationAgent struct {
+type resolvedCodexConversationWorker struct {
 	targetID    string
-	agent       classifier.Agent
+	worker      classifier.Worker
 	provider    string
 	fromWatcher bool
 	ready       bool
 	reason      string
 }
 
-func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexConversationAgent {
+func (s *Server) resolveCodexConversationWorker(raw clientMessage) resolvedCodexConversationWorker {
 	targetID := strings.TrimSpace(raw.TargetID)
 	if targetID == "" {
-		targetID = strings.TrimSpace(raw.AgentID)
+		targetID = strings.TrimSpace(raw.WorkerID)
 	}
 
-	var agent classifier.Agent
-	agentFromWatcher := false
+	var worker classifier.Worker
+	workerFromWatcher := false
 	if targetID != "" {
-		if snapshot := s.watcher.GetAgent(targetID); snapshot != nil {
-			agent = *snapshot
-			agentFromWatcher = true
+		if snapshot := s.watcher.GetWorker(targetID); snapshot != nil {
+			worker = *snapshot
+			workerFromWatcher = true
 		}
 	}
 	startedAt := clientStartedAt(raw.StartedAt)
-	if agent.ID == "" {
+	if worker.ID == "" {
 		if targetID != "" && startedAt.IsZero() {
-			return resolvedCodexConversationAgent{
+			return resolvedCodexConversationWorker{
 				targetID: targetID,
 				ready:    false,
 				reason:   "session_not_ready",
 			}
 		}
-		agent = classifier.Agent{
+		worker = classifier.Worker{
 			ID:        targetID,
 			Name:      raw.Name,
 			Cwd:       raw.Cwd,
@@ -1511,67 +1488,67 @@ func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexC
 			ProcessID: raw.ProcessID,
 		}
 	}
-	if raw.ProcessID > 0 && agent.ProcessID == 0 {
-		agent.ProcessID = raw.ProcessID
+	if raw.ProcessID > 0 && worker.ProcessID == 0 {
+		worker.ProcessID = raw.ProcessID
 	}
-	if !startedAt.IsZero() && (!agentFromWatcher || agent.StartedAt.IsZero()) {
-		agent.StartedAt = startedAt
+	if !startedAt.IsZero() && (!workerFromWatcher || worker.StartedAt.IsZero()) {
+		worker.StartedAt = startedAt
 	}
-	if agent.ID == "" && strings.TrimSpace(agent.Cwd) == "" {
-		return resolvedCodexConversationAgent{
+	if worker.ID == "" && strings.TrimSpace(worker.Cwd) == "" {
+		return resolvedCodexConversationWorker{
 			targetID: targetID,
 			ready:    false,
-			reason:   "agent_not_found",
+			reason:   "worker_not_found",
 		}
 	}
-	return resolvedCodexConversationAgent{
+	return resolvedCodexConversationWorker{
 		targetID:    targetID,
-		agent:       agent,
-		provider:    s.structuredProviderForAgent(&agent),
-		fromWatcher: agentFromWatcher,
+		worker:      worker,
+		provider:    s.structuredProviderForWorker(&worker),
+		fromWatcher: workerFromWatcher,
 		ready:       true,
 	}
 }
 
-func (s *Server) sendInput(agentID, text string) error {
+func (s *Server) sendInput(workerID, text string) error {
 	if s != nil && s.sendInputOverride != nil {
-		return s.sendInputOverride(strings.TrimSpace(agentID), text)
+		return s.sendInputOverride(strings.TrimSpace(workerID), text)
 	}
 	if s == nil || s.watcher == nil {
 		return fmt.Errorf("executor watcher unavailable")
 	}
-	return s.watcher.SendInput(strings.TrimSpace(agentID), text)
+	return s.watcher.SendInput(strings.TrimSpace(workerID), text)
 }
 
-func (s *Server) sendInputWithReceipt(agentID, text, receipt string) error {
+func (s *Server) sendInputWithReceipt(workerID, text, receipt string) error {
 	if s != nil && s.sendInputWithReceiptOverride != nil {
-		return s.sendInputWithReceiptOverride(strings.TrimSpace(agentID), text, strings.TrimSpace(receipt))
+		return s.sendInputWithReceiptOverride(strings.TrimSpace(workerID), text, strings.TrimSpace(receipt))
 	}
 	if s != nil && s.sendInputOverride != nil {
-		return s.sendInputOverride(strings.TrimSpace(agentID), text)
+		return s.sendInputOverride(strings.TrimSpace(workerID), text)
 	}
 	if s == nil || s.watcher == nil {
 		return fmt.Errorf("executor watcher unavailable")
 	}
 	if strings.TrimSpace(receipt) == "" {
-		return s.watcher.SendInput(strings.TrimSpace(agentID), text)
+		return s.watcher.SendInput(strings.TrimSpace(workerID), text)
 	}
-	return s.watcher.SendInputWithReceipt(strings.TrimSpace(agentID), text, strings.TrimSpace(receipt))
+	return s.watcher.SendInputWithReceipt(strings.TrimSpace(workerID), text, strings.TrimSpace(receipt))
 }
 
-func (s *Server) sendAction(agentID, action string) error {
+func (s *Server) sendAction(workerID, action string) error {
 	if s != nil && s.sendActionOverride != nil {
-		return s.sendActionOverride(strings.TrimSpace(agentID), action)
+		return s.sendActionOverride(strings.TrimSpace(workerID), action)
 	}
 	if s == nil || s.watcher == nil {
 		return fmt.Errorf("executor watcher unavailable")
 	}
-	return s.watcher.SendAction(strings.TrimSpace(agentID), action)
+	return s.watcher.SendAction(strings.TrimSpace(workerID), action)
 }
 
 func (s *Server) loadProviderConversationSnapshot(
 	reader *work.ProviderConversationReader,
-	resolved resolvedCodexConversationAgent,
+	resolved resolvedCodexConversationWorker,
 	now time.Time,
 ) (work.CodexConversation, error) {
 	conversation, err := s.loadProviderConversation(reader, resolved, now)
@@ -1587,7 +1564,7 @@ func (s *Server) loadProviderConversationSnapshot(
 // every sent payload is still sanitized afterwards.
 func (s *Server) loadProviderConversation(
 	reader *work.ProviderConversationReader,
-	resolved resolvedCodexConversationAgent,
+	resolved resolvedCodexConversationWorker,
 	now time.Time,
 ) (work.CodexConversation, error) {
 	var conversation work.CodexConversation
@@ -1595,7 +1572,7 @@ func (s *Server) loadProviderConversation(
 	if s.providerConversationLoader != nil {
 		conversation, err = s.providerConversationLoader(reader, strings.TrimSpace(resolved.targetID))
 	} else {
-		conversation, err = reader.Load(resolved.agent, resolved.provider, now)
+		conversation, err = reader.Load(resolved.worker, resolved.provider, now)
 	}
 	if err != nil {
 		return work.CodexConversation{}, err
@@ -1624,7 +1601,7 @@ func (s *Server) handleCodexConversationSubscribe(conn *websocket.Conn, raw clie
 		subscriptionID = strings.TrimSpace(raw.TargetID)
 	}
 	if subscriptionID == "" {
-		subscriptionID = strings.TrimSpace(raw.AgentID)
+		subscriptionID = strings.TrimSpace(raw.WorkerID)
 	}
 	if subscriptionID == "" {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_conversation_subscribe_failed", "missing subscription id")
@@ -1655,7 +1632,7 @@ func (s *Server) handleCodexConversationUnsubscribe(conn *websocket.Conn, raw cl
 		subscriptionID = strings.TrimSpace(raw.TargetID)
 	}
 	if subscriptionID == "" {
-		subscriptionID = strings.TrimSpace(raw.AgentID)
+		subscriptionID = strings.TrimSpace(raw.WorkerID)
 	}
 	if subscriptionID == "" {
 		return
@@ -1734,7 +1711,7 @@ func (s *Server) publishCodexConversationSubscription(
 	if ctx.Err() != nil || !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 		return
 	}
-	resolved := s.resolveCodexConversationAgent(raw)
+	resolved := s.resolveCodexConversationWorker(raw)
 	if !resolved.ready {
 		conversation := work.CodexConversation{
 			Available: false,
@@ -1972,7 +1949,7 @@ func codexConversationSyncStatusPayload(
 		"type":            "codex_conversation_sync_status",
 		"request_id":      subscriptionID,
 		"generation":      generation,
-		"agent_id":        targetID,
+		"worker_id":       targetID,
 		"conversation_id": "",
 		"revision":        revision,
 		"state":           "syncing",
@@ -1991,7 +1968,7 @@ func codexConversationSnapshotPayload(
 		"type":            "codex_conversation_snapshot",
 		"request_id":      subscriptionID,
 		"generation":      generation,
-		"agent_id":        targetID,
+		"worker_id":       targetID,
 		"conversation_id": codexConversationIdentity(conversation),
 		"revision":        revision,
 		"conversation":    conversation,
@@ -2012,7 +1989,7 @@ func codexConversationDeltaPayload(
 		"type":            "codex_conversation_delta",
 		"request_id":      subscriptionID,
 		"generation":      generation,
-		"agent_id":        targetID,
+		"worker_id":       targetID,
 		"conversation_id": codexConversationIdentity(conversation),
 		"base_revision":   previous.revision,
 		"revision":        next.revision,
@@ -2798,7 +2775,7 @@ func (s *Server) brainSnapshotWire(snapshot brain.Snapshot) (any, error) {
 	if _, ok := payload["adapters"]; !ok && snapshot.Executors != nil {
 		payload["adapters"] = snapshot.Executors
 	}
-	s.enrichBrainSnapshotHostAgentCapabilities(payload, snapshot)
+	s.enrichBrainSnapshotHostWorkerCapabilities(payload, snapshot)
 	results, err := s.scheduledResultsForKnownBrainThreads(defaultScheduledResultLimit)
 	if err != nil {
 		return nil, err
@@ -2808,15 +2785,15 @@ func (s *Server) brainSnapshotWire(snapshot brain.Snapshot) (any, error) {
 }
 
 // enrichBrainSnapshotHostAgentCapabilities attaches the same flat capabilities
-// object as agent_session wire onto brain_snapshot.host_agent. Derivation uses
+// object as worker_session wire onto brain_snapshot.host_worker. Derivation uses
 // the hidden watcher Agent + Model Profiles route table only; missing agent or
 // profile owner fail closed to false. The host stays Hidden and is never added
-// to agent_session_list.
-func (s *Server) enrichBrainSnapshotHostAgentCapabilities(payload map[string]any, snapshot brain.Snapshot) {
+// to worker_session_list.
+func (s *Server) enrichBrainSnapshotHostWorkerCapabilities(payload map[string]any, snapshot brain.Snapshot) {
 	if payload == nil {
 		return
 	}
-	hostRaw, ok := payload["host_agent"]
+	hostRaw, ok := payload["host_worker"]
 	if !ok || hostRaw == nil {
 		return
 	}
@@ -2825,16 +2802,16 @@ func (s *Server) enrichBrainSnapshotHostAgentCapabilities(payload map[string]any
 		return
 	}
 	sessionID := ""
-	if snapshot.HostAgent != nil {
-		sessionID = strings.TrimSpace(snapshot.HostAgent.ID)
+	if snapshot.HostWorker != nil {
+		sessionID = strings.TrimSpace(snapshot.HostWorker.ID)
 	}
 	if sessionID == "" {
 		if id, _ := hostMap["id"].(string); strings.TrimSpace(id) != "" {
 			sessionID = strings.TrimSpace(id)
 		}
 	}
-	hostMap["capabilities"] = s.hostAgentWireCapabilities(sessionID)
-	payload["host_agent"] = hostMap
+	hostMap["capabilities"] = s.hostWorkerWireCapabilities(sessionID)
+	payload["host_worker"] = hostMap
 }
 
 func (s *Server) scheduledResultsForKnownBrainThreads(limit int) ([]calendar.ScheduledResult, error) {
@@ -2864,22 +2841,22 @@ func (s *Server) scheduledResultsForKnownBrainThreads(limit int) ([]calendar.Sch
 	return results, nil
 }
 
-func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
-	if len(agents) == 0 {
+func visibleWorkerSessions(workers []*classifier.Worker) []*classifier.Worker {
+	if len(workers) == 0 {
 		return nil
 	}
-	out := make([]*classifier.Agent, 0, len(agents))
-	for _, agent := range agents {
-		if agent == nil || agent.Hidden {
+	out := make([]*classifier.Worker, 0, len(workers))
+	for _, worker := range workers {
+		if worker == nil || worker.Hidden {
 			continue
 		}
-		out = append(out, agent)
+		out = append(out, worker)
 	}
 	return out
 }
 
-func (s *Server) currentVisibleAgentSessions() []*classifier.Agent {
-	return visibleAgentSessions(s.watcher.Agents())
+func (s *Server) currentVisibleWorkerSessions() []*classifier.Worker {
+	return visibleWorkerSessions(s.watcher.Workers())
 }
 
 func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
@@ -3110,8 +3087,8 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			allAgentSessions := s.watcher.Agents()
-			agentSessions := visibleAgentSessions(allAgentSessions)
+			allWorkerSessions := s.watcher.Workers()
+			workerSessions := visibleWorkerSessions(allWorkerSessions)
 			if s.brain != nil && s.watcher != nil && s.watcher.SnapshotReady() {
 				if !s.brainHostStartupComplete {
 					_, err := s.brain.EnsureHostSnapshot()
@@ -3128,28 +3105,28 @@ func (s *Server) heartbeat(ctx context.Context) {
 					}
 				}
 				if !s.signalSystemStartupComplete {
-					complete, err := s.brain.ReconcileSignalSystemStartup(allAgentSessions, 64)
+					complete, err := s.brain.ReconcileSignalSystemStartup(allWorkerSessions, 64)
 					if err != nil {
 						log.Printf("brain signal-system startup reconciliation failed: %v", err)
 					} else {
 						s.signalSystemStartupComplete = complete
 					}
 				}
-				s.brain.ReconcileDelegatedSessions(allAgentSessions)
+				s.brain.ReconcileDelegatedSessions(allWorkerSessions)
 			}
-			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
+			data, _ := json.Marshal(map[string]any{"type": "worker_session_list", "worker_sessions": s.workerSessionsWire(workerSessions)})
 			s.broadcast(data)
 		}
 	}
 }
 
 func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
-	if ev.Agent != nil && ev.Agent.Hidden {
+	if ev.Worker != nil && ev.Worker.Hidden {
 		if s.brain != nil {
 			if _, err := s.brain.ObserveHostSessionEvent(ev); err != nil {
 				log.Printf("brain host event dispatch failed: %v", err)
 			}
-			// Hidden hosts stay off agent_session_list. Refresh brain_snapshot
+			// Hidden hosts stay off worker_session_list. Refresh brain_snapshot
 			// only when the current Host appears or disappears so capabilities
 			// converge after reconnect discovery — never on output/turn noise,
 			// and never via ensureHostAgent (projection must not create/resume/
@@ -3162,28 +3139,28 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 	}
 
 	switch ev.Type {
-	case "agent_discovered":
-		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_created", "agent_session": s.agentSessionWire(ev.Agent)})
+	case "worker_discovered":
+		if ev.Worker != nil {
+			s.broadcastJSON(map[string]any{"type": "worker_session_created", "worker_session": s.workerSessionWire(ev.Worker)})
 		}
-	case "agent_output":
-		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
+	case "worker_output":
+		if ev.Worker != nil {
+			s.broadcastJSON(map[string]any{"type": "worker_session_updated", "worker_session": s.workerSessionWire(ev.Worker)})
 		}
-	case "agent_state_change":
-		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
+	case "worker_state_change":
+		if ev.Worker != nil {
+			s.broadcastJSON(map[string]any{"type": "worker_session_updated", "worker_session": s.workerSessionWire(ev.Worker)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
 		s.routeSessionEventToBrain(ev)
-	case "agent_metadata_change":
-		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
+	case "worker_metadata_change":
+		if ev.Worker != nil {
+			s.broadcastJSON(map[string]any{"type": "worker_session_updated", "worker_session": s.workerSessionWire(ev.Worker)})
 		}
 		s.routeSessionEventToBrain(ev)
-	case "agent_removed":
-		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": s.agentSessionWire(ev.Agent)})
+	case "worker_removed":
+		if ev.Worker != nil {
+			s.broadcastJSON(map[string]any{"type": "worker_session_archived", "worker_session": s.workerSessionWire(ev.Worker)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
 		s.routeSessionEventToBrain(ev)
@@ -3195,11 +3172,11 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 // ensureHostAgent. Output chunks, turn state, and unrelated Hidden agents never
 // churn brain_snapshot.
 func (s *Server) shouldBroadcastHiddenHostBrainSnapshot(ev watcher.SessionEvent) bool {
-	if s == nil || s.brain == nil || ev.Agent == nil || !ev.Agent.Hidden {
+	if s == nil || s.brain == nil || ev.Worker == nil || !ev.Worker.Hidden {
 		return false
 	}
 	switch ev.Type {
-	case "agent_discovered", "agent_removed":
+	case "worker_discovered", "worker_removed":
 	default:
 		return false
 	}
@@ -3207,7 +3184,7 @@ func (s *Server) shouldBroadcastHiddenHostBrainSnapshot(ev watcher.SessionEvent)
 	if hostID == "" {
 		return false
 	}
-	return hostID == strings.TrimSpace(ev.Agent.ID)
+	return hostID == strings.TrimSpace(ev.Worker.ID)
 }
 
 func (s *Server) routeSessionEventToBrain(ev watcher.SessionEvent) {
@@ -3216,19 +3193,19 @@ func (s *Server) routeSessionEventToBrain(ev watcher.SessionEvent) {
 	}
 	woke, err := s.brain.RouteSessionEvent(ev)
 	if err != nil {
-		log.Printf("brain Work event routing failed for %s: %v", ev.AgentID, err)
+		log.Printf("brain Work event routing failed for %s: %v", ev.WorkerID, err)
 		return
 	}
 	if woke {
-		log.Printf("brain Work event dispatched for %s", ev.AgentID)
+		log.Printf("brain Work event dispatched for %s", ev.WorkerID)
 	}
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
-	if s.pusher == nil || ev.Agent == nil || ev.Agent.Hidden || !ev.Agent.Delegated {
+	if s.pusher == nil || ev.Worker == nil || ev.Worker.Hidden || !ev.Worker.Delegated {
 		return
 	}
-	if ev.Type == "agent_removed" {
+	if ev.Type == "worker_removed" {
 		return
 	}
 	// Push notifications are an actionable lifecycle projection, not a raw
@@ -3238,29 +3215,29 @@ func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
 	if s.brain == nil || strings.TrimSpace(ev.TurnID) == "" {
 		return
 	}
-	current, found, err := s.brain.Turn(ev.AgentID)
+	current, found, err := s.brain.Turn(ev.WorkerID)
 	if err != nil || !found || current.TurnID != strings.TrimSpace(ev.TurnID) {
 		return
 	}
-	if ev.Type != "agent_state_change" || ev.OldState == ev.NewState {
+	if ev.Type != "worker_state_change" || ev.OldState == ev.NewState {
 		return
 	}
-	if s.hasActiveViewer(ev.AgentID) {
+	if s.hasActiveViewer(ev.WorkerID) {
 		return
 	}
 
 	state := ev.NewState
 	switch state {
 	case "blocked":
-		if err := s.pusher.NotifyAgentBlocked(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+		if err := s.pusher.NotifyWorkerBlocked(ev.WorkerID, ev.Worker.Name, ev.Worker.Summary); err != nil {
 			log.Printf("blocked-agent push failed: %v", err)
 		}
 	case "failed":
-		if err := s.pusher.NotifyAgentFailed(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+		if err := s.pusher.NotifyWorkerFailed(ev.WorkerID, ev.Worker.Name, ev.Worker.Summary); err != nil {
 			log.Printf("failed-agent push failed: %v", err)
 		}
 	case "done":
-		if err := s.pusher.NotifyAgentDone(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+		if err := s.pusher.NotifyWorkerDone(ev.WorkerID, ev.Worker.Name, ev.Worker.Summary); err != nil {
 			log.Printf("done-agent push failed: %v", err)
 		}
 	}
@@ -3697,9 +3674,9 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 			if s, ok := value.(string); ok {
 				fm.Title = strings.TrimSpace(s)
 			}
-		case "agent_session":
+		case "worker_session":
 			if s, ok := value.(string); ok {
-				fm.AgentSession = s
+				fm.WorkerSession = s
 			}
 		default:
 			extra[key] = value
@@ -3772,16 +3749,16 @@ func firstLine(value string) string {
 	return value
 }
 
-func (s *Server) hasActiveViewer(agentID string) bool {
-	target := strings.TrimSpace(agentID)
+func (s *Server) hasActiveViewer(workerID string) bool {
+	target := strings.TrimSpace(workerID)
 	if target == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, activeAgentID := range s.active {
-		if strings.TrimSpace(activeAgentID) == target {
+	for _, activeWorkerID := range s.active {
+		if strings.TrimSpace(activeWorkerID) == target {
 			return true
 		}
 	}

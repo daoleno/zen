@@ -31,13 +31,13 @@ export function useTerminalScreenLocalState() {
     skillsHandoff?: string;
     createDurabilityWarning?: string;
   }>();
-  const agentId = paramString(params.id);
+  const workerId = paramString(params.id);
   const serverId = paramString(params.serverId);
   const initialInterfaceRenderMode = paramInterfaceRenderMode(
     params.initialInterfaceRenderMode,
   );
   const sessionKey =
-    agentId && serverId ? makeSessionKey(serverId, agentId) : null;
+    workerId && serverId ? makeSessionKey(serverId, workerId) : null;
   const routeSkillsHandoffToken = paramRawString(params.skillsHandoff);
   const initialComposerFocusRequested =
     isInterfaceComposerInitialFocusRouteGrant(
@@ -114,7 +114,7 @@ export function useTerminalScreenLocalState() {
   }, [sessionKey]);
 
   return {
-    agentId,
+    workerId,
     serverId,
     sessionKey,
     initialComposerFocusGrant,

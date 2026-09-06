@@ -33,9 +33,9 @@ function workResultEvent(
     source: "work_result",
     work_id: "ae621005-929b-49b5-9d42-fa476d42d3f3",
     work_session_id:
-      "brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730",
+      "zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730",
     session_name:
-      "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
+      "zen-telegram-performance-publish (zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730)",
     unread: true,
     work_review_state: "queued",
     work_session_state: "open",
@@ -177,7 +177,7 @@ describe("Brain Work Event dedicated card projection", () => {
       items,
       () => {},
       new Set([
-        "brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730",
+        "zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730",
       ]),
     );
     assertBrainWorkEventCard(
@@ -255,12 +255,12 @@ describe("Brain Work Event dedicated card projection", () => {
         work_title: "zen-telegram-performance-publish",
         kind: "session.failed",
         source:
-          "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
+          "zen-telegram-performance-publish (zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730)",
         summary: "Delegated provider process or pane is no longer live",
         next_action: "Inspect the delegated Session failure.",
         context_ref: "worklog/2026-08-06-zen-telegram-performance-publish.md",
         payload_ref:
-          "session:brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730",
+          "session:zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730",
       }),
       "</zen_work_event>",
     ].join("\n");

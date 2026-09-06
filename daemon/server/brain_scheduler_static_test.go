@@ -47,7 +47,7 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	for _, required := range []string{
 		"RouteSessionEvent(ev)",
 		"RouteCalendarEvent(event)",
-		"ReconcileDelegatedSessions(allAgentSessions)",
+		"ReconcileDelegatedSessions(allWorkerSessions)",
 		"SanitizeConversationProjection(conversation)",
 	} {
 		if !strings.Contains(string(serverSource), required) {

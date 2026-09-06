@@ -69,8 +69,8 @@ type ProviderTerminalActivity struct {
 }
 
 type ProviderActivityProbe interface {
-	ObserveProviderActivity(agent classifier.Agent, now time.Time) ProviderActivityObservation
-	ForgetProviderActivity(agentID string)
+	ObserveProviderActivity(worker classifier.Worker, now time.Time) ProviderActivityObservation
+	ForgetProviderActivity(workerID string)
 }
 
 func delegatedTurnIdentity(identity targetProcessIdentity) string {

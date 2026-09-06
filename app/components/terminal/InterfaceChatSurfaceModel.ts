@@ -1,9 +1,9 @@
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import {
   buildChatComposerPlaceholder,
   chatAgentSupportsSlashCommands,
 } from "../../services/chatComposerPresentation";
-import type { AgentKind } from "../../services/agentPresentation";
+import type { AgentKind } from "../../services/workerPresentation";
 import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ProviderActivity } from "../../services/codexConversation";

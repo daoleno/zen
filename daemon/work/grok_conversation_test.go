@@ -14,7 +14,7 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-func TestMatchGrokSessionToAgentStart_UsesNearestCreatedSession(t *testing.T) {
+func TestMatchGrokSessionToWorkerStart_UsesNearestCreatedSession(t *testing.T) {
 	base := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
 	candidates := []grokSessionCandidate{
 		{
@@ -34,7 +34,7 @@ func TestMatchGrokSessionToAgentStart_UsesNearestCreatedSession(t *testing.T) {
 		},
 	}
 
-	got, ok := matchGrokSessionToAgentStart(candidates, base)
+	got, ok := matchGrokSessionToWorkerStart(candidates, base)
 	if !ok {
 		t.Fatal("expected a grok session match")
 	}
@@ -43,7 +43,7 @@ func TestMatchGrokSessionToAgentStart_UsesNearestCreatedSession(t *testing.T) {
 	}
 }
 
-func TestMatchGrokSessionToAgentStart_DoesNotFallBackToOldSession(t *testing.T) {
+func TestMatchGrokSessionToWorkerStart_DoesNotFallBackToOldSession(t *testing.T) {
 	base := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
 	candidates := []grokSessionCandidate{
 		{
@@ -53,7 +53,7 @@ func TestMatchGrokSessionToAgentStart_DoesNotFallBackToOldSession(t *testing.T) 
 		},
 	}
 
-	if got, ok := matchGrokSessionToAgentStart(candidates, base); ok {
+	if got, ok := matchGrokSessionToWorkerStart(candidates, base); ok {
 		t.Fatalf("matched %#v, want no match", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestMatchGrokSessionToActiveSession_UsesSessionUpdatedAfterStart(t *testing
 	}
 }
 
-func TestFindGrokSession_DoesNotReturnStaleSessionForNewAgent(t *testing.T) {
+func TestFindGrokSession_DoesNotReturnStaleSessionForNewWorker(t *testing.T) {
 	homeRoot := t.TempDir()
 	home := filepath.Join(homeRoot, "home")
 	cwd := "/tmp/zen-grok-fixture"
@@ -104,11 +104,11 @@ func TestFindGrokSession_DoesNotReturnStaleSessionForNewAgent(t *testing.T) {
 	)
 
 	t.Setenv("HOME", home)
-	agentStart := time.Now().UTC()
-	got, ok, err := findGrokSession(classifier.Agent{
+	workerStart := time.Now().UTC()
+	got, ok, err := findGrokSession(classifier.Worker{
 		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
 		Cwd:       cwd,
-		StartedAt: agentStart,
+		StartedAt: workerStart,
 	}, time.Now())
 	if err != nil {
 		t.Fatalf("findGrokSession: %v", err)
@@ -138,7 +138,7 @@ func TestFindGrokSession_ResumeCommandMatchesExplicitSessionID(t *testing.T) {
 	})
 
 	t.Setenv("HOME", home)
-	got, ok, err := findGrokSession(classifier.Agent{
+	got, ok, err := findGrokSession(classifier.Worker{
 		Command:   "grok --resume " + sessionID,
 		Cwd:       cwd,
 		StartedAt: now,
@@ -1547,10 +1547,10 @@ func TestParseGrokConversation_BuildsStructuredTimeline(t *testing.T) {
 }
 
 func TestProviderConversationReaderGrokUnavailableWithoutSession(t *testing.T) {
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Command: "grok --no-alt-screen",
 		Cwd:     filepath.Join(t.TempDir(), "missing-grok-session"),
-	}, AgentProviderGrok, time.Now())
+	}, WorkerProviderGrok, time.Now())
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -1679,11 +1679,11 @@ func TestProviderConversationReaderGrokRealSessionFixture(t *testing.T) {
 	fixtureHome, cwd := installGrokSessionFixture(t, sourceDir)
 
 	t.Setenv("HOME", fixtureHome)
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
 		Cwd:       cwd,
 		StartedAt: time.Now().Add(-time.Hour),
-	}, AgentProviderGrok, time.Now())
+	}, WorkerProviderGrok, time.Now())
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -1714,7 +1714,7 @@ func TestProviderConversationReaderGrokRealSessionFixture(t *testing.T) {
 }
 
 // requireGrokRealSessionOptIn gates tests that read maintainer ~/.grok data.
-// Default `go test ./...` must not inspect local agent session stores.
+// Default `go test ./...` must not inspect local Worker session stores.
 func requireGrokRealSessionOptIn(t *testing.T) {
 	t.Helper()
 	if os.Getenv("ZEN_GROK_REAL_SESSION") != "1" {
@@ -1824,15 +1824,15 @@ func TestIsGrokBootstrapUserMessage(t *testing.T) {
 	}
 }
 
-func TestAgentExecutorInfersGrokProviderAndCapabilities(t *testing.T) {
+func TestWorkerExecutorInfersGrokProviderAndCapabilities(t *testing.T) {
 	cfg := NewExecutorConfig("claude", map[string]Executor{
 		"grok": {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
 	})
-	executor, ok := cfg.AgentExecutor("grok")
+	executor, ok := cfg.WorkerExecutor("grok")
 	if !ok {
 		t.Fatal("grok executor missing")
 	}
-	if executor.Provider != AgentProviderGrok {
+	if executor.Provider != WorkerProviderGrok {
 		t.Fatalf("provider = %q", executor.Provider)
 	}
 	if !executor.Capabilities.StructuredEvents || executor.Capabilities.NativeThreads {

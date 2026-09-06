@@ -43,7 +43,7 @@ func TestWorkProviderActivityProbeCursorAdmissionPreservesExactBytesAndCursor(t 
 	follow := "task\n\nwith CRLF\n你好"
 	writeCursorAdmissionFixture(t, transcript, initial)
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "cursor-fixture:@1",
 		Name:      "Cursor fixture",
 		Command:   "cursor-agent --force",
@@ -52,7 +52,7 @@ func TestWorkProviderActivityProbeCursorAdmissionPreservesExactBytesAndCursor(t 
 		PaneAlive: true,
 	}
 	probe := newWorkProviderActivityProbe()
-	before := probe.ObserveProviderActivity(agent, time.Now().UTC())
+	before := probe.ObserveProviderActivity(worker, time.Now().UTC())
 	wantInitial := fmt.Sprintf("%x", sha256.Sum256([]byte(initial)))
 	if before.AdmissionID == "" || before.AdmissionCursor == 0 ||
 		before.InputSHA256 != wantInitial {
@@ -60,7 +60,7 @@ func TestWorkProviderActivityProbeCursorAdmissionPreservesExactBytesAndCursor(t 
 	}
 
 	appendCursorAdmissionFixture(t, transcript, follow)
-	after := probe.ObserveProviderActivity(agent, time.Now().UTC())
+	after := probe.ObserveProviderActivity(worker, time.Now().UTC())
 	wantFollow := fmt.Sprintf("%x", sha256.Sum256([]byte(follow)))
 	if after.AdmissionID == "" || after.AdmissionID == before.AdmissionID ||
 		after.AdmissionCursor <= before.AdmissionCursor ||
@@ -127,7 +127,7 @@ func TestProbeStateClassifiesChannelHealth(t *testing.T) {
 
 	t.Run("unlocatable pi owned session", func(t *testing.T) {
 		missing := filepath.Join(home, "missing-pi-session.jsonl")
-		agent := classifier.Agent{
+		worker := classifier.Worker{
 			ID:        "pi-loss:@1",
 			Command:   fmt.Sprintf("pi --session %q", missing),
 			Cwd:       cwd,
@@ -135,7 +135,7 @@ func TestProbeStateClassifiesChannelHealth(t *testing.T) {
 			PaneAlive: true,
 		}
 		probe := newWorkProviderActivityProbe()
-		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		observation := probe.ObserveProviderActivity(worker, time.Now().UTC())
 		if observation.ProbeState != watcher.ProbeStateUnlocatable {
 			t.Fatalf("missing owned Pi session state = %q, want unlocatable", observation.ProbeState)
 		}
@@ -146,7 +146,7 @@ func TestProbeStateClassifiesChannelHealth(t *testing.T) {
 		if err := os.WriteFile(malformed, []byte("{not-json\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		agent := classifier.Agent{
+		worker := classifier.Worker{
 			ID:        "pi-malformed:@1",
 			Command:   fmt.Sprintf("pi --session %q", malformed),
 			Cwd:       cwd,
@@ -154,14 +154,14 @@ func TestProbeStateClassifiesChannelHealth(t *testing.T) {
 			PaneAlive: true,
 		}
 		probe := newWorkProviderActivityProbe()
-		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		observation := probe.ObserveProviderActivity(worker, time.Now().UTC())
 		if observation.ProbeState != watcher.ProbeStateUnreadable {
 			t.Fatalf("malformed Pi session state = %q, want unreadable", observation.ProbeState)
 		}
 	})
 
 	t.Run("not structured agent is healthy no-fact", func(t *testing.T) {
-		agent := classifier.Agent{
+		worker := classifier.Worker{
 			ID:        "custom:@1",
 			Command:   "my-custom-tool",
 			Cwd:       cwd,
@@ -169,7 +169,7 @@ func TestProbeStateClassifiesChannelHealth(t *testing.T) {
 			PaneAlive: true,
 		}
 		probe := newWorkProviderActivityProbe()
-		observation := probe.ObserveProviderActivity(agent, time.Now().UTC())
+		observation := probe.ObserveProviderActivity(worker, time.Now().UTC())
 		if observation.ProbeState.Loss() {
 			t.Fatalf("non-structured provider classified as loss: %+v", observation)
 		}

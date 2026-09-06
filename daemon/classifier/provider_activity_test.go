@@ -30,7 +30,7 @@ func TestDefaultActivityProbe_RegistersOnlyPaneAndProcessAdapters(t *testing.T) 
 
 func TestProviderAdapters_OrdinaryShellNoMatch(t *testing.T) {
 	got := DefaultActivityProbe().Infer(ActivityInput{
-		Agent:       Agent{Command: "zsh", Cwd: "/tmp"},
+		Worker:      Worker{Command: "zsh", Cwd: "/tmp"},
 		PaneContent: "$ echo hi\nhi\n$ ls\nfile\n$",
 	})
 	if got.State != "" || got.Provider != "" {
@@ -88,7 +88,7 @@ func TestDefaultActivityProbe_TranscriptOnlyEvidenceStaysUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			agent := &Agent{
+			worker := &Worker{
 				ID:        testCase.name,
 				Command:   testCase.command,
 				Cwd:       testCase.cwd,
@@ -96,10 +96,10 @@ func TestDefaultActivityProbe_TranscriptOnlyEvidenceStaysUnknown(t *testing.T) {
 				State:     StateUnknown,
 			}
 			signal := DefaultActivityProbe().Infer(ActivityInput{
-				Agent:       *agent,
+				Worker:      *worker,
 				PaneContent: testCase.pane,
 			})
-			state, _ := ResolveSessionStatus(agent, StateUnknown, "Session idle", now, signal)
+			state, _ := ResolveSessionStatus(worker, StateUnknown, "Session idle", now, signal)
 			if state != StateUnknown {
 				t.Fatalf("state = %q from signal %#v, want honest unknown", state, signal)
 			}
@@ -119,48 +119,48 @@ func TestProviderAdapters_RetainPaneAndProcessEvidence(t *testing.T) {
 	tests := []struct {
 		name       string
 		input      ActivityInput
-		wantState  AgentState
+		wantState  WorkerState
 		wantSource string
 	}{
 		{
 			name:       "codex approval",
-			input:      ActivityInput{Agent: Agent{Command: "codex"}, PaneContent: "OpenAI Codex\nDo you want to continue?"},
+			input:      ActivityInput{Worker: Worker{Command: "codex"}, PaneContent: "OpenAI Codex\nDo you want to continue?"},
 			wantState:  StateBlocked,
 			wantSource: "codex_pane_blocked",
 		},
 		{
 			name:       "codex visible working",
-			input:      ActivityInput{Agent: Agent{Command: "codex"}, PaneContent: "OpenAI Codex\nWorking...\nesc to interrupt"},
+			input:      ActivityInput{Worker: Worker{Command: "codex"}, PaneContent: "OpenAI Codex\nWorking...\nesc to interrupt"},
 			wantState:  StateRunning,
 			wantSource: "codex_pane_working",
 		},
 		{
 			name:       "claude permission",
-			input:      ActivityInput{Agent: Agent{Command: "claude"}, PaneContent: "Claude Code\nPermission required"},
+			input:      ActivityInput{Worker: Worker{Command: "claude"}, PaneContent: "Claude Code\nPermission required"},
 			wantState:  StateBlocked,
 			wantSource: "claude_pane_blocked",
 		},
 		{
 			name:       "cursor workspace trust",
-			input:      ActivityInput{Agent: Agent{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nWorkspace Trust Required\nTrust this workspace?"},
+			input:      ActivityInput{Worker: Worker{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nWorkspace Trust Required\nTrust this workspace?"},
 			wantState:  StateBlocked,
 			wantSource: "cursor_pane_trust",
 		},
 		{
 			name:       "cursor permission",
-			input:      ActivityInput{Agent: Agent{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nPermission required"},
+			input:      ActivityInput{Worker: Worker{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nPermission required"},
 			wantState:  StateBlocked,
 			wantSource: "cursor_pane_permission",
 		},
 		{
 			name:       "cursor stop marker",
-			input:      ActivityInput{Agent: Agent{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nctrl+c to stop"},
+			input:      ActivityInput{Worker: Worker{Command: "cursor-agent"}, PaneContent: "Cursor Agent\nctrl+c to stop"},
 			wantState:  StateRunning,
 			wantSource: "cursor_pane_stop_marker",
 		},
 		{
 			name:       "cursor non MCP child",
-			input:      ActivityInput{Agent: Agent{Command: "cursor-agent"}, PaneContent: "Cursor Agent", ToolChildActive: true},
+			input:      ActivityInput{Worker: Worker{Command: "cursor-agent"}, PaneContent: "Cursor Agent", ToolChildActive: true},
 			wantState:  StateRunning,
 			wantSource: "cursor_tool_child",
 		},
@@ -179,7 +179,7 @@ func TestProviderAdapters_RetainPaneAndProcessEvidence(t *testing.T) {
 func TestCodexHistoricalApprovalTextBeforeIdleComposerDoesNotBlock(t *testing.T) {
 	pane := "OpenAI Codex\n• Test output: Press enter to continue\n› \nmodel footer"
 	signal := NewCodexActivityAdapter().Infer(ActivityInput{
-		Agent:       Agent{Command: "codex"},
+		Worker:      Worker{Command: "codex"},
 		PaneContent: pane,
 	})
 	if signal.State != StateUnknown || signal.Source != "codex_idle" {
@@ -198,14 +198,14 @@ func TestResolveSessionStatus_ProgressAndStickyFactsOutrankPaneEvidence(t *testi
 
 	tests := []struct {
 		name       string
-		agent      *Agent
-		classified AgentState
+		worker     *Worker
+		classified WorkerState
 		signal     ActivitySignal
-		want       AgentState
+		want       WorkerState
 	}{
 		{
 			name: "active progress lease",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:           true,
 				State:               StateRunning,
 				Summary:             "Explicit progress",
@@ -218,21 +218,21 @@ func TestResolveSessionStatus_ProgressAndStickyFactsOutrankPaneEvidence(t *testi
 		},
 		{
 			name:       "pane blocked beats running signal",
-			agent:      &Agent{PaneAlive: true, State: StateUnknown},
+			worker:     &Worker{PaneAlive: true, State: StateUnknown},
 			classified: StateBlocked,
 			signal:     ActivitySignal{State: StateRunning, Source: "cursor_pane_stop_marker"},
 			want:       StateBlocked,
 		},
 		{
 			name:       "pane failed beats running signal",
-			agent:      &Agent{PaneAlive: true, State: StateUnknown},
+			worker:     &Worker{PaneAlive: true, State: StateUnknown},
 			classified: StateFailed,
 			signal:     ActivitySignal{State: StateRunning, Source: "codex_pane_working"},
 			want:       StateFailed,
 		},
 		{
 			name: "sticky done",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:      true,
 				State:          StateDone,
 				Summary:        "Finished",
@@ -246,7 +246,7 @@ func TestResolveSessionStatus_ProgressAndStickyFactsOutrankPaneEvidence(t *testi
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			got, _ := ResolveSessionStatus(testCase.agent, testCase.classified, "detail", now, testCase.signal)
+			got, _ := ResolveSessionStatus(testCase.worker, testCase.classified, "detail", now, testCase.signal)
 			if got != testCase.want {
 				t.Fatalf("state = %q, want %q", got, testCase.want)
 			}

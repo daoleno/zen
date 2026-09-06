@@ -28,7 +28,7 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 		t.Fatal(err)
 	}
 
-	oldHostID := "brain-agent-brain-old:@1"
+	oldHostID := "zen-worker-brain-old:@1"
 	if err := store.SetHostSession(oldHostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,8 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 	}
 
 	service := NewService(store, nil, work.NewExecutorConfig("codex", map[string]work.Executor{
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
-		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
+		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.WorkerRuntimeTmux},
 	}))
 	if err := service.MaterializeProviderConversation(threadID, mustHostBound(t, service)); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 	}
 
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldHostID: {
 				ID:      oldHostID,
 				Name:    "Brain",
@@ -116,18 +116,18 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 		},
 	}
 	service = NewService(store, fw, work.NewExecutorConfig("codex", map[string]work.Executor{
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
-		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
+		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.WorkerRuntimeTmux},
 	}))
 
 	snapshot, err := service.SetHostExecutor("grok")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldHostID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldHostID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
-	newHostID := snapshot.HostAgent.ID
+	newHostID := snapshot.HostWorker.ID
 	host, err := store.HostSession()
 	if err != nil {
 		t.Fatal(err)
@@ -141,14 +141,14 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 
 	startedAt := time.Date(2026, 8, 13, 4, 41, 0, 0, time.UTC)
 	grokSessionID := "grok-host-after-switch"
-	agent := fw.GetAgent(newHostID)
-	if agent == nil {
+	worker := fw.GetWorker(newHostID)
+	if worker == nil {
 		t.Fatal("new grok host missing from watcher")
 	}
-	agent.StartedAt = startedAt
-	agent.Cwd = store.WorkspacePath()
-	agent.Command = strings.TrimSpace(agent.Command) + " --resume " + grokSessionID
-	fw.sessions[newHostID] = agent
+	worker.StartedAt = startedAt
+	worker.Cwd = store.WorkspacePath()
+	worker.Command = strings.TrimSpace(worker.Command) + " --resume " + grokSessionID
+	fw.sessions[newHostID] = worker
 
 	grokDir := writeBrainGrokHostFixture(t, grokHome, store.WorkspacePath(), grokSessionID, startedAt, userBody)
 
@@ -295,7 +295,7 @@ func TestBoundHostConversationSubmissionResolutionRecoversGrokUntimestampedWorkE
 		},
 	}
 	_, _, matched := boundHostConversationSubmissionResolution(conversation, watcher.InputAdmission{
-		SessionID:      "brain-agent-grok:@1",
+		SessionID:      "zen-worker-grok:@1",
 		ProposedTurnID: "turn-grok-delivery",
 		Receipt:        "event-grok-delivery",
 		PayloadSHA256:  AdmissionDigest(payload),
@@ -322,7 +322,7 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 		t.Fatal(err)
 	}
 
-	oldHostID := "brain-agent-brain-old:@event-delivery"
+	oldHostID := "zen-worker-brain-old:@event-delivery"
 	if err := store.SetHostSession(oldHostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -350,11 +350,11 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	}
 
 	execs := work.NewExecutorConfig("codex", map[string]work.Executor{
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
-		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
+		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.WorkerRuntimeTmux},
 	})
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldHostID: {
 				ID:      oldHostID,
 				Name:    "Brain",
@@ -371,10 +371,10 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldHostID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldHostID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
-	hostID := snapshot.HostAgent.ID
+	hostID := snapshot.HostWorker.ID
 	host, err := store.HostSession()
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +383,7 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 		t.Fatalf("host session after switch = %+v", host)
 	}
 
-	item := createSignalTestWork(t, store, "Grok host event delivery", "brain-agent-worker-grok-delivery:@1")
+	item := createSignalTestWork(t, store, "Grok host event delivery", "zen-worker-worker-grok-delivery:@1")
 	event := appendSignalTestEvent(t, store, item, "grok-host-delivery")
 	item, err = store.Work(item.ID)
 	if err != nil {
@@ -410,14 +410,14 @@ func TestHostSwitchGrokWorkEventAmbiguousReceiptSettlesWithoutQuarantine(t *test
 
 	startedAt := claim.ClaimedAt.UTC().Add(-time.Second)
 	grokSessionID := "grok-host-event-delivery"
-	agent := fw.GetAgent(hostID)
-	if agent == nil {
+	worker := fw.GetWorker(hostID)
+	if worker == nil {
 		t.Fatal("new grok host missing from watcher")
 	}
-	agent.StartedAt = startedAt
-	agent.Cwd = store.WorkspacePath()
-	agent.Command = strings.TrimSpace(agent.Command) + " --resume " + grokSessionID
-	fw.sessions[hostID] = agent
+	worker.StartedAt = startedAt
+	worker.Cwd = store.WorkspacePath()
+	worker.Command = strings.TrimSpace(worker.Command) + " --resume " + grokSessionID
+	fw.sessions[hostID] = worker
 
 	activityAt := claim.ClaimedAt.UTC().Add(time.Second)
 	writeBrainGrokWorkEventHostFixture(t, grokHome, store.WorkspacePath(), grokSessionID, startedAt, activityAt, payload)

@@ -13,7 +13,7 @@ interface InterfaceTimelineEmptyContentProps {
   unavailableReason?: string;
   syncing: boolean;
   chrome: TerminalThemeChrome;
-  agentCwd?: string;
+  workerCwd?: string;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -29,7 +29,7 @@ export function InterfaceTimelineEmptyContent({
   unavailableReason,
   syncing,
   chrome,
-  agentCwd,
+  workerCwd,
   onUnavailableAction,
   showUnavailableAction = true,
   emptyTitle,
@@ -50,7 +50,7 @@ export function InterfaceTimelineEmptyContent({
         />
       );
     }
-    return <InterfaceSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
+    return <InterfaceSessionIdleView chrome={chrome} cwd={workerCwd} busy />;
   }
 
   if (error && items.length === 0) {
@@ -74,7 +74,7 @@ export function InterfaceTimelineEmptyContent({
         />
       );
     }
-    return <InterfaceSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
+    return <InterfaceSessionIdleView chrome={chrome} cwd={workerCwd} busy />;
   }
 
   if (unavailable) {
@@ -91,7 +91,7 @@ export function InterfaceTimelineEmptyContent({
 
   if (items.length === 0) {
     if (!emptyTitle) {
-      return <InterfaceSessionIdleView chrome={chrome} cwd={agentCwd} />;
+      return <InterfaceSessionIdleView chrome={chrome} cwd={workerCwd} />;
     }
     return (
       <InterfaceTimelineEmptyState

@@ -36,7 +36,7 @@ type brainOwner interface {
 	ThreadTimeline(threadID string, limit int) ([]brain.TimelineItem, error)
 	NewChat() (brain.Snapshot, error)
 	CurrentHostForegroundTurn() (*brain.HostForegroundTurn, error)
-	DelegatedSessions() ([]brain.AgentRef, error)
+	DelegatedSessions() ([]brain.WorkerRef, error)
 	WorkForSession(sessionID string) (brain.Work, bool, error)
 	SubmitExternalSessionInput(sessionID, receipt, body string) (brain.ExternalInputDisposition, error)
 	SessionProjection(sessionID string) (brain.SessionProjection, error)

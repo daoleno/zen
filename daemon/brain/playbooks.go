@@ -227,156 +227,62 @@ var seedPlaybooks = []struct {
 
 const defaultPlaybooksReadme = `# Brain Playbooks
 
-Provider-neutral operating playbooks for Brain lifecycle. Read on demand — bootstrap and policies mention the catalog, not full bodies.
+Discover names, descriptions and paths with zen brain playbooks --json. Read only the playbook needed for the current task.
 
-Use ` + "`zen brain playbooks --json`" + ` for metadata: name, description, path.
-
-## Seed playbooks
-
-- **brain-flows** — Route situations to the right flow
-- **align** — Decision-frontier alignment before delegation
-- **delegate-brief** — Behavioral contract for delegated agents
-- **slice-work** — Tracer-bullet work decomposition
-- **wayfind** — Fog-of-war planning for large objectives
-
-Progressive disclosure: pick one playbook, read it fully, apply it to the current task.
+- brain-flows: choose a workflow
+- align: resolve material decisions
+- delegate-brief: prepare a Worker brief
+- slice-work: split a large objective
+- wayfind: investigate an unclear objective
 `
 
 const defaultBrainFlowsPlaybook = `---
-description: Route user situations to the smallest Brain flow that can produce an executable brief.
+description: Choose the next useful Brain workflow.
 ---
 
 # Brain Flows
 
-When intent is unclear or the task spans multiple modes, pick one flow:
-
-| Situation | Playbook |
-|-----------|----------|
-| Goal fuzzy, decisions unresolved | align |
-| Ready to delegate but brief is weak | delegate-brief |
-| Large work needs decomposition | slice-work |
-| Objective huge, map unknown | wayfind |
-| Any substantive repository/tool execution, including a clear or complex bug fix | create or reuse a visible Zen Worker |
-
-When routing depends on a material user decision, include it in the next align round. When it does not, choose the smallest matching flow and proceed.
-
-The authoritative managed product block below owns the Brain/Worker routing boundary.
+Use align for material unresolved decisions, delegate-brief when execution is ready, slice-work for known dependencies, and wayfind when investigation is needed to identify the next task. Skip playbooks when the next action is already clear. Follow AGENTS.md for execution ownership and event-driven waiting.
 `
 
 const defaultAlignPlaybook = `---
-description: Resolve the current decision frontier in small rounds, then execute.
+description: Resolve consequential missing decisions without blocking independent work.
 ---
 
 # Align
 
-Resolve only decisions that materially change the outcome, risk, or user values. Keep the round small enough to answer quickly.
+State the intended outcome and check discoverable facts. Continue authorized preparation. Ask all independent material decisions together, with a recommended default and relevant tradeoff. Reopen resolved decisions only for new evidence or changed requirements.
 
-## Decision-frontier loop
-
-1. State the understood goal, constraints, and concrete completion conditions.
-2. Research discoverable environment facts with available tools or delegated agents.
-3. Identify the required user decisions that are unblocked now. A decision is required only when its answer materially changes outcome, risk, or values.
-4. Ask all currently independent required decisions in one numbered round. For each decision, give a recommended default and its relevant tradeoff.
-5. Apply the answers, continue any newly unblocked research, and form another small round only when required.
-
-Unresolved research blocks only decisions that depend on it. Continue independent research and ask independent required decisions without waiting for the whole tree.
-
-## Stop when
-
-- The brief is executable with observable completion conditions.
-- Every remaining unknown has a safe default that does not materially change outcome, risk, or values.
-
-Proceed without a mandatory final confirmation gate. Explicit confirmation remains appropriate only when the action itself is high-risk, irreversible, or permission-gated.
-
-## Completion check
-
-- Discoverable facts were researched instead of sent back as user questions.
-- Each round contained every currently independent required decision and a recommended default.
-- Resolved decisions were not reopened without new evidence.
-- The execution or delegation brief states scope, safety constraints, verification, and expected evidence.
+Proceed once remaining unknowns have safe defaults and completion is observable. Ask for new authority only at the actual permission boundary.
 `
 
 const defaultDelegateBriefPlaybook = `---
-description: Write an executable delegated-agent contract with observable completion conditions.
+description: Prepare a scoped Worker task with observable acceptance.
 ---
 
 # Delegate Brief
 
-Write delegated prompts as behavioral contracts. Prefer how things should work over where files live.
+Specify the outcome, cwd, necessary context, acceptance criteria, safety constraints, verification and expected report. Add current/desired behavior, interfaces and exclusions only when informative. Omit empty sections and standing rules already supplied by the Worker protocol.
 
-Follow explicit behavioral contracts. Supply safe defaults and observable completion conditions so routine work can continue. Keep private lifecycle and implementation details scoped to the delegated session.
-
-## Template
-
-- **Objective**: one sentence outcome
-- **Current behavior**: what happens today (behavior, not paths)
-- **Desired behavior**: what should change
-- **Key interfaces/contracts**: APIs, types, invariants
-- **Acceptance criteria**: observable done conditions
-- **Out of scope**: explicit exclusions
-- **Safety constraints**: what not to break, secrets, scope limits
-- **Verification**: commands or checks the agent can run
-- **Expected report**: files changed, behavior added, tests run, caveats; return it in the agent result
-
-## Rules
-
-- One concern per delegated session.
-- Give the agent a concrete outcome and bounded implementation responsibility.
-- Include the known context and environment facts needed to begin in the named workspace.
-- Make acceptance criteria and verification observable in the agent's report.
-- Explicitly state: do not write Brain Worklog records into the project repository or worker cwd. Brain internal reports belong under the runtime Brain workspace worklog/; product documentation, when required, must name its repository path separately.
-- File paths only when the task is a narrow patch.
+Use one coherent concern per Worker. Return the report in the Worker result; explicitly name private worklog or product documentation paths when persistence is required. Follow policies/delegation.md for reuse and review.
 `
 
 const defaultSliceWorkPlaybook = `---
-description: Tracer-bullet decomposition with blocking edges and frontier tasks.
+description: Split a large objective into testable steps and dependencies.
 ---
 
 # Slice Work
 
-Decompose large work into vertical slices that prove the path end-to-end.
-
-## Concepts
-
-- **Tracer bullet**: thinnest slice through all layers that validates the approach.
-- **Blocking edge**: dependency that prevents a task from starting; resolve or defer explicitly.
-- **Frontier**: unblocked, unclaimed tasks ready to delegate now.
-
-## Process
-
-1. Name the destination (user-visible outcome).
-2. Identify the tracer bullet — smallest proof the approach works.
-3. List tasks with blocking edges marked.
-4. Delegate frontier tasks in parallel when independent.
-5. Re-slice after each tracer bullet lands; the map will change.
-
-## Ticket shape
-
-Each slice: objective, acceptance criteria, verification, dependencies, out of scope.
-Prefer fresh delegated sessions per slice when context would bloat; reuse when one thread is clearer.
+Name the full user outcome, then the smallest end-to-end step that tests the approach. Record its acceptance criteria, verification and blocking dependencies. Delegate independent ready steps when useful; keep coupled work in one Worker. Replan from results while retaining the full completion criteria.
 `
 
 const defaultWayfindPlaybook = `---
-description: Fog-of-war planning when the objective is too large for upfront tickets.
+description: Investigate enough context to identify the next executable concern.
 ---
 
 # Wayfind
 
-For huge or ambiguous objectives, discover the map before pretending you can plan every ticket.
+Keep the destination, known constraints, decisions, open questions and next unblocked concern in current.md. Move detailed evidence to the private worklog when needed.
 
-## Map fields (maintain in current.md or a worklog record)
-
-- **Destination**: where we're going in user terms
-- **Notes**: observations, constraints, context
-- **Decisions so far**: durable choices already made
-- **Not yet specified**: open design space
-- **Out of scope**: explicit boundaries
-- **Frontier tasks**: unblocked, unclaimed, ready to delegate
-
-## Rules
-
-- Do not implement until the next frontier task is identifiable.
-- Do not over-plan past the fog line — update the map as tracer bullets land.
-- Prefer wayfind over slice-work when you cannot yet name vertical slices.
-- Transition to slice-work once the tracer path is visible.
+Investigate only enough to form the next useful brief, execute it, and update the remaining plan from results. Avoid speculative ticket trees and repeated discovery of unchanged facts.
 `

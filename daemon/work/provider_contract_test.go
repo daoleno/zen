@@ -148,15 +148,15 @@ func semanticsEqual(left, right []providerContractSemantics) bool {
 // collapse).
 func TestProviderContractPiNotCollapsedToWorking(t *testing.T) {
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "agent")
-	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	workerDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", workerDir)
+	sessionsDir := filepath.Join(workerDir, "sessions", encodePiSessionDirName("/repo"))
 	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	piCanonicalConversation(t, filepath.Join(sessionsDir, "2026-08-06T00-00-10-000Z_live.jsonl"))
-	agent := classifier.Agent{Cwd: "/repo", Command: "pi"}
-	conversation, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	worker := classifier.Worker{Cwd: "/repo", Command: "pi"}
+	conversation, err := NewProviderConversationReader().Load(worker, WorkerProviderPi, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

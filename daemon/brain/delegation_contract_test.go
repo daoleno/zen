@@ -21,62 +21,46 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 	service := NewService(store, &fakeWatcher{}, work.NewExecutorConfig("codex", map[string]work.Executor{
 		"codex": {Name: "codex", Command: "codex", Kind: "codex"},
 	}))
-
 	read := func(path string) string {
 		t.Helper()
-		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			t.Fatal(readErr)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
 		}
 		return string(raw)
 	}
-	surfaces := map[string]string{
-		"workspace AGENTS":  read(store.workspaceInstructionsPath()),
-		"delegation policy": read(store.policyPath("delegation.md")),
-		"Host bootstrap":    service.hostBootstrapPrompt(service.hostExecutor()),
-		"Host handoff":      formatHostHandoffPrompt("thread-one", "grok", "codex", "codex", "", nil),
-		"brain-flows":       read(store.playbookPath(brainFlowsPlaybookName)),
+	for name, surface := range map[string]string{
+		"AGENTS":     read(store.workspaceInstructionsPath()),
+		"activation": brainHostActivationPrompt(),
+		"bootstrap":  service.hostBootstrapPrompt(service.hostExecutor()),
+		"routing":    read(store.playbookPath(brainFlowsPlaybookName)),
+	} {
+		if strings.Count(surface, brainWorkerRoleContract) != 1 || strings.Contains(surface, brainWorkerRoleContractPlaceholder) {
+			t.Fatalf("%s has missing/duplicate role or unresolved placeholder", name)
+		}
 	}
-	for name, surface := range surfaces {
-		if strings.Count(surface, brainWorkerRoleContract) != 1 {
-			t.Fatalf("%s must contain the exact canonical contract once:\n%s", name, surface)
+	for name, surface := range map[string]string{
+		"delegation": read(store.policyPath("delegation.md")),
+		"handoff":    formatHostHandoffPrompt("thread-one", "grok", "codex", "codex", nil),
+	} {
+		if !strings.Contains(surface, "AGENTS.md") || strings.Contains(surface, brainWorkerRoleContract) {
+			t.Fatalf("%s must reference the role owner without repeating it", name)
 		}
-		if strings.Contains(surface, brainWorkerRoleContractPlaceholder) {
-			t.Fatalf("%s leaked the source placeholder:\n%s", name, surface)
-		}
-		for _, permissive := range []string{
-			"normally create or reuse",
-			"use judgment when direct execution",
-			"use judgment when a direct action",
-			"clearer or faster",
-			"clearly the better route",
-			"rigid prohibition on direct action",
-			"patch over it directly",
-		} {
-			if strings.Contains(strings.ToLower(surface), permissive) {
-				t.Fatalf("%s retains permissive routing phrase %q:\n%s", name, permissive, surface)
-			}
-		}
+	}
+	if !strings.Contains(brainWorkerRoleContract, "unless the user explicitly asks Brain to execute it directly") ||
+		!strings.Contains(brainWorkerRoleContract, "A delegation failure does not authorize direct execution") {
+		t.Fatal("role lost explicit user override or failure boundary")
 	}
 	bootstrap := service.hostBootstrapPrompt(service.hostExecutor())
-	for _, marker := range []string{
-		"Brain Worklog (private): " + store.WorklogPath(),
-		"Do not write Brain Worklog records to the project repository, cwd, or cwd/docs/worklog",
-		"return the expected report in the agent result",
-	} {
+	for _, marker := range []string{"Brain Worklog (private): " + store.WorklogPath(), "return delegated reports in the Worker result"} {
 		if !strings.Contains(bootstrap, marker) {
-			t.Fatalf("Host bootstrap missing Worklog boundary %q:\n%s", marker, bootstrap)
+			t.Fatalf("bootstrap missing %q", marker)
 		}
 	}
-	delegation := read(store.policyPath("delegation.md"))
-	for _, marker := range []string{
-		"do not write Brain Worklog records into the project repository or worker cwd",
-		"persist it only under the runtime Brain workspace `worklog/`",
-	} {
-		if !strings.Contains(delegation, marker) {
-			t.Fatalf("delegation policy missing Worklog boundary %q:\n%s", marker, delegation)
-		}
+	if len(bootstrap) > 2200 {
+		t.Fatalf("bootstrap expanded to %d bytes", len(bootstrap))
 	}
+	t.Logf("rendered bootstrap: %d bytes", len(bootstrap))
 }
 
 func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {
@@ -93,12 +77,12 @@ func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.HostAgent == nil {
-		t.Fatalf("fresh Host activation did not return a Host: %#v", first.HostAgent)
+	if first.HostWorker == nil {
+		t.Fatalf("fresh Host activation did not return a Host: %#v", first.HostWorker)
 	}
-	hostID := first.HostAgent.ID
+	hostID := first.HostWorker.ID
 	if len(fw.sentCalls) != 1 {
-		t.Fatalf("fresh Host activation: host=%#v sends=%#v", first.HostAgent, fw.sentCalls)
+		t.Fatalf("fresh Host activation: host=%#v sends=%#v", first.HostWorker, fw.sentCalls)
 	}
 	if fw.readyInputCalls != 1 {
 		t.Fatalf("fresh Host activation readiness calls = %d, want one", fw.readyInputCalls)
@@ -210,7 +194,7 @@ func TestLiveHostActivationQueuesWithUserInputsOutsideSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	const (
-		hostID            = "brain-agent-brain-live:@41"
+		hostID            = "zen-worker-brain-live:@41"
 		hostGeneration    = "host-generation-live"
 		providerSessionID = "provider-history-must-not-change"
 		transcriptPath    = "/private/provider/transcript.jsonl"
@@ -236,7 +220,7 @@ func TestLiveHostActivationQueuesWithUserInputsOutsideSnapshot(t *testing.T) {
 	}
 
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {
 				ID:      hostID,
 				Name:    "Brain",
@@ -266,7 +250,7 @@ func TestLiveHostActivationQueuesWithUserInputsOutsideSnapshot(t *testing.T) {
 	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
 		t.Fatalf("read-only Snapshot entered Host input delivery: %s", elapsed)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != hostID || snapshot.Memory != memorySecret || snapshot.Profile != profileSecret {
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != hostID || snapshot.Memory != memorySecret || snapshot.Profile != profileSecret {
 		t.Fatalf("Snapshot client data was not projected while activation was busy: %+v", snapshot)
 	}
 	if len(fw.sentCalls) != 1 || fw.readyInputCalls != 0 {
@@ -329,7 +313,7 @@ func TestLiveHostActivationAmbiguousReceiptIsNeverReplayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	const (
-		hostID         = "brain-agent-brain-live:@ambiguous"
+		hostID         = "zen-worker-brain-live:@ambiguous"
 		hostGeneration = "host-generation-ambiguous"
 	)
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -337,7 +321,7 @@ func TestLiveHostActivationAmbiguousReceiptIsNeverReplayed(t *testing.T) {
 	}
 	receipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractVersion)
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Command: "codex", Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: hostGeneration},

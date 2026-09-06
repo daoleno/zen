@@ -78,7 +78,6 @@ func NewStore(root string) (*Store, error) {
 	// supervisor sweeps and event timestamps follow the same time authority.
 	fsm.SetNow(store.nowUTC)
 	if err := store.ensureFiles(); err != nil {
-		_ = fsm.Close()
 		return nil, err
 	}
 	if err := store.rebuildFSMProjections(); err != nil {
@@ -326,7 +325,7 @@ func (s *Store) SetHostProviderTranscript(providerSessionID, transcriptPath, pro
 	})
 }
 
-func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
+func (s *Store) snapshotLocked(workers []WorkerRef) (Snapshot, error) {
 	memory, err := readTextFile(s.memoryPath())
 	if err != nil {
 		return Snapshot{}, err
@@ -343,15 +342,15 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if agents == nil {
-		agents = []AgentRef{}
+	if workers == nil {
+		workers = []WorkerRef{}
 	}
 	return Snapshot{
 		Memory:      memory,
 		Profile:     profileNotes,
 		Current:     current,
 		Personality: firstNonEmpty(profile.Personality, defaultPersonality),
-		Agents:      agents,
+		Workers:     workers,
 		Workspace:   s.WorkspacePath(),
 		WorklogPath: s.WorklogPath(),
 		GeneratedAt: time.Now().UTC(),
@@ -763,7 +762,7 @@ None recorded yet.
 ## Decisions
 
 - Brain's current host executor is the orchestrator for planning, delegation, review, and final synthesis.
-- Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
+- Delegated Zen Workers use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
 - delegated_executor controls delegated execution and ordinary non-Brain session creation.
 - Use a different executor for a session only when the user explicitly mentions or asks for it.
 - Switching Brain host executors preserves the visible chat and uses private handoff context.

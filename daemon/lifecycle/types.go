@@ -532,6 +532,7 @@ type AdmissionState struct {
 	Purpose            AdmissionPurpose `json:"purpose,omitempty"`
 	PurposeID          string           `json:"purpose_id,omitempty"`
 	Status             AdmissionStatus  `json:"status"`
+	AcceptedSeq        uint64           `json:"accepted_seq,omitempty"`
 	PreparedAt         time.Time        `json:"prepared_at"`
 	AttemptedAt        time.Time        `json:"attempted_at"`
 	SettledAt          *time.Time       `json:"settled_at,omitempty"`
@@ -546,25 +547,25 @@ type AdmissionState struct {
 
 // State is the full reduced aggregate. Never mutated outside Reduce.
 type State struct {
-	ID              WorkID          `json:"id"`
-	Revision        uint64          `json:"revision"`
-	Status          Status          `json:"status"`
-	Title           string          `json:"title"`
-	Objective       string          `json:"objective"`
-	Policy          Policy          `json:"policy"`
-	DoneCriteriaRef string          `json:"done_criteria_ref,omitempty"`
-	SourceThreadID  string          `json:"source_thread_id,omitempty"`
-	NextAction      string          `json:"next_action,omitempty"`
-	LastSummary     string          `json:"last_summary,omitempty"`
-	Fence           uint64          `json:"fence"`
-	Attempt         *Attempt        `json:"attempt,omitempty"`
-	Wake            *WakeState      `json:"wake,omitempty"`
-	Review          *ReviewState    `json:"review,omitempty"`
-	Admission       *AdmissionState `json:"admission,omitempty"`
-	SeenSources     map[string]bool `json:"seen_sources,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	TerminalAt      *time.Time      `json:"terminal_at,omitempty"`
+	ID              WorkID                        `json:"id"`
+	Revision        uint64                        `json:"revision"`
+	Status          Status                        `json:"status"`
+	Title           string                        `json:"title"`
+	Objective       string                        `json:"objective"`
+	Policy          Policy                        `json:"policy"`
+	DoneCriteriaRef string                        `json:"done_criteria_ref,omitempty"`
+	SourceThreadID  string                        `json:"source_thread_id,omitempty"`
+	NextAction      string                        `json:"next_action,omitempty"`
+	LastSummary     string                        `json:"last_summary,omitempty"`
+	Fence           uint64                        `json:"fence"`
+	Attempt         *Attempt                      `json:"attempt,omitempty"`
+	Wake            *WakeState                    `json:"wake,omitempty"`
+	Review          *ReviewState                  `json:"review,omitempty"`
+	Admissions      map[TurnToken]*AdmissionState `json:"admissions,omitempty"`
+	SeenSources     map[string]bool               `json:"seen_sources,omitempty"`
+	CreatedAt       time.Time                     `json:"created_at"`
+	UpdatedAt       time.Time                     `json:"updated_at"`
+	TerminalAt      *time.Time                    `json:"terminal_at,omitempty"`
 }
 
 // Clone returns a complete deep copy, including the internal source-dedupe
@@ -602,13 +603,16 @@ func (s *State) clone(includeSeenSources bool) *State {
 		}
 		out.Review = &r
 	}
-	if s.Admission != nil {
-		admission := *s.Admission
-		if s.Admission.SettledAt != nil {
-			settled := *s.Admission.SettledAt
-			admission.SettledAt = &settled
+	if s.Admissions != nil {
+		out.Admissions = make(map[TurnToken]*AdmissionState, len(s.Admissions))
+		for token, source := range s.Admissions {
+			admission := *source
+			if source.SettledAt != nil {
+				settled := *source.SettledAt
+				admission.SettledAt = &settled
+			}
+			out.Admissions[token] = &admission
 		}
-		out.Admission = &admission
 	}
 	out.SeenSources = nil
 	if includeSeenSources && len(s.SeenSources) > 0 {
@@ -627,19 +631,18 @@ func (s *State) clone(includeSeenSources bool) *State {
 // CurrentTurn returns the sole current Attempt, if any.
 func (s *State) CurrentTurn() *Attempt { return s.Attempt }
 
-// Admission returns the immutable transaction identified by its proposed
-// Turn token.
+// AdmissionByToken returns the exact transaction, independently of later Host
+// delivery or Worker input. Acceptance alone never grants Attempt ownership.
 func (s *State) AdmissionByToken(token TurnToken) *AdmissionState {
-	if s.Admission != nil && s.Admission.TurnToken == token {
-		return s.Admission
-	}
-	return nil
+	return s.Admissions[token]
 }
 
 // ActiveAdmission returns the sole unresolved transport transaction.
 func (s *State) ActiveAdmission() *AdmissionState {
-	if s.Admission != nil && (s.Admission.Status == AdmissionPrepared || s.Admission.Status == AdmissionAmbiguous) {
-		return s.Admission
+	for _, admission := range s.Admissions {
+		if admission.Status == AdmissionPrepared || admission.Status == AdmissionAmbiguous {
+			return admission
+		}
 	}
 	return nil
 }

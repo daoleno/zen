@@ -12,7 +12,7 @@ import {
   useAppColors,
 } from '../../constants/tokens';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
-import type { AgentKind } from '../../services/agentPresentation';
+import type { AgentKind } from '../../services/workerPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { AgentKindIcon } from './AgentKindIcon';
 import {

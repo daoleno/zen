@@ -117,16 +117,16 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	}
 
 	spawn := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
 	})
-	if !spawn.OK || spawn.Agent == nil || spawn.SessionRoute == nil {
+	if !spawn.OK || spawn.Worker == nil || spawn.SessionRoute == nil {
 		t.Fatalf("spawn=%#v", spawn)
 	}
-	if !strings.Contains(spawn.Agent.Command, "openai_base_url=") {
-		t.Fatalf("spawn command=%q", spawn.Agent.Command)
+	if !strings.Contains(spawn.Worker.Command, "openai_base_url=") {
+		t.Fatalf("spawn command=%q", spawn.Worker.Command)
 	}
-	agentID := spawn.Agent.ID
+	workerID := spawn.Worker.ID
 
 	alt := profile
 	alt.ID = "codex-alt"
@@ -139,7 +139,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	}
 
 	cas := app.HandleControlRequest(control.Request{
-		Type: "thread_runtime_set", AgentID: agentID,
+		Type: "thread_runtime_set", WorkerID: workerID,
 		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: "missing-connection", ModelID: "up-2"},
 	})
 	if cas.OK || cas.Error == nil || cas.Error.Code != modelprofiles.CodeProfileNotFound {
@@ -147,7 +147,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	}
 
 	act := app.HandleControlRequest(control.Request{
-		Type: "thread_runtime_set", AgentID: agentID,
+		Type: "thread_runtime_set", WorkerID: workerID,
 		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: alt.ID, ModelID: alt.Model},
 	})
 	if !act.OK || act.SessionRoute == nil || act.Binding == nil {
@@ -165,7 +165,7 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 	if act.SessionRoute.Current.ConnectionID != alt.ID || act.Binding.ConnectionID != alt.ID {
 		t.Fatalf("binding must match current: route=%#v binding=%#v", act.SessionRoute.Current, act.Binding)
 	}
-	state, ok := owner.Table().Get(agentID)
+	state, ok := owner.Table().Get(workerID)
 	if !ok || state.Generation != state.Binding.Generation {
 		t.Fatalf("internal generation mismatch: %#v", state)
 	}
@@ -173,24 +173,24 @@ func TestControlModelProfileHandlersCreateActivateErrorsTeardown(t *testing.T) {
 		t.Fatalf("spawn persistence=%#v durable=%v", spawn.PersistenceOutcome, spawn.PersistenceDurable)
 	}
 
-	get := app.HandleControlRequest(control.Request{Type: "thread_runtime_get", AgentID: agentID})
+	get := app.HandleControlRequest(control.Request{Type: "thread_runtime_get", WorkerID: workerID})
 	if !get.OK || get.SessionRoute == nil {
 		t.Fatalf("get=%#v", get)
 	}
 
-	closeResp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	closeResp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if !closeResp.OK {
 		t.Fatalf("close=%#v", closeResp)
 	}
-	if len(fw.killed) != 1 || fw.killed[0] != agentID {
+	if len(fw.killed) != 1 || fw.killed[0] != workerID {
 		t.Fatalf("killed=%v", fw.killed)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("route binding should be released on close")
 	}
 }
 
-func TestControlSpawnCommitPersistFailureCleansAgentBinding(t *testing.T) {
+func TestControlSpawnCommitPersistFailureCleansWorkerBinding(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -232,7 +232,7 @@ func TestControlSpawnCommitPersistFailureCleansAgentBinding(t *testing.T) {
 		return nil
 	})
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
 	})
 	owner.RoutesFile().SetPersistHook(nil)
@@ -289,13 +289,13 @@ func TestControlThreadRuntimeAppliedButNotDurableKeepsSession(t *testing.T) {
 	}
 	installControlThreadRuntimeSetter(app, owner)
 	spawn := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
 	})
-	if !spawn.OK || spawn.Agent == nil {
+	if !spawn.OK || spawn.Worker == nil {
 		t.Fatalf("spawn=%#v", spawn)
 	}
-	agentID := spawn.Agent.ID
+	workerID := spawn.Worker.ID
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "after_rename" {
 			return errors.New("injected after_rename")
@@ -303,7 +303,7 @@ func TestControlThreadRuntimeAppliedButNotDurableKeepsSession(t *testing.T) {
 		return nil
 	})
 	act := app.HandleControlRequest(control.Request{
-		Type: "thread_runtime_set", AgentID: agentID,
+		Type: "thread_runtime_set", WorkerID: workerID,
 		Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: alt.ID, ModelID: alt.Model},
 	})
 	owner.RoutesFile().SetPersistHook(nil)
@@ -316,7 +316,7 @@ func TestControlThreadRuntimeAppliedButNotDurableKeepsSession(t *testing.T) {
 	if len(fw.killed) != 0 {
 		t.Fatalf("must not kill live session: %v", fw.killed)
 	}
-	snap, ok := owner.SessionSnapshot(agentID)
+	snap, ok := owner.SessionSnapshot(workerID)
 	if !ok || snap.Current == nil || snap.Current.ConnectionID != alt.ID {
 		t.Fatalf("memory must keep applied binding: %#v", snap)
 	}
@@ -499,7 +499,7 @@ func TestControlThreadRuntimeLaunchedSurvivesHistoryTrimAndRestart(t *testing.T)
 			t.Fatal("missing")
 		}
 		act := app.HandleControlRequest(control.Request{
-			Type: "thread_runtime_set", AgentID: "tmux:@trim",
+			Type: "thread_runtime_set", WorkerID: "tmux:@trim",
 			Runtime: &modelprofiles.ThreadRuntimeChoice{ConnectionID: p.ID, ModelID: p.Model},
 		})
 		if !act.OK || act.SessionRoute == nil || act.SessionRoute.Launched == nil {
@@ -523,7 +523,7 @@ func TestControlThreadRuntimeLaunchedSurvivesHistoryTrimAndRestart(t *testing.T)
 	}
 	t.Cleanup(func() { _ = owner2.Close() })
 	app2 := &controlApp{profiles: owner2, stateDir: t.TempDir()}
-	get := app2.HandleControlRequest(control.Request{Type: "thread_runtime_get", AgentID: "tmux:@trim"})
+	get := app2.HandleControlRequest(control.Request{Type: "thread_runtime_get", WorkerID: "tmux:@trim"})
 	if !get.OK || get.SessionRoute == nil || get.SessionRoute.Launched == nil {
 		t.Fatalf("get after restart %#v", get)
 	}
@@ -592,7 +592,7 @@ func TestControlSpawnCreateFailureSurfacesAbortCleanup(t *testing.T) {
 		return nil
 	})
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
 	})
 	owner.RoutesFile().SetPersistHook(nil)
@@ -652,7 +652,7 @@ func TestControlSpawnCommitCleanupKillFailureSurfaced(t *testing.T) {
 		return nil
 	})
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Codex", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Hidden: true,
 	})
 	owner.RoutesFile().SetPersistHook(nil)
@@ -713,7 +713,7 @@ func TestControlSpawnOwnerAdmissionFailureReleasesCommittedRoute(t *testing.T) {
 		stateDir:   t.TempDir(),
 	}
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Prompt: "lose", WorkID: item.ID,
 	})
 	if resp.OK || resp.Error == nil {
@@ -775,7 +775,7 @@ func TestControlSpawnOwnerAdmissionFailureSurfacesKillAndPreservesRoute(t *testi
 		stateDir:   t.TempDir(),
 	}
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Prompt: "lose", WorkID: item.ID,
 	})
 	if resp.OK || resp.Error == nil {
@@ -846,7 +846,7 @@ func TestControlSpawnOwnerAdmissionFailureReleasePersistSurfacedAfterKill(t *tes
 		return nil
 	})
 	resp := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Losing", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Prompt: "lose", WorkID: item.ID,
 	})
 	owner.RoutesFile().SetPersistHook(nil)
@@ -896,16 +896,16 @@ func controlRoutedSpawn(t *testing.T) (*controlApp, *modelprofiles.Owner, *fakeC
 		stateDir:   t.TempDir(),
 	}
 	spawn := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Routed", Executor: "codex", ExecutorID: "codex",
+		Type: "worker_spawn", Name: "Routed", Executor: "codex", ExecutorID: "codex",
 		Cwd: t.TempDir(), ProfileID: profile.ID, Prompt: "hi",
 	})
-	if !spawn.OK || spawn.Agent == nil {
+	if !spawn.OK || spawn.Worker == nil {
 		t.Fatalf("spawn=%#v", spawn)
 	}
-	return app, owner, fw, spawn.Agent.ID
+	return app, owner, fw, spawn.Worker.ID
 }
 
-func TestControlAgentSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
+func TestControlWorkerSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
 	root := t.TempDir()
 	owner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
 		ProfilesPath: filepath.Join(root, "model-profiles.toml"),
@@ -947,10 +947,10 @@ func TestControlAgentSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
 
 	// Alias executor ID must still resolve the codex default Profile.
 	spawn := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Alias", Executor: "primary",
+		Type: "worker_spawn", Name: "Alias", Executor: "primary",
 		Cwd: t.TempDir(), Hidden: true,
 	})
-	if !spawn.OK || spawn.Agent == nil || spawn.SessionRoute == nil || spawn.SessionRoute.Current == nil {
+	if !spawn.OK || spawn.Worker == nil || spawn.SessionRoute == nil || spawn.SessionRoute.Current == nil {
 		t.Fatalf("codex alias spawn=%#v", spawn)
 	}
 	if spawn.SessionRoute.Current.ConnectionID != profile.ID {
@@ -973,7 +973,7 @@ func TestControlAgentSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	spawnClaude := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "ClaudeAlias", Executor: "desk",
+		Type: "worker_spawn", Name: "ClaudeAlias", Executor: "desk",
 		Cwd: t.TempDir(), Hidden: true,
 	})
 	if !spawnClaude.OK || spawnClaude.SessionRoute == nil || spawnClaude.SessionRoute.Current == nil {
@@ -985,7 +985,7 @@ func TestControlAgentSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
 
 	// Explicit command remains expert bypass (no managed route).
 	raw := app.HandleControlRequest(control.Request{
-		Type: "agent_spawn", Name: "Raw", Command: "my-custom-agent --flag",
+		Type: "worker_spawn", Name: "Raw", Command: "my-custom-agent --flag",
 		Cwd: t.TempDir(), Hidden: true,
 	})
 	if !raw.OK || raw.SessionRoute != nil {
@@ -993,29 +993,29 @@ func TestControlAgentSpawnAliasUsesCanonicalProfileClient(t *testing.T) {
 	}
 }
 
-func TestControlAgentCloseKillAndReleaseSuccess(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+func TestControlWorkerCloseKillAndReleaseSuccess(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if !resp.OK {
 		t.Fatalf("close=%#v", resp)
 	}
-	if len(fw.killed) != 1 || fw.killed[0] != agentID {
+	if len(fw.killed) != 1 || fw.killed[0] != workerID {
 		t.Fatalf("killed=%v", fw.killed)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("route must be released")
 	}
 }
 
-func TestControlAgentCloseReleasePersistFailureSurfaced(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseReleasePersistFailureSurfaced(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "before_rename" {
 			return errors.New("injected release pre-rename")
 		}
 		return nil
 	})
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	owner.RoutesFile().SetPersistHook(nil)
 	if resp.OK || resp.Error == nil {
 		t.Fatalf("resp=%#v", resp)
@@ -1026,62 +1026,62 @@ func TestControlAgentCloseReleasePersistFailureSurfaced(t *testing.T) {
 	if len(fw.killed) != 1 {
 		t.Fatalf("killed=%v", fw.killed)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("route must remain when release not applied")
 	}
 }
 
-func TestControlAgentCloseRetryConvergesAfterReleaseFailure(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseRetryConvergesAfterReleaseFailure(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "before_rename" {
 			return errors.New("injected release pre-rename")
 		}
 		return nil
 	})
-	first := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	first := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if first.OK {
 		t.Fatalf("first=%#v", first)
 	}
 	owner.RoutesFile().SetPersistHook(nil)
 	fw.reportKillMissing = true
-	second := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	second := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if !second.OK {
 		t.Fatalf("retry=%#v", second)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("retry must release route")
 	}
 }
 
-func TestControlAgentCloseKillFailureStillLivePreservesRoute(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseKillFailureStillLivePreservesRoute(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	fw.killErr = errors.New("injected kill failure")
 	fw.killLeavesLive = true
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if resp.OK || resp.Error == nil {
 		t.Fatalf("resp=%#v", resp)
 	}
 	if !strings.Contains(resp.Error.Message, "injected kill failure") {
 		t.Fatalf("error=%#v", resp.Error)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("route must be preserved while still live")
 	}
-	if !fw.HasSession(agentID) {
+	if !fw.HasSession(workerID) {
 		t.Fatal("session must remain live")
 	}
 }
 
-func TestControlAgentCloseAppliedNonDurableReleaseSurfaced(t *testing.T) {
-	app, owner, _, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseAppliedNonDurableReleaseSurfaced(t *testing.T) {
+	app, owner, _, workerID := controlRoutedSpawn(t)
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "after_rename" {
 			return errors.New("injected dirsync")
 		}
 		return nil
 	})
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	owner.RoutesFile().SetPersistHook(nil)
 	if resp.OK || resp.Error == nil {
 		t.Fatalf("applied+non-durable must not return success: %#v", resp)
@@ -1089,58 +1089,58 @@ func TestControlAgentCloseAppliedNonDurableReleaseSurfaced(t *testing.T) {
 	if resp.PersistenceOutcome != control.PersistenceApplied || resp.PersistenceDurable == nil || *resp.PersistenceDurable {
 		t.Fatalf("persistence fields=%#v durable=%v", resp.PersistenceOutcome, resp.PersistenceDurable)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("memory/disk rename applied — route should be gone")
 	}
 }
 
-func TestControlAgentCloseResourceReleaseFailurePreservesRoute(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseResourceReleaseFailurePreservesRoute(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	fw.killErr = fmt.Errorf("%w: injected resource cleanup", errors.New("delegated resource release failed"))
 	// Window gone, resource cleanup failed — HasSession/Probe absent.
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if resp.OK || resp.Error == nil {
 		t.Fatalf("resp=%#v", resp)
 	}
 	if !strings.Contains(resp.Error.Message, "resource cleanup") {
 		t.Fatalf("error=%#v", resp.Error)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("route must remain retryable after resource cleanup failure")
 	}
 }
 
-func TestControlAgentCloseProbeFailurePreservesRoute(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseProbeFailurePreservesRoute(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	fw.killErr = errors.New("injected kill failure")
 	fw.killLeavesLive = true
 	fw.probeErr = errors.New("injected probe transport failure")
-	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	resp := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if resp.OK || resp.Error == nil {
 		t.Fatalf("resp=%#v", resp)
 	}
 	if !strings.Contains(resp.Error.Message, "probe transport") {
 		t.Fatalf("error=%#v", resp.Error)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("route must remain on ambiguous probe")
 	}
 }
 
-func TestControlAgentCloseResourceFailureThenMissingRetryConverges(t *testing.T) {
-	app, owner, fw, agentID := controlRoutedSpawn(t)
+func TestControlWorkerCloseResourceFailureThenMissingRetryConverges(t *testing.T) {
+	app, owner, fw, workerID := controlRoutedSpawn(t)
 	fw.killErr = fmt.Errorf("%w: injected", errors.New("delegated resource release failed"))
-	first := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	first := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if first.OK {
 		t.Fatalf("first=%#v", first)
 	}
 	fw.killErr = nil
 	fw.reportKillMissing = true
-	second := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: agentID, Force: true})
+	second := app.HandleControlRequest(control.Request{Type: "worker_close", WorkerID: workerID, Force: true})
 	if !second.OK {
 		t.Fatalf("retry=%#v", second)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("retry must release")
 	}
 }

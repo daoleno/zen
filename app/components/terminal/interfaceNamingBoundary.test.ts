@@ -35,7 +35,6 @@ describe("Interface provider-neutral naming boundary", () => {
       .sort();
 
     expect(codexNamedFiles).toEqual([
-      "CodexHeartbeatWake.ts",
       "CodexQuickCommandRow.tsx",
       "CodexSkillsSheet.tsx",
       "CodexSlashCommands.ts",

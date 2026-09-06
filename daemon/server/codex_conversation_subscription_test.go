@@ -41,10 +41,10 @@ func TestSubscriptionPublishesProviderTranscriptWithBrainOverlay(t *testing.T) {
 		watcher:  watcher.New(time.Second),
 		brain:    service,
 		calendar: calendarStore,
-		providerConversationLoader: func(_ *work.ProviderConversationReader, agentID string) (work.CodexConversation, error) {
+		providerConversationLoader: func(_ *work.ProviderConversationReader, workerID string) (work.CodexConversation, error) {
 			loads.Add(1)
-			if agentID != "provider-agent" {
-				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", agentID)
+			if workerID != "provider-agent" {
+				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", workerID)
 			}
 			return work.CodexConversation{
 				Available: true,
@@ -129,10 +129,10 @@ func TestSubscriptionPreservesProviderUnavailableWithoutCapturingPane(t *testing
 	var loads atomic.Int32
 	srv := &Server{
 		watcher: watcher.New(time.Second),
-		providerConversationLoader: func(_ *work.ProviderConversationReader, agentID string) (work.CodexConversation, error) {
+		providerConversationLoader: func(_ *work.ProviderConversationReader, workerID string) (work.CodexConversation, error) {
 			loads.Add(1)
-			if agentID != "provider-agent" {
-				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", agentID)
+			if workerID != "provider-agent" {
+				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", workerID)
 			}
 			return work.CodexConversation{
 				Available: false,
@@ -186,9 +186,9 @@ func TestConversationSubscriptionOwnsReaderForExactlyItsLifetime(t *testing.T) {
 	loads := make(chan *work.ProviderConversationReader, 128)
 	srv := &Server{
 		watcher: watcher.New(time.Second),
-		providerConversationLoader: func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error) {
-			if agentID != "provider-agent" {
-				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", agentID)
+		providerConversationLoader: func(reader *work.ProviderConversationReader, workerID string) (work.CodexConversation, error) {
+			if workerID != "provider-agent" {
+				return work.CodexConversation{}, fmt.Errorf("unexpected provider agent %q", workerID)
 			}
 			loads <- reader
 			return work.CodexConversation{

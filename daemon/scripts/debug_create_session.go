@@ -30,7 +30,7 @@ type pairRequest struct {
 type wsEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
-	AgentID   string `json:"agent_id"`
+	WorkerID  string `json:"worker_id"`
 	SessionID string `json:"session_id"`
 	Message   string `json:"message"`
 }
@@ -110,11 +110,11 @@ func main() {
 		case "session_created":
 			if env.RequestID == requestID {
 				if strings.TrimSpace(*setup) != "" {
-					if err := openAndSeedTerminal(conn, env.AgentID, *setup, *cols, *rows); err != nil {
+					if err := openAndSeedTerminal(conn, env.WorkerID, *setup, *cols, *rows); err != nil {
 						fail("seed terminal: %v", err)
 					}
 				}
-				fmt.Println(env.AgentID)
+				fmt.Println(env.WorkerID)
 				return
 			}
 		case "error":
@@ -125,12 +125,12 @@ func main() {
 	}
 }
 
-func openAndSeedTerminal(conn *websocket.Conn, agentID, setup string, cols, rows int) error {
+func openAndSeedTerminal(conn *websocket.Conn, workerID, setup string, cols, rows int) error {
 	requestID := fmt.Sprintf("open_%d", time.Now().UnixNano())
 	if err := conn.WriteJSON(map[string]any{
 		"type":       "terminal_open",
 		"request_id": requestID,
-		"target_id":  agentID,
+		"target_id":  workerID,
 		"backend":    "tmux",
 		"cols":       cols,
 		"rows":       rows,

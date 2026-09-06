@@ -665,7 +665,7 @@ func tmuxLinkedViewSession(
 
 	// Unique name per open (PID + counter).
 	id := sessionCounter.Add(1)
-	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
+	linkedName := fmt.Sprintf("zen-view-%d-%d", os.Getpid(), id)
 
 	// Bootstrap an independent session on the target's own server, then
 	// atomically replace its private window with a link to the source window

@@ -21,7 +21,7 @@ import (
 //
 //	ZEN_PORTABLE_HISTORY_CAPTURE=1 go test ./modelprofiles -run 'TestCapture' -count=1 -timeout 180s -v
 //
-// Uses Agent-owned temp dirs and local fake gateways only — no real credentials,
+// Uses Worker-owned temp dirs and local fake gateways only — no real credentials,
 // user config writes, or live zen Sessions.
 
 type capturedReq struct {

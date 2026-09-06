@@ -573,14 +573,14 @@ describe("Session file preview download", () => {
     expect(
       sessionFileDownloadRequest(
         {
-          agentId: "main:@7",
+          workerId: "main:@7",
           processId: 412,
           startedAt: 1_784_518_400_123,
         },
         metadata,
       ),
     ).toEqual({
-      agentId: "main:@7",
+      workerId: "main:@7",
       processId: 412,
       startedAt: 1_784_518_400_123,
       path: "/host/repo/docs/guide.md",

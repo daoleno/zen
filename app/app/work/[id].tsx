@@ -8,7 +8,8 @@ import {
   Text,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused, useLocalSearchParams, useRouter } from "expo-router";
+import { useCurrentServer } from "../../store/currentServer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,20 +31,34 @@ function workItemKey(serverId: string, id: string) {
 }
 
 export default function WorkDetailScreen() {
+  const { hydrated, currentServerId, isCurrentServer } = useCurrentServer();
+  const focused = useIsFocused();
+  const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
+  useEffect(() => {
+    if (focused && hydrated && !isCurrentServer(params.serverId)) router.replace("/(primary)/list");
+  }, [focused, hydrated, currentServerId, isCurrentServer, params.serverId, router]);
+  if (!hydrated || !isCurrentServer(params.serverId)) return null;
+  return <CurrentWorkDetail key={`${params.serverId}:${params.id}`} />;
+}
+
+function CurrentWorkDetail() {
+  const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
+  const { isCurrentServer } = useCurrentServer();
   const router = useRouter();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const { state } = useWork();
+  const { state, dispatch } = useWork();
 
   const itemId = typeof params.id === "string" ? params.id : "";
   const serverId = typeof params.serverId === "string" ? params.serverId : "";
   const item = state.byKey[workItemKey(serverId, itemId)] as WorkItem | undefined;
+  const storedDraft = state.draftsByKey[workItemKey(serverId, itemId)];
 
-  const [draftBody, setDraftBody] = useState(item?.body ?? "");
-  const [baseMtime, setBaseMtime] = useState(item?.mtime ?? "");
-  const [dirty, setDirty] = useState(false);
+  const [draftBody, setDraftBody] = useState(storedDraft?.body ?? item?.body ?? "");
+  const [baseMtime, setBaseMtime] = useState(storedDraft?.baseMtime ?? item?.mtime ?? "");
+  const [dirty, setDirty] = useState(Boolean(storedDraft));
   const [remoteBanner, setRemoteBanner] = useState(false);
   const [saving, setSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -58,7 +73,11 @@ export default function WorkDetailScreen() {
     if (!item) {
       return;
     }
-    if (!dirty) {
+    if (!dirty || item.body === draftBody) {
+      if (dirty) {
+        dispatch({ type: "WORK_DRAFT_SAVED", serverId, id: itemId, body: draftBody, baseMtime, mtime: item.mtime });
+        setDirty(false);
+      }
       setDraftBody(item.body);
       setBaseMtime(item.mtime);
       setRemoteBanner(false);
@@ -67,10 +86,10 @@ export default function WorkDetailScreen() {
     if (item.mtime !== baseMtime && item.body !== draftBody) {
       setRemoteBanner(true);
     }
-  }, [baseMtime, dirty, draftBody, item]);
+  }, [baseMtime, dirty, draftBody, item, dispatch, serverId, itemId]);
 
   const saveWorkItem = async (frontmatter = item?.frontmatter) => {
-    if (!item || !serverId || !frontmatter) {
+    if (!item || !isCurrentServer(serverId) || !frontmatter) {
       return null;
     }
     if (savingRef.current) {
@@ -88,6 +107,8 @@ export default function WorkDetailScreen() {
         frontmatter,
         baseMtime,
       });
+      dispatch({ type: "WORK_DRAFT_SAVED", serverId, id: itemId, body: bodyAtSave, baseMtime, mtime: written.mtime });
+      if (!isCurrentServer(serverId)) return written;
       setBaseMtime(written.mtime);
       // If the user didn't type during the save, normalize body and clear
       // dirty. Otherwise leave their newer text alone; the next autosave
@@ -101,6 +122,7 @@ export default function WorkDetailScreen() {
       setRemoteBanner(false);
       return written;
     } catch (error: any) {
+      if (!isCurrentServer(serverId)) return null;
       if (error?.code === "conflict" && error?.current) {
         setRemoteBanner(true);
         setBaseMtime(error.current.mtime || baseMtime);
@@ -148,10 +170,13 @@ export default function WorkDetailScreen() {
         style: "destructive",
         onPress: () => {
           void (async () => {
+            if (!isCurrentServer(serverId)) return;
             try {
               await wsClient.deleteWorkItem(serverId, item.id);
+              if (!isCurrentServer(serverId)) return;
               router.back();
             } catch (error: any) {
+              if (!isCurrentServer(serverId)) return;
               Alert.alert(
                 "Delete failed",
                 error?.message || "Could not delete work item.",
@@ -265,6 +290,7 @@ export default function WorkDetailScreen() {
               setBaseMtime(item.mtime);
               setDirty(false);
               setRemoteBanner(false);
+              dispatch({ type: "WORK_DRAFT_DISCARDED", serverId, id: itemId });
             }}
             preset="press"
             scale={0.98}
@@ -286,8 +312,10 @@ export default function WorkDetailScreen() {
             <WorkEditor
               value={draftBody}
               onChange={(next) => {
+                draftBodyRef.current = next;
                 setDraftBody(next);
                 setDirty(true);
+                dispatch({ type: "WORK_DRAFT_CHANGED", serverId, id: itemId, body: next, baseMtime });
               }}
               onBlur={() => {
                 if (dirty && !remoteBanner) {

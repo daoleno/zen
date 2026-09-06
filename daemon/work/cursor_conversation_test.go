@@ -226,13 +226,13 @@ func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		ID:        "cursor-window:@1",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
 		StartedAt: now.Add(-time.Minute),
 		State:     classifier.StateRunning,
-	}, AgentProviderCursor, now)
+	}, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -298,13 +298,13 @@ func TestProviderConversationReaderFreshCursorDoesNotBorrowAnotherCursorSession(
 	}
 	t.Setenv("HOME", home)
 
-	resumed, err := NewProviderConversationReader().Load(classifier.Agent{
+	resumed, err := NewProviderConversationReader().Load(classifier.Worker{
 		ID:        "cursor-window:@old",
 		Command:   "cursor-agent --resume " + oldSessionID,
 		Cwd:       cwd,
 		StartedAt: now,
 		State:     classifier.StateRunning,
-	}, AgentProviderCursor, now)
+	}, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("resume load: %v", err)
 	}
@@ -313,14 +313,14 @@ func TestProviderConversationReaderFreshCursorDoesNotBorrowAnotherCursorSession(
 	}
 
 	freshReader := NewProviderConversationReader()
-	freshAgent := classifier.Agent{
+	freshWorker := classifier.Worker{
 		ID:        "cursor-window:@fresh",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
 		StartedAt: now,
 		State:     classifier.StateRunning,
 	}
-	fresh, err := freshReader.Load(freshAgent, AgentProviderCursor, now)
+	fresh, err := freshReader.Load(freshWorker, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("fresh load: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProviderConversationReaderFreshCursorDoesNotBorrowAnotherCursorSession(
 	if err := os.Chtimes(newTranscriptPath, newUpdatedAt, newUpdatedAt); err != nil {
 		t.Fatalf("Chtimes new transcript: %v", err)
 	}
-	attached, err := freshReader.Load(freshAgent, AgentProviderCursor, now.Add(4*time.Second))
+	attached, err := freshReader.Load(freshWorker, WorkerProviderCursor, now.Add(4*time.Second))
 	if err != nil {
 		t.Fatalf("fresh transcript load: %v", err)
 	}
@@ -435,13 +435,13 @@ func TestProviderConversationReaderCursorResolvesHiddenWorkspaceViaTrustedMarker
 	}
 	t.Setenv("HOME", home)
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
-		ID:        "brain-agent-terminal-native-scroll-recovery-3:@14",
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
+		ID:        "zen-worker-terminal-native-scroll-recovery-3:@14",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
 		StartedAt: now.Add(-time.Minute),
 		State:     classifier.StateRunning,
-	}, AgentProviderCursor, now)
+	}, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -487,14 +487,14 @@ func TestProviderConversationReaderCursorMarkerFallbackRejectsUnsafeAndForeignSo
 	)
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{
-		ID:        "brain-agent-git-diff-performance-recovery-3:@31",
+	worker := classifier.Worker{
+		ID:        "zen-worker-git-diff-performance-recovery-3:@31",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
 		StartedAt: startedAt,
 		State:     classifier.StateRunning,
 	}
-	got, err := reader.Load(agent, AgentProviderCursor, now)
+	got, err := reader.Load(worker, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestProviderConversationReaderCursorProjectRootCacheIsSubscriptionLocal(t *
 	firstSession := "cache-session-one"
 	firstPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-cache-probe", firstSession, "first transcript", now)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "cursor-cache:@1",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
@@ -530,7 +530,7 @@ func TestProviderConversationReaderCursorProjectRootCacheIsSubscriptionLocal(t *
 		State:     classifier.StateRunning,
 	}
 
-	first, err := reader.Load(agent, AgentProviderCursor, now)
+	first, err := reader.Load(worker, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("first Load: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestProviderConversationReaderCursorProjectRootCacheIsSubscriptionLocal(t *
 	}
 	writeCursorUserTranscript(t, secondPath, "second transcript", now.Add(3*time.Second))
 
-	second, err := reader.Load(agent, AgentProviderCursor, now.Add(4*time.Second))
+	second, err := reader.Load(worker, WorkerProviderCursor, now.Add(4*time.Second))
 	if err != nil {
 		t.Fatalf("second Load: %v", err)
 	}
@@ -565,9 +565,9 @@ func TestProviderConversationReaderCursorProjectRootCacheIsSubscriptionLocal(t *
 
 	otherSession := "cache-session-other"
 	otherPath := writeCursorHiddenWorkspaceTranscript(t, home, otherCWD, "private-cache-other", otherSession, "other cwd", now.Add(5*time.Second))
-	otherAgent := agent
-	otherAgent.Cwd = otherCWD
-	other, err := reader.Load(otherAgent, AgentProviderCursor, now.Add(6*time.Second))
+	otherWorker := worker
+	otherWorker.Cwd = otherCWD
+	other, err := reader.Load(otherWorker, WorkerProviderCursor, now.Add(6*time.Second))
 	if err != nil {
 		t.Fatalf("other CWD Load: %v", err)
 	}
@@ -606,13 +606,13 @@ func TestProviderConversationReaderCursorForeignDirectRootDoesNotHideMarkerOwner
 	ownSession := "exact-marker-owner-session"
 	ownPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, hashedName, ownSession, "exact marker owner", now)
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		ID:        "cursor-marker-owner:@1",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
 		StartedAt: now.Add(-time.Minute),
 		State:     classifier.StateRunning,
-	}, AgentProviderCursor, now)
+	}, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestProviderConversationReaderCursorProjectRootCacheRetriesAndDropsDeadRoot
 	t.Setenv("HOME", home)
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "cursor-root-replace:@1",
 		Command:   "cursor-agent --force --sandbox disabled",
 		Cwd:       cwd,
@@ -639,7 +639,7 @@ func TestProviderConversationReaderCursorProjectRootCacheRetriesAndDropsDeadRoot
 		State:     classifier.StateRunning,
 	}
 
-	missing, err := reader.Load(agent, AgentProviderCursor, now)
+	missing, err := reader.Load(worker, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatalf("empty Load: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestProviderConversationReaderCursorProjectRootCacheRetriesAndDropsDeadRoot
 
 	oldSession := "old-root-session"
 	oldPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-root-old", oldSession, "old root", now.Add(2*time.Second))
-	first, err := reader.Load(agent, AgentProviderCursor, now.Add(3*time.Second))
+	first, err := reader.Load(worker, WorkerProviderCursor, now.Add(3*time.Second))
 	if err != nil {
 		t.Fatalf("first Load: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestProviderConversationReaderCursorProjectRootCacheRetriesAndDropsDeadRoot
 	newSession := "replacement-root-session"
 	newPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-root-new", newSession, "replacement root", now.Add(4*time.Second))
 
-	replaced, err := reader.Load(agent, AgentProviderCursor, now.Add(5*time.Second))
+	replaced, err := reader.Load(worker, WorkerProviderCursor, now.Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("replacement Load: %v", err)
 	}

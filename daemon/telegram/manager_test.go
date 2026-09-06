@@ -25,7 +25,7 @@ type fakeBrain struct {
 	timeline              []brain.TimelineItem
 	newChats              int
 	foreground            *brain.HostForegroundTurn
-	sessions              []brain.AgentRef
+	sessions              []brain.WorkerRef
 	sessionWork           map[string]brain.Work
 	projections           map[string]brain.SessionProjection
 	sessionReceipts       []string
@@ -46,10 +46,10 @@ func (f *fakeBrain) SubmitExternalUserInput(receipt, body string) (brain.Externa
 	return f.disposition, nil
 }
 
-func (f *fakeBrain) DelegatedSessions() ([]brain.AgentRef, error) {
+func (f *fakeBrain) DelegatedSessions() ([]brain.WorkerRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]brain.AgentRef(nil), f.sessions...), nil
+	return append([]brain.WorkerRef(nil), f.sessions...), nil
 }
 
 func (f *fakeBrain) WorkForSession(sessionID string) (brain.Work, bool, error) {

@@ -1,9 +1,93 @@
 package lifecycle
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestHostAdmissionPreservesWorkerAuthorityAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	e, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.SetNow(func() time.Time { return time.Now().UTC() })
+	define(t, e, "w-host-worker", PolicyUntilDone)
+	prepareAdmissionFixture(t, e, "w-host-worker", "worker", "worker-turn")
+	before, err := e.AcceptAdmissionBySignal("w-host-worker", "worker-turn", "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.OpenReviewEvent("w-host-worker", "lease_expired", "worker-turn", "review-1"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := e.ClaimReview("w-host-worker", "host", "handling-1", "host-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := PrepareAdmissionInput{
+		SessionID: "host", TurnToken: "host-turn", Receipt: "host-turn", ClaimToken: claim.Review.Handler.HandlerID,
+		PayloadSHA256: "host-digest", ProcessIdentity: "host-process", PaneGeneration: "host-pane",
+		Mode: AdmissionFresh, Purpose: AdmissionPurposeReview, PurposeID: claim.Review.Handler.HandlerID,
+		AttemptedAt: time.Now().UTC(),
+	}
+	if _, _, err := e.PrepareAdmission("w-host-worker", input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.AcceptAdmission("w-host-worker", "host-turn", AcceptAdmissionInput{
+		SessionID: "host", Receipt: "host-turn", PayloadSHA256: "host-digest",
+		ActivityID: "host-activity", AdmissionStream: "provider", AdmissionID: "host-input", AdmissionSHA256: "host-digest", AdmissionAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := reopened.State("w-host-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before.Attempt, after.Attempt) ||
+		!reflect.DeepEqual(before.AdmissionByToken("worker-turn"), after.AdmissionByToken("worker-turn")) || len(after.Admissions) != 2 {
+		t.Fatalf("Host transport changed Worker authority: before=%+v after=%+v", before, after)
+	}
+	// Operational views are detached; callers cannot mutate retained authority.
+	after.AdmissionByToken("worker-turn").SessionID = "forged"
+	stored, _ := reopened.State("w-host-worker")
+	if stored.AdmissionByToken("worker-turn").SessionID != "worker" {
+		t.Fatal("admission map leaked mutable store authority")
+	}
+	if _, err := reopened.AcceptAdmissionBySignal("w-host-worker", "worker-turn", "worker"); err != nil {
+		t.Fatalf("exact Worker signal lost authority: %v", err)
+	}
+	if _, err := reopened.AcceptAdmissionBySignal("w-host-worker", "worker-turn", "host"); err == nil {
+		t.Fatal("wrong Session gained Worker signal authority")
+	}
+	input.TurnToken, input.Receipt = "duplicate-host-turn", "duplicate-host-turn"
+	if _, _, err := reopened.PrepareAdmission("w-host-worker", input); err == nil {
+		t.Fatal("accepted Host delivery was automatically replayable")
+	}
+	// Host delivery and one Worker follow-up have distinct roles under the
+	// same review handling. Accepted input is still non-owning until disposition.
+	if _, _, err := reopened.PrepareAdmission("w-host-worker", PrepareAdmissionInput{
+		SessionID: "worker", TurnToken: "review-follow-up", Receipt: "review-follow-up",
+		PayloadSHA256: "follow-up-digest", ProcessIdentity: "process-1", PaneGeneration: "pane-1",
+		Mode: AdmissionFresh, SignalProtocol: true, Purpose: AdmissionPurposeReview,
+		PurposeID: claim.Review.Handler.HandlerID, AttemptedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := reopened.AcceptAdmissionBySignal("w-host-worker", "review-follow-up", "worker")
+	if err != nil || accepted.Attempt.TurnToken != "worker-turn" || len(accepted.Admissions) != 3 {
+		t.Fatalf("accepted follow-up stole ownership: state=%+v err=%v", accepted, err)
+	}
+	adopted, err := reopened.AcceptReviewFollowUp("w-host-worker", accepted.Review.EventID, "worker", "review-follow-up")
+	if err != nil || adopted.Attempt.TurnToken != "review-follow-up" || adopted.Review != nil {
+		t.Fatalf("typed disposition failed to adopt exact input: state=%+v err=%v", adopted, err)
+	}
+}
 
 func prepareAdmissionFixture(t *testing.T, e *Engine, workID, sessionID string, token TurnToken) {
 	t.Helper()
@@ -25,14 +109,12 @@ func TestPreparedAdmissionSurvivesRestartAndAcceptsExactlyOnce(t *testing.T) {
 	}
 	define(t, e, "w-admission-restart", PolicyUntilDone)
 	prepareAdmissionFixture(t, e, "w-admission-restart", "session-1", "turn-1")
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	e, err = Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+
 	st, _ := e.State("w-admission-restart")
 	if st.Attempt != nil || st.ActiveAdmission() == nil || st.ActiveAdmission().Status != AdmissionPrepared {
 		t.Fatalf("prepared restart state=%+v", st)
@@ -62,7 +144,7 @@ func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
 	for _, acceptBy := range []string{"provider", "signal"} {
 		t.Run(acceptBy, func(t *testing.T) {
 			e, _ := newTestEngine(t)
-			defer e.Close()
+
 			define(t, e, "w-review-without-attempt", PolicyUntilDone)
 			admit(t, e, "w-review-without-attempt", "turn-lost", "session-1")
 			if _, err := e.ReportTurnLost("w-review-without-attempt", attemptID("session-1", "turn-lost", 1), "true silence"); err != nil {
@@ -118,7 +200,7 @@ func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
 
 func TestClaimedReviewAdmissionMayQueueWithoutAdoptingLiveActivity(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-queued-review", PolicyBounded)
 	if _, err := e.OpenReviewEvent("w-queued-review", "session.done", "worker-turn", "event-queued"); err != nil {
 		t.Fatal(err)
@@ -162,7 +244,7 @@ func TestClaimedReviewAdmissionMayQueueWithoutAdoptingLiveActivity(t *testing.T)
 
 func TestAmbiguousAdmissionIsDurableAndNeverReprepared(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-ambiguous", PolicyUntilDone)
 	prepareAdmissionFixture(t, e, "w-ambiguous", "session-1", "turn-1")
 	if _, err := e.MarkAdmissionAmbiguous("w-ambiguous", "turn-1", "queue started"); err != nil {
@@ -183,7 +265,7 @@ func TestAmbiguousAdmissionIsDurableAndNeverReprepared(t *testing.T) {
 
 func TestExactActionableEventIdentityOwnsReview(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-event", PolicyBounded)
 	if _, err := e.OpenReviewEvent("w-event", "session.needs_input", "evidence-ref", "event-exact"); err != nil {
 		t.Fatal(err)

@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import { buildInterfaceComposerMessage } from "./InterfaceChatControllerModel";
 import type { ComposerAttachment } from "./InterfaceChatSession";
 

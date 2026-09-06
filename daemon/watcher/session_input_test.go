@@ -58,7 +58,7 @@ type transportAdmissionProbe struct {
 }
 
 func (p *transportAdmissionProbe) ObserveProviderActivity(
-	classifier.Agent,
+	classifier.Worker,
 	time.Time,
 ) ProviderActivityObservation {
 	step := 0
@@ -365,7 +365,7 @@ func scriptedActivityTransitionAdmission(
 
 func watcherWithAdmissionProbe(probe ProviderActivityProbe) *Watcher {
 	w := New(time.Second)
-	w.agents["agent:@1"] = &classifier.Agent{
+	w.workers["agent:@1"] = &classifier.Worker{
 		ID:        "agent:@1",
 		Command:   "cursor-agent --force",
 		Cwd:       "/repo/zen",
@@ -2915,7 +2915,7 @@ func TestWatcherPollResolvesOnlyExactPendingRowAmongCoexistingRows(t *testing.T)
 	probe := &fixedStateProbe{obs: ProviderActivityObservation{Structured: true, FallbackAllowed: true}}
 	w := lifecycleTestWatcher(io, ledger, probe)
 	sessionID := "opencode-coexist:@1"
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, Delegated: true,
 	}

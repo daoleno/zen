@@ -36,7 +36,7 @@ interface UseTerminalScreenOverlayPropsInput {
   showToggleRenderMode?: boolean;
   toggleRenderModeLabel?: string;
   newTerminalVisible: boolean;
-  agentCwd?: string;
+  workerCwd?: string;
   serverId: string;
   renameVisible: boolean;
   renameDraft: string;
@@ -82,7 +82,7 @@ export function useTerminalScreenOverlayProps({
   showToggleRenderMode = false,
   toggleRenderModeLabel,
   newTerminalVisible,
-  agentCwd,
+  workerCwd,
   serverId,
   renameVisible,
   renameDraft,
@@ -146,7 +146,7 @@ export function useTerminalScreenOverlayProps({
       showToggleRenderMode,
       toggleRenderModeLabel,
       newTerminalVisible,
-      newTerminalInitialCwd: agentCwd || "",
+      newTerminalInitialCwd: workerCwd || "",
       selectedServerId: serverId,
       gitDiffSheetProps: gitDiff.sheetProps,
       renameVisible,
@@ -165,7 +165,7 @@ export function useTerminalScreenOverlayProps({
       onRename: openRenameModal,
       onOpenLinkedWork: sessionActions.openLinkedWork,
       onToggleRenderMode,
-      onTerminate: navigationActions.handleTerminateAgent,
+      onTerminate: navigationActions.handleTerminateWorker,
       onCloseNewTerminal: handleCloseNewTerminal,
       onSubmitNewTerminal: handleSubmitNewTerminal,
       onRenameDraftChange: setRenameDraft,
@@ -173,7 +173,7 @@ export function useTerminalScreenOverlayProps({
       onSaveRename: sessionActions.handleSaveRename,
     }),
     [
-      agentCwd,
+      workerCwd,
       chrome,
       closeMenu,
       connectionConnected,
@@ -185,7 +185,7 @@ export function useTerminalScreenOverlayProps({
       hasLinkedWork,
       menuPosition,
       menuVisible,
-      navigationActions.handleTerminateAgent,
+      navigationActions.handleTerminateWorker,
       newTerminalVisible,
       onActivateSessionModel,
       onCloseResourceSheet,

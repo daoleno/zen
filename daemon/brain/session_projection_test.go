@@ -10,28 +10,28 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
-func newSessionProjectionService(t *testing.T, agents map[string]*classifier.Agent) *Service {
+func newSessionProjectionService(t *testing.T, workers map[string]*classifier.Worker) *Service {
 	t.Helper()
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := make([]*classifier.Agent, 0, len(agents))
-	for _, agent := range agents {
-		all = append(all, agent)
+	all := make([]*classifier.Worker, 0, len(workers))
+	for _, worker := range workers {
+		all = append(all, worker)
 	}
-	fw := &fakeWatcher{sessions: agents, agents: all}
+	fw := &fakeWatcher{sessions: workers, workers: all}
 	return NewService(store, fw, nil)
 }
 
 func TestDelegatedSessionsOnlyUserVisibleDelegated(t *testing.T) {
-	agents := map[string]*classifier.Agent{
+	workers := map[string]*classifier.Worker{
 		"host":       {ID: "host", Hidden: true, Delegated: true, State: classifier.StateRunning},
 		"manual":     {ID: "manual", Delegated: false, State: classifier.StateRunning},
 		"hidden-del": {ID: "hidden-del", Hidden: true, Delegated: true, State: classifier.StateRunning},
 		"visible":    {ID: "visible", Name: "Codex worker", Delegated: true, State: classifier.StateRunning},
 	}
-	service := newSessionProjectionService(t, agents)
+	service := newSessionProjectionService(t, workers)
 	sessions, err := service.DelegatedSessions()
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestSubmitExternalSessionInputReceiptOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{sessions: map[string]*classifier.Worker{
 		"sess-1": {ID: "sess-1", Delegated: true, State: classifier.StateRunning},
 	}}
 	service := NewService(store, fw, nil)
@@ -127,11 +127,11 @@ func TestSessionProjectionVisibleLifecycleAndSanitizedAssistant(t *testing.T) {
 	bootstrapAdmittedTurnFixture(t, store, liveItem.ID, watcher.AdmittedTurn{
 		SessionID: "sess-1", TurnID: "sess-1:turn:1", AcceptedAt: acceptedAt,
 	})
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+	fw := &fakeWatcher{sessions: map[string]*classifier.Worker{
 		"sess-1": {ID: "sess-1", Name: "Worker", Delegated: true, State: classifier.StateRunning, Command: "codex"},
 	}}
 	service := NewService(store, fw, nil)
-	service.sessionConversationHook = func(_ *classifier.Agent, _ string, _ time.Time) (work.CodexConversation, error) {
+	service.sessionConversationHook = func(_ *classifier.Worker, _ string, _ time.Time) (work.CodexConversation, error) {
 		return work.CodexConversation{Events: []work.CodexConversationEvent{
 			{ID: "tool-1", Kind: "tool", Title: "exec", Input: "secret tool payload", Output: "raw output"},
 			{ID: "goal-1", Kind: "assistant_message", Body: "hidden goal context", Source: "goal"},
@@ -183,7 +183,7 @@ func TestSessionProjectionAbsentStillReportsTurnAndWork(t *testing.T) {
 	bootstrapAdmittedTurnFixture(t, store, doneItem.ID, watcher.AdmittedTurn{
 		SessionID: "gone-session", TurnID: "gone-session:turn:1", AcceptedAt: acceptedAt,
 	})
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{}}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Worker{}}
 	service := NewService(store, fw, nil)
 	projection, err := service.SessionProjection("gone-session")
 	if err != nil {
@@ -198,7 +198,7 @@ func TestSessionProjectionAbsentStillReportsTurnAndWork(t *testing.T) {
 }
 
 func TestSessionProjectionReadsNothingForCustomExecutorWithoutTranscript(t *testing.T) {
-	service := newSessionProjectionService(t, map[string]*classifier.Agent{
+	service := newSessionProjectionService(t, map[string]*classifier.Worker{
 		"sess-custom": {ID: "sess-custom", Name: "custom", Delegated: true, State: classifier.StateRunning, Command: "custom-agent"},
 	})
 	projection, err := service.SessionProjection("sess-custom")

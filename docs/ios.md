@@ -89,7 +89,7 @@ An end-to-end terminal check should cover:
 
 1. Pair and reconnect without reusing an expired enrollment token.
 2. Confirm Codex, Claude Code, Cursor Agent, Grok, Pi, or OpenCode sessions appear in Sessions.
-3. Open a structured agent session and verify Chat is the default interface.
+3. Open a structured Worker session and verify Chat is the default interface.
 4. Toggle to Terminal and attach to its tmux session.
 5. Confirm existing output, cursor, colors, and tmux status are rendered.
 6. Enter a command and confirm shell output returns to the same terminal surface.

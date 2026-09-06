@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type document struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -354,7 +354,7 @@ func (s *Store) Claim(id string, manual bool) (Item, Run, error) {
 	return cloneItem(item), run, nil
 }
 
-func (s *Store) RecordLaunch(id, runID, workID, agentSession string) (Item, error) {
+func (s *Store) RecordLaunch(id, runID, workID, workerSession string) (Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, ok := s.items[id]
@@ -377,7 +377,7 @@ func (s *Store) RecordLaunch(id, runID, workID, agentSession string) (Item, erro
 		return Item{}, ErrClaimed
 	}
 	now := s.now().UTC()
-	item.Runs[idx].WorkID, item.Runs[idx].AgentSession = workID, agentSession
+	item.Runs[idx].WorkID, item.Runs[idx].WorkerSession = workID, workerSession
 	item.LinkedWorkID, item.Status, item.FailureReason, item.UpdatedAt = workID, StatusRunning, "", now
 	item.Revision++
 	s.items[id] = item

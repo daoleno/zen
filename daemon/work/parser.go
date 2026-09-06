@@ -74,17 +74,20 @@ func decodeFrontmatter(fm string) (Frontmatter, map[string]interface{}, error) {
 	if err := yaml.Unmarshal([]byte(fm), &raw); err != nil {
 		return Frontmatter{}, nil, err
 	}
+	if _, retired := raw["agent_session"]; retired {
+		return Frontmatter{}, nil, fmt.Errorf("retired agent_session metadata requires explicit offline Worker migration")
+	}
 
 	extra := map[string]interface{}{}
 	known := map[string]struct{}{
-		"id":            {},
-		"kind":          {},
-		"created":       {},
-		"done":          {},
-		"started":       {},
-		"status":        {},
-		"title":         {},
-		"agent_session": {},
+		"id":             {},
+		"kind":           {},
+		"created":        {},
+		"done":           {},
+		"started":        {},
+		"status":         {},
+		"title":          {},
+		"worker_session": {},
 	}
 	for key, value := range raw {
 		if _, ok := known[key]; ok {
@@ -140,8 +143,8 @@ func SerializeItem(iss *Item) ([]byte, error) {
 	if iss.Frontmatter.Title != "" {
 		out["title"] = iss.Frontmatter.Title
 	}
-	if iss.Frontmatter.AgentSession != "" {
-		out["agent_session"] = iss.Frontmatter.AgentSession
+	if iss.Frontmatter.WorkerSession != "" {
+		out["worker_session"] = iss.Frontmatter.WorkerSession
 	}
 	for key, value := range iss.Frontmatter.Extra {
 		out[key] = value

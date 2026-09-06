@@ -13,21 +13,21 @@ import (
 	"testing"
 )
 
-func TestFormatNotificationAgentLabel(t *testing.T) {
+func TestFormatNotificationWorkerLabel(t *testing.T) {
 	tests := []struct {
-		name      string
-		agentName string
-		agentID   string
-		want      string
+		name       string
+		workerName string
+		workerID   string
+		want       string
 	}{
-		{name: "clean shell path and session suffix", agentName: "./bin/zen (main:7)", agentID: "main:7", want: "zen"},
-		{name: "fallback to agent id", agentName: "", agentID: "main:7", want: "main:7"},
-		{name: "keep simple project name", agentName: "backend-api", agentID: "main:7", want: "backend-api"},
+		{name: "clean shell path and session suffix", workerName: "./bin/zen (main:7)", workerID: "main:7", want: "zen"},
+		{name: "fallback to agent id", workerName: "", workerID: "main:7", want: "main:7"},
+		{name: "keep simple project name", workerName: "backend-api", workerID: "main:7", want: "backend-api"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatNotificationAgentLabel(tt.agentName, tt.agentID); got != tt.want {
+			if got := formatNotificationWorkerLabel(tt.workerName, tt.workerID); got != tt.want {
 				t.Fatalf("formatNotificationAgentLabel() = %q, want %q", got, tt.want)
 			}
 		})
@@ -60,7 +60,7 @@ func TestShortPushRegistrationNeverPanicsOrLogsCredential(t *testing.T) {
 		return pushResponse(http.StatusOK, `{"data":{"status":"ok","id":"ticket-1"}}`), nil
 	})
 	client.SetRegistration("x", "server-1")
-	if err := client.NotifyAgentDone("agent-1", "Agent", "finished"); err != nil {
+	if err := client.NotifyWorkerDone("agent-1", "Agent", "finished"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(logs.String(), "x") {
@@ -76,7 +76,7 @@ func TestNotifyWithoutRegistrationDoesNotAttemptHTTP(t *testing.T) {
 		return pushResponse(http.StatusOK, `{"data":{"status":"ok"}}`), nil
 	})
 
-	err := client.NotifyAgentBlocked("agent-1", "Agent", "waiting")
+	err := client.NotifyWorkerBlocked("agent-1", "Agent", "waiting")
 	if !errors.Is(err, ErrNoRegistration) {
 		t.Fatalf("error = %v, want ErrNoRegistration", err)
 	}
@@ -119,7 +119,7 @@ func TestNotifyFailuresAreSingleAttempts(t *testing.T) {
 				attempts.Add(1)
 				return test.transport(request)
 			})
-			if err := client.NotifyAgentFailed("agent-1", "Agent", "failed"); err == nil {
+			if err := client.NotifyWorkerFailed("agent-1", "Agent", "failed"); err == nil {
 				t.Fatal("expected notification failure")
 			} else if strings.Contains(err.Error(), "credential-token") {
 				t.Fatalf("credential leaked in error: %v", err)
@@ -234,7 +234,7 @@ func TestConcurrentRegistrationAndNotificationUseCoherentSnapshot(t *testing.T) 
 	go func() {
 		defer wg.Done()
 		for range 250 {
-			if err := client.NotifyAgentDone("agent-1", "Agent", "done"); err != nil {
+			if err := client.NotifyWorkerDone("agent-1", "Agent", "done"); err != nil {
 				errCh <- err
 			}
 		}

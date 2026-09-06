@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   addSessionToSelection,
-  countSelectionServers,
   countSessionSelection,
   EMPTY_SESSION_SELECTION,
   isSessionTerminable,
@@ -12,12 +11,12 @@ import {
   toggleSessionSelection,
   type SessionSelection,
 } from "./sessionSelection";
-import type { Agent } from "../store/agents";
+import type { Worker } from "../store/workers";
 
-function agentWith(
+function workerWith(
   key: string,
   serverId: string = "srv-a",
-): Pick<Agent, "key" | "serverId"> {
+): Pick<Worker, "key" | "serverId"> {
   return { key, serverId };
 }
 
@@ -87,16 +86,6 @@ describe("countSessionSelection + labels", () => {
     expect(selectionCountLabel(3)).toBe("3 selected");
   });
 
-  test("countSelectionServers spans distinct daemons only", () => {
-    const agents = [
-      agentWith("a", "srv-1"),
-      agentWith("b", "srv-1"),
-      agentWith("c", "srv-2"),
-    ];
-    expect(countSelectionServers(agents)).toBe(2);
-    expect(countSelectionServers([agents[0]])).toBe(1);
-    expect(countSelectionServers([])).toBe(0);
-  });
 });
 
 describe("sessionTerminationEligibility", () => {
@@ -124,10 +113,10 @@ describe("sessionTerminationEligibility", () => {
       "srv-a": "connected",
       "srv-b": "offline",
     } as Record<string, "connected" | "offline">;
-    expect(isSessionTerminable(agentWith("a", "srv-a"), connections)).toBe(
+    expect(isSessionTerminable(workerWith("a", "srv-a"), connections)).toBe(
       true,
     );
-    expect(isSessionTerminable(agentWith("b", "srv-b"), connections)).toBe(
+    expect(isSessionTerminable(workerWith("b", "srv-b"), connections)).toBe(
       false,
     );
   });

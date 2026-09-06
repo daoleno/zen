@@ -5,10 +5,10 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { Worker, ConnectionState } from "../../store/workers";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { InterfaceChatSurface } from "./InterfaceChatSurface";
-import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
+import type { InterfaceChatWorkerInfo } from "./InterfaceChatSession";
 import { CHAT_HEADER_HEIGHT, CHAT_HEADER_OUTER_GAP } from "./chatChromeMetrics";
 import { TerminalOutputPane } from "./TerminalOutputPane";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
@@ -18,8 +18,8 @@ export interface TerminalViewportProps {
   initialComposerFocusGrant: string | null;
   sessionKey: string | null;
   serverId: string;
-  agentId: string;
-  agent?: Agent;
+  workerId: string;
+  agent?: Worker;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
@@ -56,7 +56,7 @@ function TerminalViewportImpl({
   initialComposerFocusGrant,
   sessionKey,
   serverId,
-  agentId,
+  workerId,
   agent,
   connectionState,
   connectionIssue,
@@ -88,8 +88,8 @@ function TerminalViewportImpl({
   composerModelControl,
   onComposerModelControlPress,
 }: TerminalViewportProps) {
-  const interfaceChatAgentInfo = React.useMemo<
-    InterfaceChatAgentInfo | undefined
+  const interfaceChatWorkerInfo = React.useMemo<
+    InterfaceChatWorkerInfo | undefined
   >(
     () =>
       agent
@@ -137,7 +137,7 @@ function TerminalViewportImpl({
           <TerminalOutputPane
             sessionKey={sessionKey}
             serverId={serverId}
-            agentId={agentId}
+            workerId={workerId}
             theme={theme}
             chrome={chrome}
             terminalRef={terminalRef}
@@ -162,7 +162,7 @@ function TerminalViewportImpl({
             onAccessoryLayout={onAccessoryLayout}
           />
 
-          {showInterfaceChat && sessionKey && serverId && agentId ? (
+          {showInterfaceChat && sessionKey && serverId && workerId ? (
             <View pointerEvents="auto" style={styles.chatOverlay}>
               <InterfaceChatSurface
                 key={`interface-chat:${sessionKey}`}
@@ -170,8 +170,8 @@ function TerminalViewportImpl({
                 serverId={serverId}
                 serverUrl={serverUrl}
                 daemonId={daemonId}
-                agentId={agentId}
-                agentInfo={interfaceChatAgentInfo}
+                workerId={workerId}
+                workerInfo={interfaceChatWorkerInfo}
                 connectionState={connectionState}
                 connectionIssue={connectionIssue}
                 theme={theme}

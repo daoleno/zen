@@ -12,7 +12,7 @@ import type { CreateSessionResult } from "./types";
 export type CreateSessionReconciliation =
   | {
       kind: "navigable";
-      agentId: string;
+      workerId: string;
       persistence: MutationPersistence;
       durabilityWarning: string | null;
       writeLocked: boolean;
@@ -57,7 +57,7 @@ export function reconcileCreateSessionSuccess(
   }
   return {
     kind: "navigable",
-    agentId: created.agentId,
+    workerId: created.workerId,
     persistence,
     durabilityWarning:
       classification === "applied_uncertain"

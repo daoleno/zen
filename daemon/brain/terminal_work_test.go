@@ -31,7 +31,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 
 	assertNoWake := func(t *testing.T, store *Store) {
 		t.Helper()
-		if _, claimed, err := store.ClaimNextReviewAction("brain-agent-host-hidden:@1"); err != nil || claimed {
+		if _, claimed, err := store.ClaimNextReviewAction("zen-worker-host-hidden:@1"); err != nil || claimed {
 			t.Fatalf("terminal Work produced a claimable wake: claimed=%v err=%v", claimed, err)
 		}
 	}
@@ -257,7 +257,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 		if !found || row.Actionable {
 			t.Fatalf("active Work uncertain row = %+v found=%v, want non-actionable audit evidence", row, found)
 		}
-		if _, claimed, err := store.ClaimNextReviewAction("brain-agent-host-hidden:@1"); err != nil || !claimed {
+		if _, claimed, err := store.ClaimNextReviewAction("zen-worker-host-hidden:@1"); err != nil || !claimed {
 			t.Fatalf("active Work wake not claimable: claimed=%v err=%v", claimed, err)
 		}
 	})

@@ -11,39 +11,27 @@ import {
   NewTerminalLaunchPresetList,
   type NewTerminalLaunchPreset,
 } from './NewTerminalLaunchPresetList';
-import {
-  NewTerminalServerSelector,
-  type NewTerminalServerOption,
-} from './NewTerminalServerSelector';
-
-export type { NewTerminalServerOption } from './NewTerminalServerSelector';
 export type { NewTerminalLaunchPreset } from './NewTerminalLaunchPresetList';
 
 interface NewTerminalQuickLaunchSectionProps {
-  serverOptions: NewTerminalServerOption[];
-  selectedServerId?: string | null;
   command: string;
   cwd: string;
   submitting: boolean;
   canSubmit: boolean;
   advanced: boolean;
   canPickDirectory: boolean;
-  onSelectServer?(serverId: string): void;
   onPresetPress(preset: NewTerminalLaunchPreset): void;
   onToggleAdvanced(): void;
   onPickDirectory(): void;
 }
 
 export function NewTerminalQuickLaunchSection({
-  serverOptions,
-  selectedServerId,
   command,
   cwd,
   submitting,
   canSubmit,
   advanced,
   canPickDirectory,
-  onSelectServer,
   onPresetPress,
   onToggleAdvanced,
   onPickDirectory,
@@ -52,12 +40,6 @@ export function NewTerminalQuickLaunchSection({
 
   return (
     <>
-      <NewTerminalServerSelector
-        serverOptions={serverOptions}
-        selectedServerId={selectedServerId}
-        onSelectServer={onSelectServer}
-      />
-
       <NewTerminalCwdRow
         cwd={cwd}
         canPickDirectory={canPickDirectory}

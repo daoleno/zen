@@ -73,7 +73,7 @@ describe("pending user message lifecycle", () => {
     ).text();
     const zenUser = bubbleSource.slice(
       bubbleSource.indexOf("export function ZenUserMessage"),
-      bubbleSource.indexOf("function HeartbeatWakeCard"),
+      bubbleSource.indexOf("export function ZenAssistantMessage"),
     );
     expect(zenUser).not.toContain("resolvePendingUserBubbleBorderColor");
     expect(zenUser).not.toContain("StyleSheet.hairlineWidth");

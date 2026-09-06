@@ -97,7 +97,7 @@ command = "grok --live"
 		t.Fatalf("SetDelegatedExecutor: %v", err)
 	}
 	assertDelegated(t, cfg, "grok")
-	delegated, ok := cfg.DelegatedAgentExecutor()
+	delegated, ok := cfg.DelegatedWorkerExecutor()
 	if !ok || delegated.ID != "grok" || delegated.Command != "grok --live" || !delegated.Delegated {
 		t.Fatalf("DelegatedAgentExecutor = %+v ok=%v", delegated, ok)
 	}
@@ -271,7 +271,7 @@ command = "claude"
 			if got != "codex" && got != "grok" && got != "claude" {
 				t.Errorf("observed invalid partial selection %q", got)
 			}
-			if delegated, ok := cfg.DelegatedAgentExecutor(); ok {
+			if delegated, ok := cfg.DelegatedWorkerExecutor(); ok {
 				if delegated.ID != "codex" && delegated.ID != "grok" && delegated.ID != "claude" {
 					t.Errorf("DelegatedAgentExecutor invalid id %q", delegated.ID)
 				}
@@ -373,7 +373,7 @@ command = "claude"
 	cfg := loadExecutorsOrFatal(t, path)
 
 	assertDelegated(t, cfg, "grok")
-	delegated, ok := cfg.DelegatedAgentExecutor()
+	delegated, ok := cfg.DelegatedWorkerExecutor()
 	if !ok || delegated.ID != "grok" || delegated.Command != "grok --env" {
 		t.Fatalf("DelegatedAgentExecutor = %+v ok=%v", delegated, ok)
 	}

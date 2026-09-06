@@ -1,17 +1,17 @@
 import { useMemo } from "react";
-import { type AgentKind, presentAgent } from "../../../services/agentPresentation";
+import { type AgentKind, presentWorker } from "../../../services/workerPresentation";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type {
-  StoredAgentAliases,
+  StoredWorkerAliases,
   StoredInterfaceRenderMode,
   StoredInterfaceRenderModes,
 } from "../../../services/storage";
 import type {
-  Agent,
-  AgentCapabilities,
+  Worker,
+  WorkerCapabilities,
   ConnectionState,
-} from "../../../store/agents";
-import type { BrainAgentRef } from "../../../store/brain";
+} from "../../../store/workers";
+import type { BrainWorkerRef } from "../../../store/brain";
 import type { WorkItem } from "../../../store/work";
 import {
   sessionAllowsModelProfileActivation,
@@ -21,96 +21,96 @@ import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
 interface UseTerminalRouteModelInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   routeSessionHint: TerminalRouteSessionHint;
-  agentByKey: ReadonlyMap<string, Agent>;
+  workerByKey: ReadonlyMap<string, Worker>;
   workByKey: Record<string, WorkItem>;
-  agentAliases: StoredAgentAliases;
+  workerAliases: StoredWorkerAliases;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   interfaceRenderModes: StoredInterfaceRenderModes;
-  /** Current-server Brain host_agent (hidden from agent_session_list). */
-  brainHostAgent?: BrainAgentRef | null;
-  /** serverId that owns brainHostAgent — must match route serverId. */
+  /** Current-server Brain host_worker (hidden from worker_session_list). */
+  brainHostWorker?: BrainWorkerRef | null;
+  /** serverId that owns brainHostWorker — must match route serverId. */
   brainHostServerId?: string | null;
 }
 
 export function useTerminalRouteModel({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   routeSessionHint,
-  agentByKey,
+  workerByKey,
   workByKey,
-  agentAliases,
+  workerAliases,
   serverConnections,
   serverConnectionIssues,
   interfaceRenderModes,
-  brainHostAgent,
+  brainHostWorker,
   brainHostServerId,
 }: UseTerminalRouteModelInput) {
-  const storedAgent = sessionKey ? agentByKey.get(sessionKey) : undefined;
+  const storedWorker = sessionKey ? workerByKey.get(sessionKey) : undefined;
   const agent = useMemo(
     () =>
-      resolveTerminalRouteAgent({
-        storedAgent,
+      resolveTerminalRouteWorker({
+        storedWorker,
         routeSessionHint,
         sessionKey,
         serverId,
-        agentId,
-        brainHostAgent,
+        workerId,
+        brainHostWorker,
         brainHostServerId,
       }),
     [
-      agentId,
-      brainHostAgent,
+      workerId,
+      brainHostWorker,
       brainHostServerId,
       routeSessionHint,
       serverId,
       sessionKey,
-      storedAgent,
+      storedWorker,
     ],
   );
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
-  const presentedAgent = useMemo(
+  const presentedWorker = useMemo(
     () =>
-      presentAgent(
+      presentWorker(
         agent || { name: "", summary: "", last_output_lines: [] },
-        sessionKey ? agentAliases[sessionKey] : undefined,
+        sessionKey ? workerAliases[sessionKey] : undefined,
       ),
-    [agent, agentAliases, sessionKey],
+    [agent, workerAliases, sessionKey],
   );
   const linkedWork = useMemo(
-    () => findLinkedWork(workByKey, serverId, agentId),
-    [agentId, serverId, workByKey],
+    () => findLinkedWork(workByKey, serverId, workerId),
+    [workerId, serverId, workByKey],
   );
   const linkedWorkTitle = linkedWork?.title?.trim() || "";
   const displayName =
-    presentedAgent.titleSource === "default" && linkedWorkTitle
+    presentedWorker.titleSource === "default" && linkedWorkTitle
       ? linkedWorkTitle
-      : presentedAgent.title;
+      : presentedWorker.title;
   const connectionState = serverId
     ? serverConnections[serverId] || "offline"
     : "offline";
   const connectionIssue = serverId
     ? serverConnectionIssues[serverId] || null
     : null;
-  const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
-  const isCodexAgent = presentedAgent.kind === "codex";
-  const isGrokAgent = presentedAgent.kind === "grok";
-  const isStructuredChatAgent = supportsChatInterface(
-    presentedAgent.kind,
+  const hasTerminalRoute = Boolean(sessionKey && serverId && workerId);
+  const isCodexWorker = presentedWorker.kind === "codex";
+  const isGrokWorker = presentedWorker.kind === "grok";
+  const isStructuredChatWorker = supportsChatInterface(
+    presentedWorker.kind,
     agent?.capabilities,
   );
   const interfaceRenderMode = resolveInterfaceRenderMode({
-    kind: presentedAgent.kind,
+    kind: presentedWorker.kind,
     capabilities: agent?.capabilities,
     sessionKey,
     storedModes: interfaceRenderModes,
   });
   const showInterfaceChat =
-    hasTerminalRoute && isStructuredChatAgent && interfaceRenderMode === "chat";
+    hasTerminalRoute && isStructuredChatWorker && interfaceRenderMode === "chat";
 
   return {
     agent,
@@ -120,11 +120,11 @@ export function useTerminalRouteModel({
     displayName,
     gitDiffCwd,
     hasTerminalRoute,
-    isCodexAgent,
-    isGrokAgent,
-    isStructuredChatAgent,
+    isCodexWorker,
+    isGrokWorker,
+    isStructuredChatWorker,
     linkedWork,
-    presentedAgent,
+    presentedWorker,
     showInterfaceChat,
   };
 }
@@ -132,7 +132,7 @@ export function useTerminalRouteModel({
 /** Agents with a structured chat surface (provider-neutral conversation UI). */
 export function supportsChatInterface(
   kind: AgentKind | string,
-  capabilities?: AgentCapabilities,
+  capabilities?: WorkerCapabilities,
 ): boolean {
   return (
     capabilities?.structured_events === true ||
@@ -156,7 +156,7 @@ export function resolveInterfaceRenderMode({
   storedModes,
 }: {
   kind: AgentKind | string;
-  capabilities?: AgentCapabilities;
+  capabilities?: WorkerCapabilities;
   sessionKey: string | null;
   storedModes: StoredInterfaceRenderModes;
 }): StoredInterfaceRenderMode {
@@ -171,7 +171,7 @@ export function resolveInterfaceRenderMode({
 
 export function defaultInterfaceRenderModeForKind(
   kind: AgentKind | string,
-  capabilities?: AgentCapabilities,
+  capabilities?: WorkerCapabilities,
 ): StoredInterfaceRenderMode {
   return supportsChatInterface(kind, capabilities) ? "chat" : "terminal";
 }
@@ -181,87 +181,87 @@ export function defaultInterfaceRenderModeForKind(
  * Never matches on name, command, or route-param inference.
  */
 export function brainHostMatchesRoute(input: {
-  brainHostAgent?: BrainAgentRef | null;
+  brainHostWorker?: BrainWorkerRef | null;
   brainHostServerId?: string | null;
   routeServerId: string;
-  routeAgentId: string;
+  routeWorkerId: string;
 }): boolean {
-  const hostId = input.brainHostAgent?.id?.trim() || "";
+  const hostId = input.brainHostWorker?.id?.trim() || "";
   const brainServer = input.brainHostServerId?.trim() || "";
   const routeServer = input.routeServerId.trim();
-  const routeAgent = input.routeAgentId.trim();
-  if (!hostId || !brainServer || !routeServer || !routeAgent) {
+  const routeWorker = input.routeWorkerId.trim();
+  if (!hostId || !brainServer || !routeServer || !routeWorker) {
     return false;
   }
-  return brainServer === routeServer && hostId === routeAgent;
+  return brainServer === routeServer && hostId === routeWorker;
 }
 
 /**
  * Resolve the Terminal route Agent. When the route targets the current-server
- * Brain host (hidden from agent_session_list), merge host_agent — including
+ * Brain host (hidden from worker_session_list), merge host_worker — including
  * daemon-authoritative capabilities — without upserting into the Agent store.
  */
-export function resolveTerminalRouteAgent({
-  storedAgent,
+export function resolveTerminalRouteWorker({
+  storedWorker,
   routeSessionHint,
   sessionKey,
   serverId,
-  agentId,
-  brainHostAgent,
+  workerId,
+  brainHostWorker,
   brainHostServerId,
 }: {
-  storedAgent?: Agent;
+  storedWorker?: Worker;
   routeSessionHint: TerminalRouteSessionHint;
   sessionKey: string | null;
   serverId: string;
-  agentId: string;
-  brainHostAgent?: BrainAgentRef | null;
+  workerId: string;
+  brainHostWorker?: BrainWorkerRef | null;
   brainHostServerId?: string | null;
-}): Agent | undefined {
+}): Worker | undefined {
   const hostMatches = brainHostMatchesRoute({
-    brainHostAgent,
+    brainHostWorker,
     brainHostServerId,
     routeServerId: serverId,
-    routeAgentId: agentId,
+    routeWorkerId: workerId,
   });
   const hostCapabilities = hostMatches
-    ? brainHostAgent?.capabilities
+    ? brainHostWorker?.capabilities
     : undefined;
 
-  if (storedAgent) {
+  if (storedWorker) {
     // Ordinary visible Agent: unchanged identity. Overlay host capabilities only
     // when this exact server+id is the Brain host (rare overlap; never invent).
     return {
-      ...storedAgent,
-      name: storedAgent.name || routeSessionHint.name || agentId,
-      cwd: storedAgent.cwd || routeSessionHint.cwd,
-      command: storedAgent.command || routeSessionHint.command,
-      started_at: storedAgent.started_at ?? routeSessionHint.startedAt,
-      capabilities: hostCapabilities ?? storedAgent.capabilities,
+      ...storedWorker,
+      name: storedWorker.name || routeSessionHint.name || workerId,
+      cwd: storedWorker.cwd || routeSessionHint.cwd,
+      command: storedWorker.command || routeSessionHint.command,
+      started_at: storedWorker.started_at ?? routeSessionHint.startedAt,
+      capabilities: hostCapabilities ?? storedWorker.capabilities,
     };
   }
 
-  if (hostMatches && sessionKey && brainHostAgent) {
-    // Hidden Brain host: project host_agent as the route Agent for this screen.
-    // Capabilities come only from host_agent — route params never authorize.
+  if (hostMatches && sessionKey && brainHostWorker) {
+    // Hidden Brain host: project host_worker as the route Agent for this screen.
+    // Capabilities come only from host_worker — route params never authorize.
     const now = Date.now();
     return {
       key: sessionKey,
-      id: brainHostAgent.id,
+      id: brainHostWorker.id,
       serverId,
       serverName: "",
       serverUrl: "",
-      name: brainHostAgent.name || agentId,
-      status: (brainHostAgent.status as Agent["status"]) || "running",
+      name: brainHostWorker.name || workerId,
+      status: (brainHostWorker.status as Worker["status"]) || "running",
       project: undefined,
-      cwd: brainHostAgent.cwd || routeSessionHint.cwd,
-      command: brainHostAgent.command || routeSessionHint.command,
-      summary: brainHostAgent.summary || "",
+      cwd: brainHostWorker.cwd || routeSessionHint.cwd,
+      command: brainHostWorker.command || routeSessionHint.command,
+      summary: brainHostWorker.summary || "",
       last_output_lines: [],
-      started_at: brainHostAgent.started_at ?? routeSessionHint.startedAt,
-      updated_at: brainHostAgent.started_at || now,
-      process_id: brainHostAgent.process_id,
-      delegated: brainHostAgent.delegated,
+      started_at: brainHostWorker.started_at ?? routeSessionHint.startedAt,
+      updated_at: brainHostWorker.started_at || now,
+      process_id: brainHostWorker.process_id,
+      delegated: brainHostWorker.delegated,
       capabilities: hostCapabilities,
     };
   }
@@ -269,7 +269,7 @@ export function resolveTerminalRouteAgent({
   if (
     !sessionKey ||
     !serverId ||
-    !agentId ||
+    !workerId ||
     !hasRouteSessionHint(routeSessionHint)
   ) {
     return undefined;
@@ -279,11 +279,11 @@ export function resolveTerminalRouteAgent({
   const now = Date.now();
   return {
     key: sessionKey,
-    id: agentId,
+    id: workerId,
     serverId,
     serverName: "",
     serverUrl: "",
-    name: routeSessionHint.name || routeSessionHint.command || agentId,
+    name: routeSessionHint.name || routeSessionHint.command || workerId,
     status: "running",
     project: undefined,
     cwd: routeSessionHint.cwd,
@@ -301,8 +301,8 @@ export function resolveTerminalRouteAgent({
  * daemon-acknowledged live switch. Managed read-only and unmanaged Sessions
  * keep the action hidden — never a dead control.
  */
-export function routeAgentProviderModelActionState(
-  capabilities: AgentCapabilities | null | undefined,
+export function routeWorkerProviderModelActionState(
+  capabilities: WorkerCapabilities | null | undefined,
 ): {
   actionVisible: boolean;
   activationEnabled: boolean;

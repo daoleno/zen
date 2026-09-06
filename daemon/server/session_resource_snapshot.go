@@ -14,7 +14,7 @@ import (
 type sessionResourceSnapshotWire struct {
 	Type      string                     `json:"type"`
 	RequestID string                     `json:"request_id,omitempty"`
-	AgentID   string                     `json:"agent_id"`
+	WorkerID  string                     `json:"worker_id"`
 	Session   sessionResourceSessionWire `json:"session"`
 	Pool      *sessionResourcePoolWire   `json:"pool,omitempty"`
 	Host      *sessionResourceHostWire   `json:"host,omitempty"`
@@ -49,50 +49,50 @@ type sessionResourceHostWire struct {
 }
 
 func (s *Server) handleGetSessionResourceSnapshot(conn *websocket.Conn, raw clientMessage) {
-	agentID := strings.TrimSpace(raw.AgentID)
-	if agentID == "" {
-		agentID = strings.TrimSpace(raw.TargetID)
+	workerID := strings.TrimSpace(raw.WorkerID)
+	if workerID == "" {
+		workerID = strings.TrimSpace(raw.TargetID)
 	}
-	if agentID == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "session_resource_snapshot_failed", "agent_id is required")
+	if workerID == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "session_resource_snapshot_failed", "worker_id is required")
 		return
 	}
 
-	agent, resource, err := s.resolveSessionResourceSnapshot(agentID)
+	worker, resource, err := s.resolveSessionResourceSnapshot(workerID)
 	if err != nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "session_resource_snapshot_failed", err.Error())
 		return
 	}
 
-	s.sendJSON(conn, s.buildSessionResourceSnapshotWire(raw.RequestID, agentID, agent, resource))
+	s.sendJSON(conn, s.buildSessionResourceSnapshotWire(raw.RequestID, workerID, worker, resource))
 }
 
 // resolveSessionResourceSnapshot loads the live Session and one on-demand
 // resource projection. Missing Sessions fail instead of synthesizing Local/Not managed.
-func (s *Server) resolveSessionResourceSnapshot(agentID string) (*classifier.Agent, watcher.SessionResourceSnapshot, error) {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("agent_id is required")
+func (s *Server) resolveSessionResourceSnapshot(workerID string) (*classifier.Worker, watcher.SessionResourceSnapshot, error) {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("worker_id is required")
 	}
 	if s == nil || s.watcher == nil {
-		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("agent session not found")
+		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("Worker session not found")
 	}
-	agent := s.watcher.GetAgent(agentID)
-	if agent == nil {
-		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("agent session not found")
+	worker := s.watcher.GetWorker(workerID)
+	if worker == nil {
+		return nil, watcher.SessionResourceSnapshot{}, fmt.Errorf("Worker session not found")
 	}
-	return agent, s.watcher.SessionResourceSnapshot(agentID), nil
+	return worker, s.watcher.SessionResourceSnapshot(workerID), nil
 }
 
 func (s *Server) buildSessionResourceSnapshotWire(
-	requestID, agentID string,
-	agent *classifier.Agent,
+	requestID, workerID string,
+	worker *classifier.Worker,
 	resource watcher.SessionResourceSnapshot,
 ) sessionResourceSnapshotWire {
 	payload := sessionResourceSnapshotWire{
 		Type:      "session_resource_snapshot",
 		RequestID: strings.TrimSpace(requestID),
-		AgentID:   agentID,
+		WorkerID:  workerID,
 		Session: sessionResourceSessionWire{
 			Managed: resource.Managed,
 		},
@@ -103,17 +103,17 @@ func (s *Server) buildSessionResourceSnapshotWire(
 		payload.Session.MemoryPeakBytes = resource.MemoryPeakBytes
 		payload.Session.TasksCurrent = resource.TasksCurrent
 	}
-	if agent != nil {
-		payload.Session.Name = strings.TrimSpace(agent.Name)
-		payload.Session.Command = strings.TrimSpace(agent.Command)
-		payload.Session.Status = string(agent.State)
-		payload.Session.Phase = strings.TrimSpace(agent.Phase)
-		payload.Session.Cwd = strings.TrimSpace(agent.Cwd)
-		payload.Session.Delegated = agent.Delegated
-		if !agent.StartedAt.IsZero() {
-			payload.Session.StartedAt = agent.StartedAt.UTC().Format(time.RFC3339Nano)
+	if worker != nil {
+		payload.Session.Name = strings.TrimSpace(worker.Name)
+		payload.Session.Command = strings.TrimSpace(worker.Command)
+		payload.Session.Status = string(worker.State)
+		payload.Session.Phase = strings.TrimSpace(worker.Phase)
+		payload.Session.Cwd = strings.TrimSpace(worker.Cwd)
+		payload.Session.Delegated = worker.Delegated
+		if !worker.StartedAt.IsZero() {
+			payload.Session.StartedAt = worker.StartedAt.UTC().Format(time.RFC3339Nano)
 		}
-		payload.Session.Executor = work.InferAgentProvider(agent.Command, agent.Name)
+		payload.Session.Executor = work.InferWorkerProvider(worker.Command, worker.Name)
 	}
 	// Wire contract: pool is only for Sessions Zen actually manages. Watcher may
 	// still observe the shared pool for unmanaged targets; do not expose it here.

@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
 import {
   bumpServerConnectionGeneration,
-  isAgentSessionListFreshForConnection,
+  isWorkerSessionListFreshForConnection,
   liveActionPromptScopeKey,
-  stampAgentSessionListGeneration,
+  stampWorkerSessionListGeneration,
   type TransportConnectionState,
-} from "../../services/agentSessionListTransport";
+} from "../../services/workerSessionListTransport";
 
 const WEEKLY_LIMIT_LINES = [
   "◆ Task completed in 2m45s: Wait for dedicated em",
@@ -22,7 +22,7 @@ const GROK_COMMAND = "grok --no-alt-screen --permission-mode bypassPermissions";
 type TransportSlice = {
   connectionState: TransportConnectionState;
   connectionGenerationByServer: Record<string, number>;
-  agentSessionListGenerationByServer: Record<string, number>;
+  workerSessionListGenerationByServer: Record<string, number>;
 };
 
 function applyConnection(
@@ -38,28 +38,28 @@ function applyConnection(
       slice.connectionState,
       connectionState,
     ),
-    agentSessionListGenerationByServer: slice.agentSessionListGenerationByServer,
+    workerSessionListGenerationByServer: slice.workerSessionListGenerationByServer,
   };
 }
 
-function applyFullAgentSessionList(slice: TransportSlice, serverId: string): TransportSlice {
+function applyFullWorkerSessionList(slice: TransportSlice, serverId: string): TransportSlice {
   return {
     ...slice,
-    agentSessionListGenerationByServer: stampAgentSessionListGeneration({
+    workerSessionListGenerationByServer: stampWorkerSessionListGeneration({
       connectionState: slice.connectionState,
       connectionGeneration: slice.connectionGenerationByServer[serverId] ?? 0,
-      agentSessionListGenerationByServer: slice.agentSessionListGenerationByServer,
+      workerSessionListGenerationByServer: slice.workerSessionListGenerationByServer,
       serverId,
     }),
   };
 }
 
 function isFresh(slice: TransportSlice, serverId: string) {
-  return isAgentSessionListFreshForConnection({
+  return isWorkerSessionListFreshForConnection({
     connectionState: slice.connectionState,
     connectionGeneration: slice.connectionGenerationByServer[serverId] ?? 0,
-    agentSessionListGeneration:
-      slice.agentSessionListGenerationByServer[serverId] ?? 0,
+    workerSessionListGeneration:
+      slice.workerSessionListGenerationByServer[serverId] ?? 0,
   });
 }
 
@@ -85,7 +85,7 @@ function projectPrompt(
     lastOutputLines: agent.lastOutputLines,
     command: agent.command,
     scopeKey: liveActionPromptScopeKey({
-      agentId: agent.id,
+      workerId: agent.id,
       processId: agent.processId,
       startedAt: agent.startedAt,
       connectionGeneration: slice.connectionGenerationByServer[serverId] ?? 0,
@@ -292,7 +292,7 @@ describe("buildTerminalActionPrompt", () => {
       status: "blocked",
       command: GROK_COMMAND,
       scopeKey: liveActionPromptScopeKey({
-        agentId: "agent-a",
+        workerId: "agent-a",
         processId: 11,
         startedAt: 100,
         connectionGeneration: 1,
@@ -303,7 +303,7 @@ describe("buildTerminalActionPrompt", () => {
       status: "blocked",
       command: GROK_COMMAND,
       scopeKey: liveActionPromptScopeKey({
-        agentId: "agent-a",
+        workerId: "agent-a",
         processId: 22,
         startedAt: 200,
         connectionGeneration: 2,
@@ -317,18 +317,18 @@ describe("buildTerminalActionPrompt", () => {
   });
 });
 
-describe("agent_session_list connection-generation freshness", () => {
+describe("worker_session_list connection-generation freshness", () => {
   test("connect -> full snapshot allows current live prompt", () => {
     let slice: TransportSlice = {
       connectionState: "offline",
       connectionGenerationByServer: {},
-      agentSessionListGenerationByServer: {},
+      workerSessionListGenerationByServer: {},
     };
     slice = applyConnection(slice, "server", "connecting");
     slice = applyConnection(slice, "server", "connected");
     expect(isFresh(slice, "server")).toBe(false);
 
-    slice = applyFullAgentSessionList(slice, "server");
+    slice = applyFullWorkerSessionList(slice, "server");
     expect(isFresh(slice, "server")).toBe(true);
     expect(projectPrompt(slice, "server", LIVE_BLOCKED)?.title).toBe(
       "You hit your weekly limit.",
@@ -339,11 +339,11 @@ describe("agent_session_list connection-generation freshness", () => {
     let slice: TransportSlice = {
       connectionState: "offline",
       connectionGenerationByServer: {},
-      agentSessionListGenerationByServer: {},
+      workerSessionListGenerationByServer: {},
     };
     slice = applyConnection(slice, "server", "connecting");
     slice = applyConnection(slice, "server", "connected");
-    slice = applyFullAgentSessionList(slice, "server");
+    slice = applyFullWorkerSessionList(slice, "server");
     expect(projectPrompt(slice, "server", LIVE_BLOCKED)?.actionable).toBe(false);
 
     slice = applyConnection(slice, "server", "connecting");
@@ -355,10 +355,10 @@ describe("agent_session_list connection-generation freshness", () => {
     expect(isFresh(slice, "server")).toBe(false);
     expect(projectPrompt(slice, "server", LIVE_BLOCKED)).toBeNull();
 
-    // Incremental agent upsert is not a full agent_session_list.
+    // Incremental agent upsert is not a full worker_session_list.
     expect(isFresh(slice, "server")).toBe(false);
 
-    slice = applyFullAgentSessionList(slice, "server");
+    slice = applyFullWorkerSessionList(slice, "server");
     expect(isFresh(slice, "server")).toBe(true);
     expect(projectPrompt(slice, "server", LIVE_BLOCKED)?.title).toBe(
       "You hit your weekly limit.",
@@ -369,10 +369,10 @@ describe("agent_session_list connection-generation freshness", () => {
     let slice: TransportSlice = {
       connectionState: "offline",
       connectionGenerationByServer: {},
-      agentSessionListGenerationByServer: {},
+      workerSessionListGenerationByServer: {},
     };
     slice = applyConnection(slice, "server", "connected");
-    slice = applyFullAgentSessionList(slice, "server");
+    slice = applyFullWorkerSessionList(slice, "server");
     expect(isFresh(slice, "server")).toBe(true);
     expect(
       projectPrompt(slice, "server", {

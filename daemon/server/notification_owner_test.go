@@ -17,7 +17,7 @@ import (
 
 type recordedPush struct {
 	kind      string
-	agentID   string
+	workerID  string
 	title     string
 	status    string
 	threadID  string
@@ -37,16 +37,16 @@ func (p *recordingNotificationPusher) SetRegistration(_, serverRef string) {
 	p.mu.Unlock()
 }
 
-func (p *recordingNotificationPusher) NotifyAgentBlocked(agentID, _, _ string) error {
-	return p.record(recordedPush{kind: "blocked", agentID: agentID})
+func (p *recordingNotificationPusher) NotifyWorkerBlocked(workerID, _, _ string) error {
+	return p.record(recordedPush{kind: "blocked", workerID: workerID})
 }
 
-func (p *recordingNotificationPusher) NotifyAgentFailed(agentID, _, _ string) error {
-	return p.record(recordedPush{kind: "failed", agentID: agentID})
+func (p *recordingNotificationPusher) NotifyWorkerFailed(workerID, _, _ string) error {
+	return p.record(recordedPush{kind: "failed", workerID: workerID})
 }
 
-func (p *recordingNotificationPusher) NotifyAgentDone(agentID, _, _ string) error {
-	return p.record(recordedPush{kind: "done", agentID: agentID})
+func (p *recordingNotificationPusher) NotifyWorkerDone(workerID, _, _ string) error {
+	return p.record(recordedPush{kind: "done", workerID: workerID})
 }
 
 func (p *recordingNotificationPusher) NotifyScheduledResult(title, status, threadID, resultID string) error {
@@ -75,7 +75,7 @@ func (p *recordingNotificationPusher) snapshot() []recordedPush {
 // ledgerNotificationServer builds a Server whose Brain ledger owns one
 // current turn for agentID, so the lifecycle-push gate admits exactly that
 // turn's projections. Returns the server and the current TurnID.
-func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
+func ledgerNotificationServer(t *testing.T, workerID string) (*Server, string) {
 	t.Helper()
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {
@@ -90,11 +90,11 @@ func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turnID := agentID + ":turn:1"
+	turnID := workerID + ":turn:1"
 	acceptedAt := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
 	payloadDigest := "0000000000000000000000000000000000000000000000000000000000000000"
 	pending, created, err := store.PrepareInputAdmission(watcher.InputAdmission{
-		WorkID: item.ID, SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
+		WorkID: item.ID, SessionID: workerID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: payloadDigest, ProcessIdentity: "push-gate-process",
 		PaneGeneration: "push-gate-pane", AcceptedAt: acceptedAt,
 		Mode: watcher.InputAdmissionFresh,
@@ -103,7 +103,7 @@ func ledgerNotificationServer(t *testing.T, agentID string) (*Server, string) {
 		t.Fatalf("prepare canonical notification Turn: pending=%+v created=%v err=%v", pending, created, err)
 	}
 	resolved, err := store.ResolveInputAdmission(watcher.InputAdmissionResolution{
-		SessionID: agentID, ProposedTurnID: turnID, Receipt: turnID,
+		SessionID: workerID, ProposedTurnID: turnID, Receipt: turnID,
 		PayloadSHA256: payloadDigest, ActivityID: "push-gate-activity",
 		Admission: watcher.TurnAdmission{
 			Stream: "push-gate", ID: "push-gate-admission", Cursor: 1,
@@ -131,14 +131,14 @@ func TestOrdinaryDelegatedTransitionsEachAttemptOnePush(t *testing.T) {
 			event.TurnID = turnID
 			srv.maybeNotifyForSessionEvent(event)
 			calls := pusher.snapshot()
-			if len(calls) != 1 || calls[0].kind != state || calls[0].agentID != "agent-1" {
+			if len(calls) != 1 || calls[0].kind != state || calls[0].workerID != "agent-1" {
 				t.Fatalf("calls = %#v", calls)
 			}
 		})
 	}
 }
 
-func TestNotificationSuppressionUsesExactAgentViewer(t *testing.T) {
+func TestNotificationSuppressionUsesExactWorkerViewer(t *testing.T) {
 	viewer := &websocket.Conn{}
 	pusher := &recordingNotificationPusher{}
 	srv, turnID := ledgerNotificationServer(t, "agent-target")
@@ -154,7 +154,7 @@ func TestNotificationSuppressionUsesExactAgentViewer(t *testing.T) {
 
 	srv.active[viewer] = "agent-other"
 	srv.maybeNotifyForSessionEvent(event)
-	if calls := pusher.snapshot(); len(calls) != 1 || calls[0].agentID != "agent-target" {
+	if calls := pusher.snapshot(); len(calls) != 1 || calls[0].workerID != "agent-target" {
 		t.Fatalf("other viewer suppressed target: %#v", calls)
 	}
 }
@@ -214,7 +214,7 @@ func TestNonDelegatedSessionsNeverUseGenericLifecyclePush(t *testing.T) {
 	srv := &Server{pusher: pusher, active: map[*websocket.Conn]string{}}
 	for _, state := range []string{"blocked", "failed", "done"} {
 		event := notificationTransition("non-delegated", "running", state)
-		event.Agent.Delegated = false
+		event.Worker.Delegated = false
 		srv.maybeNotifyForSessionEvent(event)
 	}
 	if calls := pusher.snapshot(); len(calls) != 0 {
@@ -335,23 +335,23 @@ func assertNoServerCalendarEvent(t *testing.T, events <-chan calendar.Event) {
 	}
 }
 
-func notificationTransition(agentID, oldState, newState string) watcher.SessionEvent {
+func notificationTransition(workerID, oldState, newState string) watcher.SessionEvent {
 	return watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  agentID,
+		Type:     "worker_state_change",
+		WorkerID: workerID,
 		OldState: oldState,
 		NewState: newState,
-		Agent: &classifier.Agent{
-			ID:        agentID,
-			Name:      "Agent " + agentID,
-			State:     classifier.AgentState(newState),
+		Worker: &classifier.Worker{
+			ID:        workerID,
+			Name:      "Agent " + workerID,
+			State:     classifier.WorkerState(newState),
 			Summary:   "current summary",
 			Delegated: true,
 		},
 	}
 }
 
-func newScheduledNotificationFixture(t *testing.T, agentID string) (*calendar.Store, calendar.Item, calendar.Run) {
+func newScheduledNotificationFixture(t *testing.T, workerID string) (*calendar.Store, calendar.Item, calendar.Run) {
 	t.Helper()
 	store, err := calendar.NewStore(t.TempDir())
 	if err != nil {
@@ -375,7 +375,7 @@ func newScheduledNotificationFixture(t *testing.T, agentID string) (*calendar.St
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordLaunch(item.ID, run.ID, "work-1", agentID); err != nil {
+	if _, err := store.RecordLaunch(item.ID, run.ID, "work-1", workerID); err != nil {
 		t.Fatal(err)
 	}
 	return store, item, run

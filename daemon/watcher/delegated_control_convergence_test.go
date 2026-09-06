@@ -14,7 +14,7 @@ func TestSubmitDelegatedInputReusesCompletedSessionWithDifferentIdleActivity(t *
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Date(2026, 8, 11, 3, 20, 0, 0, time.UTC)
-	sessionID := "brain-agent-completed-reuse:@1"
+	sessionID := "zen-worker-completed-reuse:@1"
 	oldActivityID := "activity-prior-canonical"
 	ledger.seed(sessionID, TurnSnapshot{
 		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnDone,
@@ -36,7 +36,7 @@ func TestSubmitDelegatedInputReusesCompletedSessionWithDifferentIdleActivity(t *
 	}}
 	w := lifecycleTestWatcher(io, ledger, probe)
 	w.sessionInput.now = func() time.Time { return now }
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
 		Delegated: true, State: classifier.StateDone,
 	}
@@ -65,7 +65,7 @@ func TestSubmitDelegatedInputActivityMismatchPreservesControlOwner(t *testing.T)
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Date(2026, 8, 11, 3, 30, 0, 0, time.UTC)
-	sessionID := "brain-agent-activity-mismatch:@1"
+	sessionID := "zen-worker-activity-mismatch:@1"
 	identity := testSessionInputIdentity("codex")
 	ledger.seed(sessionID, TurnSnapshot{
 		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnRunning,
@@ -77,11 +77,11 @@ func TestSubmitDelegatedInputActivityMismatchPreservesControlOwner(t *testing.T)
 		Structured: true,
 	}}}
 	w := New(time.Second)
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
 		Delegated: true, State: classifier.StateRunning, Attention: "none",
 	}
-	w.agentOrder = append(w.agentOrder, sessionID)
+	w.workerOrder = append(w.workerOrder, sessionID)
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.targetProcessResolver = fixedSessionInputResolver(identity)
 	w.providerActivityProbe = probe
@@ -104,7 +104,7 @@ func TestSubmitDelegatedInputActivityMismatchPreservesControlOwner(t *testing.T)
 	if turn.Status != TurnRunning || turn.ControlState != TurnControlOwned {
 		t.Fatalf("admission conflict changed durable control owner: %+v", turn)
 	}
-	projected := w.GetAgent(sessionID)
+	projected := w.GetWorker(sessionID)
 	if projected == nil || projected.State != classifier.StateRunning ||
 		projected.Attention == "ownership_lost" || projected.NeedsAttention {
 		t.Fatalf("admission conflict deprojected the live target: %+v", projected)
@@ -118,7 +118,7 @@ func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testin
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Date(2026, 8, 11, 3, 35, 0, 0, time.UTC)
-	sessionID := "brain-agent-completed-activity-mismatch:@1"
+	sessionID := "zen-worker-completed-activity-mismatch:@1"
 	identity := testSessionInputIdentity("codex")
 	settledAt := now.Add(-time.Minute)
 	ledger.seed(sessionID, TurnSnapshot{
@@ -131,11 +131,11 @@ func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testin
 		Structured: true,
 	}}}
 	w := New(time.Second)
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
 		Delegated: true, State: classifier.StateDone, Attention: "none",
 	}
-	w.agentOrder = append(w.agentOrder, sessionID)
+	w.workerOrder = append(w.workerOrder, sessionID)
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.targetProcessResolver = fixedSessionInputResolver(identity)
 	w.providerActivityProbe = probe
@@ -155,7 +155,7 @@ func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testin
 	if turn.Status != TurnDone || turn.ControlState != TurnControlOwned {
 		t.Fatalf("admission conflict changed completed control state: %+v", turn)
 	}
-	projected := w.GetAgent(sessionID)
+	projected := w.GetWorker(sessionID)
 	if projected == nil || projected.State != classifier.StateDone ||
 		projected.Attention == "ownership_lost" || projected.NeedsAttention {
 		t.Fatalf("completed admission conflict deprojected the target: %+v", projected)
@@ -166,7 +166,7 @@ func TestResolveDelegatedControlIsReadOnlyAcrossProviderActivityChanges(t *testi
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Date(2026, 8, 11, 3, 37, 0, 0, time.UTC)
-	sessionID := "brain-agent-control-surface:@1"
+	sessionID := "zen-worker-control-surface:@1"
 	identity := testSessionInputIdentity("codex")
 	ledger.seed(sessionID, TurnSnapshot{
 		SessionID: sessionID, TurnID: sessionID + ":turn:1", Status: TurnRunning,
@@ -181,11 +181,11 @@ func TestResolveDelegatedControlIsReadOnlyAcrossProviderActivityChanges(t *testi
 		ID: "activity-unowned-live", Status: "running",
 	}}}
 	w := New(time.Second)
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "codex", Cwd: "/repo/zen", PaneAlive: true,
 		Delegated: true, State: classifier.StateRunning, Attention: "none",
 	}
-	w.agentOrder = append(w.agentOrder, sessionID)
+	w.workerOrder = append(w.workerOrder, sessionID)
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.targetProcessResolver = fixedSessionInputResolver(identity)
 	w.providerActivityProbe = probe
@@ -201,9 +201,9 @@ func TestResolveDelegatedControlIsReadOnlyAcrossProviderActivityChanges(t *testi
 	if turn.ControlState != TurnControlOwned || turn.Status != TurnRunning {
 		t.Fatalf("read-only control changed canonical turn: %+v", turn)
 	}
-	agent := w.GetAgent(sessionID)
-	if agent == nil || agent.State != classifier.StateRunning || agent.Attention == "ownership_lost" {
-		t.Fatalf("read-only control changed agent projection: %+v", agent)
+	worker := w.GetWorker(sessionID)
+	if worker == nil || worker.State != classifier.StateRunning || worker.Attention == "ownership_lost" {
+		t.Fatalf("read-only control changed agent projection: %+v", worker)
 	}
 	probe.mu.Lock()
 	consumed := probe.stepIdx
@@ -213,7 +213,7 @@ func TestResolveDelegatedControlIsReadOnlyAcrossProviderActivityChanges(t *testi
 	}
 }
 
-func agentStateForTurnStatus(status TurnStatus) classifier.AgentState {
+func workerStateForTurnStatus(status TurnStatus) classifier.WorkerState {
 	if status == TurnDone {
 		return classifier.StateDone
 	}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import { chatAgentSupportsSlashCommands } from "../../services/chatComposerPresentation";
-import type { AgentKind } from "../../services/agentPresentation";
+import type { AgentKind } from "../../services/workerPresentation";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 import { slashCommandTitle } from "./codexSlashCommandPresentation";
 

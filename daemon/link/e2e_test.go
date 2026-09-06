@@ -198,6 +198,11 @@ func TestOpaqueRelayConnectorHealthAndAdmissionReplay(t *testing.T) {
 			wrongPathBody,
 		)
 	}
+	// HTTP response completion does not mean the duplex relay stream has
+	// finished. Reuse the unconsumed alias only after its reservation is free.
+	waitFor(t, 2*time.Second, func() bool {
+		return relayServer.Snapshot().ActiveClients == 0
+	})
 
 	if !runMobilePairingImport(
 		t,
@@ -777,7 +782,7 @@ func assertDaemonWebSocketThroughLink(
 		t.Fatalf("read Link WebSocket: %v", err)
 	}
 	if messageType != websocket.TextMessage ||
-		!bytes.Contains(message, []byte(`"type":"agent_session_list"`)) {
+		!bytes.Contains(message, []byte(`"type":"worker_session_list"`)) {
 		t.Fatalf("unexpected daemon WebSocket frame type=%d body=%q", messageType, message)
 	}
 }

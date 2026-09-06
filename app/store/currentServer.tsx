@@ -27,6 +27,7 @@ interface CurrentServerContextValue {
   servers: StoredServer[];
   refreshServers(preferredServerId?: string): Promise<void>;
   switchCurrentServer(serverId: string): Promise<void>;
+  isCurrentServer(serverId: string | null | undefined): boolean;
 }
 
 const CurrentServerContext = createContext<CurrentServerContextValue | null>(
@@ -109,6 +110,10 @@ export function CurrentServerProvider({ children }: { children: ReactNode }) {
     () => selectCurrentServer(servers, currentServerId),
     [currentServerId, servers],
   );
+  const isCurrentServer = useCallback(
+    (serverId: string | null | undefined) => Boolean(serverId && currentServerIdRef.current === serverId),
+    [],
+  );
   const value = useMemo<CurrentServerContextValue>(
     () => ({
       currentServer,
@@ -117,6 +122,7 @@ export function CurrentServerProvider({ children }: { children: ReactNode }) {
       refreshServers,
       servers,
       switchCurrentServer,
+      isCurrentServer,
     }),
     [
       currentServer,
@@ -125,6 +131,7 @@ export function CurrentServerProvider({ children }: { children: ReactNode }) {
       refreshServers,
       servers,
       switchCurrentServer,
+      isCurrentServer,
     ],
   );
 

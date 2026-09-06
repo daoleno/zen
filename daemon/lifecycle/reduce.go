@@ -114,7 +114,10 @@ func Reduce(prev *State, ev Event) *State {
 			// deterministic.
 			attemptedAt = ev.At
 		}
-		s.Admission = &AdmissionState{
+		if s.Admissions == nil {
+			s.Admissions = make(map[TurnToken]*AdmissionState)
+		}
+		s.Admissions[ev.TurnToken] = &AdmissionState{
 			TurnToken: ev.TurnToken, SessionID: p.SessionID, Receipt: p.Receipt,
 			ClaimToken: p.ClaimToken, PayloadSHA256: p.PayloadSHA256,
 			ProcessIdentity: p.ProcessIdentity, PaneGeneration: p.PaneGeneration,
@@ -155,6 +158,7 @@ func Reduce(prev *State, ev Event) *State {
 		p := payload[AdmissionAcceptedPayload](ev)
 		now := ev.At
 		a.Status = AdmissionAccepted
+		a.AcceptedSeq = ev.Seq
 		if a.SettledAt == nil {
 			a.SettledAt = &now
 		}

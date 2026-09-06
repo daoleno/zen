@@ -28,15 +28,15 @@ func ProviderResumeToken(provider, command string) (token string, present bool, 
 		return "", false, ErrLaunchUnparseable
 	}
 	switch provider {
-	case AgentProviderCodex:
+	case WorkerProviderCodex:
 		return codexResumeTokenFromArgv(options.argv)
-	case AgentProviderClaude:
+	case WorkerProviderClaude:
 		return exclusiveResumeFlagToken(options.argv, "--resume", "-r")
-	case AgentProviderGrok, AgentProviderCursor:
+	case WorkerProviderGrok, WorkerProviderCursor:
 		return exclusiveResumeFlagToken(options.argv, "--resume")
-	case AgentProviderOpenCode:
+	case WorkerProviderOpenCode:
 		return exclusiveOpenCodeSessionToken(options.argv)
-	case AgentProviderPi:
+	case WorkerProviderPi:
 		return exclusivePiSessionToken(options.argv)
 	default:
 		return "", false, ErrLaunchUnparseable
@@ -75,16 +75,16 @@ func WithProviderResumeToken(provider, command, token string) (string, error) {
 	}
 	quoted := shellQuoteForLaunch(token)
 	switch provider {
-	case AgentProviderCodex:
+	case WorkerProviderCodex:
 		return appendCommandOptions(command, "resume", quoted), nil
-	case AgentProviderClaude, AgentProviderGrok, AgentProviderCursor:
+	case WorkerProviderClaude, WorkerProviderGrok, WorkerProviderCursor:
 		return appendCommandOptions(command, "--resume", quoted), nil
-	case AgentProviderOpenCode:
+	case WorkerProviderOpenCode:
 		if !strings.HasPrefix(token, "ses_") {
 			return "", fmt.Errorf("opencode resume requires ses_* session id")
 		}
 		return appendCommandOptions(command, "-s", quoted), nil
-	case AgentProviderPi:
+	case WorkerProviderPi:
 		if !filepath.IsAbs(token) {
 			return "", fmt.Errorf("pi resume requires an absolute --session path")
 		}
@@ -101,8 +101,8 @@ func CodexSessionIDFromRolloutPath(path string) string {
 
 func normalizeResumeProvider(provider, command string) string {
 	provider = strings.TrimSpace(provider)
-	if provider == "" || provider == AgentProviderCustom {
-		provider = InferAgentProvider(command)
+	if provider == "" || provider == WorkerProviderCustom {
+		provider = InferWorkerProvider(command)
 	}
 	return provider
 }

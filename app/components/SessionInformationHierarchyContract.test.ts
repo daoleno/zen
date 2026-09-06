@@ -4,11 +4,11 @@ import { join } from "node:path";
 
 const componentRoot = import.meta.dir;
 const rowSource = readFileSync(
-  join(componentRoot, "agents/AgentSessionRow.tsx"),
+  join(componentRoot, "workers/WorkerSessionRow.tsx"),
   "utf8",
 );
 const rowContainerSource = readFileSync(
-  join(componentRoot, "agents/AgentListRowContainer.tsx"),
+  join(componentRoot, "workers/WorkerListRowContainer.tsx"),
   "utf8",
 );
 const sheetSource = readFileSync(
@@ -30,10 +30,10 @@ const layoutPropsSource = readFileSync(
 
 describe("Session list information hierarchy", () => {
   test("keeps status words out of the row while preserving one hidden indicator", () => {
-    expect(rowSource).not.toContain("agentStatusLabel");
+    expect(rowSource).not.toContain("workerStatusLabel");
     expect(rowSource).not.toContain("statusText");
     expect(rowSource).not.toContain("statusDot");
-    expect(rowSource).toContain("agentStatusIndicatorIcon(status)");
+    expect(rowSource).toContain("workerStatusIndicatorIcon(status)");
 
     const indicator = rowSource.slice(
       rowSource.indexOf("style={styles.statusIndicator}"),
@@ -98,6 +98,6 @@ describe("Interface Session title ownership", () => {
     expect(titleBlock).toContain("{sessionTitle}");
     expect(titleBlock).not.toContain("numberOfLines");
     expect(titleBlock).not.toContain("ellipsizeMode");
-    expect(sheetSource).not.toContain("presentAgent");
+    expect(sheetSource).not.toContain("presentWorker");
   });
 });

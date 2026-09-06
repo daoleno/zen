@@ -37,7 +37,7 @@ func TestNonOpenCodeProvidersFlowStableIDInPlaceDeltas(t *testing.T) {
 			var loads atomic.Int32
 			srv := &Server{
 				watcher: watcher.New(time.Second),
-				providerConversationLoader: func(_ *work.ProviderConversationReader, agentID string) (work.CodexConversation, error) {
+				providerConversationLoader: func(_ *work.ProviderConversationReader, workerID string) (work.CodexConversation, error) {
 					load := loads.Add(1)
 					events := []work.CodexConversationEvent{{
 						ID:        "event:streaming",
@@ -121,7 +121,7 @@ func TestBrainThreadScopeFlowsWorkCardDeltas(t *testing.T) {
 		watcher:  watcher.New(time.Second),
 		brain:    service,
 		calendar: calendarStore,
-		providerConversationLoader: func(_ *work.ProviderConversationReader, agentID string) (work.CodexConversation, error) {
+		providerConversationLoader: func(_ *work.ProviderConversationReader, workerID string) (work.CodexConversation, error) {
 			return work.CodexConversation{
 				Available: true,
 				Source:    "codex_rollout",

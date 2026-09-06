@@ -57,7 +57,7 @@ type sessionFileTextPreview struct {
 }
 
 type sessionFileCapabilityRequest struct {
-	AgentID    string `json:"agent_id"`
+	WorkerID   string `json:"worker_id"`
 	ProcessID  int    `json:"process_id"`
 	StartedAt  int64  `json:"started_at"`
 	Path       string `json:"path"`
@@ -69,7 +69,7 @@ type sessionFileCapabilityClaims struct {
 	DaemonID    string `json:"daemon_id"`
 	DeviceID    string `json:"device_id"`
 	Method      string `json:"method"`
-	AgentID     string `json:"agent_id"`
+	WorkerID    string `json:"worker_id"`
 	ProcessID   int    `json:"process_id"`
 	StartedAt   int64  `json:"started_at"`
 	Path        string `json:"path"`
@@ -131,33 +131,33 @@ func (s *Server) sendSessionFileError(conn *websocket.Conn, requestID, fallbackC
 }
 
 func (s *Server) resolveCurrentSessionFile(raw clientMessage) (*resolvedSessionFile, error) {
-	agentID := strings.TrimSpace(raw.AgentID)
-	if agentID == "" {
-		return nil, fmt.Errorf("agent_id is required")
+	workerID := strings.TrimSpace(raw.WorkerID)
+	if workerID == "" {
+		return nil, fmt.Errorf("worker_id is required")
 	}
-	agent := s.currentSessionFileAgent(agentID)
-	if agent == nil {
+	worker := s.currentSessionFileWorker(workerID)
+	if worker == nil {
 		return nil, fmt.Errorf("%w: Session is no longer live", errStaleSessionFileIdentity)
 	}
-	if err := validateSessionFileIdentity(agent, raw); err != nil {
+	if err := validateSessionFileIdentity(worker, raw); err != nil {
 		return nil, err
 	}
-	return openSessionFile(agent.Cwd, raw.Path)
+	return openSessionFile(worker.Cwd, raw.Path)
 }
 
-func (s *Server) currentSessionFileAgent(agentID string) *classifier.Agent {
-	if s != nil && s.sessionFileAgentLoader != nil {
-		return s.sessionFileAgentLoader(agentID)
+func (s *Server) currentSessionFileWorker(workerID string) *classifier.Worker {
+	if s != nil && s.sessionFileWorkerLoader != nil {
+		return s.sessionFileWorkerLoader(workerID)
 	}
 	if s == nil || s.watcher == nil {
 		return nil
 	}
-	return s.watcher.GetAgent(agentID)
+	return s.watcher.GetWorker(workerID)
 }
 
-func validateSessionFileIdentity(agent *classifier.Agent, raw clientMessage) error {
-	agentID := strings.TrimSpace(raw.AgentID)
-	if agent == nil || strings.TrimSpace(agent.ID) == "" || strings.TrimSpace(agent.ID) != agentID {
+func validateSessionFileIdentity(worker *classifier.Worker, raw clientMessage) error {
+	workerID := strings.TrimSpace(raw.WorkerID)
+	if worker == nil || strings.TrimSpace(worker.ID) == "" || strings.TrimSpace(worker.ID) != workerID {
 		return fmt.Errorf("%w: Session is no longer live", errStaleSessionFileIdentity)
 	}
 	if raw.ProcessID <= 0 {
@@ -167,13 +167,13 @@ func validateSessionFileIdentity(agent *classifier.Agent, raw clientMessage) err
 	if startedAt.IsZero() {
 		return fmt.Errorf("started_at is required")
 	}
-	if agent.ProcessID <= 0 || agent.StartedAt.IsZero() {
+	if worker.ProcessID <= 0 || worker.StartedAt.IsZero() {
 		return fmt.Errorf("%w: live Session generation is unavailable", errStaleSessionFileIdentity)
 	}
-	if raw.ProcessID != agent.ProcessID || startedAt.UnixMilli() != agent.StartedAt.UnixMilli() {
+	if raw.ProcessID != worker.ProcessID || startedAt.UnixMilli() != worker.StartedAt.UnixMilli() {
 		return fmt.Errorf("%w: Session generation changed", errStaleSessionFileIdentity)
 	}
-	if strings.TrimSpace(agent.Cwd) == "" {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		return fmt.Errorf("live Session CWD is unavailable")
 	}
 	return nil
@@ -532,7 +532,7 @@ func (s *Server) handleSessionFileCapability(
 	}
 
 	raw := clientMessage{
-		AgentID:        request.AgentID,
+		WorkerID:       request.WorkerID,
 		ProcessID:      request.ProcessID,
 		StartedAt:      json.RawMessage(strconv.FormatInt(request.StartedAt, 10)),
 		Path:           request.Path,
@@ -669,7 +669,7 @@ func sessionFileMessageFromRequest(r *http.Request) (clientMessage, error) {
 		return clientMessage{}, errors.New("started_at is invalid")
 	}
 	return clientMessage{
-		AgentID:        r.URL.Query().Get("agent_id"),
+		WorkerID:       r.URL.Query().Get("worker_id"),
 		ProcessID:      processID,
 		StartedAt:      json.RawMessage(strconv.FormatInt(startedAtMS, 10)),
 		Path:           r.URL.Query().Get("path"),
@@ -778,7 +778,7 @@ func (s *Server) sessionFileCapabilityPayload(
 		DaemonID:    s.auth.DaemonID(),
 		DeviceID:    strings.TrimSpace(deviceID),
 		Method:      method,
-		AgentID:     raw.AgentID,
+		WorkerID:    raw.WorkerID,
 		ProcessID:   raw.ProcessID,
 		StartedAt:   startedAtMS,
 		Path:        raw.Path,

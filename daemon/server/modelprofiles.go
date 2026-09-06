@@ -375,7 +375,7 @@ func (s *Server) handleGetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 		return
 	}
-	sessionID := strings.TrimSpace(raw.AgentID)
+	sessionID := strings.TrimSpace(raw.WorkerID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(raw.SessionID)
 	}
@@ -388,7 +388,7 @@ func (s *Server) handleGetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 	payload := map[string]any{
 		"type":       "thread_runtime",
 		"request_id": raw.RequestID,
-		"agent_id":   sessionID,
+		"worker_id":  sessionID,
 		"runtime":    sel,
 	}
 	if snap.Launched != nil {
@@ -403,7 +403,7 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 		return
 	}
-	sessionID := strings.TrimSpace(raw.AgentID)
+	sessionID := strings.TrimSpace(raw.WorkerID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(raw.SessionID)
 	}
@@ -424,7 +424,7 @@ func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 	payload := map[string]any{
 		"type":       "thread_runtime_set",
 		"request_id": raw.RequestID,
-		"agent_id":   sessionID,
+		"worker_id":  sessionID,
 		"runtime": map[string]any{
 			"session_id":               snap.Current.SessionID,
 			"client":                   snap.Current.Client,
@@ -575,17 +575,17 @@ func (s *Server) codexSessionCwd(sessionID string) string {
 	if s == nil {
 		return ""
 	}
-	if s.getAgentOverride != nil {
-		if agent := s.getAgentOverride(sessionID); agent != nil {
-			return strings.TrimSpace(agent.Cwd)
+	if s.getWorkerOverride != nil {
+		if worker := s.getWorkerOverride(sessionID); worker != nil {
+			return strings.TrimSpace(worker.Cwd)
 		}
 		return ""
 	}
 	if s.watcher == nil {
 		return ""
 	}
-	if agent := s.watcher.GetAgent(sessionID); agent != nil {
-		return strings.TrimSpace(agent.Cwd)
+	if worker := s.watcher.GetWorker(sessionID); worker != nil {
+		return strings.TrimSpace(worker.Cwd)
 	}
 	return ""
 }
@@ -697,8 +697,8 @@ func (s *Server) sendModelProfileError(conn *websocket.Conn, requestID string, e
 func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.CreateSessionOptions, profileID string) (string, *modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 	owner := s.modelProfiles()
 	if owner == nil {
-		agentID, err := s.watcher.CreateSession(preferredTarget, opts)
-		return agentID, nil, modelprofiles.PersistResult{Applied: true, Durable: true}, err
+		workerID, err := s.watcher.CreateSession(preferredTarget, opts)
+		return workerID, nil, modelprofiles.PersistResult{Applied: true, Durable: true}, err
 	}
 
 	executorID := strings.TrimSpace(profileExecutorHint(opts.Command, profileID))
@@ -707,27 +707,27 @@ func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.
 		return "", nil, plan.Persist, err
 	}
 	if plan.Bypass || !plan.Applied {
-		agentID, err := s.watcher.CreateSession(preferredTarget, opts)
-		return agentID, nil, modelprofiles.PersistResult{Applied: true, Durable: true}, err
+		workerID, err := s.watcher.CreateSession(preferredTarget, opts)
+		return workerID, nil, modelprofiles.PersistResult{Applied: true, Durable: true}, err
 	}
 
 	opts.Command = plan.Command
 	opts.Env = mergeSessionEnv(opts.Env, plan.Env)
-	agentID, err := s.watcher.CreateSession(preferredTarget, opts)
+	workerID, err := s.watcher.CreateSession(preferredTarget, opts)
 	if err != nil {
 		abortPersist, abortErr := owner.AbortLaunch(plan.ProvisionalID)
 		return "", nil, abortPersist, errors.Join(err, abortErr)
 	}
-	_, snap, persist, commitErr := owner.CommitLaunch(plan.ProvisionalID, agentID)
+	_, snap, persist, commitErr := owner.CommitLaunch(plan.ProvisionalID, workerID)
 	if !persist.Applied {
-		cleanup := modelprofiles.CleanupFailedLaunch(owner, plan.ProvisionalID, agentID, s.watcher.KillSession, s.sessionLivenessProbe)
+		cleanup := modelprofiles.CleanupFailedLaunch(owner, plan.ProvisionalID, workerID, s.watcher.KillSession, s.sessionLivenessProbe)
 		return "", nil, cleanup.Persist, errors.Join(commitErr, cleanup.Err)
 	}
 	persist = modelprofiles.CombinePersistResults(plan.Persist, persist)
 	if !persist.Durable && commitErr == nil && !plan.Persist.Durable {
 		commitErr = modelprofiles.ErrPersistDirSync
 	}
-	return agentID, &snap, persist, commitErr
+	return workerID, &snap, persist, commitErr
 }
 
 func profileExecutorHint(command, profileID string) string {
@@ -796,22 +796,22 @@ func (s *Server) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLi
 	}
 }
 
-// teardownAgentSession applies the route-aware kill/release rule for kill_agent
+// teardownAgentSession applies the route-aware kill/release rule for kill_worker
 // and other Session destruction paths. Returns a non-nil error whenever cleanup
 // is incomplete or applied with uncertain durability.
-func (s *Server) teardownAgentSession(agentID string) modelprofiles.SessionTeardownResult {
+func (s *Server) teardownWorkerSession(workerID string) modelprofiles.SessionTeardownResult {
 	var release func(string) (modelprofiles.PersistResult, error)
 	controlSocket := ""
 	if owner := s.modelProfiles(); owner != nil {
 		release = owner.ReleaseSession
-		controlSocket = owner.CodexControlSocket(agentID)
+		controlSocket = owner.CodexControlSocket(workerID)
 	}
-	result := modelprofiles.TeardownSession(agentID, s.killSession, s.sessionLivenessProbe, release)
+	result := modelprofiles.TeardownSession(workerID, s.killSession, s.sessionLivenessProbe, release)
 	if result.Err == nil && controlSocket != "" {
 		// The Session is confirmed dead: kill any orphaned Codex app-server
 		// (via its recorded pid) and remove daemon-owned socket/pid/log files.
 		if cleanupErr := modelprofiles.CleanupCodexControlArtifacts(controlSocket); cleanupErr != nil {
-			log.Printf("cleanup codex control artifacts for %s: %v", agentID, cleanupErr)
+			log.Printf("cleanup codex control artifacts for %s: %v", workerID, cleanupErr)
 		}
 	}
 	return result

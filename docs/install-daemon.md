@@ -223,7 +223,7 @@ For personal use, a tmux pane or systemd user unit is enough. Example user unit 
 
 ```ini
 [Unit]
-Description=zen agent control plane
+Description=zen worker control plane
 After=network.target
 
 [Service]

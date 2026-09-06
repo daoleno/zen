@@ -20,7 +20,7 @@ type scriptedProviderActivityProbe struct {
 }
 
 func (p *scriptedProviderActivityProbe) ObserveProviderActivity(
-	classifier.Agent,
+	classifier.Worker,
 	time.Time,
 ) ProviderActivityObservation {
 	p.mu.Lock()
@@ -77,8 +77,8 @@ func TestBrainHostInputCarriesExactClaimCapabilityThroughCanonicalSubmission(t *
 		},
 	}}
 	w := lifecycleTestWatcher(io, ledger, probe)
-	hostID := "brain-agent-brain-hidden:@host-capability"
-	w.agents[hostID] = &classifier.Agent{
+	hostID := "zen-worker-brain-hidden:@host-capability"
+	w.workers[hostID] = &classifier.Worker{
 		ID: hostID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, State: classifier.StateDone,
 	}
@@ -147,7 +147,7 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	}
 	w := lifecycleTestWatcher(io, ledger, probe)
 	sessionID := "opencode-ambiguous:@1"
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID:        sessionID,
 		Command:   "opencode",
 		Cwd:       "/repo/zen",
@@ -194,8 +194,8 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	if turn.Status != TurnRunning {
 		t.Fatalf("provider-native running did not promote the turn: %+v", turn)
 	}
-	agent := w.GetAgent(sessionID)
-	state, _ := projectDelegatedTurn(agent, turn)
+	worker := w.GetWorker(sessionID)
+	state, _ := projectDelegatedTurn(worker, turn)
 	if state != classifier.StateRunning {
 		t.Fatalf("poll projection = %s", state)
 	}
@@ -214,7 +214,7 @@ func TestOpenCodeAmbiguousAdmissionPromotedByLiveProviderActivityAndSettlesOnce(
 	if applied.Status != TurnDone {
 		t.Fatalf("terminal turn reopened after settlement: %+v", applied)
 	}
-	state, _ = projectDelegatedTurn(w.GetAgent(sessionID), turn)
+	state, _ = projectDelegatedTurn(w.GetWorker(sessionID), turn)
 	if state != classifier.StateDone {
 		t.Fatalf("terminal turn projection = %s, want done", state)
 	}
@@ -272,7 +272,7 @@ func TestOpenCodeConfirmedFollowUpAfterAmbiguousAdmissionOwnsNewSignalTurn(t *te
 	}
 	w := lifecycleTestWatcher(io, ledger, probe)
 	sessionID := "opencode-followup:@2"
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, Delegated: true, State: classifier.StateUnknown,
 	}
@@ -333,7 +333,7 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) 
 	}
 	w := lifecycleTestWatcher(io, ledger, probe)
 	sessionID := "opencode-noevidence:@3"
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, Delegated: true, State: classifier.StateUnknown,
 	}
@@ -351,8 +351,8 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) 
 	if _, err := w.RebindDelegatedTurnProjection(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	if agent := w.GetAgent(sessionID); agent == nil || agent.State != classifier.StateRunning {
-		t.Fatalf("pending projection = %+v, want running", agent)
+	if worker := w.GetWorker(sessionID); worker == nil || worker.State != classifier.StateRunning {
+		t.Fatalf("pending projection = %+v, want running", worker)
 	}
 }
 
@@ -395,7 +395,7 @@ func TestOpenCodeFollowUpTurnNotTerminalizedByStaleCompletedProviderActivity(t *
 		},
 	}
 	w := lifecycleTestWatcher(io, ledger, probe)
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, Delegated: true, State: classifier.StateRunning,
 	}
@@ -446,7 +446,7 @@ func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()
 	now := time.Now().UTC()
-	sessionID := "brain-agent-opencode:@8174"
+	sessionID := "zen-worker-opencode:@8174"
 	firstAt := now.Add(-30 * time.Minute)
 	firstTurn := sessionID + ":turn:1"
 	ledger.seed(sessionID, TurnSnapshot{
@@ -501,7 +501,7 @@ func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 		},
 	}
 	w := lifecycleTestWatcher(io, ledger, probe)
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
 		PaneAlive: true, Delegated: true, State: classifier.StateDone,
 	}
@@ -551,10 +551,10 @@ func TestOpenCodeReusedSessionDigestMismatchCannotAdoptPending(t *testing.T) {
 // TestProjectDelegatedTurnMapsAllCanonicalStatuses guards the projection
 // contract: list/capture/close/Work read canonical status only.
 func TestProjectDelegatedTurnMapsAllCanonicalStatuses(t *testing.T) {
-	agent := &classifier.Agent{Attention: "failed", NeedsAttention: true}
+	worker := &classifier.Worker{Attention: "failed", NeedsAttention: true}
 	for _, test := range []struct {
 		status TurnStatus
-		want   classifier.AgentState
+		want   classifier.WorkerState
 	}{
 		{TurnAdmitted, classifier.StateRunning},
 		{TurnAccepted, classifier.StateRunning},
@@ -565,18 +565,18 @@ func TestProjectDelegatedTurnMapsAllCanonicalStatuses(t *testing.T) {
 		{TurnUnknown, classifier.StateUnknown},
 	} {
 		turn := TurnSnapshot{SessionID: "s", TurnID: "t", Status: test.status, Summary: "summary"}
-		state, _ := projectDelegatedTurn(agent, turn)
+		state, _ := projectDelegatedTurn(worker, turn)
 		if state != test.want {
 			t.Fatalf("status %s projected %s, want %s", test.status, state, test.want)
 		}
 	}
-	if agent.Attention != "none" || agent.NeedsAttention {
-		t.Fatalf("non-blocked projection retained attention: %+v", agent)
+	if worker.Attention != "none" || worker.NeedsAttention {
+		t.Fatalf("non-blocked projection retained attention: %+v", worker)
 	}
 	blocked := TurnSnapshot{Status: TurnBlocked}
-	projectDelegatedTurn(agent, blocked)
-	if agent.Attention != "user_input" || !agent.NeedsAttention {
-		t.Fatalf("blocked projection attention = %+v", agent)
+	projectDelegatedTurn(worker, blocked)
+	if worker.Attention != "user_input" || !worker.NeedsAttention {
+		t.Fatalf("blocked projection attention = %+v", worker)
 	}
 }
 

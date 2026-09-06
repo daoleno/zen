@@ -88,7 +88,7 @@ func TestHostOwnershipLossHistoryDoesNotBlockCanonicalEventDelivery(t *testing.T
 	}
 	eventID := before.Review.EventID
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		},
 		ownedGenerations: map[string]string{hostID: "stable-host-generation"},
@@ -127,9 +127,7 @@ func TestHostOwnershipLossHistoryDoesNotBlockCanonicalEventDelivery(t *testing.T
 	if err != nil || !found || historical.Status != watcher.TurnUnknown || historical.ControlState != watcher.TurnControlOwnershipLost {
 		t.Fatalf("historical audit was rewritten: found=%v turn=%+v err=%v", found, historical, err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +147,7 @@ func TestHistoricalRunningHostTurnIsAuditOnlyAtSerializedAdmission(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	const (
 		hostID     = "brain-host:@legacy-foreground"
 		threadID   = "thread-legacy-foreground"
@@ -197,7 +195,7 @@ func TestHistoricalRunningHostTurnIsAuditOnlyAtSerializedAdmission(t *testing.T)
 	}
 	settledAt := acceptedAt.Add(time.Minute)
 	fw := &fakeWatcher{
-		sessions:         map[string]*classifier.Agent{hostID: {ID: hostID, Hidden: true, State: classifier.StateDone}},
+		sessions:         map[string]*classifier.Worker{hostID: {ID: hostID, Hidden: true, State: classifier.StateDone}},
 		ownedGenerations: map[string]string{hostID: "stable-host-generation"},
 		providerEvidence: map[string]watcher.ProviderActivityObservation{
 			hostID: {
@@ -231,7 +229,7 @@ func TestHistoricalHostTurnDoesNotLockOutOrdinaryUserInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	const (
 		hostID   = "brain-host:@historical-user-input"
 		threadID = "thread-historical-user-input"
@@ -267,7 +265,7 @@ func TestHistoricalHostTurnDoesNotLockOutOrdinaryUserInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone, PaneAlive: true},
 		},
 		ownedGenerations: map[string]string{hostID: "current-host-generation"},
@@ -290,7 +288,7 @@ func TestCurrentUnreadableProviderActivityDoesNotCreateSchedulerGate(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	const hostID = "brain-host:@provider-unreadable"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
@@ -298,7 +296,7 @@ func TestCurrentUnreadableProviderActivityDoesNotCreateSchedulerGate(t *testing.
 	item := createSignalTestWork(t, store, "provider unreadable", "worker:@provider-unreadable")
 	appendSignalTestEvent(t, store, item, "provider-unreadable")
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateUnknown, PaneAlive: true},
 		},
 		ownedGenerations: map[string]string{hostID: "current-host-generation"},

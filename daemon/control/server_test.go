@@ -32,9 +32,9 @@ func TestServerCallRoundTrip(t *testing.T) {
 
 	handler := &testHandler{
 		response: Response{
-			OK:    true,
-			Text:  "hello",
-			Agent: &Agent{ID: "main:@42", Name: "Franklin", Status: "running"},
+			OK:     true,
+			Text:   "hello",
+			Worker: &Worker{ID: "main:@42", Name: "Franklin", Status: "running"},
 		},
 	}
 	server := &Server{Path: socketPath, Handler: handler}
@@ -48,11 +48,11 @@ func TestServerCallRoundTrip(t *testing.T) {
 	}()
 	waitForSocketPath(t, socketPath)
 
-	resp, err := Call(socketPath, Request{Type: "agent_capture", AgentID: "main:@42"})
+	resp, err := Call(socketPath, Request{Type: "worker_capture", WorkerID: "main:@42"})
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !resp.OK || resp.Text != "hello" || resp.Agent == nil || resp.Agent.ID != "main:@42" {
+	if !resp.OK || resp.Text != "hello" || resp.Worker == nil || resp.Worker.ID != "main:@42" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 
@@ -60,7 +60,7 @@ func TestServerCallRoundTrip(t *testing.T) {
 	if len(handler.requests) != 1 {
 		t.Fatalf("handler requests = %#v", handler.requests)
 	}
-	if handler.requests[0].Type != "agent_capture" || handler.requests[0].AgentID != "main:@42" {
+	if handler.requests[0].Type != "worker_capture" || handler.requests[0].WorkerID != "main:@42" {
 		t.Fatalf("handler request = %#v", handler.requests[0])
 	}
 	handler.mu.Unlock()

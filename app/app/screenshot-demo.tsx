@@ -20,7 +20,7 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { AgentListRowContainer } from "../components/agents/AgentListRowContainer";
+import { WorkerListRowContainer } from "../components/workers/WorkerListRowContainer";
 import {
   PrimaryDrawerShell,
   resolvePrimaryAppBarGeometry,
@@ -69,7 +69,8 @@ import {
   threadRuntimeRows,
 } from "../services/providers/sessionModelHelpers";
 import type { ProvidersSnapshot } from "../services/providers/types";
-import { StatsScreenshotDemo, type StatsPayload } from "./stats";
+import { StatsScreenshotDemo } from "./stats";
+import type { StatsView } from "../services/statsPayload";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
 
@@ -342,7 +343,7 @@ function ChatDemo() {
               additionsText: "+42",
               deletionsText: "−9",
             }}
-            isStructuredChatAgent
+            isStructuredChatWorker
             onBack={NOOP}
             onOpenSessionDetails={NOOP}
             onOpenGitDiff={NOOP}
@@ -1037,14 +1038,14 @@ function SessionsDemo() {
           showsVerticalScrollIndicator={false}
         >
           {SCREENSHOT_SESSION_AGENTS.map((agent) => (
-            <AgentListRowContainer
+            <WorkerListRowContainer
               key={agent.key}
               agent={agent}
               showServerName={false}
               selectionMode={false}
               selected={false}
               selectionDisabled={false}
-              onOpenAgent={NOOP}
+              onOpenWorker={NOOP}
               onEnterSelection={NOOP}
               onToggleSelection={NOOP}
             />
@@ -1076,7 +1077,7 @@ function StatsDemo() {
         </View>
       </View>
       <StatsScreenshotDemo
-        statsData={SCREENSHOT_STATS_FIXTURE as unknown as StatsPayload}
+        statsData={SCREENSHOT_STATS_FIXTURE as unknown as StatsView}
       />
     </SafeAreaView>
   );

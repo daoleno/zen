@@ -20,7 +20,7 @@ func TestReviewAuthorizedSendReusesCompletedSessionBeforeTypedContinue(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "brain-agent-reusable:@500"
+	const sessionID = "zen-worker-reusable:@500"
 	oldTurnID := admitControlWorkOwner(t, store, item.ID, sessionID)
 	oldTurn, found, err := store.Turn(sessionID)
 	if err != nil || !found {
@@ -50,12 +50,12 @@ func TestReviewAuthorizedSendReusesCompletedSessionBeforeTypedContinue(t *testin
 	lease := delivered.Review.Lease
 	fw := newFakeControlWatcher()
 	fw.turnStore = store
-	fw.agents[sessionID] = &classifier.Agent{
+	fw.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Name: "Reusable", Command: "codex", Delegated: true, State: classifier.StateDone,
 	}
 	app := &controlApp{watcher: fw, brainStore: store}
 	request := control.Request{
-		Type: "agent_send", AgentID: sessionID, Text: "Implement the reviewed second stage.", Submit: true,
+		Type: "worker_send", WorkerID: sessionID, Text: "Implement the reviewed second stage.", Submit: true,
 		WorkID: item.ID, EventID: delivered.Review.EventID,
 		HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
 		Revision: int64(lease.DeliveryWorkRevision), TurnID: "turn:review-reuse-next",

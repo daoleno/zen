@@ -13,7 +13,7 @@ type fixedStateProbe struct {
 	obs ProviderActivityObservation
 }
 
-func (p *fixedStateProbe) ObserveProviderActivity(classifier.Agent, time.Time) ProviderActivityObservation {
+func (p *fixedStateProbe) ObserveProviderActivity(classifier.Worker, time.Time) ProviderActivityObservation {
 	if p == nil {
 		return ProviderActivityObservation{}
 	}
@@ -39,7 +39,7 @@ func boundedLossPollTimes(base time.Time, seconds int) []time.Time {
 // loss.
 func TestPollProviderEvidenceLossEmitsUncertainAfterBoundedWindow(t *testing.T) {
 	base := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
-	sessionID := "brain-agent-loss:@1"
+	sessionID := "zen-worker-loss:@1"
 	turnID := sessionID + ":turn:1"
 
 	newWatcher := func(times []time.Time) (*Watcher, *fakeTurnLedger) {
@@ -218,12 +218,12 @@ func TestPollProviderEvidenceLossEmitsUncertainAfterBoundedWindow(t *testing.T) 
 // command on rediscovery; the tmux option / launch command is only an
 // advisory cache that backfills a missing binding idempotently.
 func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
-	sessionID := "brain-agent-pi:@1"
+	sessionID := "zen-worker-pi:@1"
 	ownedPath := "/home/user/.zen/pi-sessions/owned.jsonl"
 
 	t.Run("restore from ledger", func(t *testing.T) {
 		w := New(time.Second)
-		agent := &classifier.Agent{
+		worker := &classifier.Worker{
 			ID:      sessionID,
 			Command: "pi", // rediscovered without the owned flag (argv rewrite)
 		}
@@ -235,11 +235,11 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 			},
 		}
 		w.mu.Lock()
-		w.restoreTurnTranscriptBindingLocked(agent, turn)
+		w.restoreTurnTranscriptBindingLocked(worker, turn)
 		w.mu.Unlock()
 		want := "pi --session " + shellQuoteForLaunch(ownedPath)
-		if agent.Command != want {
-			t.Fatalf("restored command = %q, want %q", agent.Command, want)
+		if worker.Command != want {
+			t.Fatalf("restored command = %q, want %q", worker.Command, want)
 		}
 	})
 
@@ -250,21 +250,21 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 		w := New(time.Second)
 		ledger := newFakeTurnLedger()
 		w.turnLedger = ledger
-		agent := &classifier.Agent{
+		worker := &classifier.Worker{
 			ID:      sessionID,
 			Command: "pi --session " + shellQuoteForLaunch(ownedPath),
 		}
 		w.mu.Lock()
-		w.restoreTurnTranscriptBindingLocked(agent, TurnSnapshot{SessionID: sessionID, TurnID: sessionID + ":turn:1"})
+		w.restoreTurnTranscriptBindingLocked(worker, TurnSnapshot{SessionID: sessionID, TurnID: sessionID + ":turn:1"})
 		w.mu.Unlock()
-		if agent.Command != "pi --session "+shellQuoteForLaunch(ownedPath) {
-			t.Fatalf("command changed without a binding: %q", agent.Command)
+		if worker.Command != "pi --session "+shellQuoteForLaunch(ownedPath) {
+			t.Fatalf("command changed without a binding: %q", worker.Command)
 		}
 	})
 
 	t.Run("non-pi command never rewritten", func(t *testing.T) {
 		w := New(time.Second)
-		agent := &classifier.Agent{ID: sessionID, Command: "opencode"}
+		worker := &classifier.Worker{ID: sessionID, Command: "opencode"}
 		turn := TurnSnapshot{
 			SessionID: sessionID,
 			TranscriptBinding: TranscriptBinding{
@@ -272,10 +272,10 @@ func TestLedgerTranscriptBindingRestoresAndBackfills(t *testing.T) {
 			},
 		}
 		w.mu.Lock()
-		w.restoreTurnTranscriptBindingLocked(agent, turn)
+		w.restoreTurnTranscriptBindingLocked(worker, turn)
 		w.mu.Unlock()
-		if agent.Command != "opencode" {
-			t.Fatalf("non-pi command rewritten: %q", agent.Command)
+		if worker.Command != "opencode" {
+			t.Fatalf("non-pi command rewritten: %q", worker.Command)
 		}
 	})
 }

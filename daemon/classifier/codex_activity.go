@@ -24,7 +24,7 @@ func NewCodexActivityAdapter() *CodexActivityAdapter {
 func (a *CodexActivityAdapter) Name() string { return "codex" }
 
 func (a *CodexActivityAdapter) Match(in ActivityInput) bool {
-	base := commandBaseName(in.Agent.Command)
+	base := commandBaseName(in.Worker.Command)
 	if base == "codex" || strings.Contains(base, "codex") {
 		return true
 	}

@@ -5,8 +5,8 @@ import React, {
   type ReactNode,
 } from "react";
 import {
-  normalizeAgentSessionCapabilities,
-  type AgentSessionCapabilities,
+  normalizeWorkerSessionCapabilities,
+  type WorkerSessionCapabilities,
 } from "../services/providers/sessionCapabilities";
 
 export type BrainScheduledResult = {
@@ -68,7 +68,7 @@ export type BrainWorkBacklog = {
   historical_results: number;
 };
 
-export type BrainAgentRef = {
+export type BrainWorkerRef = {
   id: string;
   name: string;
   status: string;
@@ -80,34 +80,34 @@ export type BrainAgentRef = {
   updated_at?: string;
   delegated?: boolean;
   /**
-   * Daemon-authoritative flat Session capabilities on brain_snapshot.host_agent.
-   * Hidden hosts are absent from agent_session_list — never invent from name/command.
+   * Daemon-authoritative flat Session capabilities on brain_snapshot.host_worker.
+   * Hidden hosts are absent from worker_session_list — never invent from name/command.
    */
-  capabilities?: AgentSessionCapabilities;
+  capabilities?: WorkerSessionCapabilities;
 };
 
-export type BrainAdapterCapabilities = {
+export type BrainExecutorCapabilities = {
   interactive_tty?: boolean;
   structured_events?: boolean;
 };
 
-export type BrainAdapterRef = {
+export type BrainExecutorRef = {
   id: string;
   name: string;
   provider?: string;
   command?: string;
   runtime?: string;
-  capabilities?: BrainAdapterCapabilities;
+  capabilities?: BrainExecutorCapabilities;
   host?: boolean;
   delegated?: boolean;
 };
 
 export type BrainSnapshot = {
-  agents?: BrainAgentRef[];
-  host_agent?: BrainAgentRef | null;
-  host_adapter?: BrainAdapterRef | null;
-  delegated_adapter?: BrainAdapterRef | null;
-  adapters?: BrainAdapterRef[];
+  workers?: BrainWorkerRef[];
+  host_worker?: BrainWorkerRef | null;
+  host_executor?: BrainExecutorRef | null;
+  delegated_executor?: BrainExecutorRef | null;
+  executors?: BrainExecutorRef[];
   chat_thread_id?: string;
   scheduled_results?: BrainScheduledResult[];
   current_work?: BrainCurrentWork[];
@@ -139,9 +139,6 @@ type RawBrainSnapshot = Omit<
   scheduled_results?: unknown[];
   current_work?: unknown[];
   work_backlog?: unknown;
-  host_executor?: BrainAdapterRef | null;
-  delegated_executor?: BrainAdapterRef | null;
-  executors?: BrainAdapterRef[];
 };
 
 type Action =
@@ -160,34 +157,32 @@ function normalizeSnapshot(
   serverName: string,
   serverUrl: string,
 ): BrainServerState {
-  const hostAdapter = raw?.host_adapter ?? raw?.host_executor;
-  const delegatedAdapter = raw?.delegated_adapter ?? raw?.delegated_executor;
-  const adapters = Array.isArray(raw?.adapters)
-    ? raw.adapters
-    : Array.isArray(raw?.executors)
-      ? raw.executors
-      : [];
+  const hostExecutor = raw?.host_executor;
+  const delegatedExecutor = raw?.delegated_executor;
+  const executors = Array.isArray(raw?.executors)
+    ? raw.executors
+    : [];
   return {
     serverId,
     serverName,
     serverUrl,
     hydrated: true,
-    agents: Array.isArray(raw?.agents)
-      ? raw.agents.map(normalizeAgentRef).filter((agent) => agent.id)
+    workers: Array.isArray(raw?.workers)
+      ? raw.workers.map(normalizeWorkerRef).filter((agent) => agent.id)
       : [],
-    host_agent:
-      raw?.host_agent && typeof raw.host_agent === "object"
-        ? normalizeAgentRef(raw.host_agent)
+    host_worker:
+      raw?.host_worker && typeof raw.host_worker === "object"
+        ? normalizeWorkerRef(raw.host_worker)
         : undefined,
-    host_adapter:
-      hostAdapter && typeof hostAdapter === "object"
-        ? normalizeAdapterRef(hostAdapter)
+    host_executor:
+      hostExecutor && typeof hostExecutor === "object"
+        ? normalizeExecutorRef(hostExecutor)
         : undefined,
-    delegated_adapter:
-      delegatedAdapter && typeof delegatedAdapter === "object"
-        ? normalizeAdapterRef(delegatedAdapter)
+    delegated_executor:
+      delegatedExecutor && typeof delegatedExecutor === "object"
+        ? normalizeExecutorRef(delegatedExecutor)
         : undefined,
-    adapters: adapters.map(normalizeAdapterRef).filter((adapter) => adapter.id),
+    executors: executors.map(normalizeExecutorRef).filter((adapter) => adapter.id),
     chat_thread_id:
       typeof raw?.chat_thread_id === "string" ? raw.chat_thread_id : undefined,
     scheduled_results: Array.isArray(raw?.scheduled_results)
@@ -438,7 +433,7 @@ function normalizeScheduledResults(raw: any[]): BrainScheduledResult[] {
   });
 }
 
-function normalizeAgentRef(raw: any): BrainAgentRef {
+function normalizeWorkerRef(raw: any): BrainWorkerRef {
   const parsedStartedAt =
     typeof raw?.started_at === "string" ||
     typeof raw?.started_at === "number" ||
@@ -464,25 +459,25 @@ function normalizeAgentRef(raw: any): BrainAgentRef {
     updated_at:
       typeof raw?.updated_at === "string" ? raw.updated_at : undefined,
     delegated: raw?.delegated === true,
-    // Same strict flat boolean helper as agent_session.capabilities.
-    capabilities: normalizeAgentSessionCapabilities(raw?.capabilities),
+    // Same strict flat boolean helper as worker_session.capabilities.
+    capabilities: normalizeWorkerSessionCapabilities(raw?.capabilities),
   };
 }
 
-function normalizeAdapterRef(raw: any): BrainAdapterRef {
+function normalizeExecutorRef(raw: any): BrainExecutorRef {
   return {
     id: typeof raw?.id === "string" ? raw.id : "",
     name: typeof raw?.name === "string" ? raw.name : "",
     provider: typeof raw?.provider === "string" ? raw.provider : undefined,
     command: typeof raw?.command === "string" ? raw.command : undefined,
     runtime: typeof raw?.runtime === "string" ? raw.runtime : undefined,
-    capabilities: normalizeAdapterCapabilities(raw?.capabilities),
+    capabilities: normalizeExecutorCapabilities(raw?.capabilities),
     host: typeof raw?.host === "boolean" ? raw.host : undefined,
     delegated: typeof raw?.delegated === "boolean" ? raw.delegated : undefined,
   };
 }
 
-function normalizeAdapterCapabilities(raw: any): BrainAdapterCapabilities {
+function normalizeExecutorCapabilities(raw: any): BrainExecutorCapabilities {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
     interactive_tty:
@@ -553,11 +548,11 @@ function brainServerStatesEqual(
     left.chat_thread_id === right.chat_thread_id &&
     left.workspace === right.workspace &&
     left.worklog_path === right.worklog_path &&
-    agentRefsEqual(left.host_agent, right.host_agent) &&
-    adapterRefsEqual(left.host_adapter, right.host_adapter) &&
-    adapterRefsEqual(left.delegated_adapter, right.delegated_adapter) &&
-    agentRefArraysEqual(left.agents ?? [], right.agents ?? []) &&
-    adapterRefArraysEqual(left.adapters ?? [], right.adapters ?? []) &&
+    workerRefsEqual(left.host_worker, right.host_worker) &&
+    executorRefsEqual(left.host_executor, right.host_executor) &&
+    executorRefsEqual(left.delegated_executor, right.delegated_executor) &&
+    workerRefArraysEqual(left.workers ?? [], right.workers ?? []) &&
+    executorRefArraysEqual(left.executors ?? [], right.executors ?? []) &&
     scheduledResultArraysEqual(
       left.scheduled_results ?? [],
       right.scheduled_results ?? [],
@@ -679,9 +674,9 @@ function scheduledResultEqual(
   );
 }
 
-function agentRefArraysEqual(
-  left: BrainAgentRef[],
-  right: BrainAgentRef[],
+function workerRefArraysEqual(
+  left: BrainWorkerRef[],
+  right: BrainWorkerRef[],
 ): boolean {
   if (left === right) {
     return true;
@@ -690,16 +685,16 @@ function agentRefArraysEqual(
     return false;
   }
   for (let index = 0; index < left.length; index += 1) {
-    if (!agentRefsEqual(left[index], right[index])) {
+    if (!workerRefsEqual(left[index], right[index])) {
       return false;
     }
   }
   return true;
 }
 
-function agentRefsEqual(
-  left: BrainAgentRef | null | undefined,
-  right: BrainAgentRef | null | undefined,
+function workerRefsEqual(
+  left: BrainWorkerRef | null | undefined,
+  right: BrainWorkerRef | null | undefined,
 ): boolean {
   if (left === right) {
     return true;
@@ -727,9 +722,9 @@ function agentRefsEqual(
   );
 }
 
-function adapterRefArraysEqual(
-  left: BrainAdapterRef[],
-  right: BrainAdapterRef[],
+function executorRefArraysEqual(
+  left: BrainExecutorRef[],
+  right: BrainExecutorRef[],
 ): boolean {
   if (left === right) {
     return true;
@@ -738,16 +733,16 @@ function adapterRefArraysEqual(
     return false;
   }
   for (let index = 0; index < left.length; index += 1) {
-    if (!adapterRefsEqual(left[index], right[index])) {
+    if (!executorRefsEqual(left[index], right[index])) {
       return false;
     }
   }
   return true;
 }
 
-function adapterRefsEqual(
-  left: BrainAdapterRef | null | undefined,
-  right: BrainAdapterRef | null | undefined,
+function executorRefsEqual(
+  left: BrainExecutorRef | null | undefined,
+  right: BrainExecutorRef | null | undefined,
 ): boolean {
   if (left === right) {
     return true;
@@ -763,13 +758,13 @@ function adapterRefsEqual(
     left.runtime === right.runtime &&
     left.host === right.host &&
     left.delegated === right.delegated &&
-    adapterCapabilitiesEqual(left.capabilities, right.capabilities)
+    executorCapabilitiesEqual(left.capabilities, right.capabilities)
   );
 }
 
-function adapterCapabilitiesEqual(
-  left: BrainAdapterCapabilities | undefined,
-  right: BrainAdapterCapabilities | undefined,
+function executorCapabilitiesEqual(
+  left: BrainExecutorCapabilities | undefined,
+  right: BrainExecutorCapabilities | undefined,
 ): boolean {
   if (left === right) {
     return true;

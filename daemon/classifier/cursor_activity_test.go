@@ -8,7 +8,7 @@ func TestCursorActivityAdapter_PaneAndProcessFacts(t *testing.T) {
 		command    string
 		pane       string
 		toolChild  bool
-		wantState  AgentState
+		wantState  WorkerState
 		wantSource string
 	}{
 		{
@@ -59,7 +59,7 @@ func TestCursorActivityAdapter_PaneAndProcessFacts(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			input := ActivityInput{
-				Agent:           Agent{Command: testCase.command},
+				Worker:          Worker{Command: testCase.command},
 				PaneContent:     testCase.pane,
 				ToolChildActive: testCase.toolChild,
 			}

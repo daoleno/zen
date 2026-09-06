@@ -7,13 +7,13 @@ import { wsClient } from "../../../services/websocket";
 
 interface UseSessionResourceSheetInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   connectionConnected: boolean;
 }
 
 export function useSessionResourceSheet({
   serverId,
-  agentId,
+  workerId,
   connectionConnected,
 }: UseSessionResourceSheetInput) {
   const [visible, setVisible] = useState(false);
@@ -39,7 +39,7 @@ export function useSessionResourceSheet({
   }, []);
 
   const load = useCallback(async () => {
-    if (!visible || !serverId || !agentId) {
+    if (!visible || !serverId || !workerId) {
       return;
     }
     if (!connectionConnected) {
@@ -55,13 +55,13 @@ export function useSessionResourceSheet({
     setError(null);
 
     try {
-      const next = await wsClient.getSessionResourceSnapshot(serverId, agentId);
+      const next = await wsClient.getSessionResourceSnapshot(serverId, workerId);
       if (
         !acceptSessionResourceSnapshotResponse({
           requestSeq,
           currentSeq: requestSeqRef.current,
-          snapshotAgentId: next.agent_id,
-          expectedAgentId: agentId,
+          snapshotWorkerId: next.worker_id,
+          expectedWorkerId: workerId,
         })
       ) {
         return;
@@ -79,13 +79,13 @@ export function useSessionResourceSheet({
         setLoading(false);
       }
     }
-  }, [agentId, connectionConnected, serverId, visible]);
+  }, [workerId, connectionConnected, serverId, visible]);
 
   useEffect(() => {
     // Session or server identity changes must never resurrect a prior projection.
     clearProjection();
     setVisible(false);
-  }, [agentId, serverId, clearProjection]);
+  }, [workerId, serverId, clearProjection]);
 
   useEffect(() => {
     if (!visible) {

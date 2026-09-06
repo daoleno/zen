@@ -1806,44 +1806,44 @@ func TestCleanupFailedLaunchCommittedCompensationMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		agentID := "agent:@committed"
-		if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, agentID); err != nil {
+		workerID := "agent:@committed"
+		if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, workerID); err != nil {
 			t.Fatal(err)
 		}
-		return owner, agentID
+		return owner, workerID
 	}
 
 	t.Run("kill_failure_preserves_committed", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
-		cleanup := CleanupFailedLaunch(owner, "", agentID,
+		owner, workerID := newCommitted(t)
+		cleanup := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error { return errors.New("injected kill failure") },
 			func(string) (SessionLiveness, error) { return SessionLivenessPresent, nil },
 		)
 		if cleanup.Persist.Applied || !errors.Is(cleanup.Err, ErrSessionStillLive) {
 			t.Fatalf("cleanup=%#v", cleanup)
 		}
-		if _, ok := owner.Table().Get(agentID); !ok {
+		if _, ok := owner.Table().Get(workerID); !ok {
 			t.Fatal("committed route must remain")
 		}
 	})
 
 	t.Run("true_missing_then_release", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
-		cleanup := CleanupFailedLaunch(owner, "", agentID,
+		owner, workerID := newCommitted(t)
+		cleanup := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error { return nil },
 			func(string) (SessionLiveness, error) { return SessionLivenessAbsent, nil },
 		)
 		if cleanup.Err != nil || !cleanup.Persist.Applied {
 			t.Fatalf("cleanup=%#v", cleanup)
 		}
-		if _, ok := owner.Table().Get(agentID); ok {
+		if _, ok := owner.Table().Get(workerID); ok {
 			t.Fatal("committed route must be released")
 		}
 	})
 
 	t.Run("resource_cleanup_failure_preserves_committed", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
-		cleanup := CleanupFailedLaunch(owner, "", agentID,
+		owner, workerID := newCommitted(t)
+		cleanup := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error {
 				return fmt.Errorf("%w: injected", errors.New("delegated resource release failed"))
 			},
@@ -1852,20 +1852,20 @@ func TestCleanupFailedLaunchCommittedCompensationMatrix(t *testing.T) {
 		if cleanup.Persist.Applied || cleanup.Err == nil {
 			t.Fatalf("cleanup=%#v", cleanup)
 		}
-		if _, ok := owner.Table().Get(agentID); !ok {
+		if _, ok := owner.Table().Get(workerID); !ok {
 			t.Fatal("committed route must remain after resource failure")
 		}
 	})
 
 	t.Run("release_persist_failure_after_kill", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
+		owner, workerID := newCommitted(t)
 		owner.RoutesFile().SetPersistHook(func(phase string) error {
 			if phase == "before_rename" {
 				return errors.New("injected release pre-rename")
 			}
 			return nil
 		})
-		cleanup := CleanupFailedLaunch(owner, "", agentID,
+		cleanup := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error { return nil },
 			func(string) (SessionLiveness, error) { return SessionLivenessAbsent, nil },
 		)
@@ -1876,14 +1876,14 @@ func TestCleanupFailedLaunchCommittedCompensationMatrix(t *testing.T) {
 		if !strings.Contains(cleanup.Err.Error(), "injected release pre-rename") {
 			t.Fatalf("err=%v", cleanup.Err)
 		}
-		if _, ok := owner.Table().Get(agentID); !ok {
+		if _, ok := owner.Table().Get(workerID); !ok {
 			t.Fatal("committed route must remain when release not applied")
 		}
 	})
 
 	t.Run("retry_converges_after_resource_then_missing", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
-		first := CleanupFailedLaunch(owner, "", agentID,
+		owner, workerID := newCommitted(t)
+		first := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error {
 				return fmt.Errorf("%w: injected", errors.New("delegated resource release failed"))
 			},
@@ -1892,21 +1892,21 @@ func TestCleanupFailedLaunchCommittedCompensationMatrix(t *testing.T) {
 		if first.Persist.Applied {
 			t.Fatal("first must not apply")
 		}
-		second := CleanupFailedLaunch(owner, "", agentID,
+		second := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error { return nil },
 			func(string) (SessionLiveness, error) { return SessionLivenessAbsent, nil },
 		)
 		if second.Err != nil || !second.Persist.Applied {
 			t.Fatalf("second=%#v", second)
 		}
-		if _, ok := owner.Table().Get(agentID); ok {
+		if _, ok := owner.Table().Get(workerID); ok {
 			t.Fatal("retry must release committed route")
 		}
 	})
 
 	t.Run("probe_failure_preserves_committed", func(t *testing.T) {
-		owner, agentID := newCommitted(t)
-		cleanup := CleanupFailedLaunch(owner, "", agentID,
+		owner, workerID := newCommitted(t)
+		cleanup := CleanupFailedLaunch(owner, "", workerID,
 			func(string) error { return errors.New("injected kill failure") },
 			func(string) (SessionLiveness, error) {
 				return SessionLivenessUnknown, errors.New("injected probe failure")
@@ -1915,7 +1915,7 @@ func TestCleanupFailedLaunchCommittedCompensationMatrix(t *testing.T) {
 		if cleanup.Persist.Applied || !errors.Is(cleanup.Err, ErrSessionLivenessUnknown) {
 			t.Fatalf("cleanup=%#v", cleanup)
 		}
-		if _, ok := owner.Table().Get(agentID); !ok {
+		if _, ok := owner.Table().Get(workerID); !ok {
 			t.Fatal("committed route must remain on ambiguous probe")
 		}
 	})

@@ -319,7 +319,7 @@ func (e env) detectRunningZen(stateDir string) (string, bool) {
 	if _, err := os.Stat(socketPath); err != nil {
 		return "", false
 	}
-	resp, err := control.Call(socketPath, control.Request{Type: "agent_list"})
+	resp, err := control.Call(socketPath, control.Request{Type: "worker_list"})
 	if err == nil && resp.OK {
 		return "", true
 	}
@@ -436,18 +436,18 @@ func anyAuth(items []ExecutorCheck, want AuthState) bool {
 }
 
 func (e env) probeExecutor(name string, executor work.Executor) ExecutorCheck {
-	agent := work.NewAgentExecutor(name, executor)
+	worker := work.NewWorkerExecutor(name, executor)
 	item := ExecutorCheck{
-		ID:           agent.ID,
-		Name:         agent.Name,
-		Provider:     agent.Provider,
+		ID:           worker.ID,
+		Name:         worker.Name,
+		Provider:     worker.Provider,
 		Configured:   true,
-		Command:      agent.Command,
+		Command:      worker.Command,
 		Auth:         AuthUnknown,
-		Capabilities: agent.Capabilities,
+		Capabilities: worker.Capabilities,
 	}
 
-	bin := firstCommandToken(agent.Command)
+	bin := firstCommandToken(worker.Command)
 	if bin == "" {
 		item.Status = StatusFail
 		item.Remediation = RemediationConfigureExecutor
@@ -465,9 +465,9 @@ func (e env) probeExecutor(name string, executor work.Executor) ExecutorCheck {
 	}
 	item.BinaryFound = true
 	item.BinaryPath = path
-	item.Version = e.probeVersion(path, agent.Provider)
-	item.Auth = e.probeAuth(path, agent.Provider)
-	if agent.Provider == work.AgentProviderOpenCode {
+	item.Version = e.probeVersion(path, worker.Provider)
+	item.Auth = e.probeAuth(path, worker.Provider)
+	if worker.Provider == work.WorkerProviderOpenCode {
 		e.probeOpenCodeRuntime(path, &item)
 	}
 
@@ -492,7 +492,7 @@ func (e env) probeExecutor(name string, executor work.Executor) ExecutorCheck {
 		item.Status = StatusWarn
 		item.Summary = fmt.Sprintf("%s runnable (%s); auth state unknown", item.ID, item.Provider)
 	}
-	if agent.Provider == work.AgentProviderOpenCode {
+	if worker.Provider == work.WorkerProviderOpenCode {
 		item.Summary = appendOpenCodeProbeSummary(item.Summary, item.ModelsStatus, item.DBPathStatus)
 	}
 	return item
@@ -599,22 +599,22 @@ func (e env) probeAuth(binaryPath, provider string) AuthState {
 	defer cancel()
 
 	switch provider {
-	case work.AgentProviderCodex:
+	case work.WorkerProviderCodex:
 		out, err := e.opts.RunCommand(ctx, binaryPath, "login", "status")
 		return parseCodexAuth(out, err)
-	case work.AgentProviderClaude:
+	case work.WorkerProviderClaude:
 		out, err := e.opts.RunCommand(ctx, binaryPath, "auth", "status", "--json")
 		return parseClaudeAuth(out, err)
-	case work.AgentProviderCursor:
+	case work.WorkerProviderCursor:
 		out, err := e.opts.RunCommand(ctx, binaryPath, "status", "--format", "json")
 		return parseCursorAuth(out, err)
-	case work.AgentProviderGrok:
+	case work.WorkerProviderGrok:
 		// Grok has login but no safe official non-interactive status command.
 		return AuthUnknown
-	case work.AgentProviderOpenCode:
+	case work.WorkerProviderOpenCode:
 		out, err := e.opts.RunCommand(ctx, binaryPath, "auth", "list")
 		return parseOpenCodeAuth(out, err)
-	case work.AgentProviderPi:
+	case work.WorkerProviderPi:
 		return probePiAuth()
 	default:
 		return AuthUnknown
@@ -788,12 +788,12 @@ func recommendHost(usable []ExecutorCheck) string {
 	}
 	// Prefer by provider if IDs differ.
 	for _, provider := range []string{
-		work.AgentProviderCodex,
-		work.AgentProviderClaude,
-		work.AgentProviderCursor,
-		work.AgentProviderGrok,
-		work.AgentProviderPi,
-		work.AgentProviderOpenCode,
+		work.WorkerProviderCodex,
+		work.WorkerProviderClaude,
+		work.WorkerProviderCursor,
+		work.WorkerProviderGrok,
+		work.WorkerProviderPi,
+		work.WorkerProviderOpenCode,
 	} {
 		for _, item := range usable {
 			if item.Provider == provider {

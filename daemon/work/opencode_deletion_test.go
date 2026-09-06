@@ -39,8 +39,8 @@ func TestOpenCodeMessageAndPartDeletionLeavesConversation(t *testing.T) {
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo/del", Command: "opencode", StartedAt: started}
-	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	worker := classifier.Worker{Cwd: "/repo/del", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestOpenCodeMessageAndPartDeletionLeavesConversation(t *testing.T) {
 		t.Fatalf("delete rows: %v: %s", err, out)
 	}
 
-	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	second, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestOpenCodeMessageAndPartDeletionLeavesConversation(t *testing.T) {
 
 	// The refresh must also survive a subsequent unchanged poll (the cursors
 	// and stamp must have advanced past the deletion full read).
-	third, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	third, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestOpenCodeMessageAndPartDeletionLeavesConversation(t *testing.T) {
 
 	// A fresh subscription (new reader) must observe the deleted state too.
 	fresh := NewProviderConversationReader()
-	freshConversation, err := fresh.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	freshConversation, err := fresh.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +128,8 @@ func TestOpenCodeDeletionThenReinsertRecovers(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo/del2", Command: "opencode", StartedAt: started}
-	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	worker := classifier.Worker{Cwd: "/repo/del2", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestOpenCodeDeletionThenReinsertRecovers(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("delete rows: %v: %s", err, out)
 	}
-	empty, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	empty, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestOpenCodeDeletionThenReinsertRecovers(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("reinsert: %v: %s", err, out)
 	}
-	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	second, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

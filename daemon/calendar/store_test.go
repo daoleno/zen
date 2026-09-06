@@ -129,20 +129,20 @@ func TestStoreRejectsInvalidDocumentWithoutMutation(t *testing.T) {
 		{name: "bare array", raw: `[]`, wantErr: "JSON object"},
 		{name: "empty object", raw: `{}`, wantErr: "schema_version is required"},
 		{name: "missing schema", raw: `{"items":[]}`, wantErr: "schema_version is required"},
-		{name: "zero schema", raw: `{"schema_version":0,"items":[]}`, wantErr: "must equal 1, got 0"},
-		{name: "negative schema", raw: `{"schema_version":-1,"items":[]}`, wantErr: "must equal 1, got -1"},
-		{name: "future schema", raw: `{"schema_version":2,"items":[]}`, wantErr: "must equal 1, got 2"},
+		{name: "zero schema", raw: `{"schema_version":0,"items":[]}`, wantErr: "must equal 2, got 0"},
+		{name: "negative schema", raw: `{"schema_version":-1,"items":[]}`, wantErr: "must equal 2, got -1"},
+		{name: "future schema", raw: `{"schema_version":3,"items":[]}`, wantErr: "must equal 2, got 3"},
 		{name: "null schema", raw: `{"schema_version":null,"items":[]}`, wantErr: "non-null integer"},
 		{name: "string schema", raw: `{"schema_version":"1","items":[]}`, wantErr: "non-null integer"},
-		{name: "fractional schema", raw: `{"schema_version":1.0,"items":[]}`, wantErr: "non-null integer"},
-		{name: "missing items", raw: `{"schema_version":1}`, wantErr: "items is required"},
-		{name: "null items", raw: `{"schema_version":1,"items":null}`, wantErr: "non-null JSON array"},
-		{name: "object items", raw: `{"schema_version":1,"items":{}}`, wantErr: "items must be a JSON array"},
-		{name: "unknown field", raw: `{"schema_version":1,"items":[],"legacy":true}`, wantErr: `unknown field "legacy"`},
-		{name: "malformed", raw: `{"schema_version":1,"items":[}`, wantErr: "invalid character"},
+		{name: "fractional schema", raw: `{"schema_version":2.0,"items":[]}`, wantErr: "non-null integer"},
+		{name: "missing items", raw: `{"schema_version":2}`, wantErr: "items is required"},
+		{name: "null items", raw: `{"schema_version":2,"items":null}`, wantErr: "non-null JSON array"},
+		{name: "object items", raw: `{"schema_version":2,"items":{}}`, wantErr: "items must be a JSON array"},
+		{name: "unknown field", raw: `{"schema_version":2,"items":[],"legacy":true}`, wantErr: `unknown field "legacy"`},
+		{name: "malformed", raw: `{"schema_version":2,"items":[}`, wantErr: "invalid character"},
 		{name: "non-object", raw: `null`, wantErr: "JSON object"},
-		{name: "multiple values", raw: `{"schema_version":1,"items":[]} {}`, wantErr: "exactly one JSON value"},
-		{name: "trailing garbage", raw: `{"schema_version":1,"items":[]} trailing`, wantErr: "exactly one JSON value"},
+		{name: "multiple values", raw: `{"schema_version":2,"items":[]} {}`, wantErr: "exactly one JSON value"},
+		{name: "trailing garbage", raw: `{"schema_version":2,"items":[]} trailing`, wantErr: "exactly one JSON value"},
 		{name: "blank", raw: " \n\t", wantErr: "JSON object"},
 	}
 
@@ -325,7 +325,7 @@ func (r *fakeRunner) RunScheduledAction(_ context.Context, _ Item, _ Run) (Actio
 		r.beforeReturn()
 	}
 	if r.result.WorkID == "" && r.err == nil {
-		r.result = ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true}
+		r.result = ActionResult{WorkID: "work-1", WorkerSession: "agent-1", Launched: true}
 	}
 	return r.result, r.err
 }
@@ -495,7 +495,7 @@ func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing
 	due := now.Add(time.Hour)
 	item, _ := store.Create(Item{Title: "Launch", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Launch work", SourceThreadID: "thread-1"})
 	runner := &fakeRunner{
-		result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true},
+		result: ActionResult{WorkID: "work-1", WorkerSession: "agent-1", Launched: true},
 		err:    errors.New("write started Work frontmatter"),
 	}
 	scheduler := NewScheduler(store, runner)
@@ -506,7 +506,7 @@ func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing
 	if got.Status != StatusRunning || len(got.Runs) != 1 || got.Runs[0].Status != StatusRunning {
 		t.Fatalf("partial launch was treated as terminal: %#v", got)
 	}
-	if got.Runs[0].WorkID != "work-1" || got.Runs[0].AgentSession != "agent-1" || got.Runs[0].Result != "" {
+	if got.Runs[0].WorkID != "work-1" || got.Runs[0].WorkerSession != "agent-1" || got.Runs[0].Result != "" {
 		t.Fatalf("partial launch evidence missing: %#v", got.Runs[0])
 	}
 	if scheduler.isLaunching(item.ID) {
@@ -591,7 +591,7 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(completed.Runs) != 1 || completed.Runs[0].WorkID != "work-1" || completed.Runs[0].AgentSession != "agent-1" {
+	if len(completed.Runs) != 1 || completed.Runs[0].WorkID != "work-1" || completed.Runs[0].WorkerSession != "agent-1" {
 		t.Fatalf("launch link was not recorded exactly once: %#v", completed)
 	}
 
@@ -652,7 +652,7 @@ func TestSchedulerLaunchGuardClearsOnErrorExits(t *testing.T) {
 		}
 		calendarPath := store.path
 		runner := &fakeRunner{
-			result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true},
+			result: ActionResult{WorkID: "work-1", WorkerSession: "agent-1", Launched: true},
 			beforeReturn: func() {
 				store.path = root
 			},

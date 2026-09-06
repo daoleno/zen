@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const lifecycleStoreSchema = 1
+const lifecycleStoreSchema = 2
 
 // lifecycleDatabase is the single durable transaction image. Current rows and
 // append-only Events are replaced together, so recovery never replays a second
@@ -16,14 +16,14 @@ const lifecycleStoreSchema = 1
 type lifecycleDatabase struct {
 	Schema  int               `json:"schema"`
 	NextSeq uint64            `json:"next_seq"`
-	Works   map[string]*State `json:"works"`
+	Works   map[WorkID]*State `json:"works"`
 	Events  []Event           `json:"events"`
 }
 
 func readLifecycleDatabase(path string) (lifecycleDatabase, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return lifecycleDatabase{Schema: lifecycleStoreSchema, NextSeq: 1, Works: map[string]*State{}}, nil
+		return lifecycleDatabase{Schema: lifecycleStoreSchema, NextSeq: 1, Works: map[WorkID]*State{}}, nil
 	}
 	if err != nil {
 		return lifecycleDatabase{}, err
@@ -32,38 +32,54 @@ func readLifecycleDatabase(path string) (lifecycleDatabase, error) {
 	if err := json.Unmarshal(raw, &database); err != nil {
 		return lifecycleDatabase{}, fmt.Errorf("decode lifecycle store: %w", err)
 	}
+	return database, validateLifecycleDatabase(database)
+}
+
+func validateLifecycleDatabase(database lifecycleDatabase) error {
 	if database.Schema != lifecycleStoreSchema {
-		return lifecycleDatabase{}, fmt.Errorf("lifecycle: unsupported store schema %d", database.Schema)
+		return fmt.Errorf("lifecycle: unsupported store schema %d", database.Schema)
 	}
 	if database.Works == nil || database.Events == nil {
-		return lifecycleDatabase{}, fmt.Errorf("lifecycle: works and events are required")
+		return fmt.Errorf("lifecycle: works and events are required")
 	}
 	var maxSeq uint64
 	for _, event := range database.Events {
 		if event.Seq <= maxSeq {
-			return lifecycleDatabase{}, fmt.Errorf("lifecycle: event sequence is not strictly increasing")
+			return fmt.Errorf("lifecycle: event sequence is not strictly increasing")
 		}
 		maxSeq = event.Seq
 	}
 	if database.NextSeq <= maxSeq {
-		return lifecycleDatabase{}, fmt.Errorf("lifecycle: next event sequence is stale")
-	}
-	if database.NextSeq == 0 {
-		database.NextSeq = 1
+		return fmt.Errorf("lifecycle: next event sequence is stale")
 	}
 	for id, work := range database.Works {
-		if work == nil || work.ID != WorkID(id) {
-			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work row %q has mismatched identity", id)
+		if work == nil || work.ID != id {
+			return fmt.Errorf("lifecycle: Work row %q has mismatched identity", id)
 		}
 		if work.Attempt != nil && (work.Attempt.SessionID == "" || work.Attempt.TurnToken == "" || work.Attempt.Generation == 0) {
-			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete active Attempt identity", id)
+			return fmt.Errorf("lifecycle: Work %q has incomplete active Attempt identity", id)
 		}
-		if admission := work.Admission; admission != nil &&
-			(admission.TurnToken == "" || admission.SessionID == "" || admission.AttemptedAt.IsZero()) {
-			return lifecycleDatabase{}, fmt.Errorf("lifecycle: Work %q has incomplete Attempt admission", id)
+		pending := 0
+		acceptedSequences := make(map[uint64]bool)
+		for token, admission := range work.Admissions {
+			if admission == nil || token == "" || token != admission.TurnToken || admission.SessionID == "" || admission.AttemptedAt.IsZero() {
+				return fmt.Errorf("lifecycle: Work %q has incomplete Attempt admission", id)
+			}
+			if admission.Status == AdmissionPrepared || admission.Status == AdmissionAmbiguous {
+				pending++
+			}
+			if admission.Status == AdmissionAccepted {
+				if admission.AcceptedSeq == 0 || admission.AcceptedSeq >= database.NextSeq || acceptedSequences[admission.AcceptedSeq] {
+					return fmt.Errorf("lifecycle: Work %q has invalid admission acceptance sequence", id)
+				}
+				acceptedSequences[admission.AcceptedSeq] = true
+			}
+		}
+		if pending > 1 {
+			return fmt.Errorf("lifecycle: Work %q has multiple unresolved admissions", id)
 		}
 	}
-	return database, nil
+	return nil
 }
 
 func writeLifecycleDatabase(path string, database lifecycleDatabase) error {

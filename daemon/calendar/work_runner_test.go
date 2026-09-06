@@ -14,7 +14,7 @@ import (
 )
 
 type scheduledActionWatcher struct {
-	agent      *classifier.Agent
+	worker     *classifier.Worker
 	hasSession bool
 }
 
@@ -58,8 +58,8 @@ func (r *scheduledActionThreadRegistry) HasChatThread(threadID string) (bool, er
 	return r.known, nil
 }
 
-func (w scheduledActionWatcher) GetAgent(string) *classifier.Agent {
-	return w.agent
+func (w scheduledActionWatcher) GetWorker(string) *classifier.Worker {
+	return w.worker
 }
 
 func (w scheduledActionWatcher) HasSession(string) bool {
@@ -128,7 +128,7 @@ func TestInspectScheduledActionRejectsMalformedTerminalHandoffs(t *testing.T) {
 			if test.mutateRun != nil {
 				test.mutateRun(&run)
 			}
-			runner.Watcher = scheduledActionWatcher{agent: &classifier.Agent{State: classifier.StateDone, Summary: "Agent Summary fallback must not win."}}
+			runner.Watcher = scheduledActionWatcher{worker: &classifier.Worker{State: classifier.StateDone, Summary: "Agent Summary fallback must not win."}}
 
 			status, result, failure, known := runner.InspectScheduledAction(context.Background(), item, run)
 			if !known || status != StatusFailed || result != "" || strings.TrimSpace(failure) == "" {
@@ -150,7 +150,7 @@ func TestInspectScheduledActionFailedWorkUsesCalendarOwnedReason(t *testing.T) {
 		frontmatter.Extra["ai_error"] = "AI error fallback must not win."
 		frontmatter.Extra["friction"] = "Legacy friction must not win."
 	})
-	runner.Watcher = scheduledActionWatcher{agent: &classifier.Agent{
+	runner.Watcher = scheduledActionWatcher{worker: &classifier.Worker{
 		State:   classifier.StateFailed,
 		Summary: "Watcher Summary must not win after terminal Work.",
 	}}
@@ -192,7 +192,7 @@ func TestSchedulerCommitsOneStrictTerminalWorkDeliverableOnce(t *testing.T) {
 	calendarStore, scheduler, item, launched := newLinkedScheduledRunFixture(t, scheduledDeliverableBody("\n "+deliverable+" \n"), func(frontmatter *work.Frontmatter) {
 		frontmatter.Done = &done
 		frontmatter.Extra["outcome"] = "Digest fallback must not win."
-	}, scheduledActionWatcher{agent: &classifier.Agent{State: classifier.StateDone, Summary: "Summary fallback must not win."}})
+	}, scheduledActionWatcher{worker: &classifier.Worker{State: classifier.StateDone, Summary: "Summary fallback must not win."}})
 
 	scheduler.Tick(context.Background())
 	finished, err := calendarStore.Get(item.ID)
@@ -224,7 +224,7 @@ func TestSchedulerInvalidTerminalWorkFailsWithoutOutcomeOrSummaryFallback(t *tes
 		frontmatter.Done = &done
 		frontmatter.Extra["outcome"] = "Outcome fallback must not win."
 		frontmatter.Extra["ai_error"] = "AI error fallback must not win."
-	}, scheduledActionWatcher{agent: &classifier.Agent{State: classifier.StateDone, Summary: "Summary fallback must not win."}})
+	}, scheduledActionWatcher{worker: &classifier.Worker{State: classifier.StateDone, Summary: "Summary fallback must not win."}})
 
 	scheduler.Tick(context.Background())
 	failed, err := calendarStore.Get(item.ID)
@@ -241,12 +241,12 @@ func TestSchedulerInvalidTerminalWorkFailsWithoutOutcomeOrSummaryFallback(t *tes
 	}
 }
 
-func TestInspectScheduledActionAgentDoneCannotManufactureSuccess(t *testing.T) {
+func TestInspectScheduledActionWorkerDoneCannotManufactureSuccess(t *testing.T) {
 	for _, body := range []string{scheduledDeliverableBody("draft only"), "missing markers"} {
 		runner, item, run, _ := writeScheduledWorkFixture(t, body, func(frontmatter *work.Frontmatter) {
 			frontmatter.Extra["outcome"] = "Outcome fallback must not win."
 		})
-		runner.Watcher = scheduledActionWatcher{agent: &classifier.Agent{State: classifier.StateDone, Summary: "Summary fallback must not win."}}
+		runner.Watcher = scheduledActionWatcher{worker: &classifier.Worker{State: classifier.StateDone, Summary: "Summary fallback must not win."}}
 		status, result, failure, known := runner.InspectScheduledAction(context.Background(), item, run)
 		if !known || status != StatusFailed || result != "" || strings.TrimSpace(failure) == "" {
 			t.Fatalf("inspection = (%q, %q, %q, %v)", status, result, failure, known)
@@ -260,17 +260,17 @@ func TestInspectScheduledActionAgentDoneCannotManufactureSuccess(t *testing.T) {
 func TestInspectScheduledActionUsesSessionExistenceBeforeDeclaringUnobservable(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		agent      *classifier.Agent
+		worker     *classifier.Worker
 		hasSession bool
 		wantKnown  bool
 	}{
-		{name: "indexed nonterminal agent", agent: &classifier.Agent{State: classifier.StateRunning}, wantKnown: true},
+		{name: "indexed nonterminal agent", worker: &classifier.Worker{State: classifier.StateRunning}, wantKnown: true},
 		{name: "watcher index not ready", hasSession: true, wantKnown: true},
 		{name: "execution absent", hasSession: false, wantKnown: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner, item, run, _ := writeScheduledWorkFixture(t, scheduledDeliverableBody("draft"), nil)
-			runner.Watcher = scheduledActionWatcher{agent: test.agent, hasSession: test.hasSession}
+			runner.Watcher = scheduledActionWatcher{worker: test.worker, hasSession: test.hasSession}
 			status, result, failure, known := runner.InspectScheduledAction(context.Background(), item, run)
 			if known != test.wantKnown || status != StatusRunning || result != "" || failure != "" {
 				t.Fatalf("inspection = (%q, %q, %q, %v)", status, result, failure, known)
@@ -361,9 +361,9 @@ func TestSchedulerRestartReconciliationWaitsForLiveSessionAndFailsTrueAbsenceOnc
 	}
 }
 
-func TestInspectScheduledActionAgentFailureUsesOnlyCompactDiagnostic(t *testing.T) {
+func TestInspectScheduledActionWorkerFailureUsesOnlyCompactDiagnostic(t *testing.T) {
 	runner, item, run, _ := writeScheduledWorkFixture(t, scheduledDeliverableBody("draft"), nil)
-	runner.Watcher = scheduledActionWatcher{agent: &classifier.Agent{State: classifier.StateFailed, Summary: "  executor\n failed  "}}
+	runner.Watcher = scheduledActionWatcher{worker: &classifier.Worker{State: classifier.StateFailed, Summary: "  executor\n failed  "}}
 	status, result, failure, known := runner.InspectScheduledAction(context.Background(), item, run)
 	if !known || status != StatusFailed || result != "" || failure != "executor failed" {
 		t.Fatalf("inspection = (%q, %q, %q, %v)", status, result, failure, known)
@@ -440,7 +440,7 @@ func TestRunScheduledActionPersistsFreshDelegatedLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Launched || result.WorkID != run.ID || result.AgentSession != "claude-scheduled" {
+	if !result.Launched || result.WorkID != run.ID || result.WorkerSession != "claude-scheduled" {
 		t.Fatalf("action result = %#v", result)
 	}
 	if len(tmux.spawnRoles) != 1 || tmux.spawnRoles[0] != "claude" || tmux.spawnCwds[0] != "/calendar-cwd" || tmux.spawnCommands[0] != "claude --configured --permission-mode bypassPermissions" {
@@ -453,7 +453,7 @@ func TestRunScheduledActionPersistsFreshDelegatedLaunch(t *testing.T) {
 		t.Fatalf("aborts = %#v, want none after successful launch", tmux.abortCalls)
 	}
 	written, ok := store.GetByID(run.ID)
-	if !ok || written.Frontmatter.Started == nil || written.Frontmatter.AgentSession != "claude-scheduled" {
+	if !ok || written.Frontmatter.Started == nil || written.Frontmatter.WorkerSession != "claude-scheduled" {
 		t.Fatalf("persisted Work = %#v, found = %v", written, ok)
 	}
 }
@@ -564,7 +564,7 @@ func TestSchedulerHandoffTimeoutFailsOccurrenceOnceBoundedly(t *testing.T) {
 		!strings.Contains(finished.Runs[0].FailureReason, `agent input not ready for "opencode"`) {
 		t.Fatalf("handoff timeout failure = %#v", finished.Runs[0])
 	}
-	if finished.Runs[0].WorkID != "" || finished.Runs[0].AgentSession != "" {
+	if finished.Runs[0].WorkID != "" || finished.Runs[0].WorkerSession != "" {
 		t.Fatalf("unsubmitted handoff was recorded as launched: %#v", finished.Runs[0])
 	}
 	if len(tmux.spawnCommands) != 1 || len(tmux.sendReadyCalls) != 1 || len(tmux.abortCalls) != 1 {
@@ -685,7 +685,7 @@ func TestSchedulerDelayedReadinessHandoffLaunchesOnceAndRoutsResult(t *testing.T
 	runner := &WorkRunner{
 		Store:    workStore,
 		Launcher: launcher,
-		Watcher: scheduledActionWatcher{agent: &classifier.Agent{
+		Watcher: scheduledActionWatcher{worker: &classifier.Worker{
 			State:   classifier.StateRunning,
 			Summary: "OpenCode working on the scheduled briefing",
 		}},
@@ -699,7 +699,7 @@ func TestSchedulerDelayedReadinessHandoffLaunchesOnceAndRoutsResult(t *testing.T
 		t.Fatal(err)
 	}
 	if launched.Runs[0].Status != StatusRunning || launched.Runs[0].WorkID != launched.Runs[0].ID ||
-		launched.Runs[0].AgentSession != "opencode-scheduled" {
+		launched.Runs[0].WorkerSession != "opencode-scheduled" {
 		t.Fatalf("handoff launch = %#v", launched.Runs[0])
 	}
 	if len(tmux.sendReadyCalls) != 1 || len(tmux.abortCalls) != 0 {
@@ -841,7 +841,7 @@ func TestSchedulerRestartDuringHandoffFailsClosedWithoutDuplicate(t *testing.T) 
 	}
 }
 
-func TestSchedulerAgentEndedWithoutNotificationFailsOccurrenceOnce(t *testing.T) {
+func TestSchedulerWorkerEndedWithoutNotificationFailsOccurrenceOnce(t *testing.T) {
 	// Regression reproduction: the spawned agent ended (process exited) without
 	// ever notifying completion — no done marker, no deliverable — yet Zen must
 	// not keep projecting the occurrence as running forever. The linked agent's
@@ -888,7 +888,7 @@ func TestSchedulerAgentEndedWithoutNotificationFailsOccurrenceOnce(t *testing.T)
 
 	runner := &WorkRunner{
 		Store: workStore,
-		Watcher: scheduledActionWatcher{agent: &classifier.Agent{
+		Watcher: scheduledActionWatcher{worker: &classifier.Worker{
 			State:   classifier.StateDone,
 			Summary: "Session ended without marking the scheduled Work done",
 		}},
@@ -939,7 +939,7 @@ func writeScheduledWorkFixture(t *testing.T, body string, mutate func(*work.Fron
 		t.Fatal(err)
 	}
 	item := Item{ID: "calendar-1", Title: "Scheduled result", Timezone: "UTC"}
-	run := Run{ID: "run-1", WorkID: "run-1", AgentSession: "agent-1", Title: item.Title}
+	run := Run{ID: "run-1", WorkID: "run-1", WorkerSession: "agent-1", Title: item.Title}
 	frontmatter := work.Frontmatter{
 		ID:      run.ID,
 		Kind:    "calendar_action",

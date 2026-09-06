@@ -1,20 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import {
   capabilityProviderDisagreementMessage,
-  normalizeAgentSessionCapabilities,
+  normalizeWorkerSessionCapabilities,
   sessionAllowsModelProfileActivation,
   sessionIsManagedReadOnlyProfile,
   sessionSupportsModelProfileAction,
 } from "./sessionCapabilities";
 import {
-  agentReducer,
-  initialAgentState,
-  type RawAgent,
-} from "../../store/agents";
+  workerReducer,
+  initialWorkerState,
+  type RawWorker,
+} from "../../store/workers";
 
 const UPDATED_AT = 1_700_000_000_000;
 
-const baseRaw = (id: string, capabilities?: RawAgent["capabilities"]): RawAgent => ({
+const baseRaw = (id: string, capabilities?: RawWorker["capabilities"]): RawWorker => ({
   id,
   name: id,
   status: "running",
@@ -22,41 +22,41 @@ const baseRaw = (id: string, capabilities?: RawAgent["capabilities"]): RawAgent 
   capabilities,
 });
 
-describe("flat agent_session Provider Model capabilities", () => {
+describe("flat worker_session Provider Model capabilities", () => {
   test("list and incremental normalization use the same typed flat booleans", () => {
     const caps = {
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: false,
     };
-    const fromList = normalizeAgentSessionCapabilities(caps);
+    const fromList = normalizeWorkerSessionCapabilities(caps);
     expect(fromList).toEqual({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: false,
     });
 
-    let state = agentReducer(initialAgentState, {
-      type: "UPSERT_SERVER_AGENTS",
+    let state = workerReducer(initialWorkerState, {
+      type: "UPSERT_SERVER_WORKERS",
       serverId: "s1",
       serverName: "S1",
       serverUrl: "https://s1.test",
-      agents: [baseRaw("a1", caps)],
+      workers: [baseRaw("a1", caps)],
     });
-    expect(state.agents[0]?.capabilities).toEqual(fromList);
+    expect(state.workers[0]?.capabilities).toEqual(fromList);
 
-    state = agentReducer(state, {
-      type: "UPSERT_AGENT",
+    state = workerReducer(state, {
+      type: "UPSERT_WORKER",
       serverId: "s1",
       serverName: "S1",
       serverUrl: "https://s1.test",
-      agent: baseRaw("a1", {
+      worker: baseRaw("a1", {
         structured_events: true,
         model_profile_managed: true,
         model_profile_active_switch: true,
       }),
     });
-    expect(state.agents[0]?.capabilities).toEqual({
+    expect(state.workers[0]?.capabilities).toEqual({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: true,
@@ -64,7 +64,7 @@ describe("flat agent_session Provider Model capabilities", () => {
   });
 
   test("native managed true/false is read-only; Responses+Anthropic true/true activate", () => {
-    const native = normalizeAgentSessionCapabilities({
+    const native = normalizeWorkerSessionCapabilities({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: false,
@@ -73,7 +73,7 @@ describe("flat agent_session Provider Model capabilities", () => {
     expect(sessionIsManagedReadOnlyProfile(native)).toBe(true);
     expect(sessionAllowsModelProfileActivation(native)).toBe(false);
 
-    const responses = normalizeAgentSessionCapabilities({
+    const responses = normalizeWorkerSessionCapabilities({
       structured_events: false,
       model_profile_managed: true,
       model_profile_active_switch: true,
@@ -82,7 +82,7 @@ describe("flat agent_session Provider Model capabilities", () => {
     expect(sessionIsManagedReadOnlyProfile(responses)).toBe(false);
     expect(sessionAllowsModelProfileActivation(responses)).toBe(true);
 
-    const anthropic = normalizeAgentSessionCapabilities({
+    const anthropic = normalizeWorkerSessionCapabilities({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: true,
@@ -91,7 +91,7 @@ describe("flat agent_session Provider Model capabilities", () => {
   });
 
   test("ordinary false/false and old-daemon missing fail closed", () => {
-    const ordinary = normalizeAgentSessionCapabilities({
+    const ordinary = normalizeWorkerSessionCapabilities({
       structured_events: true,
       model_profile_managed: false,
       model_profile_active_switch: false,
@@ -99,15 +99,15 @@ describe("flat agent_session Provider Model capabilities", () => {
     expect(sessionSupportsModelProfileAction(ordinary)).toBe(false);
     expect(sessionAllowsModelProfileActivation(ordinary)).toBe(false);
 
-    expect(normalizeAgentSessionCapabilities(undefined)).toBeUndefined();
-    expect(normalizeAgentSessionCapabilities(null)).toBeUndefined();
+    expect(normalizeWorkerSessionCapabilities(undefined)).toBeUndefined();
+    expect(normalizeWorkerSessionCapabilities(null)).toBeUndefined();
     expect(sessionSupportsModelProfileAction(null)).toBe(false);
     expect(sessionSupportsModelProfileAction(undefined)).toBe(false);
   });
 
   test("malformed nested legacy shapes and non-booleans fail closed", () => {
     // Nested legacy model_profiles must not authorize.
-    const nested = normalizeAgentSessionCapabilities({
+    const nested = normalizeWorkerSessionCapabilities({
       structured_events: true,
       model_profiles: {
         routed: true,
@@ -121,7 +121,7 @@ describe("flat agent_session Provider Model capabilities", () => {
     });
     expect(sessionSupportsModelProfileAction(nested)).toBe(false);
 
-    const malformed = normalizeAgentSessionCapabilities({
+    const malformed = normalizeWorkerSessionCapabilities({
       structured_events: "yes",
       model_profile_managed: 1,
       model_profile_active_switch: "route_binding",
@@ -139,39 +139,39 @@ describe("flat agent_session Provider Model capabilities", () => {
       model_profile_managed: true,
       model_profile_active_switch: true,
     };
-    let state = agentReducer(initialAgentState, {
-      type: "UPSERT_SERVER_AGENTS",
+    let state = workerReducer(initialWorkerState, {
+      type: "UPSERT_SERVER_WORKERS",
       serverId: "s1",
       serverName: "S1",
       serverUrl: "https://s1.test",
-      agents: [baseRaw("tmux:@1", caps)],
+      workers: [baseRaw("tmux:@1", caps)],
     });
-    const first = state.agents[0];
-    state = agentReducer(state, {
-      type: "UPSERT_SERVER_AGENTS",
+    const first = state.workers[0];
+    state = workerReducer(state, {
+      type: "UPSERT_SERVER_WORKERS",
       serverId: "s1",
       serverName: "S1",
       serverUrl: "https://s1.test",
-      agents: [baseRaw("tmux:@1", { ...caps })],
+      workers: [baseRaw("tmux:@1", { ...caps })],
     });
     // Identical capabilities reuse the previous agent object.
-    expect(state.agents[0]).toBe(first);
+    expect(state.workers[0]).toBe(first);
 
-    state = agentReducer(state, {
-      type: "UPSERT_AGENT",
+    state = workerReducer(state, {
+      type: "UPSERT_WORKER",
       serverId: "s1",
       serverName: "S1",
       serverUrl: "https://s1.test",
-      agent: baseRaw("tmux:@1", {
+      worker: baseRaw("tmux:@1", {
         ...caps,
         model_profile_active_switch: false,
       }),
     });
-    expect(state.agents[0]).not.toBe(first);
-    expect(state.agents[0]?.capabilities?.model_profile_active_switch).toBe(
+    expect(state.workers[0]).not.toBe(first);
+    expect(state.workers[0]?.capabilities?.model_profile_active_switch).toBe(
       false,
     );
-    expect(sessionIsManagedReadOnlyProfile(state.agents[0]?.capabilities)).toBe(
+    expect(sessionIsManagedReadOnlyProfile(state.workers[0]?.capabilities)).toBe(
       true,
     );
   });
@@ -179,7 +179,7 @@ describe("flat agent_session Provider Model capabilities", () => {
   test("menu visibility and sheet modes from capability matrix", () => {
     expect(
       sessionSupportsModelProfileAction(
-        normalizeAgentSessionCapabilities({
+        normalizeWorkerSessionCapabilities({
           structured_events: true,
           model_profile_managed: false,
           model_profile_active_switch: false,
@@ -187,7 +187,7 @@ describe("flat agent_session Provider Model capabilities", () => {
       ),
     ).toBe(false);
 
-    const readonlyNative = normalizeAgentSessionCapabilities({
+    const readonlyNative = normalizeWorkerSessionCapabilities({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: false,
@@ -196,7 +196,7 @@ describe("flat agent_session Provider Model capabilities", () => {
     expect(sessionIsManagedReadOnlyProfile(readonlyNative)).toBe(true);
     expect(sessionAllowsModelProfileActivation(readonlyNative)).toBe(false);
 
-    const activeRouted = normalizeAgentSessionCapabilities({
+    const activeRouted = normalizeWorkerSessionCapabilities({
       structured_events: false,
       model_profile_managed: true,
       model_profile_active_switch: true,

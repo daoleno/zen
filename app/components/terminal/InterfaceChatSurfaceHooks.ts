@@ -40,13 +40,13 @@ type UseInterfaceComposerPresentationInput = Omit<
   InterfaceComposerPresentationInput,
   "agentKind"
 > & {
-  agentCommand?: string;
+  workerCommand?: string;
 };
 
 export function useInterfaceComposerPresentation({
   draft,
   slashCommands,
-  agentCommand,
+  workerCommand,
   connectionState,
   runningActivity,
   attachmentCount,
@@ -61,7 +61,7 @@ export function useInterfaceComposerPresentation({
   composerLayout,
   modelControl,
 }: UseInterfaceComposerPresentationInput) {
-  const agentKind = agentKindFromCommand(agentCommand);
+  const agentKind = agentKindFromCommand(workerCommand);
   return useMemo(
     () =>
       buildInterfaceComposerPresentation({

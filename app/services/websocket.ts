@@ -1,4 +1,5 @@
 import type { StoredServer } from "./storage";
+import type { StatsPayload } from "./statsPayload";
 import { Platform } from "react-native";
 import { buildAuthorizationHeader } from "./auth";
 import { diagnoseConnectionIssue } from "./connectionIssue";
@@ -226,11 +227,11 @@ export interface BrainContextPayload {
   memory?: string;
   profile?: string;
   personality?: string;
-  host_agent?: any;
-  host_adapter?: any;
-  delegated_adapter?: any;
-  adapters?: any[];
-  agents?: any[];
+  host_worker?: any;
+  host_executor?: any;
+  delegated_executor?: any;
+  executors?: any[];
+  workers?: any[];
   generated_at?: string;
 }
 
@@ -239,7 +240,7 @@ export interface BrainHousekeepingPayload {
   current_path?: string;
   policy_paths?: string[];
   worklog_path?: string;
-  open_delegated_agents?: any[];
+  open_delegated_workers?: any[];
   changed_paths?: string[];
   recommended_next_steps?: string[];
   generated_at?: string;
@@ -273,7 +274,7 @@ export interface TelegramBindingChallenge {
 
 export interface CodexConversationSnapshotPayload {
   request_id?: string;
-  agent_id?: string;
+  worker_id?: string;
   conversation_id?: string;
   revision: number;
   server_generation?: string;
@@ -282,7 +283,7 @@ export interface CodexConversationSnapshotPayload {
 
 export interface CodexConversationDeltaPayload {
   request_id?: string;
-  agent_id?: string;
+  worker_id?: string;
   conversation_id?: string;
   revision: number;
   base_revision: number;
@@ -301,7 +302,7 @@ export interface CodexConversationDeltaPayload {
 
 export interface CodexConversationSyncStatusPayload {
   request_id?: string;
-  agent_id?: string;
+  worker_id?: string;
   conversation_id?: string;
   revision: number;
   server_generation?: string;
@@ -311,7 +312,7 @@ export interface CodexConversationSyncStatusPayload {
 
 export interface CodexConversationSubscriptionOptions {
   targetId?: string;
-  agentId?: string;
+  workerId?: string;
   cwd?: string;
   command?: string;
   name?: string;
@@ -683,14 +684,14 @@ export class MultiServerWebSocketClient {
         }
         cleanup();
         if (
-          payload.agent_session &&
-          typeof payload.agent_session === "object"
+          payload.worker_session &&
+          typeof payload.worker_session === "object"
         ) {
-          this.emit("agent_session_created", serverId, {
-            agent_session: payload.agent_session,
+          this.emit("worker_session_created", serverId, {
+            worker_session: payload.worker_session,
           });
         }
-        if (typeof payload.agent_id !== "string" || !payload.agent_id) {
+        if (typeof payload.worker_id !== "string" || !payload.worker_id) {
           reject(new Error("Daemon returned an invalid session id."));
           return;
         }
@@ -716,7 +717,7 @@ export class MultiServerWebSocketClient {
             }
           }
           resolve({
-            agentId: payload.agent_id,
+            workerId: payload.worker_id,
             persistence,
           });
         } catch (error) {
@@ -1150,7 +1151,7 @@ export class MultiServerWebSocketClient {
 
   getThreadRuntime(
     serverId: string,
-    agentId: string,
+    workerId: string,
   ): Promise<ThreadRuntimeSelection> {
     const requestId = newProviderRequestId();
     return new Promise((resolve, reject) => {
@@ -1167,7 +1168,7 @@ export class MultiServerWebSocketClient {
         try {
           const selection = parseThreadRuntimeSelection(
             payload.runtime,
-            agentId,
+            workerId,
           );
           if (!selection) {
             reject(
@@ -1215,7 +1216,7 @@ export class MultiServerWebSocketClient {
         {
           type: "get_thread_runtime",
           request_id: requestId,
-          agent_id: agentId,
+          worker_id: workerId,
         },
         cleanup,
         reject,
@@ -1226,7 +1227,7 @@ export class MultiServerWebSocketClient {
   setThreadRuntime(
     serverId: string,
     input: {
-      agentId: string;
+      workerId: string;
       runtime: import("./providers").ThreadRuntimeChoice;
     },
   ): Promise<ThreadRuntimeMutationResult> {
@@ -1246,7 +1247,7 @@ export class MultiServerWebSocketClient {
           const persistence = requireAppliedPersistence(payload);
           const selection = parseThreadRuntimeSelection(
             payload.runtime,
-            input.agentId,
+            input.workerId,
           );
           if (!selection || !assertThreadRuntimeMatches(selection, input)) {
             reject(
@@ -1294,7 +1295,7 @@ export class MultiServerWebSocketClient {
         {
           type: "set_thread_runtime",
           request_id: requestId,
-          agent_id: input.agentId,
+          worker_id: input.workerId,
           runtime: {
             connection_id: input.runtime.connectionId,
             model_id: input.runtime.modelId,
@@ -1876,7 +1877,7 @@ export class MultiServerWebSocketClient {
         type: "codex_conversation_subscribe",
         request_id: requestId,
         target_id: options.targetId,
-        agent_id: options.agentId,
+        worker_id: options.workerId,
         cwd: options.cwd,
         command: options.command,
         name: options.name,
@@ -1900,7 +1901,7 @@ export class MultiServerWebSocketClient {
         type: "codex_conversation_unsubscribe",
         request_id: requestId,
         target_id: options.targetId,
-        agent_id: options.agentId,
+        worker_id: options.workerId,
       });
     };
   }
@@ -2743,7 +2744,7 @@ export class MultiServerWebSocketClient {
         {
           type: "session_file_metadata",
           request_id: requestId,
-          agent_id: request.agentId,
+          worker_id: request.workerId,
           process_id: request.processId,
           started_at: request.startedAt,
           path: request.path,
@@ -2798,7 +2799,7 @@ export class MultiServerWebSocketClient {
         {
           type: "session_file_text",
           request_id: requestId,
-          agent_id: request.agentId,
+          worker_id: request.workerId,
           process_id: request.processId,
           started_at: request.startedAt,
           path: request.path,
@@ -2883,7 +2884,7 @@ export class MultiServerWebSocketClient {
 
   sendAction(
     serverId: string,
-    agentId: string,
+    workerId: string,
     action: string,
   ): StructuredCommandReceipt {
     const socket = this.connections.get(serverId);
@@ -2903,7 +2904,7 @@ export class MultiServerWebSocketClient {
         socket.sendNow(
           structuredActionMessage({
             requestId,
-            agentId,
+            workerId,
             action,
           }),
         );
@@ -2913,7 +2914,7 @@ export class MultiServerWebSocketClient {
 
   sendInput(
     serverId: string,
-    agentId: string,
+    workerId: string,
     text: string,
     options?: {
       displayBody?: string;
@@ -2945,7 +2946,7 @@ export class MultiServerWebSocketClient {
         socket.sendNow(
           structuredInputMessage({
             requestId,
-            agentId,
+            workerId,
             text,
             displayBody: options?.displayBody,
             conversationScopeKey: options?.conversationScopeKey,
@@ -3017,7 +3018,7 @@ export class MultiServerWebSocketClient {
     );
   }
 
-  sendKey(serverId: string, agentId: string, key: string) {
+  sendKey(serverId: string, workerId: string, key: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<void>((resolve, reject) => {
@@ -3055,7 +3056,7 @@ export class MultiServerWebSocketClient {
         {
           type: "send_key",
           request_id: requestId,
-          agent_id: agentId,
+          worker_id: workerId,
           key,
         },
         cleanup,
@@ -3064,26 +3065,26 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  setActiveAgent(serverId: string, agentId: string | null) {
+  setActiveWorker(serverId: string, workerId: string | null) {
     this.trySendNow(serverId, {
-      type: "set_active_agent",
-      agent_id: agentId ?? "",
+      type: "set_active_worker",
+      worker_id: workerId ?? "",
     });
   }
 
-  clearActiveAgentsExcept(
-    selected: { serverId: string; agentId: string } | null,
+  clearActiveWorkersExcept(
+    selected: { serverId: string; workerId: string } | null,
   ) {
     for (const [serverId] of this.connections) {
       if (selected && selected.serverId === serverId) {
-        this.setActiveAgent(serverId, selected.agentId);
+        this.setActiveWorker(serverId, selected.workerId);
       } else {
-        this.setActiveAgent(serverId, null);
+        this.setActiveWorker(serverId, null);
       }
     }
   }
 
-  getStats(serverId: string): Promise<any> {
+  getStats(serverId: string): Promise<StatsPayload> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise((resolve, reject) => {
@@ -3094,7 +3095,7 @@ export class MultiServerWebSocketClient {
 
       const handleStats = (payload: any) => {
         if (payload.serverId !== serverId) return;
-        if (payload.request_id && payload.request_id !== requestId) return;
+        if (payload.request_id !== requestId) return;
         cleanup();
         resolve(payload);
       };
@@ -3116,10 +3117,10 @@ export class MultiServerWebSocketClient {
 
   getSessionResourceSnapshot(
     serverId: string,
-    agentId: string,
+    workerId: string,
   ): Promise<SessionResourceSnapshot> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const targetAgentId = agentId.trim();
+    const targetWorkerId = workerId.trim();
 
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -3134,7 +3135,7 @@ export class MultiServerWebSocketClient {
         }
         const snapshot = normalizeSessionResourceSnapshot(payload);
         cleanup();
-        if (!snapshot || snapshot.agent_id !== targetAgentId) {
+        if (!snapshot || snapshot.worker_id !== targetWorkerId) {
           reject(new Error("Invalid session resource snapshot."));
           return;
         }
@@ -3167,7 +3168,7 @@ export class MultiServerWebSocketClient {
         {
           type: "get_session_resource_snapshot",
           request_id: requestId,
-          agent_id: targetAgentId,
+          worker_id: targetWorkerId,
         },
         cleanup,
         reject,
@@ -3177,20 +3178,20 @@ export class MultiServerWebSocketClient {
 
   /**
    * Fire-and-forget terminate: the daemon tears the Session down and the
-   * authoritative removal arrives via `agent_session_archived` or the next
-   * full `agent_session_list`. An optional request_id correlates the
+   * authoritative removal arrives via `worker_session_archived` or the next
+   * full `worker_session_list`. An optional request_id correlates the
    * `error` reply for batch termination; success has no reply.
    */
-  killAgent(serverId: string, agentId: string, requestId?: string) {
+  killWorker(serverId: string, workerId: string, requestId?: string) {
     this.send(serverId, {
-      type: "kill_agent",
-      agent_id: agentId,
+      type: "kill_worker",
+      worker_id: workerId,
       ...(requestId ? { request_id: requestId } : {}),
     });
   }
 
-  listAgentSessions(serverId: string) {
-    this.send(serverId, { type: "list_agent_sessions" });
+  listWorkerSessions(serverId: string) {
+    this.send(serverId, { type: "list_worker_sessions" });
   }
 
   requestBrainSnapshot(serverId: string) {
@@ -3485,7 +3486,7 @@ export class MultiServerWebSocketClient {
       serverId,
       executorId,
       "set_delegated_executor",
-      "Agents executor",
+      "Worker executor",
     );
   }
 
@@ -3944,9 +3945,9 @@ function normalizeSessionService(value: any): SessionService {
   return {
     ...service,
     id: typeof service.id === "string" ? service.id : "",
-    agent_id: typeof service.agent_id === "string" ? service.agent_id : "",
-    agent_name:
-      typeof service.agent_name === "string" ? service.agent_name : "",
+    worker_id: typeof service.worker_id === "string" ? service.worker_id : "",
+    worker_name:
+      typeof service.worker_name === "string" ? service.worker_name : "",
     project: typeof service.project === "string" ? service.project : undefined,
     cwd: typeof service.cwd === "string" ? service.cwd : undefined,
     command: typeof service.command === "string" ? service.command : undefined,
@@ -4024,8 +4025,8 @@ function normalizeCodexConversationSnapshotPayload(
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id:
-      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    worker_id:
+      typeof payload.worker_id === "string" ? payload.worker_id : undefined,
     conversation_id:
       typeof payload.conversation_id === "string"
         ? payload.conversation_id
@@ -4052,8 +4053,8 @@ function normalizeCodexConversationDeltaPayload(
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id:
-      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    worker_id:
+      typeof payload.worker_id === "string" ? payload.worker_id : undefined,
     conversation_id:
       typeof payload.conversation_id === "string"
         ? payload.conversation_id
@@ -4097,8 +4098,8 @@ function normalizeCodexConversationSyncStatusPayload(
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id:
-      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    worker_id:
+      typeof payload.worker_id === "string" ? payload.worker_id : undefined,
     conversation_id:
       typeof payload.conversation_id === "string"
         ? payload.conversation_id

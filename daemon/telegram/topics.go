@@ -20,8 +20,8 @@ func isGeneralThread(threadID int64) bool {
 	return threadID == 0 || threadID == generalTopicThreadID
 }
 
-func topicLabel(session brain.AgentRef) string {
-	name := shortAgentLabel(session.Name)
+func topicLabel(session brain.WorkerRef) string {
+	name := shortWorkerLabel(session.Name)
 	if name == "" {
 		name = strings.TrimSpace(session.ID)
 	}
@@ -32,9 +32,9 @@ func topicLabel(session brain.AgentRef) string {
 	return name
 }
 
-// shortAgentLabel matches the Session list presentation contract: the
+// shortWorkerLabel matches the Session list presentation contract: the
 // parenthesized canonical agent identity is routing metadata, not display text.
-func shortAgentLabel(value string) string {
+func shortWorkerLabel(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if !strings.HasSuffix(trimmed, ")") {
 		return trimmed
@@ -74,7 +74,7 @@ func (m *Manager) projectSessionTopics(ctx context.Context, token string) error 
 	if err != nil {
 		return err
 	}
-	present := make(map[string]brain.AgentRef, len(sessions))
+	present := make(map[string]brain.WorkerRef, len(sessions))
 	for _, session := range sessions {
 		present[session.ID] = session
 	}
@@ -144,7 +144,7 @@ func (m *Manager) projectSessionTopics(ctx context.Context, token string) error 
 // delegated Session and enqueues an opportunistic rename op when the display
 // label changed. A durable op in any state (pending/ambiguous) prevents a
 // second create; ambiguous is never retried automatically.
-func (m *Manager) ensureSessionTopic(session brain.AgentRef, now time.Time) error {
+func (m *Manager) ensureSessionTopic(session brain.WorkerRef, now time.Time) error {
 	label := topicLabel(session)
 	return m.store.mutate(func(state *durableState) error {
 		for index := range state.Topics {

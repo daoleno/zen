@@ -8,13 +8,10 @@ import { NewTerminalAdvancedForm } from "./NewTerminalAdvancedForm";
 import {
   NewTerminalQuickLaunchSection,
   type NewTerminalLaunchPreset,
-  type NewTerminalServerOption,
 } from "./NewTerminalQuickLaunchSection";
 
 interface NewTerminalSheetContentProps {
   title: string;
-  serverOptions: NewTerminalServerOption[];
-  selectedServerId?: string | null;
   command: string;
   submitting: boolean;
   canSubmit: boolean;
@@ -22,7 +19,6 @@ interface NewTerminalSheetContentProps {
   cwd: string;
   name: string;
   canPickDirectory: boolean;
-  onSelectServer?(serverId: string): void;
   onPresetPress(preset: NewTerminalLaunchPreset): void;
   onToggleAdvanced(): void;
   onCwdChange(value: string): void;
@@ -30,13 +26,10 @@ interface NewTerminalSheetContentProps {
   onNameChange(value: string): void;
   onPickDirectory(): void;
   onSubmitAdvanced(): void;
-  onCancel(): void;
 }
 
 export function NewTerminalSheetContent({
   title,
-  serverOptions,
-  selectedServerId,
   command,
   submitting,
   canSubmit,
@@ -44,7 +37,6 @@ export function NewTerminalSheetContent({
   cwd,
   name,
   canPickDirectory,
-  onSelectServer,
   onPresetPress,
   onToggleAdvanced,
   onCwdChange,
@@ -63,15 +55,12 @@ export function NewTerminalSheetContent({
         {title}
       </AppText>
       <NewTerminalQuickLaunchSection
-        serverOptions={serverOptions}
-        selectedServerId={selectedServerId}
         command={command}
         cwd={cwd}
         submitting={submitting}
         canSubmit={canSubmit}
         advanced={advanced}
         canPickDirectory={canPickDirectory}
-        onSelectServer={onSelectServer}
         onPresetPress={onPresetPress}
         onToggleAdvanced={onToggleAdvanced}
         onPickDirectory={onPickDirectory}

@@ -46,12 +46,12 @@ func hostTranscriptFromCodex(provider string, identity CodexTranscriptIdentity) 
 // ResolveHostTranscriptIdentityForAgent binds the live host process to its
 // current provider conversation. An existing identity is kept only when it
 // still belongs to that provider; a previous executor's transcript cannot win.
-func ResolveHostTranscriptIdentityForAgent(
-	agent classifier.Agent,
+func ResolveHostTranscriptIdentityForWorker(
+	worker classifier.Worker,
 	existing HostTranscriptIdentity,
 	provider string,
 ) HostTranscriptIdentity {
-	provider = normalizeHostTranscriptProvider(provider, agent)
+	provider = normalizeHostTranscriptProvider(provider, worker)
 	existing = normalizeHostTranscriptIdentity(existing)
 	if !hostIdentityUsable(existing, provider) {
 		existing = HostTranscriptIdentity{}
@@ -62,15 +62,15 @@ func ResolveHostTranscriptIdentityForAgent(
 	}
 
 	switch provider {
-	case AgentProviderCodex, "":
-		resolved := ResolveCodexTranscriptIdentityForAgent(agent, existing.Codex())
-		out := hostTranscriptFromCodex(AgentProviderCodex, resolved)
+	case WorkerProviderCodex, "":
+		resolved := ResolveCodexTranscriptIdentityForWorker(worker, existing.Codex())
+		out := hostTranscriptFromCodex(WorkerProviderCodex, resolved)
 		if provider != "" {
 			out.Provider = provider
 		}
 		return out
 	default:
-		conversation, err := NewProviderConversationReader().Load(agent, provider, time.Now().UTC())
+		conversation, err := NewProviderConversationReader().Load(worker, provider, time.Now().UTC())
 		if err != nil || !conversation.Available {
 			return HostTranscriptIdentity{Provider: provider}
 		}
@@ -120,17 +120,17 @@ func (r *ProviderConversationReader) LoadByIdentity(identity HostTranscriptIdent
 	}
 
 	switch identity.Provider {
-	case AgentProviderCodex, "":
+	case WorkerProviderCodex, "":
 		return LoadCodexConversationByIdentity(identity.Codex())
-	case AgentProviderGrok:
+	case WorkerProviderGrok:
 		return r.loadBoundGrokConversation(identity)
-	case AgentProviderClaude:
+	case WorkerProviderClaude:
 		return r.loadBoundFileConversation(identity, claudeConversationSource, r.loadClaudeConversation)
-	case AgentProviderCursor:
+	case WorkerProviderCursor:
 		return r.loadBoundFileConversation(identity, cursorConversationSource, r.loadCursorConversation)
-	case AgentProviderPi:
+	case WorkerProviderPi:
 		return r.loadBoundFileConversation(identity, piConversationSource, r.loadPiConversation)
-	case AgentProviderOpenCode:
+	case WorkerProviderOpenCode:
 		return r.loadBoundOpenCodeConversation(identity)
 	default:
 		r.resetSource()
@@ -144,7 +144,7 @@ func (r *ProviderConversationReader) LoadByIdentity(identity HostTranscriptIdent
 
 func (r *ProviderConversationReader) loadBoundGrokConversation(identity HostTranscriptIdentity) (CodexConversation, error) {
 	path := strings.TrimSpace(identity.Path)
-	if path == "" || !hostIdentityUsable(identity, AgentProviderGrok) {
+	if path == "" || !hostIdentityUsable(identity, WorkerProviderGrok) {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -237,10 +237,10 @@ func (r *ProviderConversationReader) loadBoundOpenCodeConversation(identity Host
 	return conversation, nil
 }
 
-func normalizeHostTranscriptProvider(provider string, agent classifier.Agent) string {
+func normalizeHostTranscriptProvider(provider string, worker classifier.Worker) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "" || provider == AgentProviderCustom {
-		provider = InferAgentProvider(agent.Command, agent.Name)
+	if provider == "" || provider == WorkerProviderCustom {
+		provider = InferWorkerProvider(worker.Command, worker.Name)
 	}
 	return provider
 }
@@ -263,15 +263,15 @@ func hostIdentityUsable(identity HostTranscriptIdentity, provider string) bool {
 		return false
 	}
 	switch provider {
-	case AgentProviderGrok:
+	case WorkerProviderGrok:
 		return grokSessionDirUsable(identity.Path)
-	case AgentProviderCodex, "":
+	case WorkerProviderCodex, "":
 		if identity.Path != "" {
 			info, err := os.Stat(identity.Path)
 			return err == nil && !info.IsDir()
 		}
 		return identity.SessionID != ""
-	case AgentProviderOpenCode:
+	case WorkerProviderOpenCode:
 		if identity.SessionID != "" {
 			if identity.Path == "" {
 				return true
@@ -311,9 +311,9 @@ func hostDataRootForPath(path, provider string) string {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case AgentProviderCodex:
+	case WorkerProviderCodex:
 		return dataRootForPath(path, nil)
-	case AgentProviderGrok:
+	case WorkerProviderGrok:
 		const marker = string(os.PathSeparator) + ".grok" + string(os.PathSeparator)
 		if index := strings.Index(path, marker); index > 0 {
 			return path[:index]

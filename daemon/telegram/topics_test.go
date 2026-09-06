@@ -19,7 +19,7 @@ func topicFixture(t *testing.T) (*Manager, *fakeBrain, *fakeAPI, string) {
 	t.Helper()
 	manager, owner, api, root := configuredManager(t)
 	bindOwner(t, manager, 1, 10, 10)
-	owner.sessions = []brain.AgentRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
+	owner.sessions = []brain.WorkerRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
 	owner.sessionWork = map[string]brain.Work{"sess-a": {ID: "work-a", Title: "Work A", Status: brain.WorkRunning, SourceThreadID: "thread-1"}}
 	owner.projections = map[string]brain.SessionProjection{
 		"sess-a": {SessionID: "sess-a", Present: true, Label: "Session A", Status: "running", TurnStatus: "running", WorkID: "work-a", WorkStatus: "running", WorkTitle: "Work A"},
@@ -88,7 +88,7 @@ func TestTopicRoutingGeneralToBrainAndMappedSessionOnly(t *testing.T) {
 
 func TestTwoMappedSessionsRemainIsolatedBothDirections(t *testing.T) {
 	manager, owner, _, _ := topicFixture(t)
-	owner.sessions = append(owner.sessions, brain.AgentRef{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"})
+	owner.sessions = append(owner.sessions, brain.WorkerRef{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"})
 	owner.sessionWork["sess-b"] = brain.Work{ID: "work-b", Title: "Work B", Status: brain.WorkRunning, SourceThreadID: "thread-1"}
 	owner.projections["sess-b"] = brain.SessionProjection{SessionID: "sess-b", Present: true, Label: "Session B", Status: "running", TurnStatus: "running"}
 
@@ -385,7 +385,7 @@ func TestTopicCreateDefiniteRejectionRetriesButAmbiguousNeverRepeats(t *testing.
 	}
 
 	// Transport-indeterminate create becomes ambiguous and is never retried.
-	owner2 := &fakeBrain{threadID: "thread-1", sessions: []brain.AgentRef{{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"}}}
+	owner2 := &fakeBrain{threadID: "thread-1", sessions: []brain.WorkerRef{{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"}}}
 	owner2.projections = map[string]brain.SessionProjection{"sess-b": {SessionID: "sess-b", Present: true, Label: "Session B", Status: "running"}}
 	owner2.sessionWork = map[string]brain.Work{"sess-b": {ID: "work-b", SourceThreadID: "thread-1"}}
 	manager2, err := NewManagerWithOptions(t.TempDir(), owner2, Options{API: api, Now: manager.now, PollTimeout: 1, Backoff: time.Millisecond,
@@ -431,7 +431,7 @@ func TestTopicRenameLabelAndCapabilityDisabled(t *testing.T) {
 	createTopicFor(t, manager)
 	threadID := manager.store.snapshot().Topics[0].MessageThreadID
 
-	owner.sessions = []brain.AgentRef{{ID: "sess-a", Name: "Session A renamed (brain-agent-session-a:@2)", Delegated: true, Status: "running"}}
+	owner.sessions = []brain.WorkerRef{{ID: "sess-a", Name: "Session A renamed (zen-worker-session-a:@2)", Delegated: true, Status: "running"}}
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestTopicRenameLabelAndCapabilityDisabled(t *testing.T) {
 	if err := manager.refreshTopicCapability(context.Background(), "token"); err != nil {
 		t.Fatal(err)
 	}
-	owner.sessions = append(owner.sessions, brain.AgentRef{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"})
+	owner.sessions = append(owner.sessions, brain.WorkerRef{ID: "sess-b", Name: "Session B", Delegated: true, Status: "running"})
 	owner.sessionWork["sess-b"] = brain.Work{ID: "work-b", SourceThreadID: "thread-1"}
 	before := len(api.createdTopics)
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
@@ -474,22 +474,22 @@ func TestTopicRenameLabelAndCapabilityDisabled(t *testing.T) {
 func TestTopicLabelMatchesSessionListTitle(t *testing.T) {
 	tests := []struct {
 		name    string
-		session brain.AgentRef
+		session brain.WorkerRef
 		want    string
 	}{
 		{
 			name:    "canonical identity suffix is hidden",
-			session: brain.AgentRef{ID: "session-1", Name: "telegram-topic-smoke (brain-agent-telegram-topic-smoke-1787669753941544264:@42)"},
+			session: brain.WorkerRef{ID: "session-1", Name: "telegram-topic-smoke (zen-worker-telegram-topic-smoke-1787669753941544264:@42)"},
 			want:    "telegram-topic-smoke",
 		},
 		{
 			name:    "plain title is preserved",
-			session: brain.AgentRef{ID: "session-2", Name: "Rates research"},
+			session: brain.WorkerRef{ID: "session-2", Name: "Rates research"},
 			want:    "Rates research",
 		},
 		{
 			name:    "missing title falls back to session identity",
-			session: brain.AgentRef{ID: "session-3"},
+			session: brain.WorkerRef{ID: "session-3"},
 			want:    "session-3",
 		},
 	}
@@ -867,7 +867,7 @@ func TestTopicMappingLimitDegradesWithoutAbortingProjection(t *testing.T) {
 	}
 
 	// A new Session cannot get a Topic but the existing mapping still projects.
-	owner.sessions = append(owner.sessions, brain.AgentRef{ID: "sess-over", Name: "Over", Delegated: true, Status: "running"})
+	owner.sessions = append(owner.sessions, brain.WorkerRef{ID: "sess-over", Name: "Over", Delegated: true, Status: "running"})
 	owner.sessionWork["sess-over"] = brain.Work{ID: "work-over", SourceThreadID: "thread-1"}
 	owner.projections["sess-over"] = brain.SessionProjection{SessionID: "sess-over", Present: true, Label: "Over", Status: "running"}
 	owner.projections["sess-a"] = brain.SessionProjection{SessionID: "sess-a", Present: true, Label: "Session A", Status: "running",
@@ -966,7 +966,7 @@ func TestStaleMappingRevivesWhenSessionReappears(t *testing.T) {
 	}
 
 	// Same exact Session identity is user-visible again: the mapping revives.
-	owner.sessions = []brain.AgentRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
+	owner.sessions = []brain.WorkerRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
 	owner.projections["sess-a"] = brain.SessionProjection{SessionID: "sess-a", Present: true, Label: "Session A", Status: "running", TurnStatus: "running"}
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
 		t.Fatal(err)

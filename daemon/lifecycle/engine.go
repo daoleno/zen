@@ -16,7 +16,7 @@ type Engine struct {
 	root string
 
 	mu      sync.Mutex
-	works   map[WorkID]*workActor
+	works   map[WorkID]*State
 	events  []Event
 	nextSeq uint64
 
@@ -46,11 +46,6 @@ func (e *Engine) nowUTC() time.Time {
 	return fn()
 }
 
-// workActor owns one aggregate's lock and reduced state.
-type workActor struct {
-	st *State
-}
-
 // Open loads the one canonical transaction image. There is no legacy
 // directory, snapshot fallback, migration, or second log to replay.
 func Open(root string) (*Engine, error) {
@@ -59,41 +54,19 @@ func Open(root string) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{
-		root: root, works: map[WorkID]*workActor{}, events: database.Events,
+		root: root, works: database.Works, events: database.Events,
 		nextSeq: database.NextSeq, now: time.Now, wake: make(chan struct{}, 1),
-	}
-	for id, state := range database.Works {
-		if state == nil || state.ID != WorkID(id) {
-			return nil, fmt.Errorf("lifecycle: Work row %q has mismatched identity", id)
-		}
-		e.works[WorkID(id)] = &workActor{st: state}
 	}
 	return e, nil
 }
 
-// Close is a compatibility-free lifecycle hook for owners that use a common
-// shutdown path. Engine commands are durable before they return, so there is
-// no runtime resource to release here.
-func (e *Engine) Close() error { return nil }
-
-func (e *Engine) databaseLocked(states map[WorkID]*State, events []Event, nextSeq uint64) lifecycleDatabase {
-	database := lifecycleDatabase{
-		Schema: lifecycleStoreSchema, NextSeq: nextSeq,
-		Works: make(map[string]*State, len(states)), Events: events,
-	}
-	for id, state := range states {
-		database.Works[string(id)] = state
-	}
-	return database
-}
-
 func (e *Engine) statesLocked(replaceID WorkID, replacement *State) map[WorkID]*State {
 	states := make(map[WorkID]*State, len(e.works)+1)
-	for id, actor := range e.works {
+	for id, state := range e.works {
 		if id == replaceID {
 			states[id] = replacement
 		} else {
-			states[id] = actor.st
+			states[id] = state
 		}
 	}
 	if _, exists := states[replaceID]; !exists && replacement != nil {
@@ -118,15 +91,15 @@ func (e *Engine) dispatch(id WorkID, build func(st *State, now time.Time) ([]Eve
 		return nil, ErrUnknownWork
 	}
 
-	events, err := build(a.st, e.nowUTC())
+	events, err := build(a, e.nowUTC())
 	if err != nil {
-		return a.st.Clone(), err
+		return a.Clone(), err
 	}
-	events = unseenSourceEvents(a.st, events)
+	events = unseenSourceEvents(a, events)
 	if len(events) == 0 {
-		return a.st.Clone(), nil
+		return a.Clone(), nil
 	}
-	next := a.st.Clone()
+	next := a.Clone()
 	nextEvents := append([]Event(nil), e.events...)
 	nextSeq := e.nextSeq
 	for i := range events {
@@ -136,12 +109,12 @@ func (e *Engine) dispatch(id WorkID, build func(st *State, now time.Time) ([]Eve
 		nextEvents = append(nextEvents, events[i])
 	}
 	states := e.statesLocked(id, next)
-	if err := writeLifecycleDatabase(e.root+"/state.json", e.databaseLocked(states, nextEvents, nextSeq)); err != nil {
-		return a.st.Clone(), err
+	if err := writeLifecycleDatabase(e.root+"/state.json", lifecycleDatabase{Works: states, Events: nextEvents, NextSeq: nextSeq}); err != nil {
+		return a.Clone(), err
 	}
-	a.st, e.events, e.nextSeq = next, nextEvents, nextSeq
+	e.works[id], e.events, e.nextSeq = next, nextEvents, nextSeq
 	e.signalWake()
-	return a.st.Clone(), nil
+	return next.Clone(), nil
 }
 
 // unseenSourceEvents is the canonical source-admission boundary. Commands are
@@ -211,10 +184,10 @@ func (e *Engine) DefineWork(id WorkID, in DefineWorkInput) (*State, error) {
 	next := Reduce(nil, events[0])
 	nextEvents := append(append([]Event(nil), e.events...), events[0])
 	states := e.statesLocked(id, next)
-	if err := writeLifecycleDatabase(e.root+"/state.json", e.databaseLocked(states, nextEvents, e.nextSeq+1)); err != nil {
+	if err := writeLifecycleDatabase(e.root+"/state.json", lifecycleDatabase{Works: states, Events: nextEvents, NextSeq: e.nextSeq + 1}); err != nil {
 		return nil, err
 	}
-	e.works[id] = &workActor{st: next}
+	e.works[id] = next
 	e.events, e.nextSeq = nextEvents, e.nextSeq+1
 	e.signalWake()
 	return next.Clone(), nil
@@ -312,9 +285,11 @@ func (e *Engine) PrepareAdmission(id WorkID, in PrepareAdmissionInput) (bool, *S
 		if active := st.ActiveAdmission(); active != nil {
 			return nil, fmt.Errorf("%w: admission %s is still %s", ErrAttemptActive, active.TurnToken, active.Status)
 		}
-		if previous := st.Admission; previous != nil && in.Purpose != "" &&
-			previous.Purpose == in.Purpose && previous.PurposeID == in.PurposeID && previous.Status != AdmissionAborted {
-			return nil, fmt.Errorf("%w: admission purpose already belongs to %s", ErrAttemptActive, previous.TurnToken)
+		for _, previous := range st.Admissions {
+			if in.Purpose != "" && previous.Purpose == in.Purpose && previous.PurposeID == in.PurposeID &&
+				(previous.ClaimToken == "") == (in.ClaimToken == "") && previous.Status != AdmissionAborted {
+				return nil, fmt.Errorf("%w: admission purpose already belongs to %s", ErrAttemptActive, previous.TurnToken)
+			}
 		}
 		switch in.Purpose {
 		case AdmissionPurposeReview:
@@ -1213,8 +1188,7 @@ func (e *Engine) NextWakeAt() (time.Time, bool) {
 			next = at
 		}
 	}
-	for _, actor := range e.works {
-		st := actor.st
+	for _, st := range e.works {
 		if st == nil {
 			continue
 		}
@@ -1241,7 +1215,7 @@ func (e *Engine) State(id WorkID) (*State, error) {
 	if a == nil {
 		return nil, ErrUnknownWork
 	}
-	return a.st.Clone(), nil
+	return a.Clone(), nil
 }
 
 // ListStates returns cloned views of all aggregates sorted by ID.
@@ -1259,11 +1233,11 @@ func (e *Engine) ListViews() []*State {
 func (e *Engine) listStates(includeSeenSources bool) []*State {
 	e.mu.Lock()
 	states := make(map[WorkID]*State, len(e.works))
-	for id, actor := range e.works {
+	for id, state := range e.works {
 		if includeSeenSources {
-			states[id] = actor.st.Clone()
+			states[id] = state.Clone()
 		} else {
-			states[id] = actor.st.cloneView()
+			states[id] = state.cloneView()
 		}
 	}
 	e.mu.Unlock()

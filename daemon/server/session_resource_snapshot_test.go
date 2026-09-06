@@ -24,7 +24,7 @@ func TestBuildSessionResourceSnapshotWireKeysIdentityAndOmitsAbsent(t *testing.T
 	payload := srv.buildSessionResourceSnapshotWire(
 		"req-1",
 		"main:@7",
-		&classifier.Agent{
+		&classifier.Worker{
 			ID:        "main:@7",
 			Name:      "cursor-agent",
 			Command:   "cursor-agent",
@@ -51,7 +51,7 @@ func TestBuildSessionResourceSnapshotWireKeysIdentityAndOmitsAbsent(t *testing.T
 	if payload.Type != "session_resource_snapshot" {
 		t.Fatalf("type = %q", payload.Type)
 	}
-	if payload.RequestID != "req-1" || payload.AgentID != "main:@7" {
+	if payload.RequestID != "req-1" || payload.WorkerID != "main:@7" {
 		t.Fatalf("identity keys = %#v", payload)
 	}
 	if payload.Session.Executor != "cursor" {
@@ -87,7 +87,7 @@ func TestBuildSessionResourceSnapshotWireKeysIdentityAndOmitsAbsent(t *testing.T
 	unmanaged := srv.buildSessionResourceSnapshotWire(
 		"req-2",
 		"main:@8",
-		&classifier.Agent{ID: "main:@8", Name: "shell", State: classifier.StateRunning},
+		&classifier.Worker{ID: "main:@8", Name: "shell", State: classifier.StateRunning},
 		watcher.SessionResourceSnapshot{},
 	)
 	unmanagedRaw, err := json.Marshal(unmanaged)
@@ -115,7 +115,7 @@ func TestBuildSessionResourceSnapshotWireKeysIdentityAndOmitsAbsent(t *testing.T
 	unmanagedObserved := srv.buildSessionResourceSnapshotWire(
 		"req-3",
 		"main:@9",
-		&classifier.Agent{ID: "main:@9", Name: "shell", State: classifier.StateRunning},
+		&classifier.Worker{ID: "main:@9", Name: "shell", State: classifier.StateRunning},
 		watcher.SessionResourceSnapshot{
 			Backend:                "cgroup_pool",
 			Managed:                false,
@@ -160,17 +160,17 @@ func TestBuildSessionResourceSnapshotWireKeysIdentityAndOmitsAbsent(t *testing.T
 	}
 }
 
-func TestResolveSessionResourceSnapshotFailsWhenAgentDisappears(t *testing.T) {
+func TestResolveSessionResourceSnapshotFailsWhenWorkerDisappears(t *testing.T) {
 	w := watcher.New(time.Second)
 	srv := &Server{watcher: w}
 
 	_, _, err := srv.resolveSessionResourceSnapshot("main:@missing")
-	if err == nil || !strings.Contains(err.Error(), "agent session not found") {
+	if err == nil || !strings.Contains(err.Error(), "Worker session not found") {
 		t.Fatalf("missing agent error = %v", err)
 	}
 
 	_, _, err = (&Server{}).resolveSessionResourceSnapshot("main:@1")
-	if err == nil || !strings.Contains(err.Error(), "agent session not found") {
+	if err == nil || !strings.Contains(err.Error(), "Worker session not found") {
 		t.Fatalf("nil watcher error = %v", err)
 	}
 }

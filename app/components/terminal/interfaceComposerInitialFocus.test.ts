@@ -199,7 +199,7 @@ describe("Interface Composer initial focus", () => {
     // The row context-menu symbol is gone (long press now enters selection
     // mode); the existing-open region ends where the create flow starts.
     const existingOpen = sessions.slice(
-      sessions.indexOf("const openAgent"),
+      sessions.indexOf("const openWorker"),
       sessions.indexOf("const finishCreateTerminal"),
     );
     const createdOpen = sessions.slice(

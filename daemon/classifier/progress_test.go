@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidateProgressAcceptsStrictValues(t *testing.T) {
-	progress, err := ValidateProgress(AgentProgress{
+	progress, err := ValidateProgress(WorkerProgress{
 		Status:       "running",
 		Phase:        "working",
 		Attention:    "none",
@@ -32,7 +32,7 @@ func TestValidateProgressAcceptsStrictValues(t *testing.T) {
 }
 
 func TestValidateProgressRejectsAliasesAndCamelCaseLeaseIsNotAField(t *testing.T) {
-	cases := []AgentProgress{
+	cases := []WorkerProgress{
 		{Status: "completed", Phase: "working", Attention: "none"},
 		{Status: "running", Phase: "coding", Attention: "none"},
 		{Status: "running", Phase: "working", Attention: "waiting"},
@@ -52,13 +52,13 @@ func TestValidateProgressRejectsAliasesAndCamelCaseLeaseIsNotAField(t *testing.T
 
 func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 	now := time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC)
-	agent := &Agent{
-		ID:      "brain-agent-worker:@1",
+	worker := &Worker{
+		ID:      "zen-worker-worker:@1",
 		State:   StateRunning,
 		Summary: "previous",
 	}
 
-	ApplyProgress(agent, AgentProgress{
+	ApplyProgress(worker, WorkerProgress{
 		Status:       "blocked",
 		Phase:        "working",
 		Attention:    "user_input",
@@ -69,37 +69,37 @@ func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 		LeaseSeconds: 300,
 	}, now)
 
-	if agent.State != StateBlocked {
-		t.Fatalf("agent state = %q", agent.State)
+	if worker.State != StateBlocked {
+		t.Fatalf("agent state = %q", worker.State)
 	}
-	if agent.Phase != "working" || agent.Attention != "user_input" || !agent.NeedsAttention {
-		t.Fatalf("agent progress fields = %#v", agent)
+	if worker.Phase != "working" || worker.Attention != "user_input" || !worker.NeedsAttention {
+		t.Fatalf("worker progress fields = %#v", worker)
 	}
-	if agent.Summary != "Need confirmation" {
-		t.Fatalf("summary = %q", agent.Summary)
+	if worker.Summary != "Need confirmation" {
+		t.Fatalf("summary = %q", worker.Summary)
 	}
-	if agent.TaskClass != "lasting_design" || agent.EventKind != "needs_judgment" || agent.DetailsJSON == "" {
-		t.Fatalf("semantic progress fields = %#v", agent)
+	if worker.TaskClass != "lasting_design" || worker.EventKind != "needs_judgment" || worker.DetailsJSON == "" {
+		t.Fatalf("semantic progress fields = %#v", worker)
 	}
-	if agent.LastProgressAt == nil || !agent.LastProgressAt.Equal(now) {
-		t.Fatalf("last progress = %#v, want %s", agent.LastProgressAt, now)
+	if worker.LastProgressAt == nil || !worker.LastProgressAt.Equal(now) {
+		t.Fatalf("last progress = %#v, want %s", worker.LastProgressAt, now)
 	}
-	if agent.ExpectedNextCheckAt == nil || !agent.ExpectedNextCheckAt.Equal(now.Add(300*time.Second)) {
-		t.Fatalf("next check = %#v", agent.ExpectedNextCheckAt)
+	if worker.ExpectedNextCheckAt == nil || !worker.ExpectedNextCheckAt.Equal(now.Add(300*time.Second)) {
+		t.Fatalf("next check = %#v", worker.ExpectedNextCheckAt)
 	}
 }
 
 func TestApplyProgressDoesNotShortenActiveLeaseWithinRunningPhase(t *testing.T) {
 	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 	longDeadline := start.Add(900 * time.Second)
-	agent := &Agent{
+	worker := &Worker{
 		State:               StateRunning,
 		Phase:               "working",
 		LeaseSeconds:        900,
 		ExpectedNextCheckAt: &longDeadline,
 	}
 
-	ApplyProgress(agent, AgentProgress{
+	ApplyProgress(worker, WorkerProgress{
 		Status:       "running",
 		Phase:        "working",
 		Attention:    "none",
@@ -107,14 +107,14 @@ func TestApplyProgressDoesNotShortenActiveLeaseWithinRunningPhase(t *testing.T) 
 		LeaseSeconds: 300,
 	}, start.Add(time.Minute))
 
-	if agent.ExpectedNextCheckAt == nil || !agent.ExpectedNextCheckAt.Equal(longDeadline) {
-		t.Fatalf("routine progress shortened active lease to %#v, want %s", agent.ExpectedNextCheckAt, longDeadline)
+	if worker.ExpectedNextCheckAt == nil || !worker.ExpectedNextCheckAt.Equal(longDeadline) {
+		t.Fatalf("routine progress shortened active lease to %#v, want %s", worker.ExpectedNextCheckAt, longDeadline)
 	}
-	if agent.LeaseSeconds != 900 {
-		t.Fatalf("effective lease seconds = %d, want preserved 900", agent.LeaseSeconds)
+	if worker.LeaseSeconds != 900 {
+		t.Fatalf("effective lease seconds = %d, want preserved 900", worker.LeaseSeconds)
 	}
 
-	ApplyProgress(agent, AgentProgress{
+	ApplyProgress(worker, WorkerProgress{
 		Status:       "running",
 		Phase:        "verifying",
 		Attention:    "none",
@@ -122,16 +122,16 @@ func TestApplyProgressDoesNotShortenActiveLeaseWithinRunningPhase(t *testing.T) 
 		LeaseSeconds: 300,
 	}, start.Add(2*time.Minute))
 	wantPhaseDeadline := start.Add(7 * time.Minute)
-	if agent.ExpectedNextCheckAt == nil || !agent.ExpectedNextCheckAt.Equal(wantPhaseDeadline) {
-		t.Fatalf("new phase deadline = %#v, want %s", agent.ExpectedNextCheckAt, wantPhaseDeadline)
+	if worker.ExpectedNextCheckAt == nil || !worker.ExpectedNextCheckAt.Equal(wantPhaseDeadline) {
+		t.Fatalf("new phase deadline = %#v, want %s", worker.ExpectedNextCheckAt, wantPhaseDeadline)
 	}
-	if agent.LeaseSeconds != 300 {
-		t.Fatalf("new phase lease seconds = %d, want 300", agent.LeaseSeconds)
+	if worker.LeaseSeconds != 300 {
+		t.Fatalf("new phase lease seconds = %d, want 300", worker.LeaseSeconds)
 	}
 }
 
 func TestProgressNeedsAttentionIncludesTerminalStatuses(t *testing.T) {
-	for _, progress := range []AgentProgress{
+	for _, progress := range []WorkerProgress{
 		{Status: "done", Attention: "none"},
 		{Status: "failed", Attention: "none"},
 		{Status: "blocked", Attention: "none"},
@@ -142,21 +142,21 @@ func TestProgressNeedsAttentionIncludesTerminalStatuses(t *testing.T) {
 			t.Fatalf("ProgressNeedsAttention(%#v) = false, want true", progress)
 		}
 	}
-	if ProgressNeedsAttention(AgentProgress{Status: "running", Attention: "none"}) {
+	if ProgressNeedsAttention(WorkerProgress{Status: "running", Attention: "none"}) {
 		t.Fatal("normal running progress should not need attention")
 	}
 }
 
 func TestApplyProgressTruncatesSummary(t *testing.T) {
-	agent := &Agent{}
-	ApplyProgress(agent, AgentProgress{
+	worker := &Worker{}
+	ApplyProgress(worker, WorkerProgress{
 		Status:    "running",
 		Phase:     "working",
 		Attention: "none",
 		Summary:   strings.Repeat("a", 200),
 	}, time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC))
 
-	if len(agent.Summary) != 160 {
-		t.Fatalf("summary length = %d, want classifier truncate limit 160", len(agent.Summary))
+	if len(worker.Summary) != 160 {
+		t.Fatalf("summary length = %d, want classifier truncate limit 160", len(worker.Summary))
 	}
 }

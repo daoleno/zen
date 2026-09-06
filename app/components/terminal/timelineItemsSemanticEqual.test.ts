@@ -15,7 +15,6 @@ import {
   toolDeveloperDetailsEqual,
 } from "./timelineItemsSemanticEqual";
 import type { DisplayAttachment } from "./InterfaceTimelineMessage";
-import type { HeartbeatWakeEvent } from "./CodexHeartbeatWake";
 import type { ZenPlanTimelineItem } from "./InterfaceTimelinePlanTypes";
 import type { CodexPlanStep } from "../../services/codexConversation";
 
@@ -182,8 +181,7 @@ function legacyRemovedProductionTimelineItemsEqual(
       left.onRetryPending === right.onRetryPending &&
       left.streaming === right.streaming &&
       left.turnFocusAnchorId === right.turnFocusAnchorId &&
-      legacyAttachmentsEqualNamePathOnly(left.attachments, right.attachments) &&
-      left.heartbeatWake === right.heartbeatWake
+      legacyAttachmentsEqualNamePathOnly(left.attachments, right.attachments)
     );
   }
   if (left.type === "plan" && right.type === "plan") {
@@ -789,29 +787,6 @@ describe("timelineItemsSemanticEqual", () => {
     ).toBe(false);
   });
 
-  test("heartbeatWake stays conservative identity comparison", () => {
-    const wake: HeartbeatWakeEvent = {
-      reason: "stale",
-      agentId: "agent-1",
-      agentName: "Zen",
-      status: "wake",
-      summary: "resume",
-    };
-    const left = makeMessage({ heartbeatWake: wake });
-    const sameReference = makeMessage({ heartbeatWake: wake });
-    const cloneWithSameFields = makeMessage({
-      heartbeatWake: { ...wake },
-    });
-    expect(timelineItemsSemanticEqual(left, sameReference)).toBe(true);
-    expect(timelineItemsSemanticEqual(left, cloneWithSameFields)).toBe(false);
-    expect(
-      timelineItemsSemanticEqual(
-        makeMessage({ heartbeatWake: undefined }),
-        makeMessage({ heartbeatWake: wake }),
-      ),
-    ).toBe(false);
-  });
-
   test("production stabilization path no longer uses JSON.stringify for Activity or Brain Work", async () => {
     const hookSource = await Bun.file(
       new URL("./useInterfaceTimelineItems.ts", import.meta.url),
@@ -829,7 +804,6 @@ describe("timelineItemsSemanticEqual", () => {
     expect(equalSource).not.toMatch(/\.every\s*\(/);
     expect(equalSource).toContain("localUri");
     expect(equalSource).toContain("mimeType");
-    expect(equalSource).toContain("left.heartbeatWake === right.heartbeatWake");
   });
 
   test("precomputed 500-item repeated-pass benchmark: semantic vs removed production comparator", () => {

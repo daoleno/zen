@@ -13,7 +13,7 @@ import {
 } from "./brainWorkEventPresentation";
 
 const canonicalSessionID =
-  "brain-agent-zen-brain-event-cards-1785779310481592975:@7163";
+  "zen-worker-zen-brain-event-cards-1785779310481592975:@7163";
 
 function resultEvent(
   overrides: Partial<BrainWorkResultEvent> = {},
@@ -58,7 +58,7 @@ describe("Brain Work event source presentation", () => {
     });
     expect(label).toContain("Work zen device revocation acceptance");
     expect(label).not.toContain(canonicalSessionID);
-    expect(label).not.toContain("brain-agent-");
+    expect(label).not.toContain("zen-worker-");
   });
 
   test("omits a normalized source that repeats the Work title", () => {
@@ -125,7 +125,7 @@ describe("Brain Work event source presentation", () => {
 
     expect(label).toContain("Source: zen-brain-event-cards");
     expect(label).not.toContain(canonicalSessionID);
-    expect(label).not.toContain("brain-agent-");
+    expect(label).not.toContain("zen-worker-");
   });
 
   test("keeps result fact, review attention, and Session finalization distinct", () => {

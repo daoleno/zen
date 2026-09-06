@@ -536,7 +536,7 @@ func TestTerminalModelSwitchConvergesInterfaceProjection(t *testing.T) {
 	getProjection := func() (model string, effort string) {
 		t.Helper()
 		if err := conn.WriteJSON(map[string]any{
-			"type": "get_thread_runtime", "request_id": "gtr-1", "agent_id": "tmux:@converge",
+			"type": "get_thread_runtime", "request_id": "gtr-1", "worker_id": "tmux:@converge",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -600,9 +600,9 @@ func TestTerminalModelSwitchConvergesInterfaceProjection(t *testing.T) {
 }
 
 // TestTeardownAgentSessionCleansCodexControlArtifacts proves normal Session
-// teardown (kill_agent) kills any remaining Codex app-server via its recorded
+// teardown (kill_worker) kills any remaining Codex app-server via its recorded
 // pid and removes the daemon-owned socket/pid/log artifacts.
-func TestTeardownAgentSessionCleansCodexControlArtifacts(t *testing.T) {
+func TestTeardownWorkerSessionCleansCodexControlArtifacts(t *testing.T) {
 	owner := startLiveProfileOwner(t)
 	const sessionID = "tmux:@teardown-cleanup"
 	bindLiveCodexSession(t, owner, sessionID)
@@ -646,7 +646,7 @@ func TestTeardownAgentSessionCleansCodexControlArtifacts(t *testing.T) {
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresenceAbsent, nil
 	}
-	result := srv.teardownAgentSession(sessionID)
+	result := srv.teardownWorkerSession(sessionID)
 	if result.Err != nil {
 		t.Fatalf("teardown: %v", result.Err)
 	}
@@ -757,7 +757,7 @@ func TestTerminalEffortOnlyChangeConvergesInterfaceProjection(t *testing.T) {
 	getProjection := func() (model string, effort string) {
 		t.Helper()
 		if err := conn.WriteJSON(map[string]any{
-			"type": "get_thread_runtime", "request_id": "gtr-effort", "agent_id": "tmux:@effort-converge",
+			"type": "get_thread_runtime", "request_id": "gtr-effort", "worker_id": "tmux:@effort-converge",
 		}); err != nil {
 			t.Fatal(err)
 		}

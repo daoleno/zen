@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type AgentProgress struct {
+type WorkerProgress struct {
 	// TurnID is the random identity printed in one delegated prompt. It is
 	// empty for ordinary/provider-native Sessions that do not participate in
 	// the delegated signal contract.
@@ -28,7 +28,7 @@ type AgentProgress struct {
 	ProgressEventID string
 }
 
-func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
+func ValidateProgress(progress WorkerProgress) (WorkerProgress, error) {
 	progress.TurnID = strings.TrimSpace(progress.TurnID)
 	progress.Status = strings.TrimSpace(progress.Status)
 	progress.Phase = strings.TrimSpace(progress.Phase)
@@ -40,71 +40,71 @@ func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
 	progress.ProgressEventID = strings.TrimSpace(progress.ProgressEventID)
 
 	if !validProgressStatus(progress.Status) {
-		return AgentProgress{}, fmt.Errorf("invalid status %q; valid values are running, done, failed, blocked", progress.Status)
+		return WorkerProgress{}, fmt.Errorf("invalid status %q; valid values are running, done, failed, blocked", progress.Status)
 	}
 	if !validProgressPhase(progress.Phase) {
-		return AgentProgress{}, fmt.Errorf("invalid phase %q; valid values are starting, reading, planning, working, verifying, reporting", progress.Phase)
+		return WorkerProgress{}, fmt.Errorf("invalid phase %q; valid values are starting, reading, planning, working, verifying, reporting", progress.Phase)
 	}
 	if !validProgressAttention(progress.Attention) {
-		return AgentProgress{}, fmt.Errorf("invalid attention %q; valid values are none, done, blocked, failed, user_input, stale", progress.Attention)
+		return WorkerProgress{}, fmt.Errorf("invalid attention %q; valid values are none, done, blocked, failed, user_input, stale", progress.Attention)
 	}
 	if progress.TaskClass != "" && !validProgressTaskClass(progress.TaskClass) {
-		return AgentProgress{}, fmt.Errorf("invalid task_class %q; valid values are exploration, mechanical_change, lasting_design", progress.TaskClass)
+		return WorkerProgress{}, fmt.Errorf("invalid task_class %q; valid values are exploration, mechanical_change, lasting_design", progress.TaskClass)
 	}
 	if progress.EventKind != "" && !validProgressEventKind(progress.EventKind) {
-		return AgentProgress{}, fmt.Errorf("invalid event_kind %q; valid values are progress, invariant, artifact, risk, needs_judgment, verification, done", progress.EventKind)
+		return WorkerProgress{}, fmt.Errorf("invalid event_kind %q; valid values are progress, invariant, artifact, risk, needs_judgment, verification, done", progress.EventKind)
 	}
 	if progress.DetailsJSON != "" && !json.Valid([]byte(progress.DetailsJSON)) {
-		return AgentProgress{}, fmt.Errorf("details_json must be valid JSON")
+		return WorkerProgress{}, fmt.Errorf("details_json must be valid JSON")
 	}
 	if progress.LeaseSeconds < 0 {
-		return AgentProgress{}, fmt.Errorf("lease seconds must be zero or greater")
+		return WorkerProgress{}, fmt.Errorf("lease seconds must be zero or greater")
 	}
 	return progress, nil
 }
 
-func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
-	if agent == nil {
+func ApplyProgress(worker *Worker, progress WorkerProgress, now time.Time) {
+	if worker == nil {
 		return
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	previousState := agent.State
-	previousPhase := agent.Phase
-	previousLeaseSeconds := agent.LeaseSeconds
-	previousExpectedNextCheckAt := agent.ExpectedNextCheckAt
-	agent.State = ProgressState(progress)
-	agent.Phase = progress.Phase
-	agent.Attention = progress.Attention
-	agent.NeedsAttention = ProgressNeedsAttention(progress)
-	agent.Summary = truncate(strings.TrimSpace(progress.Summary), 160)
-	agent.TaskClass = progress.TaskClass
-	agent.EventKind = progress.EventKind
-	agent.DetailsJSON = progress.DetailsJSON
-	agent.LeaseSeconds = progress.LeaseSeconds
+	previousState := worker.State
+	previousPhase := worker.Phase
+	previousLeaseSeconds := worker.LeaseSeconds
+	previousExpectedNextCheckAt := worker.ExpectedNextCheckAt
+	worker.State = ProgressState(progress)
+	worker.Phase = progress.Phase
+	worker.Attention = progress.Attention
+	worker.NeedsAttention = ProgressNeedsAttention(progress)
+	worker.Summary = truncate(strings.TrimSpace(progress.Summary), 160)
+	worker.TaskClass = progress.TaskClass
+	worker.EventKind = progress.EventKind
+	worker.DetailsJSON = progress.DetailsJSON
+	worker.LeaseSeconds = progress.LeaseSeconds
 	progressAt := now.UTC()
-	agent.LastProgressAt = &progressAt
+	worker.LastProgressAt = &progressAt
 	if progress.LeaseSeconds > 0 {
 		expected := progressAt.Add(time.Duration(progress.LeaseSeconds) * time.Second)
-		agent.ExpectedNextCheckAt = &expected
+		worker.ExpectedNextCheckAt = &expected
 	} else {
-		agent.ExpectedNextCheckAt = nil
+		worker.ExpectedNextCheckAt = nil
 	}
 	if previousState == StateRunning &&
-		agent.State == StateRunning &&
-		previousPhase == agent.Phase &&
+		worker.State == StateRunning &&
+		previousPhase == worker.Phase &&
 		previousExpectedNextCheckAt != nil &&
 		previousExpectedNextCheckAt.After(progressAt) &&
-		(agent.ExpectedNextCheckAt == nil || previousExpectedNextCheckAt.After(*agent.ExpectedNextCheckAt)) {
+		(worker.ExpectedNextCheckAt == nil || previousExpectedNextCheckAt.After(*worker.ExpectedNextCheckAt)) {
 		expected := previousExpectedNextCheckAt.UTC()
-		agent.ExpectedNextCheckAt = &expected
-		agent.LeaseSeconds = previousLeaseSeconds
+		worker.ExpectedNextCheckAt = &expected
+		worker.LeaseSeconds = previousLeaseSeconds
 	}
-	agent.UpdatedAt = progressAt
+	worker.UpdatedAt = progressAt
 }
 
-func ProgressState(progress AgentProgress) AgentState {
+func ProgressState(progress WorkerProgress) WorkerState {
 	switch progress.Status {
 	case "done":
 		return StateDone
@@ -119,7 +119,7 @@ func ProgressState(progress AgentProgress) AgentState {
 	}
 }
 
-func ProgressNeedsAttention(progress AgentProgress) bool {
+func ProgressNeedsAttention(progress WorkerProgress) bool {
 	switch progress.Status {
 	case "done", "blocked", "failed":
 		return true

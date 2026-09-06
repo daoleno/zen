@@ -9,10 +9,10 @@ describe("remote notification behavior", () => {
     expect(
       resolveNotificationDestination({
         screen: "terminal",
-        agent_id: "agent-1",
+        worker_id: "agent-1",
         server_id: "server-1",
       }),
-    ).toEqual({ kind: "terminal", agentId: "agent-1", serverId: "server-1" });
+    ).toEqual({ kind: "terminal", workerId: "agent-1", serverId: "server-1" });
 
     expect(
       resolveNotificationDestination({

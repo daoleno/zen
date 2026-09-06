@@ -1,5 +1,5 @@
 import { useCallback, type SetStateAction } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type {
   CodexConversation,
   ProviderActivity,
@@ -21,7 +21,7 @@ import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
 
 interface UseInterfaceChatControllerInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   conversationScopeKey?: string;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
@@ -54,7 +54,7 @@ interface UseInterfaceChatControllerInput {
 
 export function useInterfaceChatController({
   serverId,
-  agentId,
+  workerId,
   conversationScopeKey,
   connectionState,
   connectionIssue,
@@ -114,7 +114,7 @@ export function useInterfaceChatController({
     submitTextToInterface,
   } = useInterfaceMessageTransport({
     serverId,
-    agentId,
+    workerId,
     conversationScopeKey,
     connectionState,
     runningActivity,

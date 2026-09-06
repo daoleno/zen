@@ -33,7 +33,7 @@ func TestDeviceRevokeImmediatelyClosesAuthenticatedWebSocket(t *testing.T) {
 		nil,
 	)
 	var actions atomic.Int64
-	server.sendActionOverride = func(agentID string, action string) error {
+	server.sendActionOverride = func(workerID string, action string) error {
 		actions.Add(1)
 		return nil
 	}
@@ -60,7 +60,7 @@ func TestDeviceRevokeImmediatelyClosesAuthenticatedWebSocket(t *testing.T) {
 	if err := conn.WriteJSON(clientMessage{
 		Type:      "send_action",
 		RequestID: "before-revoke",
-		AgentID:   "agent-one",
+		WorkerID:  "agent-one",
 		Action:    "continue",
 	}); err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestDeviceRevokeImmediatelyClosesAuthenticatedWebSocket(t *testing.T) {
 	_ = conn.WriteJSON(clientMessage{
 		Type:      "send_action",
 		RequestID: "after-revoke",
-		AgentID:   "agent-one",
+		WorkerID:  "agent-one",
 		Action:    "continue",
 	})
 	time.Sleep(25 * time.Millisecond)
@@ -150,7 +150,7 @@ func TestMessageAdmissionUsesSoleManagerStateBeforeSocketCallback(t *testing.T) 
 	server.authRevocationUnsubscribe()
 	server.authRevocationUnsubscribe = nil
 	var actions atomic.Int64
-	server.sendActionOverride = func(agentID string, action string) error {
+	server.sendActionOverride = func(workerID string, action string) error {
 		actions.Add(1)
 		return nil
 	}
@@ -172,7 +172,7 @@ func TestMessageAdmissionUsesSoleManagerStateBeforeSocketCallback(t *testing.T) 
 	if err := conn.WriteJSON(clientMessage{
 		Type:      "send_action",
 		RequestID: "after-manager-commit",
-		AgentID:   "agent-one",
+		WorkerID:  "agent-one",
 		Action:    "continue",
 	}); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestRevokeAndShutdownDoNotWaitForAdmittedCommand(t *testing.T) {
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			var actions atomic.Int64
-			server.sendActionOverride = func(agentID string, action string) error {
+			server.sendActionOverride = func(workerID string, action string) error {
 				if actions.Add(1) == 1 {
 					close(entered)
 				}
@@ -304,7 +304,7 @@ func TestRevokeAndShutdownDoNotWaitForAdmittedCommand(t *testing.T) {
 			if err := conn.WriteJSON(clientMessage{
 				Type:      "send_action",
 				RequestID: "blocked-command",
-				AgentID:   "agent-one",
+				WorkerID:  "agent-one",
 				Action:    "continue",
 			}); err != nil {
 				t.Fatal(err)
@@ -337,7 +337,7 @@ func TestRevokeAndShutdownDoNotWaitForAdmittedCommand(t *testing.T) {
 			_ = conn.WriteJSON(clientMessage{
 				Type:      "send_action",
 				RequestID: "must-not-start",
-				AgentID:   "agent-two",
+				WorkerID:  "agent-two",
 				Action:    "continue",
 			})
 			close(release)

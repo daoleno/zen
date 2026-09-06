@@ -8,6 +8,7 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	telegramchannel "github.com/daoleno/zen/daemon/telegram"
 )
@@ -33,7 +34,7 @@ type Request struct {
 	Runtime              *modelprofiles.ThreadRuntimeChoice     `json:"runtime,omitempty"`
 	Generation           int64                                  `json:"generation,omitempty"` // internal CAS only; ignored on Provider activate
 	Operation            string                                 `json:"operation,omitempty"`
-	AgentID              string                                 `json:"agent_id,omitempty"`
+	WorkerID             string                                 `json:"worker_id,omitempty"`
 	Client               string                                 `json:"client,omitempty"`
 	Credential           string                                 `json:"credential,omitempty"`
 	Status               string                                 `json:"status,omitempty"`
@@ -83,8 +84,9 @@ type PairingInfo struct {
 type Response struct {
 	OK                 bool                                     `json:"ok"`
 	Error              *Error                                   `json:"error,omitempty"`
-	Agent              *Agent                                   `json:"agent,omitempty"`
-	Agents             []Agent                                  `json:"agents,omitempty"`
+	Worker             *Worker                                  `json:"worker,omitempty"`
+	Workers            []Worker                                 `json:"workers,omitempty"`
+	WorkerReceipt      *WorkerReceipt                           `json:"worker_receipt,omitempty"`
 	Executor           *Executor                                `json:"executor,omitempty"`
 	DelegatedExecutor  *Executor                                `json:"delegated_executor,omitempty"`
 	Executors          []Executor                               `json:"executors,omitempty"`
@@ -119,7 +121,13 @@ type Error struct {
 	Message string `json:"message"`
 }
 
-type Agent struct {
+type WorkerReceipt struct {
+	WorkID      lifecycle.WorkID         `json:"work_id"`
+	Admission   lifecycle.AdmissionState `json:"admission"`
+	OwnsAttempt bool                     `json:"owns_attempt"`
+}
+
+type Worker struct {
 	ID                  string     `json:"id"`
 	Name                string     `json:"name"`
 	Status              string     `json:"status"`

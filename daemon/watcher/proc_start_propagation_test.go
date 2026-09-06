@@ -58,23 +58,23 @@ func TestWatcherPropagatesPreciseProcessStart(t *testing.T) {
 	go func() { _ = w.Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
-	var agent *classifier.Agent
+	var worker *classifier.Worker
 	for time.Now().Before(deadline) {
-		agent = w.GetAgent("probe:@1")
-		if agent != nil {
+		worker = w.GetWorker("probe:@1")
+		if worker != nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if agent == nil {
+	if worker == nil {
 		t.Fatal("agent was not discovered")
 	}
-	if !agent.StartedAt.Equal(precise) {
-		t.Fatalf("agent.StartedAt = %v (rounded %v), want precise %v", agent.StartedAt, rounded, precise)
+	if !worker.StartedAt.Equal(precise) {
+		t.Fatalf("agent.StartedAt = %v (rounded %v), want precise %v", worker.StartedAt, rounded, precise)
 	}
 	// The refined value is stable across polls (no equality churn).
 	time.Sleep(120 * time.Millisecond)
-	if stable := w.GetAgent("probe:@1"); stable == nil || !stable.StartedAt.Equal(precise) {
+	if stable := w.GetWorker("probe:@1"); stable == nil || !stable.StartedAt.Equal(precise) {
 		t.Fatalf("agent.StartedAt not stable: %+v", stable)
 	}
 }

@@ -33,7 +33,7 @@ func TestConversationAPIProjectionHidesTypedGoalContext(t *testing.T) {
 
 	conversation, err := srv.loadProviderConversationSnapshot(
 		work.NewProviderConversationReader(),
-		resolvedCodexConversationAgent{targetID: "agent-1", ready: true},
+		resolvedCodexConversationWorker{targetID: "agent-1", ready: true},
 		time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
 	)
 	if err != nil {

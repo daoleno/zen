@@ -7,20 +7,20 @@ import {
   Typography,
   UiTextMetrics,
 } from "../../constants/tokens";
-import type { BrainAdapterRef } from "../../store/brain";
-import { BrainAdapterIcon } from "./BrainAdapterIcon";
+import type { BrainExecutorRef } from "../../store/brain";
+import { BrainExecutorIcon } from "./BrainExecutorIcon";
 import { brainAdapterLabel, brainProviderLabel } from "./brainPresentation";
 
 interface BrainExecutorMentionPickerProps {
-  adapters: BrainAdapterRef[];
+  executors: BrainExecutorRef[];
   activeAdapterId?: string;
   query: string;
   chrome: TerminalThemeChrome;
-  onSelect(adapter: BrainAdapterRef): void;
+  onSelect(adapter: BrainExecutorRef): void;
 }
 
 export function BrainExecutorMentionPicker({
-  adapters,
+  executors,
   activeAdapterId,
   query,
   chrome,
@@ -29,7 +29,7 @@ export function BrainExecutorMentionPicker({
   const styles = useMemo(() => createStyles(chrome), [chrome]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const candidates = adapters.filter((adapter) => adapter.id.trim());
+    const candidates = executors.filter((adapter) => adapter.id.trim());
     if (!needle) {
       return candidates;
     }
@@ -43,7 +43,7 @@ export function BrainExecutorMentionPicker({
         provider.startsWith(needle)
       );
     });
-  }, [adapters, query]);
+  }, [executors, query]);
 
   if (filtered.length === 0) {
     return null;
@@ -72,7 +72,7 @@ export function BrainExecutorMentionPicker({
                 pressed ? styles.chipPressed : null,
               ]}
             >
-              <BrainAdapterIcon adapter={item} size={15} />
+              <BrainExecutorIcon adapter={item} size={15} />
               <Text style={styles.handle} numberOfLines={1}>
                 @{item.id}
               </Text>

@@ -68,7 +68,7 @@ interface SessionFilePreviewSheetProps {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
+  workerId: string;
   processId?: number;
   startedAt?: number;
   cwd?: string;
@@ -82,7 +82,7 @@ export function SessionFilePreviewSheet({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
+  workerId,
   processId,
   startedAt,
   cwd,
@@ -98,7 +98,7 @@ export function SessionFilePreviewSheet({
     serverId,
     serverUrl,
     daemonId,
-    agentId,
+    workerId,
     processId,
     startedAt,
     cwd,
@@ -130,7 +130,7 @@ export function SessionFilePreviewSheet({
         );
       }
       const request = {
-        agentId,
+        workerId,
         processId,
         startedAt,
         path: state.reference!,
@@ -187,7 +187,7 @@ export function SessionFilePreviewSheet({
       cancelled = true;
     };
   }, [
-    agentId,
+    workerId,
     daemonId,
     processId,
     serverId,
@@ -279,7 +279,7 @@ export function SessionFilePreviewSheet({
     const fileName = sessionFileDownloadFileName(metadata);
     const mimeType = sessionFileDownloadMimeType(metadata.contentType);
     const request = sessionFileDownloadRequest(
-      { agentId, processId, startedAt },
+      { workerId, processId, startedAt },
       metadata,
     );
     void downloadOwner
@@ -295,7 +295,7 @@ export function SessionFilePreviewSheet({
       )
       .catch(() => {});
   }, [
-    agentId,
+    workerId,
     daemonId,
     downloadBackend,
     downloadOwner,

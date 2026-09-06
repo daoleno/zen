@@ -6,12 +6,12 @@ import (
 )
 
 func TestMergeProgressAndClassification_OrdinaryShellStaysUnknown(t *testing.T) {
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive: true,
 		State:     StateUnknown,
 	}
 	classified, summary := Classify(true, []string{"$ echo hi", "hi", "$"}, "")
-	got, _ := MergeProgressAndClassification(agent, classified, summary, time.Now().UTC())
+	got, _ := MergeProgressAndClassification(worker, classified, summary, time.Now().UTC())
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown for ordinary shell", got)
 	}
@@ -24,7 +24,7 @@ func TestMergeProgressAndClassification_ActiveLeaseKeepsRunning(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-30 * time.Second)
 	leaseUntil := now.Add(270 * time.Second)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:           true,
 		State:               StateRunning,
 		Summary:             "Working on fix",
@@ -32,7 +32,7 @@ func TestMergeProgressAndClassification_ActiveLeaseKeepsRunning(t *testing.T) {
 		ExpectedNextCheckAt: &leaseUntil,
 		LeaseSeconds:        300,
 	}
-	got, summary := MergeProgressAndClassification(agent, StateUnknown, "shell noise", now)
+	got, summary := MergeProgressAndClassification(worker, StateUnknown, "shell noise", now)
 	if got != StateRunning {
 		t.Fatalf("state = %q, want running under active lease", got)
 	}
@@ -45,7 +45,7 @@ func TestMergeProgressAndClassification_ExpiredLeaseFallsToUnknown(t *testing.T)
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-10 * time.Minute)
 	leaseUntil := now.Add(-1 * time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:           true,
 		State:               StateRunning,
 		Summary:             "Still claimed running",
@@ -55,7 +55,7 @@ func TestMergeProgressAndClassification_ExpiredLeaseFallsToUnknown(t *testing.T)
 	}
 	// Fresh pane churn after expiry must not keep Running.
 	classified, summary := Classify(true, []string{"compiling...", "done.", "$"}, "")
-	got, _ := MergeProgressAndClassification(agent, classified, summary, now)
+	got, _ := MergeProgressAndClassification(worker, classified, summary, now)
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown after lease expiry", got)
 	}
@@ -67,7 +67,7 @@ func TestMergeProgressAndClassification_ExpiredLeaseFallsToUnknown(t *testing.T)
 func TestMergeProgressAndClassification_LeaseBoundaryInclusive(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-5 * time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:           true,
 		State:               StateRunning,
 		Summary:             "On the wire",
@@ -75,12 +75,12 @@ func TestMergeProgressAndClassification_LeaseBoundaryInclusive(t *testing.T) {
 		ExpectedNextCheckAt: &now, // exactly now: still active (!After)
 		LeaseSeconds:        300,
 	}
-	got, _ := MergeProgressAndClassification(agent, StateUnknown, "noise", now)
+	got, _ := MergeProgressAndClassification(worker, StateUnknown, "noise", now)
 	if got != StateRunning {
 		t.Fatalf("state = %q, want running when now == ExpectedNextCheckAt", got)
 	}
 	oneNsLater := now.Add(time.Nanosecond)
-	got, _ = MergeProgressAndClassification(agent, StateUnknown, "noise", oneNsLater)
+	got, _ = MergeProgressAndClassification(worker, StateUnknown, "noise", oneNsLater)
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown one ns after lease end", got)
 	}
@@ -89,14 +89,14 @@ func TestMergeProgressAndClassification_LeaseBoundaryInclusive(t *testing.T) {
 func TestMergeProgressAndClassification_RunningWithoutLeaseIsNotDurable(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:      true,
 		State:          StateRunning,
 		Summary:        "No lease",
 		LastProgressAt: &progressAt,
 		LeaseSeconds:   0,
 	}
-	got, _ := MergeProgressAndClassification(agent, StateUnknown, "idle", now)
+	got, _ := MergeProgressAndClassification(worker, StateUnknown, "idle", now)
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown when running progress has no lease", got)
 	}
@@ -105,7 +105,7 @@ func TestMergeProgressAndClassification_RunningWithoutLeaseIsNotDurable(t *testi
 func TestMergeProgressAndClassification_DelegatedDoneSticksWhileAlive(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-2 * time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:      true,
 		State:          StateDone,
 		Summary:        "Delegated work finished",
@@ -113,7 +113,7 @@ func TestMergeProgressAndClassification_DelegatedDoneSticksWhileAlive(t *testing
 		LastProgressAt: &progressAt,
 	}
 	classified, summary := Classify(true, []string{"$ ", "done output", "$"}, "")
-	got, gotSummary := MergeProgressAndClassification(agent, classified, summary, now)
+	got, gotSummary := MergeProgressAndClassification(worker, classified, summary, now)
 	if got != StateDone {
 		t.Fatalf("state = %q, want done for completed delegated session", got)
 	}
@@ -125,13 +125,13 @@ func TestMergeProgressAndClassification_DelegatedDoneSticksWhileAlive(t *testing
 func TestMergeProgressAndClassification_FailedProgressSticks(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:      true,
 		State:          StateFailed,
 		Summary:        "Agent failed",
 		LastProgressAt: &progressAt,
 	}
-	got, _ := MergeProgressAndClassification(agent, StateUnknown, "prompt", now)
+	got, _ := MergeProgressAndClassification(worker, StateUnknown, "prompt", now)
 	if got != StateFailed {
 		t.Fatalf("state = %q, want failed", got)
 	}
@@ -140,14 +140,14 @@ func TestMergeProgressAndClassification_FailedProgressSticks(t *testing.T) {
 func TestMergeProgressAndClassification_BlockedProgressSticks(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:      true,
 		State:          StateBlocked,
 		Summary:        "Need a decision",
 		Attention:      "user_input",
 		LastProgressAt: &progressAt,
 	}
-	got, summary := MergeProgressAndClassification(agent, StateUnknown, "shell prompt", now)
+	got, summary := MergeProgressAndClassification(worker, StateUnknown, "shell prompt", now)
 	if got != StateBlocked {
 		t.Fatalf("state = %q, want blocked", got)
 	}
@@ -164,13 +164,13 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		agent      *Agent
-		classified AgentState
-		want       AgentState
+		worker     *Worker
+		classified WorkerState
+		want       WorkerState
 	}{
 		{
 			name: "classify blocked overrides active running lease",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:           true,
 				State:               StateRunning,
 				Summary:             "working",
@@ -182,7 +182,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "active running lease outranks classify failed",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:           true,
 				State:               StateRunning,
 				Summary:             "working",
@@ -194,7 +194,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "classify blocked overrides sticky done",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:      true,
 				State:          StateDone,
 				Summary:        "Was done",
@@ -205,7 +205,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "sticky done outranks classify failed",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:      true,
 				State:          StateDone,
 				Summary:        "Was done",
@@ -216,7 +216,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "classify unknown keeps sticky done",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:      true,
 				State:          StateDone,
 				Summary:        "Delegated finished",
@@ -227,7 +227,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "classify unknown keeps sticky failed",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:      true,
 				State:          StateFailed,
 				Summary:        "Boom",
@@ -238,7 +238,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "expired running + classify unknown => unknown",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:           true,
 				State:               StateRunning,
 				Summary:             "stale running",
@@ -250,7 +250,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "alive pane with no progress stays classified unknown",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive: true,
 				State:     StateUnknown,
 			},
@@ -259,7 +259,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 		},
 		{
 			name: "dead pane uses classified done",
-			agent: &Agent{
+			worker: &Worker{
 				PaneAlive:           false,
 				State:               StateRunning,
 				LastProgressAt:      &progressAt,
@@ -272,7 +272,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := MergeProgressAndClassification(tt.agent, tt.classified, "detail", now)
+			got, _ := MergeProgressAndClassification(tt.worker, tt.classified, "detail", now)
 			if got != tt.want {
 				t.Fatalf("state = %q, want %q", got, tt.want)
 			}
@@ -283,13 +283,13 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 func TestMergeProgressAndClassification_ClassifyBlockedOverridesDone(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-time.Minute)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:      true,
 		State:          StateDone,
 		Summary:        "Was done",
 		LastProgressAt: &progressAt,
 	}
-	got, _ := MergeProgressAndClassification(agent, StateBlocked, "Do you want to proceed? (Y/n)", now)
+	got, _ := MergeProgressAndClassification(worker, StateBlocked, "Do you want to proceed? (Y/n)", now)
 	if got != StateBlocked {
 		t.Fatalf("state = %q, want blocked override", got)
 	}
@@ -301,7 +301,7 @@ func TestResolveSessionStatus_GrokAlwaysApproveChromeKeepsRunningLease(t *testin
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-30 * time.Second)
 	leaseUntil := now.Add(270 * time.Second)
-	agent := &Agent{
+	worker := &Worker{
 		PaneAlive:           true,
 		State:               StateRunning,
 		Summary:             "Reading delegated lifecycle",
@@ -316,11 +316,11 @@ func TestResolveSessionStatus_GrokAlwaysApproveChromeKeepsRunningLease(t *testin
 		"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
 		"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts",
 	}
-	classified, classifiedSummary := Classify(true, lines, agent.Command)
+	classified, classifiedSummary := Classify(true, lines, worker.Command)
 	if classified != StateUnknown {
 		t.Fatalf("classified = %q (%q), want unknown for always-approve chrome", classified, classifiedSummary)
 	}
-	got, summary := ResolveSessionStatus(agent, classified, classifiedSummary, now, ActivitySignal{})
+	got, summary := ResolveSessionStatus(worker, classified, classifiedSummary, now, ActivitySignal{})
 	if got != StateRunning {
 		t.Fatalf("resolved = %q, want running under lease", got)
 	}
@@ -334,16 +334,16 @@ func TestProgressLeaseActive(t *testing.T) {
 	progressAt := now
 	future := now.Add(time.Minute)
 	past := now.Add(-time.Minute)
-	agent := &Agent{State: StateRunning, LastProgressAt: &progressAt, ExpectedNextCheckAt: &future}
-	if !ProgressLeaseActive(agent, now) {
+	worker := &Worker{State: StateRunning, LastProgressAt: &progressAt, ExpectedNextCheckAt: &future}
+	if !ProgressLeaseActive(worker, now) {
 		t.Fatal("expected active lease")
 	}
-	agent.ExpectedNextCheckAt = &past
-	if ProgressLeaseActive(agent, now) {
+	worker.ExpectedNextCheckAt = &past
+	if ProgressLeaseActive(worker, now) {
 		t.Fatal("expected expired lease")
 	}
-	agent.ExpectedNextCheckAt = nil
-	if ProgressLeaseActive(agent, now) {
+	worker.ExpectedNextCheckAt = nil
+	if ProgressLeaseActive(worker, now) {
 		t.Fatal("missing lease must not be active")
 	}
 }

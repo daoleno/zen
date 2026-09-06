@@ -21,7 +21,7 @@ describe("current Work projection", () => {
             created: "2026-07-17T03:00:00Z",
             status: "running",
             title: "Current scheduled Work",
-            agent_session: "agent-1",
+            worker_session: "agent-1",
             extra: { legacy_note: "inert" },
           },
           mtime: "2026-07-17T03:01:00Z",
@@ -35,7 +35,7 @@ describe("current Work projection", () => {
       kind: "calendar_action",
       status: "running",
       title: "Current scheduled Work",
-      agent_session: "agent-1",
+      worker_session: "agent-1",
       extra: { legacy_note: "inert" },
     });
     expect(findLinkedWork(state.byKey, "server-1", "agent-1")).toBe(item);

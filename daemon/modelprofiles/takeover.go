@@ -33,16 +33,16 @@ type TakeoverState struct {
 
 // TakeoverStatus is the truthful control-plane view of takeover state.
 type TakeoverStatus struct {
-	State              string `json:"state"` // active | inactive | drifted | broken
-	Detail             string `json:"detail,omitempty"`
-	ConfigPath         string `json:"config_path,omitempty"`
-	BackupPath         string `json:"backup_path,omitempty"`
-	ListenAddr         string `json:"listen_addr,omitempty"`
-	ProviderName       string `json:"provider_name,omitempty"`
-	UpstreamProfileID  string `json:"upstream_profile_id,omitempty"`
-	GatewayListening   bool   `json:"gateway_listening"`
-	Enabled            bool   `json:"enabled"`
-	RestoreAvailable   bool   `json:"restore_available"`
+	State             string `json:"state"` // active | inactive | drifted | broken
+	Detail            string `json:"detail,omitempty"`
+	ConfigPath        string `json:"config_path,omitempty"`
+	BackupPath        string `json:"backup_path,omitempty"`
+	ListenAddr        string `json:"listen_addr,omitempty"`
+	ProviderName      string `json:"provider_name,omitempty"`
+	UpstreamProfileID string `json:"upstream_profile_id,omitempty"`
+	GatewayListening  bool   `json:"gateway_listening"`
+	Enabled           bool   `json:"enabled"`
+	RestoreAvailable  bool   `json:"restore_available"`
 }
 
 const (
@@ -58,10 +58,10 @@ const (
 // exact pre-takeover bytes in a durable backup and only ever writes the
 // marked Zen-owned projection.
 type Takeover struct {
-	statePath string
-	backupDir string
+	statePath  string
+	backupDir  string
 	configPath string
-	gateway   *Gateway
+	gateway    *Gateway
 }
 
 // NewTakeover constructs the takeover manager. configPath is the Codex config

@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react";
 import {
-  getAgentAliases,
+  getWorkerAliases,
   getInterfaceRenderModes,
-  getRecentAgentOpens,
-  getServers,
-  markAgentOpened,
-  type StoredAgentAliases,
+  getRecentWorkerOpens,
+  markWorkerOpened,
+  type StoredWorkerAliases,
   type StoredInterfaceRenderMode,
   type StoredInterfaceRenderModes,
-  type StoredRecentAgentOpens,
-  type StoredServer,
+  type StoredRecentWorkerOpens,
 } from "../../../services/storage";
+import { useCurrentServer } from "../../../store/currentServer";
 
 interface UseTerminalScreenStorageInput {
   serverId: string;
@@ -23,17 +22,17 @@ export function useTerminalScreenStorage({
   sessionKey,
   initialInterfaceRenderMode,
 }: UseTerminalScreenStorageInput) {
-  const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
+  const { currentServer } = useCurrentServer();
+  const server = currentServer?.id === serverId ? currentServer : null;
+  const [workerAliases, setWorkerAliases] = useState<StoredWorkerAliases>({});
   const [interfaceRenderModes, setInterfaceRenderModes] =
     useState<StoredInterfaceRenderModes>(() =>
       sessionKey && initialInterfaceRenderMode
         ? { [sessionKey]: initialInterfaceRenderMode }
         : {},
     );
-  const [recentAgentOpens, setRecentAgentOpens] =
-    useState<StoredRecentAgentOpens>({});
-  const [server, setServer] = useState<StoredServer | null>(null);
-  const [servers, setServers] = useState<StoredServer[]>([]);
+  const [recentWorkerOpens, setRecentWorkerOpens] =
+    useState<StoredRecentWorkerOpens>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -42,17 +41,12 @@ export function useTerminalScreenStorage({
       const [
         storedRecentOpens,
         storedAliases,
-        storedServers,
         storedInterfaceRenderModes,
       ] = await Promise.all([
-        getRecentAgentOpens(),
-        getAgentAliases(),
-        getServers(),
+        getRecentWorkerOpens(),
+        getWorkerAliases(),
         getInterfaceRenderModes(),
       ]);
-      const storedServer = serverId
-        ? storedServers.find((current) => current.id === serverId) || null
-        : null;
       const nextInterfaceRenderModes =
         sessionKey && initialInterfaceRenderMode
           ? {
@@ -63,13 +57,13 @@ export function useTerminalScreenStorage({
 
       const openedAt = sessionKey ? Date.now() : 0;
       if (sessionKey) {
-        void markAgentOpened(sessionKey, openedAt);
+        void markWorkerOpened(sessionKey, openedAt);
       }
 
       if (!cancelled) {
-        setAgentAliases(storedAliases);
+        setWorkerAliases(storedAliases);
         setInterfaceRenderModes(nextInterfaceRenderModes);
-        setRecentAgentOpens(
+        setRecentWorkerOpens(
           sessionKey
             ? {
                 ...storedRecentOpens,
@@ -77,8 +71,6 @@ export function useTerminalScreenStorage({
               }
             : storedRecentOpens,
         );
-        setServer(storedServer);
-        setServers(storedServers);
       }
     })();
 
@@ -88,14 +80,12 @@ export function useTerminalScreenStorage({
   }, [initialInterfaceRenderMode, serverId, sessionKey]);
 
   return {
-    agentAliases,
-    setAgentAliases,
+    workerAliases,
+    setWorkerAliases,
     interfaceRenderModes,
     setInterfaceRenderModes,
-    recentAgentOpens,
-    setRecentAgentOpens,
+    recentWorkerOpens,
+    setRecentWorkerOpens,
     server,
-    setServer,
-    servers,
   };
 }

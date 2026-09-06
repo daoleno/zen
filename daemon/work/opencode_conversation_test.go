@@ -22,7 +22,7 @@ func TestOpenCodeBindRejectsAmbiguousSameCWD(t *testing.T) {
 	}, nil, nil)
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	_, ok, err := reader.findOpenCodeSession(classifier.Agent{
+	_, ok, err := reader.findOpenCodeSession(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
@@ -52,11 +52,11 @@ func TestOpenCodeExactAdmissionAndLifecycle(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	got, err := reader.Load(classifier.Agent{
+	got, err := reader.Load(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
-	}, AgentProviderOpenCode, started.Add(time.Minute))
+	}, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +82,11 @@ func TestOpenCodeExactAdmissionAndLifecycle(t *testing.T) {
 		{ID: "p3", MessageID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(3 * time.Second).UnixMilli(), Data: `{"type":"text","text":"ack"}`},
 		{ID: "p4", MessageID: "msg_asst", SessionID: "ses_exact", CreatedMS: started.Add(4 * time.Second).UnixMilli(), Data: `{"type":"step-finish","reason":"stop"}`},
 	})
-	second, err := reader.Load(classifier.Agent{
+	second, err := reader.Load(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
-	}, AgentProviderOpenCode, started.Add(time.Minute))
+	}, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestOpenCodeBindsRootNotChildSession(t *testing.T) {
 	// of projecting a previous thread into this agent. Children still never
 	// bind — the refusal is session_not_found, not a child binding.
 	reader := NewProviderConversationReader()
-	candidate, ok, err := reader.findOpenCodeSession(classifier.Agent{
+	candidate, ok, err := reader.findOpenCodeSession(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started.Add(20 * time.Second),
@@ -252,7 +252,7 @@ func TestOpenCodeBindsRootNotChildSession(t *testing.T) {
 	// startedAt zero: freshest root fallback still binds the parent, not the
 	// child, and not session_not_found.
 	reader = NewProviderConversationReader()
-	candidate, ok, err = reader.findOpenCodeSession(classifier.Agent{
+	candidate, ok, err = reader.findOpenCodeSession(classifier.Worker{
 		Cwd:     "/repo",
 		Command: "opencode",
 	}, started.Add(time.Minute))
@@ -273,7 +273,7 @@ func TestOpenCodeBindFreshestRootWhenStartWindowMisses(t *testing.T) {
 	}, nil, nil)
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	candidate, ok, err := reader.findOpenCodeSession(classifier.Agent{
+	candidate, ok, err := reader.findOpenCodeSession(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
@@ -290,7 +290,7 @@ func TestOpenCodeBindFreshestRootWhenStartWindowMisses(t *testing.T) {
 		{ID: "ses_new", Directory: "/repo", CreatedMS: started.Add(20 * time.Minute).UnixMilli(), UpdatedMS: started.Add(21 * time.Minute).UnixMilli()},
 		{ID: "ses_latest", Directory: "/repo", CreatedMS: started.Add(40 * time.Minute).UnixMilli(), UpdatedMS: started.Add(41 * time.Minute).UnixMilli()},
 	}, nil, nil)
-	candidate, ok, err = reader.findOpenCodeSession(classifier.Agent{
+	candidate, ok, err = reader.findOpenCodeSession(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
@@ -321,9 +321,9 @@ func TestOpenCodeNewSessionNeverBindsPreStartRows(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo", Command: "opencode", StartedAt: started}
+	worker := classifier.Worker{Cwd: "/repo", Command: "opencode", StartedAt: started}
 
-	conversation, err := reader.Load(agent, AgentProviderOpenCode, started.Add(5*time.Second))
+	conversation, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestOpenCodeNewSessionNeverBindsPreStartRows(t *testing.T) {
 		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
 		{ID: "p_own", MessageID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(2500 * time.Millisecond).UnixMilli(), Data: `{"type":"text","text":"own session history"}`},
 	})
-	conversation, err = reader.Load(agent, AgentProviderOpenCode, started.Add(10*time.Second))
+	conversation, err = reader.Load(worker, WorkerProviderOpenCode, started.Add(10*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,10 +375,10 @@ func TestOpenCodePinReleasesWhenStartEvidenceArrivesLate(t *testing.T) {
 	reader := NewProviderConversationReader()
 
 	// No start evidence yet: legacy fallback binds the freshest root.
-	conversation, err := reader.Load(classifier.Agent{
+	conversation, err := reader.Load(classifier.Worker{
 		Cwd:     "/repo",
 		Command: "opencode",
-	}, AgentProviderOpenCode, started.Add(time.Minute))
+	}, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,11 +388,11 @@ func TestOpenCodePinReleasesWhenStartEvidenceArrivesLate(t *testing.T) {
 
 	// Start evidence arrives with the DB stamp unchanged: the fast path must
 	// not keep serving the pre-start pin.
-	conversation, err = reader.Load(classifier.Agent{
+	conversation, err = reader.Load(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
-	}, AgentProviderOpenCode, started.Add(time.Minute))
+	}, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,11 +411,11 @@ func TestOpenCodePinReleasesWhenStartEvidenceArrivesLate(t *testing.T) {
 		{ID: "p_prev", MessageID: "msg_prev_user", SessionID: "ses_prev", CreatedMS: started.Add(-50 * time.Minute).UnixMilli(), Data: `{"type":"text","text":"previous session history"}`},
 		{ID: "p_own", MessageID: "msg_own_user", SessionID: "ses_own", CreatedMS: started.Add(1500 * time.Millisecond).UnixMilli(), Data: `{"type":"text","text":"own session history"}`},
 	})
-	conversation, err = reader.Load(classifier.Agent{
+	conversation, err = reader.Load(classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode",
 		StartedAt: started,
-	}, AgentProviderOpenCode, started.Add(2*time.Minute))
+	}, WorkerProviderOpenCode, started.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,13 +440,13 @@ func TestOpenCodeLaunchTokenOwnsPreStartRow(t *testing.T) {
 	})
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "opencode -s ses_resumed",
 		StartedAt: started,
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		conversation, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+		conversation, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -829,8 +829,8 @@ func TestOpenCodeSettleReportsPartialFlipsAsChanged(t *testing.T) {
 	createOpenCodeFixtureDB(t, dbPath, session, inFlightMessages, inFlightParts)
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo", Command: "opencode", StartedAt: started}
-	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	worker := classifier.Worker{Cwd: "/repo", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -849,7 +849,7 @@ func TestOpenCodeSettleReportsPartialFlipsAsChanged(t *testing.T) {
 		{ID: "msg_asst", SessionID: "ses_par", CreatedMS: started.Add(2 * time.Second).UnixMilli(), Data: `{"role":"assistant","finish":"stop","time":{"created":1,"completed":` + fmt.Sprintf("%d", started.Add(6*time.Second).UnixMilli()) + `}}`},
 	}
 	createOpenCodeFixtureDB(t, dbPath, session, settledMessages, inFlightParts)
-	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	second, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

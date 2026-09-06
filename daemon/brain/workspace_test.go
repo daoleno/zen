@@ -153,10 +153,10 @@ func TestNewStoreCreatesDefaultSoulWithPrivateMode(t *testing.T) {
 	}
 	assertFileMode(t, store.soulPath(), 0o600)
 	for _, marker := range []string{
-		"stable expression and judgment principles",
-		"ASD-STE100 Simplified Technical English as a practical style baseline",
-		"Zen does not claim full ASD-STE100 conformance without formal dictionary and document validation",
-		"ASD-STE100 does not govern Chinese",
+		"user's language",
+		"concise paragraphs",
+		"Separate facts from assumptions",
+		"meaningful verification",
 	} {
 		if !strings.Contains(string(raw), marker) {
 			t.Fatalf("soul.md missing %q:\n%s", marker, raw)
@@ -324,26 +324,23 @@ func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 		t.Fatalf("read AGENTS.md: %v", err)
 	}
 	content := string(raw)
-	if strings.Count(content, managedStartMarker(brainAgentsManagedID)) != 1 ||
-		strings.Count(content, managedEndMarker(brainAgentsManagedID)) != 1 {
+	if strings.Count(content, managedStartMarker(brainWorkersManagedID)) != 1 ||
+		strings.Count(content, managedEndMarker(brainWorkersManagedID)) != 1 {
 		t.Fatalf("AGENTS.md does not contain one managed block:\n%s", content)
 	}
 	for _, marker := range []string{
-		"When a Brain Host Session starts or is replaced, read soul.md once",
-		"Re-read it only if the file changes",
-		"## Brain Communication Rules",
-		"Avoid AI slop",
-		"Answer first",
-		"Do not be sycophantic",
-		"## Brain Lifecycle Rules",
-		"Run independent delegated subtasks in parallel when useful",
-		"## Workspace Isolation",
+		"read soul.md once",
+		"re-read only if it changes",
+		"## Role",
+		"## Context",
+		"## Lifecycle",
+		"## Workspace",
+		"## Tools",
+		"policies/delegation.md",
+		"policies/engine.md",
 		"$ZEN_WORKTREE_ROOT",
 		"TMPDIR/TMP/TEMP",
 		"$ZEN_BUILD_TMPDIR",
-		"Never hard-code OS-global temp paths",
-		"## Executor Rules",
-		"## Zen CLI",
 	} {
 		if !strings.Contains(content, marker) {
 			t.Fatalf("AGENTS.md missing %q:\n%s", marker, content)
@@ -386,14 +383,10 @@ func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 		path   string
 		marker string
 	}{
-		{store.policyPath("delegation.md"), "Reduce user decision load"},
-		{store.policyPath("delegation.md"), "## Workspace Isolation"},
-		{store.policyPath("delegation.md"), "$ZEN_WORKTREE_ROOT"},
-		{store.policyPath("delegation.md"), "TMPDIR/TMP/TEMP"},
-		{store.policyPath("delegation.md"), "$ZEN_BUILD_TMPDIR"},
-		{store.policyPath("delegation.md"), "Never hard-code OS-global temp paths"},
-		{store.policyPath("delegation.md"), "Final synthesis should be concise and judgmental"},
-		{store.policyPath("engine.md"), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session."},
+		{store.policyPath("delegation.md"), "AGENTS.md"},
+		{store.policyPath("delegation.md"), "Scale verification to risk"},
+		{store.policyPath("delegation.md"), "Inspect every delegated result"},
+		{store.policyPath("engine.md"), "Use configured routing unless the user requests another executor"},
 		{store.policyPath("handoff.md"), "Host executor switching preserves the visible Brain chat."},
 	} {
 		raw, err := os.ReadFile(policy.path)
@@ -428,19 +421,14 @@ func TestNewStoreUpgradesExistingDelegationPolicyWithoutOverwriting(t *testing.T
 	content := string(readDelegation)
 	for _, want := range []string{
 		"Keep my local rule.",
-		"Reduce user decision load",
-		"## Orchestrator / Delegation Model",
-		"Brain owns decomposition, ordering, judgment, result review, and final synthesis",
-		"Delegated agents are scoped execution sessions",
-		"Do not ask a delegated agent to invent the plan",
-		"Review delegated output before integrating it",
-		"Final synthesis should be concise and judgmental",
-		"## Workspace Isolation",
-		"$ZEN_WORKTREE_ROOT",
-		"TMPDIR/TMP/TEMP",
-		"$ZEN_BUILD_TMPDIR",
-		"Never hard-code OS-global temp paths",
-		"Run independent delegated subtasks in parallel when it reduces elapsed time",
+		"## Brief And Review",
+		"AGENTS.md",
+		"Inspect every delegated result",
+		"observable acceptance criteria",
+		"Scale verification to risk",
+		"same viable Worker",
+		"## Event Continuation",
+		"Ambiguous or unknown delivery is no-replay",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("delegation policy missing %q:\n%s", want, content)
@@ -594,9 +582,9 @@ func TestNewStorePreservesCurrentAndUpgradesExistingPolicyDocs(t *testing.T) {
 	engineContent := string(readEngine)
 	for _, want := range []string{
 		"Keep this too.",
-		"## Rules",
-		"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.",
-		"Do not switch executors based on private task-type judgment.",
+		"Policy",
+		"Use configured routing unless the user requests another executor",
+		"task type alone does not authorize switching",
 	} {
 		if !strings.Contains(engineContent, want) {
 			t.Fatalf("engine policy missing %q:\n%s", want, engineContent)
@@ -609,8 +597,8 @@ func TestNewStorePreservesCurrentAndUpgradesExistingPolicyDocs(t *testing.T) {
 	handoffContent := string(readHandoff)
 	for _, want := range []string{
 		"Keep this handoff rule.",
-		"## Rules",
-		"Treat a host executor switch as a host replacement, not a new conversation.",
+		"Policy",
+		"Host executor switching preserves the visible Brain chat.",
 		"Keep handoff prompts private",
 	} {
 		if !strings.Contains(handoffContent, want) {

@@ -11,7 +11,7 @@ describe("sessionResourceSnapshot", () => {
   test("normalizes optional measurements and omits absent values", () => {
     const snapshot = normalizeSessionResourceSnapshot({
       request_id: "req-1",
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       generation: "ignored-if-present",
       session: {
         name: "cursor-agent",
@@ -35,7 +35,7 @@ describe("sessionResourceSnapshot", () => {
 
     expect(snapshot).toEqual({
       request_id: "req-1",
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         name: "cursor-agent",
         executor: "cursor",
@@ -71,32 +71,32 @@ describe("sessionResourceSnapshot", () => {
       acceptSessionResourceSnapshotResponse({
         requestSeq: 3,
         currentSeq: 3,
-        snapshotAgentId: "main:@7",
-        expectedAgentId: "main:@7",
+        snapshotWorkerId: "main:@7",
+        expectedWorkerId: "main:@7",
       }),
     ).toBe(true);
     expect(
       acceptSessionResourceSnapshotResponse({
         requestSeq: 3,
         currentSeq: 4,
-        snapshotAgentId: "main:@7",
-        expectedAgentId: "main:@7",
+        snapshotWorkerId: "main:@7",
+        expectedWorkerId: "main:@7",
       }),
     ).toBe(false);
     expect(
       acceptSessionResourceSnapshotResponse({
         requestSeq: 3,
         currentSeq: 3,
-        snapshotAgentId: "main:@8",
-        expectedAgentId: "main:@7",
+        snapshotWorkerId: "main:@8",
+        expectedWorkerId: "main:@7",
       }),
     ).toBe(false);
     expect(
       acceptSessionResourceSnapshotResponse({
         requestSeq: 1,
         currentSeq: 1,
-        snapshotAgentId: "main:@7",
-        expectedAgentId: "",
+        snapshotWorkerId: "main:@7",
+        expectedWorkerId: "",
       }),
     ).toBe(false);
   });
@@ -113,8 +113,8 @@ describe("sessionResourceSnapshot", () => {
       acceptSessionResourceSnapshotResponse({
         requestSeq: openSeq,
         currentSeq: epoch,
-        snapshotAgentId: "main:@7",
-        expectedAgentId: "main:@7",
+        snapshotWorkerId: "main:@7",
+        expectedWorkerId: "main:@7",
       }),
     ).toBe(true);
 
@@ -123,8 +123,8 @@ describe("sessionResourceSnapshot", () => {
       acceptSessionResourceSnapshotResponse({
         requestSeq: openSeq,
         currentSeq: afterClose,
-        snapshotAgentId: "main:@7",
-        expectedAgentId: "main:@7",
+        snapshotWorkerId: "main:@7",
+        expectedWorkerId: "main:@7",
       }),
     ).toBe(false);
 
@@ -133,8 +133,8 @@ describe("sessionResourceSnapshot", () => {
       acceptSessionResourceSnapshotResponse({
         requestSeq: nextOpen,
         currentSeq: epoch,
-        snapshotAgentId: "main:@9",
-        expectedAgentId: "main:@9",
+        snapshotWorkerId: "main:@9",
+        expectedWorkerId: "main:@9",
       }),
     ).toBe(true);
   });

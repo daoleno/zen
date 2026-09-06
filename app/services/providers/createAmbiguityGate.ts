@@ -66,7 +66,7 @@ export function isCreateBlockedByAmbiguity(input: {
   });
 }
 
-export function bumpAgentSessionListReceipt(
+export function bumpWorkerSessionListReceipt(
   receipts: Record<string, number>,
   serverId: string,
 ): Record<string, number> {

@@ -6,7 +6,7 @@ import {
   type SetStateAction,
 } from "react";
 import { Keyboard } from "react-native";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type { ProviderActivity } from "../../services/codexConversation";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { wsClient } from "../../services/websocket";
@@ -28,7 +28,7 @@ import {
 
 interface UseInterfaceMessageTransportInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   conversationScopeKey?: string;
   connectionState: ConnectionState;
   runningActivity?: ProviderActivity;
@@ -53,7 +53,7 @@ interface UseInterfaceMessageTransportInput {
 
 export function useInterfaceMessageTransport({
   serverId,
-  agentId,
+  workerId,
   conversationScopeKey,
   connectionState,
   runningActivity,
@@ -108,7 +108,7 @@ export function useInterfaceMessageTransport({
 
   useEffect(() => {
     setOperationalError(undefined);
-  }, [agentId, conversationScopeKey, serverId]);
+  }, [workerId, conversationScopeKey, serverId]);
 
   const dispatchPendingUserMessageRef = useRef<
     (
@@ -176,7 +176,7 @@ export function useInterfaceMessageTransport({
       try {
         receipt = wsClient.sendInput(
           serverId,
-          agentId,
+          workerId,
           `${message.sentText}\n`,
           {
             displayBody: message.sentText,
@@ -207,7 +207,7 @@ export function useInterfaceMessageTransport({
       return true;
     },
     [
-      agentId,
+      workerId,
       beginPendingUserMessageAttempt,
       conversationScopeKey,
       observeInputOutcome,
@@ -234,7 +234,7 @@ export function useInterfaceMessageTransport({
       setOperationalError(undefined);
       const attempt = beginLiveMessageAttempt({
         writeNow: () =>
-          wsClient.sendInput(serverId, agentId, `${text}\n`, {
+          wsClient.sendInput(serverId, workerId, `${text}\n`, {
             displayBody: text,
             conversationScopeKey,
           }),
@@ -281,7 +281,7 @@ export function useInterfaceMessageTransport({
       observeInputOutcome(pendingMessageId, receipt);
     },
     [
-      agentId,
+      workerId,
       addPendingUserMessage,
       clearComposerNativeText,
       conversationScopeKey,
@@ -384,7 +384,7 @@ export function useInterfaceMessageTransport({
       }
     };
     try {
-      const receipt = wsClient.sendAction(serverId, agentId, "pause");
+      const receipt = wsClient.sendAction(serverId, workerId, "pause");
       void receipt.outcome.then((outcome) => {
         if (outcome.kind === "failed") {
           releaseFailedStop(outcome.failure.message);
@@ -399,7 +399,7 @@ export function useInterfaceMessageTransport({
         error?.message || "Stop was not dispatched. Try again.",
       );
     }
-  }, [agentId, connectionState, serverId, runningActivity?.id]);
+  }, [workerId, connectionState, serverId, runningActivity?.id]);
 
   return {
     sending,

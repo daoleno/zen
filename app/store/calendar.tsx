@@ -18,7 +18,7 @@ export interface CalendarRun {
   status: CalendarStatus;
   manual?: boolean;
   work_id?: string;
-  agent_session?: string;
+  worker_session?: string;
   result?: string;
   failure_reason?: string;
 }

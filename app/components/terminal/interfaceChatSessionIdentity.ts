@@ -1,9 +1,9 @@
 export function interfaceChatSessionCacheKey(
   serverId: string,
-  agentId: string,
+  workerId: string,
   conversationScopeKey?: string,
 ) {
   return conversationScopeKey
     ? `${serverId}:scope:${conversationScopeKey}`
-    : `${serverId}:agent:${agentId}`;
+    : `${serverId}:agent:${workerId}`;
 }

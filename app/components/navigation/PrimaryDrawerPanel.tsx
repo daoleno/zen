@@ -10,7 +10,7 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Typography, useAppColors } from "../../constants/tokens";
 import { appVersion } from "../../constants/appVersion";
-import { useAgentServerSummary } from "../../store/agents";
+import { useWorkerServerSummary } from "../../store/workers";
 import { useCurrentServer } from "../../store/currentServer";
 import { ZenLogoMark } from "../ui/ZenLogoMark";
 import {
@@ -103,7 +103,7 @@ export function PrimaryDrawerPanel({
 }: PrimaryDrawerPanelProps) {
   const router = useRouter();
   const colors = useAppColors();
-  const { serverConnections, serverConnectionIssues } = useAgentServerSummary();
+  const { serverConnections, serverConnectionIssues } = useWorkerServerSummary();
   const { currentServer } = useCurrentServer();
   const currentConnection = currentServer
     ? serverConnections[currentServer.id] || "offline"

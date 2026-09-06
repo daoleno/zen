@@ -11,15 +11,15 @@ import (
 const DefaultMissedActionWindow = 15 * time.Minute
 
 type ActionResult struct {
-	WorkID, AgentSession string
-	Launched             bool
+	WorkID, WorkerSession string
+	Launched              bool
 }
 type ActionRunner interface {
 	RunScheduledAction(context.Context, Item, Run) (ActionResult, error)
 }
 
 // ActionInspector reconciles a launched calendar run with its canonical Work
-// item/agent lifecycle. A false known result means the linked execution can no
+// item/Worker lifecycle. A false known result means the linked execution can no
 // longer be observed and must never be relaunched implicitly.
 type ActionInspector interface {
 	InspectScheduledAction(context.Context, Item, Run) (status Status, result, failure string, known bool)
@@ -120,13 +120,13 @@ func (s *Scheduler) run(ctx context.Context, id string, manual bool) (Item, erro
 	result, runErr := s.runner.RunScheduledAction(ctx, item, run)
 	if runErr != nil {
 		if result.Launched {
-			return s.store.RecordLaunch(id, run.ID, result.WorkID, result.AgentSession)
+			return s.store.RecordLaunch(id, run.ID, result.WorkID, result.WorkerSession)
 		}
 		return s.complete(item, run, "", strings.TrimSpace(runErr.Error()))
 	}
 	// Launching visible Work is not task completion. Persist the link and leave
 	// both the item and run running until reconciliation observes a terminal Work state.
-	return s.store.RecordLaunch(id, run.ID, result.WorkID, result.AgentSession)
+	return s.store.RecordLaunch(id, run.ID, result.WorkID, result.WorkerSession)
 }
 
 func (s *Scheduler) failOccurrence(ctx context.Context, id, failure string) {

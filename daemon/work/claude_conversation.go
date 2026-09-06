@@ -34,8 +34,8 @@ type claudeTranscriptCandidate struct {
 	Updated   time.Time
 }
 
-func (r *ProviderConversationReader) loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadClaudeConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -44,7 +44,7 @@ func (r *ProviderConversationReader) loadClaudeConversationForAgent(agent classi
 		}, nil
 	}
 
-	candidate, ok, err := findClaudeTranscript(agent, now)
+	candidate, ok, err := findClaudeTranscript(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -83,11 +83,11 @@ func (r *ProviderConversationReader) loadClaudeConversationForAgent(agent classi
 }
 
 func (r *ProviderConversationReader) loadClaudeConversation(path string) (CodexConversation, error) {
-	return r.loadFileConversation(AgentProviderClaude, path, parseClaudeConversation)
+	return r.loadFileConversation(WorkerProviderClaude, path, parseClaudeConversation)
 }
 
-func findClaudeTranscript(agent classifier.Agent, now time.Time) (claudeTranscriptCandidate, bool, error) {
-	cwd := strings.TrimSpace(agent.Cwd)
+func findClaudeTranscript(worker classifier.Worker, now time.Time) (claudeTranscriptCandidate, bool, error) {
+	cwd := strings.TrimSpace(worker.Cwd)
 	if cwd == "" {
 		return claudeTranscriptCandidate{}, false, nil
 	}
@@ -142,7 +142,7 @@ func findClaudeTranscript(agent classifier.Agent, now time.Time) (claudeTranscri
 		return claudeTranscriptCandidate{}, false, nil
 	}
 
-	if sessionID := claudeResumeSessionID(agent.Command); sessionID != "" {
+	if sessionID := claudeResumeSessionID(worker.Command); sessionID != "" {
 		if matched, ok := matchClaudeTranscriptID(candidates, sessionID); ok {
 			return matched, true, nil
 		}
@@ -154,13 +154,13 @@ func findClaudeTranscript(agent classifier.Agent, now time.Time) (claudeTranscri
 	}
 	// Prefer an unambiguous bind. Never fall back to "newest file in cwd" when
 	// multiple sessions exist — that can surface an unrelated conversation.
-	if matched, ok := matchClaudeTranscriptToAgentStart(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchClaudeTranscriptToWorkerStart(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if matched, ok := matchClaudeTranscriptToActiveSession(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchClaudeTranscriptToActiveSession(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if agent.StartedAt.IsZero() && len(freshCandidates) == 1 {
+	if worker.StartedAt.IsZero() && len(freshCandidates) == 1 {
 		return freshCandidates[0], true, nil
 	}
 	return claudeTranscriptCandidate{}, false, nil
@@ -234,7 +234,7 @@ func claudeResumeSessionID(command string) string {
 	return ""
 }
 
-func matchClaudeTranscriptToAgentStart(candidates []claudeTranscriptCandidate, startedAt time.Time) (claudeTranscriptCandidate, bool) {
+func matchClaudeTranscriptToWorkerStart(candidates []claudeTranscriptCandidate, startedAt time.Time) (claudeTranscriptCandidate, bool) {
 	if startedAt.IsZero() {
 		return claudeTranscriptCandidate{}, false
 	}

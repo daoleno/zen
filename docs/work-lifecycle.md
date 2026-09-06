@@ -6,8 +6,10 @@ Zen's durable coordination model has one `Work` aggregate with at most one
 transaction. Provider, tmux, PID, transcript, and UI state are evidence or
 projections, never lifecycle truth.
 
-This schema is intentionally breaking. Zen does not read, migrate, archive, or
-fall back to an earlier scheduler directory or document.
+This schema is intentionally breaking. Normal startup accepts only the current
+transaction-image schema; it never falls back to an earlier scheduler directory
+or reconstructs execution state from presentation. An explicit offline upgrade
+is described below.
 
 ## Work
 
@@ -49,6 +51,46 @@ The exact provider mutation is first recorded as an `AdmissionState`. A
 review-bound follow-up is tagged with the exact handling identity. It remains
 non-owning until provider acceptance and the typed `continue` disposition
 atomically promote it to the active Attempt.
+
+Admissions are indexed by their exact proposed Turn token. Host review delivery
+cannot replace a Worker's accepted signal contract. A Work still has at most one
+unresolved transport transaction and one current Attempt. Retaining an accepted
+receipt does not authorize an old token to become current, waive a handling
+identity check, close a Review, or replay an uncertain submission.
+
+After a lost CLI response, inspect known input without sending it again:
+
+```sh
+zen worker receipt --work-id <work-id> --id <session-id> --turn-id <turn-token>
+```
+
+The receipt reports canonical acceptance and `owns_attempt` separately. It works
+without a live tmux target and does not mutate lifecycle state. A follow-up
+accepted under an ended handling remains evidence, not a capability to bypass
+the currently required review disposition.
+
+## Worker Upgrade
+
+The Worker release changes CLI/control and mobile wire names together. Use
+`zen worker`; `zen agent` and the old control aliases are not supported. Native
+provider Agent names and Codex subagents are separate concepts and are not
+renamed. Mobile and daemon versions must be upgraded together.
+
+Lifecycle and Calendar use schema 2. Work Markdown uses `worker_session` instead
+of `agent_session`. Old records are rejected rather than silently losing their
+Session links. This development release does not provide old-format migration.
+Use fresh state for the new release; do not point it at an active old deployment.
+Existing data can be archived separately without importing it into the new state.
+
+Live process environments, tmux ownership markers, resource supervisors, provider
+transcripts and active Brain instruction overlays are not upgraded by source edits.
+Plan an authorized maintenance handoff: finish and review active Work normally,
+preserve native resume identities/transcripts and configuration, then stop the
+old daemon/hot watcher and retire old managed Sessions through their existing
+owner. Do not cancel or mark unfinished Work complete merely to permit an
+upgrade. Deploy the new daemon/mobile pair and create or resume Sessions through
+the new owner. Keep archived data until the new state and native resume paths are
+verified. Do not integrate source into a running `zen-dev` tree as a shortcut.
 
 `until_done` changes only completion authority: an unaffirmed terminal result
 cannot complete the Work. It does not queue a continuation, schedule a retry,

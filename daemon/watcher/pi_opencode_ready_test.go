@@ -155,19 +155,19 @@ draft still sitting here
 	if !isOpenCodeCommand("opencode --auto") {
 		t.Fatal("opencode detection failed")
 	}
-	if agentProviderFamily("pi") != "pi" || agentProviderFamily("opencode --auto") != "opencode" {
+	if workerProviderFamily("pi") != "pi" || workerProviderFamily("opencode --auto") != "opencode" {
 		t.Fatal("provider family mismatch")
 	}
-	if got := agentCommandFromProcess(processInfo{comm: "pi", args: "pi --session /tmp/x.jsonl"}); got != "pi" {
+	if got := workerCommandFromProcess(processInfo{comm: "pi", args: "pi --session /tmp/x.jsonl"}); got != "pi" {
 		t.Fatalf("pi process = %q", got)
 	}
-	if got := agentCommandFromProcess(processInfo{comm: "pip", args: "/usr/bin/pip install x"}); got != "" {
+	if got := workerCommandFromProcess(processInfo{comm: "pip", args: "/usr/bin/pip install x"}); got != "" {
 		t.Fatalf("pip must not look like pi: %q", got)
 	}
-	if got := agentCommandFromProcess(processInfo{comm: "node", args: "node /opt/bin/opencode --auto"}); got != "opencode" {
+	if got := workerCommandFromProcess(processInfo{comm: "node", args: "node /opt/bin/opencode --auto"}); got != "opencode" {
 		t.Fatalf("opencode node wrapper = %q", got)
 	}
-	if !isAgentCommand("pi --session /tmp/x.jsonl") || !isAgentCommand("opencode --auto") {
+	if !isWorkerCommand("pi --session /tmp/x.jsonl") || !isWorkerCommand("opencode --auto") {
 		t.Fatal("isAgentCommand must recognize pi/opencode")
 	}
 }

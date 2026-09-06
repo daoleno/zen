@@ -18,10 +18,10 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import {
-  AgentProvider,
-  useAgentDispatch,
-  useAgentServerConnections,
-} from "../store/agents";
+  WorkerProvider,
+  useWorkerDispatch,
+  useWorkerServerConnections,
+} from "../store/workers";
 import { BrainProvider, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
 import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
@@ -71,7 +71,7 @@ async function registerForPushNotificationsAsync(): Promise<
 > {
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("zen-agents", {
-      name: "Agent Alerts",
+      name: "Worker Alerts",
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
     });
@@ -176,7 +176,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
 }: ConnectionLifecycleProps) {
   const router = useRouter();
   const segments = useSegments();
-  const dispatch = useAgentDispatch();
+  const dispatch = useWorkerDispatch();
   const brainDispatch = useBrainDispatch();
   const workDispatch = useWorkDispatch();
   const calendarDispatch = useCalendarDispatch();
@@ -231,27 +231,27 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
   useEffect(() => {
     onBootstrapResolved(false);
 
-    const onAgentSessionList = (data: any) =>
+    const onWorkerSessionList = (data: any) =>
       dispatch({
-        type: "UPSERT_SERVER_AGENTS",
+        type: "UPSERT_SERVER_WORKERS",
         serverId: data.serverId,
         serverName: data.serverName,
         serverUrl: data.serverUrl,
-        agents: data.agent_sessions || [],
+        workers: data.worker_sessions || [],
       });
-    const onAgentSessionUpsert = (data: any) =>
+    const onWorkerSessionUpsert = (data: any) =>
       dispatch({
-        type: "UPSERT_AGENT",
+        type: "UPSERT_WORKER",
         serverId: data.serverId,
         serverName: data.serverName,
         serverUrl: data.serverUrl,
-        agent: data.agent_session,
+        worker: data.worker_session,
       });
-    const onAgentSessionArchived = (data: any) =>
+    const onWorkerSessionArchived = (data: any) =>
       dispatch({
-        type: "REMOVE_AGENT",
+        type: "REMOVE_WORKER",
         serverId: data.serverId,
-        agent_id: data.agent_session?.id || "",
+        worker_id: data.worker_session?.id || "",
       });
     const onConnecting = (data: any) =>
       dispatch({
@@ -360,10 +360,10 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
     };
     const onConnectedFetchWork = createConnectedReadRefreshHandler(wsClient);
 
-    wsClient.on("agent_session_list", onAgentSessionList);
-    wsClient.on("agent_session_created", onAgentSessionUpsert);
-    wsClient.on("agent_session_updated", onAgentSessionUpsert);
-    wsClient.on("agent_session_archived", onAgentSessionArchived);
+    wsClient.on("worker_session_list", onWorkerSessionList);
+    wsClient.on("worker_session_created", onWorkerSessionUpsert);
+    wsClient.on("worker_session_updated", onWorkerSessionUpsert);
+    wsClient.on("worker_session_archived", onWorkerSessionArchived);
     wsClient.on("connecting", onConnecting);
     wsClient.on("connected", onConnected);
     wsClient.on("disconnected", onDisconnected);
@@ -401,7 +401,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       } catch (error) {
         console.log("Failed to bootstrap app:", error);
       } finally {
-        wsClient.clearActiveAgentsExcept(null);
+        wsClient.clearActiveWorkersExcept(null);
         onBootstrapResolved(true);
       }
     })();
@@ -411,10 +411,10 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       // back to offline during hot reloads and remounts.
       wsClient.disconnectAll();
 
-      wsClient.off("agent_session_list", onAgentSessionList);
-      wsClient.off("agent_session_created", onAgentSessionUpsert);
-      wsClient.off("agent_session_updated", onAgentSessionUpsert);
-      wsClient.off("agent_session_archived", onAgentSessionArchived);
+      wsClient.off("worker_session_list", onWorkerSessionList);
+      wsClient.off("worker_session_created", onWorkerSessionUpsert);
+      wsClient.off("worker_session_updated", onWorkerSessionUpsert);
+      wsClient.off("worker_session_archived", onWorkerSessionArchived);
       wsClient.off("connecting", onConnecting);
       wsClient.off("connected", onConnected);
       wsClient.off("disconnected", onDisconnected);
@@ -477,74 +477,36 @@ const CurrentServerConnectionBinder = memo(
       return () => {
         cancelled = true;
       };
-    }, [currentServer?.id, hydrated]);
+    }, [currentServer, hydrated]);
 
     return null;
   },
 );
 
 const LatencySampler = memo(function LatencySampler() {
-  const dispatch = useAgentDispatch();
-  const serverConnections = useAgentServerConnections();
+  const dispatch = useWorkerDispatch();
+  const serverConnections = useWorkerServerConnections();
+  const { currentServer, isCurrentServer } = useCurrentServer();
+  const connected = currentServer && serverConnections[currentServer.id] === "connected";
 
   useEffect(() => {
+    if (!currentServer || !connected) return;
     let cancelled = false;
-
     const refreshServerLatency = async () => {
-      const servers = await getServers();
-      if (cancelled) {
-        return;
-      }
-
-      const connectedServers = servers.filter(
-        (server) => serverConnections[server.id] === "connected",
-      );
-      if (connectedServers.length === 0) {
-        return;
-      }
-
-      const samples = await Promise.all(
-        connectedServers.map(async (server) => {
-          try {
-            return [
-              server.id,
-              await measureServerLatency({
-                server,
-              }),
-            ] as const;
-          } catch {
-            return [server.id, null] as const;
-          }
-        }),
-      );
-
-      if (cancelled) {
-        return;
-      }
-
-      for (const [serverId, sample] of samples) {
-        if (!sample) {
-          continue;
+      if (!isCurrentServer(currentServer.id)) return;
+      try {
+        const sample = await measureServerLatency({ server: currentServer });
+        if (sample && !cancelled && isCurrentServer(currentServer.id)) {
+          dispatch({ type: "SET_SERVER_LATENCY", serverId: currentServer.id, sample });
         }
-        dispatch({
-          type: "SET_SERVER_LATENCY",
-          serverId,
-          sample,
-        });
+      } catch {
+        // A failed probe is not a new latency observation.
       }
     };
-
     void refreshServerLatency();
-    const interval = setInterval(() => {
-      void refreshServerLatency();
-    }, 15000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [dispatch, serverConnections]);
-
+    const interval = setInterval(() => { void refreshServerLatency(); }, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [connected, currentServer, dispatch, isCurrentServer]);
   return null;
 });
 
@@ -566,7 +528,7 @@ const NotificationObserver = memo(function NotificationObserver() {
       const previous = appStateRef.current;
       appStateRef.current = nextState;
       if (nextState !== "active") {
-        wsClient.clearActiveAgentsExcept(null);
+        wsClient.clearActiveWorkersExcept(null);
         return;
       }
       // Foreground resume: skip reconnect backoff and silently restore transport.
@@ -632,7 +594,7 @@ const NotificationObserver = memo(function NotificationObserver() {
             routerRef.current.push({
               pathname: "/terminal/[id]",
               params: {
-                id: destination.agentId,
+                id: destination.workerId,
                 serverId: destination.serverId,
               },
             });
@@ -807,7 +769,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
         <KeyboardProvider>
-          <AgentProvider>
+          <WorkerProvider>
             <CurrentServerProvider>
               <CurrentSessionProvider>
                 <BrainProvider>
@@ -822,7 +784,7 @@ export default function RootLayout() {
                 </BrainProvider>
               </CurrentSessionProvider>
             </CurrentServerProvider>
-          </AgentProvider>
+          </WorkerProvider>
         </KeyboardProvider>
       </ThemeProvider>
     </GestureHandlerRootView>

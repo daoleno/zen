@@ -22,13 +22,13 @@ func TestBuildWindowCommandForShellStartsInteractiveLoginShell(t *testing.T) {
 
 func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing.T) {
 	w := New(time.Second)
-	sessionID := "brain-agent-ownership-loss:@1"
+	sessionID := "zen-worker-ownership-loss:@1"
 	identity := testSessionInputIdentity("codex")
-	w.agents[sessionID] = &classifier.Agent{
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Delegated: true, State: classifier.StateRunning,
 		Command: "codex", Attention: "none",
 	}
-	w.agentOrder = append(w.agentOrder, sessionID)
+	w.workerOrder = append(w.workerOrder, sessionID)
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.targetProcessResolver = fixedSessionInputResolver(identity)
 	input := newFakeSessionInputIO()
@@ -49,7 +49,7 @@ func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing
 	if turn.Status != TurnUnknown || turn.ControlState != TurnControlOwnershipLost {
 		t.Fatalf("ownership loss was not durably reduced before rejection: %+v", turn)
 	}
-	projected := w.GetAgent(sessionID)
+	projected := w.GetWorker(sessionID)
 	if projected == nil || projected.State != classifier.StateUnknown ||
 		projected.Attention != "ownership_lost" || !projected.NeedsAttention {
 		t.Fatalf("ownership loss was not synchronously deprojected: agent=%+v", projected)
@@ -68,12 +68,12 @@ func TestResolveOwnedGenerationDeprojectsOwnershipLossBeforeRejecting(t *testing
 
 func TestResolveOwnedGenerationDoesNotDeprojectTransientProbeFailure(t *testing.T) {
 	w := New(time.Second)
-	sessionID := "brain-agent-transient-probe:@1"
-	w.agents[sessionID] = &classifier.Agent{
+	sessionID := "zen-worker-transient-probe:@1"
+	w.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Delegated: true, State: classifier.StateRunning,
 		Command: "grok", Attention: "none",
 	}
-	w.agentOrder = append(w.agentOrder, sessionID)
+	w.workerOrder = append(w.workerOrder, sessionID)
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
 	w.targetProcessResolver = func(string) (targetProcessIdentity, bool) {
 		return targetProcessIdentity{}, false
@@ -109,11 +109,11 @@ func TestBuildWindowCommandForShellWrapsCommandInInteractiveLoginShell(t *testin
 	}
 }
 
-func TestBuildWindowCommandForShellInjectsAgentProgressEnv(t *testing.T) {
+func TestBuildWindowCommandForShellInjectsWorkerProgressEnv(t *testing.T) {
 	got := buildWindowCommandForShellWithOptions("/bin/zsh", "codex --dangerously-bypass-approvals-and-sandbox", true)
 	for _, want := range []string{
-		"ZEN_AGENT_ID",
-		"ZEN_AGENT_PROGRESS_CMD",
+		"ZEN_WORKER_ID",
+		"ZEN_WORKER_PROGRESS_CMD",
 		"tmux display-message",
 		"codex --dangerously-bypass-approvals-and-sandbox",
 	} {
@@ -123,9 +123,9 @@ func TestBuildWindowCommandForShellInjectsAgentProgressEnv(t *testing.T) {
 	}
 	// The injected assignment must not embed a space-separated command string
 	// (that breaks under zsh, which does not word-split unquoted variables).
-	if strings.Contains(got, `ZEN_AGENT_PROGRESS_CMD="zen agent progress"`) ||
-		strings.Contains(got, "ZEN_AGENT_PROGRESS_CMD=zen agent progress") {
-		t.Fatalf("ZEN_AGENT_PROGRESS_CMD must be a single executable token:\n%s", got)
+	if strings.Contains(got, `ZEN_WORKER_PROGRESS_CMD="zen worker progress"`) ||
+		strings.Contains(got, "ZEN_WORKER_PROGRESS_CMD=zen worker progress") {
+		t.Fatalf("ZEN_WORKER_PROGRESS_CMD must be a single executable token:\n%s", got)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestResolveTargetIdentityWaitsForUnknownExpectedExecutable(t *testing.T) {
 		ProcessID:       10,
 		ProcessStart:    100,
 	}
-	futureAgent := targetProcessIdentity{
+	futureWorker := targetProcessIdentity{
 		Command:         "future-agent",
 		PanePID:         10,
 		PaneStart:       100,
@@ -155,12 +155,12 @@ func TestResolveTargetIdentityWaitsForUnknownExpectedExecutable(t *testing.T) {
 			if calls <= 2 {
 				return shell, true
 			}
-			return futureAgent, true
+			return futureWorker, true
 		},
 		"session:@1",
 		"future-agent --accept-all",
 	)
-	if !ok || !got.equal(futureAgent) {
+	if !ok || !got.equal(futureWorker) {
 		t.Fatalf("resolved identity = (%+v, %v), want future-agent generation", got, ok)
 	}
 	if calls < 4 {
@@ -225,13 +225,13 @@ func TestZenExecutablePathPrefersCurrentExecutable(t *testing.T) {
 	}
 }
 
-func TestAgentProgressEnvScriptAssignsSingleToken(t *testing.T) {
-	script := agentProgressEnvScript()
-	if !strings.Contains(script, "ZEN_AGENT_PROGRESS_CMD=") {
-		t.Fatalf("script missing ZEN_AGENT_PROGRESS_CMD assignment:\n%s", script)
+func TestWorkerProgressEnvScriptAssignsSingleToken(t *testing.T) {
+	script := workerProgressEnvScript()
+	if !strings.Contains(script, "ZEN_WORKER_PROGRESS_CMD=") {
+		t.Fatalf("script missing ZEN_WORKER_PROGRESS_CMD assignment:\n%s", script)
 	}
 	// The assignment must not embed a space-separated command string.
-	if strings.Contains(script, "zen agent progress") {
+	if strings.Contains(script, "zen worker progress") {
 		t.Fatalf("script must not embed space-separated command:\n%s", script)
 	}
 	// The injected value must be the current executable's path (shell-quoted),
@@ -272,19 +272,19 @@ func TestBaseSessionNameHandlesStableWindowIDs(t *testing.T) {
 	}
 }
 
-func TestFormatAgentNamePrefersWindowNameAndKeepsTargetSuffix(t *testing.T) {
-	got := formatAgentName("Implement issue titles", "main:@42")
+func TestFormatWorkerNamePrefersWindowNameAndKeepsTargetSuffix(t *testing.T) {
+	got := formatWorkerName("Implement issue titles", "main:@42")
 	want := "Implement issue titles (main:@42)"
 	if got != want {
-		t.Fatalf("formatAgentName() = %q, want %q", got, want)
+		t.Fatalf("formatWorkerName() = %q, want %q", got, want)
 	}
 }
 
-func TestFormatAgentNameFallsBackToTargetWhenWindowNameMissing(t *testing.T) {
-	got := formatAgentName("", "main:@42")
+func TestFormatWorkerNameFallsBackToTargetWhenWindowNameMissing(t *testing.T) {
+	got := formatWorkerName("", "main:@42")
 	want := "main:@42"
 	if got != want {
-		t.Fatalf("formatAgentName() = %q, want %q", got, want)
+		t.Fatalf("formatWorkerName() = %q, want %q", got, want)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestCreatedSessionNameFallsBackToCommandExecutable(t *testing.T) {
 
 func TestDetectAgentProcessRecognizesCursorAgent(t *testing.T) {
 	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
-	gotCommand, gotStarted, gotPID := detectAgentProcess("zsh", 100, map[int]processInfo{
+	gotCommand, gotStarted, gotPID := detectWorkerProcess("zsh", 100, map[int]processInfo{
 		100: {
 			pid:       100,
 			comm:      "zsh",
@@ -319,15 +319,15 @@ func TestDetectAgentProcessRecognizesCursorAgent(t *testing.T) {
 	}
 }
 
-func TestNewTmuxSessionNameUsesAgentPrefix(t *testing.T) {
+func TestNewTmuxSessionNameUsesWorkerPrefix(t *testing.T) {
 	got := newTmuxSessionName(CreateSessionOptions{Name: "Brain Codex"})
-	if !strings.HasPrefix(got, "brain-agent-brain-codex-") {
+	if !strings.HasPrefix(got, "zen-worker-brain-codex-") {
 		t.Fatalf("newTmuxSessionName() = %q", got)
 	}
 }
 
 func TestBuildNewSessionArgsCreatesDetachedSession(t *testing.T) {
-	got := buildNewSessionArgs("brain-agent-codex-123", "/repo/zen", CreateSessionOptions{
+	got := buildNewSessionArgs("zen-worker-codex-123", "/repo/zen", CreateSessionOptions{
 		Name: "brain-codex",
 	}, "exec '/bin/zsh' -i -l -c 'codex'")
 	wantPrefix := []string{
@@ -337,7 +337,7 @@ func TestBuildNewSessionArgsCreatesDetachedSession(t *testing.T) {
 		"-F",
 		"#{session_name}:#{window_id}",
 		"-s",
-		"brain-agent-codex-123",
+		"zen-worker-codex-123",
 	}
 	if len(got) < len(wantPrefix) || !reflect.DeepEqual(got[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("buildNewSessionArgs() = %v", got)
@@ -347,7 +347,7 @@ func TestBuildNewSessionArgsCreatesDetachedSession(t *testing.T) {
 	}
 }
 
-func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
+func TestRegisterCreatedSessionSeedsWorkerSnapshotAndEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
@@ -356,18 +356,18 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 		Name:    "Codex follow-up",
 	}, startedAt)
 
-	agent := w.GetAgent("main:@42")
-	if agent == nil {
+	worker := w.GetWorker("main:@42")
+	if worker == nil {
 		t.Fatal("expected created session to be registered")
 	}
-	if agent.Name != "Codex follow-up (main:@42)" {
-		t.Fatalf("agent name = %q", agent.Name)
+	if worker.Name != "Codex follow-up (main:@42)" {
+		t.Fatalf("agent name = %q", worker.Name)
 	}
-	if agent.Cwd != "/repo/zen" || agent.Project != "zen" || agent.Command != "codex" {
-		t.Fatalf("agent metadata = cwd %q project %q command %q", agent.Cwd, agent.Project, agent.Command)
+	if worker.Cwd != "/repo/zen" || worker.Project != "zen" || worker.Command != "codex" {
+		t.Fatalf("agent metadata = cwd %q project %q command %q", worker.Cwd, worker.Project, worker.Command)
 	}
-	if agent.State != classifier.StateUnknown || !agent.StartedAt.Equal(startedAt) {
-		t.Fatalf("agent state/start = %q %s", agent.State, agent.StartedAt)
+	if worker.State != classifier.StateUnknown || !worker.StartedAt.Equal(startedAt) {
+		t.Fatalf("agent state/start = %q %s", worker.State, worker.StartedAt)
 	}
 	if _, ok := w.prevContent["main:@42"]; !ok {
 		t.Fatal("expected initial content marker for first poll update")
@@ -375,7 +375,7 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 
 	select {
 	case ev := <-w.Events():
-		if ev.Type != "agent_discovered" || ev.AgentID != "main:@42" || ev.Agent == nil {
+		if ev.Type != "worker_discovered" || ev.WorkerID != "main:@42" || ev.Worker == nil {
 			t.Fatalf("event = %#v", ev)
 		}
 	case <-time.After(time.Second):
@@ -383,7 +383,7 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 	}
 }
 
-func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
+func TestRegisterCreatedSessionMarksHiddenWorker(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
@@ -393,14 +393,14 @@ func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
 		Hidden:  true,
 	}, startedAt)
 
-	agent := w.GetAgent("main:@43")
-	if agent == nil {
+	worker := w.GetWorker("main:@43")
+	if worker == nil {
 		t.Fatal("expected created session to be registered")
 	}
-	if !agent.Hidden || !w.hidden["main:@43"] {
-		t.Fatalf("expected hidden agent, got agent hidden=%v registry=%v", agent.Hidden, w.hidden["main:@43"])
+	if !worker.Hidden || !w.hidden["main:@43"] {
+		t.Fatalf("expected hidden agent, got agent hidden=%v registry=%v", worker.Hidden, w.hidden["main:@43"])
 	}
-	if agent.Delegated {
+	if worker.Delegated {
 		t.Fatal("hidden Brain host should not be marked delegated")
 	}
 }
@@ -409,34 +409,34 @@ func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
-	w.registerCreatedSession("brain-agent-verify-123:@44", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-verify-123:@44", "/repo/zen", CreateSessionOptions{
 		Command:   "codex",
 		Name:      "Verify",
 		Delegated: true,
 	}, startedAt)
 
-	agent := w.GetAgent("brain-agent-verify-123:@44")
-	if agent == nil {
+	worker := w.GetWorker("zen-worker-verify-123:@44")
+	if worker == nil {
 		t.Fatal("expected created session to be registered")
 	}
-	if !agent.Delegated {
-		t.Fatal("visible brain-agent session should be marked delegated")
+	if !worker.Delegated {
+		t.Fatal("visible brain-Worker session should be marked delegated")
 	}
 }
 
 func TestRegisterCreatedSessionDoesNotInferDelegatedFromName(t *testing.T) {
 	w := New(time.Second)
 
-	w.registerCreatedSession("brain-agent-user-owned:@44", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-user-owned:@44", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "User owned",
 	}, time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC))
 
-	agent := w.GetAgent("brain-agent-user-owned:@44")
-	if agent == nil {
+	worker := w.GetWorker("zen-worker-user-owned:@44")
+	if worker == nil {
 		t.Fatal("expected created session to be registered")
 	}
-	if agent.Delegated {
+	if worker.Delegated {
 		t.Fatal("session name alone should not mark an agent delegated")
 	}
 }
@@ -452,25 +452,25 @@ func TestAllowedTmuxKeyIncludesCodexPickerShortcuts(t *testing.T) {
 	}
 }
 
-func TestAgentMetadataChangedDetectsNameChange(t *testing.T) {
-	agent := &classifier.Agent{
+func TestWorkerMetadataChangedDetectsNameChange(t *testing.T) {
+	worker := &classifier.Worker{
 		Name:      "Codex (main:@42)",
 		Project:   "zen",
 		Cwd:       "/repo/zen",
 		Command:   "codex",
 		ProcessID: 123,
 	}
-	previous := agentMetadataSnapshotFor(agent)
+	previous := workerMetadataSnapshotFor(worker)
 
-	agent.Name = "Investigate rename sync (main:@42)"
+	worker.Name = "Investigate rename sync (main:@42)"
 
-	if !agentMetadataChanged(previous, agent) {
+	if !workerMetadataChanged(previous, worker) {
 		t.Fatal("expected metadata change after agent name changed")
 	}
 }
 
-func TestAgentMetadataChangedIgnoresStateOnlyChange(t *testing.T) {
-	agent := &classifier.Agent{
+func TestWorkerMetadataChangedIgnoresStateOnlyChange(t *testing.T) {
+	worker := &classifier.Worker{
 		Name:      "Codex (main:@42)",
 		Project:   "zen",
 		Cwd:       "/repo/zen",
@@ -479,40 +479,40 @@ func TestAgentMetadataChangedIgnoresStateOnlyChange(t *testing.T) {
 		Summary:   "running",
 		ProcessID: 123,
 	}
-	previous := agentMetadataSnapshotFor(agent)
+	previous := workerMetadataSnapshotFor(worker)
 
-	agent.State = classifier.StateBlocked
-	agent.Summary = "waiting"
-	agent.UpdatedAt = time.Now()
+	worker.State = classifier.StateBlocked
+	worker.Summary = "waiting"
+	worker.UpdatedAt = time.Now()
 
-	if agentMetadataChanged(previous, agent) {
+	if workerMetadataChanged(previous, worker) {
 		t.Fatal("state-only updates should not count as metadata changes")
 	}
 }
 
-func TestAgentMetadataChangedDetectsProgressAttentionChange(t *testing.T) {
-	agent := &classifier.Agent{
-		Name:           "Worker (brain-agent-worker:@1)",
+func TestWorkerMetadataChangedDetectsProgressAttentionChange(t *testing.T) {
+	worker := &classifier.Worker{
+		Name:           "Worker (zen-worker-worker:@1)",
 		State:          classifier.StateRunning,
 		Phase:          "working",
 		Attention:      "none",
 		LeaseSeconds:   300,
 		NeedsAttention: false,
 	}
-	previous := agentMetadataSnapshotFor(agent)
+	previous := workerMetadataSnapshotFor(worker)
 
-	agent.Attention = "user_input"
-	agent.NeedsAttention = true
+	worker.Attention = "user_input"
+	worker.NeedsAttention = true
 	progressAt := time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC)
-	agent.LastProgressAt = &progressAt
+	worker.LastProgressAt = &progressAt
 
-	if !agentMetadataChanged(previous, agent) {
+	if !workerMetadataChanged(previous, worker) {
 		t.Fatal("expected progress attention change to count as metadata")
 	}
 }
 
 func TestControlFactPreservesStructuredProgressContext(t *testing.T) {
-	progress := classifier.AgentProgress{
+	progress := classifier.WorkerProgress{
 		Status: "blocked", Phase: "verifying", Attention: "blocked",
 		Summary: "Registry is unavailable", EventKind: "risk",
 		DetailsJSON: `{"registry":"external"}`, LeaseSeconds: 300,
@@ -533,16 +533,16 @@ func TestControlFactPreservesStructuredProgressContext(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
+func TestUpdateWorkerProgressUpdatesWorkerAndEmitsStateEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, startedAt)
 	<-w.Events()
 
-	agent, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+	worker, err := w.UpdateWorkerProgress("zen-worker-worker:@1", classifier.WorkerProgress{
 		Status:       "done",
 		Phase:        "reporting",
 		Attention:    "done",
@@ -555,32 +555,32 @@ func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateAgentProgress returned error: %v", err)
 	}
-	if agent.State != classifier.StateDone || agent.Phase != "reporting" || agent.Attention != "done" {
-		t.Fatalf("agent progress = %#v", agent)
+	if worker.State != classifier.StateDone || worker.Phase != "reporting" || worker.Attention != "done" {
+		t.Fatalf("worker progress = %#v", worker)
 	}
-	if !agent.NeedsAttention || agent.LastProgressAt == nil || agent.ExpectedNextCheckAt == nil {
-		t.Fatalf("agent progress metadata = %#v", agent)
+	if !worker.NeedsAttention || worker.LastProgressAt == nil || worker.ExpectedNextCheckAt == nil {
+		t.Fatalf("worker progress metadata = %#v", worker)
 	}
-	if agent.TaskClass != "mechanical_change" || agent.EventKind != "verification" || agent.DetailsJSON == "" {
-		t.Fatalf("agent semantic metadata = %#v", agent)
+	if worker.TaskClass != "mechanical_change" || worker.EventKind != "verification" || worker.DetailsJSON == "" {
+		t.Fatalf("agent semantic metadata = %#v", worker)
 	}
 
 	select {
 	case ev := <-w.Events():
-		if ev.Type != "agent_state_change" || ev.OldState != "unknown" || ev.NewState != "done" {
+		if ev.Type != "worker_state_change" || ev.OldState != "unknown" || ev.NewState != "done" {
 			t.Fatalf("event = %#v", ev)
 		}
-		if ev.Agent == nil || ev.Agent.Summary != "Finished verification" || ev.Agent.EventKind != "verification" {
-			t.Fatalf("event agent = %#v", ev.Agent)
+		if ev.Worker == nil || ev.Worker.Summary != "Finished verification" || ev.Worker.EventKind != "verification" {
+			t.Fatalf("event agent = %#v", ev.Worker)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for progress event")
 	}
 }
 
-func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
+func TestUpdateWorkerProgressRejectsUnknownWorker(t *testing.T) {
 	w := New(time.Second)
-	if _, err := w.UpdateAgentProgress("missing:@1", classifier.AgentProgress{
+	if _, err := w.UpdateWorkerProgress("missing:@1", classifier.WorkerProgress{
 		Status:    "running",
 		Phase:     "working",
 		Attention: "none",
@@ -589,9 +589,9 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentProgressRequiresExactDelegatedSignalIdentity(t *testing.T) {
+func TestUpdateWorkerProgressRequiresExactDelegatedSignalIdentity(t *testing.T) {
 	w := New(time.Second)
-	const sessionID = "brain-agent-signal:@1"
+	const sessionID = "zen-worker-signal:@1"
 	const turnID = "turn:signal-current"
 	w.registerCreatedSession(sessionID, "/repo/zen", CreateSessionOptions{
 		Command: "codex", Name: "Signal", Delegated: true,
@@ -613,7 +613,7 @@ func TestUpdateAgentProgressRequiresExactDelegatedSignalIdentity(t *testing.T) {
 		{name: "mismatched", turnID: "turn:previous", want: "does not match"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+			if _, err := w.UpdateWorkerProgress(sessionID, classifier.WorkerProgress{
 				TurnID: test.turnID, Status: "done", Phase: "reporting", Attention: "done",
 				Summary: "must not apply", ProgressEventID: "rejected-" + test.name,
 			}); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -621,26 +621,26 @@ func TestUpdateAgentProgressRequiresExactDelegatedSignalIdentity(t *testing.T) {
 			}
 		})
 	}
-	if agent := w.GetAgent(sessionID); agent.State == classifier.StateDone || agent.Summary == "must not apply" {
-		t.Fatalf("rejected signal mutated Session projection: %+v", agent)
+	if worker := w.GetWorker(sessionID); worker.State == classifier.StateDone || worker.Summary == "must not apply" {
+		t.Fatalf("rejected signal mutated Session projection: %+v", worker)
 	}
 	if turn, _, _ := ledger.Turn(sessionID); turn.Status != TurnAccepted {
 		t.Fatalf("rejected signal mutated canonical Turn: %+v", turn)
 	}
 
-	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+	worker, err := w.UpdateWorkerProgress(sessionID, classifier.WorkerProgress{
 		TurnID: turnID, Status: "done", Phase: "reporting", Attention: "done",
 		Summary: "REVIEW_READY", ProgressEventID: "matching-done",
 	})
-	if err != nil || agent.State != classifier.StateDone || agent.Summary != "REVIEW_READY" {
-		t.Fatalf("matching signal projection = %+v err=%v", agent, err)
+	if err != nil || worker.State != classifier.StateDone || worker.Summary != "REVIEW_READY" {
+		t.Fatalf("matching signal projection = %+v err=%v", worker, err)
 	}
 	<-w.Events()
 }
 
-func TestUpdateAgentProgressMapsMatchingUserInputAttentionToBlockedTurn(t *testing.T) {
+func TestUpdateWorkerProgressMapsMatchingUserInputAttentionToBlockedTurn(t *testing.T) {
 	w := New(time.Second)
-	const sessionID = "brain-agent-user-input:@1"
+	const sessionID = "zen-worker-user-input:@1"
 	const turnID = "turn:user-input"
 	w.registerCreatedSession(sessionID, "/repo/zen", CreateSessionOptions{
 		Command: "pi", Name: "User input", Delegated: true,
@@ -652,12 +652,12 @@ func TestUpdateAgentProgressMapsMatchingUserInputAttentionToBlockedTurn(t *testi
 		AcceptedAt: time.Now().UTC().Add(-time.Second), SignalProtocol: true,
 	})
 	w.turnLedger = ledger
-	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+	worker, err := w.UpdateWorkerProgress(sessionID, classifier.WorkerProgress{
 		TurnID: turnID, Status: "running", Phase: "working", Attention: "user_input",
 		Summary: "Need exact input", ProgressEventID: "matching-user-input",
 	})
-	if err != nil || agent.State != classifier.StateBlocked || agent.Attention != "user_input" || agent.Summary != "Need exact input" {
-		t.Fatalf("user_input projection = %+v err=%v", agent, err)
+	if err != nil || worker.State != classifier.StateBlocked || worker.Attention != "user_input" || worker.Summary != "Need exact input" {
+		t.Fatalf("user_input projection = %+v err=%v", worker, err)
 	}
 	turn, _, _ := ledger.Turn(sessionID)
 	if turn.Status != TurnBlocked || turn.Attention != "user_input" {
@@ -668,7 +668,7 @@ func TestUpdateAgentProgressMapsMatchingUserInputAttentionToBlockedTurn(t *testi
 
 func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
@@ -680,15 +680,15 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	ledger := newFakeTurnLedger()
 	acceptedAt := time.Now().UTC()
 	if err := ledger.AdmitTurn(AdmittedTurn{
-		SessionID:  "brain-agent-worker:@1",
-		TurnID:     "brain-agent-worker:@1:turn:1",
+		SessionID:  "zen-worker-worker:@1",
+		TurnID:     "zen-worker-worker:@1:turn:1",
 		AcceptedAt: acceptedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	w.turnLedger = ledger
 
-	failed, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+	failed, err := w.UpdateWorkerProgress("zen-worker-worker:@1", classifier.WorkerProgress{
 		Status:    "failed",
 		Phase:     "starting",
 		Attention: "failed",
@@ -708,7 +708,7 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 		t.Fatalf("failed hint polluted the canonical projection: %#v", failed)
 	}
 
-	accepted, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
+	accepted, err := w.RebindDelegatedTurnProjection("zen-worker-worker:@1")
 	if err != nil {
 		t.Fatalf("RebindDelegatedTurnProjection returned error: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 	case ev := <-w.Events():
 		// The failed hint never flips the canonical projection; the rebind
 		// emits the same nonterminal metadata event.
-		if ev.Type != "agent_metadata_change" && ev.Type != "agent_state_change" {
+		if ev.Type != "worker_metadata_change" && ev.Type != "worker_state_change" {
 			t.Fatalf("event = %#v", ev)
 		}
 	case <-time.After(time.Second):
@@ -736,7 +736,7 @@ func TestRebindDelegatedTurnProjectionClearsOlderStickyFailure(t *testing.T) {
 
 func TestRebindDelegatedTurnProjectionBypassesRecentTurnCache(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 8, 9, 4, 24, 0, 0, time.UTC))
@@ -744,32 +744,32 @@ func TestRebindDelegatedTurnProjectionBypassesRecentTurnCache(t *testing.T) {
 
 	ledger := newFakeTurnLedger()
 	readAt := time.Now().UTC()
-	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
-		SessionID: "brain-agent-worker:@1", TurnID: "cached-old", Status: TurnDone,
+	ledger.seed("zen-worker-worker:@1", TurnSnapshot{
+		SessionID: "zen-worker-worker:@1", TurnID: "cached-old", Status: TurnDone,
 		AcceptedAt: readAt.Add(-time.Minute),
 	})
 	w.turnLedger = ledger
-	if turn, found, err := w.ledgerTurnFor("brain-agent-worker:@1", readAt); err != nil || !found || turn.TurnID != "cached-old" {
+	if turn, found, err := w.ledgerTurnFor("zen-worker-worker:@1", readAt); err != nil || !found || turn.TurnID != "cached-old" {
 		t.Fatalf("seed cache = (%+v, %v, %v)", turn, found, err)
 	}
-	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
-		SessionID: "brain-agent-worker:@1", TurnID: "authoritative-new", Status: TurnAccepted,
+	ledger.seed("zen-worker-worker:@1", TurnSnapshot{
+		SessionID: "zen-worker-worker:@1", TurnID: "authoritative-new", Status: TurnAccepted,
 		AcceptedAt: readAt.Add(time.Second),
 	})
 
-	rebound, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
+	rebound, err := w.RebindDelegatedTurnProjection("zen-worker-worker:@1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rebound.State != classifier.StateRunning ||
-		w.ledgerTurns["brain-agent-worker:@1"].TurnID != "authoritative-new" {
-		t.Fatalf("rebind reused stale cache: agent=%+v cached=%+v", rebound, w.ledgerTurns["brain-agent-worker:@1"])
+		w.ledgerTurns["zen-worker-worker:@1"].TurnID != "authoritative-new" {
+		t.Fatalf("rebind reused stale cache: agent=%+v cached=%+v", rebound, w.ledgerTurns["zen-worker-worker:@1"])
 	}
 }
 
 func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T) {
 	w := New(time.Second)
-	const sessionID = "brain-agent-worker:@heartbeat"
+	const sessionID = "zen-worker-worker:@heartbeat"
 	w.registerCreatedSession(sessionID, "/repo/zen", CreateSessionOptions{
 		Command: "codex", Name: "Worker",
 	}, time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC))
@@ -790,7 +790,7 @@ func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T
 		AcceptedAt: readAt.Add(time.Second), ActivityID: "fresh-activity",
 	})
 
-	agent, err := w.UpdateAgentProgress(sessionID, classifier.AgentProgress{
+	worker, err := w.UpdateWorkerProgress(sessionID, classifier.WorkerProgress{
 		Status: "running", Phase: "working", Attention: "none",
 		Summary: "first fresh heartbeat", ProgressEventID: "heartbeat-fresh-1",
 	})
@@ -798,8 +798,8 @@ func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T
 		t.Fatal(err)
 	}
 	<-w.Events()
-	if agent.State != classifier.StateRunning || w.ledgerTurns[sessionID].TurnID != "fresh-turn" {
-		t.Fatalf("first heartbeat used superseded cache: agent=%+v cache=%+v", agent, w.ledgerTurns[sessionID])
+	if worker.State != classifier.StateRunning || w.ledgerTurns[sessionID].TurnID != "fresh-turn" {
+		t.Fatalf("first heartbeat used superseded cache: agent=%+v cache=%+v", worker, w.ledgerTurns[sessionID])
 	}
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
@@ -810,7 +810,7 @@ func TestFirstHeartbeatAfterFreshResolveBypassesSupersededTurnCache(t *testing.T
 
 func TestPreContractTurnProjectionIgnoresUnscopedControlDoneMetadata(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 8, 8, 8, 0, 0, 0, time.UTC))
@@ -819,25 +819,25 @@ func TestPreContractTurnProjectionIgnoresUnscopedControlDoneMetadata(t *testing.
 	ledger := newFakeTurnLedger()
 	acceptedAt := time.Now().UTC()
 	if err := ledger.AdmitTurn(AdmittedTurn{
-		SessionID:  "brain-agent-worker:@1",
-		TurnID:     "brain-agent-worker:@1:turn:1",
+		SessionID:  "zen-worker-worker:@1",
+		TurnID:     "zen-worker-worker:@1:turn:1",
 		AcceptedAt: acceptedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := ledger.ApplyTurnFact(TurnFact{
-		SessionID: "brain-agent-worker:@1",
-		TurnID:    "brain-agent-worker:@1:turn:1",
+		SessionID: "zen-worker-worker:@1",
+		TurnID:    "zen-worker-worker:@1:turn:1",
 		Class:     EvidenceReceipt,
 		Kind:      "admission",
-		SourceID:  "receipt\x00brain-agent-worker:@1:turn:1\x00accepted\x00payload",
+		SourceID:  "receipt\x00zen-worker-worker:@1:turn:1\x00accepted\x00payload",
 		Admission: TurnAdmission{Stream: "test", ID: "admission-1", Cursor: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	w.turnLedger = ledger
 
-	agent, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+	worker, err := w.UpdateWorkerProgress("zen-worker-worker:@1", classifier.WorkerProgress{
 		Status:       "done",
 		Phase:        "reporting",
 		Attention:    "done",
@@ -851,21 +851,21 @@ func TestPreContractTurnProjectionIgnoresUnscopedControlDoneMetadata(t *testing.
 		t.Fatal(err)
 	}
 	<-w.Events()
-	if agent.State != classifier.StateRunning || agent.Attention != "none" || agent.NeedsAttention ||
-		agent.Phase != "" || agent.TaskClass != "" || agent.EventKind != "" || agent.DetailsJSON != "" ||
-		agent.LastProgressAt != nil || agent.ExpectedNextCheckAt != nil || agent.LeaseSeconds != 0 {
-		t.Fatalf("Control done metadata contradicted canonical running turn: %#v", agent)
+	if worker.State != classifier.StateRunning || worker.Attention != "none" || worker.NeedsAttention ||
+		worker.Phase != "" || worker.TaskClass != "" || worker.EventKind != "" || worker.DetailsJSON != "" ||
+		worker.LastProgressAt != nil || worker.ExpectedNextCheckAt != nil || worker.LeaseSeconds != 0 {
+		t.Fatalf("Control done metadata contradicted canonical running turn: %#v", worker)
 	}
 }
 
 func TestControlDoneCarriesExplicitCompletionCriteria(t *testing.T) {
-	fact := controlFactFromProgress("agent:@1", "turn-exact", classifier.AgentProgress{
+	fact := controlFactFromProgress("agent:@1", "turn-exact", classifier.WorkerProgress{
 		Status: "done", Attention: "done", DetailsJSON: `{"criteria_met":true}`,
 	}, time.Now().UTC())
 	if fact == nil || fact.Kind != "done" || !fact.CriteriaMet {
 		t.Fatalf("exact Control done fact=%+v", fact)
 	}
-	fact = controlFactFromProgress("agent:@1", "turn-exact", classifier.AgentProgress{
+	fact = controlFactFromProgress("agent:@1", "turn-exact", classifier.WorkerProgress{
 		Status: "done", Attention: "done", DetailsJSON: `{"criteria_met":false}`,
 	}, time.Now().UTC())
 	if fact == nil || fact.CriteriaMet {
@@ -875,7 +875,7 @@ func TestControlDoneCarriesExplicitCompletionCriteria(t *testing.T) {
 
 func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
-	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
 		Name:    "Worker",
 	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
@@ -884,26 +884,26 @@ func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *
 
 	ledger := newFakeTurnLedger()
 	if err := ledger.AdmitTurn(AdmittedTurn{
-		SessionID:  "brain-agent-worker:@1",
-		TurnID:     "brain-agent-worker:@1:turn:1",
+		SessionID:  "zen-worker-worker:@1",
+		TurnID:     "zen-worker-worker:@1:turn:1",
 		AcceptedAt: handoffStartedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// The turn is accepted (correlated admission) before the progress arrives.
 	if _, _, err := ledger.ApplyTurnFact(TurnFact{
-		SessionID: "brain-agent-worker:@1",
-		TurnID:    "brain-agent-worker:@1:turn:1",
+		SessionID: "zen-worker-worker:@1",
+		TurnID:    "zen-worker-worker:@1:turn:1",
 		Class:     EvidenceReceipt,
 		Kind:      "admission",
-		SourceID:  "receipt\x00brain-agent-worker:@1:turn:1\x00accepted\x00payload",
+		SourceID:  "receipt\x00zen-worker-worker:@1:turn:1\x00accepted\x00payload",
 		Admission: TurnAdmission{Stream: "test", ID: "admission-1", Cursor: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	w.turnLedger = ledger
 
-	progress, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+	progress, err := w.UpdateWorkerProgress("zen-worker-worker:@1", classifier.WorkerProgress{
 		Status:       "running",
 		Phase:        "verifying",
 		Attention:    "none",
@@ -926,7 +926,7 @@ func TestRebindDelegatedTurnProjectionDoesNotOverwriteNewerLifecycleProgress(t *
 
 	// Rebind after an accepted dispatch projects canonical status; progress
 	// lease metadata survives and the canonical summary is preserved.
-	accepted, err := w.RebindDelegatedTurnProjection("brain-agent-worker:@1")
+	accepted, err := w.RebindDelegatedTurnProjection("zen-worker-worker:@1")
 	if err != nil {
 		t.Fatalf("RebindDelegatedTurnProjection returned error: %v", err)
 	}
@@ -984,12 +984,12 @@ func TestCodexContentInferenceStillRequiresIdentity(t *testing.T) {
 
 func TestCursorAgentInputReadyRequiresComposerPrompt(t *testing.T) {
 	starting := "Cursor Agent\nv2026.07.01-41b2de7\nTip: Use /mcp to connect Cursor to your tools and data sources.\n"
-	if isAgentInputReady("cursor-agent --force --sandbox disabled", starting) {
+	if isWorkerInputReady("cursor-agent --force --sandbox disabled", starting) {
 		t.Fatal("Cursor Agent startup screen should not be input-ready")
 	}
 
 	ready := starting + "\n\nComposer 2.5 Fast           Run Everything\n~/workspace/zen · main\n"
-	if !isAgentInputReady("cursor-agent --force --sandbox disabled", ready) {
+	if !isWorkerInputReady("cursor-agent --force --sandbox disabled", ready) {
 		t.Fatal("Cursor Agent composer prompt should be input-ready")
 	}
 }
@@ -999,7 +999,7 @@ func TestCursorWorkspaceTrustPromptIsNotInputReady(t *testing.T) {
 	if !isCursorWorkspaceTrustPrompt("cursor-agent --force --sandbox disabled", trust) {
 		t.Fatal("Cursor Agent workspace trust prompt should be detected")
 	}
-	if isAgentInputReady("cursor-agent --force --sandbox disabled", trust) {
+	if isWorkerInputReady("cursor-agent --force --sandbox disabled", trust) {
 		t.Fatal("Cursor Agent workspace trust prompt should not be treated as task input-ready")
 	}
 }
@@ -1144,7 +1144,7 @@ func TestCodexStartupReadyHeaderlessComposerStillFailsClosedOnBlockingScreens(t 
 func TestCursorAgentInputReadyIgnoresStaleStartupInScrollback(t *testing.T) {
 	content := "Cursor Agent\nv2026.07.01\nTip: loading\n\n" +
 		"Cursor Agent\nv2026.07.01\n\nComposer 2.5 Fast           Run Everything\n~/workspace/zen · main\n"
-	if !isAgentInputReady("cursor-agent --force --sandbox disabled", content) {
+	if !isWorkerInputReady("cursor-agent --force --sandbox disabled", content) {
 		t.Fatal("current Cursor Agent prompt should be ready even when scrollback contains older startup text")
 	}
 }
@@ -1160,12 +1160,12 @@ func TestCursorAgentCommandNeedsInputReadinessWait(t *testing.T) {
 
 func TestGrokInputReadyRequiresComposerAndChrome(t *testing.T) {
 	starting := "Starting Grok...\nLoading model\n"
-	if isAgentInputReady("grok", starting) {
+	if isWorkerInputReady("grok", starting) {
 		t.Fatal("Grok startup without composer should not be input-ready")
 	}
 
 	chromeOnly := "Grok 4.5 (high) · always-approve\nShift+Tab:mode  │  Ctrl+c:cancel\n"
-	if isAgentInputReady("grok", chromeOnly) {
+	if isWorkerInputReady("grok", chromeOnly) {
 		t.Fatal("Grok chrome without composer prompt should not be input-ready")
 	}
 
@@ -1175,13 +1175,13 @@ func TestGrokInputReadyRequiresComposerAndChrome(t *testing.T) {
 		"  ╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯\n" +
 		"\n" +
 		"  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+g:send to bg  │  Ctrl+x:shortcuts\n"
-	if !isAgentInputReady("grok", ready) {
+	if !isWorkerInputReady("grok", ready) {
 		t.Fatal("Grok composer + chrome should be input-ready")
 	}
 
 	// Legacy keybinding chrome used in older captures.
 	legacyReady := "│ ❯\nEnter:send\nGrok 4.5\n"
-	if !isAgentInputReady("grok", legacyReady) {
+	if !isWorkerInputReady("grok", legacyReady) {
 		t.Fatal("Grok Enter:send chrome with composer should be input-ready")
 	}
 }
@@ -1214,51 +1214,51 @@ func TestClaudeInputReadyRequiresAllThreeIndicators(t *testing.T) {
 
 	// Startup screen: has version but not composer or mode footer.
 	startup := "Claude Code v2.1.214\nLoading...\n"
-	if isAgentInputReady("claude", startup) {
+	if isWorkerInputReady("claude", startup) {
 		t.Fatal("Claude startup without composer should not be input-ready")
 	}
 
 	// Safety screen: has version and footer but no empty composer line.
 	safety := "Claude Code v2.1.214\nPermissions request\n" + bypassFooter + "\n"
-	if isAgentInputReady("claude", safety) {
+	if isWorkerInputReady("claude", safety) {
 		t.Fatal("Claude safety screen without empty composer should not be input-ready")
 	}
 
 	// Nonempty draft: has version, composer glyph, and footer but composer is not empty.
 	draft := "Claude Code v2.1.214\nSome text in the composer\n❯ more draft\n" + bypassFooter + "\n"
-	if isAgentInputReady("claude", draft) {
+	if isWorkerInputReady("claude", draft) {
 		t.Fatal("Claude with nonempty draft should not be input-ready")
 	}
 
 	// NBSP after ❯ plus draft text is still a nonempty composer.
 	draftNBSP := "Claude Code v2.1.214\n❯\u00a0typed draft\n" + bypassFooter + "\n"
-	if isAgentInputReady("claude", draftNBSP) {
+	if isWorkerInputReady("claude", draftNBSP) {
 		t.Fatal("Claude with NBSP-padded nonempty draft should not be input-ready")
 	}
 
 	// Arbitrary Claude mention with ctrl should not match without all three.
 	arbitrary := "Claude can ctrl+c to exit\nSome content\n"
-	if isAgentInputReady("claude", arbitrary) {
+	if isWorkerInputReady("claude", arbitrary) {
 		t.Fatal("Claude with arbitrary content and ctrl mention should not be input-ready")
 	}
 
-	if !isAgentInputReady("claude", readyLive) {
+	if !isWorkerInputReady("claude", readyLive) {
 		t.Fatal("exact @224 Claude ready pane with NBSP composer should be input-ready")
 	}
 
 	// Ready state: version + empty NBSP composer + mode footer (manual mode).
 	readyManual := "Claude Code v2.1.214\nMessages here\n\n❯\u00a0\n" + manualFooter + "\n"
-	if !isAgentInputReady("claude", readyManual) {
+	if !isWorkerInputReady("claude", readyManual) {
 		t.Fatal("Claude with empty NBSP composer and manual mode footer should be input-ready")
 	}
 
 	// Version number can vary and must not pin major version 2.
 	readyV2150 := "Claude Code v2.1.50\n\n❯\u00a0\n" + manualFooter + "\n"
-	if !isAgentInputReady("claude", readyV2150) {
+	if !isWorkerInputReady("claude", readyV2150) {
 		t.Fatal("Claude v2.1.50 with ready state should be input-ready")
 	}
 	readyV3 := "Claude Code v3.0.1\n\n❯\u00a0\n" + bypassFooter + "\n"
-	if !isAgentInputReady("claude", readyV3) {
+	if !isWorkerInputReady("claude", readyV3) {
 		t.Fatal("Claude v3.0.1 with NBSP empty composer should be input-ready")
 	}
 }
@@ -1362,7 +1362,7 @@ func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 }
 
 func TestUnknownCommandDoesNotWaitForInputReady(t *testing.T) {
-	if !isAgentInputReady("zsh", "") {
+	if !isWorkerInputReady("zsh", "") {
 		t.Fatal("unknown commands should be treated as immediately ready")
 	}
 }
@@ -1405,7 +1405,7 @@ func TestChangedPaneLinesReturnsOnlyAppendedLines(t *testing.T) {
 	}
 }
 
-func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
+func TestDetectWorkerProcessPrefersCodexChildStartTime(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	codexStarted := shellStarted.Add(30 * time.Minute)
 	processes := map[int]processInfo{
@@ -1413,7 +1413,7 @@ func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: codexStarted, comm: "codex", args: "codex"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("codex", 10, processes, codexStarted.Add(5*time.Second))
+	command, startedAt, pid := detectWorkerProcess("codex", 10, processes, codexStarted.Add(5*time.Second))
 	if command != "codex" || !startedAt.Equal(codexStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex child start %s pid 20", command, startedAt, pid, codexStarted)
 	}
@@ -1874,11 +1874,11 @@ func TestStartupIdentityTransitionConvergesOnNativeCodexTUI(t *testing.T) {
 	}
 }
 
-func TestAgentProcessScoreDistinguishesCodexRoles(t *testing.T) {
+func TestWorkerProcessScoreDistinguishesCodexRoles(t *testing.T) {
 	appServer := processInfo{pid: 21, comm: "codex", args: "codex app-server --listen unix:///tmp/zen/codex-ctl-abc.sock"}
 	tuiClient := processInfo{pid: 20, comm: "codex", args: "codex --remote unix:///tmp/zen/codex-ctl-abc.sock --model gpt-5"}
-	appScore := agentProcessScore(appServer, "codex")
-	tuiScore := agentProcessScore(tuiClient, "codex")
+	appScore := workerProcessScore(appServer, "codex")
+	tuiScore := workerProcessScore(tuiClient, "codex")
 	if !(tuiScore > appScore) {
 		t.Fatalf("TUI client score %d must exceed app-server score %d", tuiScore, appScore)
 	}
@@ -1913,14 +1913,14 @@ func TestForegroundProviderAuthorityKeepsPlainShellGeneric(t *testing.T) {
 	}
 }
 
-func TestAgentCommandFromProcessRejectsShellLaunchHint(t *testing.T) {
+func TestWorkerCommandFromProcessRejectsShellLaunchHint(t *testing.T) {
 	process := processInfo{
 		pid:  10,
 		ppid: 1,
 		comm: "zsh",
 		args: "zsh -lc codex --no-alt-screen",
 	}
-	if command := agentCommandFromProcess(process); command != "" {
+	if command := workerCommandFromProcess(process); command != "" {
 		t.Fatalf("shell launch hint was treated as actual provider process: %q", command)
 	}
 }
@@ -1956,7 +1956,7 @@ func TestParseProcessSnapshotUsesStableAbsoluteStartTime(t *testing.T) {
 	}
 }
 
-func TestDetectAgentProcessPreservesCodexResumeIntent(t *testing.T) {
+func TestDetectWorkerProcessPreservesCodexResumeIntent(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	codexStarted := shellStarted.Add(30 * time.Minute)
 	processes := map[int]processInfo{
@@ -1964,13 +1964,13 @@ func TestDetectAgentProcessPreservesCodexResumeIntent(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: codexStarted, comm: "node", args: "node /home/user/.local/bin/codex --dangerously-bypass-approvals-and-sandbox resume"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("node", 10, processes, codexStarted.Add(5*time.Second))
+	command, startedAt, pid := detectWorkerProcess("node", 10, processes, codexStarted.Add(5*time.Second))
 	if command != "codex resume" || !startedAt.Equal(codexStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex resume child start %s pid 20", command, startedAt, pid, codexStarted)
 	}
 }
 
-func TestDetectAgentProcessPreservesGrokResumeIntent(t *testing.T) {
+func TestDetectWorkerProcessPreservesGrokResumeIntent(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	grokStarted := shellStarted.Add(30 * time.Minute)
 	processes := map[int]processInfo{
@@ -1978,13 +1978,13 @@ func TestDetectAgentProcessPreservesGrokResumeIntent(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: grokStarted, comm: "grok", args: "grok --resume 019f2826-12b8-7cc3-a094-a57522b559e6"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
+	command, startedAt, pid := detectWorkerProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
 	if command != "grok --resume 019f2826-12b8-7cc3-a094-a57522b559e6" || !startedAt.Equal(grokStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want grok resume session child start %s pid 20", command, startedAt, pid, grokStarted)
 	}
 }
 
-func TestDetectAgentProcessPrefersGrokChildStartTime(t *testing.T) {
+func TestDetectWorkerProcessPrefersGrokChildStartTime(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	grokStarted := shellStarted.Add(30 * time.Minute)
 	processes := map[int]processInfo{
@@ -1992,13 +1992,13 @@ func TestDetectAgentProcessPrefersGrokChildStartTime(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: grokStarted, comm: "grok", args: "grok --no-alt-screen"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
+	command, startedAt, pid := detectWorkerProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
 	if command != "grok" || !startedAt.Equal(grokStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want grok child start %s pid 20", command, startedAt, pid, grokStarted)
 	}
 }
 
-func TestDetectAgentProcessPrefersNativeCodexChildOverNodeWrapper(t *testing.T) {
+func TestDetectWorkerProcessPrefersNativeCodexChildOverNodeWrapper(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	wrapperStarted := shellStarted.Add(30 * time.Minute)
 	nativeStarted := wrapperStarted.Add(time.Second)
@@ -2008,19 +2008,19 @@ func TestDetectAgentProcessPrefersNativeCodexChildOverNodeWrapper(t *testing.T) 
 		30: {pid: 30, ppid: 20, startedAt: nativeStarted, comm: "codex", args: "/home/user/.local/share/codex/codex --dangerously-bypass-approvals-and-sandbox"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("node", 10, processes, nativeStarted.Add(5*time.Second))
+	command, startedAt, pid := detectWorkerProcess("node", 10, processes, nativeStarted.Add(5*time.Second))
 	if command != "codex" || !startedAt.Equal(nativeStarted) || pid != 30 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want native codex start %s pid 30", command, startedAt, pid, nativeStarted)
 	}
 }
 
-func TestDetectAgentProcessUsesFallbackForCodexWithoutProcessMatch(t *testing.T) {
+func TestDetectWorkerProcessUsesFallbackForCodexWithoutProcessMatch(t *testing.T) {
 	fallbackAt := time.Date(2026, 5, 21, 8, 30, 0, 0, time.UTC)
 	processes := map[int]processInfo{
 		10: {pid: 10, ppid: 1, startedAt: fallbackAt.Add(-2 * time.Hour), comm: "zsh", args: "zsh"},
 	}
 
-	command, startedAt, pid := detectAgentProcess("codex", 10, processes, fallbackAt)
+	command, startedAt, pid := detectWorkerProcess("codex", 10, processes, fallbackAt)
 	if command != "codex" || !startedAt.Equal(fallbackAt) || pid != 10 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex fallback %s pid 10", command, startedAt, pid, fallbackAt)
 	}
@@ -2050,8 +2050,8 @@ func TestCursorToolChildActive_DetectsShellWorker(t *testing.T) {
 func TestCursorActivitySignal_StopMarker(t *testing.T) {
 	w := New(time.Second)
 	w.SetActivityProbe(classifier.NewActivityProbe(classifier.NewCursorActivityAdapter()))
-	agent := classifier.Agent{Command: "cursor-agent", Cwd: "/tmp"}
-	got := w.activitySignal(agent, "Cursor Agent\n→ Add a follow-up\nctrl+c to stop\n", 0, nil)
+	worker := classifier.Worker{Command: "cursor-agent", Cwd: "/tmp"}
+	got := w.activitySignal(worker, "Cursor Agent\n→ Add a follow-up\nctrl+c to stop\n", 0, nil)
 	if got.State != classifier.StateRunning {
 		t.Fatalf("got %#v", got)
 	}
@@ -2071,35 +2071,35 @@ func TestActivityProbe_IdleProviderPanesWithoutProcessFactsStayUnknown(t *testin
 		{command: "grok", pane: "Grok\n❯ "},
 	}
 	for _, testCase := range tests {
-		agent := classifier.Agent{ID: testCase.command, Command: testCase.command, Cwd: "/tmp", PaneAlive: true, State: classifier.StateUnknown}
-		signal := w.activitySignal(agent, testCase.pane, 0, nil)
-		state, _ := classifier.ResolveSessionStatus(&agent, classifier.StateUnknown, "Session idle", time.Now().UTC(), signal)
+		worker := classifier.Worker{ID: testCase.command, Command: testCase.command, Cwd: "/tmp", PaneAlive: true, State: classifier.StateUnknown}
+		signal := w.activitySignal(worker, testCase.pane, 0, nil)
+		state, _ := classifier.ResolveSessionStatus(&worker, classifier.StateUnknown, "Session idle", time.Now().UTC(), signal)
 		if state != classifier.StateUnknown {
 			t.Fatalf("%s state = %q from signal %#v, want unknown", testCase.command, state, signal)
 		}
 	}
 }
 
-func TestAgentsPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
+func TestWorkersPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
 	w := New(time.Second)
-	w.agents["a"] = &classifier.Agent{ID: "a", Summary: "first"}
-	w.agents["b"] = &classifier.Agent{ID: "b", Summary: "second"}
-	w.agentOrder = []string{"a", "b"}
+	w.workers["a"] = &classifier.Worker{ID: "a", Summary: "first"}
+	w.workers["b"] = &classifier.Worker{ID: "b", Summary: "second"}
+	w.workerOrder = []string{"a", "b"}
 
-	w.agents["a"].UpdatedAt = time.Now().Add(time.Hour)
-	w.agents["a"].Summary = "new activity"
-	w.agents["b"].State = classifier.StateRunning
+	w.workers["a"].UpdatedAt = time.Now().Add(time.Hour)
+	w.workers["a"].Summary = "new activity"
+	w.workers["b"].State = classifier.StateRunning
 
-	got := w.Agents()
+	got := w.Workers()
 	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
 		t.Fatalf("Agents() order = %#v, want [a b]", got)
 	}
 
-	delete(w.agents, "a")
-	w.compactAgentOrderLocked()
-	w.agents["c"] = &classifier.Agent{ID: "c"}
-	w.agentOrder = append(w.agentOrder, "c")
-	got = w.Agents()
+	delete(w.workers, "a")
+	w.compactWorkerOrderLocked()
+	w.workers["c"] = &classifier.Worker{ID: "c"}
+	w.workerOrder = append(w.workerOrder, "c")
+	got = w.Workers()
 	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "c" {
 		t.Fatalf("Agents() after remove/add = %#v, want [b c]", got)
 	}
@@ -2115,53 +2115,53 @@ func TestClassifyPaneAndApplyProgressInvalidation(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		agent       *classifier.Agent
+		worker      *classifier.Worker
 		alive       bool
 		lines       []string
-		want        classifier.AgentState
+		want        classifier.WorkerState
 		wantSummary string
 		wantCleared bool
 		checkSticky bool
 	}{
 		{
 			name: "1 wait/search false-positive keeps lease",
-			agent: &classifier.Agent{
+			worker: &classifier.Worker{
 				State: classifier.StateRunning, Summary: "Rebuilding Android APK",
 				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
 			},
 			alive: true, lines: waitFalsePositive, want: classifier.StateRunning, wantSummary: "Rebuilding Android APK",
 		},
 		{
-			name:  "2 genuine failed without progress",
-			agent: &classifier.Agent{State: classifier.StateUnknown},
-			alive: true, lines: genuineFail, want: classifier.StateFailed, wantCleared: true,
+			name:   "2 genuine failed without progress",
+			worker: &classifier.Worker{State: classifier.StateUnknown},
+			alive:  true, lines: genuineFail, want: classifier.StateFailed, wantCleared: true,
 		},
 		{
 			name: "3 expired lease clears so failed cannot stick",
-			agent: &classifier.Agent{
+			worker: &classifier.Worker{
 				State: classifier.StateRunning, Summary: "stale",
 				LastProgressAt: &progressAt, ExpectedNextCheckAt: &expiredLease, LeaseSeconds: 300,
 			},
 			alive: true, lines: genuineFail, want: classifier.StateFailed, wantCleared: true, checkSticky: true,
 		},
 		{
-			name:  "4 sticky done retained",
-			agent: &classifier.Agent{State: classifier.StateDone, Summary: "Was done", LastProgressAt: &progressAt},
-			alive: true, lines: genuineFail, want: classifier.StateDone, wantSummary: "Was done",
+			name:   "4 sticky done retained",
+			worker: &classifier.Worker{State: classifier.StateDone, Summary: "Was done", LastProgressAt: &progressAt},
+			alive:  true, lines: genuineFail, want: classifier.StateDone, wantSummary: "Was done",
 		},
 		{
-			name:  "4b sticky failed retained",
-			agent: &classifier.Agent{State: classifier.StateFailed, Summary: "explicit failed", LastProgressAt: &progressAt},
-			alive: true, lines: genuineFail, want: classifier.StateFailed, wantSummary: "explicit failed",
+			name:   "4b sticky failed retained",
+			worker: &classifier.Worker{State: classifier.StateFailed, Summary: "explicit failed", LastProgressAt: &progressAt},
+			alive:  true, lines: genuineFail, want: classifier.StateFailed, wantSummary: "explicit failed",
 		},
 		{
-			name:  "4c sticky blocked retained",
-			agent: &classifier.Agent{State: classifier.StateBlocked, Summary: "explicit blocked", LastProgressAt: &progressAt},
-			alive: true, lines: genuineFail, want: classifier.StateBlocked, wantSummary: "explicit blocked",
+			name:   "4c sticky blocked retained",
+			worker: &classifier.Worker{State: classifier.StateBlocked, Summary: "explicit blocked", LastProgressAt: &progressAt},
+			alive:  true, lines: genuineFail, want: classifier.StateBlocked, wantSummary: "explicit blocked",
 		},
 		{
 			name: "5 blocked clears running progress",
-			agent: &classifier.Agent{
+			worker: &classifier.Worker{
 				State: classifier.StateRunning, Summary: "working",
 				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
 			},
@@ -2169,7 +2169,7 @@ func TestClassifyPaneAndApplyProgressInvalidation(t *testing.T) {
 		},
 		{
 			name: "6 dead pane failed clears lease",
-			agent: &classifier.Agent{
+			worker: &classifier.Worker{
 				State: classifier.StateRunning, Summary: "claimed",
 				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
 			},
@@ -2179,21 +2179,21 @@ func TestClassifyPaneAndApplyProgressInvalidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			classified, summary := classifyPaneAndApplyProgressInvalidation(tt.agent, tt.alive, tt.lines, now)
-			got, gotSummary := classifier.ResolveSessionStatus(tt.agent, classified, summary, now, classifier.ActivitySignal{})
+			classified, summary := classifyPaneAndApplyProgressInvalidation(tt.worker, tt.alive, tt.lines, now)
+			got, gotSummary := classifier.ResolveSessionStatus(tt.worker, classified, summary, now, classifier.ActivitySignal{})
 			if got != tt.want {
 				t.Fatalf("state = %q, want %q (classified=%q)", got, tt.want, classified)
 			}
 			if tt.wantSummary != "" && gotSummary != tt.wantSummary {
 				t.Fatalf("summary = %q, want %q", gotSummary, tt.wantSummary)
 			}
-			if cleared := tt.agent.LastProgressAt == nil; cleared != tt.wantCleared {
+			if cleared := tt.worker.LastProgressAt == nil; cleared != tt.wantCleared {
 				t.Fatalf("cleared = %v, want %v", cleared, tt.wantCleared)
 			}
 			if tt.checkSticky {
-				tt.agent.State = got
-				nextClassified, nextSummary := classifyPaneAndApplyProgressInvalidation(tt.agent, true, []string{"$"}, now)
-				next, _ := classifier.ResolveSessionStatus(tt.agent, nextClassified, nextSummary, now, classifier.ActivitySignal{})
+				tt.worker.State = got
+				nextClassified, nextSummary := classifyPaneAndApplyProgressInvalidation(tt.worker, true, []string{"$"}, now)
+				next, _ := classifier.ResolveSessionStatus(tt.worker, nextClassified, nextSummary, now, classifier.ActivitySignal{})
 				if next != classifier.StateUnknown {
 					t.Fatalf("follow-up = %q, want unknown", next)
 				}

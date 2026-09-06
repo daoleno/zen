@@ -147,7 +147,7 @@ func TestMissingTmuxTransferPersistFailureKillsAndKeepsOldResumable(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -200,7 +200,7 @@ func TestMissingTmuxTransferAppliedNondurableFailsClosedNoSuccess(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -262,7 +262,7 @@ func TestNewChatReleasesRoutedHostBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 	}
@@ -288,16 +288,16 @@ func TestProviderMismatchReplacementReleasesRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old-grok:@1"
+	oldID := "zen-worker-brain-old-grok:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "grok", State: classifier.StateRunning, Hidden: true, Cwd: store.WorkspacePath()},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	routes := &fakeRouteLifecycle{}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
@@ -324,18 +324,18 @@ func TestProviderMismatchKillFailureStillLivePreservesAndAborts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old-grok:@1"
+	oldID := "zen-worker-brain-old-grok:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "grok", State: classifier.StateRunning, Hidden: true, Cwd: store.WorkspacePath()},
 		},
 		killErr:        errors.New("injected kill failure"),
 		killLeavesLive: true,
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	routes := &fakeRouteLifecycle{}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
@@ -366,16 +366,16 @@ func TestProviderMismatchReleaseFailureSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old-grok:@1"
+	oldID := "zen-worker-brain-old-grok:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "grok", State: classifier.StateRunning, Hidden: true, Cwd: store.WorkspacePath()},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	routes := &fakeRouteLifecycle{
 		releaseErr: errors.New("injected release failure"),
 	}
@@ -402,7 +402,7 @@ func TestResumeRouteTransferFailureSurfacesKillError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -439,8 +439,8 @@ func TestRecoverLiveTransfersRouteBeforeHostBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -449,14 +449,14 @@ func TestRecoverLiveTransfersRouteBeforeHostBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
@@ -467,8 +467,8 @@ func TestRecoverLiveTransfersRouteBeforeHostBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
-		t.Fatalf("host=%#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != aliveID {
+		t.Fatalf("host=%#v", snapshot.HostWorker)
 	}
 	if len(routes.transfers) != 1 || routes.transfers[0] != [2]string{deadID, aliveID} {
 		t.Fatalf("transfers=%#v", routes.transfers)
@@ -494,8 +494,8 @@ func TestRecoverLiveRouteTransferFailurePreservesBindingNoAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -508,14 +508,14 @@ func TestRecoverLiveRouteTransferFailurePreservesBindingNoAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{transferErr: errors.New("injected recover transfer failure")}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
@@ -550,8 +550,8 @@ func TestRecoverLiveNoRouteTransferIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -560,14 +560,14 @@ func TestRecoverLiveNoRouteTransferIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{transferErr: modelprofiles.ErrBindingNotFound}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
@@ -578,8 +578,8 @@ func TestRecoverLiveNoRouteTransferIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
-		t.Fatalf("host=%#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != aliveID {
+		t.Fatalf("host=%#v", snapshot.HostWorker)
 	}
 	if len(routes.transfers) != 1 || routes.transfers[0] != [2]string{deadID, aliveID} {
 		t.Fatalf("expected no-op transfer attempt: %#v", routes.transfers)
@@ -602,8 +602,8 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensatesNoBind(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -616,14 +616,14 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensatesNoBind(t *testing.T
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{
 		transferScript: []transferOutcome{
 			{persist: modelprofiles.PersistResult{Applied: true, Durable: false}, err: modelprofiles.ErrPersistDirSync},
@@ -671,8 +671,8 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensationAmbiguityPreserves
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -685,14 +685,14 @@ func TestRecoverLiveRouteTransferAppliedNondurableCompensationAmbiguityPreserves
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{
 		transferScript: []transferOutcome{
 			{persist: modelprofiles.PersistResult{Applied: true, Durable: false}, err: modelprofiles.ErrPersistDirSync},
@@ -729,7 +729,7 @@ func TestResumeRouteTransferAppliedNondurableCompensatesKillsSpawn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -793,7 +793,7 @@ func TestResumeRouteTransferAppliedNondurableCompensationFailurePreservesLive(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -852,8 +852,8 @@ func TestRecoverLiveBindFailureAfterTransferRollsRouteNoAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -866,14 +866,14 @@ func TestRecoverLiveBindFailureAfterTransferRollsRouteNoAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	routes := &fakeRouteLifecycle{}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
@@ -913,7 +913,7 @@ func TestRouteTransferRollbackFailureRetainsLiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -985,7 +985,7 @@ func TestHostTeardownResourceReleaseFailurePreservesAndSurfaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 		killErr: errors.New("delegated resource release failed: injected"),
@@ -1015,7 +1015,7 @@ func TestHostTeardownProbeFailurePreservesRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 		killErr:        errors.New("injected kill failure"),
@@ -1047,7 +1047,7 @@ func TestHostTeardownMissingRetryAfterResourceFailureConverges(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 		killErr: errors.New("delegated resource release failed: injected"),
@@ -1137,7 +1137,7 @@ func TestResumeNondurableTransferRealOwnerRestoresRestartVisibleRoute(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -1202,8 +1202,8 @@ func TestRecoverNondurableTransferRealOwnerRestoresRestartVisibleRoute(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1228,14 +1228,14 @@ func TestRecoverNondurableTransferRealOwnerRestoresRestartVisibleRoute(t *testin
 		return nil
 	})
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 				Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})

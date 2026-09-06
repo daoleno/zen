@@ -4,7 +4,9 @@ Thanks for helping with Zen.
 
 ## Scope of this beta
 
-Honest support is **Linux daemon + Android app**, with **one** AI CLI enough to be useful. See the root README platform matrix before proposing “add iOS parity” as a small fix.
+The daemon runs on Linux and Apple Silicon macOS. Android and iOS share the
+mobile product contract; platform-specific adapters must expose explicit
+behavior on both. One supported coding CLI is enough to run a Zen Worker.
 
 ## Before you start
 

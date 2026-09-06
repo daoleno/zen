@@ -43,7 +43,7 @@ func NewCursorActivityAdapter() *CursorActivityAdapter {
 func (a *CursorActivityAdapter) Name() string { return "cursor" }
 
 func (a *CursorActivityAdapter) Match(in ActivityInput) bool {
-	return isCursorAgentCommandLine(in.Agent.Command) ||
+	return isCursorAgentCommandLine(in.Worker.Command) ||
 		cursorAgentChromeRe.MatchString(latestCursorPaneWindow(in.PaneContent))
 }
 

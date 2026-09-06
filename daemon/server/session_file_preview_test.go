@@ -305,33 +305,33 @@ func TestSessionFileTextReadIsBoundedAndGenerationChecked(t *testing.T) {
 
 func TestSessionFilePreviewRejectsStaleSessionIdentity(t *testing.T) {
 	started := time.Date(2026, 7, 20, 4, 0, 0, 123_000_000, time.UTC)
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID:        "main:@7",
 		Cwd:       "/repo/zen",
 		ProcessID: 412,
 		StartedAt: started,
 	}
 	valid := clientMessage{
-		AgentID:   agent.ID,
-		ProcessID: agent.ProcessID,
+		WorkerID:  worker.ID,
+		ProcessID: worker.ProcessID,
 		StartedAt: startedAtRaw(started),
 	}
-	if err := validateSessionFileIdentity(agent, valid); err != nil {
+	if err := validateSessionFileIdentity(worker, valid); err != nil {
 		t.Fatalf("valid identity: %v", err)
 	}
-	staleAgent := valid
-	staleAgent.AgentID = "main:@8"
-	if err := validateSessionFileIdentity(agent, staleAgent); !isStaleSessionFileIdentity(err) {
+	staleWorker := valid
+	staleWorker.WorkerID = "main:@8"
+	if err := validateSessionFileIdentity(worker, staleWorker); !isStaleSessionFileIdentity(err) {
 		t.Fatalf("stale agent error = %v", err)
 	}
 	staleProcess := valid
 	staleProcess.ProcessID++
-	if err := validateSessionFileIdentity(agent, staleProcess); !isStaleSessionFileIdentity(err) {
+	if err := validateSessionFileIdentity(worker, staleProcess); !isStaleSessionFileIdentity(err) {
 		t.Fatalf("stale process error = %v", err)
 	}
 	staleStart := valid
 	staleStart.StartedAt = startedAtRaw(started.Add(time.Millisecond))
-	if err := validateSessionFileIdentity(agent, staleStart); !isStaleSessionFileIdentity(err) {
+	if err := validateSessionFileIdentity(worker, staleStart); !isStaleSessionFileIdentity(err) {
 		t.Fatalf("stale start error = %v", err)
 	}
 }
@@ -352,11 +352,11 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 
 	manager, privateKey, deviceID := sessionFileAuthFixture(t)
 	started := time.Date(2026, 7, 20, 4, 0, 0, 0, time.UTC)
-	agent := &classifier.Agent{ID: "main:@7", Cwd: workspace, ProcessID: 412, StartedAt: started}
+	worker := &classifier.Worker{ID: "main:@7", Cwd: workspace, ProcessID: 412, StartedAt: started}
 	server := New(manager, nil, nil, nil, nil, nil, nil)
-	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
-		if id == agent.ID {
-			copy := *agent
+	server.sessionFileWorkerLoader = func(id string) *classifier.Worker {
+		if id == worker.ID {
+			copy := *worker
 			return &copy
 		}
 		return nil
@@ -364,7 +364,7 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 
 	request := httptest.NewRequest(http.MethodGet, "/session-file", nil)
 	query := request.URL.Query()
-	query.Set("agent_id", agent.ID)
+	query.Set("worker_id", worker.ID)
 	query.Set("process_id", "412")
 	query.Set("started_at", "178451?bad")
 	query.Set("path", "image.png")
@@ -379,7 +379,7 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 
 	request = httptest.NewRequest(http.MethodGet, "/session-file", nil)
 	query = request.URL.Query()
-	query.Set("agent_id", agent.ID)
+	query.Set("worker_id", worker.ID)
 	query.Set("process_id", "412")
 	query.Set("path", "image.png")
 	query.Set("generation", generation)
@@ -419,7 +419,7 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 		t.Fatalf("stale generation status=%d body=%s", staleGeneration.Code, staleGeneration.Body.String())
 	}
 
-	agent.ProcessID++
+	worker.ProcessID++
 	staleSessionRequest := httptest.NewRequest(http.MethodGet, request.URL.String(), nil)
 	staleSessionRequest.Header.Set("Authorization", sessionFileAuthorizationHeader(t, privateKey, manager.DaemonID(), deviceID))
 	staleSession := httptest.NewRecorder()
@@ -427,7 +427,7 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 	if staleSession.Code != http.StatusConflict {
 		t.Fatalf("stale Session status=%d body=%s", staleSession.Code, staleSession.Body.String())
 	}
-	agent.ProcessID--
+	worker.ProcessID--
 
 	unauthorized := httptest.NewRecorder()
 	server.handleSessionFileBinary(unauthorized, httptest.NewRequest(http.MethodGet, request.URL.String(), nil))
@@ -455,24 +455,24 @@ func TestSessionFileReadCapabilitySupportsGETHEADRangeAndRetry(t *testing.T) {
 
 	manager, privateKey, deviceID := sessionFileAuthFixture(t)
 	started := time.Date(2026, 7, 20, 4, 0, 0, 0, time.UTC)
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID:        "main:@capability",
 		Cwd:       workspace,
 		ProcessID: 512,
 		StartedAt: started,
 	}
 	server := New(manager, nil, nil, nil, nil, nil, nil)
-	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
-		if id != agent.ID {
+	server.sessionFileWorkerLoader = func(id string) *classifier.Worker {
+		if id != worker.ID {
 			return nil
 		}
-		copy := *agent
+		copy := *worker
 		return &copy
 	}
 
 	requestBody, err := json.Marshal(map[string]any{
-		"agent_id":   agent.ID,
-		"process_id": agent.ProcessID,
+		"worker_id":  worker.ID,
+		"process_id": worker.ProcessID,
 		"started_at": started.UnixMilli(),
 		"path":       "image.png",
 		"generation": generation,
@@ -523,8 +523,8 @@ func TestSessionFileReadCapabilitySupportsGETHEADRangeAndRetry(t *testing.T) {
 	fileURL := "/session-file"
 	queryRequest := httptest.NewRequest(http.MethodGet, fileURL, nil)
 	query := queryRequest.URL.Query()
-	query.Set("agent_id", agent.ID)
-	query.Set("process_id", strconv.Itoa(agent.ProcessID))
+	query.Set("worker_id", worker.ID)
+	query.Set("process_id", strconv.Itoa(worker.ProcessID))
 	query.Set("started_at", strconv.FormatInt(started.UnixMilli(), 10))
 	query.Set("path", "image.png")
 	query.Set("generation", generation)
@@ -652,13 +652,13 @@ func TestSessionFileBinaryPreviewSizeBoundary(t *testing.T) {
 	workspace := t.TempDir()
 	manager, privateKey, deviceID := sessionFileAuthFixture(t)
 	started := time.Date(2026, 7, 20, 4, 0, 0, 0, time.UTC)
-	agent := &classifier.Agent{ID: "main:@7", Cwd: workspace, ProcessID: 412, StartedAt: started}
+	worker := &classifier.Worker{ID: "main:@7", Cwd: workspace, ProcessID: 412, StartedAt: started}
 	server := New(manager, nil, nil, nil, nil, nil, nil)
-	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
-		if id != agent.ID {
+	server.sessionFileWorkerLoader = func(id string) *classifier.Worker {
+		if id != worker.ID {
 			return nil
 		}
-		copy := *agent
+		copy := *worker
 		return &copy
 	}
 
@@ -707,8 +707,8 @@ func TestSessionFileBinaryPreviewSizeBoundary(t *testing.T) {
 
 			request := httptest.NewRequest(http.MethodGet, "/session-file", nil)
 			query := request.URL.Query()
-			query.Set("agent_id", agent.ID)
-			query.Set("process_id", strconv.Itoa(agent.ProcessID))
+			query.Set("worker_id", worker.ID)
+			query.Set("process_id", strconv.Itoa(worker.ProcessID))
 			query.Set("started_at", string(startedAtRaw(started)))
 			query.Set("path", tt.name)
 			query.Set("generation", generation)
@@ -780,11 +780,11 @@ func TestSessionFileBinaryDownloadServesExactTextUnderSizeBound(t *testing.T) {
 
 	manager, privateKey, deviceID := sessionFileAuthFixture(t)
 	started := time.Date(2026, 8, 6, 4, 0, 0, 0, time.UTC)
-	agent := &classifier.Agent{ID: "main:@download", Cwd: workspace, ProcessID: 713, StartedAt: started}
+	worker := &classifier.Worker{ID: "main:@download", Cwd: workspace, ProcessID: 713, StartedAt: started}
 	server := New(manager, nil, nil, nil, nil, nil, nil)
-	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
-		if id == agent.ID {
-			copy := *agent
+	server.sessionFileWorkerLoader = func(id string) *classifier.Worker {
+		if id == worker.ID {
+			copy := *worker
 			return &copy
 		}
 		return nil
@@ -792,7 +792,7 @@ func TestSessionFileBinaryDownloadServesExactTextUnderSizeBound(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/session-file", nil)
 	query := request.URL.Query()
-	query.Set("agent_id", agent.ID)
+	query.Set("worker_id", worker.ID)
 	query.Set("process_id", "713")
 	query.Set("started_at", string(startedAtRaw(started)))
 	query.Set("path", "notes.md")

@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	delegatedMarkerEnv        = "ZEN_AGENT_DELEGATED"
-	delegatedResourceUnitEnv  = "ZEN_AGENT_RESOURCE_UNIT"
-	delegatedResourceOwnerEnv = "ZEN_AGENT_RESOURCE_OWNER"
+	delegatedMarkerEnv        = "ZEN_WORKER_DELEGATED"
+	delegatedResourceUnitEnv  = "ZEN_WORKER_RESOURCE_UNIT"
+	delegatedResourceOwnerEnv = "ZEN_WORKER_RESOURCE_OWNER"
 
 	defaultDelegatedTasksMax    = 1024
 	maxConfiguredActiveSessions = 65536
 
 	// Short durable temp dirs keep AF_UNIX paths under sockaddr sun_path limits.
-	delegatedTempMarkerName = ".zen-agent-unit"
+	delegatedTempMarkerName = ".zen-worker-unit"
 	delegatedTempDigestLen  = 6
 )
 
@@ -121,7 +121,7 @@ func delegatedResourceUnit(owner, token string) string {
 			return ""
 		}
 	}
-	return "zen-agent-" + owner + "-" + token + ".scope"
+	return "zen-worker-" + owner + "-" + token + ".scope"
 }
 
 func delegatedResourceSlice(owner string) string {
@@ -129,7 +129,7 @@ func delegatedResourceSlice(owner string) string {
 	if owner == "" {
 		return ""
 	}
-	return "zen-agents-" + owner + ".slice"
+	return "zen-workers-" + owner + ".slice"
 }
 
 // shortDelegatedTempDigest returns a stable 6-character URL-safe digest of the
@@ -146,7 +146,7 @@ func shortDelegatedTempDigest(unit string) string {
 func validDelegatedResourceUnit(owner, unit string) bool {
 	owner = normalizeResourceOwner(owner)
 	unit = strings.TrimSpace(unit)
-	prefix := "zen-agent-" + owner + "-"
+	prefix := "zen-worker-" + owner + "-"
 	if owner == "" || !strings.HasPrefix(unit, prefix) || !strings.HasSuffix(unit, ".scope") {
 		return false
 	}
@@ -214,7 +214,7 @@ func wrapDelegatedResourceCommand(inner string, spec *delegatedResourceSpec) str
 	}
 	supervisorArgs := []string{
 		spec.Supervisor,
-		"agent",
+		"worker",
 		"__supervise",
 		"--resource-id=" + spec.Unit,
 		"--lease-dir=" + spec.LeaseDir,
@@ -246,7 +246,7 @@ func wrapDelegatedResourceCommand(inner string, spec *delegatedResourceSpec) str
 		"--send-sighup",
 		"--unit=" + spec.Unit,
 		"--slice=" + spec.Slice,
-		"--description=Zen delegated agent " + spec.Unit,
+		"--description=Zen delegated Zen Worker " + spec.Unit,
 		"--property=TasksAccounting=yes",
 		fmt.Sprintf("--property=TasksMax=%d", spec.Limits.TasksMax),
 		"--property=OOMPolicy=stop",
@@ -316,7 +316,7 @@ func validateDelegatedWorkspacePath(cwd string) (string, error) {
 			rootResolved = value
 		}
 		if pathWithinRoot(absolute, rootAbsolute) || pathWithinRoot(resolved, rootResolved) {
-			return "", fmt.Errorf("delegated agent cwd %q is on volatile or memory-backed temporary storage; use a durable workspace such as $ZEN_WORKTREE_ROOT (default ~/.zen/worktrees)", cwd)
+			return "", fmt.Errorf("delegated Zen Worker cwd %q is on volatile or memory-backed temporary storage; use a durable workspace such as $ZEN_WORKTREE_ROOT (default ~/.zen/worktrees)", cwd)
 		}
 	}
 	return resolved, nil

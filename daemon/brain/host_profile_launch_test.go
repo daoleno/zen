@@ -65,12 +65,12 @@ func TestNewChatPrepareCommitFreshHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old:@1"
+	oldID := "zen-worker-brain-old:@1"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 	}
@@ -109,12 +109,12 @@ func TestExecutorMismatchReplacementPrepareCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-grok:@1"
+	oldID := "zen-worker-brain-grok:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "grok", State: classifier.StateRunning, Hidden: true},
 		},
 	}
@@ -164,7 +164,7 @@ func TestMissingTmuxResumeUsesImmutableBindingNotDefaultPrepare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing:@9"
+	oldID := "zen-worker-brain-missing:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := filepath.Join(t.TempDir(), "rollout-"+providerSessionID+".jsonl")
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -222,7 +222,7 @@ func TestMissingTmuxResumeWithoutBindingPreparesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-unbound:@9"
+	oldID := "zen-worker-brain-missing-unbound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := filepath.Join(t.TempDir(), "rollout-"+providerSessionID+".jsonl")
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -489,11 +489,11 @@ func TestInitialCommitNondurableFailsClosedNoHostBind(t *testing.T) {
 	if len(fw.created) != 1 {
 		t.Fatalf("created=%#v", fw.created)
 	}
-	agentID := fw.created[0].id
-	if len(fw.killed) != 1 || fw.killed[0] != agentID {
-		t.Fatalf("killed=%#v want %s", fw.killed, agentID)
+	workerID := fw.created[0].id
+	if len(fw.killed) != 1 || fw.killed[0] != workerID {
+		t.Fatalf("killed=%#v want %s", fw.killed, workerID)
 	}
-	if len(routes.releases) != 1 || routes.releases[0] != agentID {
+	if len(routes.releases) != 1 || routes.releases[0] != workerID {
 		t.Fatalf("releases=%#v", routes.releases)
 	}
 	if len(routes.abortCalls) != 0 {
@@ -517,7 +517,7 @@ func TestNewChatCommitNondurableFailsClosedNoHostBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old:@1"
+	oldID := "zen-worker-brain-old:@1"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +526,7 @@ func TestNewChatCommitNondurableFailsClosedNoHostBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {ID: oldID, Name: "Brain", Command: "codex", State: classifier.StateRunning, Hidden: true},
 		},
 	}

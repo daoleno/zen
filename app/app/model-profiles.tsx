@@ -30,12 +30,12 @@ import {
   type ProvidersSnapshot,
 } from "../services/providers";
 import { wsClient } from "../services/websocket";
-import { useAgents } from "../store/agents";
+import { useWorkers } from "../store/workers";
 import { useCurrentServer } from "../store/currentServer";
 
 export default function ProvidersScreen() {
   const router = useRouter();
-  const { state } = useAgents();
+  const { state } = useWorkers();
   const { currentServer } = useCurrentServer();
   const currentServerId = currentServer?.id ?? null;
   const currentConnected = Boolean(

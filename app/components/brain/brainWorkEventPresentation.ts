@@ -37,9 +37,9 @@ export type BrainWorkLifecyclePresentation = {
 };
 
 const CANONICAL_SESSION_SUFFIX =
-  /\s*\(brain-agent-[^()\s]+:@\d+\)\s*$/i;
-const CANONICAL_SESSION_ID = /brain-agent-[^()\s]+:@\d+/i;
-const CANONICAL_SESSION_ID_GLOBAL = /brain-agent-[^()\s]+:@\d+/gi;
+  /\s*\(zen-worker-[^()\s]+:@\d+\)\s*$/i;
+const CANONICAL_SESSION_ID = /zen-worker-[^()\s]+:@\d+/i;
+const CANONICAL_SESSION_ID_GLOBAL = /zen-worker-[^()\s]+:@\d+/gi;
 const PROVIDER_TURN_ID_GLOBAL = /\bturn:[a-z0-9-]+\b/gi;
 
 export function brainWorkEventWorkTitle(event: BrainWorkResultEvent): string {
@@ -177,7 +177,7 @@ export function brainCurrentWorkLifecycle(
   return lifecyclePresentation("working");
 }
 
-export function brainWorkAgentCountLabel(count: number): string {
+export function brainWorkWorkerCountLabel(count: number): string {
   return `${count} ${count === 1 ? "agent" : "agents"}`;
 }
 

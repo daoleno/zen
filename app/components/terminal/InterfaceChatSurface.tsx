@@ -5,21 +5,21 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { InterfaceChatBody } from "./InterfaceChatBody";
 import { useInterfaceChatSurfaceState } from "./useInterfaceChatSurfaceState";
-import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
+import type { InterfaceChatWorkerInfo } from "./InterfaceChatSession";
 
 interface InterfaceChatSurfaceProps {
   visible: boolean;
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
+  workerId: string;
   conversationScopeKey?: string;
-  agentInfo?: InterfaceChatAgentInfo;
+  workerInfo?: InterfaceChatWorkerInfo;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
@@ -56,9 +56,9 @@ function InterfaceChatSurfaceImpl({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
+  workerId,
   conversationScopeKey,
-  agentInfo,
+  workerInfo,
   connectionState,
   connectionIssue,
   theme,
@@ -88,9 +88,9 @@ function InterfaceChatSurfaceImpl({
     serverId,
     serverUrl,
     daemonId,
-    agentId,
+    workerId,
     conversationScopeKey,
-    agentInfo,
+    workerInfo,
     connectionState,
     connectionIssue,
     theme,

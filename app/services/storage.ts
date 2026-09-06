@@ -19,16 +19,16 @@ const KEYS = {
   currentServer: "zen:v1:current_server_id",
   disabledServers: "zen:v1:disabled_servers",
   onboarded: "zen:onboarded",
-  recentAgentOpens: "zen:recent_agent_opens",
-  agentAliases: "zen:agent_aliases",
+  recentWorkerOpens: "zen:recent_agent_opens",
+  workerAliases: "zen:agent_aliases",
   interfaceRenderModes: "zen:codex_render_modes",
   themePreference: "zen:theme_preference",
 } as const;
 
 export type StoredThemePreference = "system" | string;
 
-export type StoredRecentAgentOpens = Record<string, number>;
-export type StoredAgentAliases = Record<string, string>;
+export type StoredRecentWorkerOpens = Record<string, number>;
+export type StoredWorkerAliases = Record<string, string>;
 export type StoredInterfaceRenderMode = "chat" | "terminal";
 export type StoredInterfaceRenderModes = Record<
   string,
@@ -125,16 +125,16 @@ export async function setServerAutoConnect(
   await AsyncStorage.setItem(KEYS.disabledServers, JSON.stringify(next));
 }
 
-export async function getRecentAgentOpens(): Promise<StoredRecentAgentOpens> {
-  const value = await AsyncStorage.getItem(KEYS.recentAgentOpens);
+export async function getRecentWorkerOpens(): Promise<StoredRecentWorkerOpens> {
+  const value = await AsyncStorage.getItem(KEYS.recentWorkerOpens);
   if (!value) return {};
 
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
-    const normalized: StoredRecentAgentOpens = {};
-    for (const [agentId, openedAt] of Object.entries(parsed)) {
+    const normalized: StoredRecentWorkerOpens = {};
+    for (const [workerId, openedAt] of Object.entries(parsed)) {
       if (typeof openedAt === "number" && Number.isFinite(openedAt)) {
-        normalized[agentId] = openedAt;
+        normalized[workerId] = openedAt;
       }
     }
     return normalized;
@@ -143,14 +143,14 @@ export async function getRecentAgentOpens(): Promise<StoredRecentAgentOpens> {
   }
 }
 
-export async function markAgentOpened(
-  agentId: string,
+export async function markWorkerOpened(
+  workerId: string,
   openedAt: number = Date.now(),
 ): Promise<void> {
-  const current = await getRecentAgentOpens();
-  const next: StoredRecentAgentOpens = {
+  const current = await getRecentWorkerOpens();
+  const next: StoredRecentWorkerOpens = {
     ...current,
-    [agentId]: openedAt,
+    [workerId]: openedAt,
   };
 
   const entries = Object.entries(next)
@@ -158,25 +158,25 @@ export async function markAgentOpened(
     .slice(0, 100);
 
   await AsyncStorage.setItem(
-    KEYS.recentAgentOpens,
+    KEYS.recentWorkerOpens,
     JSON.stringify(Object.fromEntries(entries)),
   );
 }
 
-export async function getAgentAliases(): Promise<StoredAgentAliases> {
-  const value = await AsyncStorage.getItem(KEYS.agentAliases);
+export async function getWorkerAliases(): Promise<StoredWorkerAliases> {
+  const value = await AsyncStorage.getItem(KEYS.workerAliases);
   if (!value) return {};
 
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
-    const normalized: StoredAgentAliases = {};
-    for (const [agentId, alias] of Object.entries(parsed)) {
-      if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+    const normalized: StoredWorkerAliases = {};
+    for (const [workerId, alias] of Object.entries(parsed)) {
+      if (typeof workerId !== "string" || workerId.trim().length === 0) continue;
       if (typeof alias !== "string") continue;
 
       const trimmed = alias.trim();
       if (!trimmed) continue;
-      normalized[agentId] = trimmed;
+      normalized[workerId] = trimmed;
     }
     return normalized;
   } catch {
@@ -184,21 +184,21 @@ export async function getAgentAliases(): Promise<StoredAgentAliases> {
   }
 }
 
-export async function setAgentAlias(
-  agentId: string,
+export async function setWorkerAlias(
+  workerId: string,
   alias: string,
-): Promise<StoredAgentAliases> {
-  const current = await getAgentAliases();
-  const next: StoredAgentAliases = { ...current };
+): Promise<StoredWorkerAliases> {
+  const current = await getWorkerAliases();
+  const next: StoredWorkerAliases = { ...current };
   const trimmed = alias.trim();
 
   if (trimmed) {
-    next[agentId] = trimmed;
+    next[workerId] = trimmed;
   } else {
-    delete next[agentId];
+    delete next[workerId];
   }
 
-  await AsyncStorage.setItem(KEYS.agentAliases, JSON.stringify(next));
+  await AsyncStorage.setItem(KEYS.workerAliases, JSON.stringify(next));
   return next;
 }
 
@@ -209,10 +209,10 @@ export async function getInterfaceRenderModes(): Promise<StoredInterfaceRenderMo
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const normalized: StoredInterfaceRenderModes = {};
-    for (const [agentId, mode] of Object.entries(parsed)) {
-      if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+    for (const [workerId, mode] of Object.entries(parsed)) {
+      if (typeof workerId !== "string" || workerId.trim().length === 0) continue;
       if (mode === "chat" || mode === "terminal") {
-        normalized[agentId] = mode;
+        normalized[workerId] = mode;
       }
     }
     return normalized;
@@ -222,10 +222,10 @@ export async function getInterfaceRenderModes(): Promise<StoredInterfaceRenderMo
 }
 
 export async function setInterfaceRenderMode(
-  agentId: string,
+  workerId: string,
   mode: StoredInterfaceRenderMode,
 ): Promise<StoredInterfaceRenderModes> {
-  const trimmed = agentId.trim();
+  const trimmed = workerId.trim();
   if (!trimmed) {
     return getInterfaceRenderModes();
   }

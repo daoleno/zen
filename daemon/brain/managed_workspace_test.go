@@ -75,16 +75,17 @@ func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *test
 	}
 
 	for _, contract := range []string{
-		"sole master orchestrator and scheduler",
-		"independently decompose",
+		"Brain owns conversation",
+		"visible Zen Worker",
 		"typed disposition",
 		"durable next action",
 		"due_retry",
-		"Delegated agents execute scoped concerns",
 		"Inspect every delegated result",
-		"zen agent send -id <session> -text <follow-up> --work-id <work> --event-id <event> --handling-id <handling> --provider-turn-id <provider-turn> --revision <revision> --turn-id <random-turn-id>",
-		"zen brain work resolve --work-id <work> --handling-id <handling> --provider-turn-id <provider-turn> --revision <revision> --disposition continue --next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>",
+		"same-Session continuation",
+		"exact acceptance",
 		"Ambiguous or unknown delivery is no-replay",
+		"completion or failure event",
+		"User instructions override skill guidelines",
 	} {
 		if !strings.Contains(productWorkspaceInstructions, contract) && !strings.Contains(productDelegationPolicy, contract) {
 			t.Fatalf("shipped templates missing autonomous contract %q", contract)
@@ -150,7 +151,7 @@ func TestNewStoreUpgradesMarkedBlockInPlaceAndSecondRunIsExact(t *testing.T) {
 	path := filepath.Join(workspace, "AGENTS.md")
 	prefix := []byte("# User Before\n\n")
 	suffix := []byte("\n\n# User After\n\nKeep this exact suffix.  \n")
-	oldBlock := []byte(managedStartMarker(brainAgentsManagedID) + "\n# Old Product Block\n" + managedEndMarker(brainAgentsManagedID))
+	oldBlock := []byte(managedStartMarker(brainWorkersManagedID) + "\n# Old Product Block\n" + managedEndMarker(brainWorkersManagedID))
 	input := bytes.Join([][]byte{prefix, oldBlock, suffix}, nil)
 	if err := os.WriteFile(path, input, 0o644); err != nil {
 		t.Fatal(err)
@@ -188,7 +189,7 @@ func TestNewStoreConsolidatesMarkedBlocksAndPreservesAllExteriorBytes(t *testing
 		t.Fatal(err)
 	}
 	path := filepath.Join(workspace, "AGENTS.md")
-	oldBlock := []byte(managedStartMarker(brainAgentsManagedID) + "\nold\n" + managedEndMarker(brainAgentsManagedID))
+	oldBlock := []byte(managedStartMarker(brainWorkersManagedID) + "\nold\n" + managedEndMarker(brainWorkersManagedID))
 	prefix := []byte("USER BEFORE\n")
 	between := []byte("\nUSER BETWEEN BLOCKS\n")
 	suffix := []byte("\nUSER AFTER\n")
@@ -209,12 +210,12 @@ func TestNewStoreConsolidatesMarkedBlocksAndPreservesAllExteriorBytes(t *testing
 
 func TestManagedMarkerValidationRejectsCorruptionAndForeignIDs(t *testing.T) {
 	tests := map[string]string{
-		"missing end": managedStartMarker(brainAgentsManagedID) + "\nbody\n",
-		"stray end":   managedEndMarker(brainAgentsManagedID) + "\n",
-		"nested": managedStartMarker(brainAgentsManagedID) + "\n" +
-			managedStartMarker(brainAgentsManagedID) + "\n" +
-			managedEndMarker(brainAgentsManagedID) + "\n",
-		"malformed line":  managedStartMarker(brainAgentsManagedID) + " trailing text\n",
+		"missing end": managedStartMarker(brainWorkersManagedID) + "\nbody\n",
+		"stray end":   managedEndMarker(brainWorkersManagedID) + "\n",
+		"nested": managedStartMarker(brainWorkersManagedID) + "\n" +
+			managedStartMarker(brainWorkersManagedID) + "\n" +
+			managedEndMarker(brainWorkersManagedID) + "\n",
+		"malformed line":  managedStartMarker(brainWorkersManagedID) + " trailing text\n",
 		"foreign id":      managedStartMarker(handoffManagedID) + "\nforeign\n" + managedEndMarker(handoffManagedID) + "\n",
 		"embedded prefix": "User prose mentions " + managedMarkerPrefix + "agents:start --> inline.\n",
 	}
@@ -247,7 +248,7 @@ func TestManagedWorkspaceLateFailureNeverWritesEarlierDocument(t *testing.T) {
 			t.Fatal("NewStore accepted a foreign handoff marker")
 		}
 		assertBytesAndMtime(t, agentsPath, original, fixed)
-		if !bytes.Contains(mustReadFile(t, handoffPath), []byte(managedStartMarker(brainAgentsManagedID))) {
+		if !bytes.Contains(mustReadFile(t, handoffPath), []byte(managedStartMarker(brainWorkersManagedID))) {
 			t.Fatal("foreign handoff marker unexpectedly changed")
 		}
 	})
@@ -258,11 +259,11 @@ func TestManagedWorkspaceLateFailureNeverWritesEarlierDocument(t *testing.T) {
 			t.Fatal(err)
 		}
 		agentsPath := store.workspaceInstructionsPath()
-		original := staleManagedAgents()
+		original := staleManagedWorkers()
 		if err := os.WriteFile(agentsPath, original, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		foreign := []byte(managedStartMarker(brainAgentsManagedID) + "\nforeign\n" + managedEndMarker(brainAgentsManagedID) + "\n")
+		foreign := []byte(managedStartMarker(brainWorkersManagedID) + "\nforeign\n" + managedEndMarker(brainWorkersManagedID) + "\n")
 		if err := os.WriteFile(store.policyPath("handoff.md"), foreign, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -454,7 +455,7 @@ func TestHousekeepingCreatesMissingSoulOnceAndPreservesPrivateSoul(t *testing.T)
 	assertBytesAndMtime(t, store.soulPath(), private, fixed)
 }
 
-func lateFailureFixture(t *testing.T) (root, agentsPath, handoffPath string, agents []byte, fixed time.Time) {
+func lateFailureFixture(t *testing.T) (root, agentsPath, handoffPath string, workers []byte, fixed time.Time) {
 	t.Helper()
 	root = t.TempDir()
 	policies := filepath.Join(root, "workspace", "policies")
@@ -463,11 +464,11 @@ func lateFailureFixture(t *testing.T) (root, agentsPath, handoffPath string, age
 	}
 	agentsPath = filepath.Join(root, "workspace", "AGENTS.md")
 	handoffPath = filepath.Join(policies, "handoff.md")
-	agents = staleManagedAgents()
-	if err := os.WriteFile(agentsPath, agents, 0o600); err != nil {
+	workers = staleManagedWorkers()
+	if err := os.WriteFile(agentsPath, workers, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	foreign := []byte(managedStartMarker(brainAgentsManagedID) + "\nforeign\n" + managedEndMarker(brainAgentsManagedID) + "\n")
+	foreign := []byte(managedStartMarker(brainWorkersManagedID) + "\nforeign\n" + managedEndMarker(brainWorkersManagedID) + "\n")
 	if err := os.WriteFile(handoffPath, foreign, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -475,11 +476,11 @@ func lateFailureFixture(t *testing.T) (root, agentsPath, handoffPath string, age
 	if err := os.Chtimes(agentsPath, fixed, fixed); err != nil {
 		t.Fatal(err)
 	}
-	return root, agentsPath, handoffPath, agents, fixed
+	return root, agentsPath, handoffPath, workers, fixed
 }
 
-func staleManagedAgents() []byte {
-	return []byte(managedStartMarker(brainAgentsManagedID) + "\nold product bytes\n" + managedEndMarker(brainAgentsManagedID) + "\n")
+func staleManagedWorkers() []byte {
+	return []byte(managedStartMarker(brainWorkersManagedID) + "\nold product bytes\n" + managedEndMarker(brainWorkersManagedID) + "\n")
 }
 
 func mustReadFile(t *testing.T, path string) []byte {

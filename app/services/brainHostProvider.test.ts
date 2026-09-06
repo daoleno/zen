@@ -1,29 +1,29 @@
 import { describe, expect, test } from "bun:test";
 import {
   brainHostMatchesRoute,
-  resolveTerminalRouteAgent,
-  routeAgentProviderModelActionState,
+  resolveTerminalRouteWorker,
+  routeWorkerProviderModelActionState,
 } from "../components/terminal/screen/useTerminalRouteModel";
 import {
   sessionAllowsModelProfileActivation,
   sessionIsManagedReadOnlyProfile,
   sessionSupportsModelProfileAction,
-  type AgentSessionCapabilities,
+  type WorkerSessionCapabilities,
 } from "./providers/sessionCapabilities";
 import {
-  agentReducer,
-  initialAgentState,
-  type Agent,
-} from "../store/agents";
-import { brainReducer, initialBrainState, type BrainAgentRef } from "../store/brain";
+  workerReducer,
+  initialWorkerState,
+  type Worker,
+} from "../store/workers";
+import { brainReducer, initialBrainState, type BrainWorkerRef } from "../store/brain";
 import { makeSessionKey } from "./sessionKeys";
 
 const HOST_ID = "brain-host-1";
 const SERVER_ID = "server-a";
 
 function hostRef(
-  capabilities?: AgentSessionCapabilities,
-): BrainAgentRef {
+  capabilities?: WorkerSessionCapabilities,
+): BrainWorkerRef {
   return {
     id: HOST_ID,
     name: "Brain",
@@ -34,22 +34,22 @@ function hostRef(
   };
 }
 
-describe("Brain host_agent Provider Model capabilities", () => {
-  test("BrainAgentRef parsing uses strict normalizeAgentSessionCapabilities", () => {
+describe("Brain host_worker Provider Model capabilities", () => {
+  test("BrainWorkerRef parsing uses strict normalizeWorkerSessionCapabilities", () => {
     const routed = brainReducer(initialBrainState, {
       type: "BRAIN_SNAPSHOT",
       serverId: SERVER_ID,
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        host_agent: hostRef({
+        host_worker: hostRef({
           structured_events: true,
           model_profile_managed: true,
           model_profile_active_switch: true,
         }),
       },
     });
-    expect(routed.byServer[SERVER_ID]?.host_agent?.capabilities).toEqual({
+    expect(routed.byServer[SERVER_ID]?.host_worker?.capabilities).toEqual({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: true,
@@ -61,7 +61,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        host_agent: {
+        host_worker: {
           id: HOST_ID,
           name: "Brain",
           status: "running",
@@ -75,7 +75,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
       } as never,
     });
     expect(
-      nestedIgnored.byServer[SERVER_ID]?.host_agent?.capabilities,
+      nestedIgnored.byServer[SERVER_ID]?.host_worker?.capabilities,
     ).toEqual({
       structured_events: true,
       model_profile_managed: false,
@@ -85,13 +85,13 @@ describe("Brain host_agent Provider Model capabilities", () => {
 
   test("routed host action is visible and activatable", () => {
     const sessionKey = makeSessionKey(SERVER_ID, HOST_ID);
-    const agent = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const agent = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: { name: "hint-name", command: "hint-cmd" },
       sessionKey,
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: hostRef({
+      workerId: HOST_ID,
+      brainHostWorker: hostRef({
         structured_events: true,
         model_profile_managed: true,
         model_profile_active_switch: true,
@@ -105,7 +105,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
     });
     // Capabilities authorize — not the route hint name/command.
     expect(agent?.name).toBe("Brain");
-    const state = routeAgentProviderModelActionState(agent?.capabilities);
+    const state = routeWorkerProviderModelActionState(agent?.capabilities);
     expect(state.actionVisible).toBe(true);
     expect(state.activationEnabled).toBe(true);
     expect(sessionSupportsModelProfileAction(agent?.capabilities)).toBe(true);
@@ -113,48 +113,48 @@ describe("Brain host_agent Provider Model capabilities", () => {
   });
 
   test("managed-native host stays hidden (no acknowledged live switch)", () => {
-    const agent = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const agent = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: {},
       sessionKey: makeSessionKey(SERVER_ID, HOST_ID),
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: hostRef({
+      workerId: HOST_ID,
+      brainHostWorker: hostRef({
         structured_events: true,
         model_profile_managed: true,
         model_profile_active_switch: false,
       }),
       brainHostServerId: SERVER_ID,
     });
-    const state = routeAgentProviderModelActionState(agent?.capabilities);
+    const state = routeWorkerProviderModelActionState(agent?.capabilities);
     expect(state.actionVisible).toBe(false);
     expect(state.activationEnabled).toBe(false);
     expect(sessionIsManagedReadOnlyProfile(agent?.capabilities)).toBe(true);
   });
 
   test("missing or false capabilities fail closed (hidden menu)", () => {
-    const missing = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const missing = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: { name: "Brain", command: "zen brain" },
       sessionKey: makeSessionKey(SERVER_ID, HOST_ID),
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: hostRef(),
+      workerId: HOST_ID,
+      brainHostWorker: hostRef(),
       brainHostServerId: SERVER_ID,
     });
     expect(missing?.capabilities).toBeUndefined();
-    expect(routeAgentProviderModelActionState(missing?.capabilities)).toEqual({
+    expect(routeWorkerProviderModelActionState(missing?.capabilities)).toEqual({
       actionVisible: false,
       activationEnabled: false,
     });
 
-    const falseCaps = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const falseCaps = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: {},
       sessionKey: makeSessionKey(SERVER_ID, HOST_ID),
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: hostRef({
+      workerId: HOST_ID,
+      brainHostWorker: hostRef({
         structured_events: false,
         model_profile_managed: false,
         model_profile_active_switch: false,
@@ -169,24 +169,24 @@ describe("Brain host_agent Provider Model capabilities", () => {
   test("wrong server or id is ignored", () => {
     expect(
       brainHostMatchesRoute({
-        brainHostAgent: hostRef({
+        brainHostWorker: hostRef({
           model_profile_managed: true,
           model_profile_active_switch: true,
           structured_events: true,
         }),
         brainHostServerId: "other-server",
         routeServerId: SERVER_ID,
-        routeAgentId: HOST_ID,
+        routeWorkerId: HOST_ID,
       }),
     ).toBe(false);
 
-    const wrongId = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const wrongId = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: { name: "Brain" },
       sessionKey: makeSessionKey(SERVER_ID, "visible-agent"),
       serverId: SERVER_ID,
-      agentId: "visible-agent",
-      brainHostAgent: hostRef({
+      workerId: "visible-agent",
+      brainHostWorker: hostRef({
         structured_events: true,
         model_profile_managed: true,
         model_profile_active_switch: true,
@@ -205,7 +205,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        host_agent: hostRef({
+        host_worker: hostRef({
           structured_events: true,
           model_profile_managed: true,
           model_profile_active_switch: false,
@@ -213,7 +213,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
       },
     });
     expect(
-      state.byServer[SERVER_ID]?.host_agent?.capabilities
+      state.byServer[SERVER_ID]?.host_worker?.capabilities
         ?.model_profile_active_switch,
     ).toBe(false);
 
@@ -223,7 +223,7 @@ describe("Brain host_agent Provider Model capabilities", () => {
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        host_agent: hostRef({
+        host_worker: hostRef({
           structured_events: true,
           model_profile_managed: true,
           model_profile_active_switch: true,
@@ -231,20 +231,20 @@ describe("Brain host_agent Provider Model capabilities", () => {
       },
     });
     expect(
-      state.byServer[SERVER_ID]?.host_agent?.capabilities,
+      state.byServer[SERVER_ID]?.host_worker?.capabilities,
     ).toEqual({
       structured_events: true,
       model_profile_managed: true,
       model_profile_active_switch: true,
     });
 
-    const agent = resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    const agent = resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: {},
       sessionKey: makeSessionKey(SERVER_ID, HOST_ID),
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: state.byServer[SERVER_ID]?.host_agent,
+      workerId: HOST_ID,
+      brainHostWorker: state.byServer[SERVER_ID]?.host_worker,
       brainHostServerId: SERVER_ID,
     });
     expect(sessionAllowsModelProfileActivation(agent?.capabilities)).toBe(
@@ -253,30 +253,30 @@ describe("Brain host_agent Provider Model capabilities", () => {
   });
 
   test("host merge does not upsert or unhide a double Agent row", () => {
-    const beforeAgents = [...initialAgentState.agents];
+    const beforeWorkers = [...initialWorkerState.workers];
     const brain = brainReducer(initialBrainState, {
       type: "BRAIN_SNAPSHOT",
       serverId: SERVER_ID,
       serverName: "Zen",
       serverUrl: "ws://zen",
       brain: {
-        host_agent: hostRef({
+        host_worker: hostRef({
           structured_events: true,
           model_profile_managed: true,
           model_profile_active_switch: true,
         }),
-        agents: [],
+        workers: [],
       },
     });
     // Brain agents list stays empty / without host unhide into Agent store.
-    expect(brain.byServer[SERVER_ID]?.agents ?? []).toEqual([]);
+    expect(brain.byServer[SERVER_ID]?.workers ?? []).toEqual([]);
 
-    const agentsAfter = agentReducer(initialAgentState, {
-      type: "UPSERT_SERVER_AGENTS",
+    const agentsAfter = workerReducer(initialWorkerState, {
+      type: "UPSERT_SERVER_WORKERS",
       serverId: SERVER_ID,
       serverName: "Zen",
       serverUrl: "ws://zen",
-      agents: [
+      workers: [
         {
           id: "visible-1",
           name: "Codex",
@@ -289,24 +289,24 @@ describe("Brain host_agent Provider Model capabilities", () => {
         },
       ],
     });
-    expect(agentsAfter.agents.map((a) => a.id)).toEqual(["visible-1"]);
-    expect(agentsAfter.agents.some((a) => a.id === HOST_ID)).toBe(false);
+    expect(agentsAfter.workers.map((a) => a.id)).toEqual(["visible-1"]);
+    expect(agentsAfter.workers.some((a) => a.id === HOST_ID)).toBe(false);
 
-    resolveTerminalRouteAgent({
-      storedAgent: undefined,
+    resolveTerminalRouteWorker({
+      storedWorker: undefined,
       routeSessionHint: {},
       sessionKey: makeSessionKey(SERVER_ID, HOST_ID),
       serverId: SERVER_ID,
-      agentId: HOST_ID,
-      brainHostAgent: brain.byServer[SERVER_ID]?.host_agent,
+      workerId: HOST_ID,
+      brainHostWorker: brain.byServer[SERVER_ID]?.host_worker,
       brainHostServerId: SERVER_ID,
     });
     // Pure resolve — Agent store unchanged.
-    expect(initialAgentState.agents).toEqual(beforeAgents);
+    expect(initialWorkerState.workers).toEqual(beforeWorkers);
   });
 
   test("ordinary visible Agent capabilities remain unchanged when not the host", () => {
-    const stored: Agent = {
+    const stored: Worker = {
       key: makeSessionKey(SERVER_ID, "agent-2"),
       id: "agent-2",
       serverId: SERVER_ID,
@@ -323,13 +323,13 @@ describe("Brain host_agent Provider Model capabilities", () => {
         model_profile_active_switch: true,
       },
     };
-    const resolved = resolveTerminalRouteAgent({
-      storedAgent: stored,
+    const resolved = resolveTerminalRouteWorker({
+      storedWorker: stored,
       routeSessionHint: { name: "ignored" },
       sessionKey: stored.key,
       serverId: SERVER_ID,
-      agentId: "agent-2",
-      brainHostAgent: hostRef({
+      workerId: "agent-2",
+      brainHostWorker: hostRef({
         structured_events: false,
         model_profile_managed: false,
         model_profile_active_switch: false,

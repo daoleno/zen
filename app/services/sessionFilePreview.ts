@@ -13,7 +13,7 @@ export type SessionFileRenderer =
   | "unsupported";
 
 export interface SessionFileIdentity {
-  agentId: string;
+  workerId: string;
   processId: number;
   startedAt: number;
 }
@@ -267,7 +267,7 @@ export function sessionFilePreviewScopeKey(input: {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
+  workerId: string;
   processId?: number;
   startedAt?: number;
   cwd?: string;
@@ -276,7 +276,7 @@ export function sessionFilePreviewScopeKey(input: {
     input.serverId,
     input.serverUrl,
     input.daemonId,
-    input.agentId,
+    input.workerId,
     input.processId ?? "",
     input.startedAt ?? "",
     input.cwd?.trim() || "",
@@ -295,7 +295,7 @@ export function buildSessionFileBinaryUrl(
     url.pathname = "/session-file";
     url.search = "";
     url.hash = "";
-    url.searchParams.set("agent_id", request.agentId);
+    url.searchParams.set("worker_id", request.workerId);
     url.searchParams.set("process_id", String(request.processId));
     url.searchParams.set("started_at", String(request.startedAt));
     url.searchParams.set("path", request.path);
@@ -340,7 +340,7 @@ export async function buildSessionFileBinarySource(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      agent_id: request.agentId,
+      worker_id: request.workerId,
       process_id: request.processId,
       started_at: request.startedAt,
       path: request.path,

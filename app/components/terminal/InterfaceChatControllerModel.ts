@@ -1,4 +1,4 @@
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type {
   CodexConversation,
   ProviderActivity,
@@ -61,7 +61,7 @@ export function buildInterfaceComposerMessage(
 export function conversationUnavailableReason(reason?: string) {
   switch (reason) {
     case "not_codex":
-      return "Chat is only available for supported agent sessions.";
+      return "Chat is only available for supported Worker sessions.";
     case "not_visible":
       return "This chat is not available from the current view yet.";
     case "missing_cwd":
@@ -70,8 +70,8 @@ export function conversationUnavailableReason(reason?: string) {
       return "Messages are still syncing for this session.";
     case "transcript_malformed":
       return "Chat could not read this session transcript. Open the terminal view.";
-    case "agent_not_found":
-      return "This agent session is no longer available.";
+    case "worker_not_found":
+      return "This Worker session is no longer available.";
     case "session_not_ready":
       return "This chat is getting ready.";
     default:

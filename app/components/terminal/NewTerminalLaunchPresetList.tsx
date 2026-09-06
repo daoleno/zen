@@ -5,7 +5,7 @@ import {
   View,
 } from "react-native";
 import { Colors, useAppColors } from "../../constants/tokens";
-import type { AgentKind } from "../../services/agentPresentation";
+import type { AgentKind } from "../../services/workerPresentation";
 import {
   CLAUDE_CODE_COMMAND,
   CODEX_COMMAND,

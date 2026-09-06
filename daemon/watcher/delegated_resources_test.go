@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daoleno/zen/daemon/agentproc"
+	"github.com/daoleno/zen/daemon/workerproc"
 )
 
 type fakeDelegatedResourceManager struct {
@@ -82,7 +82,7 @@ func newTestPortableResourceManager(t *testing.T, owner string, limits delegated
 
 func TestDelegatedResourceUnitIsStrictlyNamespaced(t *testing.T) {
 	unit := delegatedResourceUnit("Daemon-ID-ABCDEF", "01234567-89ab-cdef-0123-456789abcdef")
-	if unit != "zen-agent-daemonidabcdef-0123456789abcdef0123456789abcdef.scope" {
+	if unit != "zen-worker-daemonidabcdef-0123456789abcdef0123456789abcdef.scope" {
 		t.Fatalf("unit = %q", unit)
 	}
 	if !validDelegatedResourceUnit("daemon-id-abcdef", unit) {
@@ -90,9 +90,9 @@ func TestDelegatedResourceUnitIsStrictlyNamespaced(t *testing.T) {
 	}
 	for _, candidate := range []string{
 		"tmux-spawn-01234567.scope",
-		"zen-agent-otherdaemon-0123456789abcdef0123456789abcdef.scope",
-		"zen-agent-daemonidabcdef-not-a-uuid.scope",
-		"zen-agent-daemonidabcdef-0123456789abcdef0123456789abcdef.service",
+		"zen-worker-otherdaemon-0123456789abcdef0123456789abcdef.scope",
+		"zen-worker-daemonidabcdef-not-a-uuid.scope",
+		"zen-worker-daemonidabcdef-0123456789abcdef0123456789abcdef.service",
 	} {
 		if validDelegatedResourceUnit("daemon-id-abcdef", candidate) {
 			t.Fatalf("accepted unowned or malformed unit %q", candidate)
@@ -209,7 +209,7 @@ func TestWrapDelegatedResourceCommandCreatesOwnedScopeAtomically(t *testing.T) {
 		Slice:      delegatedResourceSlice("abc123"),
 		SystemdRun: "/usr/bin/systemd-run",
 		Supervisor: "/usr/bin/zen",
-		LeaseDir:   "/home/test/.zen/run/agent-resources/abc123",
+		LeaseDir:   "/home/test/.zen/run/worker-resources/abc123",
 		Limits: delegatedResourceLimits{
 			MemoryHigh:        "4G",
 			MemoryMax:         "6G",
@@ -221,11 +221,11 @@ func TestWrapDelegatedResourceCommandCreatesOwnedScopeAtomically(t *testing.T) {
 		"exec '/usr/bin/systemd-run'",
 		"'--scope'",
 		"'--unit=" + unit + "'",
-		"'--slice=zen-agents-abc123.slice'",
+		"'--slice=zen-workers-abc123.slice'",
 		"'--property=TasksMax=1024'",
 		"'--property=KillMode=control-group'",
-		"'/usr/bin/zen' 'agent' '__supervise'",
-		"'--lease-dir=/home/test/.zen/run/agent-resources/abc123'",
+		"'/usr/bin/zen' 'worker' '__supervise'",
+		"'--lease-dir=/home/test/.zen/run/worker-resources/abc123'",
 		"'/bin/sh' '-c'",
 		shellQuote(strings.ReplaceAll(inner, "$", "$$")),
 	} {
@@ -250,7 +250,7 @@ func TestWrapDelegatedResourceCommandEnablesPortablePoolGuard(t *testing.T) {
 		Owner:      "abc123",
 		Unit:       unit,
 		Supervisor: "/usr/bin/zen",
-		LeaseDir:   "/home/test/.zen/run/agent-resources/abc123",
+		LeaseDir:   "/home/test/.zen/run/worker-resources/abc123",
 		Limits: delegatedResourceLimits{
 			MemoryHigh: "25G",
 			MemoryMax:  "28G",
@@ -327,7 +327,7 @@ func TestCreateDelegatedSessionPassesOwnedResourceToTmux(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
 case "$1" in
-  new-session) printf 'brain-agent-test:@1\n' ;;
+  new-session) printf 'zen-worker-test:@1\n' ;;
 esac
 exit 0
 `
@@ -371,7 +371,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target != "brain-agent-test:@1" || manager.boundTarget != target || manager.boundUnit != unit {
+	if target != "zen-worker-test:@1" || manager.boundTarget != target || manager.boundUnit != unit {
 		t.Fatalf("target/binding = %q %q %q", target, manager.boundTarget, manager.boundUnit)
 	}
 	if _, exists := callerEnv[delegatedMarkerEnv]; exists {
@@ -388,8 +388,8 @@ exit 0
 		"TMPDIR=" + filepath.Join(dir, "owned-tmp"),
 		"ZEN_BUILD_TMPDIR=" + filepath.Join(dir, "owned-tmp"),
 		"--unit=" + unit,
-		"set-option -w -t " + target + " @zen_agent_delegated 1",
-		"set-option -w -t " + target + " @zen_agent_resource_unit " + unit,
+		"set-option -w -t " + target + " @zen_worker_delegated 1",
+		"set-option -w -t " + target + " @zen_worker_resource_unit " + unit,
 	} {
 		if !strings.Contains(calls, want) {
 			t.Fatalf("tmux calls missing %q:\n%s", want, calls)
@@ -404,10 +404,10 @@ func TestCreateDelegatedSessionRollsBackWhenOwnershipMarkersFail(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
 case "$1" in
-  new-session) printf 'brain-agent-test:@7\n' ;;
+  new-session) printf 'zen-worker-test:@7\n' ;;
   set-option)
     case "$*" in
-      *@zen_agent_resource_unit*) exit 1 ;;
+      *@zen_worker_resource_unit*) exit 1 ;;
     esac
     ;;
 esac
@@ -454,7 +454,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "kill-window -t brain-agent-test:@7") {
+	if !strings.Contains(string(raw), "kill-window -t zen-worker-test:@7") {
 		t.Fatalf("unmarked window was not rolled back:\n%s", raw)
 	}
 }
@@ -672,48 +672,13 @@ func TestPortableResourceReleaseRemovesShortRestrictedNestedTrees(t *testing.T) 
 	}
 }
 
-func TestPortableResourceReleaseRemovesLegacyReadonlyNestedCache(t *testing.T) {
-	owner := "abc123"
-	unit := delegatedResourceUnit(owner, "0123456789abcdef0123456789abcdef")
-	root := t.TempDir()
-	leaseDir := filepath.Join(root, "leases")
-	tempRoot := filepath.Join(root, "t")
-	legacyRoot := filepath.Join(root, "tmp", "agent-resources", owner)
-	for _, dir := range []string{leaseDir, tempRoot, legacyRoot} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	legacyTemp := filepath.Join(legacyRoot, unit)
-	if err := os.MkdirAll(legacyTemp, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeReadonlyNestedCache(t, legacyTemp)
-	manager := &portableDelegatedResourceManager{
-		owner:          owner,
-		supervisor:     "/usr/bin/zen",
-		leaseDir:       leaseDir,
-		tempRoot:       tempRoot,
-		legacyTempRoot: legacyRoot,
-		byTarget:       make(map[string]string),
-		reserved:       make(map[string]time.Time),
-		now:            time.Now,
-	}
-	if err := manager.Release("", unit); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(legacyTemp); !os.IsNotExist(err) {
-		t.Fatalf("legacy owned temp with readonly cache still exists: %v", err)
-	}
-}
-
 func TestPortableResourceReleaseDoesNotFollowSymlinkOrForeignMarkerRoot(t *testing.T) {
 	owner := "abc123"
 	unit := delegatedResourceUnit(owner, "0123456789abcdef0123456789abcdef")
 	root := t.TempDir()
 	leaseDir := filepath.Join(root, "leases")
 	tempRoot := filepath.Join(root, "t")
-	legacyRoot := filepath.Join(root, "tmp", "agent-resources", owner)
+	legacyRoot := filepath.Join(root, "tmp", "worker-resources", owner)
 	foreign := filepath.Join(root, "foreign")
 	for _, dir := range []string{leaseDir, tempRoot, legacyRoot, foreign} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -735,14 +700,13 @@ func TestPortableResourceReleaseDoesNotFollowSymlinkOrForeignMarkerRoot(t *testi
 	}
 
 	manager := &portableDelegatedResourceManager{
-		owner:          owner,
-		supervisor:     "/usr/bin/zen",
-		leaseDir:       leaseDir,
-		tempRoot:       tempRoot,
-		legacyTempRoot: legacyRoot,
-		byTarget:       make(map[string]string),
-		reserved:       make(map[string]time.Time),
-		now:            time.Now,
+		owner:      owner,
+		supervisor: "/usr/bin/zen",
+		leaseDir:   leaseDir,
+		tempRoot:   tempRoot,
+		byTarget:   make(map[string]string),
+		reserved:   make(map[string]time.Time),
+		now:        time.Now,
 	}
 	if err := manager.Release("", unit); err != nil {
 		t.Fatal(err)
@@ -854,54 +818,14 @@ func TestPortableResourceReconcileRemovesOrphanShortTemp(t *testing.T) {
 	}
 }
 
-func TestPortableResourceReleaseCleansLegacyFullUnitTemp(t *testing.T) {
-	owner := "abc123"
-	unit := delegatedResourceUnit(owner, "0123456789abcdef0123456789abcdef")
-	root := t.TempDir()
-	leaseDir := filepath.Join(root, "leases")
-	tempRoot := filepath.Join(root, "t")
-	legacyRoot := filepath.Join(root, "tmp", "agent-resources", owner)
-	for _, dir := range []string{leaseDir, tempRoot, legacyRoot} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	legacyTemp := filepath.Join(legacyRoot, unit)
-	foreignLegacy := filepath.Join(legacyRoot, "user-data")
-	for _, dir := range []string{legacyTemp, foreignLegacy} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manager := &portableDelegatedResourceManager{
-		owner:          owner,
-		supervisor:     "/usr/bin/zen",
-		leaseDir:       leaseDir,
-		tempRoot:       tempRoot,
-		legacyTempRoot: legacyRoot,
-		byTarget:       make(map[string]string),
-		reserved:       make(map[string]time.Time),
-		now:            time.Now,
-	}
-	if err := manager.Release("", unit); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(legacyTemp); !os.IsNotExist(err) {
-		t.Fatalf("legacy owned temp still exists: %v", err)
-	}
-	if _, err := os.Stat(foreignLegacy); err != nil {
-		t.Fatalf("foreign legacy directory was touched: %v", err)
-	}
-}
-
-func TestPortableResourceReconcileCleansLegacyOrphanKeepsLive(t *testing.T) {
+func TestPortableResourceReconcileLeavesRetiredLayoutUntouched(t *testing.T) {
 	owner := "abc123"
 	orphan := delegatedResourceUnit(owner, "0123456789abcdef0123456789abcdef")
 	live := delegatedResourceUnit(owner, "fedcba9876543210fedcba9876543210")
 	root := t.TempDir()
 	leaseDir := filepath.Join(root, "leases")
 	tempRoot := filepath.Join(root, "t")
-	legacyRoot := filepath.Join(root, "tmp", "agent-resources", owner)
+	legacyRoot := filepath.Join(root, "tmp", "worker-resources", owner)
 	for _, dir := range []string{leaseDir, tempRoot, legacyRoot} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -916,22 +840,21 @@ func TestPortableResourceReconcileCleansLegacyOrphanKeepsLive(t *testing.T) {
 		}
 	}
 	manager := &portableDelegatedResourceManager{
-		owner:          owner,
-		supervisor:     "/usr/bin/zen",
-		leaseDir:       leaseDir,
-		tempRoot:       tempRoot,
-		legacyTempRoot: legacyRoot,
-		byTarget:       make(map[string]string),
-		reserved:       make(map[string]time.Time),
-		now:            time.Now,
+		owner:      owner,
+		supervisor: "/usr/bin/zen",
+		leaseDir:   leaseDir,
+		tempRoot:   tempRoot,
+		byTarget:   make(map[string]string),
+		reserved:   make(map[string]time.Time),
+		now:        time.Now,
 	}
 	manager.Reconcile([]tmuxWindow{{
 		target:       "main:@1",
 		delegated:    true,
 		resourceUnit: live,
 	}})
-	if _, err := os.Stat(orphanLegacy); !os.IsNotExist(err) {
-		t.Fatalf("legacy orphan still exists: %v", err)
+	if _, err := os.Stat(orphanLegacy); err != nil {
+		t.Fatalf("retired layout was modified: %v", err)
 	}
 	if _, err := os.Stat(liveLegacy); err != nil {
 		t.Fatalf("live legacy temp was removed: %v", err)
@@ -1033,7 +956,7 @@ func TestPortablePrepareLeaseScanFollowsSessionCap(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var leaseReads atomic.Int32
 			manager := newTestPortableResourceManager(t, "abc123", delegatedResourceLimits{MaxActiveSessions: tc.cap, TasksMax: 1024})
-			manager.listLeases = func(string) ([]agentproc.Lease, error) {
+			manager.listLeases = func(string) ([]workerproc.Lease, error) {
 				leaseReads.Add(1)
 				return nil, nil
 			}

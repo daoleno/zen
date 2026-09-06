@@ -3,9 +3,9 @@ import type {
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
-import type { Agent, ConnectionState } from "../../../store/agents";
+import type { Worker, ConnectionState } from "../../../store/workers";
 import type { WorkItem } from "../../../store/work";
-import type { StoredRecentAgentOpens } from "../../../services/storage";
+import type { StoredRecentWorkerOpens } from "../../../services/storage";
 
 export interface MenuAnchorLayout {
   x: number;
@@ -25,15 +25,15 @@ export interface TerminalFallbackPresentation {
 export function findLinkedWork(
   byKey: Record<string, WorkItem>,
   serverId: string,
-  agentId: string,
+  workerId: string,
 ): WorkItem | undefined {
-  if (!serverId || !agentId) return undefined;
+  if (!serverId || !workerId) return undefined;
 
   return Object.values(byKey)
     .filter(
       (current) =>
         current.serverId === serverId &&
-        current.frontmatter.agent_session === agentId,
+        current.frontmatter.worker_session === workerId,
     )
     .sort((left, right) => getWorkStartedAt(right) - getWorkStartedAt(left))[0];
 }
@@ -78,12 +78,12 @@ export function buildTerminalFallbackPresentation({
   };
 }
 
-export function sortTerminalAgents({
+export function sortTerminalWorkers({
   agents,
-  recentAgentOpens: _recentAgentOpens,
+  recentWorkerOpens: _recentWorkerOpens,
 }: {
-  agents: Agent[];
-  recentAgentOpens: StoredRecentAgentOpens;
+  agents: Worker[];
+  recentWorkerOpens: StoredRecentWorkerOpens;
 }) {
   return [...agents];
 }

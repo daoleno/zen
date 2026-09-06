@@ -50,8 +50,8 @@ type grokSessionCandidate struct {
 	Active    bool
 }
 
-func (r *ProviderConversationReader) loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadGrokConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -60,7 +60,7 @@ func (r *ProviderConversationReader) loadGrokConversationForAgent(agent classifi
 		}, nil
 	}
 
-	candidate, ok, err := findGrokSession(agent, now)
+	candidate, ok, err := findGrokSession(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -98,7 +98,7 @@ func (r *ProviderConversationReader) loadGrokConversation(sessionDir string) (Co
 	}
 
 	previous := r.source
-	sameSource := previous.provider == AgentProviderGrok &&
+	sameSource := previous.provider == WorkerProviderGrok &&
 		previous.path == sessionDir &&
 		sameProviderSourceFile(previous.fileInfo, historyInfo)
 	sameUpdatesFile := sameProviderSourceFile(previous.grokUpdatesInfo, updatesInfo)
@@ -144,7 +144,7 @@ func (r *ProviderConversationReader) loadGrokConversation(sessionDir string) (Co
 		return conversation, nil
 	}
 	r.source = providerConversationSource{
-		provider:        AgentProviderGrok,
+		provider:        WorkerProviderGrok,
 		path:            sessionDir,
 		size:            afterHistoryInfo.Size(),
 		modTime:         afterHistoryInfo.ModTime(),
@@ -176,8 +176,8 @@ func readGrokConversationStamp(sessionDir string) (grokConversationStamp, os.Fil
 	return stamp, history, updatesInfo, nil
 }
 
-func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidate, bool, error) {
-	cwd := strings.TrimSpace(agent.Cwd)
+func findGrokSession(worker classifier.Worker, now time.Time) (grokSessionCandidate, bool, error) {
+	cwd := strings.TrimSpace(worker.Cwd)
 	if cwd == "" {
 		return grokSessionCandidate{}, false, nil
 	}
@@ -227,7 +227,7 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 		return grokSessionCandidate{}, false, nil
 	}
 
-	if sessionID := grokResumeSessionID(agent.Command); sessionID != "" {
+	if sessionID := grokResumeSessionID(worker.Command); sessionID != "" {
 		if matched, ok := matchGrokSessionID(candidates, sessionID); ok {
 			return matched, true, nil
 		}
@@ -237,10 +237,10 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 	if len(freshCandidates) == 0 {
 		return grokSessionCandidate{}, false, nil
 	}
-	if matched, ok := matchGrokSessionToAgentStart(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchGrokSessionToWorkerStart(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if matched, ok := matchGrokSessionToActiveSession(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchGrokSessionToActiveSession(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
 	return grokSessionCandidate{}, false, nil
@@ -299,7 +299,7 @@ func grokResumeSessionID(command string) string {
 	return ""
 }
 
-func matchGrokSessionToAgentStart(candidates []grokSessionCandidate, startedAt time.Time) (grokSessionCandidate, bool) {
+func matchGrokSessionToWorkerStart(candidates []grokSessionCandidate, startedAt time.Time) (grokSessionCandidate, bool) {
 	if startedAt.IsZero() {
 		return grokSessionCandidate{}, false
 	}

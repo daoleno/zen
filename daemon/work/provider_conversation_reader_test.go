@@ -168,8 +168,8 @@ func TestProviderConversationReaderSelectsNewSessionAndProviderWithoutPriorState
 	forceReaderFixtureModTime(t, oldCursorPath, now.Add(-time.Minute))
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{ID: "agent", Cwd: cwd, Command: "cursor-agent --resume cursor-old"}
-	oldCursor, err := reader.Load(agent, AgentProviderCursor, now)
+	worker := classifier.Worker{ID: "agent", Cwd: cwd, Command: "cursor-agent --resume cursor-old"}
+	oldCursor, err := reader.Load(worker, WorkerProviderCursor, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +180,8 @@ func TestProviderConversationReaderSelectsNewSessionAndProviderWithoutPriorState
 	newCursorPath := cursorReaderTranscriptPath(home, cwd, "cursor-new")
 	writeCursorReaderTranscript(t, newCursorPath, "cursor new session")
 	forceReaderFixtureModTime(t, newCursorPath, now.Add(time.Second))
-	agent.Command = "cursor-agent --resume cursor-new"
-	newCursor, err := reader.Load(agent, AgentProviderCursor, now.Add(2*time.Second))
+	worker.Command = "cursor-agent --resume cursor-new"
+	newCursor, err := reader.Load(worker, WorkerProviderCursor, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +193,9 @@ func TestProviderConversationReaderSelectsNewSessionAndProviderWithoutPriorState
 	claudePath := claudeReaderTranscriptPath(home, cwd, "claude-session")
 	writeClaudeReaderTranscript(t, claudePath, cwd, "claude-session", "claude provider")
 	forceReaderFixtureModTime(t, claudePath, now)
-	claudeAgent := agent
-	claudeAgent.Command = "claude --resume claude-session"
-	claudeConversation, err := reader.Load(claudeAgent, AgentProviderClaude, now.Add(2*time.Second))
+	claudeWorker := worker
+	claudeWorker.Command = "claude --resume claude-session"
+	claudeConversation, err := reader.Load(claudeWorker, WorkerProviderClaude, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,13 +223,13 @@ func TestProviderConversationReaderResumeSwitchCannotReusePriorSession(t *testin
 	}
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{ID: "agent", Cwd: cwd, Command: "claude --resume resume-one"}
-	first, err := reader.Load(agent, AgentProviderClaude, now)
+	worker := classifier.Worker{ID: "agent", Cwd: cwd, Command: "claude --resume resume-one"}
+	first, err := reader.Load(worker, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent.Command = "claude --resume resume-two"
-	second, err := reader.Load(agent, AgentProviderClaude, now)
+	worker.Command = "claude --resume resume-two"
+	second, err := reader.Load(worker, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatal(err)
 	}

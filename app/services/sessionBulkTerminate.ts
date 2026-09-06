@@ -1,13 +1,13 @@
 /**
  * Batch Session termination against the daemon's authoritative terminate
- * lifecycle (`kill_agent` → route-aware teardown → watcher removal).
+ * lifecycle (`kill_worker` → route-aware teardown → watcher removal).
  *
  * Contract audited from daemon/server/server.go and daemon/modelprofiles:
- * - Command: `kill_agent` with `agent_id` and optional `request_id`.
+ * - Command: `kill_worker` with `worker_id` and optional `request_id`.
  * - Failure: daemon replies `{type:"error", code, message, request_id, ...}`.
  * - Success: no direct reply. The authoritative acknowledgement is the Session
- *   leaving the daemon list: either the `agent_session_archived` event or
- *   absence from the next full `agent_session_list` snapshot (heartbeat and
+ *   leaving the daemon list: either the `worker_session_archived` event or
+ *   absence from the next full `worker_session_list` snapshot (heartbeat and
  *   refresh broadcasts replace the whole set).
  *
  * The batch never deletes locally and never invents state: entries are a
@@ -19,10 +19,10 @@
 export type SessionTerminationStatus = "pending" | "succeeded" | "failed";
 
 export interface SessionTerminationEntry {
-  /** Canonical stable key: makeSessionKey(serverId, agentId). */
+  /** Canonical stable key: makeSessionKey(serverId, workerId). */
   sessionKey: string;
   serverId: string;
-  agentId: string;
+  workerId: string;
   status: SessionTerminationStatus;
   /** Truthful failure detail for the retryable summary. */
   error?: string;
@@ -45,7 +45,7 @@ export interface SessionTerminationSummary {
 export interface SessionTerminationTransport {
   on(type: string, handler: (data: any) => void): void;
   off(type: string, handler: (data: any) => void): void;
-  killAgent(serverId: string, agentId: string, requestId?: string): void;
+  killWorker(serverId: string, workerId: string, requestId?: string): void;
 }
 
 export interface SessionTerminationBatchOptions {
@@ -61,7 +61,7 @@ export interface SessionTerminationBatchOptions {
 export interface SessionTerminationTarget {
   sessionKey: string;
   serverId: string;
-  agentId: string;
+  workerId: string;
 }
 
 /** Build the pending entry snapshot for a set of stable Session targets. */
@@ -71,7 +71,7 @@ export function createSessionTerminationEntries(
   return targets.map((target) => ({
     sessionKey: target.sessionKey,
     serverId: target.serverId,
-    agentId: target.agentId,
+    workerId: target.workerId,
     status: "pending" as const,
   }));
 }
@@ -121,11 +121,9 @@ function newBatchRequestId(): string {
 
 export function sessionTerminationConfirmMessage(
   count: number,
-  serverCount: number,
 ): string {
   const target = count === 1 ? "This session" : `These ${count} sessions`;
-  const where = serverCount > 1 ? ` across ${serverCount} daemons` : "";
-  return `${target} will be terminated${where}. Sessions leave the list once the daemon confirms termination.`;
+  return `${target} will be terminated. Sessions leave the list once the daemon confirms termination.`;
 }
 
 export function sessionTerminationSummaryMessage(
@@ -150,15 +148,15 @@ export function sessionTerminationSummaryMessage(
   return `${lead}${detail}\n\nThese sessions remain selected. Retry to terminate them.`;
 }
 
-function archivedAgentId(payload: any): string | null {
-  const id = payload?.agent_session?.id;
+function archivedWorkerId(payload: any): string | null {
+  const id = payload?.worker_session?.id;
   return typeof id === "string" && id ? id : null;
 }
 
-function listedAgentIds(payload: any): Set<string> {
+function listedWorkerIds(payload: any): Set<string> {
   const ids = new Set<string>();
-  const sessions = Array.isArray(payload?.agent_sessions)
-    ? payload.agent_sessions
+  const sessions = Array.isArray(payload?.worker_sessions)
+    ? payload.worker_sessions
     : [];
   for (const session of sessions) {
     if (session && typeof session.id === "string" && session.id) {
@@ -173,8 +171,8 @@ function listedAgentIds(payload: any): Set<string> {
  * a no-op), subscribes to daemon events, and settles each entry from
  * authoritative evidence:
  * - `error` matching this batch's request_id → failed (daemon message kept).
- * - `agent_session_archived` for the Session → succeeded.
- * - absence from a full `agent_session_list` snapshot → succeeded.
+ * - `worker_session_archived` for the Session → succeeded.
+ * - absence from a full `worker_session_list` snapshot → succeeded.
  * - per-entry timeout → failed (retryable).
  * - `settleDisappeared` (called by the UI when the authoritative row vanished
  *   while the batch was running) → succeeded, treated as already settled.
@@ -226,7 +224,7 @@ export class SessionTerminationBatch {
       const requestId = newBatchRequestId();
       this.requestIdBySessionKey.set(entry.sessionKey, requestId);
       try {
-        this.transport.killAgent(entry.serverId, entry.agentId, requestId);
+        this.transport.killWorker(entry.serverId, entry.workerId, requestId);
       } catch {
         this.settle(
           entry.sessionKey,
@@ -325,15 +323,15 @@ export class SessionTerminationBatch {
       }
     };
     const onArchived = (data: any) => {
-      const agentId = archivedAgentId(data);
-      if (agentId == null || data?.serverId == null) {
+      const workerId = archivedWorkerId(data);
+      if (workerId == null || data?.serverId == null) {
         return;
       }
       for (const entry of this.entries) {
         if (
           entry.status === "pending" &&
           entry.serverId === data.serverId &&
-          entry.agentId === agentId
+          entry.workerId === workerId
         ) {
           this.settle(entry.sessionKey, "succeeded");
         }
@@ -344,12 +342,12 @@ export class SessionTerminationBatch {
       if (typeof serverId !== "string") {
         return;
       }
-      const present = listedAgentIds(data);
+      const present = listedWorkerIds(data);
       for (const entry of this.entries) {
         if (
           entry.status === "pending" &&
           entry.serverId === serverId &&
-          !present.has(entry.agentId)
+          !present.has(entry.workerId)
         ) {
           this.settle(entry.sessionKey, "succeeded");
         }
@@ -360,8 +358,8 @@ export class SessionTerminationBatch {
       handler: (data: any) => void;
     }> = [
       { type: "error", handler: onError },
-      { type: "agent_session_archived", handler: onArchived },
-      { type: "agent_session_list", handler: onList },
+      { type: "worker_session_archived", handler: onArchived },
+      { type: "worker_session_list", handler: onList },
     ];
     for (const { type, handler } of handlers) {
       this.transport.on(type, handler);

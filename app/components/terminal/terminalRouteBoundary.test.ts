@@ -15,7 +15,7 @@ const TERMINAL_SCREEN_CLUSTER = [
   "terminalPresence.ts",
   "useSessionResourceSheet.ts",
   "useSessionProviderSheet.ts",
-  "useTerminalAgentIndex.ts",
+  "useTerminalWorkerIndex.ts",
   "useTerminalChromeLayout.ts",
   "useTerminalFallbackState.ts",
   "useTerminalFocusLifecycle.ts",

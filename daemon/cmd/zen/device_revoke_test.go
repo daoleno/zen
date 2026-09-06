@@ -436,11 +436,11 @@ func TestCLIRevokeUsesRuntimeOwnerAcrossTargetAndUnaffectedSockets(
 	)
 	for _, conn := range otherSockets {
 		if err := conn.WriteJSON(map[string]any{
-			"type": "list_agent_sessions",
+			"type": "list_worker_sessions",
 		}); err != nil {
 			t.Fatalf("unaffected socket write: %v", err)
 		}
-		readControlWebSocketType(t, conn, "agent_session_list")
+		readControlWebSocketType(t, conn, "worker_session_list")
 		_ = conn.Close()
 	}
 	reconnectedOther := dialControlSockets(
@@ -757,7 +757,7 @@ func dialControlSockets(
 			t.Fatal(err)
 		}
 		sockets = append(sockets, conn)
-		readControlWebSocketType(t, conn, "agent_session_list")
+		readControlWebSocketType(t, conn, "worker_session_list")
 	}
 	return sockets
 }

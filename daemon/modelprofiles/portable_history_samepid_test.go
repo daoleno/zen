@@ -23,7 +23,7 @@ import (
 //
 //	ZEN_PORTABLE_HISTORY_SAMEPID=1 go test ./modelprofiles -run 'TestPortableHistorySamePID' -count=1 -timeout 300s -v
 //
-// Artifacts land under TMPDIR (Agent-owned). No real credentials / user config / live Sessions.
+// Artifacts land under TMPDIR (Worker-owned). No real credentials / user config / live Sessions.
 
 func TestPortableHistorySamePIDCodex(t *testing.T) {
 	if os.Getenv("ZEN_PORTABLE_HISTORY_SAMEPID") == "" {

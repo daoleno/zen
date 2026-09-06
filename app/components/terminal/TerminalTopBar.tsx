@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import type { AgentKind } from "../../services/agentPresentation";
+import type { AgentKind } from "../../services/workerPresentation";
 import type { TerminalFlavor } from "../../services/terminalFlavor";
 import type { StoredInterfaceRenderMode } from "../../services/storage";
 import { TelegramChatHeader } from "./TelegramChatHeader";
@@ -26,7 +26,7 @@ export interface TerminalTopBarProps {
   interfaceRenderMode: StoredInterfaceRenderMode;
   gitDiffDisabled: boolean;
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
-  isStructuredChatAgent: boolean;
+  isStructuredChatWorker: boolean;
   delegated?: boolean;
   onBack(): void;
   onOpenSessionDetails(): void;

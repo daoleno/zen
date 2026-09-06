@@ -275,7 +275,7 @@ func TestHostLaneReducerIdempotentOneShot(t *testing.T) {
 // pure model's outcome for the same persisted + strong-evidence state. A
 // change to one side without the other fails.
 func TestHostLaneReducerModelBindsProduction(t *testing.T) {
-	const hostID = "brain-agent-brain-hidden:@model-bind"
+	const hostID = "zen-worker-brain-hidden:@model-bind"
 	rows := []struct {
 		name  string
 		state hostLaneState
@@ -290,7 +290,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			name:  "serialization boundary claims and submits one pending Event",
 			state: hostLaneState{PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
-				item := createSignalTestWork(t, store, "model idle delivery", "brain-agent-model:@1")
+				item := createSignalTestWork(t, store, "model idle delivery", "zen-worker-model:@1")
 				appendSignalTestEvent(t, store, item, "model-idle")
 			},
 		},
@@ -298,7 +298,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			name:  "pending user admission stops the lane",
 			state: hostLaneState{PendingUserAdmission: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
-				item := createSignalTestWork(t, store, "model pending admission", "brain-agent-model:@2")
+				item := createSignalTestWork(t, store, "model pending admission", "zen-worker-model:@2")
 				appendSignalTestEvent(t, store, item, "model-admission")
 				if _, created, err := service.PrepareHostUserInput(hostID, "model-pending-steer", "continue", ""); err != nil || !created {
 					t.Fatalf("prepare pending admission created=%v err=%v", created, err)
@@ -313,7 +313,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 					ID: "model-activity-live", Status: "running", StartedAt: time.Now().Add(-time.Minute),
 				}
 				acceptModelForeground(t, service, store, hostID, "model-live", "model-activity-live")
-				item := createSignalTestWork(t, store, "model live turn", "brain-agent-model:@3")
+				item := createSignalTestWork(t, store, "model live turn", "zen-worker-model:@3")
 				appendSignalTestEvent(t, store, item, "model-live-turn")
 			},
 		},
@@ -324,7 +324,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
 					ID: "ambient-provider-activity", Status: "running", StartedAt: time.Now().Add(-time.Minute),
 				}
-				item := createSignalTestWork(t, store, "model ambient provider Activity", "brain-agent-model:@ambient")
+				item := createSignalTestWork(t, store, "model ambient provider Activity", "zen-worker-model:@ambient")
 				appendSignalTestEvent(t, store, item, "model-ambient-provider")
 			},
 		},
@@ -336,7 +336,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 					ID: "model-activity-live", Status: "running", StartedAt: time.Now().Add(-time.Minute),
 				}
 				acceptModelForeground(t, service, store, hostID, "model-terminal", "")
-				item := createSignalTestWork(t, store, "model terminal boundary", "brain-agent-model:@4")
+				item := createSignalTestWork(t, store, "model terminal boundary", "zen-worker-model:@4")
 				appendSignalTestEvent(t, store, item, "model-terminal-boundary")
 				// The exact bound Activity's terminal evidence converges the
 				// boundary; ambient Agent state is never authority.
@@ -351,7 +351,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			name:  "delivered Event awaiting disposition stops the lane",
 			state: hostLaneState{DeliveredAwaitingDisposition: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
-				item := createSignalTestWork(t, store, "model delivered", "brain-agent-model:@5")
+				item := createSignalTestWork(t, store, "model delivered", "zen-worker-model:@5")
 				appendSignalTestEvent(t, store, item, "model-delivered")
 				// First pass delivers at the serialized boundary; the assertion pass
 				// then observes the delivered handling gate.
@@ -372,7 +372,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			}
 			fw := &fakeWatcher{
 				turnStore: store,
-				sessions: map[string]*classifier.Agent{
+				sessions: map[string]*classifier.Worker{
 					hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning, PaneAlive: true},
 				},
 				ownedGenerations: map[string]string{hostID: "host-generation-model"},

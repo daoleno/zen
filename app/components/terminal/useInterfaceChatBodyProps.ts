@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type ReactNode } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -27,10 +27,10 @@ interface UseInterfaceChatBodyPropsInput {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
-  agentProcessId?: number;
-  agentStartedAt?: number;
-  agentCwd?: string;
+  workerId: string;
+  workerProcessId?: number;
+  workerStartedAt?: number;
+  workerCwd?: string;
   connectionState: ConnectionState;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
@@ -77,10 +77,10 @@ export function useInterfaceChatBodyProps({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
-  agentProcessId,
-  agentStartedAt,
-  agentCwd,
+  workerId,
+  workerProcessId,
+  workerStartedAt,
+  workerCwd,
   connectionState,
   conversation,
   events,
@@ -133,10 +133,10 @@ export function useInterfaceChatBodyProps({
       serverId,
       serverUrl,
       daemonId,
-      agentId,
-      agentProcessId,
-      agentStartedAt,
-      agentCwd,
+      workerId,
+      workerProcessId,
+      workerStartedAt,
+      workerCwd,
       conversation,
       events,
       pendingUserMessages,
@@ -211,10 +211,10 @@ export function useInterfaceChatBodyProps({
       skillsSheet,
     }),
     [
-      agentId,
-      agentCwd,
-      agentProcessId,
-      agentStartedAt,
+      workerId,
+      workerCwd,
+      workerProcessId,
+      workerStartedAt,
       attachments,
       chrome,
       composerInput.focused,

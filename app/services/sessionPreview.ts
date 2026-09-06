@@ -1,4 +1,4 @@
-import type { Agent } from '../store/agents';
+import type { Worker } from '../store/workers';
 import { stripAnsiText } from './ansiText';
 
 export type SessionPreviewTone = 'default' | 'muted' | 'accent' | 'danger' | 'success';
@@ -9,9 +9,9 @@ export type SessionPreview = {
   prefix?: string;
 };
 
-export function formatAgentSessionPreview(
+export function formatWorkerSessionPreview(
   agent: Pick<
-    Agent,
+    Worker,
     | 'status'
     | 'summary'
     | 'attention'

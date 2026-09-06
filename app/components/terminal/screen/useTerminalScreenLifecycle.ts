@@ -3,7 +3,7 @@ import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 
 interface UseTerminalScreenLifecycleInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   setScreenFocused: Dispatch<SetStateAction<boolean>>;
   onCtrlArmedChange(next: boolean): void;
@@ -11,7 +11,7 @@ interface UseTerminalScreenLifecycleInput {
 
 export function useTerminalScreenLifecycle({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   setScreenFocused,
   onCtrlArmedChange,
@@ -22,7 +22,7 @@ export function useTerminalScreenLifecycle({
 
   useTerminalFocusLifecycle({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     setScreenFocused,
     onInactive: handleTerminalInactive,

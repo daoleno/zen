@@ -13,8 +13,8 @@ export type SessionServiceInterface = {
 
 export type SessionService = {
   id: string;
-  agent_id: string;
-  agent_name: string;
+  worker_id: string;
+  worker_name: string;
   project?: string;
   cwd?: string;
   command?: string;

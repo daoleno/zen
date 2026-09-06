@@ -13,7 +13,7 @@ import { BottomSheetFrame } from "./ui/BottomSheetFrame";
 import {
   groupSessionServices,
   presentSessionServiceURL,
-  serviceAgentLabel,
+  serviceWorkerLabel,
   serviceBindLabel,
   serviceCommandDetail,
   serviceProcessLabel,
@@ -244,14 +244,14 @@ function ServicePortRow({
           </Text>
         ) : null}
 
-        <View style={styles.agentRow}>
+        <View style={styles.workerRow}>
           <Ionicons
             name="person-circle-outline"
             size={13}
             color={colors.textSecondary}
           />
-          <Text style={styles.portAgent} numberOfLines={1}>
-            {serviceAgentLabel(service)}
+          <Text style={styles.portWorker} numberOfLines={1}>
+            {serviceWorkerLabel(service)}
           </Text>
         </View>
 
@@ -523,13 +523,13 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       fontFamily: Typography.terminalFont,
       opacity: 0.64,
     },
-    agentRow: {
+    workerRow: {
       flexDirection: "row",
       alignItems: "center",
       gap: 4,
       minWidth: 0,
     },
-    portAgent: {
+    portWorker: {
       flex: 1,
       minWidth: 0,
       color: colors.textSecondary,

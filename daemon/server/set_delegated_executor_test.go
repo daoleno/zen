@@ -18,17 +18,17 @@ import (
 )
 
 type brainServiceTestWatcher struct {
-	sessions          map[string]*classifier.Agent
+	sessions          map[string]*classifier.Worker
 	turnStore         *brain.Store
 	readyInputCalls   int
 	receiptInputCalls int
 }
 
-func (w *brainServiceTestWatcher) Agents() []*classifier.Agent {
+func (w *brainServiceTestWatcher) Workers() []*classifier.Worker {
 	return nil
 }
 
-func (w *brainServiceTestWatcher) GetAgent(id string) *classifier.Agent {
+func (w *brainServiceTestWatcher) GetWorker(id string) *classifier.Worker {
 	if w.sessions == nil {
 		return nil
 	}
@@ -144,7 +144,7 @@ func (w *brainServiceTestWatcher) ProbeProviderEvidence(string) (watcher.Provide
 }
 
 func (w *brainServiceTestWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error) {
-	if w.GetAgent(sessionID) == nil {
+	if w.GetWorker(sessionID) == nil {
 		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
 	}
 	return watcher.OwnedGeneration{
@@ -167,11 +167,11 @@ type killTrackingWatcher struct {
 
 func (w *killTrackingWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
 	if w.sessions == nil {
-		w.sessions = map[string]*classifier.Agent{}
+		w.sessions = map[string]*classifier.Worker{}
 	}
 	w.created++
-	id := fmt.Sprintf("brain-agent-host:@%d", w.created)
-	w.sessions[id] = &classifier.Agent{
+	id := fmt.Sprintf("zen-worker-host:@%d", w.created)
+	w.sessions[id] = &classifier.Worker{
 		ID:      id,
 		Name:    opts.Name,
 		Cwd:     opts.Cwd,
@@ -218,10 +218,10 @@ command = "grok --live"
 		if err != nil {
 			t.Fatal(err)
 		}
-		existingID := "brain-agent-worker:@9"
+		existingID := "zen-worker-worker:@9"
 		fw := &killTrackingWatcher{
 			brainServiceTestWatcher: brainServiceTestWatcher{
-				sessions: map[string]*classifier.Agent{
+				sessions: map[string]*classifier.Worker{
 					existingID: {
 						ID:      existingID,
 						Name:    "Worker",
@@ -270,7 +270,7 @@ command = "grok --live"
 		if len(fw.killed) != 0 {
 			t.Fatalf("existing sessions migrated: killed=%v", fw.killed)
 		}
-		if fw.GetAgent(existingID) == nil {
+		if fw.GetWorker(existingID) == nil {
 			t.Fatal("existing ordinary session was removed")
 		}
 	})

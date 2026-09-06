@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, StyleSheet } from "react-native";
 import { wsClient } from "../../services/websocket";
+import { useCurrentServer } from "../../store/currentServer";
 import { DirectoryPickerContent } from "./DirectoryPickerContent";
 import {
   beginDirectoryLoad,
@@ -14,7 +15,6 @@ import {
 } from "./directoryPickerState";
 import {
   type NewTerminalLaunchPreset,
-  type NewTerminalServerOption,
 } from "./NewTerminalQuickLaunchSection";
 import { NewTerminalSheetContent } from "./NewTerminalSheetContent";
 import {
@@ -30,14 +30,11 @@ import { BottomSheetFrame } from "../ui";
 interface NewTerminalSheetProps {
   visible: boolean;
   title: string;
-  subtitle: string;
   initialCwd?: string;
   initialCommand?: string;
   initialName?: string;
   submitting?: boolean;
-  serverOptions?: NewTerminalServerOption[];
-  selectedServerId?: string | null;
-  onSelectServer?(serverId: string): void;
+  serverId: string | null;
   onClose(): void;
   onSubmit(input: {
     cwd: string;
@@ -50,17 +47,15 @@ interface NewTerminalSheetProps {
 export function NewTerminalSheet({
   visible,
   title,
-  subtitle: _subtitle,
   initialCwd = "",
   initialCommand = "",
   initialName = "",
   submitting = false,
-  serverOptions = [],
-  selectedServerId,
-  onSelectServer,
+  serverId,
   onClose,
   onSubmit,
 }: NewTerminalSheetProps) {
+  const { isCurrentServer } = useCurrentServer();
   const [form, setForm] = useState<NewTerminalSheetFormState>(() =>
     createNewTerminalSheetFormState({
       cwd: initialCwd,
@@ -101,24 +96,25 @@ export function NewTerminalSheet({
     initialCwd,
     initialName,
     invalidateDirectoryRequests,
+    serverId,
     visible,
   ]);
 
-  const canSubmit =
-    !submitting && (!serverOptions.length || Boolean(selectedServerId));
+  const canSubmit = !submitting && isCurrentServer(serverId);
 
   const loadDirectory = useCallback(async (serverId: string, path?: string) => {
+    if (!isCurrentServer(serverId)) return;
     const epoch = nextDirectoryListEpoch(listDirEpochRef.current);
     listDirEpochRef.current = epoch;
     setDirectory((current) => beginDirectoryLoad(current));
     try {
       const result = await wsClient.listDir(serverId, path);
-      if (!shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
+      if (!isCurrentServer(serverId) || !shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
         return;
       }
       setDirectory((current) => completeDirectoryLoad(current, result));
     } catch (e: any) {
-      if (!shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
+      if (!isCurrentServer(serverId) || !shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
         return;
       }
       setDirectory((current) =>
@@ -128,16 +124,17 @@ export function NewTerminalSheet({
         ),
       );
     }
-  }, []);
+  }, [isCurrentServer]);
 
   const submitLaunch = (input: {
     cwd: string;
     command: string;
     name: string;
   }) => {
+    if (!serverId || !isCurrentServer(serverId)) return;
     onSubmit({
       ...input,
-      serverId: selectedServerId ?? undefined,
+      serverId,
     });
   };
 
@@ -166,11 +163,11 @@ export function NewTerminalSheet({
   };
 
   const handleOpenDirectoryPicker = () => {
-    if (!selectedServerId) return;
+    if (!serverId) return;
     Keyboard.dismiss();
     setDirectory(createIdleDirectoryPickerState());
     setForm((current) => openDirectoryPanel(current));
-    void loadDirectory(selectedServerId, form.cwd.trim() || undefined);
+    void loadDirectory(serverId, form.cwd.trim() || undefined);
   };
 
   const handleReturnToForm = () => {
@@ -217,15 +214,15 @@ export function NewTerminalSheet({
           loading={directory.loading}
           error={directory.error}
           onGoUp={() => {
-            if (!selectedServerId) return;
+            if (!serverId) return;
             void loadDirectory(
-              selectedServerId,
+              serverId,
               parentDirectoryPath(directory.currentPath),
             );
           }}
           onOpenDirectory={(path) => {
-            if (!selectedServerId) return;
-            void loadDirectory(selectedServerId, path);
+            if (!serverId) return;
+            void loadDirectory(serverId, path);
           }}
           onSelectCurrent={handleSelectDirectory}
           onClose={handleReturnToForm}
@@ -233,16 +230,13 @@ export function NewTerminalSheet({
       ) : (
         <NewTerminalSheetContent
           title={title}
-          serverOptions={serverOptions}
-          selectedServerId={selectedServerId}
           command={form.command}
           submitting={submitting}
           canSubmit={canSubmit}
           advanced={form.advanced}
           cwd={form.cwd}
           name={form.name}
-          canPickDirectory={Boolean(selectedServerId)}
-          onSelectServer={onSelectServer}
+          canPickDirectory={Boolean(serverId)}
           onPresetPress={handlePresetTap}
           onToggleAdvanced={handleToggleAdvanced}
           onCwdChange={(cwd) => setForm((current) => ({ ...current, cwd }))}
@@ -252,7 +246,6 @@ export function NewTerminalSheet({
           onNameChange={(name) => setForm((current) => ({ ...current, name }))}
           onPickDirectory={handleOpenDirectoryPicker}
           onSubmitAdvanced={handleAdvancedSubmit}
-          onCancel={handleCloseSheet}
         />
       )}
     </BottomSheetFrame>

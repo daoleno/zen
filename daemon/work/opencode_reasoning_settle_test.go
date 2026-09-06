@@ -147,8 +147,8 @@ func TestOpenCodeTerminalDeltaConvergesReasoningPartial(t *testing.T) {
 	createOpenCodeFixtureDB(t, dbPath, session, liveMessages, parts)
 	t.Setenv("ZEN_OPENCODE_DB", dbPath)
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{Cwd: "/repo", Command: "opencode", StartedAt: started}
-	first, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	worker := classifier.Worker{Cwd: "/repo", Command: "opencode", StartedAt: started}
+	first, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestOpenCodeTerminalDeltaConvergesReasoningPartial(t *testing.T) {
 		{ID: "msg_terminal", SessionID: "ses_rsn", CreatedMS: started.Add(10 * time.Second).UnixMilli(), Data: fmt.Sprintf(`{"role":"assistant","finish":"unknown","time":{"created":1,"completed":%d}}`, started.Add(14*time.Second).UnixMilli())},
 	}
 	createOpenCodeFixtureDB(t, dbPath, session, terminalMessages, parts)
-	second, err := reader.Load(agent, AgentProviderOpenCode, started.Add(time.Minute))
+	second, err := reader.Load(worker, WorkerProviderOpenCode, started.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

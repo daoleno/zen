@@ -135,13 +135,13 @@ type NativeThreadRuntimeLaunch struct {
 // NativeThreadRuntimeResumeLaunch returns the tmux launch command for
 // resuming a provider-owned native thread. This keeps provider-specific CLI
 // syntax out of Brain core.
-func NativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) (NativeThreadRuntimeLaunch, bool) {
+func NativeThreadRuntimeResumeLaunch(executor WorkerExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) (NativeThreadRuntimeLaunch, bool) {
 	provider := strings.TrimSpace(executor.Provider)
-	if provider == "" || provider == AgentProviderCustom {
-		provider = InferAgentProvider(executor.Command, executor.ID)
+	if provider == "" || provider == WorkerProviderCustom {
+		provider = InferWorkerProvider(executor.Command, executor.ID)
 	}
 	switch provider {
-	case AgentProviderCodex:
+	case WorkerProviderCodex:
 		return codexNativeThreadRuntimeResumeLaunch(executor, thread, opts, fallbackCwd), true
 	default:
 		return NativeThreadRuntimeLaunch{}, false
@@ -151,14 +151,14 @@ func NativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeThread
 // NewNativeThreadProvider returns the provider-specific native thread executor
 // for a configured executor. CLI-only tools still run through tmux and return
 // no native provider here.
-func NewNativeThreadProvider(executor AgentExecutor) (NativeThreadProvider, bool) {
-	if strings.TrimSpace(executor.Provider) != AgentProviderCodex || !executor.Capabilities.NativeThreads {
+func NewNativeThreadProvider(executor WorkerExecutor) (NativeThreadProvider, bool) {
+	if strings.TrimSpace(executor.Provider) != WorkerProviderCodex || !executor.Capabilities.NativeThreads {
 		return nil, false
 	}
 	return NewCodexAppServerThreadProvider(executor.Command), true
 }
 
-func codexNativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) NativeThreadRuntimeLaunch {
+func codexNativeThreadRuntimeResumeLaunch(executor WorkerExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) NativeThreadRuntimeLaunch {
 	command := strings.TrimSpace(executor.Command)
 	if command == "" {
 		command = strings.TrimSpace(executor.ID)
@@ -168,7 +168,7 @@ func codexNativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeT
 	}
 	threadID := strings.TrimSpace(thread.NativeID)
 	if threadID == "" {
-		threadID = nativeThreadIDForProvider(AgentProviderCodex, thread.ID)
+		threadID = nativeThreadIDForProvider(WorkerProviderCodex, thread.ID)
 	}
 	args := []string{command, "resume"}
 	if threadID != "" {
@@ -206,7 +206,7 @@ func NewCodexAppServerThreadProvider(command string) *CodexAppServerThreadProvid
 }
 
 func (p *CodexAppServerThreadProvider) ProviderID() string {
-	return AgentProviderCodex
+	return WorkerProviderCodex
 }
 
 func (p *CodexAppServerThreadProvider) StartThread(ctx context.Context, opts NativeThreadStartOptions) (NativeThread, error) {
@@ -226,7 +226,7 @@ func (p *CodexAppServerThreadProvider) ResumeThread(ctx context.Context, id stri
 	}
 	var response codexThreadReadResponse
 	params := codexThreadResumeParams(opts)
-	params["threadId"] = nativeThreadIDForProvider(AgentProviderCodex, id)
+	params["threadId"] = nativeThreadIDForProvider(WorkerProviderCodex, id)
 	if err := p.client.Call(ctx, "thread/resume", params, &response); err != nil {
 		return NativeThread{}, err
 	}
@@ -282,7 +282,7 @@ func (p *CodexAppServerThreadProvider) ReadThread(ctx context.Context, id string
 	}
 	var response codexThreadReadResponse
 	params := map[string]any{
-		"threadId":     nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId":     nativeThreadIDForProvider(WorkerProviderCodex, id),
 		"includeTurns": opts.IncludeTurns,
 	}
 	if err := p.client.Call(ctx, "thread/read", params, &response); err != nil {
@@ -296,7 +296,7 @@ func (p *CodexAppServerThreadProvider) ForkThread(ctx context.Context, id string
 		return NativeThread{}, fmt.Errorf("codex native thread provider is not configured")
 	}
 	params := map[string]any{
-		"threadId": nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId": nativeThreadIDForProvider(WorkerProviderCodex, id),
 	}
 	if cwd := strings.TrimSpace(opts.Cwd); cwd != "" {
 		params["cwd"] = cwd
@@ -336,7 +336,7 @@ func (p *CodexAppServerThreadProvider) ArchiveThread(ctx context.Context, id str
 	}
 	var response codexThreadReadResponse
 	if err := p.client.Call(ctx, method, map[string]any{
-		"threadId": nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId": nativeThreadIDForProvider(WorkerProviderCodex, id),
 	}, &response); err != nil {
 		return NativeThread{}, err
 	}
@@ -351,7 +351,7 @@ func (p *CodexAppServerThreadProvider) GetGoal(ctx context.Context, id string) (
 	}
 	var response codexThreadGoalGetResponse
 	if err := p.client.Call(ctx, "thread/goal/get", map[string]any{
-		"threadId": nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId": nativeThreadIDForProvider(WorkerProviderCodex, id),
 	}, &response); err != nil {
 		return nil, err
 	}
@@ -367,7 +367,7 @@ func (p *CodexAppServerThreadProvider) SetGoal(ctx context.Context, id string, u
 		return NativeThreadGoal{}, fmt.Errorf("codex native thread provider is not configured")
 	}
 	params := map[string]any{
-		"threadId": nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId": nativeThreadIDForProvider(WorkerProviderCodex, id),
 	}
 	if objective := strings.TrimSpace(update.Objective); objective != "" {
 		params["objective"] = objective
@@ -391,7 +391,7 @@ func (p *CodexAppServerThreadProvider) ClearGoal(ctx context.Context, id string)
 	}
 	var response codexThreadGoalClearResponse
 	if err := p.client.Call(ctx, "thread/goal/clear", map[string]any{
-		"threadId": nativeThreadIDForProvider(AgentProviderCodex, id),
+		"threadId": nativeThreadIDForProvider(WorkerProviderCodex, id),
 	}, &response); err != nil {
 		return false, err
 	}
@@ -725,9 +725,9 @@ func codexThreadToNative(thread codexThread, archived bool) NativeThread {
 		title = firstNonEmptyString(firstLine(preview), nativeID)
 	}
 	return NativeThread{
-		ID:            providerQualifiedThreadID(AgentProviderCodex, nativeID),
+		ID:            providerQualifiedThreadID(WorkerProviderCodex, nativeID),
 		NativeID:      nativeID,
-		Provider:      AgentProviderCodex,
+		Provider:      WorkerProviderCodex,
 		SessionID:     strings.TrimSpace(thread.SessionID),
 		ForkedFromID:  strings.TrimSpace(derefString(thread.ForkedFromID)),
 		Title:         title,
@@ -747,7 +747,7 @@ func codexThreadToNative(thread codexThread, archived bool) NativeThread {
 
 func codexGoalToNative(goal codexThreadGoal) NativeThreadGoal {
 	return NativeThreadGoal{
-		ThreadID:        providerQualifiedThreadID(AgentProviderCodex, goal.ThreadID),
+		ThreadID:        providerQualifiedThreadID(WorkerProviderCodex, goal.ThreadID),
 		Objective:       strings.TrimSpace(goal.Objective),
 		Status:          strings.TrimSpace(goal.Status),
 		TokenBudget:     goal.TokenBudget,

@@ -217,7 +217,7 @@ describe("generic WebSocket live boundary", () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
 
-    expect(() => client.killAgent(server.id, "agent-a")).toThrow(
+    expect(() => client.killWorker(server.id, "agent-a")).toThrow(
       "Daemon is not connected.",
     );
     expect(() => client.listWorkItems(server.id)).toThrow(
@@ -256,10 +256,10 @@ describe("generic WebSocket live boundary", () => {
     const socket = await connectClient(client);
     socket.open();
 
-    client.killAgent(server.id, "agent-a");
+    client.killWorker(server.id, "agent-a");
 
     expect(socket.sent).toEqual([
-      JSON.stringify({ type: "kill_agent", agent_id: "agent-a" }),
+      JSON.stringify({ type: "kill_worker", worker_id: "agent-a" }),
     ]);
     client.disconnectAll();
   });
@@ -274,7 +274,7 @@ describe("generic WebSocket live boundary", () => {
     expect(JSON.parse(socket.sent[0]!)).toEqual({
       type: "send_input",
       request_id: inputReceipt.requestId,
-      agent_id: "agent-a",
+      worker_id: "agent-a",
       text: "hello",
     });
     socket.receive({
@@ -299,7 +299,7 @@ describe("generic WebSocket live boundary", () => {
     expect(JSON.parse(socket.sent[2]!)).toEqual({
       type: "send_action",
       request_id: actionReceipt.requestId,
-      agent_id: "agent-a",
+      worker_id: "agent-a",
       action: "pause",
     });
     socket.receive({
@@ -322,13 +322,13 @@ describe("generic WebSocket live boundary", () => {
       {
         type: "send_input",
         request_id: first.requestId,
-        agent_id: "agent-a",
+        worker_id: "agent-a",
         text: "same\n",
       },
       {
         type: "send_input",
         request_id: second.requestId,
-        agent_id: "agent-a",
+        worker_id: "agent-a",
         text: "same\n",
       },
     ]);
@@ -346,7 +346,7 @@ describe("generic WebSocket live boundary", () => {
     const sockets = [socket];
 
     socket.close();
-    expect(() => client.killAgent(server.id, "agent-old")).toThrow(
+    expect(() => client.killWorker(server.id, "agent-old")).toThrow(
       "Daemon is not connected.",
     );
 
@@ -365,9 +365,9 @@ describe("generic WebSocket live boundary", () => {
     expect(sockets.every((candidate) => candidate.sent.length === 0)).toBe(
       true,
     );
-    client.killAgent(server.id, "agent-new");
+    client.killWorker(server.id, "agent-new");
     expect(socket.sent).toEqual([
-      JSON.stringify({ type: "kill_agent", agent_id: "agent-new" }),
+      JSON.stringify({ type: "kill_worker", worker_id: "agent-new" }),
     ]);
     client.disconnectAll();
   });
@@ -376,15 +376,15 @@ describe("generic WebSocket live boundary", () => {
     const client = new MultiServerWebSocketClient();
 
     expect(() =>
-      client.setActiveAgent(server.id, "agent-without-connection"),
+      client.setActiveWorker(server.id, "agent-without-connection"),
     ).not.toThrow();
     const firstSocket = await connectClient(client);
 
-    expect(() => client.clearActiveAgentsExcept(null)).not.toThrow();
+    expect(() => client.clearActiveWorkersExcept(null)).not.toThrow();
     expect(() =>
-      client.clearActiveAgentsExcept({
+      client.clearActiveWorkersExcept({
         serverId: server.id,
-        agentId: "agent-offline",
+        workerId: "agent-offline",
       }),
     ).not.toThrow();
     expect(firstSocket.sent).toEqual([]);
@@ -393,7 +393,7 @@ describe("generic WebSocket live boundary", () => {
     expect(firstSocket.sent).toEqual([]);
     firstSocket.close();
 
-    expect(() => client.clearActiveAgentsExcept(null)).not.toThrow();
+    expect(() => client.clearActiveWorkersExcept(null)).not.toThrow();
     const reconnectIndex = FakeWebSocket.instances.length;
     client.resumeReconnects();
     const reconnectedSocket = await waitForSocket(reconnectIndex);
@@ -409,15 +409,15 @@ describe("generic WebSocket live boundary", () => {
     const socket = await connectClient(client);
     socket.open();
 
-    client.clearActiveAgentsExcept({
+    client.clearActiveWorkersExcept({
       serverId: server.id,
-      agentId: "agent-selected",
+      workerId: "agent-selected",
     });
-    client.clearActiveAgentsExcept(null);
+    client.clearActiveWorkersExcept(null);
 
     expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
-      { type: "set_active_agent", agent_id: "agent-selected" },
-      { type: "set_active_agent", agent_id: "" },
+      { type: "set_active_worker", worker_id: "agent-selected" },
+      { type: "set_active_worker", worker_id: "" },
     ]);
     client.disconnectAll();
   });
@@ -429,29 +429,29 @@ describe("generic WebSocket live boundary", () => {
     openSocket.open();
 
     expect(() =>
-      client.clearActiveAgentsExcept({
+      client.clearActiveWorkersExcept({
         serverId: secondServer.id,
-        agentId: "agent-offline",
+        workerId: "agent-offline",
       }),
     ).not.toThrow();
     expect(openSocket.sent.map((frame) => JSON.parse(frame))).toEqual([
-      { type: "set_active_agent", agent_id: "" },
+      { type: "set_active_worker", worker_id: "" },
     ]);
     expect(offlineSocket.sent).toEqual([]);
 
     offlineSocket.open();
     expect(offlineSocket.sent).toEqual([]);
-    client.clearActiveAgentsExcept({
+    client.clearActiveWorkersExcept({
       serverId: server.id,
-      agentId: "agent-current",
+      workerId: "agent-current",
     });
 
     expect(openSocket.sent.map((frame) => JSON.parse(frame))).toEqual([
-      { type: "set_active_agent", agent_id: "" },
-      { type: "set_active_agent", agent_id: "agent-current" },
+      { type: "set_active_worker", worker_id: "" },
+      { type: "set_active_worker", worker_id: "agent-current" },
     ]);
     expect(offlineSocket.sent.map((frame) => JSON.parse(frame))).toEqual([
-      { type: "set_active_agent", agent_id: "" },
+      { type: "set_active_worker", worker_id: "" },
     ]);
     client.disconnectAll();
   });
@@ -481,7 +481,7 @@ describe("generic WebSocket live boundary", () => {
     expect(() =>
       client.subscribeCodexConversation(
         server.id,
-        { targetId: "agent-a", agentId: "agent-a" },
+        { targetId: "agent-a", workerId: "agent-a" },
         {
           onSnapshot: () => {},
           onDelta: () => {},
@@ -499,7 +499,7 @@ describe("generic WebSocket live boundary", () => {
     firstSocket.open();
     const unsubscribe = client.subscribeCodexConversation(
       server.id,
-      { targetId: "agent-a", agentId: "agent-a" },
+      { targetId: "agent-a", workerId: "agent-a" },
       {
         onSnapshot: () => {},
         onDelta: () => {},
@@ -526,7 +526,7 @@ describe("generic WebSocket live boundary", () => {
     const errors: Error[] = [];
     const unsubscribe = client.subscribeCodexConversation(
       server.id,
-      { targetId: "agent-a", agentId: "agent-a" },
+      { targetId: "agent-a", workerId: "agent-a" },
       {
         onSnapshot: () => {},
         onDelta: () => {},
@@ -569,7 +569,7 @@ describe("generic WebSocket live boundary", () => {
     const syncStatuses: any[] = [];
     const unsubscribe = client.subscribeCodexConversation(
       server.id,
-      { targetId: "agent-a", agentId: "agent-a" },
+      { targetId: "agent-a", workerId: "agent-a" },
       {
         onSnapshot: (payload) => snapshots.push(payload),
         onDelta: (payload) => deltas.push(payload),
@@ -633,7 +633,7 @@ describe("generic WebSocket live boundary", () => {
       server_generation: undefined,
       state: "ready",
       reason: undefined,
-      agent_id: undefined,
+      worker_id: undefined,
     });
 
     unsubscribe();
@@ -664,10 +664,10 @@ describe("Provider public WebSocket boundary", () => {
     socket.receive({
       type: "session_created",
       request_id: outbound.request_id,
-      agent_id: "agent-new",
+      worker_id: "agent-new",
     });
     await expect(pending).resolves.toEqual({
-      agentId: "agent-new",
+      workerId: "agent-new",
       persistence: undefined,
     });
     client.disconnectAll();
@@ -794,7 +794,7 @@ describe("Provider public WebSocket boundary", () => {
     expect(get).toEqual({
       type: "get_thread_runtime",
       request_id: get.request_id,
-      agent_id: "agent-a",
+      worker_id: "agent-a",
     });
     socket.receive({
       type: "thread_runtime",
@@ -807,14 +807,14 @@ describe("Provider public WebSocket boundary", () => {
     });
 
     const activatePending = client.setThreadRuntime(server.id, {
-      agentId: "agent-a",
+      workerId: "agent-a",
       runtime: { connectionId: "deepseek-main", modelId: "deepseek-chat" },
     });
     const activate = JSON.parse(socket.sent.at(-1)!);
     expect(activate).toEqual({
       type: "set_thread_runtime",
       request_id: activate.request_id,
-      agent_id: "agent-a",
+      worker_id: "agent-a",
       runtime: {
         connection_id: "deepseek-main",
         model_id: "deepseek-chat",
@@ -838,7 +838,7 @@ describe("Provider public WebSocket boundary", () => {
     });
 
     const defaultEffectPending = client.setThreadRuntime(server.id, {
-      agentId: "agent-a",
+      workerId: "agent-a",
       runtime: {
         connectionId: "deepseek-main",
         modelId: "deepseek-chat",
@@ -870,7 +870,7 @@ describe("Provider public WebSocket boundary", () => {
     socket.open();
 
     const pending = client.setThreadRuntime(server.id, {
-      agentId: "agent-a",
+      workerId: "agent-a",
       runtime: { connectionId: "deepseek-main", modelId: "deepseek-chat" },
     });
     const outbound = JSON.parse(socket.sent.at(-1)!);
@@ -976,14 +976,14 @@ describe("executor switch transport", () => {
       type: "brain_snapshot",
       request_id: outbound.request_id,
       brain: {
-        delegated_adapter: { id: "grok", name: "Grok", provider: "grok" },
-        host_adapter: { id: "codex", name: "Codex", provider: "codex" },
+        delegated_executor: { id: "grok", name: "Grok", provider: "grok" },
+        host_executor: { id: "codex", name: "Codex", provider: "codex" },
       },
     });
 
     await expect(pending).resolves.toEqual({
-      delegated_adapter: { id: "grok", name: "Grok", provider: "grok" },
-      host_adapter: { id: "codex", name: "Codex", provider: "codex" },
+      delegated_executor: { id: "grok", name: "Grok", provider: "grok" },
+      host_executor: { id: "codex", name: "Codex", provider: "codex" },
     });
     client.disconnectAll();
   });
@@ -1005,19 +1005,19 @@ describe("executor switch transport", () => {
     socket.receive({
       type: "brain_snapshot",
       request_id: hostOutbound.request_id,
-      brain: { host_adapter: { id: "claude", name: "Claude" } },
+      brain: { host_executor: { id: "claude", name: "Claude" } },
     });
     socket.receive({
       type: "brain_snapshot",
       request_id: delegatedOutbound.request_id,
-      brain: { delegated_adapter: { id: "grok", name: "Grok" } },
+      brain: { delegated_executor: { id: "grok", name: "Grok" } },
     });
 
     await expect(hostPending).resolves.toEqual({
-      host_adapter: { id: "claude", name: "Claude" },
+      host_executor: { id: "claude", name: "Claude" },
     });
     await expect(delegatedPending).resolves.toEqual({
-      delegated_adapter: { id: "grok", name: "Grok" },
+      delegated_executor: { id: "grok", name: "Grok" },
     });
     client.disconnectAll();
   });
@@ -1437,14 +1437,14 @@ describe("structured input identity reuse", () => {
       {
         type: "send_input",
         request_id: "request-stable",
-        agent_id: "agent-a",
+        worker_id: "agent-a",
         text: "same\n",
         display_body: "same",
       },
       {
         type: "send_input",
         request_id: next.requestId,
-        agent_id: "agent-a",
+        worker_id: "agent-a",
         text: "different\n",
       },
     ]);

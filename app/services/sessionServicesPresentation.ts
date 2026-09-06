@@ -107,17 +107,17 @@ export function groupSessionServices(
 }
 
 export function serviceProjectLabel(
-  service: Pick<DiscoveredSessionService, "project" | "cwd" | "agent_name">,
+  service: Pick<DiscoveredSessionService, "project" | "cwd" | "worker_name">,
 ): string {
   return (
     service.project?.trim() ||
     lastPathSegment(service.cwd) ||
-    shortAgentLabel(service.agent_name) ||
+    shortWorkerLabel(service.worker_name) ||
     "service"
   );
 }
 
-export function shortAgentLabel(value?: string): string {
+export function shortWorkerLabel(value?: string): string {
   const trimmed = value?.trim() || "";
   return trimmed.replace(/\s+\([^)]+\)\s*$/, "") || trimmed;
 }
@@ -127,10 +127,10 @@ export function shortProcessLabel(value: string): string {
   return trimmed || "process";
 }
 
-export function serviceAgentLabel(
-  service: Pick<DiscoveredSessionService, "agent_name" | "agent_id">,
+export function serviceWorkerLabel(
+  service: Pick<DiscoveredSessionService, "worker_name" | "worker_id">,
 ): string {
-  return shortAgentLabel(service.agent_name) || service.agent_id || "agent";
+  return shortWorkerLabel(service.worker_name) || service.worker_id || "agent";
 }
 
 export function serviceProcessLabel(
@@ -193,8 +193,8 @@ function compareServices(
   if (leftProcess !== rightProcess) {
     return leftProcess.localeCompare(rightProcess);
   }
-  return shortAgentLabel(left.agent_name).localeCompare(
-    shortAgentLabel(right.agent_name),
+  return shortWorkerLabel(left.worker_name).localeCompare(
+    shortWorkerLabel(right.worker_name),
   );
 }
 

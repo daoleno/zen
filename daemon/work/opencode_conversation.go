@@ -41,8 +41,8 @@ type openCodeSessionCandidate struct {
 	Updated   time.Time
 }
 
-func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadOpenCodeConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -68,7 +68,7 @@ func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent clas
 	// that predates a now-known agent start must re-run discovery instead of
 	// serving the previously bound conversation forever.
 	if owned := strings.TrimSpace(r.openCodeOwnedSessionID); owned != "" &&
-		r.openCodePinRespectsAgentStart(agent.StartedAt) {
+		r.openCodePinRespectsWorkerStart(worker.StartedAt) {
 		conversation, version, changedIDs, stale, err := openCodeConversationCache.read(dbPath, owned)
 		if err != nil {
 			r.resetSource()
@@ -81,7 +81,7 @@ func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent clas
 		}
 	}
 
-	candidate, ok, err := r.findOpenCodeSession(agent, now)
+	candidate, ok, err := r.findOpenCodeSession(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -111,11 +111,11 @@ func (r *ProviderConversationReader) loadOpenCodeConversationForAgent(agent clas
 // serving under the agent's started-at evidence. Launch-declared pins are
 // exempt (a resumed thread predates the process by design); discovered pins
 // must never predate the agent they were bound to.
-func (r *ProviderConversationReader) openCodePinRespectsAgentStart(startedAt time.Time) bool {
+func (r *ProviderConversationReader) openCodePinRespectsWorkerStart(startedAt time.Time) bool {
 	if r.openCodeOwnedFromLaunch || startedAt.IsZero() {
 		return true
 	}
-	return !openCodeCandidatePredatesAgentStart(r.openCodeOwnedCandidate, startedAt)
+	return !openCodeCandidatePredatesWorkerStart(r.openCodeOwnedCandidate, startedAt)
 }
 
 func (r *ProviderConversationReader) openCodeConversationResult(conversation CodexConversation, candidate openCodeSessionCandidate, dbPath string) CodexConversation {
@@ -131,18 +131,18 @@ func (r *ProviderConversationReader) openCodeConversationResult(conversation Cod
 	return conversation
 }
 
-func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent, now time.Time) (openCodeSessionCandidate, bool, error) {
+func (r *ProviderConversationReader) findOpenCodeSession(worker classifier.Worker, now time.Time) (openCodeSessionCandidate, bool, error) {
 	if owned := strings.TrimSpace(r.openCodeOwnedSessionID); owned != "" {
-		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, agent.Cwd); ok &&
-			r.openCodePinRespectsAgentStart(agent.StartedAt) {
+		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, worker.Cwd); ok &&
+			r.openCodePinRespectsWorkerStart(worker.StartedAt) {
 			return candidate, true, nil
 		}
 		r.openCodeOwnedSessionID = ""
 		r.openCodeOwnedCandidate = openCodeSessionCandidate{}
 		r.openCodeOwnedFromLaunch = false
 	}
-	if owned := OpenCodeOwnedSessionID(agent.Command); owned != "" {
-		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, agent.Cwd); ok {
+	if owned := OpenCodeOwnedSessionID(worker.Command); owned != "" {
+		if candidate, ok := r.revalidateOpenCodeOwnedSession(owned, worker.Cwd); ok {
 			r.openCodeOwnedSessionID = candidate.ID
 			r.openCodeOwnedCandidate = candidate
 			r.openCodeOwnedFromLaunch = true
@@ -155,7 +155,7 @@ func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent,
 	if err != nil || dbPath == "" {
 		return openCodeSessionCandidate{}, false, err
 	}
-	candidates, err := queryOpenCodeSessions(dbPath, agent.Cwd)
+	candidates, err := queryOpenCodeSessions(dbPath, worker.Cwd)
 	if err != nil {
 		return openCodeSessionCandidate{}, false, err
 	}
@@ -163,9 +163,9 @@ func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent,
 	// the Zen agent's own transcript thread. Only root sessions can bind.
 	roots := rootOpenCodeCandidates(candidates)
 	fresh := freshOpenCodeSessionCandidates(roots, now)
-	if len(openCodeWindowCandidates(fresh, agent.StartedAt)) > 0 {
+	if len(openCodeWindowCandidates(fresh, worker.StartedAt)) > 0 {
 		// A StartedAt window exists: unique min-delta bind, else refuse.
-		if matched, ok := matchOpenCodeSessionToAgentStart(fresh, agent.StartedAt); ok {
+		if matched, ok := matchOpenCodeSessionToWorkerStart(fresh, worker.StartedAt); ok {
 			r.bindDiscoveredOpenCodeSession(matched)
 			return matched, true, nil
 		}
@@ -179,7 +179,7 @@ func (r *ProviderConversationReader) findOpenCodeSession(agent classifier.Agent,
 	// agent's start. With a known start and no eligible row the correct answer
 	// is session_not_found: the Interface shows the new empty conversation and
 	// the next poll binds the agent's own row as soon as OpenCode writes it.
-	eligible := openCodeCandidatesNotBeforeStart(fresh, agent.StartedAt)
+	eligible := openCodeCandidatesNotBeforeStart(fresh, worker.StartedAt)
 	if matched, ok := freshestOpenCodeRoot(eligible); ok {
 		r.bindDiscoveredOpenCodeSession(matched)
 		return matched, true, nil
@@ -196,7 +196,7 @@ func (r *ProviderConversationReader) bindDiscoveredOpenCodeSession(candidate ope
 	r.openCodeOwnedFromLaunch = false
 }
 
-func (r *ProviderConversationReader) revalidateOpenCodeOwnedSession(sessionID, agentCWD string) (openCodeSessionCandidate, bool) {
+func (r *ProviderConversationReader) revalidateOpenCodeOwnedSession(sessionID, workerCWD string) (openCodeSessionCandidate, bool) {
 	dbPath, err := openCodeDBPath()
 	if err != nil || dbPath == "" {
 		return openCodeSessionCandidate{}, false
@@ -210,7 +210,7 @@ func (r *ProviderConversationReader) revalidateOpenCodeOwnedSession(sessionID, a
 	if strings.TrimSpace(candidate.ParentID) != "" {
 		return openCodeSessionCandidate{}, false
 	}
-	if !openCodeDirectoryMatches(candidate.CWD, agentCWD) {
+	if !openCodeDirectoryMatches(candidate.CWD, workerCWD) {
 		return openCodeSessionCandidate{}, false
 	}
 	return candidate, true
@@ -981,7 +981,7 @@ func openCodeWindowCandidates(candidates []openCodeSessionCandidate, startedAt t
 // own thread is always created at or after its process start, so a pre-start
 // row can never be this agent's transcript. Unknown evidence on either side
 // (zero startedAt or zero CreatedAt) never claims precedence.
-func openCodeCandidatePredatesAgentStart(candidate openCodeSessionCandidate, startedAt time.Time) bool {
+func openCodeCandidatePredatesWorkerStart(candidate openCodeSessionCandidate, startedAt time.Time) bool {
 	if startedAt.IsZero() || candidate.CreatedAt.IsZero() {
 		return false
 	}
@@ -997,14 +997,14 @@ func openCodeCandidatesNotBeforeStart(candidates []openCodeSessionCandidate, sta
 	}
 	eligible := make([]openCodeSessionCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if !openCodeCandidatePredatesAgentStart(candidate, startedAt) {
+		if !openCodeCandidatePredatesWorkerStart(candidate, startedAt) {
 			eligible = append(eligible, candidate)
 		}
 	}
 	return eligible
 }
 
-func matchOpenCodeSessionToAgentStart(candidates []openCodeSessionCandidate, startedAt time.Time) (openCodeSessionCandidate, bool) {
+func matchOpenCodeSessionToWorkerStart(candidates []openCodeSessionCandidate, startedAt time.Time) (openCodeSessionCandidate, bool) {
 	window := openCodeWindowCandidates(candidates, startedAt)
 	if len(window) == 0 {
 		return openCodeSessionCandidate{}, false
@@ -1062,14 +1062,14 @@ func freshestOpenCodeRoot(candidates []openCodeSessionCandidate) (openCodeSessio
 	return candidates[bestIndex], true
 }
 
-func openCodeDirectoryMatches(sessionDir, agentCWD string) bool {
+func openCodeDirectoryMatches(sessionDir, workerCWD string) bool {
 	sessionDir = strings.TrimSpace(sessionDir)
-	agentCWD = strings.TrimSpace(agentCWD)
-	if sessionDir == "" || agentCWD == "" {
+	workerCWD = strings.TrimSpace(workerCWD)
+	if sessionDir == "" || workerCWD == "" {
 		return false
 	}
-	for _, candidate := range transcriptCWDCandidates(agentCWD) {
-		if pathsEquivalent(sessionDir, candidate) || pathsEquivalent(sessionDir, agentCWD) {
+	for _, candidate := range transcriptCWDCandidates(workerCWD) {
+		if pathsEquivalent(sessionDir, candidate) || pathsEquivalent(sessionDir, workerCWD) {
 			return true
 		}
 	}

@@ -353,7 +353,7 @@ func (s *Store) PendingInputAdmissions(sessionID string) ([]watcher.InputAdmissi
 	}
 	out := make([]watcher.InputAdmission, 0)
 	for _, st := range s.fsm.ListViews() {
-		admission := st.Admission
+		admission := st.ActiveAdmission()
 		if admission != nil && admission.SessionID == sessionID &&
 			(admission.Status == lifecycle.AdmissionPrepared || admission.Status == lifecycle.AdmissionAmbiguous) {
 			out = append(out, admissionSnapshot(st, admission))
@@ -513,21 +513,30 @@ func (s *Store) rebuildFSMProjections() error {
 		}
 	}
 	for _, st := range states {
-		admission := st.Admission
-		if admission != nil && admission.Status == lifecycle.AdmissionAccepted {
-			resolvedAt := admission.AttemptedAt
-			if admission.SettledAt != nil && !admission.SettledAt.IsZero() {
-				resolvedAt = *admission.SettledAt
-			}
-			resolution := watcher.InputAdmissionResolution{
-				SessionID: admission.SessionID, ProposedTurnID: string(admission.TurnToken),
-				Receipt: admission.Receipt, PayloadSHA256: admission.PayloadSHA256,
-				ActivityID: admission.ActivityID, ResolvedAt: resolvedAt,
-				Admission: watcher.TurnAdmission{Stream: admission.AdmissionStream, ID: admission.AdmissionID,
-					Cursor: admission.AdmissionCursor, SHA256: admission.PayloadSHA256, At: admission.AdmissionAt},
-			}
-			if err := s.projectAcceptedAdmission(st, admission, resolution); err != nil {
-				note(fmt.Errorf("project admission %s: %w", admission.TurnToken, err))
+		admissions := make([]*lifecycle.AdmissionState, 0, len(st.Admissions))
+		for _, admission := range st.Admissions {
+			admissions = append(admissions, admission)
+		}
+		// Acceptance sequence is authoritative even when wall clocks tie or move backward.
+		sort.Slice(admissions, func(i, j int) bool {
+			return admissions[i].AcceptedSeq < admissions[j].AcceptedSeq
+		})
+		for _, admission := range admissions {
+			if admission != nil && admission.Status == lifecycle.AdmissionAccepted {
+				resolvedAt := admission.AttemptedAt
+				if admission.SettledAt != nil && !admission.SettledAt.IsZero() {
+					resolvedAt = *admission.SettledAt
+				}
+				resolution := watcher.InputAdmissionResolution{
+					SessionID: admission.SessionID, ProposedTurnID: string(admission.TurnToken),
+					Receipt: admission.Receipt, PayloadSHA256: admission.PayloadSHA256,
+					ActivityID: admission.ActivityID, ResolvedAt: resolvedAt,
+					Admission: watcher.TurnAdmission{Stream: admission.AdmissionStream, ID: admission.AdmissionID,
+						Cursor: admission.AdmissionCursor, SHA256: admission.PayloadSHA256, At: admission.AdmissionAt},
+				}
+				if err := s.projectAcceptedAdmission(st, admission, resolution); err != nil {
+					note(fmt.Errorf("project admission %s: %w", admission.TurnToken, err))
+				}
 			}
 		}
 	}
@@ -1390,9 +1399,10 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	}
 	if state == nil || admission == nil {
 		for _, candidate := range s.fsm.ListViews() {
-			a := candidate.Admission
-			if a != nil && a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
-				return false, errDelegatedTurnMismatch
+			for _, a := range candidate.Admissions {
+				if a != nil && a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
+					return false, errDelegatedTurnMismatch
+				}
 			}
 		}
 		return false, errNoDelegatedSignalContract

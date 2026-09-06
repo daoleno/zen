@@ -6,44 +6,44 @@ import (
 	"time"
 )
 
-// AgentState represents the classified state of a tmux-managed agent.
-type AgentState string
+// WorkerState represents the classified state of a tmux-managed Worker.
+type WorkerState string
 
 const (
-	StateRunning AgentState = "running"
-	StateBlocked AgentState = "blocked"
-	StateDone    AgentState = "done"
-	StateFailed  AgentState = "failed"
-	StateRemoved AgentState = "removed"
-	StateUnknown AgentState = "unknown"
+	StateRunning WorkerState = "running"
+	StateBlocked WorkerState = "blocked"
+	StateDone    WorkerState = "done"
+	StateFailed  WorkerState = "failed"
+	StateRemoved WorkerState = "removed"
+	StateUnknown WorkerState = "unknown"
 )
 
-// Agent holds the current state and metadata for a single agent session.
-type Agent struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
-	Project             string     `json:"project,omitempty"`
-	Cwd                 string     `json:"cwd,omitempty"`
-	Command             string     `json:"command,omitempty"`
-	State               AgentState `json:"status"`
-	Summary             string     `json:"summary"`
-	Phase               string     `json:"phase,omitempty"`
-	Attention           string     `json:"attention,omitempty"`
-	TaskClass           string     `json:"task_class,omitempty"`
-	EventKind           string     `json:"event_kind,omitempty"`
-	DetailsJSON         string     `json:"details_json,omitempty"`
-	NeedsAttention      bool       `json:"needs_attention,omitempty"`
-	LastProgressAt      *time.Time `json:"last_progress_at,omitempty"`
-	ExpectedNextCheckAt *time.Time `json:"expected_next_check_at,omitempty"`
-	LeaseSeconds        int        `json:"lease_seconds,omitempty"`
-	LastLines           []string   `json:"last_output_lines"`
-	StartedAt           time.Time  `json:"started_at,omitempty"`
-	UpdatedAt           time.Time  `json:"updated_at"`
-	LastSeenAt          time.Time  `json:"last_seen_at,omitempty"`
-	ProcessID           int        `json:"process_id,omitempty"`
-	Hidden              bool       `json:"hidden,omitempty"`
-	Delegated           bool       `json:"delegated,omitempty"`
-	PaneAlive           bool       `json:"-"`
+// Worker holds the current state and metadata for a single execution session.
+type Worker struct {
+	ID                  string      `json:"id"`
+	Name                string      `json:"name"`
+	Project             string      `json:"project,omitempty"`
+	Cwd                 string      `json:"cwd,omitempty"`
+	Command             string      `json:"command,omitempty"`
+	State               WorkerState `json:"status"`
+	Summary             string      `json:"summary"`
+	Phase               string      `json:"phase,omitempty"`
+	Attention           string      `json:"attention,omitempty"`
+	TaskClass           string      `json:"task_class,omitempty"`
+	EventKind           string      `json:"event_kind,omitempty"`
+	DetailsJSON         string      `json:"details_json,omitempty"`
+	NeedsAttention      bool        `json:"needs_attention,omitempty"`
+	LastProgressAt      *time.Time  `json:"last_progress_at,omitempty"`
+	ExpectedNextCheckAt *time.Time  `json:"expected_next_check_at,omitempty"`
+	LeaseSeconds        int         `json:"lease_seconds,omitempty"`
+	LastLines           []string    `json:"last_output_lines"`
+	StartedAt           time.Time   `json:"started_at,omitempty"`
+	UpdatedAt           time.Time   `json:"updated_at"`
+	LastSeenAt          time.Time   `json:"last_seen_at,omitempty"`
+	ProcessID           int         `json:"process_id,omitempty"`
+	Hidden              bool        `json:"hidden,omitempty"`
+	Delegated           bool        `json:"delegated,omitempty"`
+	PaneAlive           bool        `json:"-"`
 }
 
 // blockedPatterns match output that indicates the agent is waiting for user input.
@@ -133,7 +133,7 @@ var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d
 // command is the live pane process command line. Grok radio/footer menus are
 // only classified when that command is Grok; the same painted lines under
 // Codex/Claude/Cursor/shell must not phantom-block another provider.
-func Classify(paneAlive bool, lines []string, command string) (AgentState, string) {
+func Classify(paneAlive bool, lines []string, command string) (WorkerState, string) {
 	if len(lines) == 0 {
 		if !paneAlive {
 			return StateDone, "Session ended (no output)"

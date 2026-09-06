@@ -52,7 +52,7 @@ func attemptID(session string, token TurnToken, fence uint64) AttemptIdentity {
 // 1. Deterministic replay: reducing the same log twice yields identical state.
 func TestReplayDeterminism(t *testing.T) {
 	e, root := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 	if _, err := e.Heartbeat("w1", attemptID("s1", tok1, 1), 120); err != nil {
@@ -87,7 +87,7 @@ func TestReplayDeterminism(t *testing.T) {
 // 2. Duplicates: same SourceID applies once; duplicate admission is a no-op.
 func TestDuplicateEventsIdempotent(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -119,7 +119,7 @@ func TestDuplicateEventsIdempotent(t *testing.T) {
 // lease deadlines use monotonic max.
 func TestOutOfOrderFacts(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 
 	// Heartbeat arriving before its admission event is stale (rejected), then
@@ -149,7 +149,7 @@ func TestOutOfOrderFacts(t *testing.T) {
 // 4. Stale fence: inputs from a released generation are rejected idempotently.
 func TestStaleFenceRejected(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -182,7 +182,7 @@ func TestStaleFenceRejected(t *testing.T) {
 // lost only past LostGrace; takeover continues automatically.
 func TestLeaseExpiryAndEscalation(t *testing.T) {
 	e, root := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -288,14 +288,11 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 		t.Fatalf("actionable cards=%+v", cards)
 	}
 
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
 	reopened, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	setNow(reopened, deadline.Add(time.Minute))
 	for i := 0; i < scans; i++ {
 		if err := reopened.Sweep(); err != nil {
@@ -317,7 +314,7 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 
 func TestObservedLongRunningProviderPhasePreventsLeaseLoss(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-observed-long-phase", PolicyUntilDone)
 	admit(t, e, "w-observed-long-phase", tok1, "s1")
 
@@ -353,7 +350,7 @@ func TestObservedLongRunningProviderPhasePreventsLeaseLoss(t *testing.T) {
 func TestProviderRunningRenewalsAreCoalescedAndSilenceStillExpires(t *testing.T) {
 	base := time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC)
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	setNow(e, base)
 	define(t, e, "w-coalesced-live", PolicyUntilDone)
 	initial := admit(t, e, "w-coalesced-live", tok1, "s1")
@@ -450,14 +447,12 @@ func TestSignalSteerPromotesExactPromptToken(t *testing.T) {
 	if accepted.Attempt.FollowUpOf != "turn:old" {
 		t.Fatalf("signal steer lineage=%+v", accepted.Attempt)
 	}
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	replayed, _ := reopened.State("w-signal-steer")
 	if replayed.Attempt == nil || replayed.Attempt.TurnToken != "turn:current-prompt" {
 		t.Fatalf("reload changed exact Attempt: %+v", replayed)
@@ -467,7 +462,7 @@ func TestSignalSteerPromotesExactPromptToken(t *testing.T) {
 // 6. Next Attempt admission follows the settled predecessor.
 func TestNextAttemptAdmission(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -506,7 +501,7 @@ func TestNextAttemptAdmission(t *testing.T) {
 
 func TestAdmissionPurposeRequiresCompleteTag(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-tagged", PolicyUntilDone)
 	if _, _, err := e.PrepareAdmission("w-tagged", PrepareAdmissionInput{
 		SessionID: "session-next", TurnToken: "turn-next", Receipt: "turn-next", PayloadSHA256: "digest",
@@ -567,7 +562,7 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	st, err := reopened.State("w-atomic")
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +587,7 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 // never settles the current turn.
 func TestProviderTurnMismatch(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -625,15 +620,12 @@ func TestRestartRecovery(t *testing.T) {
 	}
 	want, _ := e.State("w1")
 	wantCards := e.Cards()
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	e2, err := Open(root)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer e2.Close()
+
 	got, err := e2.State("w1")
 	if err != nil {
 		t.Fatal(err)
@@ -659,7 +651,7 @@ func TestRestartRecovery(t *testing.T) {
 // met does; failed turns block with a review.
 func TestUntilDoneCompletionRule(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 
@@ -695,7 +687,7 @@ func TestUntilDoneCompletionRule(t *testing.T) {
 // Cards: exactly one actionable card per lineage, replaced in place.
 func TestCardProjectionSingleActionable(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 	define(t, e, "w2", PolicyBounded)
 
@@ -736,7 +728,7 @@ func TestCardProjectionSingleActionable(t *testing.T) {
 // of a superseded Event is a no-op.
 func TestReviewLifecycle(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 	admit(t, e, "w1", tok1, "s1")
 	if _, err := e.ReportTurnDone("w1", attemptID("s1", tok1, 1), DoneInput{OK: false, Summary: "boom"}); err != nil {
@@ -802,15 +794,12 @@ func TestAmbiguousReviewDeliveryResolutionIsAtomicIdempotentAndReplayable(t *tes
 	if err != nil || retry.Revision != st.Revision {
 		t.Fatalf("idempotent retry state=%+v err=%v", retry, err)
 	}
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	reopened, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	replayed, err := reopened.State("w1")
 	if err != nil {
 		t.Fatal(err)
@@ -822,7 +811,7 @@ func TestAmbiguousReviewDeliveryResolutionIsAtomicIdempotentAndReplayable(t *tes
 
 func TestAmbiguousReviewDiscardClosesExactEvent(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyBounded)
 	if _, err := e.OpenReview("w1", "operator_review", "canonical-only"); err != nil {
 		t.Fatal(err)
@@ -845,7 +834,7 @@ func TestAmbiguousReviewDiscardClosesExactEvent(t *testing.T) {
 // Cancel releases an active Attempt and drops pending continuations.
 func TestCancelReleasesAttempt(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	admit(t, e, "w1", tok1, "s1")
 	st, err := e.Cancel("w1", 0, "operator", "obsolete")
@@ -879,7 +868,6 @@ func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
 	if completed.Status != StatusDone || completed.Wake != nil {
 		t.Fatalf("completed Work retained wake: %+v", completed)
 	}
-	_ = e.Close()
 
 	database, err := readLifecycleDatabase(filepath.Join(root, "state.json"))
 	if err != nil {
@@ -895,7 +883,7 @@ func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+
 	if err := reopened.Sweep(); err != nil {
 		t.Fatal(err)
 	}
@@ -910,11 +898,11 @@ func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
 
 func TestOperationalViewsOmitLargeSeenSourcesAndRemainIsolated(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w-large-dedupe", PolicyBounded)
 
 	e.mu.Lock()
-	state := e.works["w-large-dedupe"].st
+	state := e.works["w-large-dedupe"]
 	for i := 0; i < 100_000; i++ {
 		state.SeenSources[fmt.Sprintf("source-%06d", i)] = true
 	}
@@ -953,7 +941,7 @@ func TestOperationalViewsOmitLargeSeenSourcesAndRemainIsolated(t *testing.T) {
 
 func TestOneLossOpensOneBlockedReview(t *testing.T) {
 	e, _ := newTestEngine(t)
-	defer e.Close()
+
 	define(t, e, "w1", PolicyUntilDone)
 	st := admit(t, e, "w1", tok1, "s1")
 	if _, err := e.ReportTurnLost("w1", attemptID("s1", tok1, st.Attempt.Generation), "lost"); err != nil {

@@ -1,0 +1,740 @@
+package work
+
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+const (
+	WorkerRuntimeTmux      = "tmux"
+	WorkerProviderCodex    = "codex"
+	WorkerProviderCursor   = "cursor"
+	WorkerProviderGrok     = "grok"
+	WorkerProviderClaude   = "claude"
+	WorkerProviderPi       = "pi"
+	WorkerProviderOpenCode = "opencode"
+	WorkerProviderCustom   = "custom"
+
+	// CodexFullAuthorizationFlag is the Codex CLI flag that skips all
+	// confirmation prompts and disables sandbox restrictions, providing the
+	// most permissive non-interactive authorization mode available.
+	// Brain-delegated Codex sessions use this so internal progress commands
+	// never block on approval prompts (e.g. when the Zen control socket lives
+	// outside the Codex sandbox).
+	CodexFullAuthorizationFlag = "--dangerously-bypass-approvals-and-sandbox"
+
+	// ClaudeFullAuthorizationFlag is the Claude CLI flag that bypasses
+	// permission checks, providing the most permissive non-interactive
+	// authorization mode available. Brain-delegated Claude sessions use this so
+	// internal progress commands never block on approval prompts.
+	ClaudeFullAuthorizationFlag = "--permission-mode bypassPermissions"
+
+	// OpenCodeAutoFlag auto-approves permissions that are not explicitly denied.
+	// Brain-delegated and Calendar OpenCode sessions use this so unattended
+	// turns do not stall on interactive permission prompts.
+	OpenCodeAutoFlag = "--auto"
+
+	// PiNoExtensionsFlag disables extension discovery. Calendar/unattended Pi
+	// launches use this because extensions may add undetectable ui.confirm gates.
+	PiNoExtensionsFlag = "--no-extensions"
+)
+
+// ErrScheduledActionUnattended is returned before spawning when a Calendar
+// scheduled_action cannot be given one proven, conflict-free unattended
+// authorization mode.
+var ErrScheduledActionUnattended = errors.New("scheduled_action executor cannot launch unattended")
+
+// HardenCodexDelegatedCommand returns a Codex launch command configured for
+// non-interactive delegated execution. When command does not already declare
+// the full-authorization flag, it is appended so Brain-delegated Codex
+// sessions do not stop on approval prompts for internal shell/progress
+// commands. Commands that already include the flag are returned unchanged so
+// explicit user-provided authorization configuration is preserved.
+func HardenCodexDelegatedCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = WorkerProviderCodex
+	}
+	if strings.Contains(command, CodexFullAuthorizationFlag) {
+		return command
+	}
+	return command + " " + CodexFullAuthorizationFlag
+}
+
+// HardenClaudeCommand returns a Claude launch command configured for
+// non-interactive autonomous execution. When command does not already declare
+// an explicit authorization mode, ClaudeFullAuthorizationFlag is appended so
+// Brain-delegated and Brain-host Claude sessions bypass permission checks for
+// internal shell/progress commands. Commands that already include
+// --permission-mode (any value) or --dangerously-skip-permissions are returned
+// unchanged so explicit user-provided authorization configuration is preserved.
+func HardenClaudeCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = WorkerProviderClaude
+	}
+	if strings.Contains(command, "--permission-mode") ||
+		strings.Contains(command, "--dangerously-skip-permissions") {
+		return command
+	}
+	return command + " " + ClaudeFullAuthorizationFlag
+}
+
+// HardenOpenCodeDelegatedCommand returns an OpenCode launch command configured
+// for non-interactive delegated execution by ensuring exact argv `--auto`.
+// Equals forms (`--auto=false`, `--auto=true`, …) are invalid and rejected
+// fail-closed so Brain/delegated launch never treats them as enabled and never
+// leaves contradictory auto flags on the command line.
+func HardenOpenCodeDelegatedCommand(command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = WorkerProviderOpenCode
+	}
+	options, ok := inspectLaunchCommandOptions(command)
+	if !ok {
+		if strings.Contains(command, OpenCodeAutoFlag+"=") {
+			return "", fmt.Errorf("opencode %s equals form is invalid; use exact %s", OpenCodeAutoFlag, OpenCodeAutoFlag)
+		}
+		if openCodeCommandHasExactAuto(command) {
+			return command, nil
+		}
+		return command + " " + OpenCodeAutoFlag, nil
+	}
+	autoPresent, autoEnabled := options.option("", OpenCodeAutoFlag)
+	if autoPresent && !autoEnabled {
+		return "", fmt.Errorf("opencode %s equals form is invalid for delegated launch; use exact %s", OpenCodeAutoFlag, OpenCodeAutoFlag)
+	}
+	if autoEnabled {
+		return command, nil
+	}
+	return command + " " + OpenCodeAutoFlag, nil
+}
+
+// openCodeCommandHasExactAuto reports an exact `--auto` argv token without
+// treating `--auto=…` or `--auto-review` as enabled.
+func openCodeCommandHasExactAuto(command string) bool {
+	fields, ok := splitSupportedLaunchFields(command)
+	if !ok {
+		return false
+	}
+	for _, field := range fields {
+		if field == OpenCodeAutoFlag {
+			return true
+		}
+	}
+	return false
+}
+
+// ScheduledActionCommand derives Calendar's unattended command without
+// mutating the configured command used by ordinary launches.
+func ScheduledActionCommand(executorID string, executor Executor) (string, error) {
+	executorID = strings.TrimSpace(executorID)
+	workerExecutor := NewWorkerExecutor(executorID, executor)
+	command := strings.TrimSpace(workerExecutor.Command)
+	options, inspectable := inspectLaunchCommandOptions(command)
+	if workerExecutor.Provider != WorkerProviderCustom {
+		if !inspectable {
+			return "", fmt.Errorf("%w: executor %q has an unsupported launch command", ErrScheduledActionUnattended, executorID)
+		}
+		if !scheduledProviderExecutable(workerExecutor.Provider, options.executable) {
+			return "", fmt.Errorf(
+				"%w: executor %q provider %q does not match executable %q",
+				ErrScheduledActionUnattended,
+				executorID,
+				workerExecutor.Provider,
+				options.executable,
+			)
+		}
+	}
+	switch workerExecutor.Provider {
+	case WorkerProviderCodex:
+		bypassPresent, bypassEnabled := options.option("", CodexFullAuthorizationFlag)
+		approvalPresent, approvalCompatible := options.option("never", "--ask-for-approval", "-a")
+		sandboxPresent, sandboxCompatible := options.option("danger-full-access", "--sandbox", "-s")
+		if bypassPresent && !bypassEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Codex bypass option", ErrScheduledActionUnattended, executorID)
+		}
+		if !approvalCompatible || !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has a non-unattended Codex approval or sandbox mode", ErrScheduledActionUnattended, executorID)
+		}
+		if bypassEnabled || approvalPresent && sandboxPresent {
+			return command, nil
+		}
+		if approvalPresent {
+			return appendScheduledOptions(executorID, command, options, "--sandbox", "danger-full-access")
+		}
+		if sandboxPresent {
+			return appendScheduledOptions(executorID, command, options, "--ask-for-approval", "never")
+		}
+		return appendScheduledOptions(executorID, command, options, CodexFullAuthorizationFlag)
+	case WorkerProviderClaude:
+		permissionPresent, permissionCompatible := options.option("bypassPermissions", "--permission-mode")
+		skipPresent, skipEnabled := options.option("", "--dangerously-skip-permissions")
+		if !permissionCompatible || skipPresent && !skipEnabled {
+			return "", fmt.Errorf("%w: executor %q has a non-bypass Claude permission mode", ErrScheduledActionUnattended, executorID)
+		}
+		if permissionPresent || skipEnabled {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, "--permission-mode", "bypassPermissions")
+	case WorkerProviderCursor:
+		autoReviewPresent, _ := options.option("", "--auto-review")
+		planPresent, _ := options.option("", "--plan")
+		modePresent, _ := options.option("", "--mode")
+		sandboxPresent, sandboxCompatible := options.option("disabled", "--sandbox")
+		if autoReviewPresent || planPresent || modePresent || !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has an interactive or read-only Cursor mode", ErrScheduledActionUnattended, executorID)
+		}
+		forcePresent, forceEnabled := options.option("", "--force")
+		yoloPresent, yoloEnabled := options.option("", "--yolo")
+		trustPresent, trustEnabled := options.option("", "--trust")
+		approveMCPsPresent, approveMCPsEnabled := options.option("", "--approve-mcps")
+		if forcePresent && !forceEnabled || yoloPresent && !yoloEnabled ||
+			trustPresent && !trustEnabled || approveMCPsPresent && !approveMCPsEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Cursor unattended option", ErrScheduledActionUnattended, executorID)
+		}
+		appendArgs := make([]string, 0, 5)
+		if !forceEnabled && !yoloEnabled {
+			appendArgs = append(appendArgs, "--force")
+		}
+		if !sandboxPresent {
+			appendArgs = append(appendArgs, "--sandbox", "disabled")
+		}
+		if !trustEnabled {
+			appendArgs = append(appendArgs, "--trust")
+		}
+		if !approveMCPsEnabled {
+			appendArgs = append(appendArgs, "--approve-mcps")
+		}
+		return appendScheduledOptions(executorID, command, options, appendArgs...)
+	case WorkerProviderGrok:
+		permissionPresent, permissionCompatible := options.option("bypassPermissions", "--permission-mode")
+		sandboxPresent, sandboxCompatible := options.option("off", "--sandbox")
+		if !permissionCompatible {
+			return "", fmt.Errorf("%w: executor %q has a non-bypass Grok permission mode", ErrScheduledActionUnattended, executorID)
+		}
+		if !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has a restricted Grok sandbox", ErrScheduledActionUnattended, executorID)
+		}
+		alwaysApprovePresent, alwaysApproveEnabled := options.option("", "--always-approve")
+		yoloPresent, yoloEnabled := options.option("", "--yolo")
+		if alwaysApprovePresent && !alwaysApproveEnabled || yoloPresent && !yoloEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Grok unattended option", ErrScheduledActionUnattended, executorID)
+		}
+		appendArgs := make([]string, 0, 4)
+		if !permissionPresent && !alwaysApproveEnabled && !yoloEnabled {
+			appendArgs = append(appendArgs, "--permission-mode", "bypassPermissions")
+		}
+		if !sandboxPresent {
+			appendArgs = append(appendArgs, "--sandbox", "off")
+		}
+		return appendScheduledOptions(executorID, command, options, appendArgs...)
+	case WorkerProviderPi:
+		continuePresent, _ := options.option("", "--continue", "-c")
+		resumePresent, _ := options.option("", "--resume", "-r")
+		noSessionPresent, _ := options.option("", "--no-session")
+		if continuePresent || resumePresent || noSessionPresent {
+			return "", fmt.Errorf("%w: executor %q uses a non-owned Pi session mode", ErrScheduledActionUnattended, executorID)
+		}
+		sessionPresent, sessionPath := options.optionValue("--session")
+		sessionDirPresent, _ := options.optionValue("--session-dir")
+		if sessionPresent && (sessionPath == "" || !filepath.IsAbs(sessionPath)) {
+			return "", fmt.Errorf("%w: executor %q requires an absolute Pi --session path", ErrScheduledActionUnattended, executorID)
+		}
+		if !sessionPresent && !sessionDirPresent {
+			ownedPath, err := NewPiOwnedSessionPath("")
+			if err != nil {
+				return "", fmt.Errorf("%w: executor %q could not allocate a Pi session path: %v", ErrScheduledActionUnattended, executorID, err)
+			}
+			command, err = appendScheduledOptions(executorID, command, options, "--session", ownedPath)
+			if err != nil {
+				return "", err
+			}
+			options, inspectable = inspectLaunchCommandOptions(command)
+			if !inspectable {
+				return "", fmt.Errorf("%w: executor %q has an unsupported launch command", ErrScheduledActionUnattended, executorID)
+			}
+		}
+		noExtensionsPresent, _ := options.option("", PiNoExtensionsFlag, "-ne")
+		if noExtensionsPresent {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, PiNoExtensionsFlag)
+	case WorkerProviderOpenCode:
+		continuePresent, _ := options.option("", "--continue", "-c")
+		if continuePresent {
+			return "", fmt.Errorf("%w: executor %q must not use OpenCode --continue", ErrScheduledActionUnattended, executorID)
+		}
+		autoPresent, autoEnabled := options.option("", OpenCodeAutoFlag)
+		if autoPresent && !autoEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid OpenCode auto option", ErrScheduledActionUnattended, executorID)
+		}
+		if autoEnabled {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, OpenCodeAutoFlag)
+	default:
+		return "", fmt.Errorf("%w: executor %q uses unsupported provider %q", ErrScheduledActionUnattended, executorID, workerExecutor.Provider)
+	}
+}
+
+func appendCommandOptions(command string, options ...string) string {
+	command = strings.TrimSpace(command)
+	for _, option := range options {
+		if option != "" {
+			command += " " + option
+		}
+	}
+	return command
+}
+
+type launchCommandOptions struct {
+	executable string
+	argv       []string
+	terminated bool
+}
+
+func inspectLaunchCommandOptions(command string) (launchCommandOptions, bool) {
+	fields, ok := splitSupportedLaunchFields(command)
+	if !ok || len(fields) == 0 {
+		return launchCommandOptions{}, false
+	}
+	executable := 0
+	if filepath.Base(fields[0]) == "env" {
+		executable++
+		for executable < len(fields) && isLaunchEnvAssignment(fields[executable]) {
+			executable++
+		}
+		if executable < len(fields) && fields[executable] == "--" {
+			executable++
+		}
+	}
+	if executable >= len(fields) || strings.HasPrefix(fields[executable], "-") {
+		return launchCommandOptions{}, false
+	}
+	options := launchCommandOptions{
+		executable: filepath.Base(fields[executable]),
+		argv:       fields[executable+1:],
+	}
+	for index, argument := range options.argv {
+		if argument == "--" {
+			options.argv = options.argv[:index]
+			options.terminated = true
+			break
+		}
+	}
+	return options, true
+}
+
+func scheduledProviderExecutable(provider, executable string) bool {
+	switch provider {
+	case WorkerProviderCodex:
+		return executable == "codex"
+	case WorkerProviderClaude:
+		return executable == "claude" || executable == "cc"
+	case WorkerProviderCursor:
+		return executable == "cursor-agent"
+	case WorkerProviderGrok:
+		return executable == "grok" || strings.HasPrefix(executable, "grok-")
+	case WorkerProviderPi:
+		return executable == "pi"
+	case WorkerProviderOpenCode:
+		return executable == "opencode"
+	default:
+		return false
+	}
+}
+
+// splitSupportedLaunchFields only recognizes the direct executable and
+// env-assignment launch shapes Zen emits. It handles shell quoting needed to
+// recover argv but deliberately rejects shell comments, command composition,
+// and substitution.
+func splitSupportedLaunchFields(command string) ([]string, bool) {
+	var fields []string
+	var token strings.Builder
+	var quote byte
+	started := false
+	flush := func() {
+		if started {
+			fields = append(fields, token.String())
+			token.Reset()
+			started = false
+		}
+	}
+	for index := 0; index < len(command); index++ {
+		current := command[index]
+		if quote != 0 {
+			if current == quote {
+				quote = 0
+				continue
+			}
+			if quote == '"' && (current == '`' ||
+				current == '$' && index+1 < len(command) && command[index+1] == '(') {
+				return nil, false
+			}
+			if quote == '"' && current == '\\' {
+				index++
+				if index >= len(command) {
+					return nil, false
+				}
+				current = command[index]
+			}
+			token.WriteByte(current)
+			started = true
+			continue
+		}
+		switch current {
+		case '\'', '"':
+			quote = current
+			started = true
+		case '\\':
+			index++
+			if index >= len(command) {
+				return nil, false
+			}
+			token.WriteByte(command[index])
+			started = true
+		case '#', ';', '|', '&', '<', '>', '`', '(', ')', '\n', '\r':
+			return nil, false
+		case ' ', '\t':
+			flush()
+		default:
+			token.WriteByte(current)
+			started = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return fields, true
+}
+
+func appendScheduledOptions(executorID, command string, options launchCommandOptions, additions ...string) (string, error) {
+	if options.terminated {
+		return "", fmt.Errorf("%w: executor %q places arguments after an option terminator", ErrScheduledActionUnattended, executorID)
+	}
+	return appendCommandOptions(command, additions...), nil
+}
+
+func isLaunchEnvAssignment(value string) bool {
+	equals := strings.IndexByte(value, '=')
+	if equals <= 0 {
+		return false
+	}
+	for _, current := range value[:equals] {
+		if current != '_' &&
+			(current < 'a' || current > 'z') &&
+			(current < 'A' || current > 'Z') &&
+			(current < '0' || current > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// option reports whether any named option is present and whether every
+// occurrence has the exact requested value. An empty want denotes a boolean
+// flag, for which equals forms are invalid rather than truthy.
+// Codex's -a and -s options additionally accept attached values.
+func (options launchCommandOptions) option(want string, names ...string) (bool, bool) {
+	present := false
+	compatible := true
+	for index, argument := range options.argv {
+		for _, name := range names {
+			if want == "" {
+				if argument == name {
+					present = true
+				} else if strings.HasPrefix(argument, name+"=") {
+					present = true
+					compatible = false
+				}
+				continue
+			}
+			value := ""
+			matched := false
+			if argument == name {
+				present = true
+				if index+1 < len(options.argv) && options.argv[index+1] != "--" {
+					value = options.argv[index+1]
+				}
+				matched = true
+			} else if strings.HasPrefix(argument, name+"=") {
+				present = true
+				value = strings.TrimPrefix(argument, name+"=")
+				matched = true
+			} else if (name == "-a" || name == "-s") &&
+				strings.HasPrefix(argument, name) && len(argument) > len(name) {
+				present = true
+				value = strings.TrimPrefix(argument, name)
+				matched = true
+			}
+			if matched && value != want {
+				compatible = false
+			}
+		}
+	}
+	if want == "" {
+		return present, present && compatible
+	}
+	return present, compatible
+}
+
+// optionValue reports whether name is present and returns its last value.
+func (options launchCommandOptions) optionValue(name string) (bool, string) {
+	present := false
+	value := ""
+	for index, argument := range options.argv {
+		if argument == name {
+			present = true
+			value = ""
+			if index+1 < len(options.argv) && options.argv[index+1] != "--" &&
+				!strings.HasPrefix(options.argv[index+1], "-") {
+				value = options.argv[index+1]
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, name+"=") {
+			present = true
+			value = strings.TrimPrefix(argument, name+"=")
+		}
+	}
+	return present, value
+}
+
+// WorkerCapabilities describes capabilities Brain can delegate to an executor.
+// Native capabilities are tool-owned features. Runtime capabilities are the
+// portable substrate Brain can rely on even when the tool has no native thread
+// model.
+type WorkerCapabilities struct {
+	NativeThreads    bool `json:"native_threads"`
+	NativeSearch     bool `json:"native_search"`
+	NativePinning    bool `json:"native_pinning"`
+	NativeArchive    bool `json:"native_archive"`
+	NativeWorktrees  bool `json:"native_worktrees"`
+	NativeFork       bool `json:"native_fork"`
+	NativeResume     bool `json:"native_resume"`
+	NativeGoals      bool `json:"native_goals"`
+	NativeAutomation bool `json:"native_automation"`
+	InteractiveTTY   bool `json:"interactive_tty"`
+	StructuredEvents bool `json:"structured_events"`
+}
+
+// WorkerExecutor is the portable Brain-facing view of a configured executor.
+type WorkerExecutor struct {
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Provider     string             `json:"provider"`
+	Command      string             `json:"command,omitempty"`
+	Runtime      string             `json:"runtime"`
+	Capabilities WorkerCapabilities `json:"capabilities"`
+	Host         bool               `json:"host,omitempty"`
+	Delegated    bool               `json:"delegated,omitempty"`
+}
+
+// WorkerExecutors returns all configured executors as portable executor records.
+func (c *ExecutorConfig) WorkerExecutors() []WorkerExecutor {
+	if c == nil || len(c.ByName) == 0 {
+		return nil
+	}
+	out := make([]WorkerExecutor, 0, len(c.ByName))
+	for name, executor := range c.ByName {
+		out = append(out, NewWorkerExecutor(name, executor))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// WorkerExecutor returns one configured executor as a portable executor record.
+func (c *ExecutorConfig) WorkerExecutor(name string) (WorkerExecutor, bool) {
+	if c == nil {
+		return WorkerExecutor{}, false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return WorkerExecutor{}, false
+	}
+	executor, ok := c.ByName[name]
+	if !ok {
+		return WorkerExecutor{}, false
+	}
+	return NewWorkerExecutor(name, executor), true
+}
+
+// DelegatedAgentExecutor returns the configured executor for delegated execution.
+// It always reads the live delegated selection owned by ExecutorConfig.
+func (c *ExecutorConfig) DelegatedWorkerExecutor() (WorkerExecutor, bool) {
+	if c == nil {
+		return WorkerExecutor{}, false
+	}
+	if executor, ok := c.WorkerExecutor(c.GetDelegatedExecutor()); ok {
+		executor.Delegated = true
+		return executor, true
+	}
+	if executor, ok := c.WorkerExecutor("codex"); ok {
+		executor.Delegated = true
+		return executor, true
+	}
+	executors := c.WorkerExecutors()
+	if len(executors) == 0 {
+		return WorkerExecutor{}, false
+	}
+	executors[0].Delegated = true
+	return executors[0], true
+}
+
+// NewWorkerExecutor converts one executor entry into Brain's portable executor
+// vocabulary.
+func NewWorkerExecutor(name string, executor Executor) WorkerExecutor {
+	id := strings.TrimSpace(name)
+	if id == "" {
+		id = strings.TrimSpace(executor.Name)
+	}
+	command := strings.TrimSpace(executor.Command)
+	if command == "" {
+		command = id
+	}
+	provider := InferWorkerProvider(executor.Kind, command, id)
+	if provider == "" {
+		provider = WorkerProviderCustom
+	}
+	runtime := normalizeWorkerRuntime(executor.Runtime)
+	return WorkerExecutor{
+		ID:           id,
+		Name:         firstNonEmptyString(strings.TrimSpace(executor.Name), id),
+		Provider:     provider,
+		Command:      command,
+		Runtime:      runtime,
+		Capabilities: workerCapabilities(provider, runtime),
+	}
+}
+
+// InferWorkerProvider detects known agent providers from config names,
+// explicit kind metadata, commands, or process command lines.
+func InferWorkerProvider(values ...string) string {
+	for _, value := range values {
+		if provider := inferWorkerProviderOne(value); provider != "" {
+			return provider
+		}
+	}
+	return ""
+}
+
+// ProfileClientExecutor returns the canonical Model Profiles client executor
+// ("codex" or "claude") for a configured CLI identity. The configured executor
+// ID/name remains the process identity; this hint is only for PrepareLaunch
+// default/override resolution. Empty means unsupported/custom — callers must
+// keep bypass/fail-closed behavior rather than inventing a client type.
+func ProfileClientExecutor(values ...string) string {
+	provider := InferWorkerProvider(values...)
+	switch provider {
+	case WorkerProviderCodex, WorkerProviderClaude:
+		return provider
+	default:
+		return ""
+	}
+}
+
+// ProfileClientExecutor returns the canonical Model Profiles client hint for
+// this configured WorkerExecutor (Provider first, then command/ID inference).
+func (e WorkerExecutor) ProfileClientExecutor() string {
+	return ProfileClientExecutor(e.Provider, e.Command, e.ID)
+}
+
+func inferWorkerProviderOne(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+	fields := strings.Fields(value)
+	candidates := fields
+	if len(candidates) == 0 {
+		candidates = []string{value}
+	}
+	for _, candidate := range candidates {
+		base := filepath.Base(strings.Trim(candidate, `"'`))
+		switch {
+		case base == WorkerProviderCursor:
+			return WorkerProviderCursor
+		case strings.Contains(base, "codex"):
+			return WorkerProviderCodex
+		case base == "cursor-agent" || strings.Contains(base, "cursor-agent"):
+			return WorkerProviderCursor
+		case strings.Contains(base, "grok"):
+			return WorkerProviderGrok
+		case strings.Contains(base, "claude") || base == "cc":
+			return WorkerProviderClaude
+		case base == WorkerProviderOpenCode:
+			// Exact basename only: avoid substring false positives
+			// (myopencode, opencodefake, …).
+			return WorkerProviderOpenCode
+		case base == WorkerProviderPi:
+			// Exact basename only: avoid substring false positives (pip, pixel, …).
+			return WorkerProviderPi
+		}
+	}
+	return ""
+}
+
+func normalizeWorkerRuntime(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return WorkerRuntimeTmux
+	}
+	return value
+}
+
+func workerCapabilities(provider, runtime string) WorkerCapabilities {
+	caps := WorkerCapabilities{}
+	if runtime == WorkerRuntimeTmux {
+		caps.InteractiveTTY = true
+	}
+	switch provider {
+	case WorkerProviderCodex:
+		caps.NativeThreads = true
+		caps.NativeSearch = true
+		caps.NativeArchive = true
+		caps.NativeWorktrees = true
+		caps.NativeFork = true
+		caps.NativeResume = true
+		caps.NativeGoals = true
+		caps.NativeAutomation = true
+		caps.StructuredEvents = true
+	case WorkerProviderGrok:
+		caps.StructuredEvents = true
+	case WorkerProviderClaude:
+		// Claude Code exposes structured chat via local JSONL transcripts under
+		// ~/.claude/projects. It does not offer Codex-style native thread APIs.
+		caps.StructuredEvents = true
+	case WorkerProviderCursor:
+		// Cursor Agent appends provider-structured message, tool, and turn rows
+		// under agent-transcripts. It does not expose Codex-style native APIs.
+		caps.StructuredEvents = true
+	case WorkerProviderPi:
+		// Pi exposes structured chat via an owned JSONL session file. Resume is
+		// the same absolute --session path Zen injected at launch.
+		caps.StructuredEvents = true
+		caps.NativeResume = true
+	case WorkerProviderOpenCode:
+		// OpenCode exposes structured chat via its local SQLite database.
+		// Resume only an explicitly owned ses_* via -s; never --continue.
+		caps.StructuredEvents = true
+		caps.NativeResume = true
+		caps.NativeFork = true
+	}
+	return caps
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

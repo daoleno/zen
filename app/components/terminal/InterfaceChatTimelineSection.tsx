@@ -34,10 +34,10 @@ interface InterfaceChatTimelineSectionProps {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
-  agentProcessId?: number;
-  agentStartedAt?: number;
-  agentCwd?: string;
+  workerId: string;
+  workerProcessId?: number;
+  workerStartedAt?: number;
+  workerCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
@@ -97,10 +97,10 @@ export function InterfaceChatTimelineSection({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
-  agentProcessId,
-  agentStartedAt,
-  agentCwd,
+  workerId,
+  workerProcessId,
+  workerStartedAt,
+  workerCwd,
   conversation,
   events,
   pendingUserMessages,
@@ -179,11 +179,11 @@ export function InterfaceChatTimelineSection({
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
         path,
-        cwd: conversation?.cwd || agentCwd,
+        cwd: conversation?.cwd || workerCwd,
       });
       return asset.data_url || null;
     },
-    [agentCwd, conversation?.cwd, serverId],
+    [workerCwd, conversation?.cwd, serverId],
   );
   const syncingConversation =
     Boolean(conversation && !conversation.available) &&
@@ -217,7 +217,7 @@ export function InterfaceChatTimelineSection({
         topChromeInset={topChromeInset}
         chrome={chrome}
         theme={theme}
-        agentCwd={agentCwd}
+        workerCwd={workerCwd}
         emptyTitle={emptyTitle}
         emptyBody={emptyBody}
         onLayout={onLayout}
@@ -246,10 +246,10 @@ export function InterfaceChatTimelineSection({
         serverId={serverId}
         serverUrl={serverUrl}
         daemonId={daemonId}
-        agentId={agentId}
-        processId={agentProcessId}
-        startedAt={agentStartedAt}
-        cwd={conversation?.cwd || agentCwd}
+        workerId={workerId}
+        processId={workerProcessId}
+        startedAt={workerStartedAt}
+        cwd={conversation?.cwd || workerCwd}
         chrome={chrome}
         theme={theme}
         onClose={closeFilePreview}

@@ -3,7 +3,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
-import type { AgentKind } from "../../../services/agentPresentation";
+import type { AgentKind } from "../../../services/workerPresentation";
 import type { TerminalFlavor } from "../../../services/terminalFlavor";
 import type { StoredInterfaceRenderMode } from "../../../services/storage";
 import type { TerminalTopBarProps } from "../TerminalTopBar";
@@ -29,7 +29,7 @@ interface UseTerminalTopBarPropsInput {
   interfaceRenderMode: StoredInterfaceRenderMode;
   gitDiffDisabled: boolean;
   gitDiffSummary: TerminalGitDiffSummary | null;
-  isStructuredChatAgent: boolean;
+  isStructuredChatWorker: boolean;
   delegated?: boolean;
   onOpenSessionDetails(): void;
   openGitDiff(): void;
@@ -48,7 +48,7 @@ export function useTerminalTopBarProps({
   interfaceRenderMode,
   gitDiffDisabled,
   gitDiffSummary,
-  isStructuredChatAgent,
+  isStructuredChatWorker,
   delegated,
   onOpenSessionDetails,
   openGitDiff,
@@ -71,7 +71,7 @@ export function useTerminalTopBarProps({
         summary: gitDiffSummary,
         terminalTheme,
       }),
-      isStructuredChatAgent,
+      isStructuredChatWorker,
       delegated,
       onBack: navigationActions.goToInbox,
       onOpenSessionDetails,
@@ -90,7 +90,7 @@ export function useTerminalTopBarProps({
       interfaceRenderMode,
       gitDiffDisabled,
       gitDiffSummary,
-      isStructuredChatAgent,
+      isStructuredChatWorker,
       delegated,
       onOpenSessionDetails,
       openGitDiff,

@@ -163,7 +163,7 @@ export type UpsertProviderConnectionInput = {
 export type SetProviderDefaultInput = ProviderDefaultInput;
 
 export type CreateSessionResult = {
-  agentId: string;
+  workerId: string;
   /** Present only when the daemon included persistence_* fields. */
   persistence?: import("./persistence").MutationPersistence;
 };

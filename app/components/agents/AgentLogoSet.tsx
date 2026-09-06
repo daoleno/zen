@@ -2,7 +2,7 @@ import React from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 import { TypeScale, useAppColors } from "../../constants/tokens";
-import type { AgentKind } from "../../services/agentPresentation";
+import type { AgentKind } from "../../services/workerPresentation";
 import type { ManagedSkillAgent } from "../../services/skillsManagement";
 import { skillAgentLabel } from "../../services/skillsManagement";
 import { AgentKindIcon } from "../terminal/AgentKindIcon";

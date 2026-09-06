@@ -12,26 +12,26 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-func TestInferAgentProviderPiAndOpenCode(t *testing.T) {
+func TestInferWorkerProviderPiAndOpenCode(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"pi", AgentProviderPi},
-		{"/usr/bin/pi --session /tmp/x.jsonl", AgentProviderPi},
-		{"env PATH=/x -- pi", AgentProviderPi},
+		{"pi", WorkerProviderPi},
+		{"/usr/bin/pi --session /tmp/x.jsonl", WorkerProviderPi},
+		{"env PATH=/x -- pi", WorkerProviderPi},
 		{"pipeline", ""},
 		{"pixel", ""},
-		{"opencode", AgentProviderOpenCode},
-		{"opencode --auto", AgentProviderOpenCode},
-		{"/opt/opencode --auto -s ses_1", AgentProviderOpenCode},
-		{"env PATH=/x -- opencode --auto", AgentProviderOpenCode},
+		{"opencode", WorkerProviderOpenCode},
+		{"opencode --auto", WorkerProviderOpenCode},
+		{"/opt/opencode --auto -s ses_1", WorkerProviderOpenCode},
+		{"env PATH=/x -- opencode --auto", WorkerProviderOpenCode},
 		{"myopencode", ""},
 		{"opencodefake", ""},
 		{"/opt/bin/myopencode", ""},
 		{"wrapper-opencode", ""},
 	}
 	for _, tc := range cases {
-		if got := InferAgentProvider(tc.in); got != tc.want {
+		if got := InferWorkerProvider(tc.in); got != tc.want {
 			t.Fatalf("InferAgentProvider(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -163,7 +163,7 @@ func TestPiNonmatchingUserDoesNotAdmitPayload(t *testing.T) {
 
 func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 	dir := t.TempDir()
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		Cwd:       "/repo",
 		Command:   "pi",
 		StartedAt: time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC),
@@ -171,23 +171,23 @@ func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 	// Owned --session wins and needs no shared directory.
 	owned := filepath.Join(dir, "owned.jsonl")
 	writePiFixture(t, owned, "/repo", "owned-user")
-	agent.Command = "pi --session " + owned
-	candidate, ok, err := NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
+	worker.Command = "pi --session " + owned
+	candidate, ok, err := NewProviderConversationReader().findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != owned {
 		t.Fatalf("owned bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
 	// Shared per-CWD directory auto-binds for interactive launches without
 	// --session so the Interface is not left Working-only.
-	agentDir := filepath.Join(dir, "agent")
-	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	workerDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", workerDir)
+	sessionsDir := filepath.Join(workerDir, "sessions", encodePiSessionDirName("/repo"))
 	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shared := filepath.Join(sessionsDir, "2026-08-06T00-00-10-000Z_sess1.jsonl")
 	writePiFixture(t, shared, "/repo", "shared-user")
-	agent.Command = "pi"
-	candidate, ok, err = NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
+	worker.Command = "pi"
+	candidate, ok, err = NewProviderConversationReader().findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != shared {
 		t.Fatalf("shared dir bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
@@ -195,7 +195,7 @@ func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 	wrong := filepath.Join(sessionsDir, "2026-08-06T00-00-11-000Z_sess2.jsonl")
 	writePiFixture(t, wrong, "/other", "foreign")
 	reader := NewProviderConversationReader()
-	candidate, ok, err = reader.findPiTranscript(agent, time.Now().UTC())
+	candidate, ok, err = reader.findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != shared {
 		t.Fatalf("wrong-cwd must not replace pinned bind: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
@@ -203,17 +203,17 @@ func TestFindPiTranscriptOwnedPathAndSharedDir(t *testing.T) {
 
 func TestPiSharedDirAmbiguousWindowRefuses(t *testing.T) {
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "agent")
-	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	workerDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", workerDir)
+	sessionsDir := filepath.Join(workerDir, "sessions", encodePiSessionDirName("/repo"))
 	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC)
 	writePiFixture(t, filepath.Join(sessionsDir, "a.jsonl"), "/repo", "a-user")
 	writePiFixture(t, filepath.Join(sessionsDir, "b.jsonl"), "/repo", "b-user")
-	agent := classifier.Agent{Cwd: "/repo", Command: "pi", StartedAt: started}
-	candidate, ok, err := NewProviderConversationReader().findPiTranscript(agent, time.Now().UTC())
+	worker := classifier.Worker{Cwd: "/repo", Command: "pi", StartedAt: started}
+	candidate, ok, err := NewProviderConversationReader().findPiTranscript(worker, time.Now().UTC())
 	if err != nil || ok {
 		t.Fatalf("ambiguous same-window transcripts must refuse: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
@@ -301,17 +301,17 @@ func TestPiToolLifecycleConvergesOnAbortAndError(t *testing.T) {
 
 func TestPiSharedDirSessionSwitchCannotLeak(t *testing.T) {
 	dir := t.TempDir()
-	agentDir := filepath.Join(dir, "agent")
-	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	sessionsDir := filepath.Join(agentDir, "sessions", encodePiSessionDirName("/repo"))
+	workerDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", workerDir)
+	sessionsDir := filepath.Join(workerDir, "sessions", encodePiSessionDirName("/repo"))
 	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	first := filepath.Join(sessionsDir, "2026-08-06T00-00-10-000Z_first.jsonl")
 	writePiFixture(t, first, "/repo", "first-user")
-	agent := classifier.Agent{Cwd: "/repo", Command: "pi"}
+	worker := classifier.Worker{Cwd: "/repo", Command: "pi"}
 	reader := NewProviderConversationReader()
-	candidate, ok, err := reader.findPiTranscript(agent, time.Now().UTC())
+	candidate, ok, err := reader.findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != first {
 		t.Fatalf("first bind failed: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
@@ -321,13 +321,13 @@ func TestPiSharedDirSessionSwitchCannotLeak(t *testing.T) {
 	if err := os.Chtimes(second, time.Now(), time.Now().Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	candidate, ok, err = reader.findPiTranscript(agent, time.Now().UTC())
+	candidate, ok, err = reader.findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != first {
 		t.Fatalf("newer session leaked into pinned bind: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
 	// A reader bound to a different agent binding may pick the newer session.
 	other := NewProviderConversationReader()
-	candidate, ok, err = other.findPiTranscript(agent, time.Now().UTC())
+	candidate, ok, err = other.findPiTranscript(worker, time.Now().UTC())
 	if err != nil || !ok || candidate.Path != second {
 		t.Fatalf("fresh reader should bind newest: ok=%v path=%q err=%v", ok, candidate.Path, err)
 	}
@@ -335,11 +335,11 @@ func TestPiSharedDirSessionSwitchCannotLeak(t *testing.T) {
 
 func TestPiLateFlushMissingFileIsNotFound(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "pending.jsonl")
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		Cwd:     "/repo",
 		Command: "pi --session " + missing,
 	}
-	conversation, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	conversation, err := NewProviderConversationReader().Load(worker, WorkerProviderPi, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,11 +358,11 @@ func TestLoadExecutorsIncludesPiAndOpenCodeDefaults(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing default executor %q", id)
 		}
-		agent := NewAgentExecutor(id, executor)
-		if agent.Provider != id {
-			t.Fatalf("%s provider = %q", id, agent.Provider)
+		worker := NewWorkerExecutor(id, executor)
+		if worker.Provider != id {
+			t.Fatalf("%s provider = %q", id, worker.Provider)
 		}
-		if !agent.Capabilities.StructuredEvents {
+		if !worker.Capabilities.StructuredEvents {
 			t.Fatalf("%s missing StructuredEvents", id)
 		}
 	}

@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -75,24 +76,54 @@ func shortTmuxTestDir(t *testing.T) string {
 	return dir
 }
 
+func probeHarnessTmuxServer(realTmux, socket string) (int, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out, err := exec.Command(realTmux, "-S", socket, "display-message", "-p", "#{pid}").CombinedOutput()
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(out)))
+			if parseErr != nil || pid <= 0 {
+				return 0, fmt.Errorf("invalid tmux PID: %q", out)
+			}
+			return pid, nil
+		}
+		failure := fmt.Errorf("%w: %s", err, out)
+		if isNoTmuxServerError(failure) {
+			return 0, nil
+		}
+		// A connection can race an already-started shutdown. Re-probe; this text
+		// alone is never accepted as proof that the owned server has disappeared.
+		if !strings.Contains(string(out), "server exited unexpectedly") || !time.Now().Before(deadline) {
+			return 0, failure
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func stopHarnessTmuxServer(t *testing.T, realTmux, socket string) {
 	t.Helper()
-	pidRaw, err := exec.Command(realTmux, "-S", socket, "display-message", "-p", "#{pid}").Output()
+	pid, err := probeHarnessTmuxServer(realTmux, socket)
 	if err != nil {
+		t.Errorf("probe test tmux server on %s: %v", socket, err)
 		return
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
-	if err != nil || pid <= 0 {
-		t.Errorf("resolve test tmux pid on %s: %q", socket, pidRaw)
+	if pid == 0 {
 		return
 	}
-	if out, killErr := exec.Command(realTmux, "-S", socket, "kill-server").CombinedOutput(); killErr != nil {
-		t.Errorf("stop test tmux server %d on %s: %v: %s", pid, socket, killErr, out)
-		return
+	if out, err := exec.Command(realTmux, "-S", socket, "kill-server").CombinedOutput(); err != nil {
+		if !isNoTmuxServerError(fmt.Errorf("%w: %s", err, out)) && !strings.Contains(string(out), "server exited unexpectedly") {
+			t.Errorf("stop test tmux server %d on %s: %v: %s", pid, socket, err, out)
+			return
+		}
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if exec.Command(realTmux, "-S", socket, "display-message", "-p", "#{pid}").Run() != nil {
+		current, err := probeHarnessTmuxServer(realTmux, socket)
+		if err != nil {
+			t.Errorf("verify test tmux shutdown on %s: %v", socket, err)
+			return
+		}
+		if current == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -320,8 +351,8 @@ func TestRealTmuxOutsideTmuxUsesOrdinaryDefaultServer(t *testing.T) {
 
 func TestRealTmuxOwnedLifecycleAndAmbientCollisionContainment(t *testing.T) {
 	h := newSharedTmuxHarness(t, false)
-	ambientTarget := createHarnessPane(t, h.selected, "brain-agent-name-collision", "exec /bin/sh")
-	if out, err := tmuxHarnessCommand(h.selected, "set-option", "-wg", "@zen_agent_created", "1").CombinedOutput(); err != nil {
+	ambientTarget := createHarnessPane(t, h.selected, "zen-worker-name-collision", "exec /bin/sh")
+	if out, err := tmuxHarnessCommand(h.selected, "set-option", "-wg", "@zen_worker_created", "1").CombinedOutput(); err != nil {
 		t.Fatalf("set inherited collision marker: %v: %s", err, out)
 	}
 	originalAmbientName, err := tmuxHarnessCommand(h.selected, "display-message", "-p", "-t", ambientTarget, "#{window_name}").Output()
@@ -382,11 +413,11 @@ func TestRealTmuxOwnedLifecycleAndAmbientCollisionContainment(t *testing.T) {
 	recovered.targetCommandResolver = func(string) (string, bool) { return "opencode", true }
 	recovered.poll()
 	drainWatcherEvents(recovered)
-	if agentByID(recovered.Agents(), target) == nil {
-		t.Fatalf("owned target not rediscovered: %#v", recovered.Agents())
+	if workerByID(recovered.Workers(), target) == nil {
+		t.Fatalf("owned target not rediscovered: %#v", recovered.Workers())
 	}
-	if agentByID(recovered.Agents(), ambientTarget) != nil {
-		t.Fatalf("ambient collision was adopted: %#v", recovered.Agents())
+	if workerByID(recovered.Workers(), ambientTarget) != nil {
+		t.Fatalf("ambient collision was adopted: %#v", recovered.Workers())
 	}
 
 	if out, err := tmuxHarnessCommand(h.selected, "set-option", "-w", "-t", target, "remain-on-exit", "on").CombinedOutput(); err != nil {
@@ -404,9 +435,9 @@ func TestRealTmuxOwnedLifecycleAndAmbientCollisionContainment(t *testing.T) {
 	})
 	recovered.poll()
 	drainWatcherEvents(recovered)
-	agent := agentByID(recovered.Agents(), target)
-	if agent == nil || agent.State != classifier.StateDone || agent.PaneAlive {
-		t.Fatalf("completed recovered agent = %#v", agent)
+	worker := workerByID(recovered.Workers(), target)
+	if worker == nil || worker.State != classifier.StateDone || worker.PaneAlive {
+		t.Fatalf("completed recovered agent = %#v", worker)
 	}
 
 	unit := delegatedResourceUnit("abc123", "0123456789abcdef0123456789abcdef")
@@ -420,8 +451,8 @@ func TestRealTmuxOwnedLifecycleAndAmbientCollisionContainment(t *testing.T) {
 	}
 	recovered.poll()
 	drainWatcherEvents(recovered)
-	if agentByID(recovered.Agents(), target) != nil {
-		t.Fatalf("closed target survived cleanup: %#v", recovered.Agents())
+	if workerByID(recovered.Workers(), target) != nil {
+		t.Fatalf("closed target survived cleanup: %#v", recovered.Workers())
 	}
 	if err := tmuxHarnessCommand(h.selected, "has-session", "-t", ambientTarget).Run(); err != nil {
 		t.Fatalf("ambient Session was closed during owned cleanup: %v", err)

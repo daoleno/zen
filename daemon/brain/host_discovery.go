@@ -13,15 +13,16 @@ import (
 
 // hostDiscovery is the read-only decision produced before any route or tmux
 // mutation. Keeping it separate makes liveness uncertainty fail closed at one
-// boundary and leaves ensureHostAgent responsible for applying the decision.
+// boundary and leaves ensureHostWorker responsible for applying the decision.
 type hostDiscovery struct {
 	hostSession   HostSession
 	command       string
 	id            string
-	reuse         *classifier.Agent
+	reuse         *classifier.Worker
 	bootstrap     bool
 	replaceReason string
 	replaceDetail string
+	resumeToken   string
 }
 
 type hostLaunchPreparation struct {
@@ -31,7 +32,58 @@ type hostLaunchPreparation struct {
 	resumeBindingFound bool
 }
 
-func (s *Service) prepareHostLaunch(executor work.AgentExecutor, id, command, resumeToken string) (hostLaunchPreparation, error) {
+// resolveHostResume proves a native resume command before route or Session mutation.
+func (s *Service) resolveHostResume(executor work.WorkerExecutor, discovery hostDiscovery) (hostDiscovery, error) {
+	hostSession, id := discovery.hostSession, discovery.id
+	command, replaceReason, replaceDetail := discovery.command, discovery.replaceReason, discovery.replaceDetail
+	resumeToken := ""
+	if replaceReason == hostReplaceReasonMissingTmux {
+		token, known, resumable := s.hostProviderResumeToken(hostSession, executor)
+		if known {
+			if !resumable {
+				s.recordHostReplacement(HostReplacementEvent{
+					Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+					FromID:           id,
+					FromExecutorID:   hostSession.ExecutorID,
+					ResolvedExecutor: executor.ID,
+					Detail: fmt.Sprintf(
+						"has_session=false id=%q provider_session=%q executor=%q: no native resume shape",
+						id, token, executor.ID,
+					),
+				})
+				return discovery, fmt.Errorf(
+					"brain host refusing blank replacement: recorded provider session %q cannot be natively resumed for executor %q",
+					token, executor.ID,
+				)
+			}
+			resumeCommand, err := s.hostLaunchCommand(executor, token)
+			if err != nil {
+				s.recordHostReplacement(HostReplacementEvent{
+					Reason:           hostReplaceReasonMissingTmuxUnrecoverable,
+					FromID:           id,
+					FromExecutorID:   hostSession.ExecutorID,
+					ResolvedExecutor: executor.ID,
+					Detail: fmt.Sprintf(
+						"has_session=false id=%q provider_session=%q: %v",
+						id, token, err,
+					),
+				})
+				return discovery, fmt.Errorf(
+					"brain host refusing blank replacement: recorded provider session %q cannot be natively resumed for executor %q: %w",
+					token, executor.ID, err,
+				)
+			}
+			command = resumeCommand
+			resumeToken = token
+			replaceDetail = fmt.Sprintf("has_session=false id=%q provider_session_id=%q", id, token)
+		}
+	}
+
+	discovery.command, discovery.resumeToken, discovery.replaceDetail = command, resumeToken, replaceDetail
+	return discovery, nil
+}
+
+func (s *Service) prepareHostLaunch(executor work.WorkerExecutor, id, command, resumeToken string) (hostLaunchPreparation, error) {
 	p := hostLaunchPreparation{command: command, env: brainSessionEnvironment()}
 	routes := s.sessionRoutes()
 	if routes != nil && strings.TrimSpace(id) != "" && resumeToken != "" {
@@ -71,7 +123,7 @@ func (s *Service) prepareHostLaunch(executor work.AgentExecutor, id, command, re
 	return p, nil
 }
 
-func (s *Service) discoverHostAgent(executor work.AgentExecutor) (hostDiscovery, error) {
+func (s *Service) discoverHostWorker(executor work.WorkerExecutor) (hostDiscovery, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return hostDiscovery{}, nil
 	}
@@ -96,8 +148,8 @@ func (s *Service) discoverHostAgent(executor work.AgentExecutor) (hostDiscovery,
 		}
 		return hostDiscovery{}, fmt.Errorf("brain host recorded session liveness unknown: %w", probeErr)
 	case presence == watcher.SessionPresencePresent:
-		if agent := s.watcher.GetAgent(d.id); agent != nil {
-			if s.hostAgentMatches(agent, executor) {
+		if worker := s.watcher.GetWorker(d.id); worker != nil {
+			if s.hostWorkerMatches(worker, executor) {
 				if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
 					if err := s.store.SetHostSession(d.id, executor.ID); err != nil {
 						return hostDiscovery{}, err
@@ -107,11 +159,11 @@ func (s *Service) discoverHostAgent(executor work.AgentExecutor) (hostDiscovery,
 					return hostDiscovery{}, err
 				}
 				_, _ = s.BindHostProviderTranscript()
-				return hostDiscovery{hostSession: hostSession, command: command, id: d.id, reuse: agent}, nil
+				return hostDiscovery{hostSession: hostSession, command: command, id: d.id, reuse: worker}, nil
 			}
 			d.replaceReason = hostReplaceReasonProviderMismatch
-			d.replaceDetail = fmt.Sprintf("recorded_executor=%q resolved_executor=%q agent_command=%q agent_provider=%q", hostSession.ExecutorID, executor.ID, strings.TrimSpace(agent.Command), work.InferAgentProvider(agent.Command))
-			s.recordHostReplacement(HostReplacementEvent{Reason: d.replaceReason, FromID: d.id, FromExecutorID: hostSession.ExecutorID, FromCommand: agent.Command, ResolvedExecutor: executor.ID, Detail: d.replaceDetail})
+			d.replaceDetail = fmt.Sprintf("recorded_executor=%q resolved_executor=%q worker_command=%q worker_provider=%q", hostSession.ExecutorID, executor.ID, strings.TrimSpace(worker.Command), work.InferWorkerProvider(worker.Command))
+			s.recordHostReplacement(HostReplacementEvent{Reason: d.replaceReason, FromID: d.id, FromExecutorID: hostSession.ExecutorID, FromCommand: worker.Command, ResolvedExecutor: executor.ID, Detail: d.replaceDetail})
 			if err := s.teardownHostSession(d.id); err != nil {
 				return hostDiscovery{}, fmt.Errorf("brain host provider replacement teardown: %w", err)
 			}
@@ -144,6 +196,6 @@ func (s *Service) discoverHostAgent(executor work.AgentExecutor) (hostDiscovery,
 	return d, nil
 }
 
-func hostBootstrapRef(s *Service, d hostDiscovery) AgentRef {
-	return AgentRef{ID: d.id, Name: "Brain", Status: string(classifier.StateRunning), Summary: "Session starting", Cwd: s.brainWorkspace(), Command: d.command, Updated: firstNonZeroTime(d.hostSession.UpdatedAt, s.now().UTC()), Hidden: true}
+func hostBootstrapRef(s *Service, d hostDiscovery) WorkerRef {
+	return WorkerRef{ID: d.id, Name: "Brain", Status: string(classifier.StateUnknown), Summary: "Session observation pending", Cwd: s.brainWorkspace(), Command: d.command, Updated: d.hostSession.UpdatedAt, Hidden: true}
 }

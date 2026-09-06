@@ -131,7 +131,7 @@ export function sendWebSocketMessageNow(
 
 export function structuredInputMessage(input: {
   requestId: string;
-  agentId: string;
+  workerId: string;
   text: string;
   displayBody?: string;
   conversationScopeKey?: string;
@@ -139,7 +139,7 @@ export function structuredInputMessage(input: {
   return {
     type: "send_input",
     request_id: input.requestId,
-    agent_id: input.agentId,
+    worker_id: input.workerId,
     text: input.text,
     ...(input.displayBody !== undefined
       ? { display_body: input.displayBody }
@@ -152,13 +152,13 @@ export function structuredInputMessage(input: {
 
 export function structuredActionMessage(input: {
   requestId: string;
-  agentId: string;
+  workerId: string;
   action: string;
 }) {
   return {
     type: "send_action",
     request_id: input.requestId,
-    agent_id: input.agentId,
+    worker_id: input.workerId,
     action: input.action,
   };
 }

@@ -49,7 +49,7 @@ func scriptedOpenCodeHandoff(t *testing.T, contents []string) (*Watcher, *fakeSe
 	w.sessionInput = owner
 	w.targetProcessResolver = fixedSessionInputResolver(testSessionInputIdentity("opencode"))
 	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
-	w.agents["opencode-handoff:@1"] = &classifier.Agent{
+	w.workers["opencode-handoff:@1"] = &classifier.Worker{
 		ID:        "opencode-handoff:@1",
 		Command:   "opencode",
 		Cwd:       "/repo/zen",
@@ -234,7 +234,7 @@ func TestSubmitDelegatedInputWhenReadyBudgetedExhaustionCreatesNoTurn(t *testing
 		"work-never-ready", "turn-never-ready", time.Now().UTC(),
 		400*time.Millisecond,
 	)
-	if err == nil || !errors.Is(err, ErrAgentInputNotReady) || result.Outcome != InputNotSubmitted {
+	if err == nil || !errors.Is(err, ErrWorkerInputNotReady) || result.Outcome != InputNotSubmitted {
 		t.Fatalf("never-ready delegated result=%+v err=%v", result, err)
 	}
 	if _, found, err := ledger.Turn("opencode-handoff:@1"); err != nil || found {
@@ -255,7 +255,7 @@ func TestSendInputWhenReadyBudgetedTimeoutIsBoundedRetryableNotSubmitted(t *test
 	if err == nil {
 		t.Fatal("budgeted handoff succeeded with a never-ready pane")
 	}
-	if !errors.Is(err, ErrAgentInputNotReady) {
+	if !errors.Is(err, ErrWorkerInputNotReady) {
 		t.Fatalf("error = %v, want ErrAgentInputNotReady", err)
 	}
 	if outcome := InputOutcomeFromError(err); outcome != InputNotSubmitted {
@@ -303,7 +303,7 @@ func TestSendInputWhenReadyBudgetedSessionEndedWithoutNotificationFailsOnce(t *t
 	if err == nil {
 		t.Fatal("budgeted handoff succeeded after the spawned session ended")
 	}
-	if errors.Is(err, ErrAgentInputNotReady) {
+	if errors.Is(err, ErrWorkerInputNotReady) {
 		t.Fatalf("ended session was treated as retryable not-ready: %v", err)
 	}
 	if !strings.Contains(err.Error(), "target provider could not be proven") {
@@ -339,16 +339,16 @@ func TestSendInputWhenReadyBudgetedExactHomeCaptureSubmitsOnce(t *testing.T) {
 	}
 }
 
-func TestAgentInputNotReadyIsDistinctFromOtherNotSubmitted(t *testing.T) {
-	retryable := agentInputNotReady("opencode")
-	if !errors.Is(retryable, ErrAgentInputNotReady) {
+func TestWorkerInputNotReadyIsDistinctFromOtherNotSubmitted(t *testing.T) {
+	retryable := workerInputNotReady("opencode")
+	if !errors.Is(retryable, ErrWorkerInputNotReady) {
 		t.Fatal("agentInputNotReady must unwrap ErrAgentInputNotReady")
 	}
 	if outcome := InputOutcomeFromError(retryable); outcome != InputNotSubmitted {
 		t.Fatalf("outcome = %s", outcome)
 	}
 	terminal := definitelyNotSubmitted("", errors.New("target provider could not be proven"))
-	if errors.Is(terminal, ErrAgentInputNotReady) {
+	if errors.Is(terminal, ErrWorkerInputNotReady) {
 		t.Fatal("unprovable target identity must not be retryable")
 	}
 	if !strings.Contains(retryable.Error(), `agent input not ready for "opencode"`) {

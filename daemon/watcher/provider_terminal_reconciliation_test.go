@@ -41,10 +41,10 @@ func TestApplyPollFactsReconcilesExactHistoricalProviderTerminal(t *testing.T) {
 	if settled.Status != TurnDone || settled.ActivityID != oldActivityID {
 		t.Fatalf("exact historical terminal did not settle canonical turn: %+v", settled)
 	}
-	agent := &classifier.Agent{Attention: "done", NeedsAttention: true}
-	state, _ := projectDelegatedTurn(agent, settled)
-	if state != classifier.StateDone || agent.Attention != "none" || agent.NeedsAttention {
-		t.Fatalf("terminal Session projection = state %q agent=%+v", state, agent)
+	worker := &classifier.Worker{Attention: "done", NeedsAttention: true}
+	state, _ := projectDelegatedTurn(worker, settled)
+	if state != classifier.StateDone || worker.Attention != "none" || worker.NeedsAttention {
+		t.Fatalf("terminal Session projection = state %q agent=%+v", state, worker)
 	}
 	if len(ledger.applied) != 1 || ledger.applied[0].ActivityID != oldActivityID ||
 		ledger.applied[0].Kind != "done" || !ledger.applied[0].Admission.Empty() {

@@ -61,15 +61,12 @@ func TestQueuedReviewPromotionSurvivesRestartWithoutRevisionChurn(t *testing.T) 
 	if err != nil || !changed || promoted.ActivityID != "activity-b" || promoted.Status != watcher.TurnRunning {
 		t.Fatalf("promotion changed=%v turn=%+v err=%v", changed, promoted, err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	reopened, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.FSM().Close()
+
 	recovered, found, err := reopened.TurnByID(hostID, action.ProviderTurnID)
 	if err != nil || !found || recovered.ActivityID != "activity-b" || recovered.Status != watcher.TurnRunning {
 		t.Fatalf("restart found=%v turn=%+v err=%v", found, recovered, err)

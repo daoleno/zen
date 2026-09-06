@@ -103,7 +103,7 @@ func (m *linuxDelegatedResourceManager) ensureSharedPoolSlice() error {
 	// memory limits once. Child scopes inherit the pool and carry no per-agent
 	// MemoryHigh/MemoryMax of their own. Hold mu across bootstrap/set-property so
 	// concurrent Prepare calls cannot configure the slice more than once.
-	bootstrapUnit := "zen-agents-" + m.owner + "-pool-init.scope"
+	bootstrapUnit := "zen-workers-" + m.owner + "-pool-init.scope"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	bootstrapOut, bootstrapErr := exec.CommandContext(ctx, m.systemdRun,
 		"--user",
@@ -345,7 +345,7 @@ func (m *linuxDelegatedResourceManager) listOwnedUnits() ([]string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	pattern := "zen-agent-" + m.owner + "-*.scope"
+	pattern := "zen-worker-" + m.owner + "-*.scope"
 	out, err := exec.CommandContext(ctx, m.systemctl, "--user", "list-units", "--all", "--type=scope", "--plain", "--no-legend", "--no-pager", pattern).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-units: %w: %s", err, strings.TrimSpace(string(out)))
@@ -395,7 +395,7 @@ func validateDelegatedWorkspace(cwd string) error {
 	}
 	switch uint64(stat.Type) {
 	case tmpfsMagic, ramfsMagic, hugetlbfsMagic:
-		return fmt.Errorf("delegated agent cwd %q is on memory-backed temporary storage; use a durable workspace such as $ZEN_WORKTREE_ROOT (default ~/.zen/worktrees)", cwd)
+		return fmt.Errorf("delegated Zen Worker cwd %q is on memory-backed temporary storage; use a durable workspace such as $ZEN_WORKTREE_ROOT (default ~/.zen/worktrees)", cwd)
 	default:
 		return nil
 	}

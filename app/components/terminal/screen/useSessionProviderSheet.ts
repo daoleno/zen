@@ -14,7 +14,7 @@ import {
 import {
   sessionAllowsModelProfileActivation,
   sessionSupportsModelProfileAction,
-  type AgentSessionCapabilities,
+  type WorkerSessionCapabilities,
 } from "../../../services/providers/sessionCapabilities";
 import {
   refetchFoundBindingNotSwitchable,
@@ -29,8 +29,8 @@ export { sessionSupportsModelProfileAction } from "../../../services/providers/s
 
 interface UseSessionProviderSheetInput {
   serverId: string;
-  agentId: string;
-  capabilities?: AgentSessionCapabilities | null;
+  workerId: string;
+  capabilities?: WorkerSessionCapabilities | null;
   connectionConnected: boolean;
   eagerLoad?: boolean;
   focusActive?: boolean;
@@ -38,7 +38,7 @@ interface UseSessionProviderSheetInput {
 
 export function useSessionProviderSheet({
   serverId,
-  agentId,
+  workerId,
   capabilities,
   connectionConnected,
   eagerLoad = false,
@@ -55,7 +55,7 @@ export function useSessionProviderSheet({
   );
   const [catalog, setCatalog] = useState<ProvidersSnapshot | null>(null);
   const ownerRef = useRef(new ProviderRequestOwner());
-  const fetchedEpochRef = useRef<{ serverId: string; agentId: string } | null>(
+  const fetchedEpochRef = useRef<{ serverId: string; workerId: string } | null>(
     null,
   );
   const managed = sessionSupportsModelProfileAction(capabilities);
@@ -92,22 +92,22 @@ export function useSessionProviderSheet({
 
   const fetchProjection = useCallback(
     async (mode: "sheet" | "eager") => {
-      if (!serverId || !agentId) return;
+      if (!serverId || !workerId) return;
       if (!connectionConnected) {
         if (mode === "sheet") setError(offlineProviderError());
         return;
       }
       if (!managed) return;
-      ownerRef.current.rebind(serverId, agentId);
+      ownerRef.current.rebind(serverId, workerId);
       const admission = ownerRef.current.admitSessionLoad();
       if (!admission.ok) return;
       const token = admission.token;
       if (mode === "sheet") setLoading(true);
       setError(null);
       try {
-        const nextSelection = await wsClient.getThreadRuntime(serverId, agentId);
+        const nextSelection = await wsClient.getThreadRuntime(serverId, workerId);
         if (!ownerRef.current.acceptSession(token)) return;
-        fetchedEpochRef.current = { serverId, agentId };
+        fetchedEpochRef.current = { serverId, workerId };
         syncActivationLockUi();
         setSelection(nextSelection);
         if (
@@ -142,7 +142,7 @@ export function useSessionProviderSheet({
     },
     [
       activationCapable,
-      agentId,
+      workerId,
       connectionConnected,
       managed,
       serverId,
@@ -159,9 +159,9 @@ export function useSessionProviderSheet({
   useEffect(() => {
     if (!eagerLoad || visible || !managed || !connectionConnected) return;
     const fetched = fetchedEpochRef.current;
-    if (fetched?.serverId === serverId && fetched.agentId === agentId) return;
+    if (fetched?.serverId === serverId && fetched.workerId === workerId) return;
     void fetchProjection("eager");
-  }, [agentId, connectionConnected, eagerLoad, fetchProjection, managed, serverId, visible]);
+  }, [workerId, connectionConnected, eagerLoad, fetchProjection, managed, serverId, visible]);
 
   useEffect(() => {
     if (!focusActive || visible || !managed || !connectionConnected) return;
@@ -169,15 +169,15 @@ export function useSessionProviderSheet({
   }, [connectionConnected, fetchProjection, focusActive, managed, visible]);
 
   useEffect(() => {
-    if (ownerRef.current.rebind(serverId, agentId)) {
+    if (ownerRef.current.rebind(serverId, workerId)) {
       clearProjection();
       setVisible(false);
     }
-  }, [agentId, clearProjection, serverId]);
+  }, [workerId, clearProjection, serverId]);
 
   const activate = useCallback(
     async (runtime: ThreadRuntimeChoice) => {
-      if (!serverId || !agentId || !activationCapable || !selection || !catalog) {
+      if (!serverId || !workerId || !activationCapable || !selection || !catalog) {
         return;
       }
       if (ownerRef.current.runtimeSwitchRequiresRefresh()) {
@@ -195,7 +195,7 @@ export function useSessionProviderSheet({
       setError(null);
       try {
         const result = await wsClient.setThreadRuntime(serverId, {
-          agentId,
+          workerId,
           runtime,
         });
         if (!ownerRef.current.isCurrent(token)) return;
@@ -214,7 +214,7 @@ export function useSessionProviderSheet({
             refreshRequired: classification === "applied_uncertain",
           });
           setSelection(result.runtime);
-          fetchedEpochRef.current = { serverId, agentId };
+          fetchedEpochRef.current = { serverId, workerId };
           syncActivationLockUi();
           if (classification === "applied_durable") {
             setVisible(false);
@@ -253,7 +253,7 @@ export function useSessionProviderSheet({
         if (ownerRef.current.isCurrent(token)) setActivating(false);
       }
     },
-    [activationCapable, agentId, catalog, selection, serverId, syncActivationLockUi],
+    [activationCapable, workerId, catalog, selection, serverId, syncActivationLockUi],
   );
 
   const rows: ProviderPickerModelRow[] = threadRuntimeRows({

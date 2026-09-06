@@ -6,7 +6,7 @@ import {
   type SetStateAction,
 } from "react";
 import { Alert } from "react-native";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import { CurrentAttachmentUpload } from "../../services/currentAttachmentUpload";
 import {
   createAttachmentUploadOperation,

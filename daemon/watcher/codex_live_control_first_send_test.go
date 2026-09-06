@@ -128,7 +128,7 @@ func liveControlProcessTreeComplete(panePID int, processes map[int]processInfo) 
 		if proc.pgid != panePID || proc.tpgid != panePID || proc.pid == panePID || proc.ppid != panePID {
 			continue
 		}
-		if agentCommandFromProcess(proc) == "" {
+		if workerCommandFromProcess(proc) == "" {
 			return false
 		}
 		siblingCount++

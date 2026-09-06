@@ -11,10 +11,10 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import {
-  BrainAdapterSheet,
+  BrainExecutorSheet,
   type ExecutorTarget,
-} from "../../components/brain/BrainAdapterSheet";
-import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
+} from "../../components/brain/BrainExecutorSheet";
+import { BrainExecutorIcon } from "../../components/brain/BrainExecutorIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
@@ -42,10 +42,10 @@ import {
 import { wsClient } from "../../services/websocket";
 import { shouldShowBrainLoadingState } from "../../services/connectionLifecycle";
 import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting";
-import { useAgents, type ConnectionState } from "../../store/agents";
+import { useWorkers, type ConnectionState } from "../../store/workers";
 import {
   useBrain,
-  type BrainAdapterRef,
+  type BrainExecutorRef,
 } from "../../store/brain";
 import type { BrainWorkResultEvent } from "../../components/brain/brainWorkEvent";
 import { useCurrentServer } from "../../store/currentServer";
@@ -70,7 +70,7 @@ export default function BrainScreen() {
     () => buildChatChrome(zenTheme),
     [zenTheme],
   );
-  const { state: agentState } = useAgents();
+  const { state: workerState } = useWorkers();
   const { state: brainState } = useBrain();
   const {
     currentServer: activeServer,
@@ -124,14 +124,14 @@ export default function BrainScreen() {
     ? brainState.byServer[activeServer.id]
     : null;
   const connectionState: ConnectionState = activeServer
-    ? agentState.serverConnections[activeServer.id] || "offline"
+    ? workerState.serverConnections[activeServer.id] || "offline"
     : "offline";
   const connectionIssue = activeServer
-    ? (agentState.serverConnectionIssues[activeServer.id] ?? null)
+    ? (workerState.serverConnectionIssues[activeServer.id] ?? null)
     : null;
-  const hostAgent = activeBrain?.host_agent ?? null;
-  const hostAdapter = activeBrain?.host_adapter ?? null;
-  const delegatedAdapter = activeBrain?.delegated_adapter ?? null;
+  const hostWorker = activeBrain?.host_worker ?? null;
+  const hostExecutor = activeBrain?.host_executor ?? null;
+  const delegatedExecutor = activeBrain?.delegated_executor ?? null;
   const routedThreadId = routeServerMatches ? params.brainThreadId : undefined;
   const displayedThreadId = routedThreadId || activeBrain?.chat_thread_id;
   const targetedThreadReadOnly = isTargetedBrainThreadReadOnly(
@@ -142,24 +142,24 @@ export default function BrainScreen() {
     ? `brain-thread:${displayedThreadId}`
     : undefined;
 
-  const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
+  const ready = Boolean(activeServer && activeBrain?.hydrated && hostWorker?.id);
   const showBrainLoading = shouldShowBrainLoadingState({
     hydrated: Boolean(activeBrain?.hydrated),
-    hasHostAgent: Boolean(hostAgent?.id),
+    hasHostWorker: Boolean(hostWorker?.id),
   });
   const brainModelSheet = useSessionProviderSheet({
     serverId: activeServer?.id ?? "",
-    agentId: hostAgent?.id ?? "",
-    capabilities: hostAgent?.capabilities ?? null,
+    workerId: hostWorker?.id ?? "",
+    capabilities: hostWorker?.capabilities ?? null,
     connectionConnected: connectionState === "connected",
     eagerLoad: true,
     focusActive: screenFocused,
   });
   const canUseStructuredBrainInterface = Boolean(
-    ready && hostAdapter?.capabilities?.structured_events,
+    ready && hostExecutor?.capabilities?.structured_events,
   );
-  const availableAdapters = activeBrain?.adapters ?? [];
-  const canSwitchAdapter = availableAdapters.length > 1;
+  const availableExecutors = activeBrain?.executors ?? [];
+  const canSwitchAdapter = availableExecutors.length > 1;
   const openAdapterSheet = useCallback(() => {
     if (!canSwitchAdapter || !activeServer) {
       return;
@@ -193,18 +193,18 @@ export default function BrainScreen() {
   }, []);
 
   const openBrainTerminal = useCallback(() => {
-    if (!activeServer || !hostAgent?.id) {
+    if (!activeServer || !hostWorker?.id) {
       return;
     }
     router.push({
       pathname: "/terminal/[id]",
       params: {
-        id: hostAgent.id,
+        id: hostWorker.id,
         serverId: activeServer.id,
         initialInterfaceRenderMode: "terminal",
       },
     });
-  }, [activeServer, hostAgent?.id, router]);
+  }, [activeServer, hostWorker?.id, router]);
 
   const openCalendar = useCallback(() => {
     router.push("/calendar");
@@ -228,12 +228,12 @@ export default function BrainScreen() {
   }, [activeBrain?.hydrated, activeServer, newChatLoading]);
 
   const switchExecutor = useCallback(
-    async (adapter: BrainAdapterRef, target: ExecutorTarget) => {
+    async (adapter: BrainExecutorRef, target: ExecutorTarget) => {
       if (!activeServer || !adapter.id || switchingAdapterId) {
         return;
       }
       const currentId =
-        target === "brain" ? hostAdapter?.id : delegatedAdapter?.id;
+        target === "brain" ? hostExecutor?.id : delegatedExecutor?.id;
       if (adapter.id === currentId) {
         closeAdapterSheet();
         return;
@@ -258,14 +258,14 @@ export default function BrainScreen() {
     [
       activeServer,
       closeAdapterSheet,
-      delegatedAdapter?.id,
-      hostAdapter?.id,
+      delegatedExecutor?.id,
+      hostExecutor?.id,
       switchingAdapterId,
     ],
   );
 
   const canNewChat = Boolean(activeServer && activeBrain?.hydrated);
-  const canOpenTerminal = Boolean(activeServer && hostAgent?.id);
+  const canOpenTerminal = Boolean(activeServer && hostWorker?.id);
   const canOpenWorkspace = Boolean(
     activeServer && connectionState === "connected",
   );
@@ -301,15 +301,15 @@ export default function BrainScreen() {
               key: "executor",
               label: "Switch executor",
               accessibilityLabel: switchExecutorAccessibilityLabel(
-                hostAdapter,
-                delegatedAdapter,
+                hostExecutor,
+                delegatedExecutor,
               ),
               icon: "swap-horizontal-outline" as const,
               trailing: distinctExecutorAdapters(
-                hostAdapter,
-                delegatedAdapter,
+                hostExecutor,
+                delegatedExecutor,
               ).map((adapter) => (
-                <BrainAdapterIcon
+                <BrainExecutorIcon
                   key={adapter.id}
                   adapter={adapter}
                   size={14}
@@ -345,8 +345,8 @@ export default function BrainScreen() {
       canOpenTerminal,
       canOpenWorkspace,
       canSwitchAdapter,
-      delegatedAdapter,
-      hostAdapter,
+      delegatedExecutor,
+      hostExecutor,
       newChatLoading,
       openAdapterSheet,
       openCalendar,
@@ -365,13 +365,13 @@ export default function BrainScreen() {
       setDraft: (value: string) => void;
     }) => {
       const activeMention = activeExecutorMentionAtEnd(draft);
-      if (!activeMention || availableAdapters.length === 0) {
+      if (!activeMention || availableExecutors.length === 0) {
         return null;
       }
       return (
         <BrainExecutorMentionPicker
-          adapters={availableAdapters}
-          activeAdapterId={hostAdapter?.id}
+          executors={availableExecutors}
+          activeAdapterId={hostExecutor?.id}
           query={activeMention.query}
           chrome={chrome}
           onSelect={(adapter) => {
@@ -382,7 +382,7 @@ export default function BrainScreen() {
         />
       );
     },
-    [availableAdapters, chrome, hostAdapter?.id],
+    [availableExecutors, chrome, hostExecutor?.id],
   );
 
   const activateWorkResult = useCallback(
@@ -406,8 +406,8 @@ export default function BrainScreen() {
     [activeServer, router],
   );
   const openSessionIds = useMemo(
-    () => new Set((activeBrain?.agents ?? []).map((agent) => agent.id)),
-    [activeBrain?.agents],
+    () => new Set((activeBrain?.workers ?? []).map((agent) => agent.id)),
+    [activeBrain?.workers],
   );
 
   return (
@@ -446,14 +446,14 @@ export default function BrainScreen() {
               serverId={activeServer?.id ?? ""}
               serverUrl={activeServer?.url ?? ""}
               daemonId={activeServer?.daemonId ?? ""}
-              agentId={hostAgent?.id ?? ""}
+              workerId={hostWorker?.id ?? ""}
               conversationScopeKey={brainChatScopeKey}
-              agentInfo={{
-                cwd: hostAgent?.cwd,
-                command: hostAgent?.command,
-                name: hostAgent?.name,
-                processId: hostAgent?.process_id,
-                startedAt: hostAgent?.started_at,
+              workerInfo={{
+                cwd: hostWorker?.cwd,
+                command: hostWorker?.command,
+                name: hostWorker?.name,
+                processId: hostWorker?.process_id,
+                startedAt: hostWorker?.started_at,
               }}
               connectionState={connectionState}
               connectionIssue={connectionIssue}
@@ -485,19 +485,19 @@ export default function BrainScreen() {
           ) : (
             <BrainInterfaceUnavailableState
               chrome={chrome}
-              provider={hostAdapter?.provider}
+              provider={hostExecutor?.provider}
             />
           )}
         </ChatCanvas>
       </View>
 
-      <BrainAdapterSheet
+      <BrainExecutorSheet
         visible={adapterSheetVisible}
-        adapters={availableAdapters}
-        hostAdapterId={hostAdapter?.id}
-        delegatedAdapterId={delegatedAdapter?.id}
-        hostAdapter={hostAdapter}
-        delegatedAdapter={delegatedAdapter}
+        executors={availableExecutors}
+        hostAdapterId={hostExecutor?.id}
+        delegatedAdapterId={delegatedExecutor?.id}
+        hostExecutor={hostExecutor}
+        delegatedExecutor={delegatedExecutor}
         switchingAdapterId={switchingAdapterId}
         switchingTarget={switchingTarget}
         error={adapterSwitchError}

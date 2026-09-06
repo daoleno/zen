@@ -79,7 +79,7 @@ func (l *Launcher) StartDedicated(item *Item, cwd string) (*Item, error) {
 	next := cloneItem(item)
 	now := l.now()
 	next.Frontmatter.Started = &now
-	next.Frontmatter.AgentSession = sessionID
+	next.Frontmatter.WorkerSession = sessionID
 	return next, nil
 }
 

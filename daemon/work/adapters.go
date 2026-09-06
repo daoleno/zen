@@ -107,7 +107,7 @@ func (r TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 			provisionalID = plan.ProvisionalID
 		}
 	}
-	agentID, err := r.Watcher.CreateSession("", opts)
+	workerID, err := r.Watcher.CreateSession("", opts)
 	if err != nil {
 		if provisionalID != "" && r.Profiles != nil {
 			abortPersist, abortErr := r.Profiles.AbortLaunch(provisionalID)
@@ -121,9 +121,9 @@ func (r TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 		return "", err
 	}
 	if provisionalID != "" && r.Profiles != nil {
-		_, _, persist, commitErr := r.Profiles.CommitLaunch(provisionalID, agentID)
+		_, _, persist, commitErr := r.Profiles.CommitLaunch(provisionalID, workerID)
 		if !persist.Applied {
-			cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, provisionalID, agentID, r.Watcher.KillSession, r.sessionLivenessProbe)
+			cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, provisionalID, workerID, r.Watcher.KillSession, r.sessionLivenessProbe)
 			return "", errors.Join(commitErr, cleanup.Err)
 		}
 		if !persist.Durable || commitErr != nil {
@@ -135,18 +135,18 @@ func (r TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 			if durabilityErr == nil {
 				durabilityErr = modelprofiles.ErrPersistDirSync
 			}
-			cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, "", agentID, r.Watcher.KillSession, r.sessionLivenessProbe)
+			cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, "", workerID, r.Watcher.KillSession, r.sessionLivenessProbe)
 			return "", fmt.Errorf("calendar profile commit not durable: %w", errors.Join(durabilityErr, cleanup.Err))
 		}
 	}
-	return agentID, nil
+	return workerID, nil
 }
 
 // SendWhenReady waits for a freshly spawned known agent UI before sending the
 // initial prompt. The bounded handoff retries safe definitely-not-submitted
 // readiness timeouts within the same occurrence and fails closed on ambiguous
 // admission or a lost spawned identity.
-func (r TmuxRunner) SendWhenReady(agentID, command, text string) error {
+func (r TmuxRunner) SendWhenReady(workerID, command, text string) error {
 	if r.Watcher == nil {
 		return fmt.Errorf("delegated watcher is required")
 	}
@@ -154,25 +154,25 @@ func (r TmuxRunner) SendWhenReady(agentID, command, text string) error {
 	if budget <= 0 {
 		budget = DefaultScheduledInputReadyBudget
 	}
-	return r.Watcher.SendInputWhenReadyBudgeted(agentID, command, text, budget)
+	return r.Watcher.SendInputWhenReadyBudgeted(workerID, command, text, budget)
 }
 
 // Abort terminates the one fresh window created for a failed Calendar launch
 // and releases any committed Model Profile route only after kill proves the
 // Session is gone (or was already missing).
-func (r TmuxRunner) Abort(agentID string) error {
+func (r TmuxRunner) Abort(workerID string) error {
 	if r.Watcher == nil {
 		return fmt.Errorf("delegated watcher is required")
 	}
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
 		return nil
 	}
 	if r.Profiles != nil {
-		cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, "", agentID, r.Watcher.KillSession, r.sessionLivenessProbe)
+		cleanup := modelprofiles.CleanupFailedLaunch(r.Profiles, "", workerID, r.Watcher.KillSession, r.sessionLivenessProbe)
 		return cleanup.Err
 	}
-	return r.Watcher.KillSession(agentID)
+	return r.Watcher.KillSession(workerID)
 }
 
 func (r TmuxRunner) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {

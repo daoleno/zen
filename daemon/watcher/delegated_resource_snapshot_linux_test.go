@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daoleno/zen/daemon/agentproc"
+	"github.com/daoleno/zen/daemon/workerproc"
 )
 
 func TestLinuxSnapshotUsesCgroupPropertiesWithoutProcessPolling(t *testing.T) {
@@ -29,9 +29,9 @@ func TestLinuxSnapshotUsesCgroupPropertiesWithoutProcessPolling(t *testing.T) {
 			},
 			byTarget:        map[string]string{"main:@9": unit},
 			availableMemory: func() uint64 { return 10 * 1024 * 1024 * 1024 },
-			sampleOwnedLeases: func(string) (agentproc.PoolSample, error) {
+			sampleOwnedLeases: func(string) (workerproc.PoolSample, error) {
 				t.Fatal("linux snapshot must not fall back to whole-host process sampling")
-				return agentproc.PoolSample{}, nil
+				return workerproc.PoolSample{}, nil
 			},
 		},
 		systemctl: "/bin/true",
@@ -132,8 +132,8 @@ func TestParseSystemctlShowAndUint(t *testing.T) {
 }
 
 func TestParseSystemctlShowBlocksBlankLineSeparated(t *testing.T) {
-	oldUnit := "zen-agent-ff992d773e637a2859b1d466b0417c81-95f28a77fff94e8da964146d3e968502.scope"
-	newUnit := "zen-agent-ff992d773e637a2859b1d466b0417c81-0ab0b633f5c44a31ae3baecd1850ad36.scope"
+	oldUnit := "zen-worker-ff992d773e637a2859b1d466b0417c81-95f28a77fff94e8da964146d3e968502.scope"
+	newUnit := "zen-worker-ff992d773e637a2859b1d466b0417c81-0ab0b633f5c44a31ae3baecd1850ad36.scope"
 	raw := []byte("Id=" + oldUnit + "\nMemoryHigh=5321266995\nMemoryMax=6549251686\n\nId=" + newUnit + "\nMemoryHigh=infinity\nMemoryMax=infinity\n")
 	byID := parseSystemctlShowBlocks(raw)
 	if len(byID) != 2 {

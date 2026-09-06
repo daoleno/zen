@@ -1044,14 +1044,12 @@ func (server *Server) handleClientWithRelease(
 		outcome.reject(server.contextRejection(ctx, rejectionTicket))
 		return
 	}
-	if admissionAlias != "" {
-		defer server.releaseAdmissionReservation(admissionAlias, streamID)
-	}
 	if !server.reserveClient(session) {
+		server.releaseAdmissionReservation(admissionAlias, streamID)
 		outcome.reject(server.contextRejection(ctx, rejectionCapacity))
 		return
 	}
-	defer server.releaseClient(session)
+	defer server.releaseClient(session, admissionAlias, streamID)
 	releaseHandshake()
 
 	ticket, err := linkproto.RandomID(32)
@@ -1150,6 +1148,10 @@ func (server *Server) reserveRoute(
 func (server *Server) releaseAdmissionReservation(alias string, streamID string) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
+	server.releaseAdmissionReservationLocked(alias, streamID)
+}
+
+func (server *Server) releaseAdmissionReservationLocked(alias string, streamID string) {
 	value, exists := server.admissions[strings.ToLower(alias)]
 	if !exists || value.reservedStream != strings.ToLower(streamID) {
 		return
@@ -1177,15 +1179,14 @@ func (server *Server) reserveClient(session *routeSession) bool {
 	return true
 }
 
-func (server *Server) releaseClient(session *routeSession) {
+func (server *Server) releaseClient(session *routeSession, alias, streamID string) {
 	server.mu.Lock()
-	released := false
+	defer server.mu.Unlock()
+	// Returning client capacity and its unconsumed admission is one release.
+	// Idle metrics must not overtake reservation cleanup.
+	server.releaseAdmissionReservationLocked(alias, streamID)
 	if session.activeClients > 0 {
 		session.activeClients--
-		released = true
-	}
-	server.mu.Unlock()
-	if released {
 		server.activeClients.Add(-1)
 	}
 }

@@ -32,8 +32,8 @@ type cursorTranscriptCandidate struct {
 	Updated   time.Time
 }
 
-func (r *ProviderConversationReader) loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadCursorConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -42,7 +42,7 @@ func (r *ProviderConversationReader) loadCursorConversationForAgent(agent classi
 		}, nil
 	}
 
-	candidate, ok, err := r.findCursorTranscript(agent, now)
+	candidate, ok, err := r.findCursorTranscript(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -73,11 +73,11 @@ func (r *ProviderConversationReader) loadCursorConversationForAgent(agent classi
 }
 
 func (r *ProviderConversationReader) loadCursorConversation(path string) (CodexConversation, error) {
-	return r.loadFileConversation(AgentProviderCursor, path, parseCursorConversation)
+	return r.loadFileConversation(WorkerProviderCursor, path, parseCursorConversation)
 }
 
-func (r *ProviderConversationReader) findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscriptCandidate, bool, error) {
-	cwd := strings.TrimSpace(agent.Cwd)
+func (r *ProviderConversationReader) findCursorTranscript(worker classifier.Worker, now time.Time) (cursorTranscriptCandidate, bool, error) {
+	cwd := strings.TrimSpace(worker.Cwd)
 	if cwd == "" {
 		return cursorTranscriptCandidate{}, false, nil
 	}
@@ -131,7 +131,7 @@ func (r *ProviderConversationReader) findCursorTranscript(agent classifier.Agent
 		return cursorTranscriptCandidate{}, false, nil
 	}
 
-	if sessionID := cursorResumeSessionID(agent.Command); sessionID != "" {
+	if sessionID := cursorResumeSessionID(worker.Command); sessionID != "" {
 		if matched, ok := matchCursorTranscriptID(candidates, sessionID); ok {
 			return matched, true, nil
 		}
@@ -141,10 +141,10 @@ func (r *ProviderConversationReader) findCursorTranscript(agent classifier.Agent
 	if len(freshCandidates) == 0 {
 		return cursorTranscriptCandidate{}, false, nil
 	}
-	if matched, ok := matchCursorTranscriptToAgentStart(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchCursorTranscriptToWorkerStart(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
-	if matched, ok := matchCursorTranscriptToActiveSession(freshCandidates, agent.StartedAt); ok {
+	if matched, ok := matchCursorTranscriptToActiveSession(freshCandidates, worker.StartedAt); ok {
 		return matched, true, nil
 	}
 	return cursorTranscriptCandidate{}, false, nil
@@ -749,7 +749,7 @@ func isCursorTranscriptFresh(updated, now time.Time) bool {
 	return now.Sub(updated) <= cursorTranscriptAge
 }
 
-func matchCursorTranscriptToAgentStart(candidates []cursorTranscriptCandidate, startedAt time.Time) (cursorTranscriptCandidate, bool) {
+func matchCursorTranscriptToWorkerStart(candidates []cursorTranscriptCandidate, startedAt time.Time) (cursorTranscriptCandidate, bool) {
 	if startedAt.IsZero() {
 		return cursorTranscriptCandidate{}, false
 	}

@@ -6,7 +6,7 @@ import {
 } from "./workActivityListModel";
 
 const owner: WorkActivityOwner = {
-  sessionId: "brain-agent-worker:@1",
+  sessionId: "zen-worker-worker:@1",
   title: "Release worker",
   status: "running",
   delegated: true,

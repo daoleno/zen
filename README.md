@@ -52,6 +52,12 @@
 
 Brain keeps objectives, decisions, open threads, and next steps together across chats, devices, and restarts.
 
+A **Zen Worker** is the execution unit managed by Zen. Brain owns objectives,
+scheduling, review, and acceptance; Workers execute scoped work. Workers appear
+as execution sessions in the mobile app and are managed with `zen worker` on
+the command line. A Codex subagent belongs to Codex internally and is not a
+Zen Worker or a separate Brain scheduling owner.
+
 ## Quick start
 
 Install the daemon on Linux (`amd64`/`arm64`), WSL, or an Apple Silicon Mac:

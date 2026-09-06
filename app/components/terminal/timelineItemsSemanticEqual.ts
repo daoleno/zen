@@ -46,10 +46,7 @@ export function timelineItemsSemanticEqual(
       left.onRetryPending === right.onRetryPending &&
       left.streaming === right.streaming &&
       left.turnFocusAnchorId === right.turnFocusAnchorId &&
-      attachmentsEqual(left.attachments, right.attachments) &&
-      // Conservative identity: HeartbeatWakeEvent schema is legacy and not
-      // field-walked here; distinct objects with identical fields do not reuse.
-      left.heartbeatWake === right.heartbeatWake
+      attachmentsEqual(left.attachments, right.attachments)
     );
   }
   if (left.type === "plan" && right.type === "plan") {

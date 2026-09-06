@@ -17,7 +17,7 @@ States are `scheduled`, `waiting`, `running`, `completed`, `failed`, and `cancel
 
 ## Scheduled actions
 
-A scheduled action creates a visible `calendar_action` Work item and launches it through the configured executor in a dedicated, non-delegated tmux session. Launching Work only makes the Calendar item `running`; it is not completion. The scheduler reconciles the linked Work frontmatter and agent lifecycle and records completion or failure only after a terminal signal. The executor session never enters generic agent-lifecycle OS notifications; Calendar owns the terminal result alert.
+A scheduled action creates a visible `calendar_action` Work item and launches it through the configured executor in a dedicated, non-delegated tmux session. Launching Work only makes the Calendar item `running`; it is not completion. The scheduler reconciles the linked Work frontmatter and Worker lifecycle and records completion or failure only after a terminal signal. The executor session never enters generic agent-lifecycle OS notifications; Calendar owns the terminal result alert.
 
 The generated Work file has a deterministic `User-facing deliverable` section delimited by exactly one ordered pair of `zen:scheduled-deliverable` markers. The executor must replace the placeholder inside those markers with the complete result intended for the user, preserving useful paragraphs, lists, links, and citations while excluding instructions, progress notes, and Calendar metadata. Zen accepts that section only from the freshly read, correctly linked terminal Work file, rejects malformed or larger-than-256-KiB content, and never substitutes Work digest fields or an executor summary.
 

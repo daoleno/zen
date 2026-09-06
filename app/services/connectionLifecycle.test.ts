@@ -12,8 +12,8 @@ import { buildInterfaceStatusMeta } from "../components/terminal/InterfaceChatCo
 
 const hydratedBrain = {
   agents: [{ id: "host-1", name: "Brain", status: "running" }],
-  host_agent: { id: "host-1", name: "Brain", status: "running" },
-  host_adapter: {
+  host_worker: { id: "host-1", name: "Brain", status: "running" },
+  host_executor: {
     id: "codex",
     name: "Codex",
     provider: "codex",
@@ -36,7 +36,7 @@ describe("connected read refresh", () => {
     const calls: Array<[string, string]> = [];
     const client = {
       listWorkItems: (serverId: string) => calls.push(["work", serverId]),
-      listAgentSessions: (serverId: string) =>
+      listWorkerSessions: (serverId: string) =>
         calls.push(["sessions", serverId]),
       requestBrainSnapshot: (serverId: string) =>
         calls.push(["brain", serverId]),
@@ -105,12 +105,12 @@ describe("Brain cache across background->foreground resume", () => {
       : hydrated;
 
     expect(retained.byServer["srv-1"]?.hydrated).toBe(true);
-    expect(retained.byServer["srv-1"]?.host_agent?.id).toBe("host-1");
+    expect(retained.byServer["srv-1"]?.host_worker?.id).toBe("host-1");
     expect(retained.byServer["srv-1"]?.chat_thread_id).toBe("thread-1");
     expect(
       shouldShowBrainLoadingState({
         hydrated: Boolean(retained.byServer["srv-1"]?.hydrated),
-        hasHostAgent: Boolean(retained.byServer["srv-1"]?.host_agent?.id),
+        hasHostWorker: Boolean(retained.byServer["srv-1"]?.host_worker?.id),
       }),
     ).toBe(false);
   });
@@ -135,7 +135,7 @@ describe("Brain cache across background->foreground resume", () => {
     expect(
       shouldShowBrainLoadingState({
         hydrated: false,
-        hasHostAgent: false,
+        hasHostWorker: false,
       }),
     ).toBe(true);
   });
@@ -161,7 +161,7 @@ describe("Brain cache across background->foreground resume", () => {
     expect(afterReconnectSnapshot.byServer["srv-1"]?.chat_thread_id).toBe(
       "thread-1",
     );
-    expect(afterReconnectSnapshot.byServer["srv-1"]?.host_agent?.id).toBe(
+    expect(afterReconnectSnapshot.byServer["srv-1"]?.host_worker?.id).toBe(
       "host-1",
     );
   });

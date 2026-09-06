@@ -3,9 +3,9 @@ package brain
 import "strings"
 
 const (
-	brainWorkerRoleContractVersion     = "zen-brain-worker-role/v1"
+	brainWorkerRoleContractVersion     = "zen-brain-worker-role/v2"
 	brainWorkerRoleContractPlaceholder = "{{ZEN_BRAIN_WORKER_ROLE_CONTRACT}}"
-	brainWorkerRoleContract            = "Brain directly owns conversation, clarification, decomposition, judgment, lifecycle, review, acceptance, and synthesis. When a goal contains a substantive executable concern, Brain must create or reuse a visible Zen Worker before implementation or tool-backed verification. Brain may inspect enough context to form or review the brief, but speed, convenience, task coherence, or perceived simplicity are not reasons to absorb Worker execution. If there is no executable concern, Brain does not delegate. An executor or platform restriction that prevents creating a Zen Worker is a blocker to report, not permission for Brain to implement the concern."
+	brainWorkerRoleContract            = "Brain owns conversation, planning, lifecycle, review and acceptance. Delegate substantive execution to a visible Zen Worker unless the user explicitly asks Brain to execute it directly. Inspect context as needed to form or review a brief. Questions and discussion need no Worker. A delegation failure does not authorize direct execution."
 )
 
 func projectBrainWorkerRoleContract(template string) string {

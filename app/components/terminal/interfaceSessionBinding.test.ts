@@ -46,8 +46,8 @@ function userEvent(id: string, body: string, seq: number) {
   };
 }
 
-function populatedState(agentId: string, sessionId: string): ThreadState {
-  const cacheKey = interfaceChatSessionCacheKey(SERVER_ID, agentId);
+function populatedState(workerId: string, sessionId: string): ThreadState {
+  const cacheKey = interfaceChatSessionCacheKey(SERVER_ID, workerId);
   const conversation: CodexConversation = {
     available: true,
     source: "opencode_db",
@@ -120,11 +120,11 @@ describe("Interface/Terminal session binding contract", () => {
     // Both surfaces consume the same canonical route pair.
     expect(parseSessionKey(newKey)).toEqual({
       serverId: SERVER_ID,
-      agentId: NEW_AGENT_ID,
+      workerId: NEW_AGENT_ID,
     });
     expect(parseSessionKey(previousKey)).toEqual({
       serverId: SERVER_ID,
-      agentId: PREVIOUS_AGENT_ID,
+      workerId: PREVIOUS_AGENT_ID,
     });
   });
 
@@ -234,7 +234,7 @@ describe("Interface/Terminal session binding contract", () => {
     // App relaunch or deep link: parse the persisted/route key back to the
     // canonical pair and start from a cold-loading state.
     const recovered = parseSessionKey(makeSessionKey(SERVER_ID, NEW_AGENT_ID));
-    expect(recovered).toEqual({ serverId: SERVER_ID, agentId: NEW_AGENT_ID });
+    expect(recovered).toEqual({ serverId: SERVER_ID, workerId: NEW_AGENT_ID });
 
     let state = initialThreadState(cacheKey);
     state = interfaceChatThreadReducer(state, {

@@ -31,7 +31,7 @@ import (
 // model/effort, including Codex's native <model_switch> signal); the
 // thread/settings/updated acknowledgement matched; and a rejected native
 // mutation leaves the thread untouched. Artifacts land under TMPDIR
-// (Agent-owned). No real credentials / user config / live Sessions.
+// (Worker-owned). No real credentials / user config / live Sessions.
 func TestLiveNativeThreadSettings(t *testing.T) {
 	if os.Getenv("ZEN_CODEX_LIVE_CONTROL") == "" {
 		t.Skip("set ZEN_CODEX_LIVE_CONTROL=1 for the live Codex app-server proof")

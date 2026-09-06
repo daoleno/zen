@@ -8,7 +8,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../../store/agents";
+import type { Worker, ConnectionState } from "../../../store/workers";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalViewportModel } from "./useTerminalViewportModel";
 
@@ -17,8 +17,8 @@ interface UseTerminalViewportPropsInput {
   initialComposerFocusGrant: string | null;
   sessionKey: string | null;
   serverId: string;
-  agentId: string;
-  agent?: Agent;
+  workerId: string;
+  agent?: Worker;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
@@ -46,7 +46,7 @@ export function useTerminalViewportProps({
   initialComposerFocusGrant,
   sessionKey,
   serverId,
-  agentId,
+  workerId,
   agent,
   connectionState,
   connectionIssue,
@@ -86,7 +86,7 @@ export function useTerminalViewportProps({
       initialComposerFocusGrant,
       sessionKey,
       serverId,
-      agentId,
+      workerId,
       agent,
       connectionState,
       connectionIssue,
@@ -121,7 +121,7 @@ export function useTerminalViewportProps({
     [
       accessoryBottomOffset,
       agent,
-      agentId,
+      workerId,
       chrome,
       connectionIssue,
       connectionState,

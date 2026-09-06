@@ -190,11 +190,11 @@ export function TerminalScreenOverlays({
       />
 
       <NewTerminalSheet
+        key={selectedServerId ?? "no-server"}
         visible={newTerminalVisible}
         title="Session"
-        subtitle=""
         initialCwd={newTerminalInitialCwd}
-        selectedServerId={selectedServerId}
+        serverId={selectedServerId}
         submitting={creatingSession}
         onClose={onCloseNewTerminal}
         onSubmit={onSubmitNewTerminal}

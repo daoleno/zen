@@ -11,19 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daoleno/zen/daemon/agentproc"
+	"github.com/daoleno/zen/daemon/workerproc"
 	"github.com/google/uuid"
 )
 
 const delegatedResourceReservationTTL = 2 * time.Minute
 
 type portableDelegatedResourceManager struct {
-	owner          string
-	supervisor     string
-	leaseDir       string
-	tempRoot       string
-	legacyTempRoot string // cleanup-only: ~/.zen/tmp/agent-resources/<owner>
-	limits         delegatedResourceLimits
+	owner      string
+	supervisor string
+	leaseDir   string
+	tempRoot   string
+	limits     delegatedResourceLimits
 
 	mu                sync.Mutex
 	byTarget          map[string]string
@@ -31,8 +30,8 @@ type portableDelegatedResourceManager struct {
 	lastFullScan      time.Time
 	now               func() time.Time
 	availableMemory   func() uint64
-	listLeases        func(dir string) ([]agentproc.Lease, error)
-	sampleOwnedLeases func(dir string) (agentproc.PoolSample, error)
+	listLeases        func(dir string) ([]workerproc.Lease, error)
+	sampleOwnedLeases func(dir string) (workerproc.PoolSample, error)
 }
 
 func newPortableDelegatedResourceManager(owner string) (*portableDelegatedResourceManager, error) {
@@ -44,7 +43,7 @@ func newPortableDelegatedResourceManager(owner string) (*portableDelegatedResour
 	if err != nil {
 		return nil, fmt.Errorf("locate home directory: %w", err)
 	}
-	leaseDir := filepath.Join(home, ".zen", "run", "agent-resources", owner)
+	leaseDir := filepath.Join(home, ".zen", "run", "worker-resources", owner)
 	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create delegated lease directory: %w", err)
 	}
@@ -53,20 +52,16 @@ func newPortableDelegatedResourceManager(owner string) (*portableDelegatedResour
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("create delegated temporary root: %w", err)
 	}
-	// Legacy long temp root is cleanup-only for sessions launched before the
-	// short marked layout. New Prepare calls never create under it.
-	legacyTempRoot := filepath.Join(home, ".zen", "tmp", "agent-resources", owner)
 	return &portableDelegatedResourceManager{
 		owner:           owner,
 		supervisor:      ZenExecutablePath(),
 		leaseDir:        leaseDir,
 		tempRoot:        tempRoot,
-		legacyTempRoot:  legacyTempRoot,
-		limits:          delegatedResourceLimitsForMemory(agentproc.PhysicalMemory()),
+		limits:          delegatedResourceLimitsForMemory(workerproc.PhysicalMemory()),
 		byTarget:        make(map[string]string),
 		reserved:        make(map[string]time.Time),
 		now:             time.Now,
-		availableMemory: agentproc.AvailableMemory,
+		availableMemory: workerproc.AvailableMemory,
 	}, nil
 }
 
@@ -104,11 +99,11 @@ func (m *portableDelegatedResourceManager) Prepare(activeSessions int) (*delegat
 		if m.availableMemory != nil {
 			available = m.availableMemory()
 		} else {
-			available = agentproc.AvailableMemory()
+			available = workerproc.AvailableMemory()
 		}
 		if available > 0 && available < m.limits.HostReserve {
 			m.mu.Unlock()
-			return nil, fmt.Errorf("delegated agent launch deferred under host memory pressure (available %d bytes is below host reserve %d); retry when memory is available", available, m.limits.HostReserve)
+			return nil, fmt.Errorf("delegated Zen Worker launch deferred under host memory pressure (available %d bytes is below host reserve %d); retry when memory is available", available, m.limits.HostReserve)
 		}
 	}
 	unit := delegatedResourceUnit(m.owner, uuid.NewString())
@@ -133,11 +128,11 @@ func (m *portableDelegatedResourceManager) Prepare(activeSessions int) (*delegat
 	}, nil
 }
 
-func (m *portableDelegatedResourceManager) listOwnedLeases() ([]agentproc.Lease, error) {
+func (m *portableDelegatedResourceManager) listOwnedLeases() ([]workerproc.Lease, error) {
 	if m.listLeases != nil {
 		return m.listLeases(m.leaseDir)
 	}
-	return agentproc.ListLeases(m.leaseDir)
+	return workerproc.ListLeases(m.leaseDir)
 }
 
 func (m *portableDelegatedResourceManager) Bind(target, unit string) {
@@ -201,7 +196,7 @@ func (m *portableDelegatedResourceManager) Reconcile(windows []tmuxWindow) {
 	m.mu.Unlock()
 
 	if fullScan {
-		leases, err := agentproc.ListLeases(m.leaseDir)
+		leases, err := workerproc.ListLeases(m.leaseDir)
 		if err != nil {
 			log.Printf("delegated lease reconciliation: %v", err)
 		} else {
@@ -225,19 +220,6 @@ func (m *portableDelegatedResourceManager) Reconcile(windows []tmuxWindow) {
 					continue
 				}
 				toStop[unit] = true
-			}
-		}
-		if strings.TrimSpace(m.legacyTempRoot) != "" {
-			legacyEntries, legacyErr := os.ReadDir(m.legacyTempRoot)
-			if legacyErr != nil && !os.IsNotExist(legacyErr) {
-				log.Printf("delegated legacy temporary directory reconciliation: %v", legacyErr)
-			} else {
-				for _, entry := range legacyEntries {
-					unit := entry.Name()
-					if entry.IsDir() && validDelegatedResourceUnit(m.owner, unit) && !liveUnits[unit] {
-						toStop[unit] = true
-					}
-				}
 			}
 		}
 	}
@@ -271,11 +253,11 @@ func (m *portableDelegatedResourceManager) Release(target, unit string) error {
 }
 
 func (m *portableDelegatedResourceManager) stopLease(unit string) error {
-	path, err := agentproc.LeasePath(m.leaseDir, unit)
+	path, err := workerproc.LeasePath(m.leaseDir, unit)
 	if err != nil {
 		return err
 	}
-	if err := agentproc.StopLease(path); err != nil {
+	if err := workerproc.StopLease(path); err != nil {
 		return err
 	}
 	return m.removeOwnedTempDir(unit)
@@ -305,13 +287,6 @@ func (m *portableDelegatedResourceManager) createOwnedTempDir(unit string) (stri
 }
 
 func (m *portableDelegatedResourceManager) removeOwnedTempDir(unit string) error {
-	if err := m.removeShortOwnedTempDir(unit); err != nil {
-		return err
-	}
-	return m.removeLegacyOwnedTempDir(unit)
-}
-
-func (m *portableDelegatedResourceManager) removeShortOwnedTempDir(unit string) error {
 	tempDir, err := m.resourceTempDir(unit)
 	if err != nil {
 		return err
@@ -339,31 +314,6 @@ func (m *portableDelegatedResourceManager) removeShortOwnedTempDir(unit string) 
 	}
 	if err := removeOwnedTree(tempDir); err != nil {
 		return fmt.Errorf("remove delegated temporary directory: %w", err)
-	}
-	return nil
-}
-
-func (m *portableDelegatedResourceManager) removeLegacyOwnedTempDir(unit string) error {
-	if strings.TrimSpace(m.legacyTempRoot) == "" || !validDelegatedResourceUnit(m.owner, unit) {
-		return nil
-	}
-	legacy := filepath.Join(m.legacyTempRoot, unit)
-	if filepath.Base(legacy) != unit {
-		return nil
-	}
-	info, err := os.Lstat(legacy)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat legacy delegated temporary directory: %w", err)
-	}
-	// Exact owner/unit path only; never follow a symlink root into foreign content.
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil
-	}
-	if err := removeOwnedTree(legacy); err != nil {
-		return fmt.Errorf("remove legacy delegated temporary directory: %w", err)
 	}
 	return nil
 }

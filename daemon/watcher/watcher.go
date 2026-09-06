@@ -208,14 +208,14 @@ func isTransientLaunchShell(command string) bool {
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
-	Type     string              `json:"type"`
-	AgentID  string              `json:"agent_id"`
-	Agent    *classifier.Agent   `json:"agent,omitempty"`
-	Agents   []*classifier.Agent `json:"agents,omitempty"`
-	Lines    []string            `json:"lines,omitempty"`
-	OldState string              `json:"old,omitempty"`
-	NewState string              `json:"new,omitempty"`
-	TurnID   string              `json:"-"`
+	Type     string               `json:"type"`
+	WorkerID string               `json:"worker_id"`
+	Worker   *classifier.Worker   `json:"worker,omitempty"`
+	Workers  []*classifier.Worker `json:"workers,omitempty"`
+	Lines    []string             `json:"lines,omitempty"`
+	OldState string               `json:"old,omitempty"`
+	NewState string               `json:"new,omitempty"`
+	TurnID   string               `json:"-"`
 }
 
 type providerActivitySignal struct {
@@ -239,15 +239,18 @@ func providerActivitySignalFor(observation ProviderActivityObservation) provider
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
 	pollInterval          time.Duration
-	agents                map[string]*classifier.Agent
-	agentOrder            []string
+	workers               map[string]*classifier.Worker
+	workerOrder           []string
 	prevContent           map[string]string
 	hidden                map[string]bool
 	delegated             map[string]bool
 	activityProbe         classifier.ActivityProbe
 	providerActivityProbe ProviderActivityProbe
-	pollGeneration        int64
-	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
+	nextEpoch             int64
+	snapshotReady         bool
+	eventMu               sync.Mutex       // serialize projection publication without holding mu under backpressure
+	inventoryMu           sync.Mutex       // register resource ownership after in-flight inventory/reconciliation
+	workerEpoch           map[string]int64 // per-agent generation for lock-free probe apply
 	turnLedger            TurnLedger
 	pollSources           *PollSources              // test-only seam (SetPollSources); production is nil
 	ledgerTurns           map[string]TurnSnapshot   // projection cache of the canonical ledger, never a truth owner
@@ -288,11 +291,11 @@ type Watcher struct {
 func New(pollInterval time.Duration) *Watcher {
 	w := &Watcher{
 		pollInterval:     pollInterval,
-		agents:           make(map[string]*classifier.Agent),
+		workers:          make(map[string]*classifier.Worker),
 		prevContent:      make(map[string]string),
 		hidden:           make(map[string]bool),
 		delegated:        make(map[string]bool),
-		agentEpoch:       make(map[string]int64),
+		workerEpoch:      make(map[string]int64),
 		ledgerTurns:      make(map[string]TurnSnapshot),
 		appliedFactIDs:   make(map[string]string),
 		ledgerTurnReadAt: make(map[string]time.Time),
@@ -315,15 +318,6 @@ func (w *Watcher) pollReaders() (func() ([]tmuxWindow, error), func(string) (str
 	w.mu.RLock()
 	list, capture, snapshot := w.listWindows, w.capturePane, w.snapshotProcesses
 	w.mu.RUnlock()
-	if list == nil {
-		list = w.listTmuxWindows
-	}
-	if capture == nil {
-		capture = w.capturePaneContent
-	}
-	if snapshot == nil {
-		snapshot = snapshotProcesses
-	}
 	return list, capture, snapshot
 }
 
@@ -343,28 +337,28 @@ type paneObservation struct {
 	lines      []string
 }
 
-type preparedPollAgent struct {
+type preparedPollWorker struct {
 	id                string
 	epoch             int64
-	agentSnap         classifier.Agent
+	workerSnap        classifier.Worker
 	content           string
 	lines             []string
 	alive             bool
 	deadStatus        int
 	panePID           int
-	classified        classifier.AgentState
+	classified        classifier.WorkerState
 	classifiedSummary string
-	oldState          classifier.AgentState
+	oldState          classifier.WorkerState
 	contentChanged    bool
 	existed           bool
 	exists            bool
 	prev              string
-	previousMetadata  agentMetadataSnapshot
+	previousMetadata  workerMetadataSnapshot
 	now               time.Time
 }
 
-type probedPollAgent struct {
-	preparedPollAgent
+type probedPollWorker struct {
+	preparedPollWorker
 	activity classifier.ActivitySignal
 	provider ProviderActivityObservation
 	turn     TurnSnapshot
@@ -413,7 +407,7 @@ func (w *Watcher) SocketPathFor(target string) string {
 	target = strings.TrimSpace(target)
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if _, owned := w.agents[target]; !owned {
+	if _, owned := w.workers[target]; !owned {
 		return ""
 	}
 	return w.tmuxSocketPath
@@ -425,7 +419,7 @@ func (w *Watcher) ownsTarget(target string) bool {
 	}
 	target = strings.TrimSpace(target)
 	w.mu.RLock()
-	_, owned := w.agents[target]
+	_, owned := w.workers[target]
 	w.mu.RUnlock()
 	return owned
 }
@@ -454,7 +448,7 @@ func (w *Watcher) targetIsDurablyOwned(target string) (bool, error) {
 
 // socketPathFor resolves every internal tmux operation to the one immutable
 // host server selected at startup. Ownership is enforced separately through
-// the durable @zen_agent_created marker and the owned discovery projection.
+// the durable @zen_worker_created marker and the owned discovery projection.
 func (w *Watcher) socketPathFor(target string) string {
 	if w == nil {
 		return ""
@@ -478,15 +472,9 @@ func (w *Watcher) SetTurnLedger(ledger TurnLedger) {
 }
 
 func (w *Watcher) sessionInputOwner() *sessionInputOwner {
-	if w == nil {
-		return defaultSessionInputOwner
-	}
 	w.mu.RLock()
 	owner := w.sessionInput
 	w.mu.RUnlock()
-	if owner == nil {
-		return defaultSessionInputOwner
-	}
 	return owner
 }
 
@@ -525,7 +513,7 @@ func (w *Watcher) targetForSessionProbe(sessionID string) (targetProcessIdentity
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	w.mu.RLock()
-	_, owned := w.agents[sessionID]
+	_, owned := w.workers[sessionID]
 	identityResolver := w.targetProcessResolver
 	resolver := w.targetCommandResolver
 	w.mu.RUnlock()
@@ -756,8 +744,8 @@ func (w *Watcher) resourceManager() delegatedResourceManager {
 
 // SessionResourceSnapshot returns one on-demand read-only resource projection
 // for agentID from the daemon-owned shared resource manager.
-func (w *Watcher) SessionResourceSnapshot(agentID string) SessionResourceSnapshot {
-	return w.resourceManager().Snapshot(strings.TrimSpace(agentID))
+func (w *Watcher) SessionResourceSnapshot(workerID string) SessionResourceSnapshot {
+	return w.resourceManager().Snapshot(strings.TrimSpace(workerID))
 }
 
 func (w *Watcher) delegatedSessionCount() int {
@@ -804,18 +792,17 @@ func (w *Watcher) Events() <-chan SessionEvent {
 	return w.events
 }
 
-// Agents returns a snapshot of all current agents.
-func (w *Watcher) Agents() []*classifier.Agent {
+// Workers returns snapshots of the current execution units.
+func (w *Watcher) Workers() []*classifier.Worker {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	result := make([]*classifier.Agent, 0, len(w.agents))
-	for _, id := range w.agentOrder {
-		a, ok := w.agents[id]
+	result := make([]*classifier.Worker, 0, len(w.workers))
+	for _, id := range w.workerOrder {
+		a, ok := w.workers[id]
 		if !ok {
 			continue
 		}
-		copy := *a
-		result = append(result, &copy)
+		result = append(result, cloneWorker(a))
 	}
 	return result
 }
@@ -828,22 +815,21 @@ func (w *Watcher) SnapshotReady() bool {
 	}
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.pollGeneration > 0
+	return w.snapshotReady
 }
 
-// GetAgent returns a snapshot of a single agent, or nil if not found.
-func (w *Watcher) GetAgent(id string) *classifier.Agent {
+// GetWorker returns a snapshot of one execution unit, or nil if not found.
+func (w *Watcher) GetWorker(id string) *classifier.Worker {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	a, ok := w.agents[id]
+	a, ok := w.workers[id]
 	if !ok {
 		return nil
 	}
-	copy := *a
-	return &copy
+	return cloneWorker(a)
 }
 
-// UpdateAgentProgress applies a control-plane lifecycle progress update to a
+// UpdateWorkerProgress applies a control-plane lifecycle progress update to a
 // known agent and emits the same state/metadata events used by watcher polling.
 //
 // For delegated signal sessions the prompt-carried TurnID is matched by the
@@ -851,7 +837,7 @@ func (w *Watcher) GetAgent(id string) *classifier.Agent {
 // atomically admit its pending submission; matching running/attention and
 // terminal states then share the one canonical reducer. Markerless and
 // pre-contract Sessions retain their existing projection behavior.
-func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error) {
+func (w *Watcher) UpdateWorkerProgress(id string, progress classifier.WorkerProgress) (*classifier.Worker, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("missing agent id")
@@ -920,40 +906,44 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 		}
 	}
 	var event SessionEvent
-	var snapshot *classifier.Agent
+	var snapshot *classifier.Worker
 
+	w.eventMu.Lock()
+	defer w.eventMu.Unlock()
 	w.mu.Lock()
-	agent, ok := w.agents[id]
+	worker, ok := w.workers[id]
 	if !ok {
 		w.mu.Unlock()
-		return nil, fmt.Errorf("agent session not found")
+		return nil, fmt.Errorf("Worker session not found")
 	}
-	oldState := agent.State
-	classifier.ApplyProgress(agent, progress, now)
+	oldState := worker.State
+	w.nextEpoch++
+	w.workerEpoch[id] = w.nextEpoch
+	classifier.ApplyProgress(worker, progress, now)
 	if hasPendingSubmission && (!hasCurrentTurn || TurnTerminal(turn.Status)) {
 		// Pending is canonical transaction state, not a Turn. It suppresses raw
 		// Control terminal projection until provider admission resolves it, but
 		// cannot mutate or replace the previous terminal Turn.
-		clearStaleAttemptMetadata(agent)
-		agent.State = classifier.StateRunning
-		agent.Summary = "Delegated input is awaiting provider admission"
+		clearStaleAttemptMetadata(worker)
+		worker.State = classifier.StateRunning
+		worker.Summary = "Delegated input is awaiting provider admission"
 	} else if hasCurrentTurn {
 		// The canonical turn owns the Session projection: status, attention,
 		// and summary come from the ledger, and stale terminal-attempt
 		// metadata (attention/phase/lease) never survives.
 		w.ledgerTurns[id] = turn
 		w.ledgerTurnReadAt[id] = now
-		clearStaleAttemptMetadata(agent)
-		newState, summary := projectDelegatedTurn(agent, turn)
-		agent.State = newState
-		agent.Summary = summary
+		clearStaleAttemptMetadata(worker)
+		newState, summary := projectDelegatedTurn(worker, turn)
+		worker.State = newState
+		worker.Summary = summary
 		_ = appliedFact
 	}
-	snapshot = cloneAgent(agent)
+	snapshot = cloneWorker(worker)
 	event = SessionEvent{
-		Type:    "agent_metadata_change",
-		AgentID: id,
-		Agent:   snapshot,
+		Type:     "worker_metadata_change",
+		WorkerID: id,
+		Worker:   snapshot,
 		TurnID: func() string {
 			if hasPendingSubmission && (!hasCurrentTurn || TurnTerminal(turn.Status)) {
 				return ""
@@ -961,10 +951,10 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 			return turn.TurnID
 		}(),
 	}
-	if oldState != agent.State {
-		event.Type = "agent_state_change"
+	if oldState != worker.State {
+		event.Type = "worker_state_change"
 		event.OldState = string(oldState)
-		event.NewState = string(agent.State)
+		event.NewState = string(worker.State)
 	}
 	w.mu.Unlock()
 
@@ -977,7 +967,7 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 // identity (C.3.1): identical later heartbeats with distinct IDs are distinct
 // facts that each renew the lease, while a transport retry reusing the same ID
 // dedupes. The payload hash is audit metadata only, never identity.
-func controlFactFromProgress(id, turnID string, progress classifier.AgentProgress, now time.Time) *TurnFact {
+func controlFactFromProgress(id, turnID string, progress classifier.WorkerProgress, now time.Time) *TurnFact {
 	progressEventID := strings.TrimSpace(progress.ProgressEventID)
 	if progressEventID == "" {
 		progressEventID = uuid.NewString()
@@ -1037,7 +1027,7 @@ func progressCriteriaMet(detailsJSON string) bool {
 // delegated dispatch returns — accepted or ambiguous — so a reused Session
 // never inherits the previous turn's done projection while its new provider
 // turn is live or admitted.
-func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, error) {
+func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Worker, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("missing agent id")
@@ -1058,31 +1048,35 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 		return nil, fmt.Errorf("delegated Session %s has no canonical turn", id)
 	}
 	var event SessionEvent
-	var snapshot *classifier.Agent
+	var snapshot *classifier.Worker
+	w.eventMu.Lock()
+	defer w.eventMu.Unlock()
 	w.mu.Lock()
-	agent, ok := w.agents[id]
+	worker, ok := w.workers[id]
 	if !ok {
 		w.mu.Unlock()
-		return nil, fmt.Errorf("agent session not found")
+		return nil, fmt.Errorf("Worker session not found")
 	}
-	oldState := agent.State
+	oldState := worker.State
+	w.nextEpoch++
+	w.workerEpoch[id] = w.nextEpoch
 	if hasTurn {
 		w.ledgerTurns[id] = turn
 		w.ledgerTurnReadAt[id] = now
 	}
-	clearStaleAttemptMetadata(agent)
+	clearStaleAttemptMetadata(worker)
 	newState, summary := classifier.StateRunning, "Delegated input is awaiting provider admission"
 	if hasTurn && (!hasPendingSubmission || !TurnTerminal(turn.Status)) {
-		newState, summary = projectDelegatedTurn(agent, turn)
+		newState, summary = projectDelegatedTurn(worker, turn)
 	}
-	agent.State = newState
-	agent.Summary = summary
-	agent.UpdatedAt = now
-	snapshot = cloneAgent(agent)
+	worker.State = newState
+	worker.Summary = summary
+	worker.UpdatedAt = now
+	snapshot = cloneWorker(worker)
 	event = SessionEvent{
-		Type:    "agent_metadata_change",
-		AgentID: id,
-		Agent:   snapshot,
+		Type:     "worker_metadata_change",
+		WorkerID: id,
+		Worker:   snapshot,
 		TurnID: func() string {
 			if hasPendingSubmission && (!hasTurn || TurnTerminal(turn.Status)) {
 				return ""
@@ -1090,10 +1084,10 @@ func (w *Watcher) RebindDelegatedTurnProjection(id string) (*classifier.Agent, e
 			return turn.TurnID
 		}(),
 	}
-	if oldState != agent.State {
-		event.Type = "agent_state_change"
+	if oldState != worker.State {
+		event.Type = "worker_state_change"
 		event.OldState = string(oldState)
-		event.NewState = string(agent.State)
+		event.NewState = string(worker.State)
 	}
 	w.mu.Unlock()
 
@@ -1172,8 +1166,8 @@ func (w *Watcher) ProbeProviderEvidence(sessionID string) (ProviderActivityObser
 	if sessionID == "" {
 		return ProviderActivityObservation{}, false, fmt.Errorf("missing session id")
 	}
-	agent := w.GetAgent(sessionID)
-	if agent == nil {
+	worker := w.GetWorker(sessionID)
+	if worker == nil {
 		return ProviderActivityObservation{}, false, nil
 	}
 	w.mu.RLock()
@@ -1182,7 +1176,7 @@ func (w *Watcher) ProbeProviderEvidence(sessionID string) (ProviderActivityObser
 	if probe == nil {
 		return ProviderActivityObservation{}, false, nil
 	}
-	observation := probe.ObserveProviderActivity(*agent, time.Now().UTC())
+	observation := probe.ObserveProviderActivity(*worker, time.Now().UTC())
 	return observation, providerFactRelevant(observation), nil
 }
 
@@ -1203,65 +1197,101 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 func (w *Watcher) poll() {
 	listWindows, capturePane, snapshotProcesses := w.pollReaders()
+	w.inventoryMu.Lock()
+	w.mu.RLock()
+	inventoryEpoch := w.nextEpoch
+	w.mu.RUnlock()
 	windows, err := listWindows()
 	if err != nil {
 		if isNoTmuxServerError(err) {
 			w.resourceManager().Reconcile(nil)
 		}
+		w.inventoryMu.Unlock()
 		return
 	}
 	w.resourceManager().Reconcile(windows)
+	w.inventoryMu.Unlock()
 	processes := snapshotProcesses()
 	processSnapshotAt := time.Now()
 
 	observations := observePanes(windows, capturePane)
-
+	prepared, missing, probe, providerProbe := w.preparePollObservations(observations, processes, processSnapshotAt, inventoryEpoch)
+	results := w.collectPollEvidence(prepared, processes, probe, providerProbe)
+	missing = w.collectMissingPollEvidence(missing, providerProbe)
+	w.eventMu.Lock()
+	defer w.eventMu.Unlock()
 	w.mu.Lock()
-	w.pollGeneration++
-	generation := w.pollGeneration
+	events := w.projectPollResultsLocked(results)
+	events = append(events, w.projectMissingWorkersLocked(missing)...)
+	w.compactWorkerOrderLocked()
+	w.snapshotReady = true
+	w.mu.Unlock()
+	for _, event := range events {
+		w.events <- event
+	}
+}
+
+type missingPollWorker struct {
+	id         string
+	epoch      int64
+	owner      *classifier.Worker
+	workerSnap classifier.Worker
+	turn       TurnSnapshot
+}
+
+// preparePollObservations assigns an epoch before unlocked provider reads.
+// Projection must reject results superseded by a newer observation or input.
+func (w *Watcher) preparePollObservations(observations []paneObservation, processes map[int]processInfo, processSnapshotAt time.Time, inventoryEpoch int64) ([]preparedPollWorker, []missingPollWorker, classifier.ActivityProbe, ProviderActivityProbe) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.nextEpoch++
+	generation := w.nextEpoch
 	probe := w.activityProbe
 	providerProbe := w.providerActivityProbe
-	prepared := make([]preparedPollAgent, 0, len(observations))
+	prepared := make([]preparedPollWorker, 0, len(observations))
 	seen := make(map[string]bool, len(observations))
 
 	for _, obs := range observations {
 		win := obs.win
 		seen[win.target] = true
+		if w.workerEpoch[win.target] > inventoryEpoch {
+			continue // A newer registration or control projection outranks this inventory.
+		}
 
 		prev, existed := w.prevContent[win.target]
 		contentChanged := obs.content != prev
 		w.prevContent[win.target] = obs.content
 
-		agent, exists := w.agents[win.target]
+		worker, exists := w.workers[win.target]
 		if !exists {
-			agent = &classifier.Agent{
+			worker = &classifier.Worker{
 				ID:   win.target,
-				Name: formatAgentName(win.name, win.target),
+				Name: formatWorkerName(win.name, win.target),
 			}
-			w.agents[win.target] = agent
-			w.agentOrder = append(w.agentOrder, win.target)
+			w.workers[win.target] = worker
+			w.workerOrder = append(w.workerOrder, win.target)
 			// Rediscovered window: restore the durable Pi ownership binding
-			// (@zen_agent_pi_session) recorded at session create. After a
+			// (@zen_worker_pi_session) recorded at session create. After a
 			// daemon restart the provider process may rewrite its argv
 			// (node-based Pi), so the tmux option is the only recoverable
 			// record of an owned --session path; mergeAgentCommandOwnership
 			// then preserves it exactly as it would for a never-restarted
 			// daemon, and a provider switch still clears it.
 			if flag, path, ok := DecodePiSessionBinding(win.piSessionBinding); ok {
-				agent.Command = "pi " + flag + " " + shellQuoteForLaunch(path)
+				worker.Command = "pi " + flag + " " + shellQuoteForLaunch(path)
 			}
 		}
-		previousMetadata := agentMetadataSnapshotFor(agent)
-		if nextName := formatAgentName(win.name, win.target); nextName != "" {
-			agent.Name = nextName
+		previousMetadata := workerMetadataSnapshotFor(worker)
+		if nextName := formatWorkerName(win.name, win.target); nextName != "" {
+			worker.Name = nextName
 		}
 		if w.hidden[win.target] || win.hidden || isBrainHostWindow(win.target, win.name) {
 			w.hidden[win.target] = true
-			agent.Hidden = true
+			worker.Hidden = true
 		}
-		agent.Cwd = win.cwd
-		agent.Project = projectNameFromPath(win.cwd)
-		detectedCommand, detectedStartedAt, detectedPID := detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		worker.Cwd = win.cwd
+		worker.Project = projectNameFromPath(win.cwd)
+		detectedCommand, detectedStartedAt, detectedPID := detectWorkerProcess(win.command, win.panePID, processes, processSnapshotAt)
 		// Sub-second provider start evidence: ps lstart is whole-second
 		// precision, so instance-ownership arms would compare against a
 		// rounded start. The platform's precise derivation (Linux
@@ -1269,30 +1299,30 @@ func (w *Watcher) poll() {
 		// detected provider start when it is consistent with the observation;
 		// the guarded fallback keeps the observed value everywhere else.
 		detectedStartedAt = refineProcessStartedAt(detectedStartedAt, detectedPID)
-		agent.Command = mergeAgentCommandOwnership(agent.Command, detectedCommand)
-		agent.StartedAt = detectedStartedAt
-		agent.ProcessID = detectedPID
+		worker.Command = mergeWorkerCommandOwnership(worker.Command, detectedCommand)
+		worker.StartedAt = detectedStartedAt
+		worker.ProcessID = detectedPID
 		if w.hidden[win.target] {
-			agent.Hidden = true
+			worker.Hidden = true
 		}
 		if win.delegated {
 			w.delegated[win.target] = true
 		}
-		agent.Delegated = (w.delegated[win.target] || win.delegated) && !agent.Hidden
+		worker.Delegated = (w.delegated[win.target] || win.delegated) && !worker.Hidden
 
-		agent.PaneAlive = obs.alive
-		agent.LastLines = lastN(obs.lines, 120)
+		worker.PaneAlive = obs.alive
+		worker.LastLines = lastN(obs.lines, 120)
 		now := w.pollNowValue()
-		agent.LastSeenAt = now
+		worker.LastSeenAt = now
 
-		oldState := agent.State
-		classified, classifiedSummary := classifyPaneAndApplyProgressInvalidation(agent, obs.alive, obs.lines, now)
+		oldState := worker.State
+		classified, classifiedSummary := classifyPaneAndApplyProgressInvalidation(worker, obs.alive, obs.lines, now)
 
-		w.agentEpoch[win.target] = generation
-		prepared = append(prepared, preparedPollAgent{
+		w.workerEpoch[win.target] = generation
+		prepared = append(prepared, preparedPollWorker{
 			id:                win.target,
 			epoch:             generation,
-			agentSnap:         *agent,
+			workerSnap:        *worker,
 			content:           obs.content,
 			lines:             obs.lines,
 			alive:             obs.alive,
@@ -1309,46 +1339,54 @@ func (w *Watcher) poll() {
 			now:               now,
 		})
 	}
-	w.mu.Unlock()
+	missing := make([]missingPollWorker, 0)
+	for _, id := range w.workerOrder {
+		worker := w.workers[id]
+		if worker != nil && !seen[id] && w.workerEpoch[id] <= inventoryEpoch {
+			missing = append(missing, missingPollWorker{id: id, epoch: w.workerEpoch[id], owner: worker, workerSnap: *worker, turn: w.ledgerTurns[id]})
+		}
+	}
+	return prepared, missing, probe, providerProbe
+}
 
-	results := w.collectPollEvidence(prepared, processes, probe, providerProbe)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+// projectPollResultsLocked publishes one ordered projection from accepted
+// evidence. Discovery precedes output, state, metadata, and provider events.
+func (w *Watcher) projectPollResultsLocked(results []probedPollWorker) []SessionEvent {
+	events := make([]SessionEvent, 0)
 	for _, r := range results {
-		agent := w.agents[r.id]
-		if agent == nil {
+		worker := w.workers[r.id]
+		if worker == nil {
 			continue
 		}
-		if w.agentEpoch[r.id] != r.epoch {
+		if w.workerEpoch[r.id] != r.epoch {
 			continue
 		}
 		activity := r.activity
-		if agent.Cwd != r.agentSnap.Cwd || agent.Command != r.agentSnap.Command {
+		if worker.Cwd != r.workerSnap.Cwd || worker.Command != r.workerSnap.Command {
 			// Identity drifted while unlocked; drop provider signal rather than
 			// applying pane/process evidence to the wrong session.
 			activity = classifier.ActivitySignal{}
 		}
 
-		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
+		newState, summary := classifier.ResolveSessionStatus(worker, r.classified, r.classifiedSummary, r.now, activity)
 		previousTurn, hadPreviousTurn := w.ledgerTurns[r.id]
 		if r.hasTurn && r.turnErr == nil {
 			// Ledger-recorded transcript binding is the truth for provider
 			// evidence recovery; the tmux option is only an advisory cache.
-			w.restoreTurnTranscriptBindingLocked(agent, r.turn)
+			w.restoreTurnTranscriptBindingLocked(worker, r.turn)
 		}
 		if r.turnErr != nil {
 			// Ledger read failure is transient; keep the last projection
 			// instead of fabricating a terminal state.
 		} else if r.hasTurn {
 			w.ledgerTurns[r.id] = r.turn
-			clearStaleAttemptMetadata(agent)
-			newState, summary = projectDelegatedTurn(agent, r.turn)
+			clearStaleAttemptMetadata(worker)
+			newState, summary = projectDelegatedTurn(worker, r.turn)
 		}
-		agent.State = newState
-		agent.Summary = summary
+		worker.State = newState
+		worker.Summary = summary
 		providerChanged := false
-		if agent.Hidden {
+		if worker.Hidden {
 			nextProvider := providerActivitySignalFor(r.provider)
 			previousProvider, observedProvider := w.providerSignals[r.id]
 			w.providerSignals[r.id] = nextProvider
@@ -1362,8 +1400,8 @@ func (w *Watcher) poll() {
 			// observation clock. Pre-existing Sessions rediscovered by one poll
 			// must keep their real activity times, or they would all display
 			// the same discovery instant.
-			if seeded := sessionDiscoveryActivityTime(agent, r.turn, r.hasTurn, r.provider); !seeded.IsZero() {
-				agent.UpdatedAt = seeded
+			if seeded := sessionDiscoveryActivityTime(worker, r.turn, r.hasTurn, r.provider); !seeded.IsZero() {
+				worker.UpdatedAt = seeded
 			}
 		} else if sessionActivityAdvanced(
 			r.contentChanged && r.existed,
@@ -1374,103 +1412,119 @@ func (w *Watcher) poll() {
 			r.turn,
 			r.hasTurn,
 		) {
-			agent.UpdatedAt = r.now
+			worker.UpdatedAt = r.now
 		}
 
 		if !r.exists {
-			w.events <- SessionEvent{
-				Type:    "agent_discovered",
-				AgentID: r.id,
-				Agent:   cloneAgent(agent),
-			}
+			events = append(events, SessionEvent{
+				Type:     "worker_discovered",
+				WorkerID: r.id,
+				Worker:   cloneWorker(worker),
+			})
 		}
 
 		if r.contentChanged && r.existed {
-			w.events <- SessionEvent{
-				Type:    "agent_output",
-				AgentID: r.id,
-				Agent:   cloneAgent(agent),
-				Lines:   changedPaneLines(r.prev, r.content),
-			}
+			events = append(events, SessionEvent{
+				Type:     "worker_output",
+				WorkerID: r.id,
+				Worker:   cloneWorker(worker),
+				Lines:    changedPaneLines(r.prev, r.content),
+			})
 		}
 
 		if r.oldState != newState && r.existed {
-			w.events <- SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  r.id,
-				Agent:    cloneAgent(agent),
+			events = append(events, SessionEvent{
+				Type:     "worker_state_change",
+				WorkerID: r.id,
+				Worker:   cloneWorker(worker),
 				OldState: string(r.oldState),
 				NewState: string(newState),
 				TurnID:   r.turn.TurnID,
-			}
+			})
 		}
 
-		if r.exists && r.oldState == newState && agentMetadataChanged(r.previousMetadata, agent) {
-			w.events <- SessionEvent{
-				Type:    "agent_metadata_change",
-				AgentID: r.id,
-				Agent:   cloneAgent(agent),
-			}
+		if r.exists && r.oldState == newState && workerMetadataChanged(r.previousMetadata, worker) {
+			events = append(events, SessionEvent{
+				Type:     "worker_metadata_change",
+				WorkerID: r.id,
+				Worker:   cloneWorker(worker),
+			})
 		}
 
 		if providerChanged {
-			w.events <- SessionEvent{
-				Type:    "provider_activity_change",
-				AgentID: r.id,
-				Agent:   cloneAgent(agent),
-			}
+			events = append(events, SessionEvent{
+				Type:     "provider_activity_change",
+				WorkerID: r.id,
+				Worker:   cloneWorker(worker),
+			})
 		}
 	}
-
-	w.projectMissingAgentsLocked(seen, providerProbe)
-	w.compactAgentOrderLocked()
+	return events
 }
 
-// projectMissingAgentsLocked applies disappearance evidence and emits the
+// projectMissingWorkersLocked applies disappearance evidence and emits the
 // removal projection. The successful inventory is the evidence boundary: a
 // missing target is removed, while mutable ledger turns are resolved through
 // the canonical fact path before their projection is discarded.
-func (w *Watcher) projectMissingAgentsLocked(seen map[string]bool, providerProbe ProviderActivityProbe) {
-	for id := range w.agents {
-		if seen[id] {
+func (w *Watcher) projectMissingWorkersLocked(missing []missingPollWorker) []SessionEvent {
+	events := make([]SessionEvent, 0, len(missing))
+	for _, item := range missing {
+		id := item.id
+		if w.workers[id] != item.owner || w.workerEpoch[id] != item.epoch {
 			continue
 		}
-		old := w.agents[id]
-		turn, hasTurn := w.ledgerTurns[id]
-		if hasTurn && !TurnImmutable(turn.Status) {
-			w.resolveRemovedTurnFacts(id, *old, turn, providerProbe)
-		}
-		if providerProbe != nil {
-			providerProbe.ForgetProviderActivity(id)
-		}
-		delete(w.agents, id)
+		old := w.workers[id]
+		delete(w.workers, id)
 		delete(w.prevContent, id)
 		delete(w.hidden, id)
 		delete(w.delegated, id)
-		delete(w.agentEpoch, id)
+		delete(w.workerEpoch, id)
 		delete(w.ledgerTurns, id)
 		delete(w.appliedFactIDs, id)
 		delete(w.ledgerTurnReadAt, id)
 		delete(w.probeLossSince, id)
 		delete(w.providerSignals, id)
-		archived := cloneAgent(old)
+		archived := cloneWorker(old)
 		if archived != nil {
 			archived.State = classifier.StateRemoved
 		}
-		w.events <- SessionEvent{Type: "agent_removed", AgentID: id, Agent: archived, OldState: string(old.State), NewState: string(classifier.StateRemoved), TurnID: turn.TurnID}
+		events = append(events, SessionEvent{Type: "worker_removed", WorkerID: id, Worker: archived, OldState: string(old.State), NewState: string(classifier.StateRemoved), TurnID: item.turn.TurnID})
 	}
+	return events
+}
+
+func (w *Watcher) collectMissingPollEvidence(missing []missingPollWorker, probe ProviderActivityProbe) []missingPollWorker {
+	resolved := make([]missingPollWorker, 0, len(missing))
+	for _, item := range missing {
+		w.mu.RLock()
+		current := w.workers[item.id] == item.owner && w.workerEpoch[item.id] == item.epoch
+		w.mu.RUnlock()
+		if !current {
+			continue
+		}
+		if item.turn.TurnID != "" && !TurnImmutable(item.turn.Status) {
+			if err := w.resolveRemovedTurnFacts(item.id, item.workerSnap, item.turn, probe); err != nil {
+				continue // Retain the projection so the next inventory retries persistence, never input.
+			}
+		}
+		if probe != nil {
+			probe.ForgetProviderActivity(item.id)
+		}
+		resolved = append(resolved, item)
+	}
+	return resolved
 }
 
 // collectPollEvidence reads activity and the canonical turn ledger without
 // holding the watcher mutex. It is the evidence boundary between tmux
 // observation and the locked Session projection.
-func (w *Watcher) collectPollEvidence(prepared []preparedPollAgent, processes map[int]processInfo, probe classifier.ActivityProbe, providerProbe ProviderActivityProbe) []probedPollAgent {
-	results := make([]probedPollAgent, 0, len(prepared))
+func (w *Watcher) collectPollEvidence(prepared []preparedPollWorker, processes map[int]processInfo, probe classifier.ActivityProbe, providerProbe ProviderActivityProbe) []probedPollWorker {
+	results := make([]probedPollWorker, 0, len(prepared))
 	for _, item := range prepared {
 		activity := classifier.ActivitySignal{}
 		if probe != nil {
-			toolChild := isCursorAgentCommand(item.agentSnap.Command) && cursorToolChildActive(item.panePID, processes)
-			activity = probe.Infer(classifier.ActivityInput{Agent: item.agentSnap, PaneContent: item.content, ToolChildActive: toolChild})
+			toolChild := isCursorAgentCommand(item.workerSnap.Command) && cursorToolChildActive(item.panePID, processes)
+			activity = probe.Infer(classifier.ActivityInput{Worker: item.workerSnap, PaneContent: item.content, ToolChildActive: toolChild})
 		}
 		turn, hasTurn, turnErr := w.ledgerTurnFor(item.id, item.now)
 		pendingList, pendingErr := w.pendingInputAdmissions(item.id)
@@ -1479,8 +1533,8 @@ func (w *Watcher) collectPollEvidence(prepared []preparedPollAgent, processes ma
 			turnErr = pendingErr
 		}
 		provider := ProviderActivityObservation{}
-		if providerProbe != nil && pendingErr == nil && (item.agentSnap.Hidden || hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
-			provider = providerProbe.ObserveProviderActivity(item.agentSnap, item.now)
+		if providerProbe != nil && pendingErr == nil && (item.workerSnap.Hidden || hasPending || (hasTurn && turnErr == nil && !TurnImmutable(turn.Status))) {
+			provider = providerProbe.ObserveProviderActivity(item.workerSnap, item.now)
 		}
 		if hasPending && providerFactRelevant(provider) {
 			for _, pending := range pendingList {
@@ -1492,30 +1546,30 @@ func (w *Watcher) collectPollEvidence(prepared []preparedPollAgent, processes ma
 		if hasTurn && turnErr == nil && !TurnImmutable(turn.Status) {
 			turn = w.applyPollFacts(item.id, item.alive, item.deadStatus, item.now, turn, provider)
 		}
-		if providerProbe != nil && !item.agentSnap.Hidden && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
+		if providerProbe != nil && !item.workerSnap.Hidden && !hasPending && (!hasTurn || turnErr != nil || TurnImmutable(turn.Status)) {
 			providerProbe.ForgetProviderActivity(item.id)
 		}
-		results = append(results, probedPollAgent{preparedPollAgent: item, activity: activity, provider: provider, turn: turn, hasTurn: hasTurn, turnErr: turnErr})
+		results = append(results, probedPollWorker{preparedPollWorker: item, activity: activity, provider: provider, turn: turn, hasTurn: hasTurn, turnErr: turnErr})
 	}
 	return results
 }
 
-func (w *Watcher) compactAgentOrderLocked() {
-	next := w.agentOrder[:0]
-	for _, id := range w.agentOrder {
-		if _, ok := w.agents[id]; ok {
+func (w *Watcher) compactWorkerOrderLocked() {
+	next := w.workerOrder[:0]
+	for _, id := range w.workerOrder {
+		if _, ok := w.workers[id]; ok {
 			next = append(next, id)
 		}
 	}
-	w.agentOrder = next
+	w.workerOrder = next
 }
 
 // restoreTurnTranscriptBindingLocked restores the ledger-recorded provider
 // transcript binding onto the Session command (Pi owned --session/--session-dir
 // path). The ledger is the durable truth recorded at admission; the tmux
 // option is only an advisory cache.
-func (w *Watcher) restoreTurnTranscriptBindingLocked(agent *classifier.Agent, turn TurnSnapshot) {
-	if agent == nil || strings.TrimSpace(agent.ID) == "" {
+func (w *Watcher) restoreTurnTranscriptBindingLocked(worker *classifier.Worker, turn TurnSnapshot) {
+	if worker == nil || strings.TrimSpace(worker.ID) == "" {
 		return
 	}
 	binding := turn.TranscriptBinding
@@ -1525,25 +1579,25 @@ func (w *Watcher) restoreTurnTranscriptBindingLocked(agent *classifier.Agent, tu
 		return
 	}
 	if strings.TrimSpace(binding.Provider) != "pi" ||
-		commandExecutableBase(agent.Command) != "pi" {
+		commandExecutableBase(worker.Command) != "pi" {
 		return
 	}
-	owned := commandExecutableBase(agent.Command) + " " + binding.PiFlag + " " + shellQuoteForLaunch(binding.PiPath)
-	if strings.TrimSpace(agent.Command) != owned {
-		agent.Command = owned
+	owned := commandExecutableBase(worker.Command) + " " + binding.PiFlag + " " + shellQuoteForLaunch(binding.PiPath)
+	if strings.TrimSpace(worker.Command) != owned {
+		worker.Command = owned
 	}
 }
 
 // projectDelegatedTurn projects the canonical ledger turn onto the Session
 // (list/capture/close/Work all read this same canonical owner). Hints are
 // attached notes only: they never change the status text.
-func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifier.AgentState, string) {
-	var state classifier.AgentState
+func projectDelegatedTurn(worker *classifier.Worker, turn TurnSnapshot) (classifier.WorkerState, string) {
+	var state classifier.WorkerState
 	summary := strings.TrimSpace(turn.Summary)
 	if turn.ControlState == TurnControlOwnershipLost {
-		if agent != nil {
-			agent.Attention = "ownership_lost"
-			agent.NeedsAttention = true
+		if worker != nil {
+			worker.Attention = "ownership_lost"
+			worker.NeedsAttention = true
 		}
 		return classifier.StateUnknown, "Delegated Session control ownership was lost; inspect and recover"
 	}
@@ -1584,12 +1638,12 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 	default:
 		state = classifier.StateUnknown
 	}
-	if agent != nil && turn.Status == TurnBlocked {
-		agent.Attention = "user_input"
-		agent.NeedsAttention = true
-	} else if agent != nil {
-		agent.Attention = "none"
-		agent.NeedsAttention = false
+	if worker != nil && turn.Status == TurnBlocked {
+		worker.Attention = "user_input"
+		worker.NeedsAttention = true
+	} else if worker != nil {
+		worker.Attention = "none"
+		worker.NeedsAttention = false
 	}
 	return state, summary
 }
@@ -1603,25 +1657,25 @@ func projectDelegatedTurn(agent *classifier.Agent, turn TurnSnapshot) (classifie
 // expose the impossible combination event_kind=done with canonical
 // status=running. A live running/blocked lease is never cleared: it drives
 // session.stale.
-func clearStaleAttemptMetadata(agent *classifier.Agent) {
-	if agent == nil {
+func clearStaleAttemptMetadata(worker *classifier.Worker) {
+	if worker == nil {
 		return
 	}
-	terminalAttempt := agent.Attention == "done" || agent.Attention == "failed" ||
-		agent.State == classifier.StateDone || agent.State == classifier.StateFailed ||
-		agent.EventKind == "done"
+	terminalAttempt := worker.Attention == "done" || worker.Attention == "failed" ||
+		worker.State == classifier.StateDone || worker.State == classifier.StateFailed ||
+		worker.EventKind == "done"
 	if !terminalAttempt {
 		return
 	}
-	agent.Attention = "none"
-	agent.NeedsAttention = false
-	agent.Phase = ""
-	agent.TaskClass = ""
-	agent.EventKind = ""
-	agent.DetailsJSON = ""
-	agent.LastProgressAt = nil
-	agent.ExpectedNextCheckAt = nil
-	agent.LeaseSeconds = 0
+	worker.Attention = "none"
+	worker.NeedsAttention = false
+	worker.Phase = ""
+	worker.TaskClass = ""
+	worker.EventKind = ""
+	worker.DetailsJSON = ""
+	worker.LastProgressAt = nil
+	worker.ExpectedNextCheckAt = nil
+	worker.LeaseSeconds = 0
 }
 
 // ledgerTurnFor returns the canonical ledger snapshot for the session, re-
@@ -1871,29 +1925,39 @@ func (w *Watcher) applyPollFacts(
 // Unknown turns are still probed so a readable bound terminal upgrades them.
 func (w *Watcher) resolveRemovedTurnFacts(
 	id string,
-	agent classifier.Agent,
+	worker classifier.Worker,
 	turn TurnSnapshot,
 	probe ProviderActivityProbe,
-) {
-	if w == nil || w.turnLedger == nil || TurnImmutable(turn.Status) {
-		return
+) error {
+	if TurnImmutable(turn.Status) {
+		return nil
+	}
+	w.mu.RLock()
+	ledger := w.turnLedger
+	w.mu.RUnlock()
+	if ledger == nil {
+		return fmt.Errorf("removed Session has no turn ledger")
 	}
 	now := time.Now().UTC()
 	provider := ProviderActivityObservation{}
 	if probe != nil {
-		provider = probe.ObserveProviderActivity(agent, now)
+		provider = probe.ObserveProviderActivity(worker, now)
 	}
 	provider = providerObservationForTurn(provider, turn)
 	if providerFactRelevant(provider) {
 		if fact := admissionFactFromObservation(id, turn, provider); fact != nil {
-			_, _, _ = w.turnLedger.ApplyTurnFact(*fact)
+			if _, _, err := ledger.ApplyTurnFact(*fact); err != nil {
+				return err
+			}
 		}
 		if fact := activityFactFromObservation(id, turn, provider); fact != nil {
-			_, _, _ = w.turnLedger.ApplyTurnFact(*fact)
+			if _, _, err := ledger.ApplyTurnFact(*fact); err != nil {
+				return err
+			}
 		}
 	}
 	// ProcessDead, no bound terminal readable: Unknown + session.uncertain.
-	_, _, _ = w.turnLedger.ApplyTurnFact(TurnFact{
+	_, _, err := ledger.ApplyTurnFact(TurnFact{
 		SessionID:   id,
 		TurnID:      turn.TurnID,
 		Class:       EvidenceLiveness,
@@ -1903,6 +1967,7 @@ func (w *Watcher) resolveRemovedTurnFacts(
 		At:          now,
 		Summary:     "Delegated Session disappeared; outcome is unknown",
 	})
+	return err
 }
 
 func providerFactRelevant(provider ProviderActivityObservation) bool {
@@ -2040,7 +2105,7 @@ func (w *Watcher) currentPaneGeneration(sessionID string) string {
 // are handled by sessionDiscoveryActivityTime instead.
 func sessionActivityAdvanced(
 	contentChanged bool,
-	oldState, newState classifier.AgentState,
+	oldState, newState classifier.WorkerState,
 	previousTurn TurnSnapshot,
 	hadPreviousTurn bool,
 	turn TurnSnapshot,
@@ -2060,18 +2125,18 @@ func sessionActivityAdvanced(
 // Sources, latest wins: delegated turn settlement, turn acceptance, last
 // structured progress, authoritative provider activity, process start time.
 func sessionDiscoveryActivityTime(
-	agent *classifier.Agent,
+	worker *classifier.Worker,
 	turn TurnSnapshot,
 	hasTurn bool,
 	provider ProviderActivityObservation,
 ) time.Time {
 	var latest time.Time
-	if agent != nil {
-		if agent.LastProgressAt != nil && agent.LastProgressAt.After(latest) {
-			latest = *agent.LastProgressAt
+	if worker != nil {
+		if worker.LastProgressAt != nil && worker.LastProgressAt.After(latest) {
+			latest = *worker.LastProgressAt
 		}
-		if agent.StartedAt.After(latest) {
-			latest = agent.StartedAt
+		if worker.StartedAt.After(latest) {
+			latest = worker.StartedAt
 		}
 	}
 	if hasTurn {
@@ -2122,18 +2187,26 @@ func linesEqual(left, right []string) bool {
 	return true
 }
 
-func cloneAgent(agent *classifier.Agent) *classifier.Agent {
-	if agent == nil {
+func cloneWorker(worker *classifier.Worker) *classifier.Worker {
+	if worker == nil {
 		return nil
 	}
-	cp := *agent
-	if agent.LastLines != nil {
-		cp.LastLines = append([]string(nil), agent.LastLines...)
+	cp := *worker
+	if worker.LastLines != nil {
+		cp.LastLines = append([]string(nil), worker.LastLines...)
+	}
+	if worker.LastProgressAt != nil {
+		at := *worker.LastProgressAt
+		cp.LastProgressAt = &at
+	}
+	if worker.ExpectedNextCheckAt != nil {
+		at := *worker.ExpectedNextCheckAt
+		cp.ExpectedNextCheckAt = &at
 	}
 	return &cp
 }
 
-type agentMetadataSnapshot struct {
+type workerMetadataSnapshot struct {
 	name                string
 	project             string
 	cwd                 string
@@ -2152,32 +2225,32 @@ type agentMetadataSnapshot struct {
 	delegated           bool
 }
 
-func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
-	if agent == nil {
-		return agentMetadataSnapshot{}
+func workerMetadataSnapshotFor(worker *classifier.Worker) workerMetadataSnapshot {
+	if worker == nil {
+		return workerMetadataSnapshot{}
 	}
-	return agentMetadataSnapshot{
-		name:                agent.Name,
-		project:             agent.Project,
-		cwd:                 agent.Cwd,
-		command:             agent.Command,
-		processID:           agent.ProcessID,
-		hidden:              agent.Hidden,
-		phase:               agent.Phase,
-		attention:           agent.Attention,
-		taskClass:           agent.TaskClass,
-		eventKind:           agent.EventKind,
-		detailsJSON:         agent.DetailsJSON,
-		needsAttention:      agent.NeedsAttention,
-		leaseSeconds:        agent.LeaseSeconds,
-		delegated:           agent.Delegated,
-		lastProgressAt:      unixNanoOrZero(agent.LastProgressAt),
-		expectedNextCheckAt: unixNanoOrZero(agent.ExpectedNextCheckAt),
+	return workerMetadataSnapshot{
+		name:                worker.Name,
+		project:             worker.Project,
+		cwd:                 worker.Cwd,
+		command:             worker.Command,
+		processID:           worker.ProcessID,
+		hidden:              worker.Hidden,
+		phase:               worker.Phase,
+		attention:           worker.Attention,
+		taskClass:           worker.TaskClass,
+		eventKind:           worker.EventKind,
+		detailsJSON:         worker.DetailsJSON,
+		needsAttention:      worker.NeedsAttention,
+		leaseSeconds:        worker.LeaseSeconds,
+		delegated:           worker.Delegated,
+		lastProgressAt:      unixNanoOrZero(worker.LastProgressAt),
+		expectedNextCheckAt: unixNanoOrZero(worker.ExpectedNextCheckAt),
 	}
 }
 
-func agentMetadataChanged(previous agentMetadataSnapshot, agent *classifier.Agent) bool {
-	return previous != agentMetadataSnapshotFor(agent)
+func workerMetadataChanged(previous workerMetadataSnapshot, worker *classifier.Worker) bool {
+	return previous != workerMetadataSnapshotFor(worker)
 }
 
 func unixNanoOrZero(value *time.Time) int64 {
@@ -2190,14 +2263,14 @@ func unixNanoOrZero(value *time.Time) int64 {
 // classifyPaneAndApplyProgressInvalidation is the poll classify step: classify
 // pane text, then clear progress metadata only for authoritative terminal
 // outcomes (blocked always; failed unless explicit progress protects).
-func classifyPaneAndApplyProgressInvalidation(agent *classifier.Agent, alive bool, lines []string, now time.Time) (classifier.AgentState, string) {
-	agent.PaneAlive = alive
-	classified, summary := classifier.Classify(alive, lines, agent.Command)
+func classifyPaneAndApplyProgressInvalidation(worker *classifier.Worker, alive bool, lines []string, now time.Time) (classifier.WorkerState, string) {
+	worker.PaneAlive = alive
+	classified, summary := classifier.Classify(alive, lines, worker.Command)
 	if classified == classifier.StateBlocked ||
-		(classified == classifier.StateFailed && !classifier.ExplicitProgressProtectsAgainstPaneFailed(agent, now)) {
-		agent.LastProgressAt = nil
-		agent.ExpectedNextCheckAt = nil
-		agent.LeaseSeconds = 0
+		(classified == classifier.StateFailed && !classifier.ExplicitProgressProtectsAgainstPaneFailed(worker, now)) {
+		worker.LastProgressAt = nil
+		worker.ExpectedNextCheckAt = nil
+		worker.LeaseSeconds = 0
 	}
 	return classified, summary
 }
@@ -2207,7 +2280,7 @@ func isBrainHostWindow(target, windowName string) bool {
 	if !ok {
 		return false
 	}
-	return strings.HasPrefix(sessionName, "brain-agent-brain-") && strings.TrimSpace(windowName) == "Brain"
+	return strings.HasPrefix(sessionName, "zen-worker-brain-") && strings.TrimSpace(windowName) == "Brain"
 }
 
 // tmuxWindow represents a single tmux window target.
@@ -2216,7 +2289,7 @@ type tmuxWindow struct {
 	name             string // window name (e.g. "claude", "node")
 	cwd              string // active pane cwd
 	command          string // active pane command
-	piSessionBinding string // durable Pi ownership binding (@zen_agent_pi_session)
+	piSessionBinding string // durable Pi ownership binding (@zen_worker_pi_session)
 	panePID          int
 	hidden           bool
 	delegated        bool
@@ -2226,7 +2299,7 @@ type tmuxWindow struct {
 // listTmuxWindows inventories only explicitly Zen-owned windows on the one
 // caller-visible server selected at startup. Ambient user windows are read only
 // as part of tmux's formatted listing and are discarded by the durable
-// @zen_agent_created marker before they can enter discovery or reconciliation.
+// @zen_worker_created marker before they can enter discovery or reconciliation.
 // A missing server is an empty inventory so removal reconciliation owns vanished
 // Zen sessions.
 func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
@@ -2257,7 +2330,7 @@ func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
 }
 
 func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
-	cmd := tmuxCommand(socket, "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_agent_pi_session}")
+	cmd := tmuxCommand(socket, "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_worker_hidden}\t#{@zen_worker_delegated}\t#{@zen_worker_resource_unit}\t#{@zen_worker_pi_session}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w: %s", err, strings.TrimSpace(string(out)))
@@ -2270,9 +2343,9 @@ func listTmuxWindowsOn(socket string) ([]tmuxWindow, error) {
 		}
 		parts := strings.SplitN(line, "\t", 9)
 		target := parts[0]
-		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
+		// Terminal views link an owned window but are not execution Sessions.
 		sessionName := strings.SplitN(target, ":", 2)[0]
-		if strings.HasPrefix(sessionName, "zen-") {
+		if strings.HasPrefix(sessionName, "zen-view-") {
 			continue
 		}
 		name := target
@@ -2328,7 +2401,7 @@ func tmuxBoolOption(value string) bool {
 
 // probeTmuxTargetOwnership reads the durable, window-local ownership fact from
 // the selected server. show-options intentionally omits -A: an ambient window
-// must not inherit @zen_agent_created from a global tmux option. Missing targets
+// must not inherit @zen_worker_created from a global tmux option. Missing targets
 // and missing servers are ordinary absence; any other failure is unknown.
 func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err error) {
 	target = strings.TrimSpace(target)
@@ -2342,7 +2415,7 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		"-qv",
 		"-t",
 		target,
-		"@zen_agent_created",
+		"@zen_worker_created",
 	).CombinedOutput()
 	if commandErr != nil {
 		outText := strings.TrimSpace(string(out))
@@ -2626,7 +2699,7 @@ func (w *Watcher) SendInputWithReceiptWhenReadyResult(
 		inputReadyTimeout(identity.Command),
 		func() error { return guardTargetIdentity(resolver, sessionID, identity) },
 	) && needsInputReadinessWait(identity.Command, "") {
-		err := agentInputNotReady(identity.Command)
+		err := workerInputNotReady(identity.Command)
 		return InputResult{Outcome: InputNotSubmitted}, OwnedGeneration{}, err
 	}
 	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
@@ -2705,7 +2778,7 @@ func (w *Watcher) SendInputWhenReadyBudgeted(sessionID, command, text string, bu
 			timeout = remaining
 		}
 		err := w.sendInputWhenReadyAttempt(sessionID, command, text, timeout)
-		if err == nil || !errors.Is(err, ErrAgentInputNotReady) {
+		if err == nil || !errors.Is(err, ErrWorkerInputNotReady) {
 			return err
 		}
 		if !w.admissionNowValue().Before(deadline) {
@@ -2741,7 +2814,7 @@ func (w *Watcher) sendInputWhenReadyAttempt(
 	}
 	if !w.waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, command, timeout, guard) &&
 		needsInputReadinessWait(command, "") {
-		return agentInputNotReady(command)
+		return workerInputNotReady(command)
 	}
 	body, submit := splitSubmitInput(text)
 	if submit && body != "" {
@@ -2770,7 +2843,7 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 	if !w.waitForInputReadyGuarded(w.socketPathFor(sessionID), sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
-		return agentInputNotReady(identity.Command)
+		return workerInputNotReady(identity.Command)
 	}
 	_, err := w.sessionInputOwner().submit(sessionID, identity, resolver, identity.Command, payload, "")
 	return err
@@ -2808,7 +2881,7 @@ func (w *Watcher) SubmitDelegatedInputWhenReadyBudgeted(
 		result, err := w.submitDelegatedInputWhenReadyAttempt(
 			sessionID, command, payload, workID, turnID, acceptedAt, timeout,
 		)
-		if err == nil || !errors.Is(err, ErrAgentInputNotReady) {
+		if err == nil || !errors.Is(err, ErrWorkerInputNotReady) {
 			return result, err
 		}
 		if !w.admissionNowValue().Before(deadline) {
@@ -2837,7 +2910,7 @@ func (w *Watcher) submitDelegatedInputWhenReadyAttempt(
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}) && needsInputReadinessWait(identity.Command, "") {
 		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
-			agentInputNotReady(identity.Command)
+			workerInputNotReady(identity.Command)
 	}
 	result, err := w.sessionInputOwner().submitDelegated(
 		sessionID,
@@ -3010,8 +3083,8 @@ func (w *Watcher) delegatedInputConfirmer(
 	command string,
 ) delegatedInputConfirmer {
 	observe := func() (ProviderActivityObservation, error) {
-		agent := w.GetAgent(sessionID)
-		if agent == nil {
+		worker := w.GetWorker(sessionID)
+		if worker == nil {
 			return ProviderActivityObservation{}, fmt.Errorf("provider Session disappeared")
 		}
 		w.mu.RLock()
@@ -3020,7 +3093,7 @@ func (w *Watcher) delegatedInputConfirmer(
 		if providerProbe == nil {
 			return ProviderActivityObservation{}, fmt.Errorf("provider admission probe is unavailable")
 		}
-		return providerProbe.ObserveProviderActivity(*agent, w.admissionNowValue()), nil
+		return providerProbe.ObserveProviderActivity(*worker, w.admissionNowValue()), nil
 	}
 	return delegatedInputConfirmer{
 		baseline: func() (delegatedInputBaseline, error) {
@@ -3228,7 +3301,7 @@ func (w *Watcher) waitForInputReadyGuarded(
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		if isAgentInputReady(command, content) {
+		if isWorkerInputReady(command, content) {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -3334,7 +3407,7 @@ func codexWorkspaceTrustPathCandidates(content string) []string {
 	return nil
 }
 
-func isAgentInputReady(command, content string) bool {
+func isWorkerInputReady(command, content string) bool {
 	if !needsInputReadinessWait(command, content) {
 		return true
 	}
@@ -3636,7 +3709,7 @@ func isClaudeInputReady(content string) bool {
 		claudeModeFooterRe.MatchString(content)
 }
 
-func (w *Watcher) activitySignal(agent classifier.Agent, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
+func (w *Watcher) activitySignal(worker classifier.Worker, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
 	w.mu.RLock()
 	probe := w.activityProbe
 	w.mu.RUnlock()
@@ -3644,12 +3717,12 @@ func (w *Watcher) activitySignal(agent classifier.Agent, paneContent string, pan
 		return classifier.ActivitySignal{}
 	}
 	toolChild := false
-	if isCursorAgentCommand(agent.Command) {
+	if isCursorAgentCommand(worker.Command) {
 		// Cursor-specific process hint until a shared process observer exists.
 		toolChild = cursorToolChildActive(panePID, processes)
 	}
 	return probe.Infer(classifier.ActivityInput{
-		Agent:           agent,
+		Worker:          worker,
 		PaneContent:     paneContent,
 		ToolChildActive: toolChild,
 	})
@@ -4134,9 +4207,9 @@ func newTmuxSessionName(opts CreateSessionOptions) string {
 	}, base)
 	base = strings.Trim(base, "-_")
 	if base == "" {
-		base = "agent"
+		base = "worker"
 	}
-	return fmt.Sprintf("brain-agent-%s-%d", base, time.Now().UnixNano())
+	return fmt.Sprintf("zen-worker-%s-%d", base, time.Now().UnixNano())
 }
 
 func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionOptions, createdAt time.Time) {
@@ -4147,12 +4220,14 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
+	w.inventoryMu.Lock()
+	defer w.inventoryMu.Unlock()
 	if opts.resource != nil {
 		w.resourceManager().Bind(target, opts.resource.Unit)
 	}
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID:        target,
-		Name:      formatAgentName(createdSessionName(opts), target),
+		Name:      formatWorkerName(createdSessionName(opts), target),
 		Project:   projectNameFromPath(cwd),
 		Cwd:       strings.TrimSpace(cwd),
 		Command:   strings.TrimSpace(opts.Command),
@@ -4166,35 +4241,38 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		Delegated: opts.Delegated && !opts.Hidden,
 	}
 
+	w.eventMu.Lock()
+	defer w.eventMu.Unlock()
 	w.mu.Lock()
 	if opts.Hidden {
 		w.hidden[target] = true
 	}
-	if agent.Delegated {
+	if worker.Delegated {
 		w.delegated[target] = true
 	} else {
 		delete(w.delegated, target)
 	}
-	if _, exists := w.agents[target]; !exists {
-		w.agentOrder = append(w.agentOrder, target)
+	if _, exists := w.workers[target]; !exists {
+		w.workerOrder = append(w.workerOrder, target)
 	}
-	w.agents[target] = agent
-	w.agentEpoch[target] = 0 // invalidate any in-flight poll apply for this id
+	w.workers[target] = worker
+	w.nextEpoch++
+	w.workerEpoch[target] = w.nextEpoch
 	if _, exists := w.prevContent[target]; !exists {
 		w.prevContent[target] = ""
 	}
-	snapshot := cloneAgent(agent)
+	snapshot := cloneWorker(worker)
 	w.mu.Unlock()
 
 	w.events <- SessionEvent{
-		Type:    "agent_discovered",
-		AgentID: target,
-		Agent:   snapshot,
+		Type:     "worker_discovered",
+		WorkerID: target,
+		Worker:   snapshot,
 	}
 }
 
 func markCreatedSession(socket, target string, opts CreateSessionOptions) error {
-	if err := setTmuxWindowUserOption(socket, target, "zen_agent_created", "1"); err != nil {
+	if err := setTmuxWindowUserOption(socket, target, "zen_worker_created", "1"); err != nil {
 		return err
 	}
 	// Durable Pi ownership binding only: the raw launch command is never
@@ -4207,25 +4285,25 @@ func markCreatedSession(socket, target string, opts CreateSessionOptions) error 
 	// recover the owned path from the process table.
 	if commandExecutableBase(opts.Command) == "pi" {
 		if flag, path := piOwnedLaunchFlag(opts.Command); flag != "" {
-			if err := setTmuxWindowUserOption(socket, target, "zen_agent_pi_session", EncodePiSessionBinding(flag, path)); err != nil {
+			if err := setTmuxWindowUserOption(socket, target, "zen_worker_pi_session", EncodePiSessionBinding(flag, path)); err != nil {
 				return err
 			}
 		}
 	}
 	if opts.Hidden {
-		if err := setTmuxWindowUserOption(socket, target, "zen_agent_hidden", "1"); err != nil {
+		if err := setTmuxWindowUserOption(socket, target, "zen_worker_hidden", "1"); err != nil {
 			return err
 		}
 	}
 	if opts.Delegated && !opts.Hidden {
-		if err := setTmuxWindowUserOption(socket, target, "zen_agent_delegated", "1"); err != nil {
+		if err := setTmuxWindowUserOption(socket, target, "zen_worker_delegated", "1"); err != nil {
 			return err
 		}
 		if opts.resource != nil {
-			if err := setTmuxWindowUserOption(socket, target, "zen_agent_resource_unit", opts.resource.Unit); err != nil {
+			if err := setTmuxWindowUserOption(socket, target, "zen_worker_resource_unit", opts.resource.Unit); err != nil {
 				return err
 			}
-			if err := setTmuxWindowUserOption(socket, target, "zen_agent_resource_owner", opts.resource.Owner); err != nil {
+			if err := setTmuxWindowUserOption(socket, target, "zen_worker_resource_owner", opts.resource.Owner); err != nil {
 				return err
 			}
 		}
@@ -4297,7 +4375,7 @@ func buildWindowCommandForShellWithOptions(shellPath, command string, progressEn
 	quotedShell := shellQuote(shellPath)
 	command = strings.TrimSpace(command)
 	if progressEnv {
-		prefix := agentProgressEnvScript()
+		prefix := workerProgressEnvScript()
 		if command == "" {
 			return "exec " + quotedShell + " -i -l -c " + shellQuote(prefix+"; exec "+quotedShell+" -i -l")
 		}
@@ -4309,16 +4387,16 @@ func buildWindowCommandForShellWithOptions(shellPath, command string, progressEn
 	return "exec " + quotedShell + " -i -l -c " + shellQuote(command)
 }
 
-func agentProgressEnvScript() string {
-	// Derive ZEN_AGENT_ID while tmux still exposes the shared host server, then
+func workerProgressEnvScript() string {
+	// Derive ZEN_WORKER_ID while tmux still exposes the shared host server, then
 	// remove that capability. TMUX_TMPDIR already points at private provider
 	// scratch, so later plain tmux commands (including kill-server) cannot
 	// target the host server.
-	return `if [ -z "${ZEN_AGENT_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_AGENT_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_AGENT_ID; fi; if [ -z "${ZEN_AGENT_PROGRESS_CMD:-}" ]; then ZEN_AGENT_PROGRESS_CMD=` + shellQuote(ZenExecutablePath()) + `; export ZEN_AGENT_PROGRESS_CMD; fi; unset TMUX`
+	return `if [ -z "${ZEN_WORKER_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_WORKER_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_WORKER_ID; fi; if [ -z "${ZEN_WORKER_PROGRESS_CMD:-}" ]; then ZEN_WORKER_PROGRESS_CMD=` + shellQuote(ZenExecutablePath()) + `; export ZEN_WORKER_PROGRESS_CMD; fi; unset TMUX`
 }
 
 // ZenExecutablePath returns the absolute path of the currently running zen
-// daemon executable so delegated agents invoke the exact same binary (and
+// daemon executable so delegated Zen Workers invoke the exact same binary (and
 // therefore the same control socket / state dir) without relying on shell
 // word splitting or PATH lookups. It trusts os.Executable() regardless of the
 // binary's base name, so dev daemons launched as "zen-dev" (which rebuilds
@@ -4326,7 +4404,7 @@ func agentProgressEnvScript() string {
 // "zen" found elsewhere on PATH. It only falls back to "zen" when the current
 // executable cannot be resolved or is empty (for example, in exotic test
 // runners); the protocol always invokes the value as a quoted single token
-// followed by the "agent progress" subcommand, which is safe under zsh/bash.
+// followed by the "worker progress" subcommand, which is safe under zsh/bash.
 func ZenExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -4339,7 +4417,7 @@ func ZenExecutablePath() string {
 	return exe
 }
 
-func formatAgentName(windowName, target string) string {
+func formatWorkerName(windowName, target string) string {
 	trimmedName := strings.TrimSpace(windowName)
 	trimmedTarget := strings.TrimSpace(target)
 	switch {
@@ -4457,7 +4535,7 @@ func shellQuote(value string) string {
 }
 
 // KillSession terminates the tmux window backing a single agent.
-// Agent IDs use the form session:window_id, so killing the window
+// Worker IDs use the form session:window_id, so killing the window
 // exits only that agent instead of the whole tmux session.
 //
 // A target that is already missing is an idempotent success for the kill
@@ -4531,7 +4609,7 @@ func tmuxDelegatedResource(socket, target string) (bool, string) {
 		"-p",
 		"-t",
 		target,
-		"#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}",
+		"#{@zen_worker_delegated}\t#{@zen_worker_resource_unit}",
 	).Output()
 	if err != nil {
 		return false, ""
@@ -4594,7 +4672,7 @@ func baseSessionName(target string) string {
 	if !ok {
 		return ""
 	}
-	if strings.HasPrefix(sessionName, "zen-") {
+	if strings.HasPrefix(sessionName, "zen-view-") {
 		return ""
 	}
 	return sessionName
@@ -4710,7 +4788,7 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 		if process.pgid != foregroundPID {
 			continue
 		}
-		detected := agentCommandFromProcess(process)
+		detected := workerCommandFromProcess(process)
 		if detected == "" {
 			continue
 		}
@@ -4718,7 +4796,7 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 			!processDescendsFrom(foregroundPID, process.pid, processes) {
 			return foregroundTargetAuthority{}, false
 		}
-		family := agentProviderFamily(detected)
+		family := workerProviderFamily(detected)
 		if family == "" {
 			return foregroundTargetAuthority{}, false
 		}
@@ -4752,7 +4830,7 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 			}
 			resumeCommand = detected
 		}
-		score := agentProcessScore(process, detected)
+		score := workerProcessScore(process, detected)
 		switch {
 		case score > bestScore:
 			bestScore = score
@@ -4786,7 +4864,7 @@ func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) 
 				return foregroundTargetAuthority{}, false
 			}
 		}
-		if resumeCommand != "" && agentProviderFamily(bestCommand) == providerFamily {
+		if resumeCommand != "" && workerProviderFamily(bestCommand) == providerFamily {
 			bestCommand = resumeCommand
 		}
 		return foregroundTargetAuthority{
@@ -4815,8 +4893,8 @@ func foregroundTargetProcess(panePID int, processes map[int]processInfo) (string
 	return authority.command, authority.provider.startedAt, authority.provider.pid, true
 }
 
-func agentProviderFamily(command string) string {
-	switch agentCommandName(command) {
+func workerProviderFamily(command string) string {
+	switch workerCommandName(command) {
 	case "claude", "claude-code", "cc":
 		return "claude"
 	case "codex":
@@ -4845,7 +4923,7 @@ func agentProviderFamily(command string) string {
 // as before. The canonical form keeps every downstream consumer (App provider
 // classification, InferAgentProvider, input readiness) on the plain pi command
 // shape.
-func mergeAgentCommandOwnership(previous, detected string) string {
+func mergeWorkerCommandOwnership(previous, detected string) string {
 	previous = strings.TrimSpace(previous)
 	detected = strings.TrimSpace(detected)
 	if detected == "" {
@@ -4935,7 +5013,7 @@ func piOwnedLaunchFlag(command string) (string, string) {
 // differently but never binds a wrong transcript.
 
 // piSessionBindingWire is the versioned durable shape stored under the
-// @zen_agent_pi_session tmux window option. Only a validated Pi ownership
+// @zen_worker_pi_session tmux window option. Only a validated Pi ownership
 // binding (flag + absolute path) is ever written; the raw launch command is
 // never persisted.
 type piSessionBindingWire struct {
@@ -4964,7 +5042,7 @@ func EncodePiSessionBinding(flag, path string) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
-// DecodePiSessionBinding decodes and validates a @zen_agent_pi_session option
+// DecodePiSessionBinding decodes and validates a @zen_worker_pi_session option
 // value. Any malformed, wrong-version, or non-absolute value fails closed
 // (ok=false), so a corrupted option can never bind a transcript.
 func DecodePiSessionBinding(value string) (flag, path string, ok bool) {
@@ -5037,7 +5115,7 @@ func processDescendsFrom(rootPID, processID int, processes map[int]processInfo) 
 	return false
 }
 
-func detectAgentProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time, int) {
+func detectWorkerProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time, int) {
 	command := normalizeCommand(baseCommand)
 	baseStartedAt := time.Time{}
 	basePID := 0
@@ -5059,7 +5137,7 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 		var bestCommand string
 		var bestProcess processInfo
 		for _, proc := range scan {
-			if detected := agentCommandFromProcess(proc); detected != "" {
+			if detected := workerCommandFromProcess(proc); detected != "" {
 				if isCodexResumeCommandLine(detected) {
 					codexResumeSeen = true
 					codexResumeCommand = detected
@@ -5068,7 +5146,7 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 					grokResumeSeen = true
 					grokResumeCommand = detected
 				}
-				score := agentProcessScore(proc, detected)
+				score := workerProcessScore(proc, detected)
 				if bestScore == -1 || score > bestScore {
 					bestScore = score
 					bestCommand = detected
@@ -5095,13 +5173,13 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 		}
 	}
 
-	if isAgentCommand(command) {
+	if isWorkerCommand(command) {
 		return command, fallbackAt, basePID
 	}
 	return command, baseStartedAt, basePID
 }
 
-func agentCommandFromProcess(proc processInfo) string {
+func workerCommandFromProcess(proc processInfo) string {
 	lowerComm := normalizeCommand(proc.comm)
 	lowerArgs := strings.ToLower(proc.args)
 	switch lowerComm {
@@ -5167,9 +5245,9 @@ func processArgsExecutableBase(args string) string {
 	return ""
 }
 
-func agentProcessScore(proc processInfo, detected string) int {
+func workerProcessScore(proc processInfo, detected string) int {
 	lowerComm := normalizeCommand(proc.comm)
-	detectedName := agentCommandName(detected)
+	detectedName := workerCommandName(detected)
 	switch {
 	case detectedName == "codex" || detectedName == "grok" || detectedName == "pi" || detectedName == "opencode":
 		score := 50
@@ -5236,20 +5314,20 @@ func isCodexTUIClientProcess(command string) bool {
 
 func isCodexResumeCommandLine(command string) bool {
 	resume, _ := commandResumeArg(command)
-	return agentCommandName(command) == "codex" && resume
+	return workerCommandName(command) == "codex" && resume
 }
 
 func isGrokResumeCommandLine(command string) bool {
 	resume, _ := commandResumeArg(command)
-	return agentCommandName(command) == "grok" && resume
+	return workerCommandName(command) == "grok" && resume
 }
 
-func isAgentCommand(command string) bool {
-	name := agentCommandName(command)
+func isWorkerCommand(command string) bool {
+	name := workerCommandName(command)
 	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc" || name == "pi" || name == "opencode"
 }
 
-func agentCommandName(command string) string {
+func workerCommandName(command string) string {
 	fields := strings.Fields(strings.TrimSpace(command))
 	if len(fields) == 0 {
 		return normalizeCommand(command)

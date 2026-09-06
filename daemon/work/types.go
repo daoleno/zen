@@ -17,15 +17,15 @@ type Item struct {
 // Unknown fields are preserved via Extra so agent-written metadata survives
 // round-trips through the daemon and app.
 type Frontmatter struct {
-	ID           string                 `yaml:"id" json:"id"`
-	Kind         string                 `yaml:"kind,omitempty" json:"kind,omitempty"`
-	Created      time.Time              `yaml:"created" json:"created"`
-	Done         *time.Time             `yaml:"done,omitempty" json:"done,omitempty"`
-	Started      *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
-	Status       string                 `yaml:"status,omitempty" json:"status,omitempty"`
-	Title        string                 `yaml:"title,omitempty" json:"title,omitempty"`
-	AgentSession string                 `yaml:"agent_session,omitempty" json:"agent_session,omitempty"`
-	Extra        map[string]interface{} `yaml:"-" json:"extra,omitempty"`
+	ID            string                 `yaml:"id" json:"id"`
+	Kind          string                 `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Created       time.Time              `yaml:"created" json:"created"`
+	Done          *time.Time             `yaml:"done,omitempty" json:"done,omitempty"`
+	Started       *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
+	Status        string                 `yaml:"status,omitempty" json:"status,omitempty"`
+	Title         string                 `yaml:"title,omitempty" json:"title,omitempty"`
+	WorkerSession string                 `yaml:"worker_session,omitempty" json:"worker_session,omitempty"`
+	Extra         map[string]interface{} `yaml:"-" json:"extra,omitempty"`
 }
 
 // Executor is one configured agent kind (claude, codex, custom CLI, ...).

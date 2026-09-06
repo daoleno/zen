@@ -84,11 +84,11 @@ func TestRelayStateCapacityLimitsRejectAndRecover(t *testing.T) {
 		if server.reserveClient(secondRoute) {
 			t.Fatal("global client saturation was accepted")
 		}
-		server.releaseClient(firstRoute)
+		server.releaseClient(firstRoute, "", "")
 		if !server.reserveClient(secondRoute) {
 			t.Fatal("global client capacity did not recover")
 		}
-		server.releaseClient(secondRoute)
+		server.releaseClient(secondRoute, "", "")
 
 		server.config.MaxClients = 2
 		if !server.reserveClient(firstRoute) {
@@ -100,8 +100,8 @@ func TestRelayStateCapacityLimitsRejectAndRecover(t *testing.T) {
 		if !server.reserveClient(secondRoute) {
 			t.Fatal("per-route saturation starved another route")
 		}
-		server.releaseClient(firstRoute)
-		server.releaseClient(secondRoute)
+		server.releaseClient(firstRoute, "", "")
+		server.releaseClient(secondRoute, "", "")
 	})
 
 	t.Run("admissions", func(t *testing.T) {
@@ -579,13 +579,13 @@ func TestCapacityMetricsExposeCountsAndFixedReasonsOnly(t *testing.T) {
 		t.Fatal("reserve client for global metric rejection")
 	}
 	_ = server.reserveClient(&routeSession{})
-	server.releaseClient(route)
+	server.releaseClient(route, "", "")
 	server.config.MaxClients = 2
 	if !server.reserveClient(route) {
 		t.Fatal("reserve client for per-route metric rejection")
 	}
 	_ = server.reserveClient(route)
-	server.releaseClient(route)
+	server.releaseClient(route, "", "")
 	server.config.MaxClients = 1
 
 	manager, err := auth.NewManager(t.TempDir())

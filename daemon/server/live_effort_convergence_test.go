@@ -166,7 +166,7 @@ func TestLiveSameModelEffortConvergence(t *testing.T) {
 	getProjection := func() (model string, effort string) {
 		t.Helper()
 		if err := conn.WriteJSON(map[string]any{
-			"type": "get_thread_runtime", "request_id": "gtr-live-effort", "agent_id": sessionID,
+			"type": "get_thread_runtime", "request_id": "gtr-live-effort", "worker_id": sessionID,
 		}); err != nil {
 			t.Fatal(err)
 		}

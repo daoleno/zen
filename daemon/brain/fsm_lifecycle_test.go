@@ -109,9 +109,7 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 		state.Review != nil || projected.AttemptSessionID != nextAttempt {
 		t.Fatalf("atomic acceptance state=%+v projected=%+v", state, projected)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +157,7 @@ func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	const (
 		sessionID = "worker:@late-after-expiry"
 		turnID    = "turn:late-after-expiry"
@@ -349,9 +347,6 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 			beforeLiveness.Revision, afterRenewal.Revision, afterCoalesced.Revision)
 	}
 	progress(initialToken, "attention", "needs-input-1", "exact first correction required", false)
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	store, err = NewStore(root)
 	if err != nil {
@@ -376,9 +371,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 	if _, err := store.FSM().ReleaseReview(lifecycle.WorkID(item.ID), claimed.Review.Handler.HandlerToken); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -444,9 +437,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 
 	const secondToken = "turn:m-reviewed-second"
 	reviewedFollowUp(secondToken, "host:review-1", false)
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -471,9 +462,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 	if err != nil || len(items) != 1 || items[0].ID != finalEventID {
 		t.Fatalf("one-card projection=%+v err=%v", items, err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 }
 
 func TestDueRetryWaitIgnoresUnrelatedBrainConversation(t *testing.T) {
@@ -482,7 +471,7 @@ func TestDueRetryWaitIgnoresUnrelatedBrainConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	now := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	item, err := store.CreateWork(Work{
@@ -614,14 +603,12 @@ func TestTurnSnapshotUsesExactAggregateOwnerDuringProjectionRepair(t *testing.T)
 	if err != nil || !found || current.TurnID != currentToken || !current.SignalProtocol {
 		t.Fatalf("repair-window snapshot=%+v found=%v err=%v", current, found, err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	reloaded, found, err := store.Turn(sessionID)
 	if err != nil || !found || reloaded.TurnID != currentToken || !reloaded.SignalProtocol {
 		t.Fatalf("reloaded snapshot=%+v found=%v err=%v", reloaded, found, err)
@@ -669,14 +656,12 @@ func TestProjectionRebuildReplacesStaleReviewEvent(t *testing.T) {
 		t.Fatalf("new canonical event=%+v previous=%+v", second.Review, first.Review)
 	}
 	// Simulate a crash before the new engine event reaches presentation.json.
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	reloadedState, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -780,14 +765,12 @@ func TestResolveCanonicalReviewWithoutProjectedEvent(t *testing.T) {
 	if err != nil || stable.Revision != resolvedRevision {
 		t.Fatalf("projection sync grew revision: state=%+v want=%d err=%v", stable, resolvedRevision, err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.FSM().Close()
+
 	assertNoActionable(reopened)
 	reloaded, err := reopened.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || reloaded.Revision != resolvedRevision || reloaded.Review != nil {
@@ -837,14 +820,12 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 	if err := store.SyncWorkProjection(item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	now = dueAt
 	store.now = func() time.Time { return now }
 	if err := store.SweepLifecycle(); err != nil {
@@ -861,7 +842,7 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 		t.Fatalf("overdue projection=%+v canonical=%+v err=%v", projected, canonical, err)
 	}
 	fw := &fakeWatcher{
-		sessions:         map[string]*classifier.Agent{hostID: {ID: hostID, Hidden: true, State: classifier.StateDone}},
+		sessions:         map[string]*classifier.Worker{hostID: {ID: hostID, Hidden: true, State: classifier.StateDone}},
 		ownedGenerations: map[string]string{hostID: "host-generation"},
 		outcomes:         map[string]watcher.InputOutcome{}, turnStore: store,
 	}
@@ -895,14 +876,12 @@ func TestOverdueSweepProjectsAndAutomaticallyDeliversOneCanonicalEvent(t *testin
 			after.Revision, deliveredRevision, stableProjection.UpdatedAt, deliveredProjection.UpdatedAt,
 			len(fw.sentCalls), len(fw.created), err)
 	}
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := NewStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.FSM().Close()
+
 	fw.turnStore = reopened
 	if err := reopened.SweepLifecycle(); err != nil {
 		t.Fatal(err)
@@ -921,7 +900,7 @@ func TestIdleHostDeliversOpenReviewsInOldestFirstOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	now := time.Date(2026, 8, 23, 4, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	const hostID = "brain-host:@fair-review"
@@ -949,7 +928,7 @@ func TestIdleHostDeliversOpenReviewsInOldestFirstOrder(t *testing.T) {
 	now = now.Add(time.Second)
 	newest := createReview("newest", "event-fair-newest")
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		},
 		ownedGenerations: map[string]string{hostID: "host-generation"},
@@ -1136,9 +1115,6 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 		t.Fatalf("unrelated conversation changed Work: state=%+v err=%v", unrelated, clearErr)
 	}
 
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
 	store, err = NewStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -1201,7 +1177,7 @@ func TestLifecycleStoreRejectsAdmissionWithoutAttemptedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	acceptedAt := time.Date(2026, 8, 22, 10, 34, 42, 661032855, time.UTC)
-	sessionID := "brain-agent-zen-lifecycle-live-admission-review:@409"
+	sessionID := "zen-worker-zen-lifecycle-live-admission-review:@409"
 	turnID := "turn:87c25477-6589-4b56-b304-6f27728e831a"
 	pending, created, err := store.PrepareInputAdmission(delegatedSubmissionCandidate(
 		item.ID, sessionID, turnID, "historical payload", acceptedAt,
@@ -1210,9 +1186,6 @@ func TestLifecycleStoreRejectsAdmissionWithoutAttemptedAt(t *testing.T) {
 		t.Fatalf("prepare created=%v err=%v", created, err)
 	}
 	resolveDelegatedSubmission(t, store, pending, "activity-historical", acceptedAt.Add(3*time.Second))
-	if err := store.FSM().Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	lifecycleRoot := filepath.Join(root, "state", "lifecycle")
 	stripLifecycleAttemptedAt(t, lifecycleRoot)
@@ -1334,8 +1307,11 @@ func stripLifecycleAttemptedAt(t *testing.T, lifecycleRoot string) {
 	works, _ := database["works"].(map[string]any)
 	for _, value := range works {
 		work, _ := value.(map[string]any)
-		admission, _ := work["admission"].(map[string]any)
-		delete(admission, "attempted_at")
+		admissions, _ := work["admissions"].(map[string]any)
+		for _, value := range admissions {
+			admission, _ := value.(map[string]any)
+			delete(admission, "attempted_at")
+		}
 	}
 	rebuilt, err := json.Marshal(database)
 	if err != nil {

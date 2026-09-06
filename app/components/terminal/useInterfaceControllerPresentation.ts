@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import type {
   CodexConversation,
   ProviderActivity,

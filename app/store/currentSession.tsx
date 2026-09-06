@@ -24,7 +24,7 @@ import React, {
  */
 export type CurrentSessionRoute = {
   serverId: string;
-  agentId: string;
+  workerId: string;
 };
 
 interface CurrentSessionValue {

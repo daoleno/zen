@@ -52,7 +52,7 @@ func (s *Service) NewChat() (Snapshot, error) {
 	if err := s.store.SetHostSession("", executor.ID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := s.ensureHostAgent(executor); err != nil {
+	if _, err := s.ensureHostWorker(executor); err != nil {
 		return Snapshot{}, err
 	}
 	threadID := newChatThreadID()

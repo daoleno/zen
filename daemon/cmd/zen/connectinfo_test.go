@@ -347,7 +347,7 @@ func TestPrivateNetworkAddressDetectionSkipsContainerInterfaces(t *testing.T) {
 	}
 }
 
-func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
+func TestTopLevelHelpIncludesWorkerAndBrainCommands(t *testing.T) {
 	var output bytes.Buffer
 	_, err := parseDaemonConfig([]string{"--help"}, &output)
 	if !errors.Is(err, flag.ErrHelp) {
@@ -355,7 +355,7 @@ func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
 	}
 	rendered := output.String()
 	for _, want := range []string{
-		"agent      List, spawn, inspect, message, progress, and close agent sessions",
+		"worker     List, spawn, inspect, message, progress, and close Zen Workers",
 		"brain      Inspect Brain workspace and host executor configuration",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -364,32 +364,32 @@ func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
 	}
 }
 
-func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
-	var agentOutput bytes.Buffer
-	if err := runAgentCommand([]string{"--help"}, &agentOutput); !errors.Is(err, flag.ErrHelp) {
-		t.Fatalf("runAgentCommand error = %v, want ErrHelp", err)
+func TestWorkerAndBrainHelpAreDiscoverable(t *testing.T) {
+	var workerOutput bytes.Buffer
+	if err := runWorkerCommand([]string{"--help"}, &workerOutput); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("runWorkerCommand error = %v, want ErrHelp", err)
 	}
-	agentHelp := agentOutput.String()
+	workerHelp := workerOutput.String()
 	for _, want := range []string{
-		"Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]",
-		"zen agent spawn -name",
-		"zen agent capture -id",
-		"zen agent status -id",
-		"zen agent progress --status running",
-		"zen agent close -id",
+		"Usage: zen worker <list|spawn|send|capture|status|receipt|progress|close> [flags]",
+		"zen worker spawn -name",
+		"zen worker capture -id",
+		"zen worker status -id",
+		"zen worker progress --status running",
+		"zen worker close -id",
 	} {
-		if !strings.Contains(agentHelp, want) {
-			t.Fatalf("agent help missing %q:\n%s", want, agentHelp)
+		if !strings.Contains(workerHelp, want) {
+			t.Fatalf("agent help missing %q:\n%s", want, workerHelp)
 		}
 	}
 
 	var progressOutput bytes.Buffer
-	if err := runAgentCommand([]string{"progress", "--help"}, &progressOutput); !errors.Is(err, flag.ErrHelp) {
-		t.Fatalf("runAgentCommand progress help error = %v, want ErrHelp", err)
+	if err := runWorkerCommand([]string{"progress", "--help"}, &progressOutput); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("runWorkerCommand progress help error = %v, want ErrHelp", err)
 	}
 	progressHelp := progressOutput.String()
 	for _, want := range []string{
-		"Usage: zen agent progress --status running --phase working --attention none",
+		"Usage: zen worker progress --status running --phase working --attention none",
 		"-id",
 		"-lease",
 		"-status",
@@ -438,9 +438,9 @@ func (h *captureCLIControlHandler) HandleControlRequest(req control.Request) con
 	return response
 }
 
-func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
+func TestWorkerProgressCommandUsesZenWorkerIDFallback(t *testing.T) {
 	req := runProgressCLIAndCaptureRequest(t,
-		"brain-agent-env:@1",
+		"zen-worker-env:@1",
 		[]string{
 			"--turn-id", "turn:cli-current",
 			"--status", "running",
@@ -455,7 +455,7 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 		},
 	)
 
-	if req.Type != "agent_progress" || req.AgentID != "brain-agent-env:@1" || req.TurnID != "turn:cli-current" {
+	if req.Type != "worker_progress" || req.WorkerID != "zen-worker-env:@1" || req.TurnID != "turn:cli-current" {
 		t.Fatalf("request identity = %#v", req)
 	}
 	if req.Status != "running" || req.Phase != "working" || req.Attention != "none" {
@@ -469,11 +469,11 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 	}
 }
 
-func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
+func TestWorkerProgressCommandExplicitIDOverridesEnv(t *testing.T) {
 	req := runProgressCLIAndCaptureRequest(t,
-		"brain-agent-env:@1",
+		"zen-worker-env:@1",
 		[]string{
-			"-id", "brain-agent-explicit:@2",
+			"-id", "zen-worker-explicit:@2",
 			"--turn-id", "turn:explicit",
 			"--status", "done",
 			"--phase", "reporting",
@@ -483,7 +483,7 @@ func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
 		},
 	)
 
-	if req.AgentID != "brain-agent-explicit:@2" || req.TurnID != "turn:explicit" {
+	if req.WorkerID != "zen-worker-explicit:@2" || req.TurnID != "turn:explicit" {
 		t.Fatalf("request identity = %#v", req)
 	}
 	if req.Status != "done" || req.Phase != "reporting" || req.Attention != "done" {
@@ -491,27 +491,27 @@ func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
 	}
 }
 
-func TestAgentProgressCommandUsesZenStateDirFallback(t *testing.T) {
+func TestWorkerProgressCommandUsesZenStateDirFallback(t *testing.T) {
 	stateDir := t.TempDir()
 	handler, done, cancel := startCLIControlServer(t, stateDir)
 	defer cancel()
 
-	t.Setenv("ZEN_AGENT_ID", "brain-agent-env:@1")
+	t.Setenv("ZEN_WORKER_ID", "zen-worker-env:@1")
 	t.Setenv("ZEN_STATE_DIR", stateDir)
 	var stderr bytes.Buffer
-	if err := runAgentProgress([]string{
+	if err := runWorkerProgress([]string{
 		"--status", "running",
 		"--phase", "working",
 		"--attention", "none",
 		"--summary", "Reading files",
 		"--json=false",
 	}, &stderr); err != nil {
-		t.Fatalf("runAgentProgress returned error: %v stderr=%s", err, stderr.String())
+		t.Fatalf("runWorkerProgress returned error: %v stderr=%s", err, stderr.String())
 	}
 
 	select {
 	case req := <-handler.requests:
-		if req.AgentID != "brain-agent-env:@1" || req.Status != "running" {
+		if req.WorkerID != "zen-worker-env:@1" || req.Status != "running" {
 			t.Fatalf("request = %#v", req)
 		}
 	case <-time.After(2 * time.Second):
@@ -635,31 +635,31 @@ func TestRevokeDeviceUsesRunningDaemonControlOwner(t *testing.T) {
 	waitForCLIControlServerShutdown(t, done)
 }
 
-func TestAgentProgressCommandRequiresIDOrEnv(t *testing.T) {
+func TestWorkerProgressCommandRequiresIDOrEnv(t *testing.T) {
 	var stderr bytes.Buffer
-	t.Setenv("ZEN_AGENT_ID", "")
-	err := runAgentProgress([]string{
+	t.Setenv("ZEN_WORKER_ID", "")
+	err := runWorkerProgress([]string{
 		"--status", "running",
 		"--phase", "working",
 		"--attention", "none",
 		"--json=false",
 	}, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "agent id is required") {
-		t.Fatalf("runAgentProgress error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Worker id is required") {
+		t.Fatalf("runWorkerProgress error = %v", err)
 	}
 }
 
-func runProgressCLIAndCaptureRequest(t *testing.T, envAgentID string, args []string) control.Request {
+func runProgressCLIAndCaptureRequest(t *testing.T, envWorkerID string, args []string) control.Request {
 	t.Helper()
 	stateDir := t.TempDir()
 	handler, done, cancel := startCLIControlServer(t, stateDir)
 	defer cancel()
 
-	t.Setenv("ZEN_AGENT_ID", envAgentID)
+	t.Setenv("ZEN_WORKER_ID", envWorkerID)
 	commandArgs := append([]string{"--state-dir", stateDir}, args...)
 	var stderr bytes.Buffer
-	if err := runAgentProgress(commandArgs, &stderr); err != nil {
-		t.Fatalf("runAgentProgress returned error: %v stderr=%s", err, stderr.String())
+	if err := runWorkerProgress(commandArgs, &stderr); err != nil {
+		t.Fatalf("runWorkerProgress returned error: %v stderr=%s", err, stderr.String())
 	}
 
 	var req control.Request

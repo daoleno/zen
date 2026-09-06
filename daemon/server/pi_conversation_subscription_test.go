@@ -38,7 +38,7 @@ func TestPiLiveSubscriptionBindsOwnedTranscriptSnapshotAndDelta(t *testing.T) {
 
 	w := watcher.New(time.Second)
 	launchCommand := "pi --session " + owned
-	agentID, err := w.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  launchCommand,
@@ -47,12 +47,12 @@ func TestPiLiveSubscriptionBindsOwnedTranscriptSnapshotAndDelta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := w.GetAgent(agentID)
-	if agent == nil {
+	worker := w.GetWorker(workerID)
+	if worker == nil {
 		t.Fatal("fake tmux session was not registered")
 	}
-	if agent.Command != launchCommand {
-		t.Fatalf("registered launch command = %q, want %q", agent.Command, launchCommand)
+	if worker.Command != launchCommand {
+		t.Fatalf("registered launch command = %q, want %q", worker.Command, launchCommand)
 	}
 
 	srv := &Server{watcher: w}
@@ -60,7 +60,7 @@ func TestPiLiveSubscriptionBindsOwnedTranscriptSnapshotAndDelta(t *testing.T) {
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-live",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 
@@ -168,7 +168,7 @@ func TestPiLiveSubscriptionAmbiguityFailsClosed(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	w := watcher.New(time.Second)
-	agentID, err := w.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  "pi --session " + foreign,
@@ -182,7 +182,7 @@ func TestPiLiveSubscriptionAmbiguityFailsClosed(t *testing.T) {
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-ambiguous",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 
@@ -239,7 +239,7 @@ func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
 
 	w := watcher.New(time.Second)
 	launchCommand := "pi --session " + quoted
-	agentID, err := w.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  launchCommand,
@@ -248,12 +248,12 @@ func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := w.GetAgent(agentID)
-	if agent == nil {
+	worker := w.GetWorker(workerID)
+	if worker == nil {
 		t.Fatal("fake tmux session was not registered")
 	}
-	if agent.Command != launchCommand {
-		t.Fatalf("registered launch command = %q, want %q", agent.Command, launchCommand)
+	if worker.Command != launchCommand {
+		t.Fatalf("registered launch command = %q, want %q", worker.Command, launchCommand)
 	}
 
 	srv := &Server{watcher: w}
@@ -261,7 +261,7 @@ func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-quoted",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 
@@ -291,7 +291,7 @@ func TestPiLiveSubscriptionQuotedOwnedPathBinds(t *testing.T) {
 
 // TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript reproduces the
 // real pre-durable-binding scenario at the server boundary: the window was
-// created before the @zen_agent_pi_session option existed (or the option was
+// created before the @zen_worker_pi_session option existed (or the option was
 // lost), the node-based Pi rewrites its argv to bare "pi", and a daemon
 // restart re-discovers the window with no recoverable launch binding. The
 // subscription must auto-bind the exact Zen-owned transcript for the cwd via
@@ -327,7 +327,7 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 	// command; markCreatedSession writes no durable binding in this shape.
 	w1 := watcher.New(time.Second)
 	launchCommand := "pi --session " + owned
-	agentID, err := w1.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w1.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  launchCommand,
@@ -345,7 +345,7 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 	restore := w2.SetPollSources(watcher.PollSources{
 		ListWindows: func() ([]watcher.PollWindow, error) {
 			return []watcher.PollWindow{{
-				Target:  agentID,
+				Target:  workerID,
 				Name:    "pi",
 				Cwd:     cwd,
 				Command: "pi",
@@ -374,12 +374,12 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 		}
 	}()
 	go func() { _ = w2.Run(restartCtx) }()
-	agent := waitForWatcherAgent(t, w2, agentID)
-	if agent.Command != "pi" {
-		t.Fatalf("pre-fix window command = %q, want bare pi", agent.Command)
+	worker := waitForWatcherWorker(t, w2, workerID)
+	if worker.Command != "pi" {
+		t.Fatalf("pre-fix window command = %q, want bare pi", worker.Command)
 	}
-	if agent.StartedAt.UTC() != time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC) {
-		t.Fatalf("startedAt not recovered from process table: %v", agent.StartedAt)
+	if worker.StartedAt.UTC() != time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC) {
+		t.Fatalf("startedAt not recovered from process table: %v", worker.StartedAt)
 	}
 
 	srv := &Server{watcher: w2}
@@ -387,7 +387,7 @@ func TestPiLiveSubscriptionColdReplayAutoBindsOwnedTranscript(t *testing.T) {
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-cold-replay",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 
@@ -467,15 +467,15 @@ func appendPiServerLines(t *testing.T, path string, lines []string) {
 
 // waitForWatcherAgent polls the watcher snapshot until the agent is
 // rediscovered, failing the test after a bounded wait.
-func waitForWatcherAgent(t *testing.T, w *watcher.Watcher, agentID string) *classifier.Agent {
+func waitForWatcherWorker(t *testing.T, w *watcher.Watcher, workerID string) *classifier.Worker {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if agent := w.GetAgent(agentID); agent != nil {
-			return agent
+		if worker := w.GetWorker(workerID); worker != nil {
+			return worker
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("agent %q was not rediscovered within 3s", agentID)
+			t.Fatalf("agent %q was not rediscovered within 3s", workerID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -485,7 +485,7 @@ func waitForWatcherAgent(t *testing.T, w *watcher.Watcher, agentID string) *clas
 // the restart/reopen path end to end: run 1 creates the delegated Pi session
 // with the injected owned --session launch command; the daemon then restarts
 // (a fresh watcher with no in-memory launch record), and the window is
-// re-discovered from tmux where the durable @zen_agent_pi_session ownership
+// re-discovered from tmux where the durable @zen_worker_pi_session ownership
 // binding survives while the pi process rewrites its argv to bare "pi". The
 // new subscription must snapshot the exact same transcript history with
 // stable event IDs — never a transcript_not_found empty state.
@@ -509,7 +509,7 @@ func TestPiLiveSubscriptionRebindsOwnedTranscriptAcrossDaemonRestart(t *testing.
 	// Run 1: the daemon creates the session with the owned launch command.
 	w1 := watcher.New(time.Second)
 	launchCommand := "pi --session " + owned
-	agentID, err := w1.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w1.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  launchCommand,
@@ -526,7 +526,7 @@ func TestPiLiveSubscriptionRebindsOwnedTranscriptAcrossDaemonRestart(t *testing.
 	restore := w2.SetPollSources(watcher.PollSources{
 		ListWindows: func() ([]watcher.PollWindow, error) {
 			return []watcher.PollWindow{{
-				Target:           agentID,
+				Target:           workerID,
 				Name:             "pi",
 				Cwd:              cwd,
 				Command:          "pi",
@@ -556,9 +556,9 @@ func TestPiLiveSubscriptionRebindsOwnedTranscriptAcrossDaemonRestart(t *testing.
 		}
 	}()
 	go func() { _ = w2.Run(restartCtx) }()
-	agent := waitForWatcherAgent(t, w2, agentID)
-	if agent.Command != launchCommand {
-		t.Fatalf("restart lost owned launch command: %q, want %q", agent.Command, launchCommand)
+	worker := waitForWatcherWorker(t, w2, workerID)
+	if worker.Command != launchCommand {
+		t.Fatalf("restart lost owned launch command: %q, want %q", worker.Command, launchCommand)
 	}
 
 	srv := &Server{watcher: w2}
@@ -566,7 +566,7 @@ func TestPiLiveSubscriptionRebindsOwnedTranscriptAcrossDaemonRestart(t *testing.
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-restart",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 
@@ -622,7 +622,7 @@ func TestPiLiveSubscriptionUnavailableLoadNeverErasesHistory(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	w := watcher.New(time.Second)
-	agentID, err := w.CreateSession("", watcher.CreateSessionOptions{
+	workerID, err := w.CreateSession("", watcher.CreateSessionOptions{
 		Detached: true,
 		Cwd:      cwd,
 		Command:  "pi --session " + owned,
@@ -636,7 +636,7 @@ func TestPiLiveSubscriptionUnavailableLoadNeverErasesHistory(t *testing.T) {
 	request := clientMessage{
 		Type:      "codex_conversation_subscribe",
 		RequestID: "subscription-pi-never-erase",
-		TargetID:  agentID,
+		TargetID:  workerID,
 	}
 	writeConversationSubscriptionRequest(t, conn, request)
 

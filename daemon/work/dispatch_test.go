@@ -71,8 +71,8 @@ Treat @codex#interactive-session as ordinary instruction text.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.spawnCalls != 1 || started.Frontmatter.AgentSession != "claude-scheduled" {
-		t.Fatalf("spawn calls = %d, session = %q", run.spawnCalls, started.Frontmatter.AgentSession)
+	if run.spawnCalls != 1 || started.Frontmatter.WorkerSession != "claude-scheduled" {
+		t.Fatalf("spawn calls = %d, session = %q", run.spawnCalls, started.Frontmatter.WorkerSession)
 	}
 	if len(run.spawnRoles) != 1 || run.spawnRoles[0] != "claude" {
 		t.Fatalf("spawn roles = %#v, want delegated claude", run.spawnRoles)
@@ -177,7 +177,7 @@ func TestLauncher_StartDedicatedUsesFreshConfiguredExecutor(t *testing.T) {
 			if len(run.abortCalls) != 0 {
 				t.Fatalf("aborts = %#v, want none after successful launch", run.abortCalls)
 			}
-			if started.Frontmatter.Started == nil || started.Frontmatter.AgentSession != role+"-scheduled" {
+			if started.Frontmatter.Started == nil || started.Frontmatter.WorkerSession != role+"-scheduled" {
 				t.Fatalf("started item = %#v", started.Frontmatter)
 			}
 		})
@@ -193,22 +193,22 @@ func TestLauncher_StartDedicatedRejectsProviderExecutableMismatchBeforeSpawn(t *
 		{
 			name:     "Codex through sh",
 			role:     "codex",
-			executor: Executor{Name: "codex", Kind: AgentProviderCodex, Command: "sh -c codex"},
+			executor: Executor{Name: "codex", Kind: WorkerProviderCodex, Command: "sh -c codex"},
 		},
 		{
 			name:     "Claude through bash",
 			role:     "claude",
-			executor: Executor{Name: "claude", Kind: AgentProviderClaude, Command: "bash -lc claude"},
+			executor: Executor{Name: "claude", Kind: WorkerProviderClaude, Command: "bash -lc claude"},
 		},
 		{
 			name:     "Cursor through other executable",
 			role:     "cursor",
-			executor: Executor{Name: "cursor", Kind: AgentProviderCursor, Command: "other cursor-agent --force --sandbox=disabled --trust --approve-mcps"},
+			executor: Executor{Name: "cursor", Kind: WorkerProviderCursor, Command: "other cursor-agent --force --sandbox=disabled --trust --approve-mcps"},
 		},
 		{
 			name:     "Grok through other executable",
 			role:     "grok",
-			executor: Executor{Name: "grok", Kind: AgentProviderGrok, Command: "other grok --permission-mode=bypassPermissions --sandbox=off"},
+			executor: Executor{Name: "grok", Kind: WorkerProviderGrok, Command: "other grok --permission-mode=bypassPermissions --sandbox=off"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestLauncher_StartDedicatedRejectsInvalidScheduledArgvBeforeSpawn(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			run := &fakeRunner{newID: "codex-scheduled"}
 			execs := NewExecutorConfig("codex", map[string]Executor{
-				"codex": {Name: "codex", Kind: AgentProviderCodex, Command: test.command},
+				"codex": {Name: "codex", Kind: WorkerProviderCodex, Command: test.command},
 			})
 			_, err := NewLauncher(run, execs).StartDedicated(&Item{Path: "/tmp/scheduled.md"}, "/calendar")
 			if !errors.Is(err, ErrScheduledActionUnattended) {

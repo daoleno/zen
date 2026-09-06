@@ -18,8 +18,8 @@ import (
 )
 
 type fakeWatcher struct {
-	agents           []*classifier.Agent
-	sessions         map[string]*classifier.Agent
+	workers          []*classifier.Worker
+	sessions         map[string]*classifier.Worker
 	created          []createdCall
 	sentCalls        []sentCall
 	killed           []string
@@ -68,7 +68,7 @@ func TestSubmitExternalUserInputUsesCanonicalAdmissionAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "telegram-host-generation"},
@@ -118,7 +118,7 @@ func TestSubmitExternalUserInputAmbiguousIsDurableAndNotReplayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "telegram-host-generation"},
@@ -164,12 +164,12 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "state done",
 			event: watcher.SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  "brain-agent-markerless:@1",
+				Type:     "worker_state_change",
+				WorkerID: "zen-worker-markerless:@1",
 				OldState: string(classifier.StateRunning),
 				NewState: string(classifier.StateDone),
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateDone,
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateDone,
 					Summary: "Session starting", Delegated: true, PaneAlive: true,
 				},
 			},
@@ -177,12 +177,12 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "state failed",
 			event: watcher.SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  "brain-agent-markerless:@1",
+				Type:     "worker_state_change",
+				WorkerID: "zen-worker-markerless:@1",
 				OldState: string(classifier.StateRunning),
 				NewState: string(classifier.StateFailed),
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateFailed,
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateFailed,
 					Summary: "Session starting", Delegated: true, PaneAlive: true,
 				},
 			},
@@ -190,12 +190,12 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "state blocked",
 			event: watcher.SessionEvent{
-				Type:     "agent_state_change",
-				AgentID:  "brain-agent-markerless:@1",
+				Type:     "worker_state_change",
+				WorkerID: "zen-worker-markerless:@1",
 				OldState: string(classifier.StateRunning),
 				NewState: string(classifier.StateBlocked),
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateBlocked,
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateBlocked,
 					Summary: "Session starting", Delegated: true, PaneAlive: true,
 				},
 			},
@@ -203,10 +203,10 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "metadata attention failed",
 			event: watcher.SessionEvent{
-				Type:    "agent_metadata_change",
-				AgentID: "brain-agent-markerless:@1",
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateRunning,
+				Type:     "worker_metadata_change",
+				WorkerID: "zen-worker-markerless:@1",
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateRunning,
 					Attention: "failed", NeedsAttention: true,
 					Summary: "Session starting", Delegated: true, PaneAlive: true,
 				},
@@ -215,10 +215,10 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "metadata attention user input",
 			event: watcher.SessionEvent{
-				Type:    "agent_metadata_change",
-				AgentID: "brain-agent-markerless:@1",
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateRunning,
+				Type:     "worker_metadata_change",
+				WorkerID: "zen-worker-markerless:@1",
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateRunning,
 					Attention: "user_input", NeedsAttention: true,
 					Summary: "Resolve the delegated Session request.", Delegated: true, PaneAlive: true,
 				},
@@ -227,12 +227,12 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 		{
 			name: "removed",
 			event: watcher.SessionEvent{
-				Type:     "agent_removed",
-				AgentID:  "brain-agent-markerless:@1",
+				Type:     "worker_removed",
+				WorkerID: "zen-worker-markerless:@1",
 				OldState: string(classifier.StateRunning),
 				NewState: string(classifier.StateRemoved),
-				Agent: &classifier.Agent{
-					ID: "brain-agent-markerless:@1", State: classifier.StateRemoved,
+				Worker: &classifier.Worker{
+					ID: "zen-worker-markerless:@1", State: classifier.StateRemoved,
 					Summary: "Session starting", Delegated: true,
 				},
 			},
@@ -243,7 +243,7 @@ func TestRouteSessionEventWithoutCanonicalTurnNeverCreatesLifecycleEvents(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			sessionID := strings.TrimSpace(test.event.AgentID)
+			sessionID := strings.TrimSpace(test.event.WorkerID)
 			item, err := store.CreateWork(Work{
 				Title:            "Markerless delegated session",
 				Objective:        "No lifecycle began without a canonical turn.",
@@ -291,7 +291,7 @@ func TestReconcileDelegatedSessionsWithoutTurnNeverRoutesRawState(t *testing.T) 
 	}
 	now := time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
-	sessionID := "brain-agent-markerless:@1"
+	sessionID := "zen-worker-markerless:@1"
 	item, err := store.CreateWork(Work{
 		Title:            "Markerless delegated session",
 		Objective:        "No lifecycle began without a canonical turn.",
@@ -304,13 +304,13 @@ func TestReconcileDelegatedSessionsWithoutTurnNeverRoutesRawState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents := []*classifier.Agent{{
+	workers := []*classifier.Worker{{
 		ID: sessionID, State: classifier.StateFailed, Summary: "Session starting",
 		Delegated: true, PaneAlive: true,
 		ExpectedNextCheckAt: &now, // long-expired cross-turn lease must not stale a turnless session
 	}}
-	service := NewService(store, &fakeWatcher{sessions: map[string]*classifier.Agent{agents[0].ID: agents[0]}}, nil)
-	service.ReconcileDelegatedSessions(agents)
+	service := NewService(store, &fakeWatcher{sessions: map[string]*classifier.Worker{workers[0].ID: workers[0]}}, nil)
+	service.ReconcileDelegatedSessions(workers)
 	events, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestRouteSessionEventWithCanonicalTurnRedispatchesOnly(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
-	sessionID := "brain-agent-canonical:@1"
+	sessionID := "zen-worker-canonical:@1"
 	item, err := store.CreateWork(Work{
 		Title:            "Canonical delegated session",
 		Objective:        "The ledger owns lifecycle.",
@@ -354,14 +354,14 @@ func TestRouteSessionEventWithCanonicalTurnRedispatchesOnly(t *testing.T) {
 		AcceptedAt: now,
 	})
 	service := NewService(store, &fakeWatcher{}, nil)
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID: sessionID, State: classifier.StateFailed, Summary: "Session starting",
 		Delegated: true, PaneAlive: true,
 	}
 	if _, err := service.RouteSessionEvent(watcher.SessionEvent{
-		Type:     "agent_state_change",
-		AgentID:  sessionID,
-		Agent:    agent,
+		Type:     "worker_state_change",
+		WorkerID: sessionID,
+		Worker:   worker,
 		OldState: string(classifier.StateRunning),
 		NewState: string(classifier.StateFailed),
 	}); err != nil {
@@ -378,19 +378,19 @@ func TestRouteSessionEventWithCanonicalTurnRedispatchesOnly(t *testing.T) {
 	}
 }
 
-func (w *fakeWatcher) Agents() []*classifier.Agent {
-	out := make([]*classifier.Agent, 0, len(w.agents))
-	for _, agent := range w.agents {
-		cp := *agent
+func (w *fakeWatcher) Workers() []*classifier.Worker {
+	out := make([]*classifier.Worker, 0, len(w.workers))
+	for _, worker := range w.workers {
+		cp := *worker
 		out = append(out, &cp)
 	}
 	return out
 }
 
-func (w *fakeWatcher) GetAgent(id string) *classifier.Agent {
+func (w *fakeWatcher) GetWorker(id string) *classifier.Worker {
 	if w.sessions != nil {
-		if agent, ok := w.sessions[id]; ok {
-			cp := *agent
+		if worker, ok := w.sessions[id]; ok {
+			cp := *worker
 			return &cp
 		}
 	}
@@ -425,14 +425,14 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 		return "", w.createErr
 	}
 	if w.sessions == nil {
-		w.sessions = map[string]*classifier.Agent{}
+		w.sessions = map[string]*classifier.Worker{}
 	}
-	id := "brain-agent-" + strings.ToLower(strings.ReplaceAll(strings.TrimSpace(opts.Name), " ", "-"))
+	id := "zen-worker-" + strings.ToLower(strings.ReplaceAll(strings.TrimSpace(opts.Name), " ", "-"))
 	if opts.Hidden {
 		id += "-hidden"
 	}
 	id += fmt.Sprintf(":@%d", len(w.created)+1)
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID:        id,
 		Name:      opts.Name + " (" + id + ")",
 		Cwd:       opts.Cwd,
@@ -443,8 +443,8 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 		Delegated: opts.Delegated && !opts.Hidden,
 	}
 	w.created = append(w.created, createdCall{id: id, opts: opts})
-	w.sessions[id] = agent
-	w.agents = append(w.agents, agent)
+	w.sessions[id] = worker
+	w.workers = append(w.workers, worker)
 	if w.createHook != nil {
 		w.createHook()
 	}
@@ -615,13 +615,13 @@ func (w *fakeWatcher) KillSession(sessionID string) error {
 	if w.sessions != nil {
 		delete(w.sessions, sessionID)
 	}
-	nextAgents := w.agents[:0]
-	for _, agent := range w.agents {
-		if agent.ID != sessionID {
-			nextAgents = append(nextAgents, agent)
+	nextWorkers := w.workers[:0]
+	for _, worker := range w.workers {
+		if worker.ID != sessionID {
+			nextWorkers = append(nextWorkers, worker)
 		}
 	}
-	w.agents = nextAgents
+	w.workers = nextWorkers
 	if w.killErr != nil {
 		return w.killErr
 	}
@@ -644,11 +644,11 @@ func (w *fakeWatcher) ResolveOwnedGeneration(sessionID string) (watcher.OwnedGen
 	if generation := strings.TrimSpace(w.ownedGenerations[sessionID]); generation != "" {
 		return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
 	}
-	agent := w.GetAgent(sessionID)
-	if agent == nil {
+	worker := w.GetWorker(sessionID)
+	if worker == nil {
 		return watcher.OwnedGeneration{}, fmt.Errorf("Session %s is unavailable", sessionID)
 	}
-	generation := AdmissionDigest(fmt.Sprintf("%s\x00%d\x00%d", sessionID, agent.ProcessID, agent.StartedAt.UnixNano()))
+	generation := AdmissionDigest(fmt.Sprintf("%s\x00%d\x00%d", sessionID, worker.ProcessID, worker.StartedAt.UnixNano()))
 	return watcher.OwnedGeneration{SessionID: sessionID, Generation: generation}, nil
 }
 
@@ -674,7 +674,7 @@ func TestHostInputAdmissionLiveCriticalSectionAndRestartSettlement(t *testing.T)
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "host-generation-one"},
@@ -759,7 +759,7 @@ func TestHostInputAdmissionDifferentPayloadNeverRearmsSameIdentity(t *testing.T)
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "host-generation-one"},
@@ -811,7 +811,7 @@ func TestHostInputAdmissionRestartUsesExactAcceptedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "host-generation-accepted"},
@@ -880,7 +880,7 @@ func TestHostInputAdmissionReplacementBecomesUncertainAndFreesLane(t *testing.T)
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "host-generation-old"},
@@ -965,7 +965,7 @@ func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T)
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldHost: {ID: oldHost, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{
@@ -1010,7 +1010,7 @@ func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T)
 		t.Fatal(err)
 	}
 	delete(fw.sessions, oldHost)
-	fw.sessions[newHost] = &classifier.Agent{ID: newHost, Hidden: true, State: classifier.StateRunning}
+	fw.sessions[newHost] = &classifier.Worker{ID: newHost, Hidden: true, State: classifier.StateRunning}
 	if err := store.SetHostSession(newHost, "codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -1056,10 +1056,10 @@ func TestHostBindingReplacementRetiresExactForegroundAndDispatches(t *testing.T)
 		t.Fatalf("delayed old retirement retired=%v err=%v", retired, err)
 	}
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
-		Type: "agent_state_change", AgentID: oldHost,
+		Type: "worker_state_change", WorkerID: oldHost,
 		OldState: string(classifier.StateRunning), NewState: string(classifier.StateDone),
 		TurnID: "old-provider-turn",
-		Agent:  &classifier.Agent{ID: oldHost, Hidden: true, State: classifier.StateDone},
+		Worker: &classifier.Worker{ID: oldHost, Hidden: true, State: classifier.StateDone},
 	}); err != nil || woke {
 		t.Fatalf("delayed old terminal woke=%v err=%v", woke, err)
 	}
@@ -1089,7 +1089,7 @@ func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateRunning},
 		},
 		ownedGenerations: map[string]string{hostID: "generation-one"},
@@ -1152,9 +1152,9 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateRunning}
+	host := &classifier.Worker{ID: hostID, Hidden: true, State: classifier.StateRunning}
 	fw := &fakeWatcher{
-		sessions:         map[string]*classifier.Agent{hostID: host},
+		sessions:         map[string]*classifier.Worker{hostID: host},
 		ownedGenerations: map[string]string{hostID: "persistent-host-generation"},
 		outcomes:         map[string]watcher.InputOutcome{},
 		turnStore:        store,
@@ -1176,7 +1176,7 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 		t.Fatalf("running foreground reconcile woke=%v err=%v", woke, err)
 	}
 
-	item := createSignalTestWork(t, store, "Ready behind persistent Host", "brain-agent-worker:@1")
+	item := createSignalTestWork(t, store, "Ready behind persistent Host", "zen-worker-worker:@1")
 	event := appendSignalTestEvent(t, store, item, "persistent-host-output")
 	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
 		t.Fatalf("busy Host did not admit pending review: woke=%v err=%v", woke, err)
@@ -1189,13 +1189,13 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 	deliveredRevision := lease.DeliveryWorkRevision
 
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
-		Type: "agent_output", AgentID: "other-hidden-host:@1",
-		Agent: &classifier.Agent{ID: "other-hidden-host:@1", Hidden: true, State: classifier.StateDone},
+		Type: "worker_output", WorkerID: "other-hidden-host:@1",
+		Worker: &classifier.Worker{ID: "other-hidden-host:@1", Hidden: true, State: classifier.StateDone},
 	}); err != nil || woke {
 		t.Fatalf("non-current Hidden Session drove Host lane: woke=%v err=%v", woke, err)
 	}
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
-		Type: "agent_output", AgentID: hostID, Agent: host,
+		Type: "worker_output", WorkerID: hostID, Worker: host,
 	}); err != nil || woke {
 		t.Fatalf("running provider output replayed delivered review: woke=%v err=%v", woke, err)
 	}
@@ -1209,8 +1209,8 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 		ID: activityID, Status: "completed", StartedAt: now, SettledAt: settledAt,
 	}
 	woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
-		Type: "provider_activity_change", AgentID: hostID,
-		Agent: &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone},
+		Type: "provider_activity_change", WorkerID: hostID,
+		Worker: &classifier.Worker{ID: hostID, Hidden: true, State: classifier.StateDone},
 	})
 	if err != nil || woke {
 		t.Fatalf("terminal provider output replayed review: woke=%v err=%v", woke, err)
@@ -1232,20 +1232,20 @@ func TestSameReviewEventRedeliveryUsesFreshProviderTurnReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.FSM().Close()
+
 	const hostID = "brain-host:@review-redelivery"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	host := &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
+	host := &classifier.Worker{ID: hostID, Hidden: true, State: classifier.StateDone}
 	fw := &fakeWatcher{
-		sessions:         map[string]*classifier.Agent{hostID: host},
+		sessions:         map[string]*classifier.Worker{hostID: host},
 		ownedGenerations: map[string]string{hostID: "host-generation"},
 		outcomes:         map[string]watcher.InputOutcome{},
 		turnStore:        store,
 	}
 	service := NewService(store, fw, nil)
-	item := createSignalTestWork(t, store, "Redeliver one canonical review", "brain-agent-worker:@1")
+	item := createSignalTestWork(t, store, "Redeliver one canonical review", "zen-worker-worker:@1")
 	event := appendSignalTestEvent(t, store, item, "review-redelivery")
 
 	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
@@ -1365,10 +1365,10 @@ func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {
 	if snapshot.Workspace != store.WorkspacePath() {
 		t.Fatalf("workspace = %q, want %q", snapshot.Workspace, store.WorkspacePath())
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != fw.created[0].id {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != fw.created[0].id {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
-	if snapshot.HostExecutor == nil || snapshot.HostExecutor.Provider != "codex" || snapshot.HostExecutor.Runtime != work.AgentRuntimeTmux {
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.Provider != "codex" || snapshot.HostExecutor.Runtime != work.WorkerRuntimeTmux {
 		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
 	if len(snapshot.Executors) == 0 || !snapshot.Executors[0].Host {
@@ -1412,8 +1412,8 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 	if strings.Count(command, codexFullAuthorizationFlag) != 1 {
 		t.Fatalf("codex full authorization flag duplicated: %q", command)
 	}
-	if first.HostAgent == nil || second.HostAgent == nil || first.HostAgent.ID != second.HostAgent.ID {
-		t.Fatalf("host agents = %#v / %#v", first.HostAgent, second.HostAgent)
+	if first.HostWorker == nil || second.HostWorker == nil || first.HostWorker.ID != second.HostWorker.ID {
+		t.Fatalf("host agents = %#v / %#v", first.HostWorker, second.HostWorker)
 	}
 }
 
@@ -1433,7 +1433,7 @@ func TestServiceSnapshotAndContextDoNotMutateThreadRegistryForHost(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.HostAgent == nil {
+	if first.HostWorker == nil {
 		t.Fatal("initial Snapshot did not create the host fixture")
 	}
 
@@ -1443,15 +1443,15 @@ func TestServiceSnapshotAndContextDoNotMutateThreadRegistryForHost(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.HostAgent == nil || second.HostAgent.ID != first.HostAgent.ID {
-		t.Fatalf("host agents = %#v / %#v", first.HostAgent, second.HostAgent)
+	if second.HostWorker == nil || second.HostWorker.ID != first.HostWorker.ID {
+		t.Fatalf("host agents = %#v / %#v", first.HostWorker, second.HostWorker)
 	}
 	assertChatStateFixtureUnchanged(t, path, raw, before)
 	context, err := service.Context()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context.ThreadID != "thread-current" || context.HostAgent == nil || context.HostAgent.ID != first.HostAgent.ID {
+	if context.ThreadID != "thread-current" || context.HostWorker == nil || context.HostWorker.ID != first.HostWorker.ID {
 		t.Fatalf("context = %#v", context)
 	}
 	assertChatStateFixtureUnchanged(t, path, raw, before)
@@ -1464,12 +1464,12 @@ func TestServiceSnapshotReusesGrokHostEvenWhenClassifiedBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hostID := "brain-agent-brain-reuse:@29"
+	hostID := "zen-worker-brain-reuse:@29"
 	if err := store.SetHostSession(hostID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {
 				ID:      hostID,
 				Name:    "Brain (" + hostID + ")",
@@ -1481,7 +1481,7 @@ func TestServiceSnapshotReusesGrokHostEvenWhenClassifiedBlocked(t *testing.T) {
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[hostID])
+	fw.workers = append(fw.workers, fw.sessions[hostID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
 			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
@@ -1505,11 +1505,11 @@ func TestServiceSnapshotReusesGrokHostEvenWhenClassifiedBlocked(t *testing.T) {
 	if len(fw.killed) != 0 {
 		t.Fatalf("blocked chrome must not kill host, killed %#v", fw.killed)
 	}
-	if first.HostAgent == nil || first.HostAgent.ID != hostID {
-		t.Fatalf("first host = %#v", first.HostAgent)
+	if first.HostWorker == nil || first.HostWorker.ID != hostID {
+		t.Fatalf("first host = %#v", first.HostWorker)
 	}
-	if second.HostAgent == nil || second.HostAgent.ID != hostID {
-		t.Fatalf("second host = %#v", second.HostAgent)
+	if second.HostWorker == nil || second.HostWorker.ID != hostID {
+		t.Fatalf("second host = %#v", second.HostWorker)
 	}
 	hostSession, err := store.HostSession()
 	if err != nil {
@@ -1526,11 +1526,11 @@ func TestServiceSnapshotReplacesHostWhenTmuxSessionMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing:@1"
+	oldID := "zen-worker-brain-missing:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
-	// HasSession false: no sessions map entry and no agent list entry.
+	// HasSession false: no sessions map entry and no worker list entry.
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
@@ -1546,8 +1546,8 @@ func TestServiceSnapshotReplacesHostWhenTmuxSessionMissing(t *testing.T) {
 	if len(fw.created) != 1 {
 		t.Fatalf("expected replacement host when tmux target missing, got %#v", fw.created)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	hostSession, err := store.HostSession()
 	if err != nil {
@@ -1576,7 +1576,7 @@ func TestServiceSnapshotResumesProviderSessionWhenTmuxMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-missing-bound:@9"
+	oldID := "zen-worker-brain-missing-bound:@9"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -1598,12 +1598,12 @@ func TestServiceSnapshotResumesProviderSessionWhenTmuxMissing(t *testing.T) {
 		t.Fatalf("expected one resume launch, got %#v", fw.created)
 	}
 	command := fw.created[0].opts.Command
-	token, present, err := work.ProviderResumeToken(work.AgentProviderCodex, command)
+	token, present, err := work.ProviderResumeToken(work.WorkerProviderCodex, command)
 	if err != nil || !present || token != providerSessionID {
 		t.Fatalf("resume command = %q token=(%q,%v,%v)", command, token, present, err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	hostSession, err := store.HostSession()
 	if err != nil {
@@ -1648,7 +1648,7 @@ func TestServiceSnapshotResumesCodexFromTranscriptPathOnly(t *testing.T) {
 	if host.ProviderSessionID != derived || host.TranscriptPath != path {
 		t.Fatalf("path-derived binding = %+v", host)
 	}
-	token, present, err := work.ProviderResumeToken(work.AgentProviderCodex, fw.created[0].opts.Command)
+	token, present, err := work.ProviderResumeToken(work.WorkerProviderCodex, fw.created[0].opts.Command)
 	if err != nil || !present || token != derived {
 		t.Fatalf("command=%q token=%q err=%v", fw.created[0].opts.Command, token, err)
 	}
@@ -1670,7 +1670,7 @@ func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-1786013209881380707:@7750"
+	oldID := "zen-worker-brain-1786013209881380707:@7750"
 	providerSessionID := "019fd6ae-d6df-7341-bedc-706f7c4977bf"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1744,7 +1744,7 @@ func TestServiceMissingTmuxFailClosedTable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			oldID := "brain-agent-brain-old:@1"
+			oldID := "zen-worker-brain-old:@1"
 			if err := store.SetHostSession(oldID, tc.executorID); err != nil {
 				t.Fatal(err)
 			}
@@ -1791,7 +1791,7 @@ func TestServiceSnapshotDoesNotRebindUnrelatedHostAsContinuity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@292"
+	deadID := "zen-worker-brain-dead:@292"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1800,14 +1800,14 @@ func TestServiceSnapshotDoesNotRebindUnrelatedHostAsContinuity(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			"main:@0": {
 				ID: "main:@0", Name: "Codex", Cwd: "/other",
 				Command: "codex resume", State: classifier.StateRunning, Hidden: true,
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions["main:@0"])
+	fw.workers = append(fw.workers, fw.sessions["main:@0"])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
@@ -1816,8 +1816,8 @@ func TestServiceSnapshotDoesNotRebindUnrelatedHostAsContinuity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fw.created) != 1 || snapshot.HostAgent == nil || snapshot.HostAgent.ID == "main:@0" {
-		t.Fatalf("created=%#v host=%#v", fw.created, snapshot.HostAgent)
+	if len(fw.created) != 1 || snapshot.HostWorker == nil || snapshot.HostWorker.ID == "main:@0" {
+		t.Fatalf("created=%#v host=%#v", fw.created, snapshot.HostWorker)
 	}
 	audit, _ := os.ReadFile(store.HostReplacementsPath())
 	if strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) ||
@@ -1904,7 +1904,7 @@ func TestServiceSnapshotResumeBindFailureKillsNewHostKeepsOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old:@1"
+	oldID := "zen-worker-brain-old:@1"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1958,7 +1958,7 @@ func TestProjectionSnapshotAbsentHostDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-proj:@1"
+	oldID := "zen-worker-brain-proj:@1"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1981,8 +1981,8 @@ func TestProjectionSnapshotAbsentHostDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != oldID {
-		t.Fatalf("projection must keep recorded host: %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != oldID {
+		t.Fatalf("projection must keep recorded host: %#v", snapshot.HostWorker)
 	}
 	if len(fw.created) != 0 || len(fw.killed) != 0 || len(routes.transfers) != 0 {
 		t.Fatalf("created=%#v killed=%#v transfers=%#v", fw.created, fw.killed, routes.transfers)
@@ -2002,7 +2002,7 @@ func TestServiceSnapshotProbeUnknownPreservesBindingCreatesZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-probe-unknown:@1"
+	oldID := "zen-worker-brain-probe-unknown:@1"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	transcriptPath := "/home/daoleno/.codex/sessions/2026/08/06/rollout-" + providerSessionID + ".jsonl"
 	if err := store.SetHostSession(oldID, "codex"); err != nil {
@@ -2055,8 +2055,8 @@ func TestServiceSnapshotRecoverCandidateProbeUnknownCreatesZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -2069,8 +2069,8 @@ func TestServiceSnapshotRecoverCandidateProbeUnknownCreatesZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{},
-		agents: []*classifier.Agent{{
+		sessions: map[string]*classifier.Worker{},
+		workers: []*classifier.Worker{{
 			ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 			Command: "codex resume " + providerSessionID, State: classifier.StateRunning, Hidden: true,
 		}},
@@ -2129,8 +2129,8 @@ func TestServiceSnapshotRecoverLiveMigratesProviderBindingAtomically(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadID := "brain-agent-brain-dead:@1"
-			aliveID := "brain-agent-brain-alive:@2"
+			deadID := "zen-worker-brain-dead:@1"
+			aliveID := "zen-worker-brain-alive:@2"
 			if err := store.SetHostSession(deadID, "codex"); err != nil {
 				t.Fatal(err)
 			}
@@ -2138,14 +2138,14 @@ func TestServiceSnapshotRecoverLiveMigratesProviderBindingAtomically(t *testing.
 				t.Fatal(err)
 			}
 			fw := &fakeWatcher{
-				sessions: map[string]*classifier.Agent{
+				sessions: map[string]*classifier.Worker{
 					aliveID: {
 						ID: aliveID, Name: "Brain (" + aliveID + ")", Cwd: store.WorkspacePath(),
 						Command: tc.aliveCmd, State: classifier.StateRunning, Hidden: true,
 					},
 				},
 			}
-			fw.agents = append(fw.agents, fw.sessions[aliveID])
+			fw.workers = append(fw.workers, fw.sessions[aliveID])
 			service := NewService(store, fw, &work.ExecutorConfig{
 				ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 			})
@@ -2157,8 +2157,8 @@ func TestServiceSnapshotRecoverLiveMigratesProviderBindingAtomically(t *testing.
 			if len(fw.created) != 0 || len(fw.killed) != 0 {
 				t.Fatalf("created=%#v killed=%#v", fw.created, fw.killed)
 			}
-			if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
-				t.Fatalf("host=%#v", snapshot.HostAgent)
+			if snapshot.HostWorker == nil || snapshot.HostWorker.ID != aliveID {
+				t.Fatalf("host=%#v", snapshot.HostWorker)
 			}
 			host, err := store.HostSession()
 			if err != nil {
@@ -2182,8 +2182,8 @@ func TestServiceSnapshotRecoverLiveBindFailureKeepsOldDoesNotKill(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@1"
-	aliveID := "brain-agent-brain-alive:@2"
+	deadID := "zen-worker-brain-dead:@1"
+	aliveID := "zen-worker-brain-alive:@2"
 	providerSessionID := "019fd717-589c-7a11-9966-917f43dc336a"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
@@ -2196,7 +2196,7 @@ func TestServiceSnapshotRecoverLiveBindFailureKeepsOldDoesNotKill(t *testing.T) 
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID:      aliveID,
 				Name:    "Brain (" + aliveID + ")",
@@ -2207,7 +2207,7 @@ func TestServiceSnapshotRecoverLiveBindFailureKeepsOldDoesNotKill(t *testing.T) 
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{"codex": {Name: "codex", Command: "codex", Kind: "codex"}},
 	})
@@ -2243,13 +2243,13 @@ func TestServiceSnapshotAdoptsLiveHostProviderWhenExecutorIDEmpty(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	hostID := "brain-agent-brain-live-grok:@42"
+	hostID := "zen-worker-brain-live-grok:@42"
 	// Record id only — empty executor_id (legacy / partial write).
 	if err := store.SetHostSessionID(hostID); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			hostID: {
 				ID:      hostID,
 				Name:    "Brain (" + hostID + ")",
@@ -2260,7 +2260,7 @@ func TestServiceSnapshotAdoptsLiveHostProviderWhenExecutorIDEmpty(t *testing.T) 
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[hostID])
+	fw.workers = append(fw.workers, fw.sessions[hostID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
 			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
@@ -2278,8 +2278,8 @@ func TestServiceSnapshotAdoptsLiveHostProviderWhenExecutorIDEmpty(t *testing.T) 
 	if len(fw.created) != 0 {
 		t.Fatalf("must not create replacement, created %#v", fw.created)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != hostID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != hostID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "grok" {
 		t.Fatalf("host executor = %#v, want grok adopted from live host", snapshot.HostExecutor)
@@ -2300,13 +2300,13 @@ func TestServiceSnapshotRebindsAliveHostWhenRecordedTargetMissing(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadID := "brain-agent-brain-dead:@292"
-	aliveID := "brain-agent-brain-alive:@300"
+	deadID := "zen-worker-brain-dead:@292"
+	aliveID := "zen-worker-brain-alive:@300"
 	if err := store.SetHostSession(deadID, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			aliveID: {
 				ID:      aliveID,
 				Name:    "Brain (" + aliveID + ")",
@@ -2317,7 +2317,7 @@ func TestServiceSnapshotRebindsAliveHostWhenRecordedTargetMissing(t *testing.T) 
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	fw.workers = append(fw.workers, fw.sessions[aliveID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex", Kind: "codex"},
@@ -2331,8 +2331,8 @@ func TestServiceSnapshotRebindsAliveHostWhenRecordedTargetMissing(t *testing.T) 
 	if len(fw.created) != 0 {
 		t.Fatalf("should rebind alive host, not create: %#v", fw.created)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
-		t.Fatalf("host agent = %#v, want rebound %s", snapshot.HostAgent, aliveID)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != aliveID {
+		t.Fatalf("host agent = %#v, want rebound %s", snapshot.HostWorker, aliveID)
 	}
 	hostSession, err := store.HostSession()
 	if err != nil {
@@ -2355,12 +2355,12 @@ func TestServiceSnapshotAuditsProviderMismatchReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old-grok:@1"
+	oldID := "zen-worker-brain-old-grok:@1"
 	if err := store.SetHostSession(oldID, "grok"); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {
 				ID:      oldID,
 				Name:    "Brain",
@@ -2371,7 +2371,7 @@ func TestServiceSnapshotAuditsProviderMismatchReplacement(t *testing.T) {
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
 			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
@@ -2391,8 +2391,8 @@ func TestServiceSnapshotAuditsProviderMismatchReplacement(t *testing.T) {
 	if len(fw.created) != 1 {
 		t.Fatalf("expected codex replacement host, created %#v", fw.created)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	audit, err := os.ReadFile(store.HostReplacementsPath())
 	if err != nil {
@@ -2481,66 +2481,23 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
 	}
 	prompt := fw.sentCalls[0].text
-	assertCalendarPromptContract(t, prompt, "Do not infer Calendar items from unrelated messages")
 	for _, want := range []string{
-		"Delegated executor: codex",
-		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
-		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session",
-		"Brain is the user's scheduler",
-		"Brain's operating goal is to understand the task",
-		brainWorkerRoleContractVersion,
-		brainWorkerRoleContract,
-		"Brain is the orchestrator, not the execution pool",
-		"Delegate a subtask only when it can be named clearly",
-		"Run independent delegated subtasks in parallel when that reduces elapsed time",
-		"Delegated agents should not invent the overall plan",
-		"Review delegated results before integrating them",
-		"For a single larger task, prefer reusing the same delegated agent session",
-		"Managed worktree root:",
-		"Use the repository supplied by the user as the default workspace, even when it is dirty",
-		"$ZEN_WORKTREE_ROOT",
-		"TMPDIR/TMP/TEMP",
-		"$ZEN_BUILD_TMPDIR",
-		"Never hard-code OS-global temp paths",
-		"Zen CLI quick reference",
-		"only sessions with delegated=true are Brain-owned",
-		"agent spawn -name",
-		"agent capture -id",
-		"agent send -id",
-		"agent close -id",
-		"Delegated agent lifecycle",
-		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
-		"Keep lifecycle principles in Markdown, prompts, and agent instructions",
-		"Treat a direct Work Event input as one claimed actionable delta",
-		"Research discoverable environment facts with tools or delegated agents",
-		"every currently independent required decision in one small numbered round with a recommended default",
-		"remaining unknowns have safe defaults and completion is checkable",
-		"consolidate options and a recommendation",
+		"Delegated executor: codex", brainWorkerRoleContractVersion, brainWorkerRoleContract,
+		"Read AGENTS.md and soul.md", "Managed worktree root:", "Zen CLI:",
+		"Work/Event state owns scheduling", "a running Worker does not need progress polling",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("bootstrap prompt missing %q:\n%s", want, prompt)
+			t.Fatalf("bootstrap missing %q", want)
 		}
 	}
-	if strings.Contains(prompt, "Only create or ask for a visible delegated agent session when the user explicitly asks") {
-		t.Fatalf("bootstrap prompt still requires explicit delegation:\n%s", prompt)
+	for _, unwanted := range []string{"agent spawn", "agent capture", "Zen CLI quick reference", "Current memory:", "Current profile notes:"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("bootstrap retains %q", unwanted)
+		}
 	}
-	if strings.Contains(prompt, "creates a visible delegated agent with the current Brain executor as executor") {
-		t.Fatalf("bootstrap prompt still routes delegated agents to the current Brain executor:\n%s", prompt)
-	}
-	for _, unexpected := range []string{
-		"normally create or reuse",
-		"use judgment when direct execution",
-		"clearly the better route",
-		"clearer or faster",
-		"patch over it directly",
-		"resource admission is a ceiling",
-		"smallest useful frontier",
-		"Resource-Aware Scheduling",
-		"do not launch work outside Zen's owned lifecycle",
-		"safe concurrent headroom",
-	} {
-		if strings.Contains(prompt, unexpected) {
-			t.Fatalf("bootstrap prompt should not include %q:\n%s", unexpected, prompt)
+	for _, want := range []string{"delegated=true", "due_retry", "resolve_command", "source-thread", "scheduled_action", "first/second", "completion or failure event"} {
+		if !strings.Contains(productWorkspaceInstructions, want) {
+			t.Fatalf("loaded AGENTS missing %q", want)
 		}
 	}
 }
@@ -2579,23 +2536,8 @@ func TestServiceBootstrapPromptReferencesPrivateWorkspaceWithoutEmbeddingIt(t *t
 	}
 	prompt := fw.sentCalls[0].text
 	for _, want := range []string{
-		"Treat this bootstrap as a map, not the full context",
-		"At the start of this Brain Host Session, read soul.md once before the first response or work",
-		"Follow its stable expression and judgment principles for this Session",
-		"Re-read it only if the file changes",
-		"read memory.md/profile.md on demand",
-		"repairs product-owned standard Brain workspace blocks",
-		"zen brain context --json",
-		"zen brain playbooks --json",
-		"progressive disclosure",
-		"playbooks/",
-		"current.md",
-		"memory.md",
-		"profile.md",
-		"soul.md",
-		"policies/delegation.md",
-		"policies/engine.md",
-		"policies/handoff.md",
+		"Read AGENTS.md and soul.md", "zen brain context --json", "zen brain playbooks --json",
+		"current.md", "memory.md", "profile.md", "policies/delegation.md", "policies/engine.md", "policies/handoff.md",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("bootstrap prompt missing %q:\n%s", want, prompt)
@@ -2632,8 +2574,8 @@ func TestServiceSetHostExecutorPersistsAndStartsSelectedHost(t *testing.T) {
 	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "claude" {
 		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == "" {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == "" {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	if len(fw.created) != 1 || !strings.HasPrefix(fw.created[0].opts.Command, "claude") {
 		t.Fatalf("created = %#v", fw.created)
@@ -2652,7 +2594,7 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldHostID := "brain-agent-brain-old:@1"
+	oldHostID := "zen-worker-brain-old:@1"
 	if err := store.SetHostSession(oldHostID, "grok"); err != nil {
 		t.Fatal(err)
 	}
@@ -2666,7 +2608,7 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldHostID: {
 				ID:      oldHostID,
 				Name:    "Brain",
@@ -2678,8 +2620,8 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 		},
 	}
 	service := NewService(store, fw, work.NewExecutorConfig("grok", map[string]work.Executor{
-		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
+		"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.WorkerRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
 	}))
 	registryRaw, err := os.ReadFile(store.ChatStatePath())
 	if err != nil {
@@ -2694,8 +2636,8 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldHostID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldHostID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	if len(fw.killed) != 1 || fw.killed[0] != oldHostID {
 		t.Fatalf("killed = %#v", fw.killed)
@@ -2713,21 +2655,13 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	if handoff == "" {
 		t.Fatalf("executor handoff was not delivered: %#v", fw.sentCalls)
 	}
+	if strings.Contains(handoff, "Preserve handoff objective.") {
+		t.Fatal("handoff embeds private current.md instead of reading its current version")
+	}
 	for _, want := range []string{
-		"Brain host executor handoff:",
-		"Previous host executor: grok",
-		"Current host executor: codex",
-		"Delegated executor: grok",
-		"Read current.md in the Brain workspace before continuing.",
-		"Preserve handoff objective.",
-		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
-		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
-		"Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
-		"Delegated agents are scoped execution sessions",
-		"Run independent subtasks in parallel when useful",
-		"Inspect delegated results before integrating them.",
-		brainWorkerRoleContractVersion,
-		brainWorkerRoleContract,
+		"Brain host executor handoff:", "Previous host executor: grok",
+		"Current host executor: codex", "Delegated executor: grok",
+		"AGENTS.md", "current.md", "policies/handoff.md", "pending Event identities",
 	} {
 		if !strings.Contains(handoff, want) {
 			t.Fatalf("handoff missing %q:\n%s", want, handoff)
@@ -2744,7 +2678,7 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	}
 }
 
-func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing.T) {
+func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedWorkers(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
@@ -2762,9 +2696,9 @@ func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing
 	if err := os.WriteFile(store.policyPath("handoff.md"), []byte("# Old Handoff\n\nKeep handoff notes.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	delegatedID := "brain-agent-worker:@1"
+	delegatedID := "zen-worker-worker:@1"
 	fw := &fakeWatcher{
-		agents: []*classifier.Agent{
+		workers: []*classifier.Worker{
 			{
 				ID:        delegatedID,
 				Name:      "Worker",
@@ -2776,7 +2710,7 @@ func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing
 		},
 	}
 	service := NewService(store, fw, work.NewExecutorConfig("codex", map[string]work.Executor{
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
 	}))
 
 	report, err := service.Housekeeping()
@@ -2800,8 +2734,8 @@ func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing
 	}
 	for _, want := range []string{
 		"Keep delegated notes.",
-		"## Orchestrator / Delegation Model",
-		"Review delegated output before integrating it",
+		"## Brief And Review",
+		"Inspect every delegated result",
 	} {
 		if !strings.Contains(string(delegation), want) {
 			t.Fatalf("delegation policy missing %q:\n%s", want, delegation)
@@ -2811,7 +2745,7 @@ func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(engine), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.") {
+	if !strings.Contains(string(engine), "Use configured routing unless the user requests another executor") {
 		t.Fatalf("engine policy was not backfilled:\n%s", engine)
 	}
 	handoff, err := os.ReadFile(store.policyPath("handoff.md"))
@@ -2820,15 +2754,15 @@ func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing
 	}
 	for _, want := range []string{
 		"Keep handoff notes.",
-		"## Rules",
-		"Treat a host executor switch as a host replacement, not a new conversation.",
+		"Policy",
+		"Host executor switching preserves the visible Brain chat.",
 	} {
 		if !strings.Contains(string(handoff), want) {
 			t.Fatalf("handoff policy missing %q:\n%s", want, handoff)
 		}
 	}
-	if len(report.OpenDelegatedAgents) != 1 || report.OpenDelegatedAgents[0].ID != delegatedID {
-		t.Fatalf("delegated agents = %#v", report.OpenDelegatedAgents)
+	if len(report.OpenDelegatedWorkers) != 1 || report.OpenDelegatedWorkers[0].ID != delegatedID {
+		t.Fatalf("delegated Zen Workers = %#v", report.OpenDelegatedWorkers)
 	}
 	if len(report.RecommendedNextSteps) == 0 {
 		t.Fatalf("expected recommended next steps: %+v", report)
@@ -2852,7 +2786,7 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldHostID: {
 				ID:      oldHostID,
 				Name:    "Brain",
@@ -2864,7 +2798,7 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 		},
 	}
 	service := NewService(store, fw, work.NewExecutorConfig("claude", map[string]work.Executor{
-		"claude": {Name: "claude", Command: "claude", Kind: "claude", Runtime: work.AgentRuntimeTmux},
+		"claude": {Name: "claude", Command: "claude", Kind: "claude", Runtime: work.WorkerRuntimeTmux},
 	}))
 
 	snapshot, err := service.NewChat()
@@ -2881,8 +2815,8 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	if !created.opts.Hidden || !created.opts.Detached || created.opts.Name != "Brain" {
 		t.Fatalf("created host = %+v", created.opts)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != created.id {
-		t.Fatalf("host agent = %#v created=%#v", snapshot.HostAgent, created)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != created.id {
+		t.Fatalf("host agent = %#v created=%#v", snapshot.HostWorker, created)
 	}
 	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "claude" {
 		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
@@ -2915,15 +2849,11 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	}
 	bootstrap := fw.sentCalls[0].text
 	for _, want := range []string{
-		"Brain is the orchestrator, not the execution pool",
-		"Delegate a subtask only when it can be named clearly",
-		"Run independent delegated subtasks in parallel when that reduces elapsed time",
-		"Use the repository supplied by the user as the default workspace, even when it is dirty",
-		"$ZEN_WORKTREE_ROOT",
-		"TMPDIR/TMP/TEMP",
-		"$ZEN_BUILD_TMPDIR",
-		"Never hard-code OS-global temp paths",
-		"Review delegated results before integrating them",
+		brainWorkerRoleContract,
+		"Read AGENTS.md and soul.md",
+		"policies/delegation.md",
+		"Managed worktree root:",
+		"Work/Event state owns scheduling",
 	} {
 		if !strings.Contains(bootstrap, want) {
 			t.Fatalf("new chat bootstrap missing %q:\n%s", want, bootstrap)
@@ -2960,10 +2890,10 @@ func TestServiceSnapshotSeesLiveDelegatedExecutorSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	execs := work.NewExecutorConfig("codex", map[string]work.Executor{
-		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
-		"grok":  {Name: "grok", Command: "grok --live", Kind: "grok", Runtime: work.AgentRuntimeTmux},
+		"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.WorkerRuntimeTmux},
+		"grok":  {Name: "grok", Command: "grok --live", Kind: "grok", Runtime: work.WorkerRuntimeTmux},
 	})
-	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{}}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Worker{}}
 	service := NewService(store, fw, execs)
 
 	before, err := service.Context()
@@ -2996,12 +2926,12 @@ func TestServiceSnapshotReplacesMismatchedHostSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID := "brain-agent-brain-old:@1"
+	oldID := "zen-worker-brain-old:@1"
 	if err := store.SetHostSessionID(oldID); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {
 				ID:      oldID,
 				Name:    "Brain (" + oldID + ")",
@@ -3012,7 +2942,7 @@ func TestServiceSnapshotReplacesMismatchedHostSession(t *testing.T) {
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	service := NewService(store, fw, &work.ExecutorConfig{
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
@@ -3029,8 +2959,8 @@ func TestServiceSnapshotReplacesMismatchedHostSession(t *testing.T) {
 	if len(fw.killed) != 1 || fw.killed[0] != oldID {
 		t.Fatalf("expected mismatched host to be killed, got %#v", fw.killed)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 }
 
@@ -3044,7 +2974,7 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
+		sessions: map[string]*classifier.Worker{
 			oldID: {
 				ID:      oldID,
 				Name:    "Brain (" + oldID + ")",
@@ -3055,7 +2985,7 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 			},
 		},
 	}
-	fw.agents = append(fw.agents, fw.sessions[oldID])
+	fw.workers = append(fw.workers, fw.sessions[oldID])
 	service := NewService(store, fw, work.NewExecutorConfig("codex", map[string]work.Executor{
 		"codex": {Name: "codex", Command: "codex"},
 	}))
@@ -3070,8 +3000,8 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 	if len(fw.created) != 0 {
 		t.Fatalf("expected no replacement host, got %#v", fw.created)
 	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != oldID {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || snapshot.HostWorker.ID != oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 	hostSession, err := store.HostSession()
 	if err != nil {
@@ -3082,13 +3012,13 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 	}
 }
 
-func TestServiceSnapshotFiltersHiddenHostFromVisibleAgents(t *testing.T) {
+func TestServiceSnapshotFiltersHiddenHostFromVisibleWorkers(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
-		agents: []*classifier.Agent{{
+		workers: []*classifier.Worker{{
 			ID:      "main:@1",
 			Name:    "Codex (main:@1)",
 			State:   classifier.StateRunning,
@@ -3101,11 +3031,11 @@ func TestServiceSnapshotFiltersHiddenHostFromVisibleAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Agents) != 1 || snapshot.Agents[0].ID != "main:@1" {
-		t.Fatalf("visible agents = %#v", snapshot.Agents)
+	if len(snapshot.Workers) != 1 || snapshot.Workers[0].ID != "main:@1" {
+		t.Fatalf("visible agents = %#v", snapshot.Workers)
 	}
-	if snapshot.HostAgent == nil || !snapshot.HostAgent.Hidden {
-		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	if snapshot.HostWorker == nil || !snapshot.HostWorker.Hidden {
+		t.Fatalf("host agent = %#v", snapshot.HostWorker)
 	}
 }
 
@@ -3145,70 +3075,35 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCalendarPromptContract(t, string(instructions), "Do not extract Calendar items automatically from unrelated chat")
+	assertCalendarPromptContract(t, string(instructions))
 	if !strings.Contains(string(instructions), "Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative") {
 		t.Fatalf("workspace instructions do not describe current.md:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Use policies/ for stable Brain lifecycle rules") {
+	if !strings.Contains(string(instructions), "Read policies/delegation.md before delegating") {
 		t.Fatalf("workspace instructions do not describe policies:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Use playbooks/ for provider-neutral operating playbooks") {
+	if !strings.Contains(string(instructions), "Discover optional playbooks") {
 		t.Fatalf("workspace instructions do not describe playbooks:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
-		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "Brain is the orchestrator, not the execution pool") {
-		t.Fatalf("workspace instructions do not describe orchestrator behavior:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "Brain's operating goal is to understand the task") {
-		t.Fatalf("workspace instructions do not describe Brain's operating goal:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "inspect their reports before integrating results") {
-		t.Fatalf("workspace instructions do not describe delegated result review:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "For a single larger task, prefer reusing the same delegated agent session") {
-		t.Fatalf("workspace instructions do not describe delegated session reuse:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "Keep lifecycle principles in Markdown, prompts, and agent instructions") {
-		t.Fatalf("workspace instructions do not describe prompt-first lifecycle:\n%s", instructions)
-	}
-	if !strings.Contains(string(instructions), "Treat a direct Work Event input as one claimed actionable delta") {
-		t.Fatalf("workspace instructions do not describe Work event handling:\n%s", instructions)
-	}
 	for _, want := range []string{
-		"Research discoverable environment facts with tools or delegated agents",
-		"every currently independent required decision in one small numbered round",
-		"remaining unknowns have safe defaults",
-		"checkable completion conditions",
+		brainWorkerRoleContract, "claimed actionable Work Event", "resolve_command",
+		"finish independent authorized preparation first", "materially changes scope, risk, or user values",
+		"zen worker list/spawn/capture/send/close", "delegated=true",
+		"$ZEN_WORKTREE_ROOT", "TMPDIR/TMP/TEMP", "$ZEN_BUILD_TMPDIR",
+		"policies/delegation.md",
 	} {
 		if !strings.Contains(string(instructions), want) {
-			t.Fatalf("workspace instructions missing alignment contract %q:\n%s", want, instructions)
+			t.Fatalf("workspace missing %q", want)
 		}
 	}
-	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
-		if !strings.Contains(string(instructions), want) {
-			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
+	delegation, err := os.ReadFile(store.policyPath("delegation.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Inspect every delegated result", "same viable Worker", "acceptance criteria", "verification", "durable next action"} {
+		if !strings.Contains(string(delegation), want) {
+			t.Fatalf("loaded delegation policy missing %q", want)
 		}
-	}
-	if !strings.Contains(string(instructions), "Keep delegated agent lifecycle ownership") {
-		t.Fatalf("workspace instructions missing lifecycle ownership:\n%s", instructions)
-	}
-	for _, want := range []string{
-		"$ZEN_WORKTREE_ROOT",
-		"TMPDIR/TMP/TEMP",
-		"$ZEN_BUILD_TMPDIR",
-		"Never hard-code OS-global temp paths",
-	} {
-		if !strings.Contains(string(instructions), want) {
-			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
-		}
-	}
-	if !strings.Contains(string(instructions), "Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true") {
-		t.Fatalf("workspace instructions missing external session guard:\n%s", instructions)
-	}
-	if strings.Contains(string(instructions), "only when the user asks Brain to delegate real work") {
-		t.Fatalf("workspace instructions still require explicit delegation:\n%s", instructions)
 	}
 }
 
@@ -3285,7 +3180,7 @@ func TestStorePreservesUnmarkedWorkspaceInstructionsBeforeCanonicalBlock(t *test
 
 Custom local note.
 
-- Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.
+- Only create or ask for a visible delegated Zen Worker session when the user explicitly asks you to delegate real work.
 `
 	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte(staleInstructions), 0o600); err != nil {
 		t.Fatal(err)
@@ -3303,12 +3198,12 @@ Custom local note.
 		t.Fatalf("workspace instructions changed unmarked existing bytes:\n%s", instructions)
 	}
 	for _, want := range []string{
-		managedStartMarker(brainAgentsManagedID),
-		"## Brain Lifecycle Rules",
-		"## Brain Communication Rules",
-		"## Executor Rules",
-		"## Zen CLI",
-		managedEndMarker(brainAgentsManagedID),
+		managedStartMarker(brainWorkersManagedID),
+		"## Lifecycle",
+		"## Context",
+		"policies/engine.md",
+		"## Tools",
+		managedEndMarker(brainWorkersManagedID),
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
@@ -3344,31 +3239,25 @@ func TestServiceHousekeepingRepairsCalendarContractWithoutOverwritingUserContent
 	if !strings.Contains(instructions, "Keep this user-authored rule.") {
 		t.Fatalf("housekeeping overwrote user content:\n%s", instructions)
 	}
-	assertCalendarPromptContract(t, instructions, "Do not extract Calendar items automatically from unrelated chat")
+	assertCalendarPromptContract(t, instructions)
 }
 
-func assertCalendarPromptContract(t *testing.T, value, noAutoExtractionMarker string) {
+func assertCalendarPromptContract(t *testing.T, value string) {
 	t.Helper()
 	for _, want := range []string{
 		"calendar list/get/create/update/cancel/run",
-		"explicit time intent",
-		"event, reminder, and deadline are passive Calendar records",
-		"scheduled_action launches delegated execution",
-		"current Brain thread_id from ",
-		"brain context --json and pass that exact value",
-		"pass that exact value as -source-thread (source_thread_id)",
-		"Never invent, omit, or silently retarget this thread",
-		"canonical full result, or a concise failure, returns idempotently to that captured Brain thread",
-		"unread state and notifications are projections",
+		"only for explicit time intent",
+		"event, reminder and deadline are passive",
+		"scheduled_action executes work",
+		"current thread_id from zen brain context --json",
+		"pass it as -source-thread",
+		"Never invent or retarget the result destination",
 		"A recurring series continues after a failed occurrence",
-		"local YYYY-MM-DD date, HH:MM wall time, and IANA timezone",
-		"DST fall-back",
-		"first or second; never guess",
-		"After create, update, or run",
-		"resolved local date",
-		"recurrence/effect",
-		"result destination from the command confirmation",
-		noAutoExtractionMarker,
+		"local YYYY-MM-DD, HH:MM and IANA timezone",
+		"first/second for a repeated DST time",
+		"After create/update/run",
+		"resolved local time",
+		"recurrence/effect and result destination",
 	} {
 		if !strings.Contains(value, want) {
 			t.Fatalf("Calendar prompt contract missing %q:\n%s", want, value)

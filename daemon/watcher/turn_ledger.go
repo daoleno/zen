@@ -8,7 +8,7 @@ import (
 )
 
 // This file defines the frozen provider-neutral per-turn canonical protocol
-// vocabulary (worklog 2026-08-07-zen-agent-event-reliability, Research C.2).
+// vocabulary (worklog 2026-08-07-zen-worker-event-reliability, Research C.2).
 //
 // Exactly one canonical owner exists for every accepted delegated turn: a
 // durable ledger record in the Brain lifecycle store. Every lifecycle
@@ -359,7 +359,7 @@ type AdmittedTurn struct {
 }
 
 // TranscriptBinding is the provider-native transcript identity recorded at
-// admission. The equivalent tmux window option (@zen_agent_pi_session) is
+// admission. The equivalent tmux window option (@zen_worker_pi_session) is
 // only an advisory cache for sessions without a ledger record.
 type TranscriptBinding struct {
 	Provider string `json:"provider,omitempty"`

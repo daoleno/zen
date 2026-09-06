@@ -1,6 +1,6 @@
-import type { ConnectionState } from '../store/agents';
+import type { ConnectionState } from '../store/workers';
 import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
-import type { AgentKind } from './agentPresentation';
+import type { AgentKind } from './workerPresentation';
 
 export function agentKindFromCommand(command?: string): AgentKind {
   if (isClaudeCommand(command)) return 'claude';

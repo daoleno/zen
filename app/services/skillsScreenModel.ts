@@ -81,23 +81,6 @@ export function selectStableSkillsProjectCwd(
   );
 }
 
-export function skillsSectionAgentCounts(
-  inventory?: SkillsInventory,
-): SkillsAgentCounts {
-  const counts: SkillsAgentCounts = {
-    codex: 0,
-    "claude-code": 0,
-    cursor: 0,
-    grok: 0,
-    opencode: 0,
-    pi: 0,
-  };
-  for (const skill of inventory?.skills ?? []) {
-    for (const agent of skill.agents) counts[agent] += 1;
-  }
-  return counts;
-}
-
 export function skillsSectionProjection(
   inventory: SkillsInventory | undefined,
   agent: ManagedSkillAgent,

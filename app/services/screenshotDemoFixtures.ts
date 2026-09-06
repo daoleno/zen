@@ -1,5 +1,5 @@
 import type { CodexConversationEvent } from "./codexConversation";
-import type { Agent } from "../store/agents";
+import type { Worker } from "../store/workers";
 import type { PendingUserMessage } from "../components/terminal/InterfaceChatSession";
 import type { ProvidersSnapshot } from "./providers/types";
 
@@ -177,7 +177,7 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
     seq: 3,
     kind: "tool",
     timestamp: DEMO_TIMESTAMP,
-    tool_name: "agent progress",
+    tool_name: "worker progress",
     title: "Mobile QA agent",
     input: "Review compact layouts in the sample workspace",
     output: "Running accessibility and viewport checks",
@@ -250,7 +250,7 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
   },
 ];
 
-export const SCREENSHOT_SESSION_AGENTS: Agent[] = [
+export const SCREENSHOT_SESSION_AGENTS: Worker[] = [
   {
     key: "demo-server:atlas-mobile",
     id: "atlas-mobile",

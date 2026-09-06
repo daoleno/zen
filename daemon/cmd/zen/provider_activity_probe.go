@@ -32,25 +32,25 @@ func newWorkProviderActivityProbe() *workProviderActivityProbe {
 }
 
 func (p *workProviderActivityProbe) ObserveProviderActivity(
-	agent classifier.Agent,
+	worker classifier.Worker,
 	now time.Time,
 ) watcher.ProviderActivityObservation {
-	provider := work.InferAgentProvider(agent.Command, agent.Name)
+	provider := work.InferWorkerProvider(worker.Command, worker.Name)
 	if provider == "" {
 		return watcher.ProviderActivityObservation{FallbackAllowed: true}
 	}
 
 	p.mu.Lock()
-	reader := p.readers[agent.ID]
+	reader := p.readers[worker.ID]
 	if reader == nil {
 		reader = &providerActivityReader{reader: work.NewProviderConversationReader()}
-		p.readers[agent.ID] = reader
+		p.readers[worker.ID] = reader
 	}
 	p.mu.Unlock()
 
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
-	conversation, err := reader.reader.Load(agent, provider, now)
+	conversation, err := reader.reader.Load(worker, provider, now)
 	if err != nil {
 		// Channel health: a failed read is a bounded evidence loss — the
 		// transcript is provably unlocatable (missing file) or unreadable
@@ -69,8 +69,8 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 		// closed on a malformed header at the exact owned --session path; the
 		// file existing proves the source is unreadable, not unlocatable.
 		state := probeStateForConversation(conversation, nil)
-		if state == watcher.ProbeStateUnlocatable && provider == work.AgentProviderPi {
-			if ownedPath := work.PiOwnedSessionPath(agent.Command); ownedPath != "" {
+		if state == watcher.ProbeStateUnlocatable && provider == work.WorkerProviderPi {
+			if ownedPath := work.PiOwnedSessionPath(worker.Command); ownedPath != "" {
 				if info, statErr := os.Stat(ownedPath); statErr == nil && !info.IsDir() {
 					state = watcher.ProbeStateUnreadable
 				}
@@ -125,7 +125,7 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 		if event.Seq > 0 {
 			observation.AdmissionCursor = uint64(event.Seq)
 		}
-		if provider != work.AgentProviderCursor {
+		if provider != work.WorkerProviderCursor {
 			observation.AdmissionAt = parseProviderActivityTime(event.Timestamp)
 		}
 		observation.InputSHA256 = strings.TrimSpace(event.AdmissionSHA256)
@@ -156,12 +156,12 @@ func probeStateForConversation(conversation work.CodexConversation, err error) w
 	}
 }
 
-func (p *workProviderActivityProbe) ForgetProviderActivity(agentID string) {
+func (p *workProviderActivityProbe) ForgetProviderActivity(workerID string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
-	delete(p.readers, strings.TrimSpace(agentID))
+	delete(p.readers, strings.TrimSpace(workerID))
 	p.mu.Unlock()
 }
 

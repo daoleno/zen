@@ -1,4 +1,4 @@
-import type { AgentStatus } from "../../constants/tokens";
+import type { WorkerStatus } from "../../constants/tokens";
 import type { BrainCurrentWork } from "../../store/brain";
 import { brainWorkTitle } from "../brain/brainWorkEventPresentation";
 
@@ -16,7 +16,7 @@ export type WorkActivityTone = "attention" | "accent" | "neutral";
 export type WorkActivityOwner = {
   sessionId: string;
   title: string;
-  status: AgentStatus;
+  status: WorkerStatus;
   delegated: boolean;
 };
 

@@ -6,13 +6,8 @@ import (
 	"strings"
 )
 
-// codexCatalogBaseInstructions is the Codex CLI 0.147 model base instructions
-// reference text (codex-rs models-manager/prompt.md, Apache-2.0). The Codex
-// ModelInfo contract requires base_instructions (or model_messages.
-// instructions_template) on every model_catalog_json entry — the CLI exits at
-// config load when it is missing — and this is the exact fallback text Codex
-// itself uses for models without per-model instructions, so managed sessions
-// keep the stock Codex agent persona.
+// codexCatalogBaseInstructions supplies Zen's compact coding defaults for
+// managed catalogs, whose entries require nonempty base_instructions.
 //
 //go:embed codex_catalog_instructions.md
 var codexCatalogBaseInstructions string

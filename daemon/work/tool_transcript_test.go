@@ -106,7 +106,7 @@ func TestSanitizeConversationProjectionDropsDirectWorkEventInput(t *testing.T) {
 	}
 }
 
-func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T) {
+func TestMatchCodexTranscriptToWorkerStart_UsesNearestCreatedThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
 		{
@@ -123,7 +123,7 @@ func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T)
 		},
 	}
 
-	got, ok := matchCodexTranscriptToAgentStart(candidates, base)
+	got, ok := matchCodexTranscriptToWorkerStart(candidates, base)
 	if !ok {
 		t.Fatal("expected a transcript match")
 	}
@@ -132,7 +132,7 @@ func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T)
 	}
 }
 
-func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.T) {
+func TestMatchCodexTranscriptToWorkerStart_DoesNotFallBackToOldThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
 		{
@@ -141,12 +141,12 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.
 		},
 	}
 
-	if got, ok := matchCodexTranscriptToAgentStart(candidates, base); ok {
+	if got, ok := matchCodexTranscriptToWorkerStart(candidates, base); ok {
 		t.Fatalf("matched %#v, want no match", got)
 	}
 }
 
-func TestMatchCodexTranscriptToAgentStart_DoesNotUseStaleUpdatedThread(t *testing.T) {
+func TestMatchCodexTranscriptToWorkerStart_DoesNotUseStaleUpdatedThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
 		{
@@ -155,7 +155,7 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotUseStaleUpdatedThread(t *testin
 		},
 	}
 
-	if got, ok := matchCodexTranscriptToAgentStart(candidates, base); ok {
+	if got, ok := matchCodexTranscriptToWorkerStart(candidates, base); ok {
 		t.Fatalf("matched %#v, want no match", got)
 	}
 }
@@ -286,8 +286,8 @@ func TestBrainCodexTranscriptFallbackUsesLatestUpdated(t *testing.T) {
 		},
 	}
 
-	got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
-		ID:     "brain-agent-brain-123:@1",
+	got, ok := fallbackCodexTranscriptForWorker(candidates, classifier.Worker{
+		ID:     "zen-worker-brain-123:@1",
 		Name:   "Brain",
 		Hidden: true,
 	})
@@ -298,7 +298,7 @@ func TestBrainCodexTranscriptFallbackUsesLatestUpdated(t *testing.T) {
 		t.Fatalf("matched %q, want latest-brain-thread", got.Row.ID)
 	}
 
-	if _, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
+	if _, ok := fallbackCodexTranscriptForWorker(candidates, classifier.Worker{
 		ID:     "main:@1",
 		Name:   "codex",
 		Hidden: false,
@@ -307,7 +307,7 @@ func TestBrainCodexTranscriptFallbackUsesLatestUpdated(t *testing.T) {
 	}
 }
 
-func TestBrainCodexTranscriptFallbackDoesNotUseThreadBeforeAgentStart(t *testing.T) {
+func TestBrainCodexTranscriptFallbackDoesNotUseThreadBeforeWorkerStart(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
 		{
@@ -319,8 +319,8 @@ func TestBrainCodexTranscriptFallbackDoesNotUseThreadBeforeAgentStart(t *testing
 		},
 	}
 
-	if got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
-		ID:        "brain-agent-brain-123:@1",
+	if got, ok := fallbackCodexTranscriptForWorker(candidates, classifier.Worker{
+		ID:        "zen-worker-brain-123:@1",
 		Name:      "Brain",
 		Hidden:    true,
 		StartedAt: base,
@@ -348,8 +348,8 @@ func TestBrainCodexTranscriptFallbackPrefersPostStartThread(t *testing.T) {
 		},
 	}
 
-	got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
-		ID:        "brain-agent-brain-123:@1",
+	got, ok := fallbackCodexTranscriptForWorker(candidates, classifier.Worker{
+		ID:        "zen-worker-brain-123:@1",
 		Name:      "Brain",
 		Hidden:    true,
 		StartedAt: base,
@@ -460,9 +460,9 @@ VALUES ('019eee5e-7dec-71b1-bc2b-adcb2bad1c4c', ` + sqlString(rolloutPath) + `, 
 	}
 	defer file.Close()
 
-	got, ok, err := findCodexTranscript(classifier.Agent{
-		ID:        "brain-agent-brain-1781166359611353356:@3747",
-		Name:      "node (brain-agent-brain-1781166359611353356:@3747)",
+	got, ok, err := findCodexTranscript(classifier.Worker{
+		ID:        "zen-worker-brain-1781166359611353356:@3747",
+		Name:      "node (zen-worker-brain-1781166359611353356:@3747)",
 		Cwd:       cwd,
 		Command:   "codex",
 		ProcessID: os.Getpid(),

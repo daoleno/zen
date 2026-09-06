@@ -19,7 +19,7 @@ import (
 func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 	dir := t.TempDir()
 	owned := filepath.Join(dir, "owned.jsonl")
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "agent-pi",
 		Cwd:       "/repo",
 		Command:   "pi --session " + owned,
@@ -31,7 +31,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 
 	// Late file creation: before the first flush the owned path is an honest
 	// missing transcript, never a fallback to the shared per-CWD store.
-	first, err := reader.Load(agent, AgentProviderPi, now)
+	first, err := reader.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 	writePiLiveFixture(t, owned, "/repo", "sess-live-1", []string{
 		piLiveUserLine("u1", "", "2026-08-07T10:00:01.000Z", "first user text"),
 	})
-	second, err := reader.Load(agent, AgentProviderPi, now)
+	second, err := reader.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 	appendPiLiveLines(t, owned, []string{
 		piLiveAssistantLine("a1", "u1", "2026-08-07T10:00:02.000Z", "second text", "toolUse", `{"type":"thinking","thinking":"planning"},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}`),
 	})
-	third, err := reader.Load(agent, AgentProviderPi, now)
+	third, err := reader.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 		piLiveToolResultLine("r1", "a1", "2026-08-07T10:00:03.000Z", "call_1", "bash", "tool output ok", false),
 		piLiveAssistantLine("a2", "r1", "2026-08-07T10:00:04.000Z", "final text", "stop", `{"type":"text","text":"final text"}`),
 	})
-	fourth, err := reader.Load(agent, AgentProviderPi, now)
+	fourth, err := reader.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 	// Reconnect/reload: a brand-new reader binds the exact same transcript
 	// from the agent command alone, without any reader-owned pin memory.
 	fresh := NewProviderConversationReader()
-	freshConversation, err := fresh.Load(agent, AgentProviderPi, now)
+	freshConversation, err := fresh.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestPiLiveBindingSurvivesRefreshReconnectAndLateGrowth(t *testing.T) {
 
 	// Repeated loads on the same reader (watcher refresh) keep the identity
 	// and never renumber events.
-	again, err := reader.Load(agent, AgentProviderPi, now)
+	again, err := reader.Load(worker, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,19 +160,19 @@ func TestPiSameCWDSessionsNeverCrossBind(t *testing.T) {
 		piLiveUserLine("u1", "", "2026-08-07T10:00:01.000Z", "session b text"),
 		piLiveAssistantLine("a1", "u1", "2026-08-07T10:00:02.000Z", "session b reply", "stop", `{"type":"text","text":"session b reply"}`),
 	})
-	agentA := classifier.Agent{ID: "agent-a", Cwd: "/repo", Command: "pi --session " + ownedA}
-	agentB := classifier.Agent{ID: "agent-b", Cwd: "/repo", Command: "pi --session " + ownedB}
+	workerA := classifier.Worker{ID: "agent-a", Cwd: "/repo", Command: "pi --session " + ownedA}
+	workerB := classifier.Worker{ID: "agent-b", Cwd: "/repo", Command: "pi --session " + ownedB}
 	now := time.Now().UTC()
 
 	reader := NewProviderConversationReader()
-	gotA, err := reader.Load(agentA, AgentProviderPi, now)
+	gotA, err := reader.Load(workerA, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !gotA.Available || gotA.SessionID != "sess-a" {
 		t.Fatalf("agent A bound = %+v", gotA)
 	}
-	gotB, err := reader.Load(agentB, AgentProviderPi, now)
+	gotB, err := reader.Load(workerB, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestPiSameCWDSessionsNeverCrossBind(t *testing.T) {
 		t.Fatalf("agent B bound = %+v", gotB)
 	}
 	// Switching back must rebind A without leaking B.
-	gotABack, err := reader.Load(agentA, AgentProviderPi, now)
+	gotABack, err := reader.Load(workerA, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestPiSameCWDSessionsNeverCrossBind(t *testing.T) {
 
 	// Fresh readers (reconnect/reload) bind the exact same owned transcripts.
 	freshB := NewProviderConversationReader()
-	gotBfresh, err := freshB.Load(agentB, AgentProviderPi, now)
+	gotBfresh, err := freshB.Load(workerB, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +200,10 @@ func TestPiSameCWDSessionsNeverCrossBind(t *testing.T) {
 
 	// The shared per-CWD store never sees the owned transcripts: an unowned
 	// "pi" launch with an empty shared directory stays transcript_not_found.
-	agentDir := filepath.Join(dir, "agent")
-	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	unowned := classifier.Agent{ID: "agent-unowned", Cwd: "/repo", Command: "pi"}
-	gotUnowned, err := NewProviderConversationReader().Load(unowned, AgentProviderPi, now)
+	workerDir := filepath.Join(dir, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", workerDir)
+	unowned := classifier.Worker{ID: "agent-unowned", Cwd: "/repo", Command: "pi"}
+	gotUnowned, err := NewProviderConversationReader().Load(unowned, WorkerProviderPi, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,8 +363,8 @@ func TestPiQuotedOwnedPathBindsAndRoundTrips(t *testing.T) {
 		piLiveUserLine("u1", "", "2026-08-07T10:00:01.000Z", "quoted path user text"),
 		piLiveAssistantLine("a1", "u1", "2026-08-07T10:00:02.000Z", "quoted path reply", "stop", `{"type":"text","text":"quoted path reply"}`),
 	})
-	agent := classifier.Agent{ID: "agent-quoted", Cwd: "/repo", Command: "pi --session " + quoted}
-	conversation, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	worker := classifier.Worker{ID: "agent-quoted", Cwd: "/repo", Command: "pi --session " + quoted}
+	conversation, err := NewProviderConversationReader().Load(worker, WorkerProviderPi, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestPiQuotedOwnedPathBindsAndRoundTrips(t *testing.T) {
 	}
 
 	// A fresh reader (reconnect/reload) binds the same transcript again.
-	again, err := NewProviderConversationReader().Load(agent, AgentProviderPi, time.Now().UTC())
+	again, err := NewProviderConversationReader().Load(worker, WorkerProviderPi, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

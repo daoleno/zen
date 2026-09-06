@@ -134,7 +134,7 @@ func TestProviderCredentialWebSocketAuthenticatedHTTPAndWire(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch payload["type"] {
-			case "agent_session_list", "work_items_snapshot", "calendar_snapshot":
+			case "worker_session_list", "work_items_snapshot", "calendar_snapshot":
 				continue
 			}
 			return payload, raw

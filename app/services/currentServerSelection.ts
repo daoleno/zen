@@ -38,3 +38,11 @@ export function selectCurrentServer<T extends Pick<StoredServer, "id">>(
   }
   return servers.find((server) => server.id === currentServerId) ?? null;
 }
+
+export function selectCurrentServerItems<T extends { serverId: string }>(
+  items: readonly T[],
+  currentServerId: string | null | undefined,
+): T[] {
+  if (!currentServerId) return [];
+  return items.filter((item) => item.serverId === currentServerId);
+}

@@ -52,32 +52,32 @@ func normalizeProfile(value string) (Profile, error) {
 func commandForProfile(provider, id, existingCommand string, profile Profile) (command, kind string) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		provider = work.InferAgentProvider(existingCommand, id)
+		provider = work.InferWorkerProvider(existingCommand, id)
 	}
 	existingCommand = strings.TrimSpace(existingCommand)
 	kind = ""
 
 	switch provider {
-	case work.AgentProviderCodex:
+	case work.WorkerProviderCodex:
 		// Keep base command plain; Brain hardens at runtime when Brain is used.
 		return "codex", ""
-	case work.AgentProviderClaude:
+	case work.WorkerProviderClaude:
 		return "claude", ""
-	case work.AgentProviderCursor:
+	case work.WorkerProviderCursor:
 		kind = "cursor"
 		if profile == ProfileAutonomous {
 			return "cursor-agent --force --sandbox disabled", kind
 		}
 		return "cursor-agent", kind
-	case work.AgentProviderGrok:
+	case work.WorkerProviderGrok:
 		if profile == ProfileAutonomous {
 			return "grok --no-alt-screen --permission-mode bypassPermissions", ""
 		}
 		return "grok --no-alt-screen", ""
-	case work.AgentProviderPi:
+	case work.WorkerProviderPi:
 		// Pi is already permissive; do not invent bypass flags.
 		return "pi", ""
-	case work.AgentProviderOpenCode:
+	case work.WorkerProviderOpenCode:
 		if profile == ProfileAutonomous {
 			return "opencode --auto", ""
 		}

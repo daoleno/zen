@@ -21,8 +21,8 @@ func TestSessionActivityAdvancedDecision(t *testing.T) {
 	cases := []struct {
 		name           string
 		contentChanged bool
-		oldState       classifier.AgentState
-		newState       classifier.AgentState
+		oldState       classifier.WorkerState
+		newState       classifier.WorkerState
 		previousTurn   TurnSnapshot
 		hadPrevious    bool
 		turn           TurnSnapshot
@@ -119,7 +119,7 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 	provider := time.Date(2026, 8, 7, 9, 50, 0, 0, time.UTC)
 	settled := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 
-	baseAgent := &classifier.Agent{StartedAt: started}
+	baseWorker := &classifier.Worker{StartedAt: started}
 	baseTurn := TurnSnapshot{
 		TurnID:     "turn-1",
 		Status:     TurnRunning,
@@ -128,47 +128,47 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		agent    *classifier.Agent
+		worker   *classifier.Worker
 		turn     TurnSnapshot
 		hasTurn  bool
 		provider ProviderActivityObservation
 		want     time.Time
 	}{
 		{
-			name:  "falls back to process start time",
-			agent: baseAgent,
-			want:  started,
+			name:   "falls back to process start time",
+			worker: baseWorker,
+			want:   started,
 		},
 		{
-			name:  "no provable source stays unavailable",
-			agent: &classifier.Agent{},
-			want:  time.Time{},
+			name:   "no provable source stays unavailable",
+			worker: &classifier.Worker{},
+			want:   time.Time{},
 		},
 		{
 			name:    "turn acceptance beats process start",
-			agent:   baseAgent,
+			worker:  baseWorker,
 			turn:    baseTurn,
 			hasTurn: true,
 			want:    accepted,
 		},
 		{
 			name:    "last progress beats turn acceptance",
-			agent:   &classifier.Agent{StartedAt: started, LastProgressAt: &progress},
+			worker:  &classifier.Worker{StartedAt: started, LastProgressAt: &progress},
 			turn:    baseTurn,
 			hasTurn: true,
 			want:    progress,
 		},
 		{
 			name:     "authoritative provider activity beats progress",
-			agent:    &classifier.Agent{StartedAt: started, LastProgressAt: &progress},
+			worker:   &classifier.Worker{StartedAt: started, LastProgressAt: &progress},
 			turn:     baseTurn,
 			hasTurn:  true,
 			provider: ProviderActivityObservation{StartedAt: provider},
 			want:     provider,
 		},
 		{
-			name:  "turn settlement is the latest provable activity",
-			agent: baseAgent,
+			name:   "turn settlement is the latest provable activity",
+			worker: baseWorker,
 			turn: func() TurnSnapshot {
 				turn := baseTurn
 				turn.Status = TurnDone
@@ -181,7 +181,7 @@ func TestSessionDiscoveryActivityTimePriority(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionDiscoveryActivityTime(tc.agent, tc.turn, tc.hasTurn, tc.provider)
+			got := sessionDiscoveryActivityTime(tc.worker, tc.turn, tc.hasTurn, tc.provider)
 			if !got.Equal(tc.want) {
 				t.Fatalf("sessionDiscoveryActivityTime() = %v, want %v", got, tc.want)
 			}
@@ -286,29 +286,29 @@ func TestPollRediscoveredSessionsKeepRealActivityTimes(t *testing.T) {
 
 	w.poll()
 
-	agents := w.Agents()
-	agentA := agentByID(agents, "sess-a:@1")
-	agentB := agentByID(agents, "sess-b:@2")
-	if agentA == nil || agentB == nil {
-		t.Fatalf("agents = %#v", agents)
+	workers := w.Workers()
+	workerA := workerByID(workers, "sess-a:@1")
+	workerB := workerByID(workers, "sess-b:@2")
+	if workerA == nil || workerB == nil {
+		t.Fatalf("agents = %#v", workers)
 	}
-	if !agentA.UpdatedAt.Equal(sessionAStarted) {
-		t.Fatalf("sess-a activity time = %v, want provable process start %v", agentA.UpdatedAt, sessionAStarted)
+	if !workerA.UpdatedAt.Equal(sessionAStarted) {
+		t.Fatalf("sess-a activity time = %v, want provable process start %v", workerA.UpdatedAt, sessionAStarted)
 	}
-	if !agentB.UpdatedAt.Equal(sessionBStarted) {
-		t.Fatalf("sess-b activity time = %v, want provable process start %v", agentB.UpdatedAt, sessionBStarted)
+	if !workerB.UpdatedAt.Equal(sessionBStarted) {
+		t.Fatalf("sess-b activity time = %v, want provable process start %v", workerB.UpdatedAt, sessionBStarted)
 	}
-	if agentA.UpdatedAt.Equal(agentB.UpdatedAt) {
-		t.Fatalf("rediscovered sessions share one activity time: %v", agentA.UpdatedAt)
+	if workerA.UpdatedAt.Equal(workerB.UpdatedAt) {
+		t.Fatalf("rediscovered sessions share one activity time: %v", workerA.UpdatedAt)
 	}
 	// The observation clock must never leak into the activity time.
-	if agentA.UpdatedAt.Equal(agentA.LastSeenAt) || agentB.UpdatedAt.Equal(agentB.LastSeenAt) {
+	if workerA.UpdatedAt.Equal(workerA.LastSeenAt) || workerB.UpdatedAt.Equal(workerB.LastSeenAt) {
 		t.Fatalf("observation time leaked into activity time: a %v/%v b %v/%v",
-			agentA.UpdatedAt, agentA.LastSeenAt, agentB.UpdatedAt, agentB.LastSeenAt)
+			workerA.UpdatedAt, workerA.LastSeenAt, workerB.UpdatedAt, workerB.LastSeenAt)
 	}
-	if !agentA.LastSeenAt.Equal(time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC)) ||
-		!agentB.LastSeenAt.Equal(time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC)) {
-		t.Fatalf("observation times = a:%v b:%v", agentA.LastSeenAt, agentB.LastSeenAt)
+	if !workerA.LastSeenAt.Equal(time.Date(2026, 8, 7, 10, 0, 1, 0, time.UTC)) ||
+		!workerB.LastSeenAt.Equal(time.Date(2026, 8, 7, 10, 0, 2, 0, time.UTC)) {
+		t.Fatalf("observation times = a:%v b:%v", workerA.LastSeenAt, workerB.LastSeenAt)
 	}
 }
 
@@ -329,12 +329,12 @@ func TestPollNoopPreservesUpdatedAtAndOrder(t *testing.T) {
 	w.poll()
 	drainWatcherEvents(w)
 
-	first := w.Agents()
+	first := w.Workers()
 	if len(first) != 2 {
 		t.Fatalf("agents after first poll = %d, want 2", len(first))
 	}
-	firstA := agentByID(first, "sess-a:@1")
-	firstB := agentByID(first, "sess-b:@2")
+	firstA := workerByID(first, "sess-a:@1")
+	firstB := workerByID(first, "sess-b:@2")
 	if firstA == nil || firstB == nil {
 		t.Fatalf("agents = %#v", first)
 	}
@@ -348,15 +348,15 @@ func TestPollNoopPreservesUpdatedAtAndOrder(t *testing.T) {
 
 	w.poll()
 
-	second := w.Agents()
+	second := w.Workers()
 	if len(second) != 2 {
 		t.Fatalf("agents after no-op poll = %d, want 2", len(second))
 	}
 	if second[0].ID != first[0].ID || second[1].ID != first[1].ID {
-		t.Fatalf("no-op poll reordered sessions: before %#v after %#v", agentIDs(first), agentIDs(second))
+		t.Fatalf("no-op poll reordered sessions: before %#v after %#v", workerIDs(first), workerIDs(second))
 	}
-	secondA := agentByID(second, "sess-a:@1")
-	secondB := agentByID(second, "sess-b:@2")
+	secondA := workerByID(second, "sess-a:@1")
+	secondB := workerByID(second, "sess-b:@2")
 	if !secondA.UpdatedAt.Equal(firstA.UpdatedAt) || !secondB.UpdatedAt.Equal(firstB.UpdatedAt) {
 		t.Fatalf("no-op poll mutated activity times: a %v -> %v, b %v -> %v",
 			firstA.UpdatedAt, secondA.UpdatedAt, firstB.UpdatedAt, secondB.UpdatedAt)
@@ -381,7 +381,7 @@ func TestHiddenHostProviderTerminalEmitsActivityChangeWithoutPaneOutput(t *testi
 		{ID: "host-activity", Status: "completed", StartedAt: started, SettledAt: settled, Structured: true},
 	}}
 	windows := []tmuxWindow{{
-		target: "brain-agent-brain-provider-boundary:@1", name: "Brain", cwd: "/brain",
+		target: "zen-worker-brain-provider-boundary:@1", name: "Brain", cwd: "/brain",
 		command: "codex", panePID: 111, hidden: true,
 	}}
 	restore := installFakePollSeams(w, windows, map[string]string{
@@ -394,7 +394,7 @@ func TestHiddenHostProviderTerminalEmitsActivityChangeWithoutPaneOutput(t *testi
 	w.poll()
 
 	events := collectWatcherEvents(w)
-	if len(events) != 1 || events[0].Type != "provider_activity_change" || events[0].AgentID != windows[0].target {
+	if len(events) != 1 || events[0].Type != "provider_activity_change" || events[0].WorkerID != windows[0].target {
 		t.Fatalf("terminal provider boundary events = %#v", events)
 	}
 }
@@ -416,8 +416,8 @@ func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 	w.poll()
 	drainWatcherEvents(w)
 
-	before := w.Agents()
-	beforeB := agentByID(before, "sess-b:@2")
+	before := w.Workers()
+	beforeB := workerByID(before, "sess-b:@2")
 
 	restore()
 	restore = installFakePollSeams(w, testWindows(), map[string]string{
@@ -428,9 +428,9 @@ func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 
 	w.poll()
 
-	after := w.Agents()
-	afterA := agentByID(after, "sess-a:@1")
-	afterB := agentByID(after, "sess-b:@2")
+	after := w.Workers()
+	afterA := workerByID(after, "sess-a:@1")
+	afterB := workerByID(after, "sess-b:@2")
 	if !afterA.UpdatedAt.Equal(time.Date(2026, 8, 7, 10, 0, 3, 0, time.UTC)) {
 		t.Fatalf("content change advanced %s to the poll activity instant %v, want 10:00:03", "sess-a:@1", afterA.UpdatedAt)
 	}
@@ -443,17 +443,17 @@ func TestPollContentChangeAdvancesOnlyAffectedSession(t *testing.T) {
 	stateEvents := 0
 	for _, event := range events {
 		switch event.Type {
-		case "agent_output":
-			if event.AgentID != "sess-a:@1" {
-				t.Fatalf("agent_output for wrong session: %#v", event)
+		case "worker_output":
+			if event.WorkerID != "sess-a:@1" {
+				t.Fatalf("worker_output for wrong session: %#v", event)
 			}
 			outputEvents++
-		case "agent_state_change", "agent_metadata_change":
+		case "worker_state_change", "worker_metadata_change":
 			stateEvents++
 		}
 	}
 	if outputEvents != 1 {
-		t.Fatalf("agent_output events = %d, want 1: %#v", outputEvents, events)
+		t.Fatalf("worker_output events = %d, want 1: %#v", outputEvents, events)
 	}
 	if stateEvents != 0 {
 		t.Fatalf("unexpected state/metadata events: %#v", events)
@@ -477,8 +477,8 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 
 	w.poll()
 	drainWatcherEvents(w)
-	before := w.Agents()
-	beforeB := agentByID(before, "sess-b:@2")
+	before := w.Workers()
+	beforeB := workerByID(before, "sess-b:@2")
 
 	// Pane dies: same captured lines, but liveness flips. Classification moves
 	// sess-a to done with no content change.
@@ -493,9 +493,9 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 
 	w.poll()
 
-	after := w.Agents()
-	afterA := agentByID(after, "sess-a:@1")
-	afterB := agentByID(after, "sess-b:@2")
+	after := w.Workers()
+	afterA := workerByID(after, "sess-a:@1")
+	afterB := workerByID(after, "sess-b:@2")
 	if afterA == nil || afterA.State != classifier.StateDone {
 		t.Fatalf("sess-a state = %v, want done", stateOf(afterA))
 	}
@@ -509,7 +509,7 @@ func TestPollStateTransitionAdvancesUpdatedAtWithoutContentChange(t *testing.T) 
 	events := collectWatcherEvents(w)
 	stateEvents := 0
 	for _, event := range events {
-		if event.Type == "agent_state_change" && event.AgentID == "sess-a:@1" {
+		if event.Type == "worker_state_change" && event.WorkerID == "sess-a:@1" {
 			stateEvents++
 		}
 	}
@@ -528,8 +528,8 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	})
 	settledAt := time.Date(2026, 8, 7, 9, 59, 0, 0, time.UTC)
 	ledger := newFakeTurnLedger()
-	ledger.seed("brain-agent-worker:@1", TurnSnapshot{
-		SessionID:  "brain-agent-worker:@1",
+	ledger.seed("zen-worker-worker:@1", TurnSnapshot{
+		SessionID:  "zen-worker-worker:@1",
 		TurnID:     "turn-1",
 		Status:     TurnDone,
 		AcceptedAt: time.Date(2026, 8, 7, 9, 58, 0, 0, time.UTC),
@@ -538,10 +538,10 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	})
 	w.turnLedger = ledger
 	windows := []tmuxWindow{
-		{target: "brain-agent-worker:@1", name: "worker", cwd: "/repo/zen", command: "claude", panePID: 333},
+		{target: "zen-worker-worker:@1", name: "worker", cwd: "/repo/zen", command: "claude", panePID: 333},
 	}
 	restore := installFakePollSeams(w, windows, map[string]string{
-		"brain-agent-worker:@1": "Claude Code\nFinished verification\n",
+		"zen-worker-worker:@1": "Claude Code\nFinished verification\n",
 	}, map[int]processInfo{
 		333: fakeProcess(333, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)),
 	})
@@ -550,7 +550,7 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	w.poll()
 	drainWatcherEvents(w)
 
-	first := agentByID(w.Agents(), "brain-agent-worker:@1")
+	first := workerByID(w.Workers(), "zen-worker-worker:@1")
 	if first == nil {
 		t.Fatalf("delegated session missing after first poll")
 	}
@@ -565,7 +565,7 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	// A repeated poll with the identical settled turn is a no-op.
 	w.poll()
 
-	second := agentByID(w.Agents(), "brain-agent-worker:@1")
+	second := workerByID(w.Workers(), "zen-worker-worker:@1")
 	if !second.UpdatedAt.Equal(firstActivity) {
 		t.Fatalf("no-op poll with settled turn mutated activity time: %v -> %v", firstActivity, second.UpdatedAt)
 	}
@@ -583,28 +583,28 @@ func TestPollTurnSettlementSeedsActivityAndRepeatsPreserveIt(t *testing.T) {
 	}
 }
 
-func agentByID(agents []*classifier.Agent, id string) *classifier.Agent {
-	for _, agent := range agents {
-		if agent.ID == id {
-			return agent
+func workerByID(workers []*classifier.Worker, id string) *classifier.Worker {
+	for _, worker := range workers {
+		if worker.ID == id {
+			return worker
 		}
 	}
 	return nil
 }
 
-func agentIDs(agents []*classifier.Agent) []string {
-	ids := make([]string, 0, len(agents))
-	for _, agent := range agents {
-		ids = append(ids, agent.ID)
+func workerIDs(workers []*classifier.Worker) []string {
+	ids := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		ids = append(ids, worker.ID)
 	}
 	return ids
 }
 
-func stateOf(agent *classifier.Agent) classifier.AgentState {
-	if agent == nil {
+func stateOf(worker *classifier.Worker) classifier.WorkerState {
+	if worker == nil {
 		return ""
 	}
-	return agent.State
+	return worker.State
 }
 
 func collectWatcherEvents(w *Watcher) []SessionEvent {

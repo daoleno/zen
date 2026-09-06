@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/workers";
 import {
   buildGitDiffChipLabel,
   type GitDiffPatchPayload,
@@ -11,7 +11,7 @@ import { wsClient } from "../../services/websocket";
 
 interface UseTerminalGitDiffInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   cwd: string;
   connectionState: ConnectionState;
   hasTerminalRoute: boolean;
@@ -35,7 +35,7 @@ export interface TerminalGitDiffSummary {
 
 export function useTerminalGitDiff({
   serverId,
-  agentId,
+  workerId,
   cwd,
   connectionState,
   hasTerminalRoute,
@@ -75,7 +75,7 @@ export function useTerminalGitDiff({
   const repoBrowserPathRef = useRef(repoBrowserPath);
 
   const queryEnabled = Boolean(
-    hasTerminalRoute && screenFocused && serverId && agentId && cwd,
+    hasTerminalRoute && screenFocused && serverId && workerId && cwd,
   );
 
   useEffect(() => {
@@ -118,7 +118,7 @@ export function useTerminalGitDiff({
     async (showLoading: boolean = true) => {
       if (
         !serverId
-        || !agentId
+        || !workerId
         || connectionState !== "connected"
         || !queryEnabled
       ) {
@@ -142,7 +142,7 @@ export function useTerminalGitDiff({
 
       try {
         const nextStatus = await wsClient.getGitDiffStatus(serverId, {
-          targetId: agentId,
+          targetId: workerId,
           cwd,
         });
         if (requestRef.current !== requestId) return;
@@ -189,7 +189,7 @@ export function useTerminalGitDiff({
       }
     },
     [
-      agentId,
+      workerId,
       connectionState,
       cwd,
       queryEnabled,
@@ -201,13 +201,13 @@ export function useTerminalGitDiff({
 
   useEffect(() => {
     setVisible(false);
-  }, [agentId, serverId]);
+  }, [workerId, serverId]);
 
   useEffect(() => {
     resetPatchCache();
     resetRepoState();
     setError(null);
-  }, [agentId, cwd, resetPatchCache, resetRepoState, serverId]);
+  }, [workerId, cwd, resetPatchCache, resetRepoState, serverId]);
 
   useEffect(() => {
     if (!queryEnabled || connectionState !== "connected") {
@@ -251,7 +251,7 @@ export function useTerminalGitDiff({
   const ensurePatch = useCallback(
     async (path: string) => {
       const nextPath = path.trim();
-      if (!nextPath || !serverId || !agentId) {
+      if (!nextPath || !serverId || !workerId) {
         return;
       }
 
@@ -282,7 +282,7 @@ export function useTerminalGitDiff({
 
       try {
         const payload = await wsClient.getGitDiffPatch(serverId, {
-          targetId: agentId,
+          targetId: workerId,
           cwd,
           path: nextPath,
         });
@@ -314,12 +314,12 @@ export function useTerminalGitDiff({
         });
       }
     },
-    [agentId, cwd, serverId],
+    [workerId, cwd, serverId],
   );
 
   const loadRepoPath = useCallback(
     async (path: string = "") => {
-      if (!serverId || !agentId || !cwd) {
+      if (!serverId || !workerId || !cwd) {
         return;
       }
 
@@ -330,7 +330,7 @@ export function useTerminalGitDiff({
 
       try {
         const payload = await wsClient.getGitRepoEntries(serverId, {
-          targetId: agentId,
+          targetId: workerId,
           cwd,
           path,
         });
@@ -342,13 +342,13 @@ export function useTerminalGitDiff({
         setRepoBrowserLoading(false);
       }
     },
-    [agentId, cwd, serverId],
+    [workerId, cwd, serverId],
   );
 
   const openRepoFile = useCallback(
     async (path: string) => {
       const nextPath = path.trim();
-      if (!nextPath || !serverId || !agentId || !cwd) {
+      if (!nextPath || !serverId || !workerId || !cwd) {
         return;
       }
 
@@ -362,7 +362,7 @@ export function useTerminalGitDiff({
       setRepoFileLoadingPath(nextPath);
       try {
         const payload = await wsClient.getGitRepoFileContent(serverId, {
-          targetId: agentId,
+          targetId: workerId,
           cwd,
           path: nextPath,
         });
@@ -378,7 +378,7 @@ export function useTerminalGitDiff({
         );
       }
     },
-    [agentId, cwd, repoFileByPath, serverId],
+    [workerId, cwd, repoFileByPath, serverId],
   );
 
   const closeRepoFile = useCallback(() => {

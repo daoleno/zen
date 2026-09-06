@@ -29,12 +29,12 @@ func TestNewStoreEnsuresSeedPlaybooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read playbooks README: %v", err)
 	}
-	for _, marker := range []string{"Provider-neutral operating playbooks", "zen brain playbooks --json", "Progressive disclosure"} {
+	for _, marker := range []string{"Discover names, descriptions and paths", "zen brain playbooks --json", "Read only the playbook needed"} {
 		if !strings.Contains(string(readme), marker) {
 			t.Fatalf("playbooks README missing %q:\n%s", marker, readme)
 		}
 	}
-	if !strings.Contains(string(readme), "Decision-frontier alignment") {
+	if !strings.Contains(string(readme), "resolve material decisions") {
 		t.Fatalf("playbooks README missing decision-frontier catalog wording:\n%s", readme)
 	}
 
@@ -43,14 +43,9 @@ func TestNewStoreEnsuresSeedPlaybooks(t *testing.T) {
 		t.Fatalf("read align playbook: %v", err)
 	}
 	for _, marker := range []string{
-		"decisions that materially change the outcome, risk, or user values",
-		"Research discoverable environment facts",
-		"all currently independent required decisions in one numbered round",
-		"recommended default",
-		"Unresolved research blocks only decisions that depend on it",
-		"remaining unknown has a safe default",
-		"without a mandatory final confirmation gate",
-		"observable completion conditions",
+		"check discoverable facts", "Continue authorized preparation", "independent material decisions together",
+		"recommended default", "remaining unknowns have safe defaults", "completion is observable",
+		"actual permission boundary",
 	} {
 		if !strings.Contains(string(align), marker) {
 			t.Fatalf("align playbook missing %q:\n%s", marker, align)
@@ -67,9 +62,7 @@ func TestNewStoreEnsuresSeedPlaybooks(t *testing.T) {
 		t.Fatalf("read delegate-brief playbook: %v", err)
 	}
 	for _, marker := range []string{
-		"concrete outcome and bounded implementation responsibility",
-		"known context and environment facts",
-		"acceptance criteria and verification observable",
+		"outcome, cwd, necessary context, acceptance criteria", "verification and expected report", "one coherent concern",
 	} {
 		if !strings.Contains(string(delegateBrief), marker) {
 			t.Fatalf("delegate-brief playbook missing %q:\n%s", marker, delegateBrief)
@@ -209,13 +202,13 @@ func TestPlaybookCatalogListsSeedPlaybooks(t *testing.T) {
 			t.Fatalf("playbook %q missing description", name)
 		}
 	}
-	if !strings.Contains(byName["brain-flows"].Description, "smallest Brain flow") {
+	if !strings.Contains(byName["brain-flows"].Description, "next useful Brain workflow") {
 		t.Fatalf("brain-flows description = %q", byName["brain-flows"].Description)
 	}
-	if !strings.Contains(byName["align"].Description, "decision frontier") {
+	if !strings.Contains(byName["align"].Description, "consequential missing decisions") {
 		t.Fatalf("align description = %q", byName["align"].Description)
 	}
-	if !strings.Contains(byName["wayfind"].Description, "Fog-of-war") {
+	if !strings.Contains(byName["wayfind"].Description, "next executable concern") {
 		t.Fatalf("wayfind description = %q", byName["wayfind"].Description)
 	}
 }

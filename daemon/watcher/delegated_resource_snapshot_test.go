@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/daoleno/zen/daemon/agentproc"
+	"github.com/daoleno/zen/daemon/workerproc"
 )
 
 func TestPortableSnapshotOmitsInventedZerosAndLabelsSharedPool(t *testing.T) {
@@ -25,8 +25,8 @@ func TestPortableSnapshotOmitsInventedZerosAndLabelsSharedPool(t *testing.T) {
 		availableMemory: func() uint64 {
 			return 8 * 1024 * 1024 * 1024
 		},
-		sampleOwnedLeases: func(string) (agentproc.PoolSample, error) {
-			return agentproc.PoolSample{
+		sampleOwnedLeases: func(string) (workerproc.PoolSample, error) {
+			return workerproc.PoolSample{
 				RSSByLease: map[string]uint64{
 					unit:  1500,
 					other: 500,
@@ -87,8 +87,8 @@ func TestPortableSnapshotHostPressureWhenBelowReserve(t *testing.T) {
 			HostReserve: 4 * 1024 * 1024 * 1024,
 		},
 		availableMemory: func() uint64 { return 1024 },
-		sampleOwnedLeases: func(string) (agentproc.PoolSample, error) {
-			return agentproc.PoolSample{}, nil
+		sampleOwnedLeases: func(string) (workerproc.PoolSample, error) {
+			return workerproc.PoolSample{}, nil
 		},
 	}
 	snap := manager.Snapshot("")

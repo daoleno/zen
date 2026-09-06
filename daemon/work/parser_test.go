@@ -103,7 +103,7 @@ func TestParseFile_ExtraFieldsPreserved(t *testing.T) {
 id: a
 created: 2026-04-21T00:00:00Z
 started: 2026-04-21T01:00:00Z
-agent_session: zen-claude-3
+worker_session: zen-claude-3
 friction: legacy diagnostic
 labels: [keep, me]
 ---
@@ -117,8 +117,8 @@ Body
 	if iss.Frontmatter.Started == nil {
 		t.Fatal("started should be set")
 	}
-	if iss.Frontmatter.AgentSession != "zen-claude-3" {
-		t.Fatalf("agent_session = %q", iss.Frontmatter.AgentSession)
+	if iss.Frontmatter.WorkerSession != "zen-claude-3" {
+		t.Fatalf("worker_session = %q", iss.Frontmatter.WorkerSession)
 	}
 	if got, ok := iss.Frontmatter.Extra["friction"].(string); !ok || got != "legacy diagnostic" {
 		t.Fatalf("extra friction = %#v, want generic preserved value", iss.Frontmatter.Extra["friction"])
@@ -149,7 +149,7 @@ id: 01HZ5K8J9X
 created: 2026-04-21T14:32:15Z
 done: 2026-04-22T00:00:00Z
 started: 2026-04-21T15:00:00Z
-agent_session: zen-claude-3
+worker_session: zen-claude-3
 ---
 # Hello
 
@@ -174,8 +174,8 @@ Body line.
 	if reparsed.Frontmatter.Done == nil || !reparsed.Frontmatter.Done.Equal(*iss.Frontmatter.Done) {
 		t.Fatalf("done lost: %#v", reparsed.Frontmatter.Done)
 	}
-	if reparsed.Frontmatter.AgentSession != iss.Frontmatter.AgentSession {
-		t.Fatalf("agent_session = %q", reparsed.Frontmatter.AgentSession)
+	if reparsed.Frontmatter.WorkerSession != iss.Frontmatter.WorkerSession {
+		t.Fatalf("worker_session = %q", reparsed.Frontmatter.WorkerSession)
 	}
 	if reparsed.Body != iss.Body {
 		t.Fatalf("body = %q, want %q", reparsed.Body, iss.Body)

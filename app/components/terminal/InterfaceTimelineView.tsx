@@ -98,7 +98,7 @@ interface InterfaceTimelineViewProps {
   topChromeInset: number;
   emptyTitle?: string;
   emptyBody?: string;
-  agentCwd?: string;
+  workerCwd?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -151,7 +151,7 @@ export function InterfaceTimelineView({
   topChromeInset,
   emptyTitle,
   emptyBody,
-  agentCwd,
+  workerCwd,
   chrome,
   theme,
   onLayout,
@@ -356,13 +356,13 @@ export function InterfaceTimelineView({
         chrome={chrome}
         onUnavailableAction={onUnavailableAction}
         showUnavailableAction={showUnavailableAction}
-        agentCwd={agentCwd}
+        workerCwd={workerCwd}
         emptyTitle={emptyTitle}
         emptyBody={emptyBody}
       />
     ),
     [
-      agentCwd,
+      workerCwd,
       chrome,
       error,
       emptyStateSuppressed,

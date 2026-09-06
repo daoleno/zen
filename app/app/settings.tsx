@@ -68,10 +68,10 @@ import { wsClient } from "../services/websocket";
 import type { TelegramConnectionStatus } from "../services/websocket";
 import {
   ConnectionState,
-  countAgentsByServer,
-  useAgentList,
-  useAgentServerSummary,
-} from "../store/agents";
+  countWorkersByServer,
+  useWorkerList,
+  useWorkerServerSummary,
+} from "../store/workers";
 import * as Storage from "../services/storage";
 import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
@@ -97,7 +97,7 @@ const THEME_CHOICES = [
 export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const agents = useAgentList();
+  const agents = useWorkerList();
   const {
     currentServerId,
     refreshServers: refreshCurrentServers,
@@ -109,8 +109,8 @@ export default function SettingsScreen() {
     serverConnections,
     serverConnectionIssues,
     serverLatencyById,
-  } = useAgentServerSummary();
-  const agentCounts = useMemo(() => countAgentsByServer(agents), [agents]);
+  } = useWorkerServerSummary();
+  const agentCounts = useMemo(() => countWorkersByServer(agents), [agents]);
   const colors = useAppColors();
   const { preference, setPreference } = useZenTheme();
   const { theme } = useAppTheme();
@@ -513,7 +513,7 @@ export default function SettingsScreen() {
                 const expanded = expandedServer === server.id;
                 const agentCount = agentCounts[server.id] || 0;
                 const hydrated = Boolean(hydratedServers[server.id]);
-                const waitingForAgents =
+                const waitingForWorkers =
                   connectionState === "connected" &&
                   (!hydrated || agentCount === 0);
                 const actionLabel = !current
@@ -619,7 +619,7 @@ export default function SettingsScreen() {
                           />
                         ) : null}
 
-                        {waitingForAgents ? (
+                        {waitingForWorkers ? (
                           <ServerNoticeCard
                             icon="information-circle-outline"
                             accent={colors.accent}
@@ -631,7 +631,7 @@ export default function SettingsScreen() {
                             detail={
                               hydrated
                                 ? "Zen is connected to this daemon, but it has not reported any live agents yet."
-                                : "Zen is connected to this daemon and waiting for the first agent list to arrive."
+                                : "Zen is connected to this daemon and waiting for the first worker list to arrive."
                             }
                             hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
                           />

@@ -5,7 +5,7 @@ package watcher
 import (
 	"strings"
 
-	"github.com/daoleno/zen/daemon/agentproc"
+	"github.com/daoleno/zen/daemon/workerproc"
 )
 
 func (m *portableDelegatedResourceManager) Snapshot(target string) SessionResourceSnapshot {
@@ -31,7 +31,7 @@ func (m *portableDelegatedResourceManager) Snapshot(target string) SessionResour
 
 	sampleFn := m.sampleOwnedLeases
 	if sampleFn == nil {
-		sampleFn = agentproc.SampleOwnedLeases
+		sampleFn = workerproc.SampleOwnedLeases
 	}
 	sample, err := sampleFn(m.leaseDir)
 	if err != nil {

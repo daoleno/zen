@@ -100,13 +100,13 @@ func TestParseCodexConversationOversizedLegacyHeaderFallsBackToPathIdentity(t *t
 func TestProviderConversationReaderSelectsOnlyExplicitKnownProvider(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	for _, provider := range []string{
-		AgentProviderCodex,
-		AgentProviderClaude,
-		AgentProviderCursor,
-		AgentProviderGrok,
+		WorkerProviderCodex,
+		WorkerProviderClaude,
+		WorkerProviderCursor,
+		WorkerProviderGrok,
 	} {
 		t.Run(provider, func(t *testing.T) {
-			got, err := NewProviderConversationReader().Load(classifier.Agent{
+			got, err := NewProviderConversationReader().Load(classifier.Worker{
 				Name:    "opaque provider",
 				Command: "/opt/bin/provider-wrapper",
 			}, provider, now)
@@ -119,7 +119,7 @@ func TestProviderConversationReaderSelectsOnlyExplicitKnownProvider(t *testing.T
 		})
 	}
 
-	unknown, err := NewProviderConversationReader().Load(classifier.Agent{
+	unknown, err := NewProviderConversationReader().Load(classifier.Worker{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "/repo",
@@ -1520,7 +1520,7 @@ func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {
 	}
 }
 
-func TestParseCodexConversation_RendersAgentReasoningAsRunningCommentary(t *testing.T) {
+func TestParseCodexConversation_RendersWorkerReasoningAsRunningCommentary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,
 		map[string]any{

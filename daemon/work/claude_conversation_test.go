@@ -458,13 +458,13 @@ func TestProviderConversationReaderClaudeFindsResumeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Name:      "claude",
 		Command:   "claude --resume resume-session",
 		Cwd:       cwd,
 		State:     classifier.StateRunning,
 		StartedAt: now.Add(-time.Minute),
-	}, AgentProviderClaude, now)
+	}, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -483,11 +483,11 @@ func TestProviderConversationReaderClaudeUnavailableWithoutTranscript(t *testing
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "/repo/missing",
-	}, AgentProviderClaude, time.Now())
+	}, WorkerProviderClaude, time.Now())
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -498,11 +498,11 @@ func TestProviderConversationReaderClaudeUnavailableWithoutTranscript(t *testing
 
 func TestProviderConversationReaderClaudeExplicitProviderSelection(t *testing.T) {
 	reader := NewProviderConversationReader()
-	got, err := reader.Load(classifier.Agent{
+	got, err := reader.Load(classifier.Worker{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "",
-	}, AgentProviderClaude, time.Now())
+	}, WorkerProviderClaude, time.Now())
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestProviderConversationReaderClaudeExplicitProviderSelection(t *testing.T)
 		t.Fatalf("claude missing cwd = %#v", got)
 	}
 
-	other, err := reader.Load(classifier.Agent{
+	other, err := reader.Load(classifier.Worker{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "/repo",
@@ -602,14 +602,14 @@ func TestProviderConversationReaderClaudeAllMalformedIsUnavailable(t *testing.T)
 		t.Fatal(err)
 	}
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		Name:      "claude",
 		Command:   "claude",
 		Cwd:       cwd,
 		State:     classifier.StateRunning,
 		StartedAt: now.Add(-time.Minute),
 	}
-	got, err := NewProviderConversationReader().Load(agent, AgentProviderClaude, now)
+	got, err := NewProviderConversationReader().Load(worker, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -662,13 +662,13 @@ func TestProviderConversationReaderClaudeStartedAtSelectsMatchingSession(t *test
 		t.Fatal(err)
 	}
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Name:      "claude",
 		Command:   "claude",
 		Cwd:       cwd,
 		State:     classifier.StateRunning,
 		StartedAt: startedAt,
-	}, AgentProviderClaude, now)
+	}, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
@@ -708,12 +708,12 @@ func TestProviderConversationReaderClaudeAmbiguousSessionsYieldNotFound(t *testi
 		}
 	}
 
-	got, err := NewProviderConversationReader().Load(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
 		Name:      "claude",
 		Command:   "claude",
 		Cwd:       cwd,
 		StartedAt: time.Time{}, // no start anchor and multiple fresh sessions
-	}, AgentProviderClaude, now)
+	}, WorkerProviderClaude, now)
 	if err != nil {
 		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}

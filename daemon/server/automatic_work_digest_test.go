@@ -61,7 +61,7 @@ func TestWatcherLifecycleDoesNotInvokeAutomaticWorkDigest(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	server := New(nil, nil, nil, nil, store, nil, nil)
-	agent := &classifier.Agent{
+	worker := &classifier.Worker{
 		ID:      "fixture-agent",
 		Name:    "Fixture agent",
 		Command: "claude",
@@ -70,10 +70,10 @@ func TestWatcherLifecycleDoesNotInvokeAutomaticWorkDigest(t *testing.T) {
 	}
 
 	for _, event := range []watcher.SessionEvent{
-		{Type: "agent_discovered", AgentID: agent.ID, Agent: agent},
-		{Type: "agent_output", AgentID: agent.ID, Agent: agent},
-		{Type: "agent_state_change", AgentID: agent.ID, Agent: agent, NewState: "done"},
-		{Type: "agent_removed", AgentID: agent.ID, Agent: agent},
+		{Type: "worker_discovered", WorkerID: worker.ID, Worker: worker},
+		{Type: "worker_output", WorkerID: worker.ID, Worker: worker},
+		{Type: "worker_state_change", WorkerID: worker.ID, Worker: worker, NewState: "done"},
+		{Type: "worker_removed", WorkerID: worker.ID, Worker: worker},
 	} {
 		server.handleWatcherEvent(event)
 	}
@@ -172,14 +172,14 @@ func TestWorkWireKeepsExplicitItemsWithoutDigestControlPlane(t *testing.T) {
 func TestWorkFrontmatterUpdatePreservesCurrentFactsAndGenericExtra(t *testing.T) {
 	started := time.Date(2026, time.July, 17, 3, 0, 0, 0, time.UTC)
 	frontmatter := work.Frontmatter{
-		ID:           "work-1",
-		Kind:         "calendar_action",
-		Created:      started.Add(-time.Minute),
-		Started:      &started,
-		Status:       "running",
-		Title:        "Original",
-		AgentSession: "agent-1",
-		Extra:        map[string]interface{}{"legacy_note": "keep"},
+		ID:            "work-1",
+		Kind:          "calendar_action",
+		Created:       started.Add(-time.Minute),
+		Started:       &started,
+		Status:        "running",
+		Title:         "Original",
+		WorkerSession: "agent-1",
+		Extra:         map[string]interface{}{"legacy_note": "keep"},
 	}
 
 	applyFrontmatterOverrides(&frontmatter, map[string]interface{}{
@@ -190,7 +190,7 @@ func TestWorkFrontmatterUpdatePreservesCurrentFactsAndGenericExtra(t *testing.T)
 	if frontmatter.ID != "work-1" || frontmatter.Kind != "calendar_action" ||
 		frontmatter.Started == nil || !frontmatter.Started.Equal(started) ||
 		frontmatter.Status != "running" || frontmatter.Title != "Updated" ||
-		frontmatter.AgentSession != "agent-1" {
+		frontmatter.WorkerSession != "agent-1" {
 		t.Fatalf("current frontmatter facts changed: %#v", frontmatter)
 	}
 	if frontmatter.Extra["legacy_note"] != "keep" || frontmatter.Extra["custom_key"] != "new" {

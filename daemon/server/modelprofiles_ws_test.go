@@ -170,7 +170,7 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 
 	if err := conn.WriteJSON(map[string]any{
 		"type": "set_thread_runtime", "request_id": "act-bad",
-		"agent_id": "tmux:@9", "runtime": map[string]any{
+		"worker_id": "tmux:@9", "runtime": map[string]any{
 			"connection_id": "missing-connection", "model_id": "up-2",
 		},
 	}); err != nil {
@@ -183,7 +183,7 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 
 	if err := conn.WriteJSON(map[string]any{
 		"type": "set_thread_runtime", "request_id": "act-ok",
-		"agent_id": "tmux:@9", "runtime": map[string]any{
+		"worker_id": "tmux:@9", "runtime": map[string]any{
 			"connection_id": "codex-alt", "model_id": "up-2",
 		},
 	}); err != nil {
@@ -209,7 +209,7 @@ func TestModelProfilesWebSocketCRUDActivateAndErrors(t *testing.T) {
 	}
 
 	if err := conn.WriteJSON(map[string]any{
-		"type": "get_thread_runtime", "request_id": "get-1", "agent_id": "tmux:@9",
+		"type": "get_thread_runtime", "request_id": "get-1", "worker_id": "tmux:@9",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestSetThreadRuntimeDoesNotRestartLiveCodexSession(t *testing.T) {
 	}
 }
 
-func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
+func TestSessionCreatedWorkerSessionModelProfileCapabilities(t *testing.T) {
 	// Live-control owner: managed Codex launches carry the app-server socket,
 	// so the post-commit capabilities must advertise active switching.
 	owner := startLiveProfileOwner(t)
@@ -409,16 +409,16 @@ func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentID := "tmux:@caps"
-	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, agentID); err != nil {
+	workerID := "tmux:@caps"
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, workerID); err != nil {
 		t.Fatal(err)
 	}
-	// session_created builds agent_session after Commit via the same helper.
+	// session_created builds worker_session after Commit via the same helper.
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
-	wire := srv.agentSessionWire(&classifier.Agent{ID: agentID, Command: "zsh", Name: "Codex"})
+	wire := srv.workerSessionWire(&classifier.Worker{ID: workerID, Command: "zsh", Name: "Codex"})
 	if wire == nil || !wire.Capabilities.ModelProfileManaged || !wire.Capabilities.ModelProfileActiveSwitch {
-		t.Fatalf("post-commit agent_session caps %#v", wire)
+		t.Fatalf("post-commit worker_session caps %#v", wire)
 	}
 	if plan.CodexControlSocket == "" {
 		t.Fatal("live-control owner must allocate a socket")
@@ -445,13 +445,13 @@ func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
 	if embeddedPlan.CodexControlSocket != "" {
 		t.Fatalf("embedded owner must not allocate a socket: %q", embeddedPlan.CodexControlSocket)
 	}
-	const embeddedAgentID = "tmux:@caps-embedded"
-	if _, _, _, err := embeddedOwner.CommitLaunch(embeddedPlan.ProvisionalID, embeddedAgentID); err != nil {
+	const embeddedWorkerID = "tmux:@caps-embedded"
+	if _, _, _, err := embeddedOwner.CommitLaunch(embeddedPlan.ProvisionalID, embeddedWorkerID); err != nil {
 		t.Fatal(err)
 	}
 	embeddedSrv := &Server{}
 	embeddedSrv.SetModelProfiles(embeddedOwner)
-	embeddedWire := embeddedSrv.agentSessionWire(&classifier.Agent{ID: embeddedAgentID, Command: "zsh", Name: "Codex"})
+	embeddedWire := embeddedSrv.workerSessionWire(&classifier.Worker{ID: embeddedWorkerID, Command: "zsh", Name: "Codex"})
 	if embeddedWire == nil || !embeddedWire.Capabilities.ModelProfileManaged || embeddedWire.Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("embedded codex session caps must be managed but not active-switchable: %#v", embeddedWire)
 	}
@@ -460,7 +460,7 @@ func TestSessionCreatedAgentSessionModelProfileCapabilities(t *testing.T) {
 		t.Fatalf("secret-ish leak: %s", raw)
 	}
 }
-func TestCleanupFailedLaunchCommitReleasesAgentBinding(t *testing.T) {
+func TestCleanupFailedLaunchCommitReleasesWorkerBinding(t *testing.T) {
 	owner := startProfileOwner(t)
 	profile := modelprofiles.Profile{
 		ID: "codex-main", Name: "Codex Main", ExecutorID: modelprofiles.ExecutorCodex,
@@ -575,7 +575,7 @@ func TestActivateSessionRouteAppliedNotDurableReturnsOutcome(t *testing.T) {
 	})
 	if err := conn.WriteJSON(map[string]any{
 		"type": "set_thread_runtime", "request_id": "act-warn",
-		"agent_id": "tmux:@9", "runtime": map[string]any{
+		"worker_id": "tmux:@9", "runtime": map[string]any{
 			"connection_id": "codex-alt", "model_id": "up-2",
 		},
 	}); err != nil {
@@ -866,7 +866,7 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 		}
 		if err := conn.WriteJSON(map[string]any{
 			"type": "set_thread_runtime", "request_id": "act-" + itoaWS(i),
-			"agent_id": "tmux:@trim", "runtime": map[string]any{
+			"worker_id": "tmux:@trim", "runtime": map[string]any{
 				"connection_id": p.ID, "model_id": p.Model,
 			},
 		}); err != nil {
@@ -906,7 +906,7 @@ func TestWSActivateLaunchedSurvivesHistoryTrimAndRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn2.Close() })
 	if err := conn2.WriteJSON(map[string]any{
-		"type": "get_thread_runtime", "request_id": "get-restart", "agent_id": "tmux:@trim",
+		"type": "get_thread_runtime", "request_id": "get-restart", "worker_id": "tmux:@trim",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +948,7 @@ func itoaWS(i int) string {
 	return string(b[n:])
 }
 
-func commitTestRoute(t *testing.T, owner *modelprofiles.Owner, agentID string) {
+func commitTestRoute(t *testing.T, owner *modelprofiles.Owner, workerID string) {
 	t.Helper()
 	if owner.Catalog().Revision == 0 {
 		profile := modelprofiles.Profile{
@@ -968,44 +968,44 @@ func commitTestRoute(t *testing.T, owner *modelprofiles.Owner, agentID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, agentID); err != nil {
+	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, workerID); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestKillAgentRouteAwareTeardown(t *testing.T) {
+func TestKillWorkerRouteAwareTeardown(t *testing.T) {
 	owner := startProfileOwner(t)
 	srv := New(nil, watcher.New(time.Second), nil, nil, nil, nil, nil)
 	srv.SetModelProfiles(owner)
-	agentID := "tmux:@kill"
+	workerID := "tmux:@kill"
 
 	// kill success + release success
-	commitTestRoute(t, owner, agentID)
+	commitTestRoute(t, owner, workerID)
 	srv.killSessionOverride = func(string) error { return nil }
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresenceAbsent, nil
 	}
-	if result := srv.teardownAgentSession(agentID); result.Err != nil || !result.Persist.Applied {
+	if result := srv.teardownWorkerSession(workerID); result.Err != nil || !result.Persist.Applied {
 		t.Fatalf("success=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("route must be released")
 	}
 
 	// kill succeeds / window gone + release pre-rename failure
-	commitTestRoute(t, owner, agentID)
+	commitTestRoute(t, owner, workerID)
 	owner.RoutesFile().SetPersistHook(func(phase string) error {
 		if phase == "before_rename" {
 			return errors.New("injected release pre-rename")
 		}
 		return nil
 	})
-	result := srv.teardownAgentSession(agentID)
+	result := srv.teardownWorkerSession(workerID)
 	owner.RoutesFile().SetPersistHook(nil)
 	if result.Err == nil || !strings.Contains(result.Err.Error(), "injected release pre-rename") {
 		t.Fatalf("release fail=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("route must remain when release not applied")
 	}
 
@@ -1014,46 +1014,46 @@ func TestKillAgentRouteAwareTeardown(t *testing.T) {
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresenceAbsent, nil
 	}
-	if result := srv.teardownAgentSession(agentID); result.Err != nil {
+	if result := srv.teardownWorkerSession(workerID); result.Err != nil {
 		t.Fatalf("retry=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); ok {
+	if _, ok := owner.SessionSnapshot(workerID); ok {
 		t.Fatal("retry must release")
 	}
 
 	// kill succeeds but resource cleanup fails — preserve route even if absent
-	commitTestRoute(t, owner, agentID)
+	commitTestRoute(t, owner, workerID)
 	srv.killSessionOverride = func(string) error {
 		return fmt.Errorf("%w: injected resource cleanup", watcher.ErrDelegatedResourceRelease)
 	}
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresenceAbsent, nil
 	}
-	result = srv.teardownAgentSession(agentID)
+	result = srv.teardownWorkerSession(workerID)
 	if result.Err == nil || !errors.Is(result.Err, watcher.ErrDelegatedResourceRelease) {
 		t.Fatalf("resource fail=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("resource failure must preserve route")
 	}
 
 	// true missing + successful resource cleanup converges
 	srv.killSessionOverride = func(string) error { return nil }
-	if result := srv.teardownAgentSession(agentID); result.Err != nil {
+	if result := srv.teardownWorkerSession(workerID); result.Err != nil {
 		t.Fatalf("resource retry=%#v", result)
 	}
 
 	// kill fails + still live preserves route
-	commitTestRoute(t, owner, agentID)
+	commitTestRoute(t, owner, workerID)
 	srv.killSessionOverride = func(string) error { return errors.New("injected kill failure") }
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresencePresent, nil
 	}
-	result = srv.teardownAgentSession(agentID)
+	result = srv.teardownWorkerSession(workerID)
 	if result.Err == nil || !errors.Is(result.Err, modelprofiles.ErrSessionStillLive) {
 		t.Fatalf("still live=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("still-live must preserve route")
 	}
 
@@ -1061,11 +1061,11 @@ func TestKillAgentRouteAwareTeardown(t *testing.T) {
 	srv.probeSessionOverride = func(string) (watcher.SessionPresence, error) {
 		return watcher.SessionPresenceUnknown, errors.New("injected probe failure")
 	}
-	result = srv.teardownAgentSession(agentID)
+	result = srv.teardownWorkerSession(workerID)
 	if result.Err == nil || !errors.Is(result.Err, modelprofiles.ErrSessionLivenessUnknown) {
 		t.Fatalf("probe fail=%#v", result)
 	}
-	if _, ok := owner.SessionSnapshot(agentID); !ok {
+	if _, ok := owner.SessionSnapshot(workerID); !ok {
 		t.Fatal("probe failure must preserve route")
 	}
 
@@ -1080,7 +1080,7 @@ func TestKillAgentRouteAwareTeardown(t *testing.T) {
 		}
 		return nil
 	})
-	result = srv.teardownAgentSession(agentID)
+	result = srv.teardownWorkerSession(workerID)
 	owner.RoutesFile().SetPersistHook(nil)
 	if result.Err == nil || !errors.Is(result.Err, modelprofiles.ErrPersistDirSync) {
 		t.Fatalf("non-durable=%#v", result)
@@ -1090,7 +1090,7 @@ func TestKillAgentRouteAwareTeardown(t *testing.T) {
 	}
 }
 
-func TestKillAgentWebSocketSurfacesTeardownError(t *testing.T) {
+func TestKillWorkerWebSocketSurfacesTeardownError(t *testing.T) {
 	authManager, err := auth.NewManager(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1119,7 +1119,7 @@ func TestKillAgentWebSocketSurfacesTeardownError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if err := conn.WriteJSON(map[string]any{"type": "kill_agent", "request_id": "kill-live", "agent_id": "tmux:@ws-kill"}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"type": "kill_worker", "request_id": "kill-live", "worker_id": "tmux:@ws-kill"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)

@@ -79,7 +79,7 @@ func TestPiOwnedDirAutoBindAfterBindingLoss(t *testing.T) {
 	// Pre-fix launch shape: the pane command is bare "pi" (node-based Pi
 	// rewrites its argv), no durable tmux binding, no --session in the
 	// command. The owned transcript lives only in the Zen-owned directory.
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "recovery-agent",
 		Name:      "recovery",
 		Cwd:       cwd,
@@ -88,7 +88,7 @@ func TestPiOwnedDirAutoBindAfterBindingLoss(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	reader := NewProviderConversationReader()
-	conversation, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	conversation, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestPiOwnedDirAutoBindAfterBindingLoss(t *testing.T) {
 	appendOwnedPiLines(t, conversation.Path, []string{
 		`{"type":"message","id":"a3","parentId":"a2","timestamp":"2026-08-08T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"recovery incremental"}],"stopReason":"stop"}}`,
 	})
-	again, err := reader.Load(agent, AgentProviderPi, created.Add(11*time.Minute))
+	again, err := reader.Load(worker, WorkerProviderPi, created.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	writeOwnedPiRecoveryFixture(t, dir, foreignCwd, created.Add(30*time.Minute))
 
 	t.Setenv("HOME", home)
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "recovery-agent",
 		Name:      "recovery",
 		Cwd:       cwd,
@@ -168,7 +168,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 		StartedAt: created,
 	}
 	reader := NewProviderConversationReader()
-	conversation, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	conversation, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +181,9 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 
 	// StartedAt matching the newer session re-binds that one from a fresh
 	// subscription (a new reader has no pinned transcript).
-	agent.StartedAt = created.Add(time.Hour).Add(5 * time.Second)
+	worker.StartedAt = created.Add(time.Hour).Add(5 * time.Second)
 	freshReader := NewProviderConversationReader()
-	rebound, err := freshReader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
+	rebound, err := freshReader.Load(worker, WorkerProviderPi, created.Add(25*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	ambiguousDir := ownedPiFixtureDir(t, ambiguousHome)
 	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, created.Add(2*time.Second), "amb-a.jsonl")
 	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, created.Add(2*time.Second), "amb-b.jsonl")
-	ambiguous := classifier.Agent{
+	ambiguous := classifier.Worker{
 		ID:        "ambiguous-agent",
 		Name:      "ambiguous",
 		Cwd:       cwd,
@@ -206,7 +206,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	}
 	t.Setenv("HOME", ambiguousHome)
 	ambReader := NewProviderConversationReader()
-	ambConversation, err := ambReader.Load(ambiguous, AgentProviderPi, created.Add(10*time.Minute))
+	ambConversation, err := ambReader.Load(ambiguous, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	if err := os.Chtimes(stalePath, staleUpdated, staleUpdated); err != nil {
 		t.Fatal(err)
 	}
-	staleAgent := classifier.Agent{
+	staleWorker := classifier.Worker{
 		ID:        "stale-agent",
 		Name:      "stale",
 		Cwd:       cwd,
@@ -234,7 +234,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	}
 	t.Setenv("HOME", staleHome)
 	staleReader := NewProviderConversationReader()
-	staleConversation, err := staleReader.Load(staleAgent, AgentProviderPi, created)
+	staleConversation, err := staleReader.Load(staleWorker, WorkerProviderPi, created)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	controlHome := t.TempDir()
 	controlDir := ownedPiFixtureDir(t, controlHome)
 	controlPath := writeOwnedPiRecoveryFixture(t, controlDir, cwd, created.Add(-80*time.Hour))
-	controlAgent := classifier.Agent{
+	controlWorker := classifier.Worker{
 		ID:        "control-agent",
 		Name:      "control",
 		Cwd:       cwd,
@@ -259,7 +259,7 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	}
 	t.Setenv("HOME", controlHome)
 	controlReader := NewProviderConversationReader()
-	controlConversation, err := controlReader.Load(controlAgent, AgentProviderPi, created)
+	controlConversation, err := controlReader.Load(controlWorker, WorkerProviderPi, created)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,14 +270,14 @@ func TestPiOwnedDirAutoBindSelectionRules(t *testing.T) {
 	// An explicit command binding always wins over the directory scan.
 	t.Setenv("HOME", home)
 	boundReader := NewProviderConversationReader()
-	boundAgent := classifier.Agent{
+	boundWorker := classifier.Worker{
 		ID:        "bound-agent",
 		Name:      "bound",
 		Cwd:       cwd,
 		Command:   "pi --session " + newer,
 		StartedAt: created,
 	}
-	boundConversation, err := boundReader.Load(boundAgent, AgentProviderPi, created.Add(10*time.Minute))
+	boundConversation, err := boundReader.Load(boundWorker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	newTranscript := writeOwnedPiRecoveryFixture(t, dir, cwd, restartAt)
 
 	t.Setenv("HOME", home)
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "restart-agent",
 		Name:      "restart",
 		Cwd:       cwd,
@@ -314,7 +314,7 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	reader := NewProviderConversationReader()
 
 	// First process: the startedAt window binds and pins the old transcript.
-	first, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,9 +324,9 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 
 	// In-pane restart: the process startedAt changes. The new window must
 	// bind the new conversation — the pre-restart pin may not survive.
-	agent.StartedAt = restartAt
-	agent.ProcessID = 2000
-	restarted, err := reader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
+	worker.StartedAt = restartAt
+	worker.ProcessID = 2000
+	restarted, err := reader.Load(worker, WorkerProviderPi, created.Add(25*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	ambiguousDir := ownedPiFixtureDir(t, ambiguousHome)
 	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, restartAt.Add(2*time.Second), "amb-a.jsonl")
 	writeOwnedPiRecoveryFixtureNamed(t, ambiguousDir, cwd, restartAt.Add(2*time.Second), "amb-b.jsonl")
-	ambiguous := classifier.Agent{
+	ambiguous := classifier.Worker{
 		ID:        "ambiguous-agent",
 		Name:      "ambiguous",
 		Cwd:       cwd,
@@ -349,7 +349,7 @@ func TestPiOwnedDirAutoBindRebindsAfterInPaneRestart(t *testing.T) {
 	}
 	t.Setenv("HOME", ambiguousHome)
 	ambReader := NewProviderConversationReader()
-	ambConversation, err := ambReader.Load(ambiguous, AgentProviderPi, restartAt.Add(10*time.Minute))
+	ambConversation, err := ambReader.Load(ambiguous, WorkerProviderPi, restartAt.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 	newPath := writeOwnedPiRecoveryFixture(t, sharedDir, cwd, restartAt)
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "geometry-agent",
 		Name:      "geometry",
 		Cwd:       cwd,
@@ -408,7 +408,7 @@ func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 	// One long-lived reader = one live subscription across the restart.
 	reader := NewProviderConversationReader()
 
-	first, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,9 +418,9 @@ func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 
 	// In-pane restart: new process generation, new startedAt. The owned scan
 	// must not re-pin the frozen old file; the shared scan binds the new one.
-	agent.StartedAt = restartAt.Add(2 * time.Second)
-	agent.ProcessID = 2000
-	restarted, err := reader.Load(agent, AgentProviderPi, restartAt.Add(10*time.Minute))
+	worker.StartedAt = restartAt.Add(2 * time.Second)
+	worker.ProcessID = 2000
+	restarted, err := reader.Load(worker, WorkerProviderPi, restartAt.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,8 +430,8 @@ func TestPiOwnedDirAutoBindRealGeometryOldOwnedNewShared(t *testing.T) {
 
 	// Same instance afterwards: a processID-only observation change must not
 	// flip the bind (the scan re-pins the same transcript; no churn).
-	agent.ProcessID = 2001
-	stable, err := reader.Load(agent, AgentProviderPi, restartAt.Add(11*time.Minute))
+	worker.ProcessID = 2001
+	stable, err := reader.Load(worker, WorkerProviderPi, restartAt.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestPiOwnedDirAutoBindDelayedNewHeaderFlush(t *testing.T) {
 	}
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "flush-agent",
 		Name:      "flush",
 		Cwd:       cwd,
@@ -471,7 +471,7 @@ func TestPiOwnedDirAutoBindDelayedNewHeaderFlush(t *testing.T) {
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-	first, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,9 +480,9 @@ func TestPiOwnedDirAutoBindDelayedNewHeaderFlush(t *testing.T) {
 	}
 
 	// Restart poll before the new header exists anywhere.
-	agent.StartedAt = restartAt.Add(2 * time.Second)
-	agent.ProcessID = 2000
-	missed, err := reader.Load(agent, AgentProviderPi, restartAt.Add(10*time.Minute))
+	worker.StartedAt = restartAt.Add(2 * time.Second)
+	worker.ProcessID = 2000
+	missed, err := reader.Load(worker, WorkerProviderPi, restartAt.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestPiOwnedDirAutoBindDelayedNewHeaderFlush(t *testing.T) {
 
 	// The new header flushes into the shared directory: the next poll binds.
 	newPath := writeOwnedPiRecoveryFixture(t, sharedDir, cwd, restartAt)
-	bound, err := reader.Load(agent, AgentProviderPi, restartAt.Add(11*time.Minute))
+	bound, err := reader.Load(worker, WorkerProviderPi, restartAt.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestPiOwnedDirAutoBindResumeViaMtimeArm(t *testing.T) {
 
 	// The instance started two hours after the transcript was created and
 	// keeps writing it (mtime is real-now, not earlier than startedAt).
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "resume-agent",
 		Name:      "resume",
 		Cwd:       cwd,
@@ -529,7 +529,7 @@ func TestPiOwnedDirAutoBindResumeViaMtimeArm(t *testing.T) {
 		StartedAt: created.Add(2 * time.Hour),
 	}
 	reader := NewProviderConversationReader()
-	conversation, err := reader.Load(agent, AgentProviderPi, created.Add(25*time.Hour))
+	conversation, err := reader.Load(worker, WorkerProviderPi, created.Add(25*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestPiOwnedDirAutoBindResumeViaMtimeArm(t *testing.T) {
 	if err := os.Chtimes(path, frozen, frozen); err != nil {
 		t.Fatal(err)
 	}
-	missed, err := reader.Load(agent, AgentProviderPi, created.Add(26*time.Hour))
+	missed, err := reader.Load(worker, WorkerProviderPi, created.Add(26*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +566,7 @@ func TestPiOwnedDirAutoBindZeroStartedAtRetainsFreshest(t *testing.T) {
 	dir := ownedPiFixtureDir(t, home)
 	path := writeOwnedPiRecoveryFixture(t, dir, cwd, created)
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:      "zero-agent",
 		Name:    "zero",
 		Cwd:     cwd,
@@ -574,7 +574,7 @@ func TestPiOwnedDirAutoBindZeroStartedAtRetainsFreshest(t *testing.T) {
 		// StartedAt intentionally zero: no instance signal.
 	}
 	reader := NewProviderConversationReader()
-	conversation, err := reader.Load(agent, AgentProviderPi, created.Add(10*time.Minute))
+	conversation, err := reader.Load(worker, WorkerProviderPi, created.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +622,7 @@ func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "subsecond-agent",
 		Name:      "subsecond",
 		Cwd:       cwd,
@@ -631,7 +631,7 @@ func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, base.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,10 +642,10 @@ func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 	// Phase A (control): with the second-rounded new start the pre-fix
 	// watcher supplied, the frozen old file is re-admitted (its mtime sits in
 	// the same rounded second) and shadows the new shared transcript.
-	roundedAgent := agent
-	roundedAgent.StartedAt = newStart.Truncate(time.Second)
-	roundedAgent.ProcessID = 2000
-	rounded, err := reader.Load(roundedAgent, AgentProviderPi, base.Add(11*time.Minute))
+	roundedWorker := worker
+	roundedWorker.StartedAt = newStart.Truncate(time.Second)
+	roundedWorker.ProcessID = 2000
+	rounded, err := reader.Load(roundedWorker, WorkerProviderPi, base.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,9 +656,9 @@ func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 	// Phase B (closure): with the precise new start, the old file fails both
 	// arms (CreatedAt and mtime before the new process start) and the shared
 	// scan binds the new transcript.
-	agent.StartedAt = newStart
-	agent.ProcessID = 3000
-	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(12*time.Minute))
+	worker.StartedAt = newStart
+	worker.ProcessID = 3000
+	restarted, err := reader.Load(worker, WorkerProviderPi, base.Add(12*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,8 +668,8 @@ func TestPiOwnedDirAutoBindSubSecondRestartClosure(t *testing.T) {
 
 	// Same instance afterwards: a processID-only observation change must not
 	// flip the bind (no churn).
-	agent.ProcessID = 3001
-	stable, err := reader.Load(agent, AgentProviderPi, base.Add(13*time.Minute))
+	worker.ProcessID = 3001
+	stable, err := reader.Load(worker, WorkerProviderPi, base.Add(13*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +704,7 @@ func TestPiOwnedDirAutoBindSubSecondWindowArmExclusion(t *testing.T) {
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "window-arm-agent",
 		Name:      "window-arm",
 		Cwd:       cwd,
@@ -713,7 +713,7 @@ func TestPiOwnedDirAutoBindSubSecondWindowArmExclusion(t *testing.T) {
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, base.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,9 +721,9 @@ func TestPiOwnedDirAutoBindSubSecondWindowArmExclusion(t *testing.T) {
 		t.Fatalf("first instance must bind the old transcript, got %+v", first)
 	}
 
-	agent.StartedAt = newStart
-	agent.ProcessID = 2000
-	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(11*time.Minute))
+	worker.StartedAt = newStart
+	worker.ProcessID = 2000
+	restarted, err := reader.Load(worker, WorkerProviderPi, base.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +760,7 @@ func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 	newPath := writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, newCreated, "new.jsonl")
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "mtime-arm-agent",
 		Name:      "mtime-arm",
 		Cwd:       cwd,
@@ -769,7 +769,7 @@ func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-	first, err := reader.Load(agent, AgentProviderPi, base.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, base.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,10 +779,10 @@ func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
 
 	// Phase A (control): the second-rounded new start admits the frozen old
 	// file through the mtime arm (same rounded second).
-	roundedAgent := agent
-	roundedAgent.StartedAt = newStart.Truncate(time.Second)
-	roundedAgent.ProcessID = 2000
-	rounded, err := reader.Load(roundedAgent, AgentProviderPi, base.Add(11*time.Minute))
+	roundedWorker := worker
+	roundedWorker.StartedAt = newStart.Truncate(time.Second)
+	roundedWorker.ProcessID = 2000
+	rounded, err := reader.Load(roundedWorker, WorkerProviderPi, base.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,9 +791,9 @@ func TestPiOwnedDirAutoBindSubSecondMtimeArmExclusion(t *testing.T) {
 	}
 
 	// Phase B (closure): the precise start excludes the frozen old file.
-	agent.StartedAt = newStart
-	agent.ProcessID = 3000
-	restarted, err := reader.Load(agent, AgentProviderPi, base.Add(12*time.Minute))
+	worker.StartedAt = newStart
+	worker.ProcessID = 3000
+	restarted, err := reader.Load(worker, WorkerProviderPi, base.Add(12*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -826,7 +826,7 @@ func TestPiOwnedDirAutoBindProcessIDOnlyFallbackKeepsOwnedResume(t *testing.T) {
 	sharedDir := piSharedFixtureDir(t, home, cwd)
 	_ = writeOwnedPiRecoveryFixtureNamed(t, sharedDir, cwd, startedAt.Add(500*time.Millisecond), "new-shared.jsonl")
 
-	agent := classifier.Agent{
+	worker := classifier.Worker{
 		ID:        "fallback-resume-agent",
 		Name:      "fallback-resume",
 		Cwd:       cwd,
@@ -835,7 +835,7 @@ func TestPiOwnedDirAutoBindProcessIDOnlyFallbackKeepsOwnedResume(t *testing.T) {
 		ProcessID: 1000,
 	}
 	reader := NewProviderConversationReader()
-	first, err := reader.Load(agent, AgentProviderPi, startedAt.Add(10*time.Minute))
+	first, err := reader.Load(worker, WorkerProviderPi, startedAt.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,8 +846,8 @@ func TestPiOwnedDirAutoBindProcessIDOnlyFallbackKeepsOwnedResume(t *testing.T) {
 	// Same rounded startedAt, processID-only observation change: the old
 	// owned resume remains the authoritative eligible bind, not churn to the
 	// shared candidate.
-	agent.ProcessID = 2000
-	stable, err := reader.Load(agent, AgentProviderPi, startedAt.Add(11*time.Minute))
+	worker.ProcessID = 2000
+	stable, err := reader.Load(worker, WorkerProviderPi, startedAt.Add(11*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

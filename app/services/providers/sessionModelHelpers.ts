@@ -1,6 +1,6 @@
 import {
   sessionAllowsModelProfileActivation,
-  type AgentSessionCapabilities,
+  type WorkerSessionCapabilities,
 } from "./sessionCapabilities";
 import type {
   ThreadRuntimeSelection,
@@ -123,7 +123,7 @@ export function runtimeChoiceForRow(
 }
 
 export function resolveComposerModelControl(input: {
-  capabilities?: AgentSessionCapabilities | null;
+  capabilities?: WorkerSessionCapabilities | null;
   connectionConnected: boolean;
   selection: ThreadRuntimeSelection | null;
   refreshRequired: boolean;

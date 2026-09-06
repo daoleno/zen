@@ -25,20 +25,20 @@ func TestResolveHostTranscriptIdentityDiscardsPreviousExecutorBinding(t *testing
 	sessionID := "grok-after-switch"
 	sessionDir := writeGrokHostSessionFixture(t, home, cwd, sessionID, startedAt, "please continue", "grok assistant after switch")
 
-	got := ResolveHostTranscriptIdentityForAgent(classifier.Agent{
+	got := ResolveHostTranscriptIdentityForWorker(classifier.Worker{
 		Command:   "grok --no-alt-screen --permission-mode bypassPermissions --resume " + sessionID,
 		Cwd:       cwd,
 		StartedAt: startedAt,
 	}, HostTranscriptIdentity{
-		Provider:  AgentProviderCodex,
+		Provider:  WorkerProviderCodex,
 		SessionID: "old-codex-session",
 		Path:      codexRollout,
-	}, AgentProviderGrok)
+	}, WorkerProviderGrok)
 
 	if got.SessionID == "old-codex-session" || got.Path == codexRollout {
 		t.Fatalf("kept previous Codex identity: %+v", got)
 	}
-	if got.Provider != AgentProviderGrok || got.SessionID != sessionID || got.Path != sessionDir {
+	if got.Provider != WorkerProviderGrok || got.SessionID != sessionID || got.Path != sessionDir {
 		t.Fatalf("resolved = %+v want grok %s %s", got, sessionID, sessionDir)
 	}
 }
@@ -50,7 +50,7 @@ func TestLoadHostConversationByIdentityUsesGrokReaderNotCodexParser(t *testing.T
 	sessionDir := writeGrokHostSessionFixture(t, home, cwd, sessionID, time.Now().UTC(), "public user", "real grok reply after switch")
 
 	got, err := LoadHostConversationByIdentity(HostTranscriptIdentity{
-		Provider:  AgentProviderGrok,
+		Provider:  WorkerProviderGrok,
 		SessionID: sessionID,
 		Path:      sessionDir,
 	})
@@ -78,7 +78,7 @@ func TestLoadHostConversationByIdentityKeepsCodexSeam(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout-host.jsonl")
 	writeCodexHostRollout(t, path, "codex-host", "codex user", "codex assistant")
 	got, err := LoadHostConversationByIdentity(HostTranscriptIdentity{
-		Provider:  AgentProviderCodex,
+		Provider:  WorkerProviderCodex,
 		SessionID: "codex-host",
 		Path:      path,
 	})
@@ -174,7 +174,7 @@ func TestHostIdentityUsableRejectsCodexPathForGrok(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if hostIdentityUsable(HostTranscriptIdentity{Path: path}, AgentProviderGrok) {
+	if hostIdentityUsable(HostTranscriptIdentity{Path: path}, WorkerProviderGrok) {
 		t.Fatal("codex file must not be a grok host identity")
 	}
 }

@@ -172,7 +172,7 @@ exit 0
 		t.Fatal(err)
 	}
 	calls := string(raw)
-	if !strings.Contains(calls, "set-property --runtime zen-agents-abc123.slice") {
+	if !strings.Contains(calls, "set-property --runtime zen-workers-abc123.slice") {
 		t.Fatalf("missing slice configuration:\n%s", calls)
 	}
 	if !strings.Contains(calls, "MemoryHigh=27500000000") || !strings.Contains(calls, "MemoryMax=30900000000") {
@@ -296,7 +296,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "set-property --runtime zen-agents-abc123.slice") {
+	if !strings.Contains(string(raw), "set-property --runtime zen-workers-abc123.slice") {
 		t.Fatalf("missing parent slice configuration:\n%s", raw)
 	}
 	if _, done := manager.normalizedChildLimits[live]; !done {
@@ -340,7 +340,7 @@ func TestLinuxResourceReconcileSkipsForeignOrphanAndMalformedChildMigration(t *t
 	live := delegatedResourceUnit(owner, "0123456789abcdef0123456789abcdef")
 	orphan := delegatedResourceUnit(owner, "fedcba9876543210fedcba9876543210")
 	foreign := delegatedResourceUnit("other", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	malformed := "zen-agent-" + owner + "-not-a-token.scope"
+	malformed := "zen-worker-" + owner + "-not-a-token.scope"
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "calls.log")
 	systemctl := filepath.Join(dir, "systemctl")

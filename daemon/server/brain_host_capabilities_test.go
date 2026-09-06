@@ -16,18 +16,18 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
-func TestBrainSnapshotHostAgentCapabilitiesRoutedHidden(t *testing.T) {
+func TestBrainSnapshotHostWorkerCapabilitiesRoutedHidden(t *testing.T) {
 	owner := startBrainHostCapabilityOwner(t)
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
 
-	hostID := "brain-agent-brain-hidden:@routed"
+	hostID := "zen-worker-brain-hidden:@routed"
 	bindRoutedCodexHost(t, owner, hostID)
-	hidden := &classifier.Agent{
+	hidden := &classifier.Worker{
 		ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 		State: classifier.StateRunning,
 	}
-	srv.getAgentOverride = func(id string) *classifier.Agent {
+	srv.getWorkerOverride = func(id string) *classifier.Worker {
 		if id == hostID {
 			return hidden
 		}
@@ -40,15 +40,15 @@ func TestBrainSnapshotHostAgentCapabilitiesRoutedHidden(t *testing.T) {
 		t.Fatalf("routed hidden host capabilities = %#v", caps)
 	}
 	assertNoRouteOrSecretLeak(t, wire)
-	assertHostStaysHiddenFromAgentList(t, srv, hidden)
+	assertHostStaysHiddenFromWorkerList(t, srv, hidden)
 }
 
-func TestBrainSnapshotHostAgentCapabilitiesManagedNativeReadOnly(t *testing.T) {
+func TestBrainSnapshotHostWorkerCapabilitiesManagedNativeReadOnly(t *testing.T) {
 	owner := startBrainHostCapabilityOwner(t)
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
 
-	hostID := "brain-agent-brain-hidden:@native"
+	hostID := "zen-worker-brain-hidden:@native"
 	profile := modelprofiles.Profile{
 		ID: "codex-native", Name: "Native", ExecutorID: modelprofiles.ExecutorCodex,
 		ProviderID: "openai", ProviderLabel: "OpenAI",
@@ -66,11 +66,11 @@ func TestBrainSnapshotHostAgentCapabilitiesManagedNativeReadOnly(t *testing.T) {
 	if _, _, _, err := owner.CommitLaunch(plan.ProvisionalID, hostID); err != nil {
 		t.Fatal(err)
 	}
-	hidden := &classifier.Agent{
+	hidden := &classifier.Worker{
 		ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 		State: classifier.StateRunning,
 	}
-	srv.getAgentOverride = func(id string) *classifier.Agent {
+	srv.getWorkerOverride = func(id string) *classifier.Worker {
 		if id == hostID {
 			return hidden
 		}
@@ -83,20 +83,20 @@ func TestBrainSnapshotHostAgentCapabilitiesManagedNativeReadOnly(t *testing.T) {
 		t.Fatalf("native managed read-only capabilities = %#v", caps)
 	}
 	assertNoRouteOrSecretLeak(t, wire)
-	assertHostStaysHiddenFromAgentList(t, srv, hidden)
+	assertHostStaysHiddenFromWorkerList(t, srv, hidden)
 }
 
-func TestBrainSnapshotHostAgentCapabilitiesUnmanaged(t *testing.T) {
+func TestBrainSnapshotHostWorkerCapabilitiesUnmanaged(t *testing.T) {
 	owner := startBrainHostCapabilityOwner(t)
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
 
-	hostID := "brain-agent-brain-hidden:@unmanaged"
-	hidden := &classifier.Agent{
+	hostID := "zen-worker-brain-hidden:@unmanaged"
+	hidden := &classifier.Worker{
 		ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 		State: classifier.StateRunning,
 	}
-	srv.getAgentOverride = func(id string) *classifier.Agent {
+	srv.getWorkerOverride = func(id string) *classifier.Worker {
 		if id == hostID {
 			return hidden
 		}
@@ -112,7 +112,7 @@ func TestBrainSnapshotHostAgentCapabilitiesUnmanaged(t *testing.T) {
 		t.Fatalf("live codex host still advertises structured_events: %#v", caps)
 	}
 	assertNoRouteOrSecretLeak(t, wire)
-	assertHostStaysHiddenFromAgentList(t, srv, hidden)
+	assertHostStaysHiddenFromWorkerList(t, srv, hidden)
 }
 
 func TestBrainSnapshotBroadcastDoesNotAdmitHostActivation(t *testing.T) {
@@ -121,7 +121,7 @@ func TestBrainSnapshotBroadcastDoesNotAdmitHostActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	const (
-		hostID   = "brain-agent-brain-hidden:@busy-broadcast"
+		hostID   = "zen-worker-brain-hidden:@busy-broadcast"
 		threadID = "brain-thread-client-data-restored"
 	)
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -130,7 +130,7 @@ func TestBrainSnapshotBroadcastDoesNotAdmitHostActivation(t *testing.T) {
 	if err := store.SetChatState(brain.ChatState{ThreadID: threadID}); err != nil {
 		t.Fatal(err)
 	}
-	fw := &brainServiceTestWatcher{sessions: map[string]*classifier.Agent{
+	fw := &brainServiceTestWatcher{sessions: map[string]*classifier.Worker{
 		hostID: {
 			ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 			State: classifier.StateRunning, Summary: "Processing current provider turn",
@@ -166,8 +166,8 @@ func TestBrainSnapshotBroadcastDoesNotAdmitHostActivation(t *testing.T) {
 	}
 }
 
-func TestBrainSnapshotHostAgentCapabilitiesFailClosedMissingAgentOrOwner(t *testing.T) {
-	hostID := "brain-agent-brain-hidden:@missing"
+func TestBrainSnapshotHostWorkerCapabilitiesFailClosedMissingWorkerOrOwner(t *testing.T) {
+	hostID := "zen-worker-brain-hidden:@missing"
 
 	// No watcher agent and no profile owner.
 	srv := &Server{}
@@ -191,37 +191,37 @@ func TestBrainSnapshotHostAgentCapabilitiesFailClosedMissingAgentOrOwner(t *test
 	// Name/command must never authorize without a route, even when agent is live.
 	srv3 := &Server{}
 	srv3.SetModelProfiles(owner)
-	srv3.getAgentOverride = func(id string) *classifier.Agent {
-		if id == "brain-agent-brain-hidden:@named" {
-			return &classifier.Agent{
+	srv3.getWorkerOverride = func(id string) *classifier.Worker {
+		if id == "zen-worker-brain-hidden:@named" {
+			return &classifier.Worker{
 				ID: id, Name: "Codex Brain", Command: "codex", Hidden: true,
 			}
 		}
 		return nil
 	}
-	wire3 := mustBrainSnapshotHostWire(t, srv3, "brain-agent-brain-hidden:@named", "codex")
+	wire3 := mustBrainSnapshotHostWire(t, srv3, "zen-worker-brain-hidden:@named", "codex")
 	caps3 := hostCapabilitiesFromWire(t, wire3)
 	if caps3.ModelProfileManaged || caps3.ModelProfileActiveSwitch {
 		t.Fatalf("name/command must not authorize managed/switch: %#v", caps3)
 	}
 }
 
-func TestBrainSnapshotHostAgentCapabilitiesSharedWirePath(t *testing.T) {
+func TestBrainSnapshotHostWorkerCapabilitiesSharedWirePath(t *testing.T) {
 	// sendBrainSnapshot / broadcastBrainSnapshot / NewChat / executor-switch
 	// all serialize through brainSnapshotWire — prove the enrichment lives there.
 	owner := startBrainHostCapabilityOwner(t)
 	srv := &Server{}
 	srv.SetModelProfiles(owner)
-	hostID := "brain-agent-brain-hidden:@shared"
+	hostID := "zen-worker-brain-hidden:@shared"
 	bindRoutedCodexHost(t, owner, hostID)
-	srv.getAgentOverride = func(id string) *classifier.Agent {
+	srv.getWorkerOverride = func(id string) *classifier.Worker {
 		if id == hostID {
-			return &classifier.Agent{ID: hostID, Name: "Brain", Command: "codex", Hidden: true}
+			return &classifier.Worker{ID: hostID, Name: "Brain", Command: "codex", Hidden: true}
 		}
 		return nil
 	}
 	snapshot := brain.Snapshot{
-		HostAgent:   &brain.AgentRef{ID: hostID, Name: "Brain", Command: "codex", Hidden: true, Updated: time.Now().UTC()},
+		HostWorker:  &brain.WorkerRef{ID: hostID, Name: "Brain", Command: "codex", Hidden: true, Updated: time.Now().UTC()},
 		GeneratedAt: time.Now().UTC(),
 	}
 	wire, err := srv.brainSnapshotWire(snapshot)
@@ -236,7 +236,7 @@ func TestBrainSnapshotHostAgentCapabilitiesSharedWirePath(t *testing.T) {
 
 func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	owner := startBrainHostCapabilityOwner(t)
-	hostID := "brain-agent-brain-hidden:@lifecycle"
+	hostID := "zen-worker-brain-hidden:@lifecycle"
 	bindRoutedCodexHost(t, owner, hostID)
 
 	store, err := brain.NewStore(t.TempDir())
@@ -252,13 +252,13 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	})
 	srv := &Server{brain: service}
 	srv.SetModelProfiles(owner)
-	srv.getAgentOverride = func(id string) *classifier.Agent {
-		return bw.GetAgent(id)
+	srv.getWorkerOverride = func(id string) *classifier.Worker {
+		return bw.GetWorker(id)
 	}
 
 	// Reconnect-style projection before watcher discovery: fail closed.
 	initial, err := srv.brainSnapshotWire(brain.Snapshot{
-		HostAgent: &brain.AgentRef{
+		HostWorker: &brain.WorkerRef{
 			ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 			Updated: time.Now().UTC(),
 		},
@@ -277,20 +277,20 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 		broadcasts = append(broadcasts, payload)
 	}
 
-	hiddenHost := &classifier.Agent{
+	hiddenHost := &classifier.Worker{
 		ID: hostID, Name: "Brain", Command: "codex", Hidden: true,
 		State: classifier.StateRunning,
 	}
 	// Unrelated Hidden agent noise must not churn brain_snapshot.
-	otherHidden := &classifier.Agent{
-		ID: "brain-agent-other-hidden:@9", Name: "Other", Command: "codex", Hidden: true,
+	otherHidden := &classifier.Worker{
+		ID: "zen-worker-other-hidden:@9", Name: "Other", Command: "codex", Hidden: true,
 	}
 	if bw.sessions == nil {
-		bw.sessions = map[string]*classifier.Agent{}
+		bw.sessions = map[string]*classifier.Worker{}
 	}
 	bw.sessions[otherHidden.ID] = otherHidden
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_discovered", AgentID: otherHidden.ID, Agent: otherHidden,
+		Type: "worker_discovered", WorkerID: otherHidden.ID, Worker: otherHidden,
 	})
 	if len(broadcasts) != 0 {
 		t.Fatalf("unrelated hidden discovery broadcast=%d", len(broadcasts))
@@ -299,7 +299,7 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	// Discover current Host: authoritative capability refresh.
 	bw.sessions[hostID] = hiddenHost
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_discovered", AgentID: hostID, Agent: hiddenHost,
+		Type: "worker_discovered", WorkerID: hostID, Worker: hiddenHost,
 	})
 	if len(broadcasts) != 1 {
 		t.Fatalf("current host discovery broadcasts=%d", len(broadcasts))
@@ -312,21 +312,21 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	if !discoveredCaps.ModelProfileManaged || !discoveredCaps.ModelProfileActiveSwitch || !discoveredCaps.StructuredEvents {
 		t.Fatalf("discovered host capabilities = %#v", discoveredCaps)
 	}
-	hostWire, _ := brainPayload["host_agent"].(map[string]any)
+	hostWire, _ := brainPayload["host_worker"].(map[string]any)
 	if hidden, _ := hostWire["hidden"].(bool); !hidden {
 		t.Fatal("host must remain hidden on capability refresh")
 	}
-	assertHostStaysHiddenFromAgentList(t, srv, hiddenHost)
+	assertHostStaysHiddenFromWorkerList(t, srv, hiddenHost)
 
 	// Output / turn noise must not churn.
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_output", AgentID: hostID, Agent: hiddenHost,
+		Type: "worker_output", WorkerID: hostID, Worker: hiddenHost,
 	})
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_state_change", AgentID: hostID, Agent: hiddenHost, NewState: "running",
+		Type: "worker_state_change", WorkerID: hostID, Worker: hiddenHost, NewState: "running",
 	})
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_metadata_change", AgentID: hostID, Agent: hiddenHost,
+		Type: "worker_metadata_change", WorkerID: hostID, Worker: hiddenHost,
 	})
 	if len(broadcasts) != 1 {
 		t.Fatalf("output/turn noise churned brain_snapshot: broadcasts=%d", len(broadcasts))
@@ -346,7 +346,7 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	}
 	delete(bw.sessions, hostID)
 	srv.handleWatcherEvent(watcher.SessionEvent{
-		Type: "agent_removed", AgentID: hostID, Agent: hiddenHost,
+		Type: "worker_removed", WorkerID: hostID, Worker: hiddenHost,
 	})
 	if len(broadcasts) != 2 {
 		t.Fatalf("host removal broadcasts=%d, want 2", len(broadcasts))
@@ -359,7 +359,7 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	if removedCaps.ModelProfileManaged || removedCaps.ModelProfileActiveSwitch || removedCaps.StructuredEvents {
 		t.Fatalf("removed host must fail-closed capabilities: %#v", removedCaps)
 	}
-	removedHost, _ := removalBrain["host_agent"].(map[string]any)
+	removedHost, _ := removalBrain["host_worker"].(map[string]any)
 	if id, _ := removedHost["id"].(string); id != hostID {
 		t.Fatalf("removal payload must keep recorded host id %q, got %#v", hostID, removedHost)
 	}
@@ -383,7 +383,7 @@ func TestHiddenHostDiscoveryRefreshesBrainSnapshotCapabilities(t *testing.T) {
 	if routeAfter.Binding.RouteID != routeBefore.Binding.RouteID || routeAfter.Binding.SessionID != hostID {
 		t.Fatalf("route mutated: before=%+v after=%+v", routeBefore.Binding, routeAfter.Binding)
 	}
-	assertHostStaysHiddenFromAgentList(t, srv, hiddenHost)
+	assertHostStaysHiddenFromWorkerList(t, srv, hiddenHost)
 }
 
 func startBrainHostCapabilityOwner(t *testing.T) *modelprofiles.Owner {
@@ -431,7 +431,7 @@ func bindRoutedCodexHost(t *testing.T, owner *modelprofiles.Owner, sessionID str
 func mustBrainSnapshotHostWire(t *testing.T, srv *Server, hostID, command string) map[string]any {
 	t.Helper()
 	snapshot := brain.Snapshot{
-		HostAgent: &brain.AgentRef{
+		HostWorker: &brain.WorkerRef{
 			ID: hostID, Name: "Brain", Command: command, Hidden: true,
 			Status: string(classifier.StateRunning), Updated: time.Now().UTC(),
 		},
@@ -448,21 +448,21 @@ func mustBrainSnapshotHostWire(t *testing.T, srv *Server, hostID, command string
 	return payload
 }
 
-func hostCapabilitiesFromWire(t *testing.T, payload map[string]any) agentSessionWireCapabilities {
+func hostCapabilitiesFromWire(t *testing.T, payload map[string]any) workerSessionWireCapabilities {
 	t.Helper()
-	hostRaw, ok := payload["host_agent"].(map[string]any)
+	hostRaw, ok := payload["host_worker"].(map[string]any)
 	if !ok {
-		t.Fatalf("host_agent missing: %#v", payload["host_agent"])
+		t.Fatalf("host_worker missing: %#v", payload["host_worker"])
 	}
 	capsRaw, ok := hostRaw["capabilities"]
 	if !ok || capsRaw == nil {
-		t.Fatalf("host_agent.capabilities missing: %#v", hostRaw)
+		t.Fatalf("host_worker.capabilities missing: %#v", hostRaw)
 	}
 	raw, err := json.Marshal(capsRaw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var caps agentSessionWireCapabilities
+	var caps workerSessionWireCapabilities
 	if err := json.Unmarshal(raw, &caps); err != nil {
 		t.Fatal(err)
 	}
@@ -485,29 +485,29 @@ func assertNoRouteOrSecretLeak(t *testing.T, payload map[string]any) {
 			t.Fatalf("brain_snapshot leaked %s: %s", banned, body)
 		}
 	}
-	host := payload["host_agent"].(map[string]any)
+	host := payload["host_worker"].(map[string]any)
 	if _, ok := host["route"]; ok {
-		t.Fatal("host_agent must not embed route snapshot")
+		t.Fatal("host_worker must not embed route snapshot")
 	}
 	if _, ok := host["binding"]; ok {
-		t.Fatal("host_agent must not embed binding")
+		t.Fatal("host_worker must not embed binding")
 	}
 }
 
-func assertHostStaysHiddenFromAgentList(t *testing.T, srv *Server, host *classifier.Agent) {
+func assertHostStaysHiddenFromWorkerList(t *testing.T, srv *Server, host *classifier.Worker) {
 	t.Helper()
-	visible := &classifier.Agent{ID: "tmux:@visible", Name: "Visible", Command: "codex", Hidden: false}
-	list := visibleAgentSessions([]*classifier.Agent{host, visible})
+	visible := &classifier.Worker{ID: "tmux:@visible", Name: "Visible", Command: "codex", Hidden: false}
+	list := visibleWorkerSessions([]*classifier.Worker{host, visible})
 	if len(list) != 1 || list[0].ID != visible.ID {
 		t.Fatalf("visible list = %#v", list)
 	}
-	wired := srv.agentSessionsWire(list)
+	wired := srv.workerSessionsWire(list)
 	if len(wired) != 1 || wired[0].ID != visible.ID {
-		t.Fatalf("agent_session_list wire = %#v", wired)
+		t.Fatalf("worker_session_list wire = %#v", wired)
 	}
 	for _, session := range wired {
 		if session.ID == host.ID || session.Hidden {
-			t.Fatalf("hidden Brain host must not appear in agent_session_list: %#v", session)
+			t.Fatalf("hidden Brain host must not appear in worker_session_list: %#v", session)
 		}
 	}
 }

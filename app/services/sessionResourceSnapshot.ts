@@ -35,7 +35,7 @@ export interface SessionResourceHost {
 
 export interface SessionResourceSnapshot {
   request_id?: string;
-  agent_id: string;
+  worker_id: string;
   session: SessionResourceSession;
   pool?: SessionResourcePool | null;
   host?: SessionResourceHost | null;
@@ -48,15 +48,15 @@ export function normalizeSessionResourceSnapshot(
     return null;
   }
   const source = payload as Record<string, unknown>;
-  const agentId =
-    typeof source.agent_id === "string" ? source.agent_id.trim() : "";
-  if (!agentId) {
+  const workerId =
+    typeof source.worker_id === "string" ? source.worker_id.trim() : "";
+  if (!workerId) {
     return null;
   }
   return {
     request_id:
       typeof source.request_id === "string" ? source.request_id : undefined,
-    agent_id: agentId,
+    worker_id: workerId,
     session: normalizeSession(source.session),
     pool: normalizePool(source.pool),
     host: normalizeHost(source.host),
@@ -65,25 +65,25 @@ export function normalizeSessionResourceSnapshot(
 
 /**
  * Production freshness for Session resource snapshots:
- * unique request_id (websocket), serverId (socket wrapper), agent_id, and the
+ * unique request_id (websocket), serverId (socket wrapper), worker_id, and the
  * hook request epoch invalidated on disconnect / session / server / close.
  * There is no authoritative generation to compare against.
  */
 export function acceptSessionResourceSnapshotResponse({
   requestSeq,
   currentSeq,
-  snapshotAgentId,
-  expectedAgentId,
+  snapshotWorkerId,
+  expectedWorkerId,
 }: {
   requestSeq: number;
   currentSeq: number;
-  snapshotAgentId: string;
-  expectedAgentId: string;
+  snapshotWorkerId: string;
+  expectedWorkerId: string;
 }): boolean {
   return (
     requestSeq === currentSeq &&
-    expectedAgentId !== "" &&
-    snapshotAgentId === expectedAgentId
+    expectedWorkerId !== "" &&
+    snapshotWorkerId === expectedWorkerId
   );
 }
 

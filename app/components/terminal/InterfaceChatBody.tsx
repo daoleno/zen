@@ -40,10 +40,10 @@ export interface InterfaceChatBodyProps {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
-  agentProcessId?: number;
-  agentStartedAt?: number;
-  agentCwd?: string;
+  workerId: string;
+  workerProcessId?: number;
+  workerStartedAt?: number;
+  workerCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
@@ -137,10 +137,10 @@ export function InterfaceChatBody({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
-  agentProcessId,
-  agentStartedAt,
-  agentCwd,
+  workerId,
+  workerProcessId,
+  workerStartedAt,
+  workerCwd,
   conversation,
   events,
   pendingUserMessages,
@@ -281,10 +281,10 @@ export function InterfaceChatBody({
           serverId={serverId}
           serverUrl={serverUrl}
           daemonId={daemonId}
-          agentId={agentId}
-          agentProcessId={agentProcessId}
-          agentStartedAt={agentStartedAt}
-          agentCwd={agentCwd}
+          workerId={workerId}
+          workerProcessId={workerProcessId}
+          workerStartedAt={workerStartedAt}
+          workerCwd={workerCwd}
           conversation={conversation}
           events={events}
           pendingUserMessages={pendingUserMessages}

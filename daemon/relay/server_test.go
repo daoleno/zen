@@ -251,7 +251,7 @@ func TestConcurrencyAndOperatorSurfaceExposeMetadataOnly(t *testing.T) {
 	if server.reserveClient(session) {
 		t.Fatal("over-limit stream reservation succeeded")
 	}
-	server.releaseClient(session)
+	server.releaseClient(session, "", "")
 
 	server.acceptedClients.Add(2)
 	server.rejectedClients.Add(3)

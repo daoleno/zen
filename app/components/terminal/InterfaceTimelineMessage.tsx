@@ -1,11 +1,11 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { TypeScale, Typography, useAppTheme } from "../../constants/tokens";
+import { Typography, useAppTheme } from "../../constants/tokens";
 import type { MessagePresentation } from "./InterfaceTimelineGrouping";
 import { MessageBubbleFooter } from "./MessageBubbleFooter";
 import {
@@ -13,12 +13,7 @@ import {
   messageRowSpacing,
   userBubbleRadii,
 } from "./messageBubbleShape";
-import type { HeartbeatWakeEvent } from "./CodexHeartbeatWake";
-import {
-  formatHeartbeatReason,
-  formatHeartbeatStateChange,
-  formatHeartbeatValue,
-} from "./CodexHeartbeatWake";
+
 import { MessageBody } from "./InterfaceMessageBody";
 import { InterfaceTimelineAttachmentPreviewList } from "./InterfaceTimelineAttachmentPreviewList";
 import { PendingSendStatusMark } from "./PendingSendStatusMark";
@@ -48,7 +43,7 @@ export interface ZenMessageTimelineItem {
   pendingFailureMessage?: string;
   onRetryPending?: () => void;
   streaming?: boolean;
-  heartbeatWake?: HeartbeatWakeEvent;
+
   /** Process-local presentation alias; provider id/body remain canonical. */
   turnFocusAnchorId?: string;
 }
@@ -74,16 +69,6 @@ export function ZenUserMessage({
   const { theme: zenTheme } = useAppTheme();
   const chatLayout = zenTheme.chat.layout;
   const isChatGpt = chatLayout === "chatgpt";
-
-  if (item.heartbeatWake) {
-    return (
-      <HeartbeatWakeCard
-        event={item.heartbeatWake}
-        chrome={chrome}
-        theme={theme}
-      />
-    );
-  }
 
   const hasBody = item.body.trim().length > 0;
   const sentBubbleColor = zenTheme.chat.sentBubble;
@@ -150,174 +135,6 @@ export function ZenUserMessage({
           </View>
         ) : null}
       </View>
-    </View>
-  );
-}
-
-function HeartbeatWakeCard({
-  event,
-  chrome,
-  theme,
-}: {
-  event: HeartbeatWakeEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const agentTitle = event.agentName || event.agentId || "Unknown agent";
-  const showAgentId = Boolean(event.agentName && event.agentId);
-  const showSeparateStatus = Boolean(
-    event.status &&
-    event.newState &&
-    event.status.trim().toLowerCase() !== event.newState.trim().toLowerCase(),
-  );
-  const { theme: zenTheme } = useAppTheme();
-  const cardColor = zenTheme.chat.sentBubble;
-  const cardChrome = {
-    ...chrome,
-    text: zenTheme.chat.sentText,
-    textMuted: zenTheme.chat.sentTimestamp,
-    textSubtle: zenTheme.chat.sentTimestamp,
-    link: zenTheme.chat.sentText,
-  };
-
-  return (
-    <View style={styles.eventRow}>
-      <View
-        style={[
-          styles.heartbeatCard,
-          {
-            backgroundColor: cardColor,
-            borderColor: cardChrome.borderStrong,
-          },
-        ]}
-      >
-        <View style={styles.heartbeatHeader}>
-          <View
-            style={[
-              styles.heartbeatIcon,
-              {
-                backgroundColor: cardChrome.accentSoft,
-                borderColor: cardChrome.borderStrong,
-              },
-            ]}
-          >
-            <Ionicons
-              name="pulse-outline"
-              size={15}
-              color={cardChrome.accent}
-            />
-          </View>
-          <View style={styles.heartbeatHeaderCopy}>
-            <Text
-              style={[styles.heartbeatTitle, { color: cardChrome.text }]}
-              numberOfLines={1}
-            >
-              Heartbeat
-            </Text>
-            <Text
-              style={[styles.heartbeatReason, { color: theme.yellow }]}
-              numberOfLines={1}
-            >
-              {formatHeartbeatReason(event.reason)}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.heartbeatFields}>
-          <HeartbeatField
-            label="Agent"
-            value={agentTitle}
-            chrome={cardChrome}
-            monospace={!event.agentName}
-          />
-          {showAgentId ? (
-            <HeartbeatField
-              label="ID"
-              value={event.agentId || ""}
-              chrome={cardChrome}
-              monospace
-            />
-          ) : null}
-          <HeartbeatField
-            label={event.oldState || event.newState ? "State" : "Status"}
-            value={formatHeartbeatStateChange(event)}
-            chrome={cardChrome}
-          />
-          {showSeparateStatus ? (
-            <HeartbeatField
-              label="Status"
-              value={formatHeartbeatValue(event.status)}
-              chrome={cardChrome}
-            />
-          ) : null}
-          {event.workspace ? (
-            <HeartbeatField
-              label="Workspace"
-              value={event.workspace}
-              chrome={cardChrome}
-              monospace
-            />
-          ) : null}
-        </View>
-
-        {event.summary ? (
-          <View
-            style={[
-              styles.heartbeatSummary,
-              {
-                backgroundColor: cardChrome.surface,
-                borderColor: cardChrome.borderStrong,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.heartbeatSummaryText,
-                { color: cardChrome.textMuted },
-              ]}
-              numberOfLines={3}
-            >
-              {event.summary}
-            </Text>
-          </View>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function HeartbeatField({
-  label,
-  value,
-  chrome,
-  monospace = false,
-}: {
-  label: string;
-  value: string;
-  chrome: TerminalThemeChrome;
-  monospace?: boolean;
-}) {
-  if (!value.trim()) {
-    return null;
-  }
-
-  return (
-    <View style={styles.heartbeatFieldRow}>
-      <Text style={[styles.heartbeatFieldLabel, { color: chrome.textSubtle }]}>
-        {label}
-      </Text>
-      <Text
-        style={[
-          styles.heartbeatFieldValue,
-          {
-            color: chrome.textMuted,
-            fontFamily: monospace ? Typography.terminalFont : Typography.uiFont,
-          },
-        ]}
-        numberOfLines={1}
-      >
-        {value}
-      </Text>
     </View>
   );
 }
@@ -424,78 +241,5 @@ const styles = StyleSheet.create({
     width: "100%",
     minWidth: 0,
   },
-  eventRow: {
-    marginBottom: 12,
-    paddingRight: 2,
-  },
-  heartbeatCard: {
-    alignSelf: "stretch",
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
-  },
-  heartbeatHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-  },
-  heartbeatIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heartbeatHeaderCopy: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  heartbeatTitle: {
-    ...TypeScale.label,
-    flexShrink: 0,
-  },
-  heartbeatReason: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  heartbeatFields: {
-    gap: 4,
-    minWidth: 0,
-  },
-  heartbeatFieldRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-  },
-  heartbeatFieldLabel: {
-    ...TypeScale.micro,
-    width: 68,
-    textTransform: "uppercase",
-  },
-  heartbeatFieldValue: {
-    ...TypeScale.caption,
-    flex: 1,
-    minWidth: 0,
-  },
-  heartbeatSummary: {
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    minWidth: 0,
-  },
-  heartbeatSummaryText: {
-    ...TypeScale.caption,
-  },
+
 });

@@ -440,7 +440,7 @@ func TestCollectClaudeSessionStatsIncludesSubagents(t *testing.T) {
 	content := `{"type":"assistant","timestamp":"2026-04-04T10:00:00.000Z","cwd":"/tmp/zen","message":{"id":"m1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"x"}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write subagent session: %v", err)
+		t.Fatalf("write subWorker session: %v", err)
 	}
 
 	c := NewCollector()
@@ -560,8 +560,8 @@ func TestCollectGrokStatsDoesNotAddUnprovenChildTokens(t *testing.T) {
 	}
 	timestamp := time.Date(2026, time.April, 4, 9, 0, 0, 0, time.UTC).Unix()
 	updates := fmt.Sprintf(`{"timestamp":%d,"params":{"_meta":{"totalTokens":100,"modelId":"grok-4.5"}}}
-{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_spawned","subagent_id":"child-1","model":"grok-build"}}}
-{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_finished","subagent_id":"child-1","tokens_used":500}}}
+{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_spawned","subworker_id":"child-1","model":"grok-build"}}}
+{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_finished","subworker_id":"child-1","tokens_used":500}}}
 {"timestamp":%d,"params":{"_meta":{"totalTokens":120}}}
 `, timestamp, timestamp+1, timestamp+2, timestamp+3)
 	if err := os.WriteFile(filepath.Join(sessionDir, "updates.jsonl"), []byte(updates), 0o644); err != nil {

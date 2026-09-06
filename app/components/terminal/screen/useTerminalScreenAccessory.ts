@@ -4,7 +4,7 @@ import { useTerminalScreenLifecycle } from "./useTerminalScreenLifecycle";
 
 interface UseTerminalScreenAccessoryInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   accessoryVisible: boolean;
   ctrlDisabled: boolean;
@@ -13,7 +13,7 @@ interface UseTerminalScreenAccessoryInput {
 
 export function useTerminalScreenAccessory({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   accessoryVisible,
   ctrlDisabled,
@@ -27,7 +27,7 @@ export function useTerminalScreenAccessory({
 
   useTerminalScreenLifecycle({
     serverId,
-    agentId,
+    workerId,
     sessionKey,
     setScreenFocused,
     onCtrlArmedChange: accessory.handleCtrlArmedChange,

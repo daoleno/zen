@@ -6,10 +6,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../../store/agents";
+import type { Worker, ConnectionState } from "../../../store/workers";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type { StoredInterfaceRenderMode } from "../../../services/storage";
-import type { PresentedAgent } from "../../../services/agentPresentation";
+import type { PresentedWorker } from "../../../services/workerPresentation";
 import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
   ProviderError,
@@ -26,8 +26,8 @@ import { useTerminalTopBarProps } from "./useTerminalTopBarProps";
 import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 interface UseTerminalScreenLayoutPropsInput {
-  agent?: Agent;
-  agentId: string;
+  agent?: Worker;
+  workerId: string;
   accessoryBottomOffset: number;
   chrome: TerminalThemeChrome;
   chatChrome: TerminalThemeChrome;
@@ -46,13 +46,13 @@ interface UseTerminalScreenLayoutPropsInput {
   handleCtrlArmedChange(next: boolean): void;
   hasLinkedWork: boolean;
   hasTerminalRoute: boolean;
-  isStructuredChatAgent: boolean;
+  isStructuredChatWorker: boolean;
   keyboardVisible: boolean;
   menuPosition: { left: number; top: number };
   menuVisible: boolean;
   newTerminalVisible: boolean;
   outputBottomInset: number;
-  presentedAgent: PresentedAgent;
+  presentedWorker: PresentedWorker;
   renameDraft: string;
   renamePlaceholder: string;
   renameVisible: boolean;
@@ -99,7 +99,7 @@ interface UseTerminalScreenLayoutPropsInput {
 
 export function useTerminalScreenLayoutProps({
   agent,
-  agentId,
+  workerId,
   accessoryBottomOffset,
   chrome,
   chatChrome,
@@ -118,13 +118,13 @@ export function useTerminalScreenLayoutProps({
   handleCtrlArmedChange,
   hasLinkedWork,
   hasTerminalRoute,
-  isStructuredChatAgent,
+  isStructuredChatWorker,
   keyboardVisible,
   menuPosition,
   menuVisible,
   newTerminalVisible,
   outputBottomInset,
-  presentedAgent,
+  presentedWorker,
   renameDraft,
   renamePlaceholder,
   renameVisible,
@@ -185,7 +185,7 @@ export function useTerminalScreenLayoutProps({
   ]);
 
   const headerTitle =
-    displayName || presentedAgent.title || agent?.name || agentId || "Session";
+    displayName || presentedWorker.title || agent?.name || workerId || "Session";
 
   // Header chrome stays on chatChrome in both chat and terminal modes so Brain
   // and Agent screens share one floating header language.
@@ -193,8 +193,8 @@ export function useTerminalScreenLayoutProps({
     title: headerTitle,
     // Keep header compact: paths belong in resource details, not the chrome.
     subtitle: undefined,
-    kind: presentedAgent.kind,
-    terminalFlavor: presentedAgent.terminalFlavor,
+    kind: presentedWorker.kind,
+    terminalFlavor: presentedWorker.terminalFlavor,
     terminalTheme,
     chrome: chatChrome,
     chromeLayout,
@@ -202,7 +202,7 @@ export function useTerminalScreenLayoutProps({
     interfaceRenderMode,
     gitDiffDisabled: gitDiff.actionDisabled,
     gitDiffSummary: gitDiff.summary,
-    isStructuredChatAgent,
+    isStructuredChatWorker,
     delegated: agent?.delegated,
     onOpenSessionDetails: openSessionDetails,
     openGitDiff,
@@ -213,7 +213,7 @@ export function useTerminalScreenLayoutProps({
     initialComposerFocusGrant,
     sessionKey,
     serverId,
-    agentId,
+    workerId,
     agent,
     connectionState,
     connectionIssue,
@@ -255,11 +255,11 @@ export function useTerminalScreenLayoutProps({
     connectionConnected: connectionState === "connected",
     gitDiff,
     hasLinkedWork,
-    showToggleRenderMode: isStructuredChatAgent,
+    showToggleRenderMode: isStructuredChatWorker,
     toggleRenderModeLabel:
       interfaceRenderMode === "chat" ? "Open terminal" : "Open chat",
     newTerminalVisible,
-    agentCwd: agent?.cwd,
+    workerCwd: agent?.cwd,
     serverId: selectedServerId,
     renameVisible,
     renameDraft,

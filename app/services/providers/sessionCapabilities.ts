@@ -3,15 +3,15 @@
  * on the daemon capability wire even though the visible product is Provider /
  * Model-first.
  */
-export type AgentSessionCapabilities = {
+export type WorkerSessionCapabilities = {
   structured_events: boolean;
   model_profile_managed: boolean;
   model_profile_active_switch: boolean;
 };
 
-export function normalizeAgentSessionCapabilities(
+export function normalizeWorkerSessionCapabilities(
   raw: unknown,
-): AgentSessionCapabilities | undefined {
+): WorkerSessionCapabilities | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   return {
@@ -22,13 +22,13 @@ export function normalizeAgentSessionCapabilities(
 }
 
 export function sessionSupportsModelProfileAction(
-  capabilities?: AgentSessionCapabilities | null,
+  capabilities?: WorkerSessionCapabilities | null,
 ): boolean {
   return capabilities?.model_profile_managed === true;
 }
 
 export function sessionIsManagedReadOnlyProfile(
-  capabilities?: AgentSessionCapabilities | null,
+  capabilities?: WorkerSessionCapabilities | null,
 ): boolean {
   return (
     capabilities?.model_profile_managed === true &&
@@ -37,7 +37,7 @@ export function sessionIsManagedReadOnlyProfile(
 }
 
 export function sessionAllowsModelProfileActivation(
-  capabilities?: AgentSessionCapabilities | null,
+  capabilities?: WorkerSessionCapabilities | null,
 ): boolean {
   return (
     capabilities?.model_profile_managed === true &&

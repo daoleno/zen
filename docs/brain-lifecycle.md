@@ -52,7 +52,7 @@ creates a lifecycle status, fallback Session, automatic continuation, or
 scheduler retry.
 
 Fresh Brain homes receive the provider-neutral lifecycle and delegated
-Agent protocol from the versioned templates under `daemon/brain/templates/`.
+Worker protocol from the versioned templates under `daemon/brain/templates/`.
 Managed-block repair refreshes those product-owned blocks while preserving
 user-authored text and the private `soul.md`, `profile.md`, `memory.md`,
 `current.md`, and worklogs. `soul.md` owns stable expression and judgment
@@ -69,13 +69,10 @@ Brain Worklog boundary: internal audits, handoffs, and delegated reports belong
 under the configured Brain workspace's `worklog/` directory (normally
 `~/.zen/brain/workspace/worklog`). They must not be written to a project
 repository, a Worker cwd, or `cwd/docs/worklog`. Delegated reports should be
-returned in the agent result unless persistence is explicitly requested. Product
+returned in the Worker result unless persistence is explicitly requested. Product
 documentation is separate and must name its repository path explicitly.
 
-The shipped `soul.md` uses ASD-STE100 Simplified Technical English as a
-practical English style baseline: short direct sentences, one instruction or
-idea per sentence where practical, active voice, explicit actors and
-conditions, consistent terms, defined abbreviations, and no decorative idioms
-or vague references. Zen does not claim full ASD-STE100 conformance without
-formal dictionary and document validation. Chinese uses analogous clarity
-rules; Zen does not claim that the English standard governs Chinese.
+The shipped `soul.md` asks for concise, direct prose in the user's language,
+useful structure, and a clear distinction between facts, assumptions and
+recommendations. It does not impose a technical-writing standard or a fixed
+response template. Prompt ownership and model guidance are in [prompting.md](prompting.md).

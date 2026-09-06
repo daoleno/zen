@@ -4,7 +4,7 @@ import type {
   TerminalThemePalette,
 } from "../../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../../services/connectionIssue";
-import type { ConnectionState } from "../../../store/agents";
+import type { ConnectionState } from "../../../store/workers";
 import { buildTerminalFallbackPresentation } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 

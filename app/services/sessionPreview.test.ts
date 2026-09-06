@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { Agent } from '../store/agents';
-import { formatAgentSessionPreview } from './sessionPreview';
+import type { Worker } from '../store/workers';
+import { formatWorkerSessionPreview } from './sessionPreview';
 
-type PreviewAgent = Pick<
-  Agent,
+type PreviewWorker = Pick<
+  Worker,
   | 'status'
   | 'summary'
   | 'attention'
@@ -14,7 +14,7 @@ type PreviewAgent = Pick<
   | 'phase'
 >;
 
-function agent(overrides: Partial<PreviewAgent>): PreviewAgent {
+function agent(overrides: Partial<PreviewWorker>): PreviewWorker {
   return {
     status: 'unknown',
     summary: '',
@@ -35,14 +35,14 @@ describe('Session row preview hierarchy', () => {
     'failed',
     'unknown',
   ] as const)('does not synthesize a visible %s status label', (status) => {
-    expect(formatAgentSessionPreview(agent({ status })).text).toBe(
+    expect(formatWorkerSessionPreview(agent({ status })).text).toBe(
       'No recent output',
     );
   });
 
   test('does not synthesize Brain ownership into delegated preview text', () => {
     expect(
-      formatAgentSessionPreview(agent({ status: 'running', delegated: true }))
+      formatWorkerSessionPreview(agent({ status: 'running', delegated: true }))
         .text,
     ).toBe('No recent output');
   });
@@ -52,7 +52,7 @@ describe('Session row preview hierarchy', () => {
     'failed',
   ] as const)('prefers meaningful output over generic %s state detail', (status) => {
     expect(
-      formatAgentSessionPreview(
+      formatWorkerSessionPreview(
         agent({
           status,
           summary: 'Preserved summary',

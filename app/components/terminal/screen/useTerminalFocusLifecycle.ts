@@ -9,7 +9,7 @@ import {
 
 interface UseTerminalFocusLifecycleInput {
   serverId: string;
-  agentId: string;
+  workerId: string;
   sessionKey: string | null;
   setScreenFocused: Dispatch<SetStateAction<boolean>>;
   onInactive(): void;
@@ -17,24 +17,24 @@ interface UseTerminalFocusLifecycleInput {
 
 export function useTerminalFocusLifecycle({
   serverId,
-  agentId,
+  workerId,
   sessionKey,
   setScreenFocused,
   onInactive,
 }: UseTerminalFocusLifecycleInput) {
   const syncActiveTerminal = useCallback(
     (appState: AppStateStatus, focused = true) => {
-      wsClient.clearActiveAgentsExcept(
+      wsClient.clearActiveWorkersExcept(
         currentTerminalPresence({
           serverId,
-          agentId,
+          workerId,
           sessionKey,
           appState,
           focused,
         }),
       );
     },
-    [agentId, serverId, sessionKey],
+    [workerId, serverId, sessionKey],
   );
 
   useFocusEffect(

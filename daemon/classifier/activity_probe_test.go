@@ -39,7 +39,7 @@ func TestMultiActivityProbe_FirstMatchWins(t *testing.T) {
 	}
 	probe := NewActivityProbe(codex, cursor)
 	got := probe.Infer(ActivityInput{
-		Agent:       Agent{Command: "cursor-agent"},
+		Worker:      Worker{Command: "cursor-agent"},
 		PaneContent: "Cursor Agent",
 	})
 	if got.Source != "cursor_stub" || got.Provider != "cursor" {
@@ -52,7 +52,7 @@ func TestMultiActivityProbe_FirstMatchWins(t *testing.T) {
 
 func TestMultiActivityProbe_NoMatchEmpty(t *testing.T) {
 	probe := NewActivityProbe(&stubAdapter{name: "codex", match: false})
-	got := probe.Infer(ActivityInput{Agent: Agent{Command: "zsh"}, PaneContent: "$ ls"})
+	got := probe.Infer(ActivityInput{Worker: Worker{Command: "zsh"}, PaneContent: "$ ls"})
 	if got.State != "" || got.Source != "" {
 		t.Fatalf("got %#v, want empty", got)
 	}
@@ -61,7 +61,7 @@ func TestMultiActivityProbe_NoMatchEmpty(t *testing.T) {
 func TestDefaultActivityProbe_IncludesCursor(t *testing.T) {
 	probe := DefaultActivityProbe()
 	got := probe.Infer(ActivityInput{
-		Agent:       Agent{Command: "cursor-agent"},
+		Worker:      Worker{Command: "cursor-agent"},
 		PaneContent: "Cursor Agent\nctrl+c to stop\n",
 	})
 	if got.State != StateRunning || got.Provider != "cursor" {

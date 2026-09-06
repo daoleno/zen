@@ -239,8 +239,8 @@ type CodexPlanStep struct {
 	Status string `json:"status"`
 }
 
-func (r *ProviderConversationReader) loadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if strings.TrimSpace(agent.Cwd) == "" {
+func (r *ProviderConversationReader) loadCodexConversationForWorker(worker classifier.Worker, now time.Time) (CodexConversation, error) {
+	if strings.TrimSpace(worker.Cwd) == "" {
 		r.resetSource()
 		return CodexConversation{
 			Available: false,
@@ -249,7 +249,7 @@ func (r *ProviderConversationReader) loadCodexConversationForAgent(agent classif
 		}, nil
 	}
 
-	candidate, ok, err := findCodexTranscript(agent, now)
+	candidate, ok, err := findCodexTranscript(worker, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -280,7 +280,7 @@ func (r *ProviderConversationReader) loadCodexConversationForAgent(agent classif
 }
 
 func (r *ProviderConversationReader) loadCodexConversation(path string) (CodexConversation, error) {
-	return r.loadFileConversation(AgentProviderCodex, path, parseCodexConversation)
+	return r.loadFileConversation(WorkerProviderCodex, path, parseCodexConversation)
 }
 
 func parseCodexConversation(path string) (CodexConversation, error) {

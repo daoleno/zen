@@ -8,7 +8,7 @@ import (
 func TestRealTmuxServiceInventoryIncludesOnlyLocallyOwnedWindows(t *testing.T) {
 	h := newSharedTmuxHarness(t, false)
 	ambientTarget := createHarnessPane(t, h.selected, "ambient-service", "exec /bin/sh")
-	if out, err := tmuxHarnessCommand(h.selected, "set-option", "-wg", "@zen_agent_created", "1").CombinedOutput(); err != nil {
+	if out, err := tmuxHarnessCommand(h.selected, "set-option", "-wg", "@zen_worker_created", "1").CombinedOutput(); err != nil {
 		t.Fatalf("set global collision marker: %v: %s", err, out)
 	}
 	ownedTarget, err := h.w.CreateSession("", CreateSessionOptions{

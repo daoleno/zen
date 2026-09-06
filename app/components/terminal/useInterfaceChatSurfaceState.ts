@@ -14,10 +14,10 @@ import type {
 } from "../../constants/terminalThemes";
 import { useAppTheme } from "../../constants/tokens";
 import {
-  isAgentSessionListFreshForConnection,
-  useAgents,
+  isWorkerSessionListFreshForConnection,
+  useWorkers,
   type ConnectionState,
-} from "../../store/agents";
+} from "../../store/workers";
 import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type {
@@ -28,14 +28,14 @@ import { wsClient } from "../../services/websocket";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
 import { useInterfaceChatController } from "./InterfaceChatController";
 import {
-  type InterfaceChatAgentInfo,
+  type InterfaceChatWorkerInfo,
   type PendingUserMessage,
   useInterfaceChatSession,
 } from "./InterfaceChatSession";
 import { CodexStatusSheet } from "./CodexStatusSheet";
 import { CodexSkillsSheet } from "./CodexSkillsSheet";
 import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
-import { liveActionPromptScopeKey } from "../../services/agentSessionListTransport";
+import { liveActionPromptScopeKey } from "../../services/workerSessionListTransport";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useInterfaceChatBodyProps } from "./useInterfaceChatBodyProps";
 import {
@@ -57,9 +57,9 @@ interface UseInterfaceChatSurfaceStateInput {
   serverId: string;
   serverUrl: string;
   daemonId: string;
-  agentId: string;
+  workerId: string;
   conversationScopeKey?: string;
-  agentInfo?: InterfaceChatAgentInfo;
+  workerInfo?: InterfaceChatWorkerInfo;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
@@ -127,9 +127,9 @@ export function useInterfaceChatSurfaceState({
   serverId,
   serverUrl,
   daemonId,
-  agentId,
+  workerId,
   conversationScopeKey,
-  agentInfo,
+  workerInfo,
   connectionState,
   connectionIssue,
   theme,
@@ -155,16 +155,16 @@ export function useInterfaceChatSurfaceState({
 }: UseInterfaceChatSurfaceStateInput): InterfaceChatSurfaceState {
   const insets = useSafeAreaInsets();
   const { theme: zenTheme } = useAppTheme();
-  const { state: agentState } = useAgents();
+  const { state: workerState } = useWorkers();
   const composerLayout = zenTheme.chat.layout;
   const active = visible && screenFocused;
   const handledInitialComposerFocusGrantRef =
     useRef<InterfaceComposerInitialFocusGrant>(null);
-  const chatAgentKind = agentKindFromCommand(agentInfo?.command);
+  const chatAgentKind = agentKindFromCommand(workerInfo?.command);
   const connectionGeneration =
-    agentState.connectionGenerationByServer[serverId] ?? 0;
-  const agentSessionListFresh = isAgentSessionListFreshForConnection(
-    agentState,
+    workerState.connectionGenerationByServer[serverId] ?? 0;
+  const workerSessionListFresh = isWorkerSessionListFreshForConnection(
+    workerState,
     serverId,
   );
   const slashCommands = useCodexSlashCommands({
@@ -184,9 +184,9 @@ export function useInterfaceChatSurfaceState({
   const [statusTimedOut, setStatusTimedOut] = useState(false);
   const session = useInterfaceChatSession({
     serverId,
-    agentId,
+    workerId,
     conversationScopeKey,
-    agentInfo,
+    workerInfo,
     connectionState,
     screenFocused: active,
   });
@@ -228,7 +228,7 @@ export function useInterfaceChatSurfaceState({
     enabled: active && connectionState === "connected",
   });
   useEffect(() => {
-    const routeSessionKey = makeSessionKey(serverId, agentId);
+    const routeSessionKey = makeSessionKey(serverId, workerId);
     const effect = resolveInterfaceComposerInitialFocusEffect({
       grant: initialComposerFocusGrant,
       handledGrant: handledInitialComposerFocusGrantRef.current,
@@ -247,7 +247,7 @@ export function useInterfaceChatSurfaceState({
     }
   }, [
     active,
-    agentId,
+    workerId,
     composerInput.focus,
     connectionState,
     initialComposerFocusGrant,
@@ -325,7 +325,7 @@ export function useInterfaceChatSurfaceState({
       statusTimedOut ||
       connectionState !== "connected" ||
       !serverId ||
-      !agentId
+      !workerId
     ) {
       return;
     }
@@ -337,7 +337,7 @@ export function useInterfaceChatSurfaceState({
       }
       inFlight = true;
       void wsClient
-        .getCodexTerminalSnapshot(serverId, agentId)
+        .getCodexTerminalSnapshot(serverId, workerId)
         .then((text) => {
           if (cancelled) {
             return;
@@ -374,7 +374,7 @@ export function useInterfaceChatSurfaceState({
       clearInterval(interval);
     };
   }, [
-    agentId,
+    workerId,
     connectionState,
     serverId,
     statusOutputEvent,
@@ -453,7 +453,7 @@ export function useInterfaceChatSurfaceState({
   ]);
   const controller = useInterfaceChatController({
     serverId,
-    agentId,
+    workerId,
     conversationScopeKey,
     connectionState,
     connectionIssue,
@@ -481,7 +481,7 @@ export function useInterfaceChatSurfaceState({
   const composerPresentation = useInterfaceComposerPresentation({
     draft,
     slashCommands,
-    agentCommand: agentInfo?.command,
+    workerCommand: workerInfo?.command,
     connectionState,
     runningActivity,
     attachmentCount: attachments.length,
@@ -496,49 +496,49 @@ export function useInterfaceChatSurfaceState({
     modelControl: composerModelControl,
   });
   const terminalActionPrompt = useMemo(() => {
-    // Live pane fact only: require a full agent_session_list for this WebSocket
+    // Live pane fact only: require a full worker_session_list for this WebSocket
     // connection generation so retained pre-disconnect snapshots cannot flash.
-    if (!agentId || !agentSessionListFresh) {
+    if (!workerId || !workerSessionListFresh) {
       return null;
     }
     return buildTerminalActionPrompt({
-      status: agentInfo?.status,
-      summary: agentInfo?.summary,
-      lastOutputLines: agentInfo?.lastOutputLines,
-      command: agentInfo?.command,
+      status: workerInfo?.status,
+      summary: workerInfo?.summary,
+      lastOutputLines: workerInfo?.lastOutputLines,
+      command: workerInfo?.command,
       scopeKey: liveActionPromptScopeKey({
-        agentId,
-        processId: agentInfo?.processId,
-        startedAt: agentInfo?.startedAt,
+        workerId,
+        processId: workerInfo?.processId,
+        startedAt: workerInfo?.startedAt,
         connectionGeneration,
       }),
     });
   }, [
-    agentId,
-    agentInfo?.command,
-    agentInfo?.lastOutputLines,
-    agentInfo?.processId,
-    agentInfo?.startedAt,
-    agentInfo?.status,
-    agentInfo?.summary,
-    agentSessionListFresh,
+    workerId,
+    workerInfo?.command,
+    workerInfo?.lastOutputLines,
+    workerInfo?.processId,
+    workerInfo?.startedAt,
+    workerInfo?.status,
+    workerInfo?.summary,
+    workerSessionListFresh,
     connectionGeneration,
   ]);
   const sendTerminalActionKey = useCallback(
     (key: string) => {
-      if (connectionState !== "connected" || !serverId || !agentId) {
+      if (connectionState !== "connected" || !serverId || !workerId) {
         throw new Error("Daemon is not connected.");
       }
-      return wsClient.sendKey(serverId, agentId, key);
+      return wsClient.sendKey(serverId, workerId, key);
     },
-    [agentId, connectionState, serverId],
+    [workerId, connectionState, serverId],
   );
   const skillsSheet = useMemo(
     () =>
       React.createElement(CodexSkillsSheet, {
         visible: skillsSheetVisible,
         serverId,
-        cwd: agentInfo?.cwd,
+        cwd: workerInfo?.cwd,
         chrome,
         theme,
         onSelectSkill: (skill) => {
@@ -548,7 +548,7 @@ export function useInterfaceChatSurfaceState({
         onClose: closeSkillsSheet,
       }),
     [
-      agentInfo?.cwd,
+      workerInfo?.cwd,
       chrome,
       closeSkillsSheet,
       controller.insertSkillMention,
@@ -602,10 +602,10 @@ export function useInterfaceChatSurfaceState({
     serverId,
     serverUrl,
     daemonId,
-    agentId,
-    agentProcessId: agentInfo?.processId,
-    agentStartedAt: agentInfo?.startedAt,
-    agentCwd: agentInfo?.cwd,
+    workerId,
+    workerProcessId: workerInfo?.processId,
+    workerStartedAt: workerInfo?.startedAt,
+    workerCwd: workerInfo?.cwd,
     connectionState,
     conversation,
     events,

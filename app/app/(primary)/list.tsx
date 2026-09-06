@@ -23,7 +23,9 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { Agent, useAgents } from "../../store/agents";
+import { Worker, useWorkers } from "../../store/workers";
+import { useCurrentServer } from "../../store/currentServer";
+import { selectCurrentServerItems } from "../../services/currentServerSelection";
 import { useWork, type WorkItem } from "../../store/work";
 import {
   Radii,
@@ -48,24 +50,22 @@ import {
 } from "../../components/work/workSignalObservatoryInteraction";
 import { RisingSheet } from "../../components/ui/RisingSheet";
 import { Enter } from "../../components/ui/Enter";
-import { AgentListRowContainer } from "../../components/agents/AgentListRowContainer";
-import { AgentSessionSelectionBar } from "../../components/agents/AgentSessionSelectionBar";
+import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
+import { WorkerSessionSelectionBar } from "../../components/workers/WorkerSessionSelectionBar";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { SessionServicesSheet } from "../../components/SessionServicesSheet";
 import { usePrimarySelectionBar } from "../../components/navigation/PrimarySelectionBar";
 import { usePrimaryDrawerBack } from "../../components/navigation/usePrimaryDrawerBack";
 import {
-  getAgentAliases,
-  getServers,
-  markAgentOpened,
-  StoredAgentAliases,
-  StoredServer,
+  getWorkerAliases,
+  markWorkerOpened,
+  StoredWorkerAliases,
 } from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 import { wsClient } from "../../services/websocket";
 import {
   blockCreateAfterAmbiguity,
-  bumpAgentSessionListReceipt,
+  bumpWorkerSessionListReceipt,
   clearCreateAmbiguityForServer,
   isCreateBlockedByAmbiguity,
   reconcileCreateSessionFailure,
@@ -73,12 +73,11 @@ import {
   shouldUnlockCreateAfterAmbiguity,
   type CreateAmbiguityGateState,
 } from "../../services/providers";
-import { isAgentSessionListFreshForConnection } from "../../store/agents";
+import { isWorkerSessionListFreshForConnection } from "../../store/workers";
 import { makeSessionKey } from "../../services/sessionKeys";
-import { presentAgent } from "../../services/agentPresentation";
+import { presentWorker } from "../../services/workerPresentation";
 import {
   addSessionToSelection,
-  countSelectionServers,
   countSessionSelection,
   EMPTY_SESSION_SELECTION,
   isSessionTerminable,
@@ -95,22 +94,28 @@ import {
   type SessionTerminationSummary,
 } from "../../services/sessionBulkTerminate";
 import {
-  filterAgentsByPreferredServers,
-  groupAgentsByDirectory,
-  type AgentDirectorySection,
-} from "../../services/serverSelection";
+  groupWorkersByDirectory,
+  type WorkerDirectorySection,
+} from "../../services/workerDirectory";
 import {
   serviceProjectLabel,
   type DiscoveredSessionService,
 } from "../../services/sessionServicesPresentation";
 
 const AnimatedSectionList = Animated.createAnimatedComponent(
-  SectionList<Agent, AgentDirectorySection>,
+  SectionList<Worker, WorkerDirectorySection>,
 );
-const agentKeyExtractor = (agent: Agent) => agent.key;
+const workerKeyExtractor = (agent: Worker) => agent.key;
 
 export default function InboxScreen() {
-  const { state } = useAgents();
+  const { state } = useWorkers();
+  const { currentServer, currentServerId, hydrated: storageHydrated, isCurrentServer } = useCurrentServer();
+  const servicesRequestEpochRef = useRef(0);
+  const createInFlightRef = useRef(false);
+  const displayWorkers = useMemo(
+    () => selectCurrentServerItems(state.workers, currentServerId),
+    [state.workers, currentServerId],
+  );
   const { state: workState } = useWork();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -120,29 +125,23 @@ export default function InboxScreen() {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
-  const agentWorkMap = useMemo(() => {
+  const workerWorkMap = useMemo(() => {
     const map: Record<string, WorkItem> = {};
     for (const current of Object.values(workState.byKey)) {
-      if (current.frontmatter.done || !current.frontmatter.agent_session) {
+      if (current.serverId !== currentServerId || current.frontmatter.done || !current.frontmatter.worker_session) {
         continue;
       }
-      map[`${current.serverId}:${current.frontmatter.agent_session}`] = current;
+      map[`${current.serverId}:${current.frontmatter.worker_session}`] = current;
     }
     return map;
-  }, [workState.byKey]);
+  }, [workState.byKey, currentServerId]);
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
-  const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
-  const [configuredServerCount, setConfiguredServerCount] = useState(0);
-  const [servers, setServers] = useState<StoredServer[]>([]);
-  const [storageHydrated, setStorageHydrated] = useState(false);
+  const [workerAliases, setWorkerAliases] = useState<StoredWorkerAliases>({});
   const [createSheetVisible, setCreateSheetVisible] = useState(false);
-  const [selectedCreateServerId, setSelectedCreateServerId] = useState<
-    string | null
-  >(null);
   const [creatingServerId, setCreatingServerId] = useState<string | null>(null);
   const [createAmbiguityBlocks, setCreateAmbiguityBlocks] =
     useState<CreateAmbiguityGateState>({});
-  const [agentSessionListReceiptByServer, setAgentSessionListReceiptByServer] =
+  const [workerSessionListReceiptByServer, setWorkerSessionListReceiptByServer] =
     useState<Record<string, number>>({});
   const [serviceSheetVisible, setServiceSheetVisible] = useState(false);
   const [sessionServices, setSessionServices] = useState<
@@ -150,6 +149,10 @@ export default function InboxScreen() {
   >([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
+  const currentServices = useMemo(
+    () => selectCurrentServerItems(sessionServices, currentServerId),
+    [sessionServices, currentServerId],
+  );
   const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<SessionSelection>(
@@ -158,59 +161,45 @@ export default function InboxScreen() {
   const [terminationRunning, setTerminationRunning] = useState(false);
   const terminationBatchRef = useRef<SessionTerminationBatch | null>(null);
   const submittedKeysRef = useRef<string[]>([]);
+  const submittedServerIdRef = useRef<string | null>(null);
   const workObservatoryPullDistance = useSharedValue(0);
   const sessionListScrollOffsetY = useSharedValue(0);
   const workObservatoryTouchStartX = useSharedValue(0);
   const workObservatoryTouchStartY = useSharedValue(0);
   const workObservatoryGestureActivated = useSharedValue(0);
-  const agentsHydrated = useMemo(
-    () => servers.some((server) => state.hydratedServers[server.id]),
-    [servers, state.hydratedServers],
-  );
+  const agentsHydrated = Boolean(currentServerId && state.hydratedServers[currentServerId]);
+
+  useEffect(() => {
+    servicesRequestEpochRef.current += 1;
+    setServiceSheetVisible(false);
+    setSessionServices([]);
+    setServicesError(null);
+    setServicesLoading(false);
+    setCreateSheetVisible(false);
+    setWorkObservatoryVisible(false);
+    setSelectionMode(false);
+    setSelectedKeys(EMPTY_SESSION_SELECTION);
+  }, [currentServerId]);
 
   const agentsByKey = useMemo(() => {
-    const byKey: Record<string, Agent> = {};
-    for (const agent of state.agents) {
+    const byKey: Record<string, Worker> = {};
+    for (const agent of displayWorkers) {
       byKey[agent.key] = agent;
     }
     return byKey;
-  }, [state.agents]);
+  }, [displayWorkers]);
   const agentsByKeyRef = useRef(agentsByKey);
   agentsByKeyRef.current = agentsByKey;
-  const agentAliasesRef = useRef(agentAliases);
-  agentAliasesRef.current = agentAliases;
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [storedAliases, storedServers] = await Promise.all([
-        getAgentAliases(),
-        getServers(),
-      ]);
-      if (!cancelled) {
-        setAgentAliases(storedAliases);
-        setConfiguredServerCount(storedServers.length);
-        setServers(storedServers);
-        setStorageHydrated(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const workerAliasesRef = useRef(workerAliases);
+  workerAliasesRef.current = workerAliases;
 
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [storedAliases, storedServers] = await Promise.all([
-          getAgentAliases(),
-          getServers(),
-        ]);
+        const storedAliases = await getWorkerAliases();
         if (!cancelled) {
-          setAgentAliases(storedAliases);
-          setConfiguredServerCount(storedServers.length);
-          setServers(storedServers);
+          setWorkerAliases(storedAliases);
         }
       })();
       return () => {
@@ -219,94 +208,44 @@ export default function InboxScreen() {
     }, []),
   );
 
-  const displayAgents = useMemo(
-    () =>
-      filterAgentsByPreferredServers({
-        agents: state.agents,
-        servers,
-        connectionStates: state.serverConnections,
-        latencyById: state.serverLatencyById,
-      }),
-    [servers, state.agents, state.serverConnections, state.serverLatencyById],
-  );
-
-  const sortedAgents = useMemo(
-    () =>
-      groupAgentsByDirectory(displayAgents).flatMap((section) => section.data),
-    [displayAgents],
-  );
-
-  const showServerNames = useMemo(
-    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
-    [sortedAgents],
-  );
-
-  const hasConfiguredServers = configuredServerCount > 0;
-  const hasConnection = Object.keys(state.serverConnections).length > 0;
-  const anyConnected = Object.values(state.serverConnections).includes(
-    "connected",
-  );
-  const anyConnecting = Object.values(state.serverConnections).includes(
-    "connecting",
-  );
-  const connectedServerIds = useMemo(
-    () =>
-      servers
-        .filter((server) => state.serverConnections[server.id] === "connected")
-        .map((server) => server.id),
-    [servers, state.serverConnections],
-  );
-  const waitingForInitialAgentSnapshot =
-    storageHydrated &&
-    connectedServerIds.some((serverId) => !state.hydratedServers[serverId]);
-  const shouldShowInitialLoading =
-    (!storageHydrated && sortedAgents.length === 0) ||
-    (!agentsHydrated &&
-      sortedAgents.length === 0 &&
-      hasConfiguredServers &&
-      (anyConnecting || waitingForInitialAgentSnapshot));
   const listSections = useMemo(
-    () =>
-      groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
-    [showServerNames, sortedAgents],
+    () => groupWorkersByDirectory(displayWorkers),
+    [displayWorkers],
   );
+  const sortedWorkers = useMemo(
+    () => listSections.flatMap((section) => section.data),
+    [listSections],
+  );
+
+  const showServerNames = false;
+  const hasConfiguredServers = currentServer !== null;
+  const connectionState = currentServerId ? state.serverConnections[currentServerId] : undefined;
+  const hasConnection = connectionState !== undefined;
+  const anyConnected = connectionState === "connected";
+  const anyConnecting = connectionState === "connecting";
+  const waitingForInitialWorkerSnapshot =
+    storageHydrated &&
+    anyConnected && !agentsHydrated;
+  const shouldShowInitialLoading =
+    (!storageHydrated && sortedWorkers.length === 0) ||
+    (!agentsHydrated &&
+      sortedWorkers.length === 0 &&
+      hasConfiguredServers &&
+      (anyConnecting || waitingForInitialWorkerSnapshot));
   const useSectionHeaders = listSections.length > 1;
-  const primaryIssue = useMemo(() => {
-    let nextIssue: (typeof state.serverConnectionIssues)[string] | null = null;
-    for (const issue of Object.values(state.serverConnectionIssues)) {
-      if (!issue) {
-        continue;
-      }
-      if (!nextIssue || issue.checkedAt > nextIssue.checkedAt) {
-        nextIssue = issue;
-      }
-    }
-    return nextIssue;
-  }, [state.serverConnectionIssues]);
+  const primaryIssue = currentServerId ? state.serverConnectionIssues[currentServerId] ?? null : null;
 
-  const connectedServers = useMemo(
-    () =>
-      servers.filter(
-        (server) => state.serverConnections[server.id] === "connected",
-      ),
-    [servers, state.serverConnections],
-  );
-  const createServerOptions = useMemo(
-    () =>
-      connectedServers.map((server) => ({ id: server.id, name: server.name })),
-    [connectedServers],
-  );
-
-  const openAgent = useCallback(
-    (agent: Agent) => {
+  const openWorker = useCallback(
+    (agent: Worker) => {
+      if (!isCurrentServer(agent.serverId)) return;
       const openedAt = Date.now();
-      void markAgentOpened(agent.key, openedAt);
+      void markWorkerOpened(agent.key, openedAt);
       router.push({
         pathname: "/terminal/[id]",
         params: { id: agent.id, serverId: agent.serverId },
       });
     },
-    [router],
+    [router, isCurrentServer],
   );
 
   const exitSelectionMode = useCallback(() => {
@@ -318,7 +257,7 @@ export default function InboxScreen() {
   }, [terminationRunning]);
 
   const enterSelectionMode = useCallback(
-    (agent: Agent) => {
+    (agent: Worker) => {
       if (terminationRunning || selectionMode) {
         return;
       }
@@ -335,7 +274,7 @@ export default function InboxScreen() {
   );
 
   const toggleSelection = useCallback(
-    (agent: Agent) => {
+    (agent: Worker) => {
       if (!selectionMode || terminationRunning) {
         return;
       }
@@ -357,6 +296,11 @@ export default function InboxScreen() {
       terminationBatchRef.current?.dispose();
       terminationBatchRef.current = null;
       setTerminationRunning(false);
+      if (!isCurrentServer(submittedServerIdRef.current)) {
+        submittedKeysRef.current = [];
+        submittedServerIdRef.current = null;
+        return;
+      }
       // Successes leave selection; failures stay selected for retry.
       setSelectedKeys((current) => {
         let next = removeSessionsFromSelection(
@@ -373,7 +317,7 @@ export default function InboxScreen() {
         const failedTitles = summary.failedEntries.map((entry) => {
           const agent = agentsByKeyRef.current[entry.sessionKey];
           return agent
-            ? presentAgent(agent, agentAliasesRef.current[entry.sessionKey])
+            ? presentWorker(agent, workerAliasesRef.current[entry.sessionKey])
                 .title
             : entry.sessionKey;
         });
@@ -392,23 +336,25 @@ export default function InboxScreen() {
     [],
   );
 
-  const selectedAgents = useMemo(
-    () => state.agents.filter((agent) => selectedKeys.has(agent.key)),
-    [selectedKeys, state.agents],
+  const selectedWorkers = useMemo(
+    () => displayWorkers.filter((agent) => selectedKeys.has(agent.key)),
+    [selectedKeys, displayWorkers],
   );
 
   const runTerminateSelection = useCallback(() => {
-    if (terminationRunning || selectedAgents.length === 0) {
+    if (terminationRunning || selectedWorkers.length === 0) {
       return;
     }
+    if (selectedWorkers.some((worker) => !isCurrentServer(worker.serverId))) return;
     const entries = createSessionTerminationEntries(
-      selectedAgents.map((agent) => ({
+      selectedWorkers.map((agent) => ({
         sessionKey: agent.key,
         serverId: agent.serverId,
-        agentId: agent.id,
+        workerId: agent.id,
       })),
     );
     submittedKeysRef.current = entries.map((entry) => entry.sessionKey);
+    submittedServerIdRef.current = selectedWorkers[0].serverId;
     const batch = new SessionTerminationBatch({
       transport: wsClient,
       entries,
@@ -434,17 +380,16 @@ export default function InboxScreen() {
       submittedKeysRef.current = [];
       setTerminationRunning(false);
     }
-  }, [handleBatchSettled, selectedAgents, terminationRunning]);
+  }, [handleBatchSettled, selectedWorkers, terminationRunning, isCurrentServer]);
 
   const confirmTerminateSelection = useCallback(() => {
-    if (terminationRunning || selectedAgents.length === 0) {
+    if (terminationRunning || selectedWorkers.length === 0) {
       return;
     }
-    const count = selectedAgents.length;
-    const serverCount = countSelectionServers(selectedAgents);
+    const count = selectedWorkers.length;
     Alert.alert(
       count === 1 ? "Terminate session?" : "Terminate sessions?",
-      sessionTerminationConfirmMessage(count, serverCount),
+      sessionTerminationConfirmMessage(count),
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -454,11 +399,11 @@ export default function InboxScreen() {
         },
       ],
     );
-  }, [runTerminateSelection, selectedAgents, terminationRunning]);
+  }, [runTerminateSelection, selectedWorkers, terminationRunning]);
 
   const finishCreateTerminal = async (
     serverId: string,
-    agentId: string,
+    workerId: string,
     hint?: {
       cwd: string;
       command: string;
@@ -467,14 +412,15 @@ export default function InboxScreen() {
       durabilityWarning?: string | null;
     },
   ) => {
-    const sessionKey = makeSessionKey(serverId, agentId);
+    if (!isCurrentServer(serverId)) return;
+    const sessionKey = makeSessionKey(serverId, workerId);
     const openedAt = Date.now();
-    void markAgentOpened(sessionKey, openedAt);
+    void markWorkerOpened(sessionKey, openedAt);
     router.push({
       pathname: "/terminal/[id]",
       params: hint
         ? {
-            id: agentId,
+            id: workerId,
             serverId,
             cwd: hint.cwd,
             command: hint.command,
@@ -485,28 +431,28 @@ export default function InboxScreen() {
               ? { createDurabilityWarning: hint.durabilityWarning }
               : {}),
           }
-        : { id: agentId, serverId },
+        : { id: workerId, serverId },
     });
   };
 
   const findSuggestedCwd = (serverId: string): string => {
-    const onServer = sortedAgents.filter(
+    const onServer = sortedWorkers.filter(
       (agent) => agent.serverId === serverId && agent.cwd,
     );
     return onServer[0]?.cwd?.trim() || "";
   };
 
   useEffect(() => {
-    const onAgentSessionList = (payload: { serverId?: string }) => {
+    const onWorkerSessionList = (payload: { serverId?: string }) => {
       const serverId = payload?.serverId?.trim();
       if (!serverId) return;
-      setAgentSessionListReceiptByServer((current) =>
-        bumpAgentSessionListReceipt(current, serverId),
+      setWorkerSessionListReceiptByServer((current) =>
+        bumpWorkerSessionListReceipt(current, serverId),
       );
     };
-    wsClient.on("agent_session_list", onAgentSessionList);
+    wsClient.on("worker_session_list", onWorkerSessionList);
     return () => {
-      wsClient.off("agent_session_list", onAgentSessionList);
+      wsClient.off("worker_session_list", onWorkerSessionList);
     };
   }, []);
 
@@ -516,8 +462,8 @@ export default function InboxScreen() {
       for (const [serverId, block] of Object.entries(current)) {
         const connectionGeneration =
           state.connectionGenerationByServer[serverId] ?? 0;
-        const listReceipt = agentSessionListReceiptByServer[serverId] ?? 0;
-        const listFresh = isAgentSessionListFreshForConnection(
+        const listReceipt = workerSessionListReceiptByServer[serverId] ?? 0;
+        const listFresh = isWorkerSessionListFreshForConnection(
           state,
           serverId,
         );
@@ -535,8 +481,8 @@ export default function InboxScreen() {
       return next;
     });
   }, [
-    agentSessionListReceiptByServer,
-    state.agentSessionListGenerationByServer,
+    workerSessionListReceiptByServer,
+    state.workerSessionListGenerationByServer,
     state.connectionGenerationByServer,
     state.serverConnections,
   ]);
@@ -547,8 +493,9 @@ export default function InboxScreen() {
     command: string;
     name: string;
   }) => {
-    const server = connectedServers.find((item) => item.id === input.serverId);
-    if (!server) {
+    if (createInFlightRef.current) return;
+    const server = currentServer;
+    if (!server || !isCurrentServer(server.id) || server.id !== input.serverId || !anyConnected) {
       Alert.alert(
         "Daemon unavailable",
         "Connect to a daemon before creating a new terminal.",
@@ -559,8 +506,8 @@ export default function InboxScreen() {
     setCreateSheetVisible(false);
     const connectionGeneration =
       state.connectionGenerationByServer[server.id] ?? 0;
-    const listReceipt = agentSessionListReceiptByServer[server.id] ?? 0;
-    const listFresh = isAgentSessionListFreshForConnection(state, server.id);
+    const listReceipt = workerSessionListReceiptByServer[server.id] ?? 0;
+    const listFresh = isWorkerSessionListFreshForConnection(state, server.id);
     if (
       isCreateBlockedByAmbiguity({
         blocks: createAmbiguityBlocks,
@@ -570,7 +517,7 @@ export default function InboxScreen() {
         listFreshForConnection: listFresh,
       })
     ) {
-      wsClient.listAgentSessions(server.id);
+      wsClient.listWorkerSessions(server.id);
       Alert.alert(
         "Refresh required",
         "Previous create result was ambiguous. Waiting for a confirmed session list before creating another terminal.",
@@ -578,6 +525,7 @@ export default function InboxScreen() {
       return;
     }
     setCreatingServerId(server.id);
+    createInFlightRef.current = true;
     let dispatched = false;
     try {
       const startedAt = Date.now();
@@ -596,11 +544,12 @@ export default function InboxScreen() {
               serverId: server.id,
               connectionGeneration:
                 state.connectionGenerationByServer[server.id] ?? 0,
-              listReceipt: agentSessionListReceiptByServer[server.id] ?? 0,
+              listReceipt: workerSessionListReceiptByServer[server.id] ?? 0,
             }),
           );
-          wsClient.listAgentSessions(server.id);
+          wsClient.listWorkerSessions(server.id);
         }
+        if (!isCurrentServer(server.id)) return;
         Alert.alert(
           reconciled.kind === "ambiguous"
             ? "Refresh required"
@@ -612,7 +561,7 @@ export default function InboxScreen() {
       setCreateAmbiguityBlocks((current) =>
         clearCreateAmbiguityForServer(current, server.id),
       );
-      await finishCreateTerminal(server.id, reconciled.agentId, {
+      await finishCreateTerminal(server.id, reconciled.workerId, {
         ...input,
         startedAt,
         durabilityWarning: reconciled.durabilityWarning,
@@ -628,11 +577,12 @@ export default function InboxScreen() {
             serverId: server.id,
             connectionGeneration:
               state.connectionGenerationByServer[server.id] ?? 0,
-            listReceipt: agentSessionListReceiptByServer[server.id] ?? 0,
+            listReceipt: workerSessionListReceiptByServer[server.id] ?? 0,
           }),
         );
-        wsClient.listAgentSessions(server.id);
+        wsClient.listWorkerSessions(server.id);
       }
+      if (!isCurrentServer(server.id)) return;
       Alert.alert(
         reconciled.kind === "ambiguous"
           ? "Refresh required"
@@ -640,12 +590,15 @@ export default function InboxScreen() {
         reconciled.kind === "navigable" ? "Create failed." : reconciled.message,
       );
     } finally {
+      createInFlightRef.current = false;
       setCreatingServerId(null);
     }
   };
 
   const refreshSessionServices = async () => {
-    if (connectedServers.length === 0) {
+    const server = currentServer;
+    const epoch = ++servicesRequestEpochRef.current;
+    if (!server || !isCurrentServer(server.id) || !anyConnected) {
       setSessionServices([]);
       setServicesError(null);
       return;
@@ -654,24 +607,11 @@ export default function InboxScreen() {
     setServicesLoading(true);
     setServicesError(null);
     try {
-      const results = await Promise.allSettled(
-        connectedServers.map(async (server) => {
-          const snapshot = await wsClient.listSessionServices(server.id);
-          return snapshot.services.map<DiscoveredSessionService>((service) => ({
-            ...service,
-            serverId: server.id,
-            serverName: server.name,
-          }));
-        }),
-      );
-
-      const services = results
-        .flatMap((result) =>
-          result.status === "fulfilled" ? result.value : [],
-        )
+      const snapshot = await wsClient.listSessionServices(server.id);
+      if (!isCurrentServer(server.id) || epoch !== servicesRequestEpochRef.current) return;
+      const services = snapshot.services
+        .map<DiscoveredSessionService>((service) => ({ ...service, serverId: server.id, serverName: server.name }))
         .sort((left, right) => {
-          if (left.serverName !== right.serverName)
-            return left.serverName.localeCompare(right.serverName);
           const leftProject = serviceProjectLabel(left);
           const rightProject = serviceProjectLabel(right);
           if (leftProject !== rightProject)
@@ -679,23 +619,18 @@ export default function InboxScreen() {
           return left.port - right.port;
         });
 
-      const failures = results.filter((result) => result.status === "rejected");
       setSessionServices(services);
-      setServicesError(
-        failures.length > 0
-          ? `${failures.length} daemon${failures.length === 1 ? "" : "s"} did not return services.`
-          : null,
-      );
     } catch (error: any) {
+      if (!isCurrentServer(server.id) || epoch !== servicesRequestEpochRef.current) return;
       setSessionServices([]);
       setServicesError(error?.message || "Failed to load services.");
     } finally {
-      setServicesLoading(false);
+      if (isCurrentServer(server.id) && epoch === servicesRequestEpochRef.current) setServicesLoading(false);
     }
   };
 
   const openSessionServices = () => {
-    if (connectedServers.length === 0) {
+    if (!anyConnected || !isCurrentServer(currentServerId)) {
       Alert.alert(
         "Daemon unavailable",
         "Connect to a daemon before viewing session services.",
@@ -823,10 +758,11 @@ export default function InboxScreen() {
   );
 
   const openServiceTerminal = (service: DiscoveredSessionService) => {
+    if (!isCurrentServer(service.serverId)) return;
     setServiceSheetVisible(false);
     router.push({
       pathname: "/terminal/[id]",
-      params: { id: service.agent_id, serverId: service.serverId },
+      params: { id: service.worker_id, serverId: service.serverId },
     });
   };
 
@@ -843,27 +779,15 @@ export default function InboxScreen() {
   };
 
   const openCreateTerminal = () => {
-    if (connectedServers.length === 0) {
+    if (!anyConnected || !isCurrentServer(currentServerId)) {
       Alert.alert(
         "Daemon unavailable",
         "Connect to a daemon before creating a new terminal.",
       );
       return;
     }
-    setSelectedCreateServerId((previous) =>
-      previous && connectedServers.some((server) => server.id === previous)
-        ? previous
-        : connectedServers[0].id,
-    );
     setCreateSheetVisible(true);
   };
-
-  useEffect(() => {
-    if (!createSheetVisible || !selectedCreateServerId) {
-      return;
-    }
-    wsClient.requestBrainSnapshot(selectedCreateServerId);
-  }, [createSheetVisible, selectedCreateServerId]);
 
   const openServerSettings = (addServer: boolean) => {
     router.push({
@@ -891,28 +815,28 @@ export default function InboxScreen() {
       : primaryIssue?.detail ||
         (anyConnecting ? null : "Check server connection in Settings.");
 
-  const renderListAgent = useCallback<ListRenderItem<Agent>>(
+  const renderListWorker = useCallback<ListRenderItem<Worker>>(
     ({ item }) => (
-      <AgentListRowContainer
+      <WorkerListRowContainer
         agent={item}
-        alias={agentAliases[item.key]}
-        linkedWorkTitle={agentWorkMap[`${item.serverId}:${item.id}`]?.title}
+        alias={workerAliases[item.key]}
+        linkedWorkTitle={workerWorkMap[`${item.serverId}:${item.id}`]?.title}
         showServerName={showServerNames}
         selectionMode={selectionMode}
         selected={selectedKeys.has(item.key)}
         selectionDisabled={
           !isSessionTerminable(item, state.serverConnections)
         }
-        onOpenAgent={openAgent}
+        onOpenWorker={openWorker}
         onEnterSelection={enterSelectionMode}
         onToggleSelection={toggleSelection}
       />
     ),
     [
-      agentAliases,
-      agentWorkMap,
+      workerAliases,
+      workerWorkMap,
       enterSelectionMode,
-      openAgent,
+      openWorker,
       selectedKeys,
       selectionMode,
       showServerNames,
@@ -922,7 +846,7 @@ export default function InboxScreen() {
   );
 
   const renderListSectionHeader = useCallback(
-    ({ section }: { section: AgentDirectorySection }) => {
+    ({ section }: { section: WorkerDirectorySection }) => {
       if (!useSectionHeaders) {
         return null;
       }
@@ -963,9 +887,9 @@ export default function InboxScreen() {
   usePrimaryPageAction(listPageAction);
 
   const focused = useIsFocused();
-  const authoritativeAgentKeySet = useMemo(
-    () => new Set(state.agents.map((agent) => agent.key)),
-    [state.agents],
+  const authoritativeWorkerKeySet = useMemo(
+    () => new Set(displayWorkers.map((agent) => agent.key)),
+    [displayWorkers],
   );
 
   // Selection survives reorder/live updates by stable key and is pruned only
@@ -975,23 +899,25 @@ export default function InboxScreen() {
       return;
     }
     setSelectedKeys((current) =>
-      pruneSessionSelection(current, authoritativeAgentKeySet),
+      pruneSessionSelection(current, authoritativeWorkerKeySet),
     );
-  }, [authoritativeAgentKeySet, selectionMode]);
+  }, [authoritativeWorkerKeySet, selectionMode]);
 
-  // A Session that disappears while a termination batch is running is already
-  // settled: treat it as success so it can never be reported as failed.
+  // Only a fresh snapshot from the batch's original server proves removal.
+  // Switching the current server is not evidence that a Session terminated.
   useEffect(() => {
     const batch = terminationBatchRef.current;
-    if (!selectionMode || !batch) {
+    const serverId = submittedServerIdRef.current;
+    if (!batch || !serverId || !isWorkerSessionListFreshForConnection(state, serverId)) {
       return;
     }
-    for (const sessionKey of selectedKeys) {
-      if (!authoritativeAgentKeySet.has(sessionKey)) {
+    const batchKeys = new Set(state.workers.filter((worker) => worker.serverId === serverId).map((worker) => worker.key));
+    for (const sessionKey of submittedKeysRef.current) {
+      if (!batchKeys.has(sessionKey)) {
         batch.settleDisappeared(sessionKey);
       }
     }
-  }, [authoritativeAgentKeySet, selectedKeys, selectionMode]);
+  }, [state, terminationRunning]);
 
   // Last deselection (or all-settled removal) exits selection mode.
   useEffect(() => {
@@ -1032,7 +958,7 @@ export default function InboxScreen() {
   const selectionBar = useMemo(
     () =>
       selectionMode ? (
-        <AgentSessionSelectionBar
+        <WorkerSessionSelectionBar
           count={countSessionSelection(selectedKeys)}
           terminating={terminationRunning}
           onCancel={exitSelectionMode}
@@ -1088,7 +1014,7 @@ export default function InboxScreen() {
           >
             <ActivityIndicator color={colors.accent} />
           </Animated.ScrollView>
-        ) : sortedAgents.length === 0 ? (
+        ) : sortedWorkers.length === 0 ? (
           <Animated.ScrollView
             style={styles.flex}
             contentContainerStyle={styles.emptyScrollContent}
@@ -1108,7 +1034,7 @@ export default function InboxScreen() {
                 <Text style={styles.emptySubtext}>{emptySubtext}</Text>
               ) : null}
               <View style={styles.emptyActions}>
-                {connectedServers.length > 0 ? (
+                {anyConnected ? (
                   <AnimatedPressable
                     style={[
                       styles.emptyActionBtn,
@@ -1179,8 +1105,8 @@ export default function InboxScreen() {
           <AnimatedSectionList
             sections={listSections}
             key="list"
-            keyExtractor={agentKeyExtractor}
-            renderItem={renderListAgent}
+            keyExtractor={workerKeyExtractor}
+            renderItem={renderListWorker}
             renderSectionHeader={renderListSectionHeader}
             stickySectionHeadersEnabled={false}
             contentContainerStyle={listContentContainerStyle}
@@ -1197,10 +1123,10 @@ export default function InboxScreen() {
 
         <SessionServicesSheet
           visible={serviceSheetVisible}
-          services={sessionServices}
+          services={currentServices}
           loading={servicesLoading}
           error={servicesError}
-          showServerSections={connectedServers.length > 1}
+          showServerSections={false}
           onClose={() => setServiceSheetVisible(false)}
           onRefresh={() => void refreshSessionServices()}
           onOpenTerminal={openServiceTerminal}
@@ -1208,17 +1134,15 @@ export default function InboxScreen() {
         />
 
         <NewTerminalSheet
+          key={currentServerId ?? "no-server"}
           visible={createSheetVisible}
           title="Session"
-          subtitle=""
           initialCwd={
-            selectedCreateServerId
-              ? findSuggestedCwd(selectedCreateServerId)
+            currentServerId
+              ? findSuggestedCwd(currentServerId)
               : ""
           }
-          serverOptions={createServerOptions}
-          selectedServerId={selectedCreateServerId}
-          onSelectServer={setSelectedCreateServerId}
+          serverId={currentServerId}
           submitting={!!creatingServerId}
           onClose={() => setCreateSheetVisible(false)}
           onSubmit={(input) => {
@@ -1232,7 +1156,7 @@ export default function InboxScreen() {
           }}
         />
 
-        {sortedAgents.length > 0 && !selectionMode ? (
+        {sortedWorkers.length > 0 && !selectionMode ? (
           <AnimatedPressable
             style={[
               styles.listFab,
@@ -1267,9 +1191,9 @@ export default function InboxScreen() {
         {workObservatoryVisible ? (
           <WorkSignalObservatory
             visible={workObservatoryVisible}
-            aliases={agentAliases}
+            aliases={workerAliases}
             onClose={closeWorkObservatory}
-            onOpenSession={openAgent}
+            onOpenSession={openWorker}
             onOpenBrain={openBrain}
           />
         ) : null}

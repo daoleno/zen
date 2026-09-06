@@ -79,18 +79,18 @@ describe("structured provider transport", () => {
   test("input and Stop carry only immediate provider-call facts", () => {
     expect(structuredInputMessage({
       requestId: "request-input",
-      agentId: "agent-a",
+      workerId: "agent-a",
       text: "hello\n",
     })).toEqual({
       type: "send_input",
       request_id: "request-input",
-      agent_id: "agent-a",
+      worker_id: "agent-a",
       text: "hello\n",
     });
     expect(
       structuredInputMessage({
         requestId: "request-brain",
-        agentId: "brain-host",
+        workerId: "brain-host",
         text: "hello\n",
         displayBody: "hello",
         conversationScopeKey: "brain-thread:thread-a",
@@ -98,19 +98,19 @@ describe("structured provider transport", () => {
     ).toEqual({
       type: "send_input",
       request_id: "request-brain",
-      agent_id: "brain-host",
+      worker_id: "brain-host",
       text: "hello\n",
       display_body: "hello",
       conversation_scope_key: "brain-thread:thread-a",
     });
     expect(structuredActionMessage({
       requestId: "request-stop",
-      agentId: "agent-a",
+      workerId: "agent-a",
       action: "pause",
     })).toEqual({
       type: "send_action",
       request_id: "request-stop",
-      agent_id: "agent-a",
+      worker_id: "agent-a",
       action: "pause",
     });
   });

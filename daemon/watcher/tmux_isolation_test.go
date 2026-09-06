@@ -10,14 +10,14 @@ func TestWatcherUsesOneSelectedHostServerForKnownTargets(t *testing.T) {
 	w := New(time.Second)
 	socket := "/run/user/1000/custom tmux.sock "
 	w.SetTmuxServer(socket, "/home/user/.zen/run/tmux-scratch/daemon-1")
-	w.registerCreatedSession("brain-agent-worker:@3", "/repo", CreateSessionOptions{
+	w.registerCreatedSession("zen-worker-worker:@3", "/repo", CreateSessionOptions{
 		Name: "worker", Delegated: true, ProgressEnv: true,
 	}, time.Now().UTC())
 
-	if got := w.socketPathFor("brain-agent-worker:@3"); got != socket {
+	if got := w.socketPathFor("zen-worker-worker:@3"); got != socket {
 		t.Fatalf("internal selected socket = %q, want %q", got, socket)
 	}
-	if got := w.SocketPathFor("brain-agent-worker:@3"); got != socket {
+	if got := w.SocketPathFor("zen-worker-worker:@3"); got != socket {
 		t.Fatalf("known target socket = %q, want %q", got, socket)
 	}
 	if got := w.SocketPathFor("ambient:@9"); got != "" {
@@ -28,15 +28,15 @@ func TestWatcherUsesOneSelectedHostServerForKnownTargets(t *testing.T) {
 	}
 }
 
-func TestAgentProgressEnvScriptDropsHostTmuxCapabilityAfterIdentity(t *testing.T) {
-	script := agentProgressEnvScript()
+func TestWorkerProgressEnvScriptDropsHostTmuxCapabilityAfterIdentity(t *testing.T) {
+	script := workerProgressEnvScript()
 	unset := strings.Index(script, "unset TMUX")
-	derive := strings.Index(script, "ZEN_AGENT_ID=")
+	derive := strings.Index(script, "ZEN_WORKER_ID=")
 	if unset < 0 {
 		t.Fatalf("script does not unset TMUX: %s", script)
 	}
 	if derive < 0 || derive > unset {
-		t.Fatalf("script must derive ZEN_AGENT_ID before unsetting TMUX: %s", script)
+		t.Fatalf("script must derive ZEN_WORKER_ID before unsetting TMUX: %s", script)
 	}
 }
 

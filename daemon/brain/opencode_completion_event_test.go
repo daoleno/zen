@@ -71,7 +71,7 @@ func TestAmbiguousOpenCodeAdmissionNeverTerminalizesAndCompletionIsExactlyOnce(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-zen-opencode:@1"
+	sessionID := "zen-worker-zen-opencode:@1"
 	item, err := store.CreateWork(Work{
 		Title:            "OpenCode completion",
 		Objective:        "Emit one completion Event after an ambiguous admission.",
@@ -175,7 +175,7 @@ func TestConfirmedFollowUpTurnEstablishesNewEpochAfterEarlierTurnFailure(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-zen-opencode-event:@2"
+	sessionID := "zen-worker-zen-opencode-event:@2"
 	item, err := store.CreateWork(Work{
 		Title:            "Follow-up event",
 		Objective:        "A later authoritative turn must still complete.",
@@ -235,7 +235,7 @@ func TestFollowUpToDoneSessionReopensTurnAndNotifiesExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := "brain-agent-zen-opencode-followup-done:@1"
+	sessionID := "zen-worker-zen-opencode-followup-done:@1"
 	item, err := store.CreateWork(Work{
 		Title:            "Follow-up reopen",
 		Objective:        "A follow-up turn after done must notify exactly once.",

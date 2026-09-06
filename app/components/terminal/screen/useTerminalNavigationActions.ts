@@ -1,27 +1,27 @@
 import { useCallback } from "react";
 import { Alert } from "react-native";
 import { useRouter } from "expo-router";
-import type { Agent, ConnectionState } from "../../../store/agents";
+import type { Worker, ConnectionState } from "../../../store/workers";
 import { dismissTerminalToSessions } from "../../../services/terminalExitNavigation";
 import { wsClient } from "../../../services/websocket";
 
 interface UseTerminalNavigationActionsInput {
   sessionKey: string | null;
   serverId: string;
-  agentId: string;
+  workerId: string;
   connectionState: ConnectionState;
   displayName: string;
-  agentServerName?: string;
+  workerServerName?: string;
   closeMenu(): void;
 }
 
 export function useTerminalNavigationActions({
   sessionKey,
   serverId,
-  agentId,
+  workerId,
   connectionState,
   displayName,
-  agentServerName,
+  workerServerName,
   closeMenu,
 }: UseTerminalNavigationActionsInput) {
   const router = useRouter();
@@ -31,15 +31,15 @@ export function useTerminalNavigationActions({
     dismissTerminalToSessions(router);
   }, [closeMenu, router]);
 
-  const performTerminateAgent = useCallback(async () => {
-    if (!sessionKey || !serverId || !agentId) return;
+  const performTerminateWorker = useCallback(async () => {
+    if (!sessionKey || !serverId || !workerId) return;
 
-    wsClient.killAgent(serverId, agentId);
+    wsClient.killWorker(serverId, workerId);
     dismissTerminalToSessions(router);
-  }, [agentId, router, serverId, sessionKey]);
+  }, [workerId, router, serverId, sessionKey]);
 
-  const handleTerminateAgent = useCallback(() => {
-    if (!sessionKey || !serverId || !agentId) return;
+  const handleTerminateWorker = useCallback(() => {
+    if (!sessionKey || !serverId || !workerId) return;
 
     closeMenu();
 
@@ -54,9 +54,9 @@ export function useTerminalNavigationActions({
     Alert.alert(
       "Terminate?",
       "This will terminate " +
-        (displayName || agentId) +
+        (displayName || workerId) +
         " on " +
-        (agentServerName || serverId) +
+        (workerServerName || serverId) +
         ".",
       [
         { text: "Cancel", style: "cancel" },
@@ -64,24 +64,24 @@ export function useTerminalNavigationActions({
           text: "Terminate",
           style: "destructive",
           onPress: () => {
-            void performTerminateAgent();
+            void performTerminateWorker();
           },
         },
       ],
     );
   }, [
-    agentId,
-    agentServerName,
+    workerId,
+    workerServerName,
     closeMenu,
     connectionState,
     displayName,
-    performTerminateAgent,
+    performTerminateWorker,
     serverId,
     sessionKey,
   ]);
 
   return {
     goToInbox,
-    handleTerminateAgent,
+    handleTerminateWorker,
   };
 }

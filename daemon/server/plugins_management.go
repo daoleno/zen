@@ -251,7 +251,7 @@ func pluginMutationWireRequest(raw clientMessage) (skillmgmt.PluginMutationReque
 			strings.TrimSpace(raw.SkillCanonical) == "" ||
 			strings.TrimSpace(raw.SkillAllowedRoot) == "" ||
 			strings.TrimSpace(raw.PluginRevision) == "" ||
-			len(raw.Agents) == 0 {
+			len(raw.SkillAgents) == 0 {
 			return skillmgmt.PluginMutationRequest{}, errors.New("a complete current Plugin copy identity is required")
 		}
 		request.CopyID = raw.PluginCopyID
@@ -262,8 +262,8 @@ func pluginMutationWireRequest(raw clientMessage) (skillmgmt.PluginMutationReque
 		request.CanonicalPath = raw.SkillCanonical
 		request.AllowedRoot = raw.SkillAllowedRoot
 		request.Revision = raw.PluginRevision
-		request.Agents = make([]skillmgmt.Agent, 0, len(raw.Agents))
-		for _, agent := range raw.Agents {
+		request.Agents = make([]skillmgmt.Agent, 0, len(raw.SkillAgents))
+		for _, agent := range raw.SkillAgents {
 			request.Agents = append(request.Agents, skillmgmt.Agent(agent))
 		}
 		return request, nil

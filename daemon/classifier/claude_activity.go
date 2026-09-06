@@ -21,7 +21,7 @@ func NewClaudeActivityAdapter() *ClaudeActivityAdapter {
 func (a *ClaudeActivityAdapter) Name() string { return "claude" }
 
 func (a *ClaudeActivityAdapter) Match(in ActivityInput) bool {
-	base := commandBaseName(in.Agent.Command)
+	base := commandBaseName(in.Worker.Command)
 	if base == "claude" || base == "cc" || strings.Contains(base, "claude") {
 		return true
 	}

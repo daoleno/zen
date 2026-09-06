@@ -232,7 +232,7 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
 
 export function parseThreadRuntimeSelection(
   raw: unknown,
-  expectedAgentId?: string,
+  expectedWorkerId?: string,
 ): ThreadRuntimeSelection | null {
   const record = asRecord(raw);
   if (!record) return null;
@@ -258,7 +258,7 @@ export function parseThreadRuntimeSelection(
     !selection.model_id ||
     typeof record.credential_ready !== "boolean" ||
     typeof record.hot_switchable !== "boolean" ||
-    (expectedAgentId && selection.session_id !== expectedAgentId.trim())
+    (expectedWorkerId && selection.session_id !== expectedWorkerId.trim())
   ) {
     return null;
   }
@@ -356,12 +356,12 @@ export function parseProviderModelsDiscovery(
 export function assertThreadRuntimeMatches(
   selection: ThreadRuntimeSelection,
   input: {
-    agentId: string;
+    workerId: string;
     runtime: { connectionId: string; modelId: string; effect?: string; useDefaultEffect?: boolean };
   },
 ): boolean {
   return (
-    selection.session_id === normalizeProviderId(input.agentId) &&
+    selection.session_id === normalizeProviderId(input.workerId) &&
     selection.connection_id === normalizeProviderId(input.runtime.connectionId) &&
     selection.model_id === normalizeProviderId(input.runtime.modelId) &&
     (input.runtime.useDefaultEffect

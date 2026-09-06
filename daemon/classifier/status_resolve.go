@@ -18,36 +18,36 @@ import (
 //     is false; dead panes always resolve from classification.
 //   - Alive panes with no durable progress signal resolve to classified state
 //     (usually Unknown) before provider activity merge.
-func MergeProgressAndClassification(agent *Agent, classified AgentState, classifiedSummary string, now time.Time) (AgentState, string) {
-	if agent == nil {
+func MergeProgressAndClassification(worker *Worker, classified WorkerState, classifiedSummary string, now time.Time) (WorkerState, string) {
+	if worker == nil {
 		return classified, classifiedSummary
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 
-	if !agent.PaneAlive {
+	if !worker.PaneAlive {
 		return classified, classifiedSummary
 	}
 
 	if classified == StateBlocked {
 		return classified, classifiedSummary
 	}
-	if classified == StateFailed && !ExplicitProgressProtectsAgainstPaneFailed(agent, now) {
+	if classified == StateFailed && !ExplicitProgressProtectsAgainstPaneFailed(worker, now) {
 		return classified, classifiedSummary
 	}
 
-	if agent.LastProgressAt == nil {
+	if worker.LastProgressAt == nil {
 		return classified, classifiedSummary
 	}
 
-	switch agent.State {
+	switch worker.State {
 	case StateDone, StateFailed, StateBlocked:
-		summary := firstNonEmpty(agent.Summary, classifiedSummary)
-		return agent.State, summary
+		summary := firstNonEmpty(worker.Summary, classifiedSummary)
+		return worker.State, summary
 	case StateRunning:
-		if ProgressLeaseActive(agent, now) {
-			summary := firstNonEmpty(agent.Summary, classifiedSummary)
+		if ProgressLeaseActive(worker, now) {
+			summary := firstNonEmpty(worker.Summary, classifiedSummary)
 			return StateRunning, summary
 		}
 		// Lease expired or missing: fall back to classification (usually Unknown).
@@ -60,15 +60,15 @@ func MergeProgressAndClassification(agent *Agent, classified AgentState, classif
 // ExplicitProgressProtectsAgainstPaneFailed reports whether an alive pane's
 // heuristic failed text must yield to current explicit progress: an active
 // running lease, or sticky done/failed/blocked with LastProgressAt.
-func ExplicitProgressProtectsAgainstPaneFailed(agent *Agent, now time.Time) bool {
-	if agent == nil || !agent.PaneAlive || agent.LastProgressAt == nil {
+func ExplicitProgressProtectsAgainstPaneFailed(worker *Worker, now time.Time) bool {
+	if worker == nil || !worker.PaneAlive || worker.LastProgressAt == nil {
 		return false
 	}
-	switch agent.State {
+	switch worker.State {
 	case StateDone, StateFailed, StateBlocked:
 		return true
 	case StateRunning:
-		return ProgressLeaseActive(agent, now)
+		return ProgressLeaseActive(worker, now)
 	default:
 		return false
 	}
@@ -76,17 +76,17 @@ func ExplicitProgressProtectsAgainstPaneFailed(agent *Agent, now time.Time) bool
 
 // ProgressLeaseActive reports whether Running progress is still within its lease.
 // Running updates without a lease are not treated as durable activity signals.
-func ProgressLeaseActive(agent *Agent, now time.Time) bool {
-	if agent == nil || agent.State != StateRunning || agent.LastProgressAt == nil {
+func ProgressLeaseActive(worker *Worker, now time.Time) bool {
+	if worker == nil || worker.State != StateRunning || worker.LastProgressAt == nil {
 		return false
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	if agent.ExpectedNextCheckAt == nil {
+	if worker.ExpectedNextCheckAt == nil {
 		return false
 	}
-	return !now.After(agent.ExpectedNextCheckAt.UTC())
+	return !now.After(worker.ExpectedNextCheckAt.UTC())
 }
 
 func firstNonEmpty(values ...string) string {

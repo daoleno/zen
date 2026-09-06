@@ -156,22 +156,22 @@ type ExecutorsCheck struct {
 // unauthenticated. VerifiedAuthenticated is stricter: an official probe
 // confirmed login. Auth-unknown candidates are usable with warning.
 type ExecutorCheck struct {
-	ID                    string                 `json:"id"`
-	Name                  string                 `json:"name"`
-	Provider              string                 `json:"provider"`
-	Configured            bool                   `json:"configured"`
-	Command               string                 `json:"command,omitempty"`
-	BinaryFound           bool                   `json:"binary_found"`
-	BinaryPath            string                 `json:"binary_path,omitempty"`
-	Version               string                 `json:"version,omitempty"`
-	Auth                  AuthState              `json:"auth"`
-	Runnable              bool                   `json:"runnable"`
-	Usable                bool                   `json:"usable"`
-	VerifiedAuthenticated bool                   `json:"verified_authenticated"`
-	Capabilities          work.AgentCapabilities `json:"capabilities"`
-	Status                Status                 `json:"status"`
-	Remediation           Remediation            `json:"remediation,omitempty"`
-	Summary               string                 `json:"summary"`
+	ID                    string                  `json:"id"`
+	Name                  string                  `json:"name"`
+	Provider              string                  `json:"provider"`
+	Configured            bool                    `json:"configured"`
+	Command               string                  `json:"command,omitempty"`
+	BinaryFound           bool                    `json:"binary_found"`
+	BinaryPath            string                  `json:"binary_path,omitempty"`
+	Version               string                  `json:"version,omitempty"`
+	Auth                  AuthState               `json:"auth"`
+	Runnable              bool                    `json:"runnable"`
+	Usable                bool                    `json:"usable"`
+	VerifiedAuthenticated bool                    `json:"verified_authenticated"`
+	Capabilities          work.WorkerCapabilities `json:"capabilities"`
+	Status                Status                  `json:"status"`
+	Remediation           Remediation             `json:"remediation,omitempty"`
+	Summary               string                  `json:"summary"`
 	// OpenCode-only non-mutating probes. StatusUnknown means the probe was not
 	// run or failed ambiguously; never includes model lists or secrets.
 	ModelsStatus Status `json:"models_status,omitempty"`

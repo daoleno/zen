@@ -156,7 +156,7 @@ describe("app interface load performance regression", () => {
       });
       const payload: CodexConversationSnapshotPayload = {
         request_id: "perf-sub",
-        agent_id: "agent-1",
+        worker_id: "agent-1",
         conversation_id: SYNTHETIC_SESSION_ID,
         revision: 1,
         server_generation: "gen-1",
@@ -176,7 +176,7 @@ describe("app interface load performance regression", () => {
     };
     const delta: CodexConversationDeltaPayload = {
       request_id: "perf-sub",
-      agent_id: "agent-1",
+      worker_id: "agent-1",
       conversation_id: SYNTHETIC_SESSION_ID,
       revision: 2,
       base_revision: 1,
@@ -229,7 +229,7 @@ describe("app interface load performance regression", () => {
       });
       const payload: CodexConversationSnapshotPayload = {
         request_id: "perf-sub-1",
-        agent_id: "agent-1",
+        worker_id: "agent-1",
         conversation_id: SYNTHETIC_REVISIT_SESSION_ID,
         revision: 1,
         server_generation: "gen-1",
@@ -265,7 +265,7 @@ describe("app interface load performance regression", () => {
       });
       const payload: CodexConversationSnapshotPayload = {
         request_id: "perf-sub-2",
-        agent_id: "agent-1",
+        worker_id: "agent-1",
         conversation_id: SYNTHETIC_REVISIT_SESSION_ID,
         revision: 1,
         server_generation: "gen-2",

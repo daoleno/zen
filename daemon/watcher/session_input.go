@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -289,6 +290,8 @@ func (realSessionInputIO) runQueue(
 	beforeStart func() error,
 ) (bool, error) {
 	command := tmuxCommand(socket, args...)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
 	// This is the last pre-mutation operation: the target-bound tmux command
 	// has already been constructed, but Start has not been called. The guard
 	// re-proves the provider process lifetime and immutable pane generation.
@@ -303,7 +306,7 @@ func (realSessionInputIO) runQueue(
 		return false, err
 	}
 	if err := command.Wait(); err != nil {
-		return true, err
+		return true, fmt.Errorf("%w%s", err, commandOutputSuffix(stderr.Bytes()))
 	}
 	return true, nil
 }
@@ -362,9 +365,6 @@ type sessionInputOwner struct {
 }
 
 func newSessionInputOwner(io sessionInputIO) *sessionInputOwner {
-	if io == nil {
-		io = realSessionInputIO{}
-	}
 	return &sessionInputOwner{
 		sessions: make(map[string]*sessionInputSession),
 		io:       io,
@@ -1389,10 +1389,10 @@ func definitelyNotSubmitted(receipt string, cause error) error {
 // bounded wait expired. The input was definitely not submitted, so a caller may
 // retry within the same occurrence. Any other definitely-not-submitted outcome
 // (unprovable identity, pane replacement) is terminal.
-var ErrAgentInputNotReady = errors.New("agent input not ready")
+var ErrWorkerInputNotReady = errors.New("agent input not ready")
 
-func agentInputNotReady(command string) error {
-	return definitelyNotSubmitted("", fmt.Errorf("%w for %q", ErrAgentInputNotReady, command))
+func workerInputNotReady(command string) error {
+	return definitelyNotSubmitted("", fmt.Errorf("%w for %q", ErrWorkerInputNotReady, command))
 }
 
 func ambiguousSubmission(receipt string, cause error) error {
@@ -1401,5 +1401,3 @@ func ambiguousSubmission(receipt string, cause error) error {
 		Cause:  cause,
 	}
 }
-
-var defaultSessionInputOwner = newSessionInputOwner(realSessionInputIO{})

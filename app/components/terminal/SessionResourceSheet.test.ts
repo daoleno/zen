@@ -8,7 +8,7 @@ describe("SessionResourceSheet presentation model", () => {
   test("managed healthy host is supporting pool metadata, never an alert", () => {
     const model = buildSessionResourceViewModel(
       {
-        agent_id: "main:@7",
+        worker_id: "main:@7",
         session: {
           executor: "cursor",
           status: "running",
@@ -61,7 +61,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("portable: policy hard max may bar; MemoryHigh is not live protection", () => {
     const noMax = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "portable_supervisor",
@@ -75,7 +75,7 @@ describe("SessionResourceSheet presentation model", () => {
     expect(noMax?.poolSummary).toBe("1.95 KiB used");
 
     const withPolicy = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "portable_supervisor",
@@ -95,7 +95,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("over-limit clamps shares while keeping absolute summary labels", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -119,7 +119,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("session > pool: total-used bar, skew copy, no invented Other share", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -142,7 +142,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("absent hard max keeps absolute labels without a fake percent bar", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -156,7 +156,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("absent pool usage never turns Session memory into a pool bar", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -171,7 +171,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("unmanaged healthy host stays in footer after stale pool is refused", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@8",
+      worker_id: "main:@8",
       session: {
         status: "running",
         managed: false,
@@ -209,7 +209,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("confirmed pressure is the only standalone host warning", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "cgroup_pool",
@@ -236,7 +236,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("unavailable pressure is subdued pool support with its qualifier", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: {
         managed: true,
         backend: "portable_supervisor",
@@ -266,7 +266,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("unavailable pressure without bytes remains subdued footer copy", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: { managed: true },
       host: { pressure: "unavailable" },
     });
@@ -283,7 +283,7 @@ describe("SessionResourceSheet presentation model", () => {
 
   test("missing host data creates no host support or warning", () => {
     const model = buildSessionResourceViewModel({
-      agent_id: "main:@7",
+      worker_id: "main:@7",
       session: { managed: true, memory_current_bytes: 4096 },
     });
 
