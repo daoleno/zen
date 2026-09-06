@@ -84,8 +84,10 @@ func ResolveCodexTranscriptIdentity(processID int) (CodexTranscriptIdentity, boo
 	return CodexTranscriptIdentity{DataRoot: dataRoots[0]}, false
 }
 
-// ResolveCodexTranscriptIdentityForAgent prefers an existing host binding, then
-// resolves from the live process tree. Cwd matching is never authority.
+// ResolveCodexTranscriptIdentityForWorker follows a single rollout open by the
+// Host process tree, including native thread switches within the same process.
+// Without unambiguous live evidence, retain the durable binding. Cwd matching
+// and a process's inherited thread ID cannot override an existing binding.
 func ResolveCodexTranscriptIdentityForWorker(
 	worker classifier.Worker,
 	existing CodexTranscriptIdentity,
@@ -93,6 +95,16 @@ func ResolveCodexTranscriptIdentityForWorker(
 	existing.SessionID = strings.TrimSpace(existing.SessionID)
 	existing.Path = strings.TrimSpace(existing.Path)
 	existing.DataRoot = strings.TrimSpace(existing.DataRoot)
+	if paths := openCodexRolloutPathsForProcess(worker.ProcessID); len(paths) == 1 {
+		path := paths[0]
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return CodexTranscriptIdentity{
+				SessionID: sessionIDFromCodexRolloutPath(path),
+				Path:      path,
+				DataRoot:  dataRootForPath(path, providerDataRootsForProcessTree(worker.ProcessID)),
+			}
+		}
+	}
 	if existing.Path != "" {
 		if _, err := os.Stat(existing.Path); err == nil {
 			if existing.SessionID == "" {

@@ -25,6 +25,14 @@ repeated delivery of its stable Event cannot append duplicate cards. Session,
 provider, tmux, transcript, and process observations help decide whether an
 Attempt is viable, but none can mark Work done.
 
+Assistant replies are ingested from the current Host's provider transcript and
+persisted in the Brain thread timeline for reconnect and history. A Codex native
+thread switch can keep the same Host process alive: a single rollout open by
+that process tree supersedes its saved transcript binding. If live evidence is
+missing or ambiguous, the saved binding remains authoritative; cwd and latest
+file timestamps never select a replacement. Rebinding preserves already
+materialized history and does not replay user inputs.
+
 Continue with `zen worker send -id <session> --work-id <work> -text <follow-up>`.
 Runtime mints the Turn token and atomically binds accepted input as execution.
 There is no separate accepted-but-non-owning state or typed continue step.

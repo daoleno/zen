@@ -3,10 +3,62 @@ package work
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
+
+func TestHostTranscriptBindingFollowsLiveCodexThreadSwitch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires procfs open-file evidence")
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "07")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(dir, "rollout-old.jsonl")
+	newPath := filepath.Join(dir, "rollout-new.jsonl")
+	writeCodexHostRollout(t, oldPath, "old-thread", "earlier user", "earlier reply")
+	writeCodexHostRollout(t, newPath, "new-thread", "hi", "reply after native thread switch")
+	existing := HostTranscriptIdentity{Provider: WorkerProviderCodex, SessionID: "old-thread", Path: oldPath, DataRoot: home}
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{"single live rollout overrides readable old binding", []string{newPath}, newPath},
+		{"ambiguous live rollouts preserve binding", []string{newPath, oldPath}, oldPath},
+		{"no live rollout preserves binding", nil, oldPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("sleep", "30")
+			for _, path := range tc.paths {
+				file, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				cmd.ExtraFiles = append(cmd.ExtraFiles, file)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+			got := ResolveHostTranscriptIdentityForWorker(classifier.Worker{ProcessID: cmd.Process.Pid, Command: "codex"}, existing, WorkerProviderCodex)
+			if got.Path != tc.want || got.DataRoot != home {
+				t.Fatalf("binding = %+v, want %s", got, tc.want)
+			}
+			if tc.want == newPath && got.SessionID != "new-thread" {
+				t.Fatalf("stale session ID: %+v", got)
+			}
+		})
+	}
+}
 
 func TestLoadCodexConversationByIdentityUsesHostDataRootNotDaemonHome(t *testing.T) {
 	daemonHome := t.TempDir()

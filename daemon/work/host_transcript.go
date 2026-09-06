@@ -56,7 +56,7 @@ func ResolveHostTranscriptIdentityForWorker(
 	if !hostIdentityUsable(existing, provider) {
 		existing = HostTranscriptIdentity{}
 	}
-	if hostIdentityUsable(existing, provider) {
+	if hostIdentityUsable(existing, provider) && provider != WorkerProviderCodex && provider != "" {
 		existing.Provider = provider
 		return existing
 	}
