@@ -62,14 +62,16 @@ func validateLifecycleDatabase(database lifecycleDatabase) error {
 		if work.Attempt != nil && (work.Attempt.SessionID == "" || work.Attempt.TurnToken == "" || work.Attempt.Generation == 0) {
 			return fmt.Errorf("lifecycle: Work %q has incomplete active Attempt identity", id)
 		}
-		pending := 0
+		prepared := 0
 		acceptedSequences := make(map[uint64]bool)
 		for token, admission := range work.Admissions {
 			if admission == nil || token == "" || token != admission.TurnToken || admission.SessionID == "" || admission.AttemptedAt.IsZero() {
 				return fmt.Errorf("lifecycle: Work %q has incomplete Attempt admission", id)
 			}
-			if admission.Status == AdmissionPrepared || admission.Status == AdmissionAmbiguous {
-				pending++
+			// Ambiguous outcomes remain evidence across model-directed retries.
+			// Only a prepared transaction still owns submission serialization.
+			if admission.Status == AdmissionPrepared {
+				prepared++
 			}
 			if admission.Status == AdmissionAccepted {
 				if admission.AcceptedSeq == 0 || admission.AcceptedSeq >= database.NextSeq || acceptedSequences[admission.AcceptedSeq] {
@@ -78,8 +80,8 @@ func validateLifecycleDatabase(database lifecycleDatabase) error {
 				acceptedSequences[admission.AcceptedSeq] = true
 			}
 		}
-		if pending > 1 {
-			return fmt.Errorf("lifecycle: Work %q has multiple unresolved admissions", id)
+		if prepared > 1 {
+			return fmt.Errorf("lifecycle: Work %q has multiple prepared admissions", id)
 		}
 	}
 	return nil

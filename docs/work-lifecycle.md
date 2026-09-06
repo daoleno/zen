@@ -170,6 +170,10 @@ actor lease-recovery command can authorize replay. Its ended state is canonical
 and survives restart. An ended or superseded capability cannot disposition a
 new decision. Repeated ending, claim attempts, and resolution are idempotent.
 
+Unknown submission outcomes remain durable evidence across model-directed
+retries and restart. Only one prepared transport transaction may exist per
+Work; older ambiguous outcomes do not prevent reopening the store.
+
 Exact terminal evidence supersedes a producer's earlier decision, including an
 input request or provisional lost outcome. It gets a new decision identity and
 invalidates the earlier handling; the prior card becomes history, never another

@@ -118,6 +118,17 @@ func TestUnknownSendRestartAllowsModelRetryAndDoesNotReviveOlderInput(t *testing
 	if _, _, err := store.PrepareInputAdmission(second); err != nil {
 		t.Fatal(err)
 	}
+	store, err = NewStore(root)
+	if err != nil {
+		t.Fatalf("restart with ambiguous original and prepared retry: %v", err)
+	}
+	if err := store.MarkInputAdmissionAmbiguous("worker", "turn-retry", "retry response also lost"); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(root)
+	if err != nil {
+		t.Fatalf("restart with both outcomes ambiguous: %v", err)
+	}
 	if result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{SessionID: "worker", TurnID: "turn-retry", Class: watcher.EvidenceControl,
 		Kind: "done", SourceID: "retry-report", Summary: "retry verified", At: at.Add(time.Second)}); err != nil || !result.Matched {
 		t.Fatalf("retry=%+v %v", result, err)

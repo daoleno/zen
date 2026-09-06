@@ -5,6 +5,34 @@ import (
 	"time"
 )
 
+func TestValidatePreparedAdmissionSerialization(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		first, second AdmissionStatus
+		valid         bool
+	}{
+		{"ambiguous and prepared", AdmissionAmbiguous, AdmissionPrepared, true},
+		{"both ambiguous", AdmissionAmbiguous, AdmissionAmbiguous, true},
+		{"both prepared", AdmissionPrepared, AdmissionPrepared, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &State{ID: "work", Admissions: map[TurnToken]*AdmissionState{}}
+			for token, status := range map[TurnToken]AdmissionStatus{"first": tc.first, "second": tc.second} {
+				state.Admissions[token] = &AdmissionState{
+					TurnToken: token, SessionID: "worker", AttemptedAt: time.Unix(1, 0), Status: status,
+				}
+			}
+			err := validateLifecycleDatabase(lifecycleDatabase{
+				Schema: lifecycleStoreSchema, NextSeq: 1,
+				Works: map[WorkID]*State{state.ID: state}, Events: []Event{},
+			})
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t err=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
 func TestValidateAdmissionAcceptanceSequence(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
