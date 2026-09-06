@@ -56,6 +56,9 @@ func validateLifecycleDatabase(database lifecycleDatabase) error {
 		if work == nil || work.ID != id {
 			return fmt.Errorf("lifecycle: Work row %q has mismatched identity", id)
 		}
+		if work.Status.Terminal() && work.Wake != nil {
+			return fmt.Errorf("lifecycle: terminal Work %q retains a wake", id)
+		}
 		if work.Attempt != nil && (work.Attempt.SessionID == "" || work.Attempt.TurnToken == "" || work.Attempt.Generation == 0) {
 			return fmt.Errorf("lifecycle: Work %q has incomplete active Attempt identity", id)
 		}

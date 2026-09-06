@@ -1088,24 +1088,6 @@ func (e *Engine) Sweep() error {
 	now := e.nowUTC()
 	for _, st := range states {
 		id := st.ID
-		if st.Status.Terminal() && st.Wake != nil {
-			kind := KWorkCompleted
-			if st.Status == StatusCancelled {
-				kind = KWorkCancelled
-			}
-			if _, err := e.dispatch(id, func(current *State, at time.Time) ([]Event, error) {
-				if current == nil || !current.Status.Terminal() || current.Wake == nil {
-					return nil, nil
-				}
-				return []Event{{
-					WorkID: id, Kind: kind, SourceID: "repair:terminal-wake", At: at,
-					Payload: CancelledPayload{Actor: "supervisor", Reason: "clear invalid terminal wake"},
-				}}, nil
-			}); err != nil {
-				return err
-			}
-			continue
-		}
 		if st.Review != nil && st.Review.Handler != nil && st.Review.Handler.DeliveredAt == nil &&
 			!now.Before(st.Review.Handler.ClaimExpiresAt) {
 			if _, err := e.dispatch(id, func(current *State, at time.Time) ([]Event, error) {

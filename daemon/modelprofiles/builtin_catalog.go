@@ -34,10 +34,6 @@ type ProfileEditorSchema struct {
 	FreelyConfigurable       []string                   `json:"freely_configurable"`
 }
 
-// envelopeCodexGPT5 etc. are retained as legacy family descriptors for the
-// pre-catalog Codex client keys. The model catalog is the authoritative
-// source; these only back the editor vocabulary for legacy slugs.
-
 func envelopeClaudeSonnet() CapabilityEnvelope {
 	return CapabilityEnvelope{
 		ContextWindowTokens: 200000,

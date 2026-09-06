@@ -65,16 +65,8 @@ func Reduce(prev *State, ev Event) *State {
 
 	case KWorkCancelled:
 		if terminal(s) {
-			// Older transaction images could retain a parked wake after a
-			// terminal transition. A same-status supervisor repair event makes
-			// that invalid state converge without reopening the Work.
-			if s.Status == StatusCancelled {
-				s.Wake = nil
-			}
 			return noop(s, ev)
 		}
-		p := payload[CancelledPayload](ev)
-		_ = p
 		releaseAttempt(s, ev.At)
 		s.Status = StatusCancelled
 		now := ev.At
@@ -84,13 +76,8 @@ func Reduce(prev *State, ev Event) *State {
 
 	case KWorkCompleted:
 		if terminal(s) {
-			if s.Status == StatusDone {
-				s.Wake = nil
-			}
 			return noop(s, ev)
 		}
-		p := payload[CancelledPayload](ev)
-		_ = p
 		releaseAttempt(s, ev.At)
 		s.Status = StatusDone
 		now := ev.At

@@ -12,140 +12,48 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
-// TestProviderDisplayNameMigrationDeduplicatesDeterministically proves I6: an
-// existing catalog with duplicate/empty display names migrates deterministically
-// at load — IDs, revision, defaults and credentials are untouched.
-func TestProviderDisplayNameMigrationDeduplicatesDeterministically(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "model-profiles.toml")
-	doc := `revision = 7
-
-[[profiles]]
-id = "c-a"
-name = "Alpha"
-scope = "account"
-client = "codex"
-provider_id = "custom"
-provider_label = "Custom Gateway"
-base_url = "https://a.example/v1"
-auth_mode = "none"
-credential_env = "ZEN_PROVIDER_API_KEY"
-
-[[profiles]]
-id = "c-b"
-name = "alpha"
-scope = "account"
-client = "codex"
-provider_id = "custom"
-provider_label = "Custom Gateway"
-base_url = "https://b.example/v1"
-auth_mode = "none"
-credential_env = "ZEN_PROVIDER_API_KEY"
-
-[[profiles]]
-id = "c-c"
-name = "ALPHA"
-scope = "account"
-client = "claude"
-provider_id = "custom"
-provider_label = "Custom Gateway"
-base_url = "https://c.example/v1"
-auth_mode = "none"
-credential_env = "ZEN_PROVIDER_API_KEY"
-
-[[profiles]]
-id = "c-d"
-name = ""
-scope = "account"
-client = "codex"
-provider_id = "custom"
-provider_label = "Custom Gateway"
-base_url = "https://gateway.example/v1"
-auth_mode = "none"
-credential_env = "ZEN_PROVIDER_API_KEY"
-`
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID := map[string]Profile{}
-	for _, p := range store.Catalog().Profiles {
-		byID[p.ID] = p
-	}
-	if len(byID) != 4 {
-		t.Fatalf("migration lost profiles: %d", len(byID))
-	}
-	want := map[string]string{
-		"c-a": "Alpha",
-		"c-b": "alpha (2)",
-		"c-c": "ALPHA (3)",
-		"c-d": "gateway.example",
-	}
-	for id, name := range want {
-		if got := byID[id].Name; got != name {
-			t.Fatalf("migrated name %s=%q want %q", id, got, name)
-		}
-	}
-	// Revision, IDs and defaults survive the migration.
-	if store.Revision() != 7 {
-		t.Fatalf("revision=%d want 7", store.Revision())
-	}
-	// The corrected names are durable: a fresh load must not re-suffix.
-	store2, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID2 := map[string]Profile{}
-	for _, p := range store2.Catalog().Profiles {
-		byID2[p.ID] = p
-	}
-	for id, name := range want {
-		if got := byID2[id].Name; got != name {
-			t.Fatalf("reload %s=%q want %q", id, got, name)
-		}
-	}
-	if store2.Revision() != 7 {
-		t.Fatalf("reload revision=%d want 7", store2.Revision())
-	}
-}
-
-// TestProviderDisplayNameMigrationTruncatesOverlongNames proves over-long legacy
-// names are trimmed to the bounded length instead of failing startup.
-func TestProviderDisplayNameMigrationTruncatesOverlongNames(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "model-profiles.toml")
-	long := strings.Repeat("x", 120)
-	doc := `revision = 0
-
-[[profiles]]
-id = "c-long"
-name = "` + long + `"
-scope = "account"
-client = "codex"
-provider_id = "custom"
-provider_label = "Custom Gateway"
-base_url = "https://long.example/v1"
-auth_mode = "none"
-credential_env = "ZEN_PROVIDER_API_KEY"
-`
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := store.Get("c-long")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len([]rune(got.Name)) != MaxProviderNameLength {
-		t.Fatalf("name length=%d want %d (%q)", len([]rune(got.Name)), MaxProviderNameLength, got.Name)
+func TestProviderCatalogLoadValidatesNamesWithoutRewriting(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second string
+		valid               bool
+	}{
+		{"valid", "Alpha", "Beta", true},
+		{"empty", "Alpha", "", false},
+		{"duplicate", "Alpha", "alpha", false},
+		{"unicode-fold", "K", "\u212a", false},
+		{"overlong", "Alpha", strings.Repeat("x", MaxProviderNameLength+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := codexResponsesProfile("first", "gpt-5", "up-a")
+			second := codexResponsesProfile("second", "gpt-5", "up-b")
+			first.Name, second.Name = tc.first, tc.second
+			var data bytes.Buffer
+			if err := toml.NewEncoder(&data).Encode(fileDocument{Revision: 7, Profiles: []Profile{first, second}}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "model-profiles.toml")
+			if err := os.WriteFile(path, data.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewStore(path)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t err=%v", tc.valid, err)
+			}
+			if tc.valid && store.Revision() != 7 {
+				t.Fatal("load changed revision")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, data.Bytes()) {
+				t.Fatal("load rewrote catalog")
+			}
+		})
 	}
 }
 
@@ -476,7 +384,7 @@ func TestUpsertValidationFailureAppliesNothing(t *testing.T) {
 	}
 	// Blank, whitespace-only, and over-long name edits also apply nothing: the
 	// daemon requires an explicit non-empty trimmed name on every mutation
-	// (only load-time migration may synthesize names).
+	// Names must be provided explicitly, including in persisted catalogs.
 	badName := strings.Repeat("y", MaxProviderNameLength+1)
 	if _, err := owner.UpsertProviderConnection(
 		codexCustomInput(first.ID, badName, "https://changed.example/v1"), "sk-attacker", owner.Catalog().Revision, false); !errors.Is(err, ErrInvalid) {

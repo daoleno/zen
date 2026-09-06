@@ -852,7 +852,7 @@ func TestCancelReleasesAttempt(t *testing.T) {
 	}
 }
 
-func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
+func TestTerminalTransitionsClearWakeAndRejectInvalidStoredState(t *testing.T) {
 	e, root := newTestEngine(t)
 	define(t, e, "w1", PolicyBounded)
 	if _, err := e.SetWait("w1", WakeUserInput, "operator confirmation"); err != nil {
@@ -879,20 +879,8 @@ func TestTerminalTransitionsClearWakeAndSweepRepairsLegacyState(t *testing.T) {
 	if err := writeLifecycleDatabase(filepath.Join(root, "state.json"), database); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := reopened.Sweep(); err != nil {
-		t.Fatal(err)
-	}
-	repaired, err := reopened.State("w1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repaired.Status != StatusDone || repaired.Wake != nil {
-		t.Fatalf("legacy terminal Work was not repaired: %+v", repaired)
+	if _, err := Open(root); err == nil {
+		t.Fatal("invalid terminal wake must be rejected, not repaired during Sweep")
 	}
 }
 
