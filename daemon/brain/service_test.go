@@ -1701,7 +1701,6 @@ func TestServiceSnapshotMissingTmuxResumePreservesChatThreadIdentity(t *testing.
 		t.Fatalf("resume must preserve the Host and send one private activation: killed=%#v sent=%#v", fw.killed, fw.sentCalls)
 	}
 	if activation := fw.sentCalls[0].text; !strings.Contains(activation, "Brain Host activation contract:") ||
-		!strings.Contains(activation, brainWorkerRoleContractVersion) ||
 		!strings.Contains(activation, brainWorkerRoleContract) ||
 		strings.Contains(activation, "You are Brain inside zen") {
 		t.Fatalf("native-resume activation = %q", activation)
@@ -2482,7 +2481,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	}
 	prompt := fw.sentCalls[0].text
 	for _, want := range []string{
-		"Delegated executor: codex", brainWorkerRoleContractVersion, brainWorkerRoleContract,
+		"Delegated executor: codex", brainWorkerRoleContract,
 		"Read AGENTS.md and soul.md", "Managed worktree root:", "Zen CLI:",
 		"Work/Event state owns scheduling", "a running Worker does not need progress polling",
 	} {

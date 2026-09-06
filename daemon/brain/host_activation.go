@@ -21,7 +21,7 @@ type HostActivation struct {
 	HostGeneration  string    `json:"host_generation"`
 	ProcessIdentity string    `json:"process_identity,omitempty"`
 	PaneGeneration  string    `json:"pane_generation,omitempty"`
-	ContractVersion string    `json:"contract_version"`
+	ContractDigest  string    `json:"contract_digest"`
 	Receipt         string    `json:"receipt,omitempty"`
 	ActivatedAt     time.Time `json:"activated_at"`
 }
@@ -49,7 +49,7 @@ func (s *Store) HostActivation() (HostActivation, error) {
 	activation.HostGeneration = strings.TrimSpace(activation.HostGeneration)
 	activation.ProcessIdentity = strings.TrimSpace(activation.ProcessIdentity)
 	activation.PaneGeneration = strings.TrimSpace(activation.PaneGeneration)
-	activation.ContractVersion = strings.TrimSpace(activation.ContractVersion)
+	activation.ContractDigest = strings.TrimSpace(activation.ContractDigest)
 	activation.Receipt = strings.TrimSpace(activation.Receipt)
 	return activation, nil
 }
@@ -63,7 +63,7 @@ func (s *Store) MarkHostActivation(activation HostActivation) error {
 	activation.HostGeneration = strings.TrimSpace(activation.HostGeneration)
 	activation.ProcessIdentity = strings.TrimSpace(activation.ProcessIdentity)
 	activation.PaneGeneration = strings.TrimSpace(activation.PaneGeneration)
-	activation.ContractVersion = strings.TrimSpace(activation.ContractVersion)
+	activation.ContractDigest = strings.TrimSpace(activation.ContractDigest)
 	activation.Receipt = strings.TrimSpace(activation.Receipt)
 	activation.ActivatedAt = activation.ActivatedAt.UTC()
 	return writeJSONFile(s.HostActivationPath(), activation)

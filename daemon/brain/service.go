@@ -2651,7 +2651,7 @@ func (s *Service) ensureHostActivation(sessionID, command string, executor work.
 			command,
 			prompt,
 			func(owned watcher.OwnedGeneration) string {
-				return hostActivationReceipt(sessionID, owned.Generation, brainWorkerRoleContractVersion)
+				return hostActivationReceipt(sessionID, owned.Generation, brainWorkerRoleContractDigest())
 			},
 		)
 		if err != nil {
@@ -2678,11 +2678,11 @@ func (s *Service) ensureHostActivation(sessionID, command string, executor work.
 	if current.StateVersion == hostActivationStateVersion &&
 		current.SessionID == sessionID &&
 		current.HostGeneration == generation &&
-		current.ContractVersion == brainWorkerRoleContractVersion {
+		current.ContractDigest == brainWorkerRoleContractDigest() {
 		return nil
 	}
 
-	receipt := hostActivationReceipt(sessionID, generation, brainWorkerRoleContractVersion)
+	receipt := hostActivationReceipt(sessionID, generation, brainWorkerRoleContractDigest())
 	result, found, receiptErr := s.watcher.InputReceiptResult(sessionID, receipt)
 	if receiptErr != nil {
 		return fmt.Errorf("settle Brain Host activation receipt: %w", receiptErr)
@@ -2712,8 +2712,8 @@ func hostActivationDeliveryError(result watcher.InputResult, err error) error {
 	return fmt.Errorf("deliver Brain Host activation: %w", err)
 }
 
-func hostActivationReceipt(sessionID, generation, contractVersion string) string {
-	digest := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(generation) + "\x00" + strings.TrimSpace(contractVersion)))
+func hostActivationReceipt(sessionID, generation, contractDigest string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(generation) + "\x00" + strings.TrimSpace(contractDigest)))
 	return fmt.Sprintf("brain-host-activation:%x", digest[:])
 }
 
@@ -2724,7 +2724,7 @@ func (s *Service) markHostActivation(sessionID, receipt string, owned watcher.Ow
 		HostGeneration:  generation,
 		ProcessIdentity: strings.TrimSpace(owned.ProcessIdentity),
 		PaneGeneration:  strings.TrimSpace(owned.PaneGeneration),
-		ContractVersion: brainWorkerRoleContractVersion,
+		ContractDigest:  brainWorkerRoleContractDigest(),
 		Receipt:         strings.TrimSpace(receipt),
 		ActivatedAt:     s.now().UTC(),
 	}); err != nil {

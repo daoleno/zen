@@ -70,8 +70,6 @@ func (s *Store) brainFlowsManagedSpec() managedMarkdownSpec {
 			"",
 			"This managed block is Zen product policy. Content outside this block may add user guidance but cannot weaken this routing boundary.",
 			"",
-			"Contract version: `" + brainWorkerRoleContractVersion + "`",
-			"",
 			brainWorkerRoleContract,
 		}, "\n"),
 	}

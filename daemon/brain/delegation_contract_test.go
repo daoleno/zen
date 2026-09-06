@@ -1,7 +1,9 @@
 package brain
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -38,6 +40,9 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 		if strings.Count(surface, brainWorkerRoleContract) != 1 || strings.Contains(surface, brainWorkerRoleContractPlaceholder) {
 			t.Fatalf("%s has missing/duplicate role or unresolved placeholder", name)
 		}
+		if strings.Contains(surface, "zen-brain-worker-role/") || strings.Contains(surface, brainWorkerRoleContractDigest()) {
+			t.Fatalf("%s exposes internal activation identity", name)
+		}
 	}
 	for name, surface := range map[string]string{
 		"delegation": read(store.policyPath("delegation.md")),
@@ -61,6 +66,43 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 		t.Fatalf("bootstrap expanded to %d bytes", len(bootstrap))
 	}
 	t.Logf("rendered bootstrap: %d bytes", len(bootstrap))
+}
+
+func TestHostActivationUsesRoleContentDigest(t *testing.T) {
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte(brainWorkerRoleContract)))
+	if brainWorkerRoleContractDigest() != want {
+		t.Fatal("role identity must derive from its exact text")
+	}
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id, generation = "host:@content", "generation"
+	fw := &fakeWatcher{
+		sessions:         map[string]*classifier.Worker{id: {ID: id, Command: "codex", Hidden: true, State: classifier.StateRunning}},
+		ownedGenerations: map[string]string{id: generation},
+	}
+	if err := store.MarkHostActivation(HostActivation{SessionID: id, HostGeneration: generation, ContractDigest: "different-content"}); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, fw, work.NewExecutorConfig("codex", map[string]work.Executor{
+		"codex": {Name: "codex", Command: "codex", Kind: "codex"},
+	}))
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := service.ensureHostActivation(id, "codex", service.hostExecutor(), false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("changed role must activate exactly once: %d", len(fw.sentCalls))
+	}
+	activation, err := store.HostActivation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activation.ContractDigest != want || activation.Receipt != hostActivationReceipt(id, generation, want) {
+		t.Fatalf("wrong content receipt: %+v", activation)
+	}
 }
 
 func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {
@@ -96,7 +138,7 @@ func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if firstActivation.SessionID != hostID || firstActivation.HostGeneration == "" ||
-		firstActivation.ContractVersion != brainWorkerRoleContractVersion {
+		firstActivation.ContractDigest != brainWorkerRoleContractDigest() {
 		t.Fatalf("fresh activation state = %+v", firstActivation)
 	}
 
@@ -274,9 +316,9 @@ func TestLiveHostActivationQueuesWithUserInputsOutsideSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReceipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractVersion)
+	wantReceipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractDigest())
 	if activation.SessionID != hostID || activation.HostGeneration != hostGeneration ||
-		activation.ContractVersion != brainWorkerRoleContractVersion || activation.Receipt != wantReceipt {
+		activation.ContractDigest != brainWorkerRoleContractDigest() || activation.Receipt != wantReceipt {
 		t.Fatalf("queued activation did not persist exact receipt identity: %+v", activation)
 	}
 	if fw.readyInputCalls != 0 {
@@ -319,7 +361,7 @@ func TestLiveHostActivationAmbiguousReceiptIsNeverReplayed(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	receipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractVersion)
+	receipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractDigest())
 	fw := &fakeWatcher{
 		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Command: "codex", Hidden: true, State: classifier.StateRunning},

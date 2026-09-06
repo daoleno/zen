@@ -23,7 +23,7 @@ Async tool calling, mid-turn steering and cached reasoning updates require harne
 | Repository `AGENTS.md` | Code layout, Android/iOS and current-server invariants, commands, repository verification and safety. |
 | `daemon/modelprofiles/codex_catalog_instructions.md` | Zen-owned generic coding defaults for managed Codex catalogs; not a verbatim upstream persona. |
 | `daemon/brain/templates/AGENTS.md` | Brain context map, authorization, scheduler and event-driven waiting rules. |
-| `daemon/brain/delegation_contract.go` | Versioned compact Host/Worker role used for activation and managed role projection. |
+| `daemon/brain/delegation_contract.go` | Compact Host/Worker role used for activation and managed role projection. |
 | `daemon/brain/templates/soul.md` | Default expression and judgment; existing private soul files remain user-owned. |
 | `daemon/brain/templates/policies/` | On-demand delegation, executor routing and Host recovery rules. |
 | `daemon/brain/playbooks.go` | Optional short alignment, brief, decomposition and investigation procedures. |
@@ -35,7 +35,7 @@ Async tool calling, mid-turn steering and cached reasoning updates require harne
 
 Work Event resolution commands retain exact identities. They are actionable transaction data, not prose to abbreviate. Provider conversation parsers, terminal permission-prompt UI and historical documentation are not active model instructions. Global installed skills and private runtime overlays are outside repository source ownership.
 
-The compact role is repeated at Host activation intentionally: a resumed provider process needs the current version even if its retained history contains older instructions. Other workflow policies refer to AGENTS.md instead of restating that role.
+The compact role is repeated at Host activation intentionally: a resumed provider process needs the current instructions even if its retained history contains older text. Activation uses the role text's SHA-256 digest, not a manually maintained version. The digest stays in internal receipt/state metadata, never in the model prompt. Other workflow policies refer to AGENTS.md instead of restating that role.
 
 ## Verification And Rollout
 

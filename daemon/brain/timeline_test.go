@@ -72,7 +72,7 @@ func TestMaterializeProviderConversationSuppressesQueuedHostActivationTurn(t *te
 	events := []work.CodexConversationEvent{
 		{ID: "old-user", Timestamp: "2026-08-31T14:00:00Z", Kind: "user_message", Role: "user", Body: "earlier public question"},
 		{ID: "old-assistant", Timestamp: "2026-08-31T14:00:01Z", Kind: "assistant_message", Role: "assistant", Body: "earlier public answer"},
-		{ID: "activation-user", Timestamp: "2026-08-31T14:00:02Z", Kind: "user_message", Role: "user", Body: "Brain Host activation contract:\nVersion: zen-brain-worker-role/v1"},
+		{ID: "activation-user", Timestamp: "2026-08-31T14:00:02Z", Kind: "user_message", Role: "user", Body: brainHostActivationPrompt()},
 		{ID: "activation-tool", Timestamp: "2026-08-31T14:00:03Z", Kind: "tool_message", Role: "tool", Body: "private activation tool output"},
 		{ID: "activation-assistant", Timestamp: "2026-08-31T14:00:04Z", Kind: "assistant_message", Role: "assistant", Body: "Activation acknowledged."},
 		{ID: "next-user", Timestamp: "2026-08-31T14:00:05Z", Kind: "user_message", Role: "user", Body: "continue publicly"},
