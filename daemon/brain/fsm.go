@@ -212,9 +212,7 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 			if item.Review.Lease == nil || item.Review.Lease.HandlingID != st.Review.Handler.HandlerID {
 				hostSessionID := strings.TrimSpace(st.Review.Handler.HostSessionID)
 				if hostSessionID == "" {
-					// Pre-split claims used HandlerID for both identities. Replay them
-					// once so an upgrade can start, but every new claim writes both.
-					hostSessionID = st.Review.Handler.HandlerID
+					return fmt.Errorf("canonical review handler %s has no Host Session identity", st.Review.Handler.HandlerID)
 				}
 				item.Review.Lease = &WorkReviewLease{
 					HostSessionID:  hostSessionID,

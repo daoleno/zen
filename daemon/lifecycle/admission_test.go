@@ -276,7 +276,7 @@ func TestExactActionableEventIdentityOwnsReview(t *testing.T) {
 	}
 }
 
-func TestAdmissionPreparedUsesEventTimeWhenAttemptedAtIsOmitted(t *testing.T) {
+func TestAdmissionPreparedRejectsMissingAttemptedAt(t *testing.T) {
 	at := time.Date(2026, 8, 22, 10, 34, 42, 661032855, time.UTC)
 	st := Reduce(&State{}, Event{
 		WorkID: "w-historical", Kind: KWorkDefined, At: at,
@@ -290,7 +290,7 @@ func TestAdmissionPreparedUsesEventTimeWhenAttemptedAtIsOmitted(t *testing.T) {
 		},
 	})
 	admission := st.AdmissionByToken("turn-1")
-	if admission == nil || !admission.AttemptedAt.Equal(at) {
-		t.Fatalf("historical admission.prepared must inherit event time, got %+v", admission)
+	if admission != nil {
+		t.Fatalf("missing attempted_at must not be inferred from event time: %+v", admission)
 	}
 }

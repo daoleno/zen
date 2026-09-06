@@ -104,15 +104,8 @@ func Reduce(prev *State, ev Event) *State {
 		}
 		p := payload[AdmissionPreparedPayload](ev)
 		if p.SessionID == "" || p.Receipt == "" || p.PayloadSHA256 == "" ||
-			p.ProcessIdentity == "" || p.PaneGeneration == "" {
+			p.ProcessIdentity == "" || p.PaneGeneration == "" || p.AttemptedAt.IsZero() {
 			return noop(s, ev)
-		}
-		attemptedAt := p.AttemptedAt
-		if attemptedAt.IsZero() {
-			// Historical admission.prepared events omitted attempted_at. The
-			// event timestamp is the durable prepare instant and keeps replay
-			// deterministic.
-			attemptedAt = ev.At
 		}
 		if s.Admissions == nil {
 			s.Admissions = make(map[TurnToken]*AdmissionState)
@@ -123,7 +116,7 @@ func Reduce(prev *State, ev Event) *State {
 			ProcessIdentity: p.ProcessIdentity, PaneGeneration: p.PaneGeneration,
 			Mode: p.Mode, ExistingTurnToken: p.ExistingTurnToken,
 			BaselineActivityID: p.BaselineActivityID, SignalProtocol: p.SignalProtocol,
-			AttemptedAt:        attemptedAt,
+			AttemptedAt:        p.AttemptedAt,
 			TranscriptProvider: p.TranscriptProvider, TranscriptFlag: p.TranscriptFlag, TranscriptPath: p.TranscriptPath,
 			Purpose: p.Purpose, PurposeID: p.PurposeID,
 			Status: AdmissionPrepared, PreparedAt: ev.At,
